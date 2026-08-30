@@ -1,0 +1,61 @@
+<!--
+  index.html
+  A throwaway page for exercising the real tracker in a real browser.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  {{BASE_URL}} is substituted at serve time by cmd/testsite, so the same page
+  works on localhost and over Tailscale without editing.
+-->
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>feasible.lol — test site</title>
+
+		<!-- The tracker snippet, exactly as a customer would paste it. -->
+		<script defer data-domain="testsite.local" src="{{BASE_URL}}/js/script.js"></script>
+
+		<style>
+			body {
+				font: 16px/1.6 system-ui, sans-serif;
+				margin: 0 auto;
+				max-width: 40rem;
+				padding: 3rem 1.5rem;
+			}
+			code {
+				background: #f1f1f1;
+				border-radius: 3px;
+				padding: 0.1em 0.35em;
+			}
+			nav a {
+				margin-right: 1rem;
+			}
+		</style>
+	</head>
+
+	<body>
+		<h1>feasible.lol test site</h1>
+
+		<p>
+			This page loads the tracker from <code>{{BASE_URL}}</code> under the site
+			<code>testsite.local</code>. Reload it, click through the links, and watch the events
+			arrive.
+		</p>
+
+		<nav>
+			<a href="/">Home</a>
+			<a href="/about.html">About</a>
+			<a href="/?utm_source=newsletter&amp;utm_medium=email">Tagged link</a>
+			<a href="https://example.com/">Outbound</a>
+		</nav>
+
+		<p>
+			<button onclick="window.feasible &amp;&amp; window.feasible('Signup')">
+				Fire a custom event
+			</button>
+		</p>
+	</body>
+</html>
