@@ -229,7 +229,7 @@ func runDBBackup(e *env, args []string) int {
 	for _, path := range databases {
 		started := time.Now()
 
-		dest := filepath.Join(*out, fmt.Sprintf("%s-%s.db", snapshotName(e.cfg.App.DataDir, path), stamp))
+		dest := filepath.Join(*out, fmt.Sprintf("%s-%s.db", snapshotName(path), stamp))
 
 		if err := store.Backup(ctx, path, dest); err != nil {
 			fmt.Fprintf(e.stderr, "%v\n", err)
@@ -249,7 +249,7 @@ func runDBBackup(e *env, args []string) int {
 // snapshotName turns a database path into the stem of its snapshot file. Every
 // account database is called analytics.db, so the account id has to be in the
 // name or a directory of snapshots would be a directory of collisions.
-func snapshotName(dataDir, path string) string {
+func snapshotName(path string) string {
 	base := strings.TrimSuffix(filepath.Base(path), ".db")
 
 	if filepath.Base(path) != accounts.DatabaseName {
