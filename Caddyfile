@@ -1,0 +1,42 @@
+#
+# Caddyfile
+# Local reverse proxy, with the same routing shape production uses.
+#
+# Created: 2026-08-30
+# Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+#
+# Port 19300 is the only port anyone opens in a browser. Production differs in
+# hostnames and TLS only — the three rules below are identical, so a routing bug
+# found locally is the same routing bug production would have had.
+#
+# The Make targets set the placeholders; the defaults are the loopback values, so
+# `caddy run` on its own still works. The `-ts` targets point them at the
+# Tailscale address instead.
+{
+	# Nothing here is ever addressed by hostname, and a certificate attempt on a
+	# private address just produces noise in the log.
+	auto_https off
+}
+
+{$FEASIBLE_CADDY_BIND:127.0.0.1}:{$FEASIBLE_CADDY_PORT:19300} {
+	# /internal/* is denied outright. The routing rule everywhere else is "events
+	# to ingest, everything else to the app", and "everything else" cheerfully
+	# includes /internal/salts — the endpoint that hands out the secret which
+	# turns a visitor hash back into an IP address. This is one of two
+	# independent controls; the other is that the internal routes listen on a
+	# separate loopback-only port and are not routable from here at all.
+	handle /internal/* {
+		respond "404 page not found" 404
+	}
+
+	# The tracker's endpoint. Kept on its own process so the front door scales
+	# horizontally without dragging the dashboard along with it.
+	handle /api/event* {
+		reverse_proxy {$FEASIBLE_CADDY_INGEST_UPSTREAM:127.0.0.1:19302}
+	}
+
+	# Everything else: dashboard, API, tracker script, static assets.
+	handle {
+		reverse_proxy {$FEASIBLE_CADDY_APP_UPSTREAM:127.0.0.1:19301}
+	}
+}

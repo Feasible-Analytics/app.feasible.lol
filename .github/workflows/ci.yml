@@ -1,0 +1,92 @@
+#
+# ci.yml
+# Lint, test and build every push and pull request.
+#
+# Created: 2026-08-30
+# Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+#
+# The jobs run the same Make targets a developer runs, so a green pipeline means
+# the commands in the README work rather than that some parallel CI-only script
+# does. Integration tests are not here yet: there is nothing to integrate until
+# the ingest pipeline lands.
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Nothing here writes to the repository.
+permissions:
+  contents: read
+
+# A new push supersedes the run it interrupted. Waiting on results for code
+# nobody is looking at any more just delays the results for code they are.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Go version comes from go.mod, so CI proves the minimum version we
+      # claim to support actually builds rather than whatever is newest.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: make test
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Pinned to a 2.x release because .golangci.yml is written in the v2
+      # schema, which 1.x cannot read.
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.13.2
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - run: make lint
+
+  check-env:
+    name: Environment contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No Go toolchain: the check is a grep over the source, and keeping it
+      # toolchain-free means it stays fast enough that nobody is tempted to skip it.
+      - run: make check-env
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: make build
+
+      # The binary has to actually run. A build that links but cannot start is a
+      # failure people otherwise discover after the release is cut.
+      - run: ./feasible --version
