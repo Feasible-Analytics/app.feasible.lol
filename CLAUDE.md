@@ -89,9 +89,35 @@ The three processes live in the **`Server` tab**, one per labelled pane:
 
 | Pane label | Runs | Port |
 |---|---|---|
-| **App** | `make app` | 19301 (internal 19401) |
-| **Ingest** | `make ingest` | 19302 |
-| **Caddy** | `make caddy` | 19300 |
+| **App** | `make app-ts` | 19301 (internal 19401, loopback only) |
+| **Ingest** | `make ingest-ts` | 19302 |
+| **Caddy** | `make caddy-ts` | 19300 |
+
+### Always start the Tailscale variant
+
+**Default to the `-ts` targets, not the plain ones.** Spicer is often on a different machine and
+reaches the running app over Tailscale. A server bound to loopback is invisible to him, so binding to
+loopback wastes his time and yours.
+
+- Use `make app-ts` / `make ingest-ts` / `make caddy-ts` unless there is a specific reason not to.
+- **Fall back to the plain targets only when Tailscale is not running.** Say so when you do, so he
+  knows why he cannot reach it.
+- **Always print the URL after starting**, using the MagicDNS name rather than the IP —
+  `http://<machine>.<tailnet>.ts.net:19300`. He needs something he can click.
+
+**Two consequences to remember:**
+
+1. **`localhost` will not work** while the `-ts` targets are running, because the listeners are bound
+   to the Tailscale address rather than loopback. **Your own `curl` checks must use the Tailscale
+   hostname too.** That is deliberate: binding `0.0.0.0` would also expose the app to whatever café
+   or hotel network the laptop is on.
+2. **`BASE_URL` must be the MagicDNS hostname**, not the IP, and the `-ts` targets set it alongside
+   the bind address. Get this wrong and cookies will not set, redirects bounce, and Google OAuth
+   rejects the redirect URI — all with no useful error message.
+
+The **internal listener stays on `127.0.0.1` even in `-ts` mode.** Putting `/internal/*` on the
+tailnet would expose the salts endpoint — the one that can reverse visitor fingerprints — to every
+device on it.
 
 **Find a pane by label, never by a hard-coded id** — herdr compacts ids when panes close:
 
@@ -111,7 +137,7 @@ print(next((p['pane_id'] for p in panes
 **Start, stop, and read:**
 
 ```bash
-herdr pane run "$(herdr_pane App)" "make app"          # start
+herdr pane run "$(herdr_pane App)" "make app-ts"       # start (Tailscale — the default)
 herdr pane send-keys "$(herdr_pane App)" C-c           # stop
 herdr pane read "$(herdr_pane App)" --source recent --lines 50   # read the logs
 
@@ -137,7 +163,9 @@ TAB=$(herdr tab create --workspace "$WS" --label "Server" --no-focus \
 - **Always read the pane after starting something** rather than assuming it came up.
 - Stopping is `C-c` to the pane, not `pkill` — that keeps the shell alive and the pane reusable.
 - `make dev-solo` runs everything in one process; use the **App** pane for it and leave the other two
-  idle.
+  idle. Its Tailscale twin is `make dev-solo-ts`.
+- **After starting anything, tell Spicer the Tailscale URL.** He may well be on another machine, and a
+  running server he cannot find is the same as no server at all.
 
 ## Settled decisions
 
