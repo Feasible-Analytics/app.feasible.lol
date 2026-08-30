@@ -76,6 +76,69 @@ This project is **AGPL-3.0-or-later**.
 - **Never name a competitor in this repository**, in issues, commits, code or comments. Say "the
   incumbent" or "a competitor". Specifics live in Harbor.
 
+## Running the local apps — always through herdr
+
+**The agent has priority over the local processes at all times.** If you see `feasible`, Caddy or any
+of our dev processes running, you may stop, restart or kill them without asking. You never need
+permission to take a port or restart a server.
+
+**But always do it through herdr, never with a bare `go run` from your own shell.** Both of us drive
+the same three panes, so we see the same logs and neither of us is left wondering why a port is busy.
+
+The three processes live in the **`Server` tab**, one per labelled pane:
+
+| Pane label | Runs | Port |
+|---|---|---|
+| **App** | `make app` | 19301 (internal 19401) |
+| **Ingest** | `make ingest` | 19302 |
+| **Caddy** | `make caddy` | 19300 |
+
+**Find a pane by label, never by a hard-coded id** — herdr compacts ids when panes close:
+
+```bash
+herdr_pane() {
+  herdr pane list | python3 -c "
+import sys, json
+label = '$1'
+panes = json.load(sys.stdin)['result']['panes']
+ws = next((p['workspace_id'] for p in panes if p.get('focused')), None)
+print(next((p['pane_id'] for p in panes
+            if p.get('workspace_id') == ws and p.get('label') == label), ''))
+"
+}
+```
+
+**Start, stop, and read:**
+
+```bash
+herdr pane run "$(herdr_pane App)" "make app"          # start
+herdr pane send-keys "$(herdr_pane App)" C-c           # stop
+herdr pane read "$(herdr_pane App)" --source recent --lines 50   # read the logs
+
+# wait for it to actually be up before hitting it
+herdr wait output "$(herdr_pane App)" --match "listening" --timeout 30000
+```
+
+**If the `Server` tab or any of its three panes is missing, create it** — do not fall back to running
+things in your own shell:
+
+```bash
+WS=$(herdr pane list | python3 -c "import sys,json;print(next(p['workspace_id'] for p in json.load(sys.stdin)['result']['panes'] if p.get('focused')))")
+TAB=$(herdr tab create --workspace "$WS" --label "Server" --no-focus \
+      | python3 -c "import sys,json;print(json.load(sys.stdin)['result']['tab']['tab_id'])")
+# then split the root pane right, and the right pane down, and label the three panes
+# App / Ingest / Caddy to match the table above.
+```
+
+**Rules:**
+
+- **Never start a long-running server with the Bash tool.** It blocks, the output is invisible to
+  Spicer, and it leaves an orphan process he cannot stop.
+- **Always read the pane after starting something** rather than assuming it came up.
+- Stopping is `C-c` to the pane, not `pkill` — that keeps the shell alive and the pane reusable.
+- `make dev-solo` runs everything in one process; use the **App** pane for it and leave the other two
+  idle.
+
 ## Settled decisions
 
 Do not re-open these without a reason. Full reasoning is in the build plan.
