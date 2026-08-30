@@ -63,6 +63,19 @@ notes.
 
 This project is **AGPL-3.0-or-later**.
 
+## Issue conventions
+
+- **Epics are titled `[Epic] <name>`.** Never `EPIC:` or any other prefix.
+- Epics own **native GitHub sub-issues**, not markdown checklists — only native sub-issues give a real
+  parent/child rollup and populate the project board's Parent and Progress fields.
+- Child issue bodies end with `Part of #<epic>`.
+- Every issue carries an `area:*` label, a `priority:*` label, and a milestone.
+- **Issues must stand alone.** A senior developer with no prior context should be able to pick one up
+  and do the work from the issue body. The Harbor plan is background, not a prerequisite — this repo
+  is public and Harbor is not.
+- **Never name a competitor in this repository**, in issues, commits, code or comments. Say "the
+  incumbent" or "a competitor". Specifics live in Harbor.
+
 ## Settled decisions
 
 Do not re-open these without a reason. Full reasoning is in the build plan.
