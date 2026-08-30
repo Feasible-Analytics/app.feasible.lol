@@ -1,0 +1,27 @@
+#
+# .golangci.yml
+# Linter configuration, kept small on purpose.
+#
+# Created: 2026-08-30
+# Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+#
+# The default linter set is the right amount of strictness for this project. The
+# only tuning is to errcheck: writing to an already-failed stdout and closing a
+# read-only database handle have no useful recovery, and forcing every one of
+# them to be handled trains people to ignore the linter rather than read it.
+
+version: "2"
+
+linters:
+  default: standard
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*database/sql.DB).Close
+
+formatters:
+  enable:
+    - gofmt
