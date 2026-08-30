@@ -29,10 +29,51 @@ import (
 // find-and-replace across the tree.
 const DriverName = "sqlite"
 
+// Pragmas are applied to every connection this package opens, and none of them
+// are optional. The driver runs each one at connection time, which is the only
+// place they can be set reliably: SQLite scopes most of these per connection,
+// so a pragma executed once on a pooled handle would apply to whichever
+// connection happened to serve that call and to no other.
+//
+//	journal_mode      WAL, so a dashboard read never blocks an ingest write
+//	synchronous       NORMAL, fsync at checkpoint only — the right trade for
+//	                  analytics, where losing the last few seconds of events in
+//	                  a power cut costs far less than an fsync per commit
+//	busy_timeout      5s of waiting instead of an immediate "database is locked"
+//	foreign_keys      on, because SQLite defaults it off and silently keeps
+//	                  orphans otherwise
+//	cache_size        -64000 = 64 MB of page cache
+//	mmap_size         256 MB mapped, which is address space rather than resident
+//	                  memory and turns most reads into page-cache hits
+//	temp_store        MEMORY, so a GROUP BY spilling to a temp table stays in RAM
+//	wal_autocheckpoint 1000 pages, keeping the WAL from growing without bound
+const Pragmas = "_pragma=journal_mode(WAL)" +
+	"&_pragma=synchronous(NORMAL)" +
+	"&_pragma=busy_timeout(5000)" +
+	"&_pragma=foreign_keys(1)" +
+	"&_pragma=cache_size(-64000)" +
+	"&_pragma=mmap_size(268435456)" +
+	"&_pragma=temp_store(MEMORY)" +
+	"&_pragma=wal_autocheckpoint(1000)"
+
+// DSN builds the connection string for a database file. Every caller goes
+// through it so that a pragma can never be applied to one handle and forgotten
+// on another — a difference that would not fail, it would just quietly perform
+// or behave differently depending on which handle a query landed on.
+func DSN(path string, extra ...string) string {
+	dsn := "file:" + path + "?" + Pragmas
+
+	for _, param := range extra {
+		dsn += "&" + param
+	}
+
+	return dsn
+}
+
 // Open opens (and creates, if missing) a SQLite database with the pragmas this
-// project needs everywhere. WAL keeps a dashboard read from blocking an ingest
-// write, and the busy timeout turns the lock contention that would otherwise
-// surface as a hard "database is locked" error into a short wait.
+// project needs everywhere. It is the general-purpose handle used by
+// maintenance commands; the serving path wants OpenDatabase instead, which
+// separates the single writer from the reader pool.
 func Open(path string) (*sql.DB, error) {
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -40,9 +81,7 @@ func Open(path string) (*sql.DB, error) {
 		}
 	}
 
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)", path)
-
-	db, err := sql.Open(DriverName, dsn)
+	db, err := sql.Open(DriverName, DSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}

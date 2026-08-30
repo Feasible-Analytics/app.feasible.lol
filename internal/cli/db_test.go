@@ -15,11 +15,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
 // seedDataDir builds a data directory holding a control database and one
-// account database, which is the shape every db command walks.
+// account database, in the layout every db command walks: control.db at the
+// top, and one directory per account under accounts/.
 func seedDataDir(t *testing.T) string {
 	t.Helper()
 
@@ -27,14 +29,10 @@ func seedDataDir(t *testing.T) string {
 
 	for _, path := range []string{
 		filepath.Join(dir, "control.db"),
-		filepath.Join(dir, "accounts", "acct-000001.db"),
+		accounts.Path(dir, 1),
 	} {
 		db, err := store.Open(path)
 		if err != nil {
-			t.Fatal(err)
-		}
-
-		if _, err := db.ExecContext(context.Background(), "CREATE TABLE t (id INTEGER)"); err != nil {
 			t.Fatal(err)
 		}
 
@@ -42,6 +40,25 @@ func seedDataDir(t *testing.T) string {
 	}
 
 	return dir
+}
+
+// schemaVersion reads a database's migration level straight off the file, which
+// is how an operator checks a migration actually landed.
+func schemaVersion(t *testing.T, path string) int {
+	t.Helper()
+
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	version, err := store.SchemaVersion(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return version
 }
 
 // TestDBWithoutSubcommand checks `feasible db` lists what it offers rather than
@@ -71,37 +88,127 @@ func TestDBUnknownSubcommand(t *testing.T) {
 	}
 }
 
-// TestMigrateWalksEveryDatabase checks the walk covers control.db and the
-// account databases, and reports a schema version for each. With one database
-// per account, a migration is only resumable if you can see where it stopped.
+// TestMigrateWalksEveryDatabase is the whole command: control.db and every
+// account database brought up to date in one run. An account that is missed is
+// an account whose events stop being accepted after a deploy.
 func TestMigrateWalksEveryDatabase(t *testing.T) {
-	t.Setenv("FEASIBLE_APP_DATA_DIR", seedDataDir(t))
+	dir := seedDataDir(t)
+	t.Setenv("FEASIBLE_APP_DATA_DIR", dir)
 
 	code, stdout, stderr := run(t, "db", "migrate")
 
 	if code != ExitOK {
 		t.Fatalf("exit code %d, stderr: %s", code, stderr)
 	}
-	if !strings.Contains(stdout, "control.db") || !strings.Contains(stdout, "acct-000001.db") {
+	if !strings.Contains(stdout, "control.db") || !strings.Contains(stdout, "000001") {
 		t.Fatalf("not every database was visited: %q", stdout)
 	}
-	if strings.Count(stdout, "schema_version=0") != 2 {
-		t.Fatalf("expected a schema version per database: %q", stdout)
+
+	for _, path := range []string{filepath.Join(dir, "control.db"), accounts.Path(dir, 1)} {
+		if version := schemaVersion(t, path); version < 1 {
+			t.Fatalf("%s is still at version %d", path, version)
+		}
+	}
+
+	// The schemas are real, not just a version stamp.
+	control, err := store.Open(filepath.Join(dir, "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+
+	var count int
+	if err := control.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM users").Scan(&count); err != nil {
+		t.Fatalf("the control schema was not applied: %v", err)
 	}
 }
 
-// TestMigrateEmptyDataDir covers a first run, where nothing exists yet. That has
-// to succeed quietly rather than look like a failure.
-func TestMigrateEmptyDataDir(t *testing.T) {
-	t.Setenv("FEASIBLE_APP_DATA_DIR", t.TempDir())
+// TestMigrateIsIdempotent is what makes an interrupted run recoverable: the fix
+// is always to run it again, so a second pass has to change nothing and say so.
+func TestMigrateIsIdempotent(t *testing.T) {
+	dir := seedDataDir(t)
+	t.Setenv("FEASIBLE_APP_DATA_DIR", dir)
 
-	code, stdout, _ := run(t, "db", "migrate")
+	if code, _, stderr := run(t, "db", "migrate"); code != ExitOK {
+		t.Fatalf("first run: exit code %d, stderr: %s", code, stderr)
+	}
+
+	code, stdout, stderr := run(t, "db", "migrate")
 
 	if code != ExitOK {
-		t.Fatalf("exit code %d", code)
+		t.Fatalf("second run: exit code %d, stderr: %s", code, stderr)
 	}
-	if !strings.Contains(stdout, "no databases found yet") {
-		t.Fatalf("silent on an empty data directory: %q", stdout)
+	if strings.Contains(stdout, "database migrated") {
+		t.Fatalf("the second run applied migrations: %q", stdout)
+	}
+	if strings.Count(stdout, "database already current") != 2 {
+		t.Fatalf("the second run was not clear about doing nothing: %q", stdout)
+	}
+}
+
+// TestMigrateCreatesTheControlDatabase covers a fresh install, where nothing
+// exists yet. This is the first command a new install runs, so it has to create
+// control.db rather than report that it is missing.
+func TestMigrateCreatesTheControlDatabase(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("FEASIBLE_APP_DATA_DIR", dir)
+
+	code, stdout, stderr := run(t, "db", "migrate")
+
+	if code != ExitOK {
+		t.Fatalf("exit code %d, stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "database migrated") {
+		t.Fatalf("nothing was migrated: %q", stdout)
+	}
+
+	if version := schemaVersion(t, filepath.Join(dir, "control.db")); version < 1 {
+		t.Fatalf("control.db was left at version %d", version)
+	}
+}
+
+// TestMigrateFreshRebuilds covers the destructive development flag. It has to
+// leave a database that is migrated and empty, not one that needs deleting by
+// hand.
+func TestMigrateFreshRebuilds(t *testing.T) {
+	dir := seedDataDir(t)
+	t.Setenv("FEASIBLE_APP_DATA_DIR", dir)
+
+	if code, _, stderr := run(t, "db", "migrate"); code != ExitOK {
+		t.Fatalf("exit code %d, stderr: %s", code, stderr)
+	}
+
+	control, err := store.Open(filepath.Join(dir, "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.ExecContext(context.Background(),
+		"INSERT INTO teams (name, created_at, updated_at) VALUES ('Acme', 0, 0)"); err != nil {
+		t.Fatal(err)
+	}
+	control.Close()
+
+	code, stdout, stderr := run(t, "db", "migrate", "--fresh")
+
+	if code != ExitOK {
+		t.Fatalf("exit code %d, stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "database emptied") {
+		t.Fatalf("a destructive run said nothing about it: %q", stdout)
+	}
+
+	rebuilt, err := store.Open(filepath.Join(dir, "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rebuilt.Close()
+
+	var count int
+	if err := rebuilt.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM teams").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("--fresh left %d rows behind", count)
 	}
 }
 
@@ -145,6 +252,19 @@ func TestBackupWritesASnapshotPerDatabase(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "database backed up") {
 		t.Fatalf("backups were not reported: %q", stdout)
+	}
+
+	// Every account database is called analytics.db, so the account id has to
+	// be in the snapshot name or a directory of backups is a directory of
+	// collisions.
+	var named bool
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "account-000001-") {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("an account snapshot is not named after its account: %v", entries)
 	}
 }
 

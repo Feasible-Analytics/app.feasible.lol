@@ -17,7 +17,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
@@ -33,6 +35,10 @@ const migrateHelp = `feasible db migrate — migrate every database.
 Migrations never run on boot. Two processes racing migrations is a classic
 self-hosting failure, and with one database per account the operation has to be
 deliberate and resumable, so it is always an explicit command.
+
+control.db is created if it does not exist yet, which is what makes this the
+first command a fresh install runs. Account databases are migrated where they
+already exist; a new account's database is created when the account is.
 
 Flags:
 `
@@ -66,11 +72,19 @@ func runDB(e *env, args []string) int {
 	}
 }
 
-// runDBMigrate reports what each database is at and what it would be moved to.
-// No migrations are registered yet, so today it is a survey; the walk over every
-// database and the per-database schema version it prints are the parts that have
-// to be right, because a partial migration across N account databases is only
-// recoverable if you can see where it stopped.
+// target is one database to migrate, paired with the migrations that belong to
+// it. Control and account databases have unrelated schemas and independent
+// version numbers, so the set travels with the path rather than being decided
+// again inside the loop.
+type target struct {
+	path string
+	set  migrate.Set
+}
+
+// runDBMigrate brings control.db and every account database up to date. It
+// stops at the first failure and says which database it stopped on: with one
+// database per account a partial run is normal and recoverable, but only if you
+// can see where it got to.
 func runDBMigrate(e *env, args []string) int {
 	fs := newFlagSet("db migrate", e, migrateHelp)
 	fresh := fs.Bool("fresh", false, "drop everything and rebuild from an empty schema")
@@ -88,43 +102,102 @@ func runDBMigrate(e *env, args []string) int {
 
 	ctx := context.Background()
 
-	databases, err := discoverDatabases(e.cfg.App.DataDir)
+	targets, err := migrateTargets(e.cfg.App.DataDir)
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError
 	}
 
-	if len(databases) == 0 {
-		e.log.Info("no databases found yet",
-			"data_dir", e.cfg.App.DataDir,
-			"fresh", *fresh,
-		)
-		return ExitOK
-	}
-
-	for _, path := range databases {
-		db, err := store.Open(path)
-		if err != nil {
+	for _, item := range targets {
+		if err := migrateOne(ctx, e, item, *fresh); err != nil {
 			fmt.Fprintf(e.stderr, "%v\n", err)
 			return ExitError
 		}
-
-		version, err := store.SchemaVersion(ctx, db)
-		db.Close()
-
-		if err != nil {
-			fmt.Fprintf(e.stderr, "%v\n", err)
-			return ExitError
-		}
-
-		e.log.Info("migrate is not implemented yet",
-			"database", path,
-			"schema_version", version,
-			"fresh", *fresh,
-		)
 	}
+
+	e.log.Info("migrations complete",
+		"data_dir", e.cfg.App.DataDir,
+		"databases", len(targets),
+	)
 
 	return ExitOK
+}
+
+// migrateOne migrates a single database and reports what it did. Each database
+// is opened and closed in turn rather than all at once, because a box with a
+// thousand accounts would otherwise hold a thousand sets of handles open for
+// the length of the run.
+func migrateOne(ctx context.Context, e *env, item target, fresh bool) error {
+	db, err := store.OpenDatabase(item.path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	if fresh {
+		if err := migrate.Fresh(ctx, db.Writer()); err != nil {
+			return fmt.Errorf("%s: %w", item.path, err)
+		}
+
+		e.log.Warn("database emptied", "database", item.path)
+	}
+
+	started := time.Now()
+
+	result, err := migrate.Run(ctx, db.Writer(), item.set)
+	if err != nil {
+		return fmt.Errorf("%s: %w", item.path, err)
+	}
+
+	// The no-op case is logged as loudly as the change. Re-running migrate is
+	// how an interrupted run is resumed, and someone doing that needs to see
+	// every database confirmed rather than silence.
+	if !result.Changed() {
+		e.log.Info("database already current",
+			"database", item.path,
+			"schema", item.set.Name,
+			"schema_version", result.To,
+		)
+
+		return nil
+	}
+
+	e.log.Info("database migrated",
+		"database", item.path,
+		"schema", item.set.Name,
+		"from", result.From,
+		"schema_version", result.To,
+		"applied", len(result.Applied),
+		"duration", time.Since(started),
+	)
+
+	return nil
+}
+
+// migrateTargets lists what a migration run has to visit. control.db is always
+// included, existing or not, because creating it is how a fresh install gets a
+// schema at all. Account databases are only visited where they already exist —
+// an account's database is created with the account, and inventing one here
+// would mean guessing an id.
+func migrateTargets(dataDir string) ([]target, error) {
+	targets := []target{{
+		path: filepath.Join(dataDir, config.ControlDatabaseName),
+		set:  migrate.Control(),
+	}}
+
+	ids, err := accounts.Discover(dataDir)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, id := range ids {
+		targets = append(targets, target{
+			path: accounts.Path(dataDir, id),
+			set:  migrate.Account(),
+		})
+	}
+
+	return targets, nil
 }
 
 // runDBBackup snapshots every database into a dated file. It reports a failure
@@ -154,10 +227,10 @@ func runDBBackup(e *env, args []string) int {
 	stamp := time.Now().UTC().Format("20060102T150405Z")
 
 	for _, path := range databases {
-		name := strings.TrimSuffix(filepath.Base(path), ".db")
-		dest := filepath.Join(*out, fmt.Sprintf("%s-%s.db", name, stamp))
-
 		started := time.Now()
+
+		dest := filepath.Join(*out, fmt.Sprintf("%s-%s.db", snapshotName(path), stamp))
+
 		if err := store.Backup(ctx, path, dest); err != nil {
 			fmt.Fprintf(e.stderr, "%v\n", err)
 			return ExitError
@@ -173,10 +246,22 @@ func runDBBackup(e *env, args []string) int {
 	return ExitOK
 }
 
-// discoverDatabases lists control.db and every account database under the data
-// directory. Account databases live in their own subdirectory so that adding a
-// backup file or a downloaded GeoIP database beside them can never be mistaken
-// for an account.
+// snapshotName turns a database path into the stem of its snapshot file. Every
+// account database is called analytics.db, so the account id has to be in the
+// name or a directory of snapshots would be a directory of collisions.
+func snapshotName(path string) string {
+	base := strings.TrimSuffix(filepath.Base(path), ".db")
+
+	if filepath.Base(path) != accounts.DatabaseName {
+		return base
+	}
+
+	return "account-" + filepath.Base(filepath.Dir(path))
+}
+
+// discoverDatabases lists the database files that already exist under the data
+// directory. It is used by the commands that must never create anything —
+// unlike migrate, which creates control.db on purpose.
 func discoverDatabases(dataDir string) ([]string, error) {
 	var found []string
 
@@ -185,26 +270,17 @@ func discoverDatabases(dataDir string) ([]string, error) {
 		found = append(found, control)
 	}
 
-	accountDir := filepath.Join(dataDir, config.AccountDatabaseDir)
-
-	entries, err := os.ReadDir(accountDir)
-	if os.IsNotExist(err) {
-		return found, nil
-	}
+	ids, err := accounts.Discover(dataDir)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", accountDir, err)
+		return nil, err
 	}
 
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".db") {
-			continue
-		}
-
-		found = append(found, filepath.Join(accountDir, entry.Name()))
+	for _, id := range ids {
+		found = append(found, accounts.Path(dataDir, id))
 	}
 
-	// A stable order matters: a partially failed migration should stop at the
-	// same place on a retry, so the run is resumable by re-running it.
+	// A stable order matters: a partially failed run should stop at the same
+	// place on a retry, so the run is resumable by re-running it.
 	sort.Strings(found)
 
 	return found, nil
