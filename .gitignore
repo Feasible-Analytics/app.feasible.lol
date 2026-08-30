@@ -1,0 +1,19 @@
+# Environment
+.env
+.env.local
+
+# Local data — SQLite databases, ingest buffers, GeoIP
+/data/
+/tmp/
+
+# Build output
+/bin/
+/dist/
+feasible
+
+# Browser automation scratch (see global CLAUDE.md)
+.playwright/
+.playwright-cli/
+
+# macOS
+.DS_Store
