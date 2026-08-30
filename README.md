@@ -35,7 +35,51 @@ feasible.lol takes a different position:
 
 ## Running it
 
-Coming soon.
+You need Go 1.23 or newer. Caddy is only needed for the three-process mode, and
+Node only once there is a dashboard to compile.
+
+```bash
+cp .env.sample .env
+make build
+make dev-solo          # one process, everything in it — the self-hoster path
+```
+
+For the production shape, run each process in its own terminal so its log stream
+stays readable:
+
+```bash
+make caddy             # :19300 — the only port you open in a browser
+make app               # :19301, plus :19401 internal, loopback only
+make ingest            # :19302
+make testsite          # :19303 — a real page with the snippet installed
+```
+
+`make dev` runs all three at once. Every runnable target has a `-ts` twin
+(`make app-ts`, `make dev-ts`) that binds to the Tailscale address and moves
+`FEASIBLE_APP_BASE_URL` with it, so the app is reachable from another machine.
+The internal listener stays on `127.0.0.1` in every mode.
+
+`make` on its own lists everything.
+
+### Local services you do not need
+
+- **Email.** `FEASIBLE_APP_MAIL_TRANSPORT=log` prints the message to stdout and
+  writes the rendered HTML to `tmp/mail/*.html`. No SMTP server, no mail catcher.
+- **Geolocation.** A missing GeoIP database degrades to "unknown" rather than
+  failing. An optional data file must never stop you running the app.
+- **Stripe.** Webhooks come through the CLI:
+
+  ```bash
+  stripe listen --forward-to localhost:19301/webhooks/stripe
+  ```
+
+### Before you push
+
+```bash
+make test
+make lint
+make check-env         # every environment variable is documented in .env.sample
+```
 
 ## License
 
