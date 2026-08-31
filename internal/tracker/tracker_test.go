@@ -66,6 +66,78 @@ func TestBundleIsUnderBudget(t *testing.T) {
 	}
 }
 
+// TestVitalsBundleIsUnderBudget is the second script's own ceiling.
+//
+// It is a separate budget rather than a shared one because the two scripts are
+// paid for by different people: every site loads the tracker, and only a site
+// that asked for vitals loads this. Adding them together would let one grow
+// into the other's room.
+func TestVitalsBundleIsUnderBudget(t *testing.T) {
+	var buf bytes.Buffer
+
+	writer, err := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := writer.Write(VitalsScript); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Logf("vitals bundle: %d bytes raw, %d bytes gzipped, budget %d",
+		len(VitalsScript), buf.Len(), VitalsSizeBudget)
+
+	if buf.Len() > VitalsSizeBudget {
+		t.Fatalf("the vitals collector is %d bytes gzipped, over the %d byte budget", buf.Len(), VitalsSizeBudget)
+	}
+}
+
+// TestVitalsScriptIsServed covers the route. It carries no baked configuration
+// at all: it reports through the function the core script installed, so there
+// is no domain of its own for it to know.
+func TestVitalsScriptIsServed(t *testing.T) {
+	recorder := get(t, newHandler("example.com"), PathVitals)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200", recorder.Code)
+	}
+
+	body := recorder.Body.String()
+
+	if strings.HasPrefix(body, "window.__fsc=") {
+		t.Fatal("the vitals collector must not carry a baked configuration")
+	}
+
+	if !strings.Contains(body, "largest-contentful-paint") {
+		t.Fatal("the served bundle does not look like the vitals collector")
+	}
+
+	// The core script must not be served from this path, or a site would load
+	// the tracker twice and count every pageview twice with it.
+	if bytes.Equal([]byte(body), Script) {
+		t.Fatal("the vitals path served the tracker bundle")
+	}
+}
+
+// TestVitalsCollectorReportsThroughThePublicFunction is the contract that keeps
+// this bundle small and keeps exclusions working: it has no transport of its
+// own, so an excluded page silently sends nothing because the core script has
+// already replaced the function with a no-op.
+func TestVitalsCollectorReportsThroughThePublicFunction(t *testing.T) {
+	body := string(VitalsScript)
+
+	if !strings.Contains(body, "feasible") {
+		t.Fatal("the vitals collector does not call the tracker's public function")
+	}
+
+	if strings.Contains(body, "fetch(") || strings.Contains(body, "XMLHttpRequest") {
+		t.Fatal("the vitals collector has a transport of its own — it must send through the tracker")
+	}
+}
+
 // TestBundleIsBuilt guards against an empty or placeholder asset, which would
 // otherwise pass the budget test with flying colours.
 func TestBundleIsBuilt(t *testing.T) {

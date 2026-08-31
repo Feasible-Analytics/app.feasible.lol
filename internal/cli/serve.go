@@ -402,8 +402,10 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	// The access gate wraps it as well as the dashboard, and that is the point:
 	// the numbers come from here, so a lock that only covered the HTML would be
 	// no lock at all.
-	mux.Handle(statsapi.Pattern, metrics.Instrument(metrics.HandlerStats,
-		com.Gate.Protect(statsapi.New(service.Sites, manager, e.log))))
+	stats := statsapi.New(service.Sites, manager, e.log)
+	stats.SampleThreshold = e.cfg.API.QuerySampleThreshold
+
+	mux.Handle(statsapi.Pattern, metrics.Instrument(metrics.HandlerStats, com.Gate.Protect(stats)))
 
 	// The compiled React dashboard, served out of the binary. It reads the site
 	// snapshot only to render the site picker; every number on it comes from

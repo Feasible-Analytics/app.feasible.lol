@@ -59,6 +59,11 @@ type Handler struct {
 	// test can ask what "today" returns without waiting for tomorrow.
 	Now func() time.Time
 
+	// SampleThreshold is how many event rows a query may be estimated to read
+	// before it is answered from a sample instead. Zero takes the engine's own
+	// default; a negative value turns automatic sampling off.
+	SampleThreshold int64
+
 	// live holds the answers to reports whose range reaches today. A finished
 	// period is never held: it cannot change, and it is already answered from
 	// the summary tables in single-digit milliseconds.
@@ -94,6 +99,11 @@ type request struct {
 	Include    query.Include    `json:"include"`
 	Timezone   string           `json:"timezone"`
 	SampleRate float64          `json:"sample_rate"`
+
+	// Exact refuses the automatic sampling a very large query would otherwise
+	// get. It is on the wire rather than a header so that the request which
+	// asked for exactness and the response which echoes it are one document.
+	Exact bool `json:"exact"`
 
 	// Currency is the ISO 4217 code the money metrics are totalled in. It is
 	// optional: with one currency in the data the compiler resolves it, and
@@ -172,6 +182,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	engine := query.New(account.Reader())
+	engine.SampleThreshold = h.SampleThreshold
+
 	if h.Now != nil {
 		engine.Now = h.Now
 	}
@@ -336,6 +348,7 @@ func (r *request) toQuery(site sites.Site) query.Query {
 		Pagination: r.Pagination,
 		Include:    r.Include,
 		SampleRate: r.SampleRate,
+		Exact:      r.Exact,
 		Currency:   r.Currency,
 	}
 }

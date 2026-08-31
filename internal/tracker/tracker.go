@@ -44,6 +44,18 @@ import (
 //go:embed assets/feasible.js
 var Script []byte
 
+// VitalsScript is the optional Core Web Vitals collector.
+//
+// It is a second file rather than part of the bundle above for one reason, and
+// it is arithmetic rather than architecture: the core script sits within a few
+// dozen bytes of its budget, so there is no room in it for another metric.
+// Raising that budget would make every site pay for a measurement most of them
+// have not asked for, so this is opt-in and separate — a site that wants it
+// adds a second script tag, and a site that does not is unchanged.
+//
+//go:embed assets/feasible.vitals.js
+var VitalsScript []byte
+
 // SizeBudget is the largest the gzipped bundle may be, in bytes.
 //
 // It is enforced by a test in this package rather than only by the JavaScript
@@ -52,6 +64,12 @@ var Script []byte
 // every contributor who never touches the tracker. tracker/build.js enforces
 // the same number at build time; the two have to be changed together.
 const SizeBudget = 3 * 1024
+
+// VitalsSizeBudget is the same ceiling for the vitals collector, and it exists
+// for the same reason: a measurement script that grows without a bound is a
+// measurement script that eventually changes what it is measuring. It is a
+// third of the tracker's because it does one job.
+const VitalsSizeBudget = 1024
 
 // Paths the handler answers.
 const (
@@ -63,6 +81,14 @@ const (
 	// the whole point is that a migrating customer changes the hostname and
 	// nothing else.
 	PathLegacy = PathPrefix + "script.js"
+
+	// PathVitals is the optional Core Web Vitals collector. It is one fixed
+	// path rather than a per-site token because it carries no configuration:
+	// it reports through the function the core script already installed, so it
+	// has no domain of its own to bake and nothing to tell one site's copy from
+	// another's. That also means a filter list naming this file costs every
+	// site its vitals at once, which is the price of it being free of state.
+	PathVitals = PathPrefix + "vitals.js"
 
 	// sitePrefix and siteSuffix bracket the per-site token.
 	sitePrefix = "fs-"
@@ -106,7 +132,7 @@ func New(secret []byte, sites DomainSource) *Handler {
 
 // ServeHTTP routes one request to the variant it asked for.
 //
-// Anything under /js/ that is not one of the two known shapes is a 404 rather
+// Anything under /js/ that is not one of the three known shapes is a 404 rather
 // than a redirect or a default. A typo in a snippet has to be visible: serving
 // a working script from a wrong URL means the customer's real snippet stays
 // wrong and nobody ever finds out.
@@ -118,7 +144,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.URL.Path == PathLegacy {
-		h.serve(w, r, nil)
+		h.serve(w, r, Script, nil)
+		return
+	}
+
+	if r.URL.Path == PathVitals {
+		h.serve(w, r, VitalsScript, nil)
 		return
 	}
 
@@ -137,7 +168,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.serve(w, r, bakedConfig(domain, r))
+	h.serve(w, r, Script, bakedConfig(domain, r))
 }
 
 // siteToken pulls the token out of a per-site path, reporting whether the path
@@ -222,8 +253,8 @@ func truthy(value string) bool {
 // share a cache entry and a changed option invalidates immediately. Answering
 // the conditional request here rather than leaving it to a CDN means the same
 // behaviour on a self-hosted install with nothing in front of it.
-func (h *Handler) serve(w http.ResponseWriter, r *http.Request, cfg map[string]any) {
-	body := Script
+func (h *Handler) serve(w http.ResponseWriter, r *http.Request, script []byte, cfg map[string]any) {
+	body := script
 
 	if cfg != nil {
 		prefix, err := configPrefix(cfg)
@@ -232,7 +263,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, cfg map[string]a
 			return
 		}
 
-		body = append(prefix, Script...)
+		body = append(prefix, script...)
 	}
 
 	sum := sha256.Sum256(body)

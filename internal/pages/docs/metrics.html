@@ -50,3 +50,32 @@ not exist. Create the goal before the campaign, not after it.</p>
 already paid for, and an engagement ping is the script's own heartbeat. Billing either would
 be charging you for the same event twice. See <a href="/docs/api">the APIs</a> for exactly which
 event names are which.</p>
+
+<h3>Core Web Vitals</h3>
+<p>If you have installed the optional collector — see <a href="/docs/script-options">script
+options</a> — five more measurements arrive as numeric properties on an event called
+<strong>Web Vitals</strong>: <code>lcp</code>, <code>cls</code>, <code>inp</code>,
+<code>ttfb</code> and <code>fcp</code>. They are properties rather than metrics of their own so
+that the same aggregation, filtering and breakdown that works on everything else works on
+them: <code>p75(event:props:lcp)</code> broken down by page is the report you want, and it is
+one query.</p>
+
+<p>Three things about them are worth knowing before you quote one. They are measured only in
+browsers that implement the measurement, so a Web Vitals figure describes Chromium traffic far
+more than it describes Safari traffic. They are reported once per page load, when the page is
+hidden, so a visitor who never closes the tab never reports. And if you set a sample rate on
+the collector, the numbers describe that sample — the count of Web Vitals events beside them is
+how you see how many page loads are behind the figure.</p>
+
+<h3>When a number is an estimate</h3>
+<p>A query over a very large range that cannot be answered from the pre-aggregated summaries —
+a filtered one, or a breakdown by a custom property — is answered from a sample of visitors
+instead of every one of them, and the totals are scaled back up. This has a threshold, and
+most reports never reach it.</p>
+
+<p>When it happens, it is never quiet. The response carries a <code>sampling</code> object
+naming the rate, the row estimate that triggered it and the ceiling it crossed; every metric in
+the response carries a <code>sampled</code> warning; and the dashboard puts a "Sampled" badge on
+the figures. Send <code>"exact": true</code> with the query — or use the badge's own link — to
+refuse sampling and wait for the exact answer instead. A sampled number that looks exact is
+worse than a slow one, because somebody will make a decision on it.</p>

@@ -101,6 +101,13 @@ type API struct {
 
 	Log *logger.Logger
 
+	// SampleThreshold is how many event rows a query may be estimated to read
+	// before it is answered from a sample. It is carried here so the public
+	// endpoint and the dashboard sample at the same size — an API that
+	// estimated where the dashboard was exact would be two answers to one
+	// question.
+	SampleThreshold int64
+
 	// Now is the clock every date range resolves against, injectable so a test
 	// can ask what "today" returns without waiting for tomorrow.
 	Now func() time.Time

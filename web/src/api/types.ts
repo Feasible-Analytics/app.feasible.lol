@@ -19,7 +19,15 @@ export type Metric =
 	| "time_on_page"
 	| "scroll_depth"
 	| "exit_rate"
-	| "conversion_rate";
+	| "conversion_rate"
+	/** The numeric property aggregates, which are a family rather than fixed
+	 *  names: the property is a parameter, so no union could list them. The
+	 *  template literal still catches the mistakes worth catching — an
+	 *  aggregate we do not have, or a dimension that is not a property. */
+	| `${Aggregate}(event:props:${string})`;
+
+/** The aggregates a numeric property metric may use. */
+export type Aggregate = "sum" | "avg" | "min" | "max" | "p50" | "p75" | "p90" | "p95" | "p99";
 
 /** The date-range presets the engine resolves server-side. They are resolved
  *  there rather than here so the graph, the tables and an export taken a second
@@ -80,6 +88,9 @@ export interface StatsRequest {
 	include?: Include;
 	timezone?: string;
 	sample_rate?: number;
+	/** Refuses the automatic sampling a very large query would otherwise get,
+	 *  and waits for the exact answer instead. */
+	exact?: boolean;
 }
 
 export interface ComparisonRow {
@@ -101,6 +112,18 @@ export interface Warning {
 	warning: string;
 }
 
+/** Why an answer was read from part of the data rather than all of it. It is
+ *  present exactly when the numbers are estimates, so its presence alone is
+ *  what the badge branches on. */
+export interface Sampling {
+	rate: number;
+	reason: "requested" | "automatic";
+	/** Roughly how many event rows an exact answer would have read, and the
+	 *  ceiling it crossed. Both are absent for a rate the caller asked for. */
+	estimated_rows?: number;
+	threshold?: number;
+}
+
 export interface Meta {
 	/** Every bucket in the range, including the empty ones. Without it a graph
 	 *  cannot tell a quiet day from a day the tracker was broken. */
@@ -111,6 +134,7 @@ export interface Meta {
 	total_rows?: number;
 	interval: Interval;
 	sample_rate: number;
+	sampling?: Sampling;
 	sources: string[];
 	comparison_date_range?: string[];
 }

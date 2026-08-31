@@ -104,7 +104,19 @@ type Query struct {
 	// means no sampling and is the default. Sampling picks visitors rather
 	// than rows so that a sampled session is whole: sampling rows would break
 	// every session-scoped metric, because half a visit is not a visit.
+	//
+	// Leaving it at one does not guarantee an exact answer: a query estimated
+	// to read more rows than the engine's threshold is sampled on the caller's
+	// behalf, and says so in meta.sampling. Exact is how a caller opts out.
 	SampleRate float64 `json:"sample_rate,omitempty"`
+
+	// Exact refuses automatic sampling, however large the range. It is the
+	// escape hatch for the answer that has to be right rather than quick — an
+	// invoice, a reconciliation, a figure going into a report — and it is a
+	// separate field rather than sample_rate: 1 because those two are
+	// indistinguishable on the wire, and defaulting to exactness would put
+	// every dashboard back on the slow path.
+	Exact bool `json:"exact,omitempty"`
 }
 
 // Filter is one predicate. The wire form is the array shape the ecosystem
@@ -266,7 +278,8 @@ func (q *Query) Validate() error {
 	seenMetric := map[string]bool{}
 	for _, name := range q.Metrics {
 		if _, ok := metricByName(name); !ok {
-			return invalid("unknown metric %q — known metrics are %s", name, strings.Join(MetricNames(), ", "))
+			return invalid("unknown metric %q — known metrics are %s, plus <aggregate>(event:props:<key>) where <aggregate> is one of %s",
+				name, strings.Join(MetricNames(), ", "), strings.Join(AggregateNames(), ", "))
 		}
 		if seenMetric[name] {
 			return invalid("metric %q is listed twice", name)

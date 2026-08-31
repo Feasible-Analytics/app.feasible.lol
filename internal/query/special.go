@@ -37,7 +37,11 @@ func (x *executor) specialPass(ctx context.Context, name string, r Resolved, gro
 		return x.revenue(ctx, r, groups, keys)
 	}
 
-	return nil
+	// Everything else that reached the composite list is a numeric property
+	// aggregate, because those are the only other metrics the planner routes
+	// here. A name that is neither is refused by that pass rather than
+	// silently answering zero.
+	return x.propAggregatePass(ctx, name, r, groups, keys)
 }
 
 // scrollDepth averages how far down the page people got.

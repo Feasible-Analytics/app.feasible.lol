@@ -71,6 +71,8 @@ func buildPublic(e *env, control *sql.DB, cache *sites.Cache, manager *accounts.
 		Dispatcher: dispatcher,
 		BaseURL:    e.cfg.App.BaseURL,
 		Log:        e.log,
+
+		SampleThreshold: e.cfg.API.QuerySampleThreshold,
 	}
 
 	server := mcp.New(api, e.log)

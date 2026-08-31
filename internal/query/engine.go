@@ -40,6 +40,12 @@ type Engine struct {
 	// MaxGroups bounds how many groups are pulled into memory when the
 	// ordering cannot be pushed into SQL.
 	MaxGroups int
+
+	// SampleThreshold is how many event rows a query may be estimated to read
+	// before it is answered from a sample. Zero takes DefaultSampleThreshold;
+	// a negative value turns automatic sampling off entirely, which is what an
+	// operator who would rather wait than estimate sets.
+	SampleThreshold int64
 }
 
 // New builds an engine over an account's reader handle.
@@ -116,6 +122,13 @@ func (e *Engine) Run(ctx context.Context, q Query) (*Result, error) {
 		return nil, err
 	}
 
+	// The rate is settled before anything is compiled, because it changes the
+	// WHERE clause every statement of this query carries.
+	sampling, err := e.decideSampling(ctx, &q, resolved)
+	if err != nil {
+		return nil, err
+	}
+
 	compile, err := e.compileContext(ctx, &q)
 	if err != nil {
 		return nil, err
@@ -156,6 +169,7 @@ func (e *Engine) Run(ctx context.Context, q Query) (*Result, error) {
 			PresentIndex: resolved.PresentIndex(),
 			Interval:     resolved.Interval,
 			SampleRate:   q.SampleRate,
+			Sampling:     sampling,
 
 			// Named from the segments the query actually read, not from a
 			// second call to the router: a router that answered differently the
@@ -177,10 +191,19 @@ func (e *Engine) Run(ctx context.Context, q Query) (*Result, error) {
 	// of the answer when a filtered breakdown comes back looking thin.
 	result.Meta.ImportGaps = primary.importGaps()
 
-	if q.SampleRate < 1 {
+	// Every metric of a sampled answer carries the caveat, not the response
+	// once. The response is read per metric — a client greys out the figure it
+	// cannot trust — and a number that looks exact is the one thing sampling
+	// must never produce.
+	//
+	// A metric already carrying a caveat keeps the one it has, because a
+	// warning that changes what a number *means* is more urgent than one about
+	// how precisely it was measured. Nothing is lost by that: meta.sampling and
+	// meta.sample_rate label the whole answer, so a sampled figure is never
+	// unlabelled whichever warning won here.
+	if sampling != nil {
 		for _, name := range q.Metrics {
-			warnings.add(name, WarnSampled,
-				fmt.Sprintf("read from %g%% of visitors and scaled back up — totals are estimates", q.SampleRate*100))
+			warnings.add(name, WarnSampled, sampleWarning(sampling))
 		}
 	}
 

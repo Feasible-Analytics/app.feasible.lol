@@ -69,14 +69,18 @@ func siteArg() map[string]any {
 	return str("The site's domain, exactly as list_sites returns it — for example example.com.")
 }
 
-// metricsArg describes the metric list, enumerated from the registry so the
-// schema can never fall out of step with what the engine can actually count.
+// metricsArg describes the metric list. The names come from the registry so the
+// schema can never fall out of step with what the engine can count, but they are
+// prose rather than an enum for the same reason the dimensions are: a numeric
+// aggregate over a custom property is a family of names rather than a fixed one,
+// and an enum that excluded it would tell a model those metrics do not exist.
 func metricsArg() map[string]any {
-	return map[string]any{
-		"type":        "array",
-		"description": "What to count. The response returns one number per metric, in this order.",
-		"items":       map[string]any{"type": "string", "enum": query.MetricNames()},
-	}
+	return listOf(
+		"What to count, one number per metric in this order. Known names: "+
+			strings.Join(query.MetricNames(), ", ")+", plus <aggregate>(event:props:<key>) to "+
+			"aggregate a property's numeric values, where <aggregate> is one of "+
+			strings.Join(query.AggregateNames(), ", ")+".",
+		map[string]any{"type": "string"})
 }
 
 // dimensionsArg describes the grouping list. The enumeration is left off on

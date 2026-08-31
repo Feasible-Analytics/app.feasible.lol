@@ -43,3 +43,36 @@ never converted at write time, so a change to exchange rates cannot rewrite last
 development traffic never reaches your production numbers. Set
 <code>localStorage.feasible_local = "true"</code> in your browser console to opt one machine in
 while you are testing an install.</p>
+
+<h3>The Core Web Vitals collector</h3>
+<p>Web Vitals are measured by a second, optional script rather than by the one above, and the
+reason is the size budget. The main script has to fit in three kilobytes over the wire, and it
+already does, with about a dozen bytes to spare. Putting another four measurements in it would
+mean raising that ceiling for every site we serve — including the ones that never asked for
+Web Vitals — so the collector is its own file and its own kilobyte, loaded only where it is
+wanted:</p>
+
+<pre><code>&lt;script defer data-domain="example.com" src="https://feasible.lol/js/script.js"&gt;&lt;/script&gt;
+&lt;script defer data-vitals src="https://feasible.lol/js/vitals.js"&gt;&lt;/script&gt;</code></pre>
+
+<p>It reports LCP, CLS, INP, TTFB and FCP as an event called <strong>Web Vitals</strong>, with
+one numeric property per measurement, so every one of them is a custom property you can
+aggregate, filter and break down by page like any other. Nothing in it reads layout: every
+number comes from the browser's own Performance API, which hands over measurements it has
+already taken rather than being asked to compute one. A script that damaged the numbers it was
+measuring would not be worth having.</p>
+
+<p>It sends once, when the page is hidden. That is not a delay we could avoid — cumulative
+layout shift and interaction to next paint are not final until the visitor has stopped looking
+at the page, so a report sent on load would always be smaller than the truth.</p>
+
+<h4>data-sample</h4>
+<p>The fraction of page loads that report, between 0 and 1. It defaults to <code>1</code>, every
+load. Web Vitals are a distribution rather than a total, so a tenth of your traffic describes
+the same curve — <code>data-sample="0.1"</code> is worth setting on a busy site. We do not do it
+for you, because quietly reporting a tenth of somebody's page loads without their knowing is
+exactly the kind of decision this product exists not to make.</p>
+
+<p>The event counts towards your monthly volume like any other custom event, which is the
+other reason it is opt-in. At a sample of one in ten, that is one extra event per ten
+pageviews.</p>

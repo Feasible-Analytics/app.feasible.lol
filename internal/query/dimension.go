@@ -235,7 +235,8 @@ func ValidDimension(name string) error {
 // ValidMetric is the same check for a metric name.
 func ValidMetric(name string) error {
 	if _, ok := metricByName(name); !ok {
-		return invalid("unknown metric %q — known metrics are %s", name, strings.Join(MetricNames(), ", "))
+		return invalid("unknown metric %q — known metrics are %s, plus <aggregate>(event:props:<key>) where <aggregate> is one of %s",
+			name, strings.Join(MetricNames(), ", "), strings.Join(AggregateNames(), ", "))
 	}
 
 	return nil

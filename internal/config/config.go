@@ -79,6 +79,12 @@ const (
 	// directory, in seconds. It is the window in which a brand-new account's
 	// database is on disk and not yet replicated.
 	DefaultLitestreamWatch = 60
+
+	// DefaultQuerySampleThreshold leaves the sampling ceiling to the query
+	// engine, which is the one place the number is written down. Zero is the
+	// sentinel for that rather than a copy of the figure: two constants that
+	// have to agree are two constants that eventually do not.
+	DefaultQuerySampleThreshold = 0
 )
 
 // Layout of the data directory. These are constants because both the migrate
@@ -271,6 +277,15 @@ type API struct {
 	// launches the binary itself and can set one, where a secret passed on the
 	// command line is visible in the process list to every user on the machine.
 	MCPKey string
+
+	// QuerySampleThreshold is the row estimate above which a report is
+	// answered from a sample of visitors and labelled as sampled. Zero takes
+	// the query engine's own default and a negative value turns automatic
+	// sampling off, for an operator who would rather wait than estimate.
+	//
+	// It applies to the dashboard and the public API alike, because two
+	// thresholds would mean two answers to one question.
+	QuerySampleThreshold int64
 }
 
 // Litestream holds the values the `litestream` command reads. It is its own
@@ -569,6 +584,8 @@ func LoadFrom(l *Loader) (*Config, error) {
 			WebhookTimeout: time.Duration(l.Int("FEASIBLE_WEBHOOK_TIMEOUT_SECONDS", DefaultWebhookTimeout)) * time.Second,
 			WebhookPoll:    time.Duration(l.Int("FEASIBLE_WEBHOOK_POLL_SECONDS", DefaultWebhookPoll)) * time.Second,
 			MCPKey:         strings.TrimSpace(l.String("FEASIBLE_MCP_API_KEY", "")),
+
+			QuerySampleThreshold: int64(l.Int("FEASIBLE_QUERY_SAMPLE_THRESHOLD", DefaultQuerySampleThreshold)),
 		},
 		Litestream: Litestream{
 			ConfigPath:       l.String("FEASIBLE_LITESTREAM_CONFIG", DefaultLitestreamConfig),

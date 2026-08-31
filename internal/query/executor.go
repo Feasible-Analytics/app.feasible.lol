@@ -104,6 +104,13 @@ type statement struct {
 	// the outer query averages, and the session id is grouped on without ever
 	// being returned.
 	groupExtra []string
+
+	// ungrouped suppresses the GROUP BY that dimensions would otherwise imply.
+	// A numeric property aggregate reads one row per event and aggregates in
+	// the statement wrapped around this one; grouping here would collapse
+	// every event of a page to a single arbitrary value first, and the sum of
+	// a hundred orders would come back as one of them.
+	ungrouped bool
 }
 
 // render turns a statement into SQL and its arguments. The argument order
@@ -145,7 +152,7 @@ func (s statement) render() (string, []any) {
 	where := and(s.conditions)
 	b.add(" WHERE ").addExpr(where)
 
-	if len(s.dims) > 0 || len(s.groupExtra) > 0 {
+	if !s.ungrouped && (len(s.dims) > 0 || len(s.groupExtra) > 0) {
 		names := make([]string, 0, len(s.dims)+len(s.groupExtra))
 		for _, dimension := range s.dims {
 			names = append(names, dimension.alias)
@@ -233,7 +240,7 @@ func (x *executor) dimensions(t table, mode dimMode) ([]compiledDim, []string, [
 			// single case where a query has to touch it. Events with no such
 			// property are excluded rather than gathered into a null bucket:
 			// a breakdown of "plan" is a list of plans.
-			addJoin("JOIN event_details ed ON ed.event_id = " + alias + ".id")
+			addJoin(detailsJoin(alias))
 			conditions = append(conditions, expr{
 				SQL: "json_extract(ed.props, ?) IS NOT NULL", Args: []any{d.jsonPath()},
 			})

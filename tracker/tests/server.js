@@ -24,6 +24,11 @@ const port = Number(process.env.PORT || 19311);
 // thing under test rather than something the fixtures work around.
 const BUNDLE = join(here, "..", "dist", "feasible.js");
 
+// The optional vitals collector, served from the same origin for the same
+// reason. It is a second file rather than part of the bundle because the core
+// script has no room left in its size budget.
+const VITALS = join(here, "..", "dist", "feasible.vitals.js");
+
 const TYPES = {
 	".html": "text/html; charset=utf-8",
 	".js": "application/javascript; charset=utf-8",
@@ -57,6 +62,11 @@ const server = createServer(async (req, res) => {
 
 	if (path === "/js/script.js") {
 		send(res, 200, TYPES[".js"], await readFile(BUNDLE));
+		return;
+	}
+
+	if (path === "/js/vitals.js") {
+		send(res, 200, TYPES[".js"], await readFile(VITALS));
 		return;
 	}
 

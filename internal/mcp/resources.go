@@ -109,6 +109,12 @@ type siteSchema struct {
 	// `signup_source` and nothing else.
 	PropertyDimensions []string `json:"property_dimensions"`
 
+	// PropertyAggregates are the aggregates a property above can be wrapped in
+	// to make a metric — sum(event:props:seats) and the rest. They belong
+	// beside the property names rather than in the metric list, because the
+	// two only mean anything together.
+	PropertyAggregates []string `json:"property_aggregates"`
+
 	Goals []publicapi.Goal `json:"goals"`
 
 	// GoalsAvailable says whether the goals list is empty because there are
@@ -146,12 +152,13 @@ func (s *Server) readResource(ctx context.Context, key *apikeys.Key, request *rp
 	}
 
 	schema := siteSchema{
-		SiteID:           site.Domain,
-		Timezone:         site.Timezone,
-		Metrics:          query.MetricNames(),
-		Dimensions:       query.DimensionNames(),
-		Goals:            []publicapi.Goal{},
-		DateRangePresets: presets(),
+		SiteID:             site.Domain,
+		Timezone:           site.Timezone,
+		Metrics:            query.MetricNames(),
+		Dimensions:         query.DimensionNames(),
+		PropertyAggregates: query.AggregateNames(),
+		Goals:              []publicapi.Goal{},
+		DateRangePresets:   presets(),
 		FilterOperators: []string{
 			query.OpIs, query.OpIsNot, query.OpContains, query.OpContainsNot,
 			query.OpMatches, query.OpMatchesNot, query.OpHasDone,

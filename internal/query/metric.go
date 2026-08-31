@@ -290,18 +290,31 @@ func (m metric) additive(t table) bool {
 		return t == tableSessions
 	}
 
+	// Of the numeric property aggregates only a sum adds across two slices of
+	// time. The smallest value in a week is not the sum of the smallest value
+	// in each day, and neither an average nor a percentile can be recovered
+	// from two halves without the values behind them.
+	if parsed, ok := parsePropAggregate(m.Name); ok {
+		return parsed.Agg == AggSum
+	}
+
 	return true
 }
 
-// metricByName looks one up.
+// metricByName looks one up, falling through to the numeric property
+// aggregates. Those are a family rather than fixed entries — the property is a
+// parameter — so they are built on demand from the name, exactly as
+// event:props:<key> is on the dimension side.
 func metricByName(name string) (metric, bool) {
-	found, ok := metrics[name]
+	if found, ok := metrics[name]; ok {
+		return found, true
+	}
 
-	return found, ok
+	return propAggregateMetric(name)
 }
 
-// MetricNames lists every metric, sorted. The validation error prints it, so a
-// caller who mistyped one is told what the alternatives are in the same
+// MetricNames lists every fixed metric, sorted. The validation error prints it,
+// so a caller who mistyped one is told what the alternatives are in the same
 // response rather than in the documentation.
 func MetricNames() []string {
 	names := make([]string, 0, len(metrics))

@@ -29,6 +29,7 @@ import {
 import type { DrawerState } from "../lib/url";
 import { useStats } from "../lib/useStats";
 import { ChangeChip, Empty, Failure, Favicon, Flag, Spinner } from "./atoms";
+import { SampledBadge } from "./SampledBadge";
 
 /**
  * The details view is a drawer rather than a centred modal, and the difference
@@ -98,6 +99,11 @@ export function Drawer({
 	const listing = tableTabs(card);
 	const tab = findTab(listing, state.tab);
 
+	// Whether the reader has refused sampling for this panel. It is local to
+	// the drawer rather than shared with the dashboard behind it, because the
+	// two ask different questions and only one of them is likely to be sampled.
+	const [exactAnswer, setExactAnswer] = useState(false);
+
 	// The search box types faster than a four-second query can answer, so the
 	// input is local and the URL only catches up once typing stops.
 	const [typed, setTyped] = useState(state.search);
@@ -140,6 +146,7 @@ export function Drawer({
 			// query and never attaches a number to the wrong row.
 			comparisons: compare === "off" ? undefined : { mode: compare },
 		},
+		exact: exactAnswer || undefined,
 	};
 
 	const stats = useStats(domain, body);
@@ -255,6 +262,11 @@ export function Drawer({
 						</>
 					)}
 				</div>
+
+				{/* Filtering and searching are exactly what takes a report off
+				    the pre-aggregated summaries, so this is the panel where an
+				    answer is most likely to be an estimate. */}
+				<SampledBadge sampling={stats.data?.meta.sampling} exact={exactAnswer} onExact={setExactAnswer} />
 
 				<div className="scroll-thin min-h-0 flex-1 overflow-auto">
 					{stats.error ? (

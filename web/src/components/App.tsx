@@ -28,6 +28,7 @@ import { ReportCard } from "./ReportCard";
 import type { ShortcutActions } from "./Shortcuts";
 import { ShortcutsModal, useShortcuts } from "./Shortcuts";
 import { TopBar } from "./TopBar";
+import { SampledBadge } from "./SampledBadge";
 import { TILE_METRICS, TopStats } from "./TopStats";
 
 /** The metrics the graph can draw. The three session ratios on the tile row are
@@ -71,6 +72,12 @@ export function App() {
 	// `c` shortcut means. A nonce rather than a boolean: pressing `c` twice has
 	// to open it twice, and a boolean that is already true is a no-op.
 	const [pickCustom, setPickCustom] = useState(0);
+
+	// Whether the reader has refused sampling for this session. It is not in
+	// the URL and not a stored preference: it is a deliberate "wait for the
+	// slow answer" that should apply to the reading somebody is doing now and
+	// not silently to every dashboard they open afterwards.
+	const [exact, setExact] = useState(false);
 
 	// The element the drawer was opened from, so focus can be handed back to
 	// it. A ref rather than state: changing it must not re-render the dashboard
@@ -133,6 +140,7 @@ export function App() {
 		date_range: range,
 		filters: filters.length ? filters : undefined,
 		include: comparison,
+		exact: exact || undefined,
 	};
 
 	const totals = useStats(state.domain, state.domain ? totalsBody : null);
@@ -143,6 +151,7 @@ export function App() {
 		dimensions: [interval === "auto" ? "time" : `time:${interval}`],
 		filters: filters.length ? filters : undefined,
 		include: comparison,
+		exact: exact || undefined,
 	};
 
 	const graph = useStats(state.domain, state.domain && !live ? graphBody : null);
@@ -320,6 +329,12 @@ export function App() {
 					<Realtime domain={state.domain} filters={filters} />
 				) : (
 					<section className="overflow-hidden rounded-md border border-line bg-card shadow-sm">
+						{/* Above the tiles rather than beside one of them:
+						    sampling applies to every figure in the section, and
+						    a caveat attached to a single number reads as being
+						    about that number alone. */}
+						<SampledBadge sampling={totals.data?.meta.sampling} exact={exact} onExact={setExact} />
+
 						<TopStats stats={totals} selected={metric} onSelect={setMetric} comparing={comparing} />
 						<div className="p-4 sm:p-5">
 							<MainGraph stats={graph} metric={metric} comparing={comparing} />
