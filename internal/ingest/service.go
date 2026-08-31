@@ -43,6 +43,13 @@ type Options struct {
 	BufferSize    int
 	FlushInterval time.Duration
 
+	// Now replaces the system clock everywhere in the pipeline. It exists for
+	// the replay harness, which has to drive a stream across a UTC midnight
+	// without waiting for one, and it has to reach the salt store before its
+	// first refresh — a store built on the real clock would create the wrong
+	// day's salt and then refuse to load it.
+	Now func() time.Time
+
 	Log *logger.Logger
 }
 
@@ -64,6 +71,7 @@ type Service struct {
 
 	dataDir string
 	log     *logger.Logger
+	now     func() time.Time
 
 	// started guards the background goroutines so a double Start or a Stop
 	// before Start cannot panic on a closed channel.
@@ -88,10 +96,17 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 		return nil, err
 	}
 
+	now := opts.Now
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+
 	saltStore, err := salts.NewStore(control, key)
 	if err != nil {
 		return nil, err
 	}
+	saltStore.SetClock(now)
+
 	if _, err := saltStore.Refresh(ctx); err != nil {
 		return nil, err
 	}
@@ -119,9 +134,12 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 
 	counters := NewCounters()
 	sessionCache := NewSessionCache()
+
 	writer := NewWriter(manager, sessionCache)
+	writer.Now = now
 
 	service := &Service{
+		now:      now,
 		Sites:    siteCache,
 		Salts:    saltStore,
 		Geo:      locator,
@@ -143,6 +161,7 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 		Shards:   DirectShard{},
 		Shield:   NoShield{},
 		Counters: counters,
+		Now:      now,
 	}
 
 	// Every event flows accept → derive → buffer → forward → write, even when
@@ -164,7 +183,7 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 
 	// Reloading the session cache is what stops a restart splitting every
 	// in-flight session in two.
-	restored, err := RestoreSessions(sessionCache, SessionFilePath(opts.DataDir), time.Now().Unix())
+	restored, err := RestoreSessions(sessionCache, SessionFilePath(opts.DataDir), now().Unix())
 	if err != nil && opts.Log != nil {
 		opts.Log.Warn("session cache could not be restored", "error", err)
 	}
@@ -222,7 +241,7 @@ func (s *Service) sweep(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.Writer.Sessions().Sweep(time.Now().Unix())
+			s.Writer.Sessions().Sweep(s.now().Unix())
 		}
 	}
 }
