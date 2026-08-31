@@ -33,6 +33,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dataio"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/google"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
@@ -113,7 +114,8 @@ var pages = map[string]*template.Template{
 // template that will not parse is a broken binary, not something an operator
 // can fix by changing a setting.
 func mustParse(name string) *template.Template {
-	parsed, err := template.ParseFS(templateFS, "templates/layout.html", "templates/"+name)
+	parsed, err := template.New("layout.html").Funcs(funcs()).ParseFS(templateFS,
+		"templates/layout.html", "templates/"+name)
 	if err != nil {
 		panic("settings: " + err.Error())
 	}
@@ -121,11 +123,36 @@ func mustParse(name string) *template.Template {
 	return parsed
 }
 
+// funcs are the catalogue lookups the templates render every string through.
+//
+// The locale is the first argument rather than something the function resolves
+// for itself, because these are bound once at start-up when there is no request
+// to read a language from. Every call site therefore passes $.Lang.
+func funcs() template.FuncMap {
+	return template.FuncMap{
+		"t": func(locale, id string, args ...any) string {
+			return i18n.T(locale, id, args...)
+		},
+
+		"n": func(locale, id string, count int, args ...any) string {
+			return i18n.N(locale, id, count, args...)
+		},
+	}
+}
+
+// tr renders one catalogue string in the language a request asked for. It is
+// for the places that need a string before a page exists to carry the locale,
+// which is every redirect: the message travels in the query string already
+// rendered, exactly as the flash on the signed-in screens does.
+func tr(r *http.Request, id string, args ...any) string {
+	return i18n.T(i18n.Negotiate(r), id, args...)
+}
+
 // Handler serves the settings pages for one shard.
 //
-// TODO(M7): these pages are open, exactly like the stats endpoint. Sign-in and
-// the site-level authorisation check belong in front of them — until that
-// milestone lands, anybody who can reach the port can change a site's rules.
+// Nothing here authorises a request. The mount wraps every route in the signed
+// in application's own check, which is what keeps one definition of "may this
+// person configure this site" rather than a second one that drifts.
 type Handler struct {
 	Sites    *sites.Cache
 	Accounts *accounts.Manager
@@ -201,11 +228,16 @@ func (h *Handler) now() time.Time {
 
 // page is what every template renders against.
 type page struct {
-	Title   string
+	TitleID string
 	Tab     string
 	Domain  string
 	Message string
 	Error   string
+
+	// Lang is the language this response is written in. It lives on the page
+	// rather than being resolved inside a template function, because a template
+	// function is bound at start-up and has no request to read.
+	Lang string
 
 	// Screen-specific fields. They are on one struct rather than three so the
 	// shared layout can be a single template with one data type behind it.
@@ -222,19 +254,21 @@ type page struct {
 	Exports    []exportView
 	SheetNames []string
 
-	GoogleEnabled       bool
-	SearchConsoleNotice string
-	GA4                 *google.Connection
-	SearchConsole       *google.Connection
+	GoogleEnabled         bool
+	SearchConsoleNoticeID string
+	GA4                   *google.Connection
+	SearchConsole         *google.Connection
 }
 
-// ruleGroup is one shield kind as the page renders it.
+// ruleGroup is one shield kind as the page renders it. The three labels are
+// catalogue ids rather than prose, so a kind's copy lives beside every other
+// translated string instead of in a switch in this file.
 type ruleGroup struct {
-	Kind        string
-	Title       string
-	Hint        string
-	Placeholder string
-	Rules       []shields.Rule
+	Kind          string
+	TitleID       string
+	HintID        string
+	PlaceholderID string
+	Rules         []shields.Rule
 }
 
 // exportView is one prepared export, rendered.
@@ -368,7 +402,8 @@ func (h *Handler) shields(w http.ResponseWriter, r *http.Request, site sites.Sit
 	message, failure := flash(r)
 
 	data := page{
-		Title: "Shields", Tab: "shields", Domain: site.Domain,
+		TitleID: "auth.title.shields", Tab: "shields", Domain: site.Domain,
+		Lang:    i18n.Negotiate(r),
 		Message: message, Error: failure,
 		Viewer:   shields.ResolveViewer(r, h.Trusted),
 		MaxRules: shields.MaxRulesPerKind,
@@ -378,29 +413,29 @@ func (h *Handler) shields(w http.ResponseWriter, r *http.Request, site sites.Sit
 	h.render(w, "shields", data)
 }
 
-// groupRules splits a rule list into the four sections the page shows, with the
-// copy that explains what each one does.
+// groupRules splits a rule list into the four sections the page shows, naming
+// the copy that explains what each one does.
 func groupRules(rules []shields.Rule) []ruleGroup {
 	groups := []ruleGroup{
 		{
-			Kind: shields.KindIP, Title: "Blocked addresses",
-			Hint:        "Checked in the ingest tier, which is the only place the raw address exists. An address or a CIDR block.",
-			Placeholder: "203.0.113.14 or 203.0.113.0/24",
+			Kind: shields.KindIP, TitleID: "auth.shields.ip_title",
+			HintID:        "auth.shields.ip_hint",
+			PlaceholderID: "auth.shields.ip_placeholder",
 		},
 		{
-			Kind: shields.KindCountry, Title: "Blocked countries",
-			Hint:        "Two-letter ISO country codes. Useful when a country is entirely bot traffic for your site.",
-			Placeholder: "US",
+			Kind: shields.KindCountry, TitleID: "auth.shields.country_title",
+			HintID:        "auth.shields.country_hint",
+			PlaceholderID: "auth.shields.country_placeholder",
 		},
 		{
-			Kind: shields.KindPage, Title: "Blocked pages",
-			Hint:        "A path, or a path ending in * to block everything under it. Staging routes and health checks live here.",
-			Placeholder: "/admin*",
+			Kind: shields.KindPage, TitleID: "auth.shields.page_title",
+			HintID:        "auth.shields.page_hint",
+			PlaceholderID: "auth.shields.page_placeholder",
 		},
 		{
-			Kind: shields.KindHostname, Title: "Allowed hostnames",
-			Hint:        "An allow-list, not a block-list: with one or more entries, anything not named is dropped. This is the answer to somebody else's site sending events with your tracker id.",
-			Placeholder: "example.com",
+			Kind: shields.KindHostname, TitleID: "auth.shields.hostname_title",
+			HintID:        "auth.shields.hostname_hint",
+			PlaceholderID: "auth.shields.hostname_placeholder",
 		},
 	}
 
@@ -429,7 +464,7 @@ func (h *Handler) addShield(w http.ResponseWriter, r *http.Request, site sites.S
 	}
 
 	if err := r.ParseForm(); err != nil {
-		h.redirect(w, r, site.Domain, "shields", "", "that form could not be read")
+		h.redirect(w, r, site.Domain, "shields", "", tr(r, "auth.shields.error_unreadable_form"))
 		return
 	}
 
@@ -442,7 +477,7 @@ func (h *Handler) addShield(w http.ResponseWriter, r *http.Request, site sites.S
 
 	h.refreshShields(r.Context(), account.Reader(), site.ID)
 
-	h.redirect(w, r, site.Domain, "shields", rule.Value+" is now blocked. It takes effect on the next event.", "")
+	h.redirect(w, r, site.Domain, "shields", tr(r, "auth.shields.flash_added", "rule", rule.Value), "")
 }
 
 // deleteShield removes one rule.
@@ -467,7 +502,7 @@ func (h *Handler) deleteShield(w http.ResponseWriter, r *http.Request, site site
 
 	h.refreshShields(r.Context(), account.Reader(), site.ID)
 
-	h.redirect(w, r, site.Domain, "shields", "Rule removed.", "")
+	h.redirect(w, r, site.Domain, "shields", tr(r, "auth.shields.flash_removed"), "")
 }
 
 // refreshShields pushes a site's rules into the running snapshot. Waiting for
@@ -507,7 +542,8 @@ func (h *Handler) paths(w http.ResponseWriter, r *http.Request, site sites.Site,
 	message, failure := flash(r)
 
 	h.render(w, "paths", page{
-		Title: "Path cleaning", Tab: "paths", Domain: site.Domain,
+		TitleID: "auth.title.paths", Tab: "paths", Domain: site.Domain,
+		Lang:    i18n.Negotiate(r),
 		Message: message, Error: failure,
 		Rules:           rules,
 		Merges:          merges,
@@ -541,7 +577,7 @@ func (h *Handler) savePaths(w http.ResponseWriter, r *http.Request, site sites.S
 	}
 
 	if err := r.ParseForm(); err != nil {
-		h.redirect(w, r, site.Domain, "paths", "", "that form could not be read")
+		h.redirect(w, r, site.Domain, "paths", "", tr(r, "auth.paths.error_unreadable_form"))
 		return
 	}
 
@@ -571,7 +607,7 @@ func (h *Handler) savePaths(w http.ResponseWriter, r *http.Request, site sites.S
 	}
 
 	h.redirect(w, r, site.Domain, "paths",
-		fmt.Sprintf("Saved. %d stored paths now report under a cleaned route, retroactively.", moved), "")
+		i18n.N(i18n.Negotiate(r), "auth.paths.flash_saved", moved), "")
 }
 
 // applyPaths rebuilds the query-time map and updates the running snapshot. Both
@@ -661,7 +697,7 @@ func (h *Handler) toggleTrailingSlash(w http.ResponseWriter, r *http.Request, si
 		kept = append(kept, rule)
 	}
 
-	message := "Trailing slashes are no longer merged."
+	message := tr(r, "auth.paths.flash_slash_off")
 
 	if !found {
 		// It goes last, so a more specific rule written by hand still wins.
@@ -673,7 +709,7 @@ func (h *Handler) toggleTrailingSlash(w http.ResponseWriter, r *http.Request, si
 			Enabled:     true,
 		})
 
-		message = "/about and /about/ now report as one page, including in the history you already have."
+		message = tr(r, "auth.paths.flash_slash_on")
 	}
 
 	if err := pathclean.Replace(r.Context(), account.Writer(), site.ID, kept, h.now()); err != nil {
@@ -712,13 +748,14 @@ func (h *Handler) imports(w http.ResponseWriter, r *http.Request, site sites.Sit
 	message, failure := flash(r)
 
 	data := page{
-		Title: "Import and export", Tab: "imports", Domain: site.Domain,
+		TitleID: "auth.title.imports", Tab: "imports", Domain: site.Domain,
+		Lang:    i18n.Negotiate(r),
 		Message: message, Error: failure,
-		Imports:             records,
-		Exports:             h.exportViews(site.Domain, exports),
-		SheetNames:          dataio.SheetNames(),
-		GoogleEnabled:       h.Google != nil,
-		SearchConsoleNotice: google.SearchConsoleDelayNotice,
+		Imports:               records,
+		Exports:               h.exportViews(site.Domain, exports),
+		SheetNames:            dataio.SheetNames(),
+		GoogleEnabled:         h.Google != nil,
+		SearchConsoleNoticeID: google.SearchConsoleDelayNotice,
 	}
 
 	if h.Google != nil {
@@ -786,13 +823,13 @@ func (h *Handler) uploadImport(w http.ResponseWriter, r *http.Request, site site
 	}
 
 	if err := r.ParseMultipartForm(8 << 20); err != nil {
-		h.redirect(w, r, site.Domain, "imports", "", "that upload could not be read")
+		h.redirect(w, r, site.Domain, "imports", "", tr(r, "auth.imports.error_unreadable_upload"))
 		return
 	}
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		h.redirect(w, r, site.Domain, "imports", "", "choose a CSV or a ZIP to import")
+		h.redirect(w, r, site.Domain, "imports", "", tr(r, "auth.imports.error_choose_file"))
 		return
 	}
 	defer file.Close()
@@ -827,7 +864,7 @@ func (h *Handler) uploadImport(w http.ResponseWriter, r *http.Request, site site
 		return
 	}
 
-	h.redirect(w, r, site.Domain, "imports", header.Filename+" is queued. Progress appears below.", "")
+	h.redirect(w, r, site.Domain, "imports", tr(r, "auth.imports.flash_queued", "file", header.Filename), "")
 }
 
 // failAndRedirect writes a failure onto the import row and shows it. The row
@@ -861,7 +898,7 @@ func (h *Handler) deleteImport(w http.ResponseWriter, r *http.Request, site site
 		return
 	}
 
-	h.redirect(w, r, site.Domain, "imports", "Import deleted, along with the history it brought in.", "")
+	h.redirect(w, r, site.Domain, "imports", tr(r, "auth.imports.flash_deleted"), "")
 }
 
 // createExport prepares a full site export and opens its download window.
@@ -893,7 +930,7 @@ func (h *Handler) createExport(w http.ResponseWriter, r *http.Request, site site
 		return
 	}
 
-	h.redirect(w, r, site.Domain, "imports", "Preparing your export. The download appears below and stays available for 24 hours.", "")
+	h.redirect(w, r, site.Domain, "imports", tr(r, "auth.imports.flash_export_started"), "")
 }
 
 // downloadExport serves a prepared archive.
@@ -982,7 +1019,7 @@ func (h *Handler) googleDisconnect(w http.ResponseWriter, r *http.Request, site 
 		return
 	}
 
-	h.redirect(w, r, site.Domain, "imports", "Disconnected. Other sites connected to the same Google account are untouched.", "")
+	h.redirect(w, r, site.Domain, "imports", tr(r, "auth.imports.flash_disconnected"), "")
 }
 
 // googleCallback finishes the OAuth exchange and stores the grant against the
@@ -1002,7 +1039,7 @@ func (h *Handler) googleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if failure := r.URL.Query().Get("error"); failure != "" {
-		h.redirect(w, r, site.Domain, "imports", "", "Google returned: "+failure)
+		h.redirect(w, r, site.Domain, "imports", "", tr(r, "auth.imports.error_google_returned", "detail", failure))
 		return
 	}
 
@@ -1015,7 +1052,7 @@ func (h *Handler) googleCallback(w http.ResponseWriter, r *http.Request) {
 	token, err := h.Google.Exchange(r.Context(), r.URL.Query().Get("code"), h.now())
 	if err != nil {
 		if errors.Is(err, google.ErrInvalidGrant) {
-			h.redirect(w, r, site.Domain, "imports", "", "Google would not complete that authorisation — try connecting again")
+			h.redirect(w, r, site.Domain, "imports", "", tr(r, "auth.imports.error_google_incomplete"))
 			return
 		}
 
@@ -1039,5 +1076,5 @@ func (h *Handler) googleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.redirect(w, r, site.Domain, "imports", "Connected. This grant belongs to this site alone.", "")
+	h.redirect(w, r, site.Domain, "imports", tr(r, "auth.imports.flash_connected"), "")
 }

@@ -1,146 +1,180 @@
 {{define "body"}}
-<h1>Import &amp; export</h1>
-<p class="lede">Bring history in from anywhere, and take everything out at any time. Imported data
-is stored as roll-up rows that carry every dimension the source reported, so a filter narrows it
-like native traffic instead of erasing it — and anything the source did not report is shown as a
-labelled gap rather than counted as zero.</p>
+<h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "auth.imports.title" }}</h1>
+<p class="mt-1 max-w-2xl text-sm text-muted">{{ t $.Lang "auth.imports.lede" }}</p>
 
-<section class="card">
-  <h2>Import a CSV</h2>
-  <p class="hint">One CSV, or a ZIP of them. The formats understood are
-  {{range $i, $n := .SheetNames}}{{if $i}}, {{end}}<code>{{$n}}</code>{{end}}.
-  A column we do not recognise stops the import and names the column, rather than being dropped
-  quietly into numbers that are too small.</p>
+<section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm">
+	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.imports.csv_title" }}</h2>
+	<p class="mt-1 max-w-2xl text-xs text-muted">
+		{{ t $.Lang "auth.imports.csv_help" }}
+		<span class="font-mono">{{ range $i, $n := .SheetNames }}{{ if $i }}, {{ end }}{{ $n }}{{ end }}</span>
+	</p>
 
-  <form class="inline" method="post" action="/settings/{{.Domain}}/imports/upload" enctype="multipart/form-data">
-    <input type="file" name="file" accept=".csv,.zip" required>
-    <button>Start import</button>
-  </form>
+	<form method="post" action="/settings/{{ .Domain }}/imports/upload" enctype="multipart/form-data" class="mt-4 flex flex-wrap items-end gap-3">
+		<div class="min-w-[16rem] flex-1">
+			<label class="block text-xs font-medium text-muted" for="import-file">{{ t $.Lang "auth.imports.file_label" }}</label>
+			<input id="import-file" type="file" name="file" accept=".csv,.zip" required
+				class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+		</div>
+
+		<button type="submit" class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "auth.imports.start" }}</button>
+	</form>
 </section>
 
-<section class="card">
-  <h2>Imports</h2>
-  {{if .Imports}}
-  <table>
-    <thead><tr>
-      <th style="width:30%">File</th><th style="width:90px">Source</th><th style="width:110px">Status</th>
-      <th style="width:170px">Progress</th><th>Detail</th><th style="width:70px"></th>
-    </tr></thead>
-    <tbody>
-    {{range .Imports}}
-      <tr>
-        <td>{{.Label}}</td>
-        <td class="muted">{{.Source}}</td>
-        <td>
-          {{if eq .Status "completed"}}<span class="pill ok">completed</span>
-          {{else if eq .Status "failed"}}<span class="pill bad">failed</span>
-          {{else if eq .Status "running"}}<span class="pill run">running</span>
-          {{else}}<span class="pill">{{.Status}}</span>{{end}}
-        </td>
-        <td>
-          <div class="bar"><span style="width:{{.Progress}}%"></span></div>
-          <span class="muted small">{{.ProgressDone}} of {{.ProgressTotal}} files · {{.RowsWritten}} rows</span>
-        </td>
-        <td class="small">
-          {{if .Failure}}<span style="color:var(--danger)">{{.Failure}}</span>
-          {{else if .Dimensions}}<span class="muted">carries {{range $i, $d := .Dimensions}}{{if $i}}, {{end}}{{$d}}{{end}}</span>
-          {{else}}<span class="muted">—</span>{{end}}
-        </td>
-        <td>
-          <form method="post" action="/settings/{{$.Domain}}/imports/delete" style="margin:0">
-            <input type="hidden" name="id" value="{{.ID}}">
-            <button class="link">Delete</button>
-          </form>
-        </td>
-      </tr>
-    {{end}}
-    </tbody>
-  </table>
-  {{else}}
-  <p class="muted small">Nothing has been imported into this site yet.</p>
-  {{end}}
+<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.imports.list_title" }}</h2>
+
+	{{ if .Imports }}
+	<div class="mt-4 overflow-x-auto">
+		<table class="w-full text-sm">
+			<thead>
+				<tr class="border-b border-line text-left text-xs font-semibold uppercase tracking-wide text-muted">
+					<th class="w-1/4 pb-2 pr-3 font-semibold">{{ t $.Lang "auth.imports.column_file" }}</th>
+					<th class="w-24 pb-2 pr-3 font-semibold">{{ t $.Lang "auth.imports.column_source" }}</th>
+					<th class="w-28 pb-2 pr-3 font-semibold">{{ t $.Lang "auth.imports.column_status" }}</th>
+					<th class="w-44 pb-2 pr-3 font-semibold">{{ t $.Lang "auth.imports.column_progress" }}</th>
+					<th class="pb-2 pr-3 font-semibold">{{ t $.Lang "auth.imports.column_detail" }}</th>
+					<th class="w-20 pb-2"><span class="sr-only">{{ t $.Lang "auth.imports.column_actions" }}</span></th>
+				</tr>
+			</thead>
+			<tbody class="divide-y divide-line">
+				{{ range .Imports }}
+				<tr>
+					<td class="py-2 pr-3 align-top text-heading">{{ .Label }}</td>
+					<td class="py-2 pr-3 align-top text-muted">{{ .Source }}</td>
+					<td class="py-2 pr-3 align-top">
+						{{ if eq .Status "completed" }}
+						<span class="rounded-md bg-up/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-up-ink">{{ t $.Lang "auth.imports.status_completed" }}</span>
+						{{ else if eq .Status "failed" }}
+						<span class="rounded-md bg-down/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-down-ink">{{ t $.Lang "auth.imports.status_failed" }}</span>
+						{{ else if eq .Status "running" }}
+						<span class="rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-ink">{{ t $.Lang "auth.imports.status_running" }}</span>
+						{{ else if eq .Status "cancelled" }}
+						<span class="rounded-md bg-subtle px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">{{ t $.Lang "auth.imports.status_cancelled" }}</span>
+						{{ else }}
+						<span class="rounded-md bg-subtle px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">{{ t $.Lang "auth.imports.status_pending" }}</span>
+						{{ end }}
+					</td>
+					<td class="py-2 pr-3 align-top">
+						<div class="h-1.5 w-36 overflow-hidden rounded-full bg-subtle"><span class="block h-full bg-accent" style="width:{{ .Progress }}%"></span></div>
+						<span class="mt-1 block text-xs text-muted">{{ t $.Lang "auth.imports.progress" "done" .ProgressDone "total" .ProgressTotal "rows" .RowsWritten }}</span>
+					</td>
+					<td class="py-2 pr-3 align-top text-xs">
+						{{ if .Failure }}<span class="text-down-ink">{{ .Failure }}</span>
+						{{ else if .Dimensions }}<span class="text-muted">{{ t $.Lang "auth.imports.carries" }} {{ range $i, $d := .Dimensions }}{{ if $i }}, {{ end }}{{ $d }}{{ end }}</span>
+						{{ else }}<span class="text-faint">—</span>{{ end }}
+					</td>
+					<td class="py-2 align-top">
+						<form method="post" action="/settings/{{ $.Domain }}/imports/delete">
+							<input type="hidden" name="id" value="{{ .ID }}">
+							<button type="submit" class="text-sm font-medium text-down hover:text-down-ink">{{ t $.Lang "auth.imports.delete" }}</button>
+						</form>
+					</td>
+				</tr>
+				{{ end }}
+			</tbody>
+		</table>
+	</div>
+	{{ else }}
+	<p class="mt-4 text-sm text-faint">{{ t $.Lang "auth.imports.list_empty" }}</p>
+	{{ end }}
 </section>
 
-<section class="card">
-  <h2>Export everything</h2>
-  <p class="hint">A ZIP of the ten roll-up tables plus <code>raw_events.csv</code> — every event,
-  one row each. The raw export is in every plan: data you generated on your own site is yours.
-  A prepared archive can be downloaded for 24 hours and is then deleted.</p>
+<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.exports.title" }}</h2>
+	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang "auth.exports.help" }}</p>
 
-  <form class="inline" method="post" action="/settings/{{.Domain}}/exports/create">
-    <button>Prepare an export</button>
-  </form>
+	<form method="post" action="/settings/{{ .Domain }}/exports/create" class="mt-4">
+		<button type="submit" class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "auth.exports.prepare" }}</button>
+	</form>
 
-  {{if .Exports}}
-  <table style="margin-top:16px">
-    <thead><tr><th style="width:150px">Prepared</th><th style="width:110px">Status</th>
-      <th class="num" style="width:100px">Size</th><th>Download</th></tr></thead>
-    <tbody>
-    {{range .Exports}}
-      <tr>
-        <td class="muted small">{{.Prepared}}</td>
-        <td>
-          {{if eq .Status "completed"}}<span class="pill ok">ready</span>
-          {{else if eq .Status "failed"}}<span class="pill bad">failed</span>
-          {{else}}<span class="pill run">{{.Status}}</span>{{end}}
-        </td>
-        <td class="num">{{.Size}}</td>
-        <td class="small">
-          {{if .Expired}}<span class="muted">the 24-hour window has closed</span>
-          {{else if .URL}}<a href="{{.URL}}">Download</a> <span class="muted">· expires {{.Expires}}</span>
-          {{else if .Failure}}<span style="color:var(--danger)">{{.Failure}}</span>
-          {{else if .Ready}}<span class="muted">built by an earlier run — prepare a new export for a link</span>
-          {{else}}<span class="muted">building…</span>{{end}}
-        </td>
-      </tr>
-    {{end}}
-    </tbody>
-  </table>
-  {{end}}
+	{{ if .Exports }}
+	<div class="mt-5 overflow-x-auto border-t border-line pt-5">
+		<table class="w-full text-sm">
+			<thead>
+				<tr class="border-b border-line text-left text-xs font-semibold uppercase tracking-wide text-muted">
+					<th class="w-44 pb-2 pr-3 font-semibold">{{ t $.Lang "auth.exports.column_prepared" }}</th>
+					<th class="w-28 pb-2 pr-3 font-semibold">{{ t $.Lang "auth.exports.column_status" }}</th>
+					<th class="w-24 pb-2 pr-3 text-right font-semibold">{{ t $.Lang "auth.exports.column_size" }}</th>
+					<th class="pb-2 font-semibold">{{ t $.Lang "auth.exports.column_download" }}</th>
+				</tr>
+			</thead>
+			<tbody class="divide-y divide-line">
+				{{ range .Exports }}
+				<tr>
+					<td class="py-2 pr-3 align-top text-xs text-muted">{{ .Prepared }}</td>
+					<td class="py-2 pr-3 align-top">
+						{{ if eq .Status "completed" }}
+						<span class="rounded-md bg-up/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-up-ink">{{ t $.Lang "auth.exports.status_ready" }}</span>
+						{{ else if eq .Status "failed" }}
+						<span class="rounded-md bg-down/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-down-ink">{{ t $.Lang "auth.exports.status_failed" }}</span>
+						{{ else }}
+						<span class="rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-ink">{{ t $.Lang "auth.exports.status_building" }}</span>
+						{{ end }}
+					</td>
+					<td class="py-2 pr-3 text-right align-top tabular-nums">{{ .Size }}</td>
+					<td class="py-2 align-top text-xs">
+						{{ if .Expired }}<span class="text-muted">{{ t $.Lang "auth.exports.window_closed" }}</span>
+						{{ else if .URL }}<a href="{{ .URL }}" class="font-medium text-accent-ink hover:text-accent">{{ t $.Lang "auth.exports.download" }}</a> <span class="text-muted">{{ t $.Lang "auth.exports.expires" "at" .Expires }}</span>
+						{{ else if .Failure }}<span class="text-down-ink">{{ .Failure }}</span>
+						{{ else if .Ready }}<span class="text-muted">{{ t $.Lang "auth.exports.built_earlier" }}</span>
+						{{ else }}<span class="text-muted">{{ t $.Lang "auth.exports.building" }}</span>{{ end }}
+					</td>
+				</tr>
+				{{ end }}
+			</tbody>
+		</table>
+	</div>
+	{{ end }}
 </section>
 
-{{if .GoogleEnabled}}
-<section class="card">
-  <h2>Google Analytics 4 and Search Console</h2>
-  <p class="hint">One authorisation per site. Connecting a second site with the same Google account
-  creates a second, independent grant — revoking one can never disconnect the other.</p>
-  <div class="notice warn">{{.SearchConsoleNotice}}</div>
-  <div class="grid2">
-    <div>
-      <h2>Analytics 4</h2>
-      {{if .GA4}}
-        {{if .GA4.NeedsReconnect}}
-          <div class="notice bad">{{.GA4.Failure}}</div>
-        {{else}}
-          <p class="small muted">Connected as {{.GA4.GoogleEmail}} · property {{.GA4.Property}}</p>
-        {{end}}
-        <form class="inline" method="post" action="/settings/{{.Domain}}/google/disconnect">
-          <input type="hidden" name="provider" value="ga4">
-          <button class="ghost">Disconnect</button>
-        </form>
-      {{else}}
-        <p class="small muted">Not connected.</p>
-        <a href="/settings/{{.Domain}}/google/connect?provider=ga4"><button class="ghost">Connect Analytics</button></a>
-      {{end}}
-    </div>
-    <div>
-      <h2>Search Console</h2>
-      {{if .SearchConsole}}
-        {{if .SearchConsole.NeedsReconnect}}
-          <div class="notice bad">{{.SearchConsole.Failure}}</div>
-        {{else}}
-          <p class="small muted">Connected as {{.SearchConsole.GoogleEmail}} · {{.SearchConsole.Property}}</p>
-        {{end}}
-        <form class="inline" method="post" action="/settings/{{.Domain}}/google/disconnect">
-          <input type="hidden" name="provider" value="search_console">
-          <button class="ghost">Disconnect</button>
-        </form>
-      {{else}}
-        <p class="small muted">Not connected.</p>
-        <a href="/settings/{{.Domain}}/google/connect?provider=search_console"><button class="ghost">Connect Search Console</button></a>
-      {{end}}
-    </div>
-  </div>
+{{ if .GoogleEnabled }}
+<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.google.title" }}</h2>
+	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang "auth.google.help" }}</p>
+
+	<div class="mt-4 rounded-xl border border-warn/30 bg-warn/10 p-4 text-sm text-warn-ink">{{ t $.Lang .SearchConsoleNoticeID }}</div>
+
+	<div class="mt-5 grid gap-6 border-t border-line pt-5 md:grid-cols-2">
+		<div>
+			<h3 class="text-sm font-medium text-heading">{{ t $.Lang "auth.google.analytics" }}</h3>
+
+			{{ if .GA4 }}
+				{{ if .GA4.NeedsReconnect }}
+				<div class="mt-2 rounded-xl border border-down/30 bg-down/10 px-4 py-3 text-sm text-down-ink">{{ .GA4.Failure }}</div>
+				{{ else }}
+				<p class="mt-2 text-xs text-muted">{{ t $.Lang "auth.google.connected_property" "email" .GA4.GoogleEmail "property" .GA4.Property }}</p>
+				{{ end }}
+
+				<form method="post" action="/settings/{{ $.Domain }}/google/disconnect" class="mt-3">
+					<input type="hidden" name="provider" value="ga4">
+					<button type="submit" class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">{{ t $.Lang "auth.google.disconnect" }}</button>
+				</form>
+			{{ else }}
+				<p class="mt-2 text-xs text-muted">{{ t $.Lang "auth.google.not_connected" }}</p>
+				<a href="/settings/{{ $.Domain }}/google/connect?provider=ga4" class="mt-3 inline-block rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">{{ t $.Lang "auth.google.connect_analytics" }}</a>
+			{{ end }}
+		</div>
+
+		<div>
+			<h3 class="text-sm font-medium text-heading">{{ t $.Lang "auth.google.search_console" }}</h3>
+
+			{{ if .SearchConsole }}
+				{{ if .SearchConsole.NeedsReconnect }}
+				<div class="mt-2 rounded-xl border border-down/30 bg-down/10 px-4 py-3 text-sm text-down-ink">{{ .SearchConsole.Failure }}</div>
+				{{ else }}
+				<p class="mt-2 text-xs text-muted">{{ t $.Lang "auth.google.connected_property" "email" .SearchConsole.GoogleEmail "property" .SearchConsole.Property }}</p>
+				{{ end }}
+
+				<form method="post" action="/settings/{{ $.Domain }}/google/disconnect" class="mt-3">
+					<input type="hidden" name="provider" value="search_console">
+					<button type="submit" class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">{{ t $.Lang "auth.google.disconnect" }}</button>
+				</form>
+			{{ else }}
+				<p class="mt-2 text-xs text-muted">{{ t $.Lang "auth.google.not_connected" }}</p>
+				<a href="/settings/{{ $.Domain }}/google/connect?provider=search_console" class="mt-3 inline-block rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">{{ t $.Lang "auth.google.connect_search_console" }}</a>
+			{{ end }}
+		</div>
+	</div>
 </section>
-{{end}}
+{{ end }}
 {{end}}

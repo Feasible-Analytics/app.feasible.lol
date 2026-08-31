@@ -1,66 +1,86 @@
 {{define "body"}}
-<h1>Shields</h1>
-<p class="lede">Traffic you do not want counted. Blocked addresses are checked in the ingest tier —
-the only place the raw IP still exists — and everything else is checked at the shard where these
-rules are live. A change here applies within about fifteen seconds.</p>
+<h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "auth.shields.title" }}</h1>
+<p class="mt-1 max-w-2xl text-sm text-muted">{{ t $.Lang "auth.shields.lede" }}</p>
 
-<section class="card">
-  <h2>Your own traffic</h2>
-  <p class="hint">This is the address this page resolved you to, using exactly the same header
-  precedence the event endpoint uses. Blocking it here blocks the traffic you generate yourself.</p>
+<section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm">
+	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.shields.own_traffic" }}</h2>
+	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang "auth.shields.own_traffic_help" }}</p>
 
-  <div class="myip">
-    <span class="addr">{{.Viewer.Address}}</span>
-    <span class="pill">seen via {{.Viewer.Source}}</span>
-    {{if not .Viewer.Private}}
-    <form method="post" action="/settings/{{.Domain}}/shields/add" style="margin:0">
-      <input type="hidden" name="kind" value="ip">
-      <input type="hidden" name="value" value="{{.Viewer.Address}}">
-      <input type="hidden" name="note" value="My own traffic">
-      <button>Block my own traffic</button>
-    </form>
-    {{end}}
-  </div>
+	<div class="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-line bg-subtle px-4 py-3">
+		<span class="font-mono text-sm font-semibold text-heading">{{ .Viewer.Address }}</span>
+		<span class="rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-ink">{{ t $.Lang "auth.shields.seen_via" "source" .Viewer.Source }}</span>
 
-  {{if .Viewer.Private}}
-  <div class="notice warn"><strong>This is not your public address.</strong> {{.Viewer.Warning}}</div>
-  {{end}}
+		{{ if not .Viewer.Private }}
+		<form method="post" action="/settings/{{ $.Domain }}/shields/add" class="ml-auto">
+			<input type="hidden" name="kind" value="ip">
+			<input type="hidden" name="value" value="{{ .Viewer.Address }}">
+			<input type="hidden" name="note" value="{{ t $.Lang "auth.shields.own_traffic_note" }}">
+			<button type="submit" class="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "auth.shields.block_own" }}</button>
+		</form>
+		{{ end }}
+	</div>
+
+	{{ if .Viewer.Private }}
+	<div class="mt-4 rounded-xl border border-warn/30 bg-warn/10 p-4 text-sm text-warn-ink">
+		<strong class="font-semibold">{{ t $.Lang "auth.shields.not_public_address" }}</strong>
+		{{ t $.Lang .Viewer.Warning }}
+	</div>
+	{{ end }}
 </section>
 
-{{range .Groups}}
-<section class="card">
-  <h2>{{.Title}}</h2>
-  <p class="hint">{{.Hint}}</p>
+{{ range .Groups }}
+<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang .TitleID }}</h2>
+	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang .HintID }}</p>
 
-  {{if .Rules}}
-  <table>
-    <thead><tr><th style="width:38%">Rule</th><th>Note</th><th style="width:80px"></th></tr></thead>
-    <tbody>
-    {{range .Rules}}
-      <tr>
-        <td><code>{{.Value}}</code></td>
-        <td class="muted">{{.Note}}</td>
-        <td>
-          <form method="post" action="/settings/{{$.Domain}}/shields/delete" style="margin:0">
-            <input type="hidden" name="id" value="{{.ID}}">
-            <button class="link">Remove</button>
-          </form>
-        </td>
-      </tr>
-    {{end}}
-    </tbody>
-  </table>
-  {{else}}
-  <p class="muted small">No {{.Title}} rules yet.</p>
-  {{end}}
+	{{ if .Rules }}
+	<div class="mt-4 overflow-x-auto">
+		<table class="w-full text-sm">
+			<thead>
+				<tr class="border-b border-line text-left text-xs font-semibold uppercase tracking-wide text-muted">
+					<th class="w-2/5 pb-2 pr-3 font-semibold">{{ t $.Lang "auth.shields.column_rule" }}</th>
+					<th class="pb-2 pr-3 font-semibold">{{ t $.Lang "auth.shields.column_note" }}</th>
+					<th class="w-20 pb-2"><span class="sr-only">{{ t $.Lang "auth.shields.column_actions" }}</span></th>
+				</tr>
+			</thead>
+			<tbody class="divide-y divide-line">
+				{{ range .Rules }}
+				<tr>
+					<td class="py-2 pr-3 align-top"><code class="rounded bg-subtle px-1 font-mono text-xs text-body">{{ .Value }}</code></td>
+					<td class="py-2 pr-3 align-top text-muted">{{ .Note }}</td>
+					<td class="py-2 align-top">
+						<form method="post" action="/settings/{{ $.Domain }}/shields/delete">
+							<input type="hidden" name="id" value="{{ .ID }}">
+							<button type="submit" class="text-sm font-medium text-down hover:text-down-ink">{{ t $.Lang "auth.shields.remove" }}</button>
+						</form>
+					</td>
+				</tr>
+				{{ end }}
+			</tbody>
+		</table>
+	</div>
+	{{ else }}
+	<p class="mt-4 text-sm text-faint">{{ t $.Lang "auth.shields.empty" }}</p>
+	{{ end }}
 
-  <form class="inline" method="post" action="/settings/{{$.Domain}}/shields/add">
-    <input type="hidden" name="kind" value="{{.Kind}}">
-    <input type="text" name="value" placeholder="{{.Placeholder}}" required>
-    <input type="text" name="note" placeholder="Note (optional)">
-    <button class="ghost">Add rule</button>
-    <span class="muted small">{{len .Rules}} of {{$.MaxRules}} used</span>
-  </form>
+	<form method="post" action="/settings/{{ $.Domain }}/shields/add" class="mt-5 flex flex-wrap items-end gap-3 border-t border-line pt-5">
+		<input type="hidden" name="kind" value="{{ .Kind }}">
+
+		<div class="min-w-[14rem] flex-1">
+			<label class="block text-xs font-medium text-muted" for="value-{{ .Kind }}">{{ t $.Lang "auth.shields.column_rule" }}</label>
+			<input id="value-{{ .Kind }}" type="text" name="value" required placeholder="{{ t $.Lang .PlaceholderID }}"
+				class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+		</div>
+
+		<div class="min-w-[12rem] flex-1">
+			<label class="block text-xs font-medium text-muted" for="note-{{ .Kind }}">{{ t $.Lang "auth.shields.note_optional" }}</label>
+			<input id="note-{{ .Kind }}" type="text" name="note"
+				class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+		</div>
+
+		<button type="submit" class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">{{ t $.Lang "auth.shields.add_rule" }}</button>
+		<span class="pb-2 text-xs text-faint">{{ t $.Lang "auth.shields.used_of_max" "used" (len .Rules) "max" $.MaxRules }}</span>
+	</form>
 </section>
-{{end}}
+{{ end }}
 {{end}}

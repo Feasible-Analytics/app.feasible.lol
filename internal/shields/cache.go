@@ -199,9 +199,11 @@ type Viewer struct {
 	// nothing at all.
 	Private bool
 
-	// Warning is the sentence to show when Private is true. It names the fix
-	// rather than the symptom, because the customer cannot act on "this looks
-	// like a private address".
+	// Warning names the catalogue string to show when Private is true. It is an
+	// id rather than the sentence, because this package has no request and so
+	// no language, and because the copy a customer reads belongs in the one
+	// catalogue. The string it names gives the fix rather than the symptom:
+	// nobody can act on "this looks like a private address".
 	Warning string
 }
 
@@ -216,7 +218,7 @@ func ResolveViewer(r *http.Request, trusted *ingest.TrustedProxies) Viewer {
 	viewer := Viewer{Address: client.String(), Source: client.Source}
 
 	if !client.Addr.IsValid() {
-		viewer.Warning = "we could not work out your address from this request, so a rule built here would not match your traffic"
+		viewer.Warning = "auth.shields.warning_unresolved"
 		viewer.Private = true
 
 		return viewer
@@ -226,9 +228,7 @@ func ResolveViewer(r *http.Request, trusted *ingest.TrustedProxies) Viewer {
 
 	if addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsUnspecified() {
 		viewer.Private = true
-		viewer.Warning = "this is a private address, not your public one — your reverse proxy is not passing X-Forwarded-For " +
-			"through to this app, so every visitor currently resolves to the same address and a rule built on it would block nothing. " +
-			"Fix the proxy first: in Caddy add `header_up X-Forwarded-For {remote_host}`, in nginx `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`."
+		viewer.Warning = "auth.shields.warning_private"
 	}
 
 	return viewer

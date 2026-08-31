@@ -1,82 +1,97 @@
 {{define "body"}}
-<h1>Path cleaning</h1>
-<p class="lede">Merge URLs that are really one page — an id in a path, a trailing slash — into the
-route you think in. Rules are applied at query time, so they fix the history you already have, and
-at ingest, so the path dimension stops growing. They are tried in order and the first match wins.</p>
+<h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "auth.paths.title" }}</h1>
+<p class="mt-1 max-w-2xl text-sm text-muted">{{ t $.Lang "auth.paths.lede" }}</p>
 
-<section class="card">
-  <h2>Rules</h2>
-  <p class="hint">A pattern is a regular expression. A replacement may refer back to a capture group
-  with <code>$1</code>. Deleting every rule puts the original paths back: nothing stored is rewritten.</p>
+<section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm">
+	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.paths.rules" }}</h2>
+	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang "auth.paths.rules_help" }}</p>
 
-  <form method="post" action="/settings/{{.Domain}}/paths/save">
-    <table>
-      <thead><tr>
-        <th style="width:34px">#</th><th style="width:36%">Pattern</th>
-        <th style="width:24%">Replacement</th><th>Label</th><th style="width:70px">On</th>
-      </tr></thead>
-      <tbody>
-      {{range $i, $rule := .Rules}}
-        <tr>
-          <td class="muted">{{$rule.Position}}</td>
-          <td><input type="text" name="pattern" value="{{$rule.Pattern}}" style="width:100%"></td>
-          <td><input type="text" name="replacement" value="{{$rule.Replacement}}" style="width:100%"></td>
-          <td><input type="text" name="label" value="{{$rule.Label}}" style="width:100%"></td>
-          <td><input type="checkbox" name="enabled-{{$i}}" {{if $rule.Enabled}}checked{{end}}></td>
-        </tr>
-      {{end}}
-        <tr>
-          <td class="muted">{{len .Rules}}</td>
-          <td><input type="text" name="pattern" placeholder="^/users/[0-9a-f-]{36}" style="width:100%"></td>
-          <td><input type="text" name="replacement" placeholder="/users/:id" style="width:100%"></td>
-          <td><input type="text" name="label" placeholder="User pages" style="width:100%"></td>
-          <td><input type="checkbox" name="enabled-{{len .Rules}}" checked></td>
-        </tr>
-      </tbody>
-    </table>
-    <div class="inline">
-      <button name="action" value="preview" class="ghost">Preview</button>
-      <button name="action" value="save">Save rules</button>
-    </div>
-  </form>
+	<form method="post" action="/settings/{{ .Domain }}/paths/save">
+		<div class="mt-4 overflow-x-auto">
+			<table class="w-full text-sm">
+				<thead>
+					<tr class="border-b border-line text-left text-xs font-semibold uppercase tracking-wide text-muted">
+						<th class="w-10 pb-2 pr-3 font-semibold">#</th>
+						<th class="w-1/3 pb-2 pr-3 font-semibold">{{ t $.Lang "auth.paths.column_pattern" }}</th>
+						<th class="w-1/4 pb-2 pr-3 font-semibold">{{ t $.Lang "auth.paths.column_replacement" }}</th>
+						<th class="pb-2 pr-3 font-semibold">{{ t $.Lang "auth.paths.column_label" }}</th>
+						<th class="w-16 pb-2 font-semibold">{{ t $.Lang "auth.paths.column_on" }}</th>
+					</tr>
+				</thead>
+				<tbody class="divide-y divide-line">
+					{{ range $i, $rule := .Rules }}
+					<tr>
+						<td class="py-2 pr-3 align-middle text-muted">{{ $rule.Position }}</td>
+						<td class="py-2 pr-3"><input type="text" name="pattern" value="{{ $rule.Pattern }}" class="block w-full rounded-xl border border-field px-3 py-2 font-mono text-xs focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"></td>
+						<td class="py-2 pr-3"><input type="text" name="replacement" value="{{ $rule.Replacement }}" class="block w-full rounded-xl border border-field px-3 py-2 font-mono text-xs focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"></td>
+						<td class="py-2 pr-3"><input type="text" name="label" value="{{ $rule.Label }}" class="block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"></td>
+						<td class="py-2 align-middle"><input type="checkbox" name="enabled-{{ $i }}" {{ if $rule.Enabled }}checked{{ end }} class="rounded border-field text-accent-ink focus:ring-accent"></td>
+					</tr>
+					{{ end }}
+					<tr>
+						<td class="py-2 pr-3 align-middle text-muted">{{ len .Rules }}</td>
+						<td class="py-2 pr-3"><input type="text" name="pattern" placeholder="^/users/[0-9a-f-]{36}" class="block w-full rounded-xl border border-field px-3 py-2 font-mono text-xs focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"></td>
+						<td class="py-2 pr-3"><input type="text" name="replacement" placeholder="/users/:id" class="block w-full rounded-xl border border-field px-3 py-2 font-mono text-xs focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"></td>
+						<td class="py-2 pr-3"><input type="text" name="label" placeholder="{{ t $.Lang "auth.paths.new_label_placeholder" }}" class="block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"></td>
+						<td class="py-2 align-middle"><input type="checkbox" name="enabled-{{ len .Rules }}" checked class="rounded border-field text-accent-ink focus:ring-accent"></td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
+
+		<div class="mt-5 flex items-center gap-3 border-t border-line pt-5">
+			<button type="submit" name="action" value="save" class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "auth.paths.save" }}</button>
+			<button type="submit" name="action" value="preview" class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">{{ t $.Lang "auth.paths.preview" }}</button>
+		</div>
+	</form>
 </section>
 
-<section class="card">
-  <h2>Trailing slashes</h2>
-  <p class="hint">Most sites serve the same page at <code>/about</code> and <code>/about/</code>,
-  and the two are otherwise two permanent rows on every report. A few sites genuinely serve
-  different content at each, so this ships switched off rather than decided for you.</p>
-  <form method="post" action="/settings/{{.Domain}}/paths/trailing-slash">
-    <button class="ghost">{{if .TrailingSlashOn}}Stop merging trailing slashes{{else}}Merge trailing slashes{{end}}</button>
-  </form>
+<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.paths.trailing_slash" }}</h2>
+	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang "auth.paths.trailing_slash_help" }}</p>
+
+	<form method="post" action="/settings/{{ .Domain }}/paths/trailing-slash" class="mt-4">
+		<button type="submit" class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">
+			{{ if .TrailingSlashOn }}{{ t $.Lang "auth.paths.stop_merging_slashes" }}{{ else }}{{ t $.Lang "auth.paths.merge_slashes" }}{{ end }}
+		</button>
+	</form>
 </section>
 
-{{if .Previewed}}
-<section class="card">
-  <h2>Preview — {{len .Merges}} merge{{if ne (len .Merges) 1}}s{{end}}</h2>
-  <p class="hint">This is exactly what saving these rules would do, and how many stored rows each
-  merge moves. Nothing has been saved yet.</p>
+{{ if .Previewed }}
+<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+	<h2 class="text-sm font-semibold text-heading">{{ n $.Lang "auth.paths.preview_heading" (len .Merges) }}</h2>
+	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang "auth.paths.preview_help" }}</p>
 
-  {{if .Merges}}
-  <table>
-    <thead><tr><th style="width:46%">Becomes</th><th>Merged from</th><th class="num" style="width:90px">Rows</th></tr></thead>
-    <tbody>
-    {{range .Merges}}
-      <tr>
-        <td><code>{{.Target}}</code></td>
-        <td>
-          <span class="muted small">{{.Paths}} path{{if ne .Paths 1}}s{{end}}</span>
-          <ul class="merge">{{range .Sources}}<li>{{.Path}} <span class="muted">({{.Rows}})</span></li>{{end}}
-          {{if .Hidden}}<li class="muted">and {{.Hidden}} more</li>{{end}}</ul>
-        </td>
-        <td class="num">{{.Rows}}</td>
-      </tr>
-    {{end}}
-    </tbody>
-  </table>
-  {{else}}
-  <p class="muted small">These rules would not merge anything on this site.</p>
-  {{end}}
+	{{ if .Merges }}
+	<div class="mt-4 overflow-x-auto">
+		<table class="w-full text-sm">
+			<thead>
+				<tr class="border-b border-line text-left text-xs font-semibold uppercase tracking-wide text-muted">
+					<th class="w-2/5 pb-2 pr-3 font-semibold">{{ t $.Lang "auth.paths.column_becomes" }}</th>
+					<th class="pb-2 pr-3 font-semibold">{{ t $.Lang "auth.paths.column_merged_from" }}</th>
+					<th class="w-24 pb-2 text-right font-semibold">{{ t $.Lang "auth.paths.column_rows" }}</th>
+				</tr>
+			</thead>
+			<tbody class="divide-y divide-line">
+				{{ range .Merges }}
+				<tr>
+					<td class="py-2 pr-3 align-top"><code class="rounded bg-subtle px-1 font-mono text-xs text-body">{{ .Target }}</code></td>
+					<td class="py-2 pr-3 align-top">
+						<span class="text-xs text-muted">{{ n $.Lang "auth.paths.path_count" .Paths }}</span>
+						<ul class="mt-1 list-inside list-disc font-mono text-xs text-muted">
+							{{ range .Sources }}<li>{{ .Path }} <span class="text-faint">({{ .Rows }})</span></li>{{ end }}
+							{{ if .Hidden }}<li class="list-none text-faint">{{ n $.Lang "auth.paths.and_more" .Hidden }}</li>{{ end }}
+						</ul>
+					</td>
+					<td class="py-2 text-right align-top tabular-nums">{{ .Rows }}</td>
+				</tr>
+				{{ end }}
+			</tbody>
+		</table>
+	</div>
+	{{ else }}
+	<p class="mt-4 text-sm text-faint">{{ t $.Lang "auth.paths.preview_empty" }}</p>
+	{{ end }}
 </section>
-{{end}}
+{{ end }}
 {{end}}

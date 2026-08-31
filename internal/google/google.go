@@ -76,8 +76,10 @@ const (
 // files the same bug.
 const SearchConsoleDelay = 36 * time.Hour
 
-// SearchConsoleDelayNotice is the sentence the settings and report pages show.
-const SearchConsoleDelayNotice = "Search Console data reaches Google about 24 to 36 hours late, so today and usually yesterday are empty here. That is Google's delay, not a gap in your tracking."
+// SearchConsoleDelayNotice names the sentence the settings and report pages
+// show. It is a catalogue id rather than the sentence itself, because the copy
+// a customer reads lives with every other translated string.
+const SearchConsoleDelayNotice = "auth.imports.search_console_delay"
 
 // ErrInvalidGrant is a refresh token Google will not honour any more: the
 // customer revoked access, changed their password, or the grant expired. It is
