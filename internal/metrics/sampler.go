@@ -81,6 +81,9 @@ type sampler struct {
 	walBytesMax      *prometheus.Desc
 	databaseCount    *prometheus.Desc
 	databaseReadable *prometheus.Desc
+
+	diskTotal     *prometheus.Desc
+	diskAvailable *prometheus.Desc
 }
 
 // newSampler builds the collector for one process's sources.
@@ -137,6 +140,16 @@ func newSampler(sources Sources) *sampler {
 			"feasible_database_directory_readable",
 			"1 when the data directory could be listed, 0 when it could not.",
 			nil, nil),
+
+		diskTotal: prometheus.NewDesc(
+			"feasible_disk_total_bytes",
+			"Size of the filesystem holding the data directory, in bytes.",
+			nil, nil),
+
+		diskAvailable: prometheus.NewDesc(
+			"feasible_disk_available_bytes",
+			"Space this process can still write on the filesystem holding the data directory, in bytes. Available rather than free: the reserved blocks are not ours, and an alert on free space fires after writes have already started failing.",
+			nil, nil),
 	}
 }
 
@@ -149,6 +162,7 @@ func (s *sampler) Describe(out chan<- *prometheus.Desc) {
 	for _, desc := range []*prometheus.Desc{
 		s.bufferDepth, s.sessions, s.sites, s.openAccounts, s.jobs,
 		s.databaseBytes, s.walBytes, s.walBytesMax, s.databaseCount, s.databaseReadable,
+		s.diskTotal, s.diskAvailable,
 	} {
 		out <- desc
 	}
@@ -198,6 +212,15 @@ func (s *sampler) collectJobs(out chan<- prometheus.Metric) {
 // few files per account, which is cheap enough to do on a scrape and far more
 // truthful than a size cached from start-up.
 func (s *sampler) collectStorage(out chan<- prometheus.Metric) {
+	// Free space is read before anything else, because it is the one number
+	// here that predicts a failure rather than describing one. A database that
+	// cannot grow stops accepting writes with no warning from any of the sizes
+	// below, all of which look perfectly healthy right up to the moment.
+	if total, available, ok := diskSpace(s.sources.DataDir); ok {
+		out <- prometheus.MustNewConstMetric(s.diskTotal, prometheus.GaugeValue, float64(total))
+		out <- prometheus.MustNewConstMetric(s.diskAvailable, prometheus.GaugeValue, float64(available))
+	}
+
 	control := filepath.Join(s.sources.DataDir, config.ControlDatabaseName)
 
 	out <- prometheus.MustNewConstMetric(s.databaseBytes, prometheus.GaugeValue, float64(sizeOf(control)), "control")

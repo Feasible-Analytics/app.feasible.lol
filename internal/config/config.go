@@ -54,6 +54,31 @@ const (
 	// DefaultWebhookPoll is how long the delivery worker waits when the queue is
 	// empty, in seconds. It loops without pausing while there is work.
 	DefaultWebhookPoll = 5
+
+	// DefaultLitestreamConfig is where the generated replication configuration
+	// is written. It is outside the data directory on purpose: the file
+	// describes how to recover the data directory, and a copy that only exists
+	// inside the thing it recovers is not a recovery plan.
+	DefaultLitestreamConfig = "/etc/litestream.yml"
+
+	// DefaultLitestreamSync is how often each database's new write-ahead log
+	// pages are shipped, in seconds. One second is the recovery point this
+	// project promises, and the events written inside it are still in the
+	// ingest outbox.
+	DefaultLitestreamSync = 1
+
+	// DefaultLitestreamSnapshot is how often a full copy is taken, in hours.
+	DefaultLitestreamSnapshot = 6
+
+	// DefaultLitestreamRetention is how long snapshots and log segments are
+	// kept, in hours. It must stay longer than the snapshot interval or a
+	// restore has no snapshot to replay onto.
+	DefaultLitestreamRetention = 72
+
+	// DefaultLitestreamWatch is how often the watcher re-reads the account
+	// directory, in seconds. It is the window in which a brand-new account's
+	// database is on disk and not yet replicated.
+	DefaultLitestreamWatch = 60
 )
 
 // Layout of the data directory. These are constants because both the migrate
@@ -248,14 +273,44 @@ type API struct {
 	MCPKey string
 }
 
+// Litestream holds the values the `litestream` command reads. It is its own
+// section because no serving process reads any of it: replication is a daemon
+// beside us, and this binary's only part in it is writing the file that daemon
+// reads.
+type Litestream struct {
+	// ConfigPath is the file to generate.
+	ConfigPath string
+
+	// ReplicaURL is the prefix every database is replicated under. Empty means
+	// replication is not configured, which is the normal state for a
+	// self-hoster and an error for a shard.
+	ReplicaURL string
+
+	SyncInterval     time.Duration
+	SnapshotInterval time.Duration
+	Retention        time.Duration
+
+	// WatchInterval is how often `litestream config -watch` re-reads the
+	// account directory.
+	WatchInterval time.Duration
+
+	// OnChange is the shell command run after the file changes, which is how
+	// the daemon picks up a newly created account database. It is empty by
+	// default because the right command depends on how Litestream is
+	// supervised, and guessing would produce a watcher that silently reloads
+	// nothing.
+	OnChange string
+}
+
 // Config is the whole configuration for the binary. Both sections are always
 // loaded, even in single-process mode, because `serve` with the direct
 // transport runs the ingest path in-process.
 type Config struct {
-	Shared Shared
-	App    App
-	API    API
-	Ingest Ingest
+	Shared     Shared
+	App        App
+	API        API
+	Ingest     Ingest
+	Litestream Litestream
 }
 
 // IsProduction reports whether this process is running in production, which is
@@ -514,6 +569,15 @@ func LoadFrom(l *Loader) (*Config, error) {
 			WebhookTimeout: time.Duration(l.Int("FEASIBLE_WEBHOOK_TIMEOUT_SECONDS", DefaultWebhookTimeout)) * time.Second,
 			WebhookPoll:    time.Duration(l.Int("FEASIBLE_WEBHOOK_POLL_SECONDS", DefaultWebhookPoll)) * time.Second,
 			MCPKey:         strings.TrimSpace(l.String("FEASIBLE_MCP_API_KEY", "")),
+		},
+		Litestream: Litestream{
+			ConfigPath:       l.String("FEASIBLE_LITESTREAM_CONFIG", DefaultLitestreamConfig),
+			ReplicaURL:       strings.TrimSpace(l.String("FEASIBLE_LITESTREAM_REPLICA_URL", "")),
+			SyncInterval:     time.Duration(l.Int("FEASIBLE_LITESTREAM_SYNC_SECONDS", DefaultLitestreamSync)) * time.Second,
+			SnapshotInterval: time.Duration(l.Int("FEASIBLE_LITESTREAM_SNAPSHOT_HOURS", DefaultLitestreamSnapshot)) * time.Hour,
+			Retention:        time.Duration(l.Int("FEASIBLE_LITESTREAM_RETENTION_HOURS", DefaultLitestreamRetention)) * time.Hour,
+			WatchInterval:    time.Duration(l.Int("FEASIBLE_LITESTREAM_WATCH_SECONDS", DefaultLitestreamWatch)) * time.Second,
+			OnChange:         strings.TrimSpace(l.String("FEASIBLE_LITESTREAM_ON_CHANGE", "")),
 		},
 		Ingest: Ingest{
 			Listen:         l.String("FEASIBLE_INGEST_LISTEN", DefaultIngestListen),
