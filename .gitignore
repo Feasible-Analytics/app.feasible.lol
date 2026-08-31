@@ -3,7 +3,7 @@
 .env.local
 
 # Local data — SQLite databases, ingest buffers, GeoIP
-/data/
+data/
 /tmp/
 
 # Build output
