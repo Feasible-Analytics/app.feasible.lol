@@ -51,12 +51,15 @@ func WithKey(ctx context.Context, key *apikeys.Key) context.Context {
 	return context.WithValue(ctx, keyContextKey, key)
 }
 
-// authenticated wraps the mux with the credential check and the rate limit.
+// authenticated wraps the mux with the credential check, the rate limit and the
+// account lock.
 //
-// Both run before routing rather than inside each handler, so a route added
-// later is protected by construction. The order matters: authentication first,
-// because a rate limit keyed on an unauthenticated caller would let anybody
-// exhaust somebody else's budget by guessing their key id.
+// All three run before routing rather than inside each handler, so a route
+// added later is protected by construction. The order matters: authentication
+// first, because a rate limit keyed on an unauthenticated caller would let
+// anybody exhaust somebody else's budget by guessing their key id; then the
+// rate limit, so a locked key cannot spend an unlimited number of requests
+// being told it is locked; then the lock itself.
 func (a *API) authenticated(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		presented, err := bearerToken(r)
@@ -94,6 +97,15 @@ func (a *API) authenticated(next http.Handler) http.Handler {
 				"rate limit of %d requests per hour reached — it resets at %s",
 				decision.Limit, decision.ResetsAt.Format("15:04:05 MST")))
 
+			return
+		}
+
+		// A locked account is refused here rather than inside the stats
+		// handlers, because everything this API answers is that account's own
+		// data — its sites, its goals, its webhooks and its numbers — and none
+		// of it is the page where somebody would pay us. That page is served
+		// outside this mux and stays open.
+		if a.Access.RefuseJSON(w, key.TeamID) {
 			return
 		}
 

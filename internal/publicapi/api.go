@@ -35,6 +35,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/access"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
@@ -58,6 +59,14 @@ type API struct {
 
 	// Limiter counts requests per key.
 	Limiter *apikeys.Limiter
+
+	// Access is the account lock. Every route below reads or writes one
+	// account's data and none of them is how somebody pays us, so the check
+	// sits in front of the whole mux rather than on the endpoints that looked
+	// most like reports — a key that can still answer "how many visitors did I
+	// have" is a lock that does not lock. It is nil on an install with no
+	// billing, which locks nothing.
+	Access *access.Gate
 
 	// Sites is the in-memory routing snapshot. Reading it rather than
 	// control.db keeps an authenticated query off the shared write lock.

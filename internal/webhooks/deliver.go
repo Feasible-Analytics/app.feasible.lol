@@ -90,6 +90,11 @@ type Event struct {
 	Data any
 }
 
+// ErrLocked is what Publish answers for an account whose dashboard is locked.
+// It is an error rather than a silent zero because a withheld event is exactly
+// the kind of thing that must never vanish without a line somewhere saying so.
+var ErrLocked = errors.New("webhooks: this account is locked, so nothing was queued")
+
 // Dispatcher turns an event into rows. It never makes a network call: the whole
 // point of this design is that whatever produced the event — an ingest worker
 // counting a conversion, an import finishing — goes back to work the moment the
@@ -97,6 +102,14 @@ type Event struct {
 type Dispatcher struct {
 	store *Store
 	Now   func() time.Time
+
+	// Blocked reports whether an account's data may not leave the building. A
+	// goal conversion or a traffic spike posted to a customer's endpoint is the
+	// dashboard by another route, so a lock that ignored this queue would hand
+	// back the numbers it had just refused. It is a function rather than a
+	// dependency on the billing packages so that delivering a webhook does not
+	// require billing to exist, and nil means nothing is ever blocked.
+	Blocked func(accountID int64) bool
 }
 
 // NewDispatcher builds a dispatcher over the endpoint store.
@@ -134,6 +147,10 @@ type envelope struct {
 func (d *Dispatcher) Publish(ctx context.Context, teamID int64, event Event) (int, error) {
 	if !ValidEventType(event.Type) {
 		return 0, fmt.Errorf("webhooks: publish: unknown event type %q", event.Type)
+	}
+
+	if d.Blocked != nil && d.Blocked(teamID) {
+		return 0, ErrLocked
 	}
 
 	if event.ID == "" {

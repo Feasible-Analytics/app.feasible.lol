@@ -70,7 +70,7 @@
 
             <ul class="divide-y divide-line" data-folder-list="{{ .ID }}">
               {{ range .Sites }}
-                {{ template "site_row.html" (dict "Site" . "CSRF" $.CSRF "Lang" $.Lang) }}
+                {{ template "site_row.html" (dict "Site" . "CSRF" $.CSRF "Lang" $.Lang "Locked" $.Data.Locked) }}
               {{ else }}
                 <li class="px-5 py-6 text-sm text-faint">{{ t $.Lang "auth.sites.folder_empty" }}</li>
               {{ end }}
@@ -90,7 +90,7 @@
 
         <ul class="divide-y divide-line" data-folder-list="0">
           {{ range .Data.Sites }}
-            {{ template "site_row.html" (dict "Site" . "CSRF" $.CSRF "Lang" $.Lang) }}
+            {{ template "site_row.html" (dict "Site" . "CSRF" $.CSRF "Lang" $.Lang "Locked" $.Data.Locked) }}
           {{ end }}
         </ul>
       </div>

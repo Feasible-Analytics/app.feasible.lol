@@ -383,24 +383,32 @@ func (s *Store) Gaps(ctx context.Context, teamID int64) ([]Gap, error) {
 	return out, rows.Err()
 }
 
-// LockedTeams lists the accounts whose dashboard is blocked by the lifecycle.
-// The access gate holds this in memory rather than querying per request, for
-// the same reason the routing map is a snapshot.
-func (s *Store) LockedTeams(ctx context.Context, now time.Time) ([]int64, error) {
+// LockedTeams lists the accounts whose dashboard is blocked by the lifecycle,
+// each with the phase it is blocked in. The access gate holds this in memory
+// rather than querying per request, for the same reason the routing map is a
+// snapshot.
+//
+// The phase comes back alongside the id because the two blocked phases owe the
+// customer different words: an account in Locked is still being collected and
+// an account in Dormant is not, and telling a dormant account that we are still
+// recording its traffic is a promise it discovers is false on the day it pays.
+func (s *Store) LockedTeams(ctx context.Context, now time.Time) (map[int64]Phase, error) {
 	accounts, err := s.Running(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	var ids []int64
+	locked := map[int64]Phase{}
 
 	for _, account := range accounts {
-		if !Capabilities(account.State.At(now)).Dashboard {
-			ids = append(ids, account.TeamID)
+		phase := account.State.At(now)
+
+		if !Capabilities(phase).Dashboard {
+			locked[account.TeamID] = phase
 		}
 	}
 
-	return ids, nil
+	return locked, nil
 }
 
 // toUnix converts a time to the nullable column the schema stores. A zero time

@@ -14,6 +14,17 @@
 // no lock at all — the API is where the numbers actually come from. And the
 // answer has to be available without a database read per request, because the
 // stats endpoint is on the path of every card on every dashboard.
+//
+// There are five ways an account's numbers can leave the building — the
+// dashboard, the stats endpoint behind it, the public API, the MCP server and
+// an outbound webhook — and every one of them asks this package. Two of them
+// name a site in the URL and are wrapped by Protect; the other three carry an
+// API key that already names an account, and call Check, RefuseJSON or Blocked
+// directly.
+//
+// Everything a locked caller is told comes from one place, refusalFor, so that
+// the browser page, the JSON body and the tool error cannot drift into saying
+// three different things about the same account.
 package access
 
 import (
@@ -35,16 +46,23 @@ import (
 // coming back, and it is short enough that nobody files a bug about it.
 const RefreshInterval = 15 * time.Second
 
-// Reason is why an account is locked. There are exactly two, and they are told
-// apart because the pages a customer sees are different: one says "pay us" and
-// the other says "talk to us".
+// Reason is why an account is locked. There are exactly three, and they are
+// told apart because what the customer is owed differs: two say "pay us" and
+// differ on whether we are still recording their traffic, and the third says
+// "talk to us".
 type Reason string
 
-// The two lock reasons.
+// The three lock reasons.
 const (
 	// ReasonLifecycle is a trial that ended or a subscription that stopped
-	// paying. It clears the moment a payment succeeds.
+	// paying, while collection is still running. It clears the moment a payment
+	// succeeds, and nothing has been lost.
 	ReasonLifecycle Reason = "lifecycle"
+
+	// ReasonDormant is the same clock past the point where collection stopped.
+	// Paying still restores everything we hold, but there is a labelled gap in
+	// it, and a customer must be told that before they pay rather than after.
+	ReasonDormant Reason = "dormant"
 
 	// ReasonVolume is two consecutive months over the plan with no reply. It
 	// clears the moment usage comes back into range, or somebody replies.
@@ -94,13 +112,13 @@ func (g *Gate) Refresh(ctx context.Context) error {
 	locked := map[int64]Reason{}
 
 	if g.Lifecycle != nil {
-		ids, err := g.Lifecycle.LockedTeams(ctx, g.now())
+		phases, err := g.Lifecycle.LockedTeams(ctx, g.now())
 		if err != nil {
 			return err
 		}
 
-		for _, id := range ids {
-			locked[id] = ReasonLifecycle
+		for id, phase := range phases {
+			locked[id] = reasonFor(phase)
 		}
 	}
 
@@ -146,11 +164,39 @@ func (g *Gate) Run(ctx context.Context) {
 	}
 }
 
+// reasonFor maps a lifecycle phase onto the reason a customer is shown. Dormant
+// is its own reason rather than a second flavour of lifecycle because the one
+// sentence that differs — whether we are still collecting — is the sentence the
+// customer will hold us to.
+func reasonFor(phase lifecycle.Phase) Reason {
+	if phase == lifecycle.PhaseDormant {
+		return ReasonDormant
+	}
+
+	return ReasonLifecycle
+}
+
 // Locked reports whether an account's reports are blocked, and why.
+//
+// A nil gate never locks anything. That is what a self-hosted install is: no
+// payment provider, no clock, and no reason for any of this to refuse a request
+// — so the components that hold a gate can hold nothing instead.
 func (g *Gate) Locked(accountID int64) (Reason, bool) {
+	if g == nil {
+		return "", false
+	}
+
 	reason, ok := (*g.locked.Load())[accountID]
 
 	return reason, ok
+}
+
+// Blocked is Locked without the reason, for the callers that only have to
+// decide whether to do something rather than what to say about it.
+func (g *Gate) Blocked(accountID int64) bool {
+	_, locked := g.Locked(accountID)
+
+	return locked
 }
 
 // Count reports how many accounts are locked, for the health panel. A number
@@ -207,22 +253,80 @@ func (g *Gate) Protect(next http.Handler) http.Handler {
 	})
 }
 
+// Refusal is everything a locked caller is told: why they were refused, in a
+// sentence a person can act on, and where to go to fix it.
+//
+// The JSON tags are the body the API and the MCP endpoint return, so a client
+// reads one shape whichever door it knocked on.
+type Refusal struct {
+	Reason Reason `json:"reason"`
+	Error  string `json:"error"`
+	Action string `json:"action"`
+}
+
+// refusalFor is the only place the wording lives. Every surface — the HTML
+// page, the API body, the tool error — renders this, so a customer who reads
+// two of them cannot be told two different things about one account.
+func refusalFor(reason Reason) Refusal {
+	refusal := Refusal{Reason: reason, Error: "Your dashboard is locked.", Action: "/billing"}
+
+	switch reason {
+	case ReasonLifecycle:
+		refusal.Error = "Your dashboard is locked because this account is not currently paying. " +
+			"We are still collecting your data, and everything comes back the moment you upgrade. " +
+			"Your exports and settings stay open."
+	case ReasonDormant:
+		refusal.Error = "Your dashboard is locked because this account has not paid for sixty days, " +
+			"and we have stopped collecting new events. Everything we already hold is still here and " +
+			"comes back the moment you upgrade, with the gap marked. Your exports and settings stay open."
+	case ReasonVolume:
+		refusal.Error = "Your dashboard is locked because this account has been over its included volume " +
+			"for two months and we have not heard back. Collection has not stopped and nothing has been deleted. " +
+			"Reply to our email, or write to us, and it unlocks immediately."
+	}
+
+	return refusal
+}
+
+// Check reports what a locked account is owed, or false when it may proceed. It
+// is what the callers that already know the account — an authenticated API key,
+// an MCP session — ask instead of Protect, which has only a URL to work from.
+func (g *Gate) Check(accountID int64) (Refusal, bool) {
+	reason, locked := g.Locked(accountID)
+	if !locked {
+		return Refusal{}, false
+	}
+
+	return refusalFor(reason), true
+}
+
+// RefuseJSON answers a locked account with the 402 and reports that it did, so
+// a caller can return on one line.
+//
+// It never negotiates the format. Its callers are the public API and the MCP
+// endpoint, whose clients are programs in every case, and handing a program an
+// HTML page produces a parse error in somebody's logs rather than the sentence
+// that would have explained it.
+func (g *Gate) RefuseJSON(w http.ResponseWriter, accountID int64) bool {
+	refusal, locked := g.Check(accountID)
+	if !locked {
+		return false
+	}
+
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusPaymentRequired)
+
+	_ = json.NewEncoder(w).Encode(refusal)
+
+	return true
+}
+
 // refuse answers a locked request. The status is 402 Payment Required, which is
 // the one status code that says exactly this and is otherwise almost unused —
 // a 403 would be indistinguishable from a permissions bug in a support ticket.
 func (g *Gate) refuse(w http.ResponseWriter, r *http.Request, reason Reason) {
-	message, action := "Your dashboard is locked.", "/billing"
-
-	switch reason {
-	case ReasonLifecycle:
-		message = "Your dashboard is locked because this account is not currently paying. " +
-			"We are still collecting your data, and everything comes back the moment you upgrade. " +
-			"Your exports and settings stay open."
-	case ReasonVolume:
-		message = "Your dashboard is locked because this account has been over its included volume " +
-			"for two months and we have not heard back. Collection has not stopped and nothing has been deleted. " +
-			"Reply to our email, or write to us, and it unlocks immediately."
-	}
+	refusal := refusalFor(reason)
 
 	w.Header().Set("Cache-Control", "no-store")
 
@@ -233,11 +337,7 @@ func (g *Gate) refuse(w http.ResponseWriter, r *http.Request, reason Reason) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusPaymentRequired)
 
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"error":  message,
-			"reason": string(reason),
-			"action": action,
-		})
+		_ = json.NewEncoder(w).Encode(refusal)
 
 		return
 	}
@@ -245,7 +345,7 @@ func (g *Gate) refuse(w http.ResponseWriter, r *http.Request, reason Reason) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusPaymentRequired)
 
-	_, _ = w.Write([]byte(lockedPage(message, action)))
+	_, _ = w.Write([]byte(lockedPage(refusal.Error, refusal.Action)))
 }
 
 // domainFrom reads the site out of a request. Go's pattern matching fills the

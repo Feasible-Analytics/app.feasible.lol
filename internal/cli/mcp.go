@@ -18,10 +18,16 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/access"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mcp"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
+
+	// Aliased for the same reason it is in commerce.go: this package already has
+	// a package-level `usage`, which is the help text every subcommand prints.
+	volume "github.com/Feasible-Analytics/app.feasible.lol/internal/usage"
 )
 
 const mcpHelp = `feasible mcp — serve the Model Context Protocol over stdin and stdout.
@@ -84,12 +90,20 @@ func runMCP(e *env, args []string) int {
 		return ExitError
 	}
 
-	public := buildPublic(e, control, cache, manager)
+	// The same lock the remote transport honours. A stdio session is the same
+	// key against the same account, so leaving it ungated would turn "run the
+	// local server instead" into the way around a locked dashboard. On an
+	// install with no billing nothing is ever in the locked set, so this costs
+	// a self-hoster one query every fifteen seconds and refuses nothing.
+	gate := access.New(lifecycle.NewStore(control), volume.NewStore(control), cache, e.log)
+
+	public := buildPublic(e, control, cache, manager, gate)
 
 	// The routing snapshot is refreshed in the background, because a session can
 	// stay open for hours and a site added in the dashboard should show up in
 	// list_sites without the assistant being restarted.
 	go cache.Run(ctx, func(err error) { fmt.Fprintf(e.stderr, "site refresh: %v\n", err) })
+	go gate.Run(ctx)
 
 	if err := mcp.ServeStdio(ctx, public.MCP, mcp.StdioOptions{
 		In:  os.Stdin,

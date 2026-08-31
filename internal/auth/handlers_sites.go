@@ -39,11 +39,20 @@ func (h *Handler) showSites(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A locked account gets the list without the charts. The page itself has to
+	// stay open — it is the way to site settings and, two clicks on, to the
+	// billing screen that unlocks everything — but a sparkline is thirty days of
+	// that account's visitors, and handing those over here would be the report
+	// the dashboard just refused.
+	locked := h.Access != nil && h.Access(team.ID)
+
 	// The sparkline read opens the account database, which does not exist until
 	// a site has been created. A failure here degrades the page rather than
 	// breaking it: a list with no little charts is still a usable list.
-	if err := h.Traffic.Sparklines(r.Context(), team.ID, list, h.Store.Now()); err != nil {
-		h.Log.Warn("could not read sparklines", "team", team.ID, "error", err)
+	if !locked {
+		if err := h.Traffic.Sparklines(r.Context(), team.ID, list, h.Store.Now()); err != nil {
+			h.Log.Warn("could not read sparklines", "team", team.ID, "error", err)
+		}
 	}
 
 	if order == "traffic" {
@@ -79,6 +88,7 @@ func (h *Handler) showSites(w http.ResponseWriter, r *http.Request) {
 	p.Data["Folders"] = folders
 	p.Data["Total"] = len(list)
 	p.Data["Sort"] = order
+	p.Data["Locked"] = locked
 
 	if r.URL.Query().Get("welcome") == "1" {
 		p.Flash = i18n.T(p.Lang, "auth.flash.email_confirmed")

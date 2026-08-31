@@ -48,6 +48,12 @@ const (
 	codeInvalidParams  = -32602
 	codeInternalError  = -32603
 	codeUnauthorized   = -32001
+
+	// codePaymentRequired is the account lock. It is its own code rather than
+	// an unauthorized so a client can tell "your token is wrong" from "your
+	// account has not paid" — the first is fixed by reconnecting and the second
+	// never is.
+	codePaymentRequired = -32002
 )
 
 // rpcRequest is one incoming call. The id is a raw message because JSON-RPC
