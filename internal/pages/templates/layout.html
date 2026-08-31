@@ -4,6 +4,23 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ .Title }} · feasible.lol</title>
+
+<!-- The theme is decided before the stylesheet paints, or every load flashes
+     white before it turns slate. It reads the same preference key the dashboard
+     and the sign-in screens use: these are all one origin, so choosing dark
+     once should hold everywhere rather than being handed back at each boundary. -->
+<script>
+  (function () {
+    try {
+      var saved = localStorage.getItem("feasible.theme");
+      if (saved === "dark") document.documentElement.classList.add("dark");
+      else if (saved === "light") document.documentElement.classList.add("light");
+    } catch (e) {
+      /* A browser with storage disabled falls through to the media query. */
+    }
+  })();
+</script>
+
 <link rel="stylesheet" href="/billing/assets/pages.css">
 </head>
 <body>

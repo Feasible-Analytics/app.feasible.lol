@@ -11,31 +11,93 @@
  * time for anyone who downloaded a release binary.
  */
 
+/* The palette is the brand palette from ui/tokens.css, restated as plain CSS
+   custom properties because this file is not compiled. It has to be kept in
+   step by hand, which is the price of these pages working without the
+   JavaScript toolchain — so the values below are copied, never invented. */
 :root {
-  --bg: #f6f7f9;
+  color-scheme: light;
+
+  --bg: #f8fafc;
   --panel: #ffffff;
-  --ink: #14181d;
-  --muted: #626b76;
-  --line: #e2e5ea;
-  --accent: #1f6feb;
-  --accent-ink: #ffffff;
-  --good: #1a7f4b;
-  --warn: #a86400;
-  --bad: #b42318;
+  --subtle: #f1f5f9;
+  --ink: #0f172a;
+  --body: #1e293b;
+  --muted: #64748b;
+  --line: #e2e8f0;
+
+  --accent: #0d9488;
+
+  /* Accent-coloured text is a shade darker than the accent fill: the fill has
+     to carry a button, the ink has to carry a link at body size. */
+  --accent-ink: #0f766e;
+  --accent-fg: #ffffff;
+
+  --good: #059669;
+  --warn: #d97706;
+  --bad: #e11d48;
   --radius: 12px;
 }
 
+/* Dark mode resolves two ways, and both are needed. The class is what the
+   header script sets from the shared preference key, so a visitor who chose
+   dark in the dashboard gets dark here. The media query covers the visitor who
+   never opened the dashboard and has no preference stored. */
+.dark,
+:root:not(.light) {
+  --dark-bg: #020617;
+  --dark-panel: #0f172a;
+  --dark-subtle: #1e293b;
+  --dark-ink: #f1f5f9;
+  --dark-body: #e2e8f0;
+  --dark-muted: #94a3b8;
+  --dark-line: #1e293b;
+  --dark-accent: #2dd4bf;
+  --dark-accent-ink: #5eead4;
+
+  /* Near-black on the accent, not white: the dark accent is a 400-level teal
+     and light text on it is unreadable where it was fine on the 600. */
+  --dark-accent-fg: #020617;
+  --dark-good: #34d399;
+  --dark-warn: #fbbf24;
+  --dark-bad: #fb7185;
+}
+
+.dark {
+  color-scheme: dark;
+
+  --bg: var(--dark-bg);
+  --panel: var(--dark-panel);
+  --subtle: var(--dark-subtle);
+  --ink: var(--dark-ink);
+  --body: var(--dark-body);
+  --muted: var(--dark-muted);
+  --line: var(--dark-line);
+  --accent: var(--dark-accent);
+  --accent-ink: var(--dark-accent-ink);
+  --accent-fg: var(--dark-accent-fg);
+  --good: var(--dark-good);
+  --warn: var(--dark-warn);
+  --bad: var(--dark-bad);
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1216;
-    --panel: #171b21;
-    --ink: #e8ebef;
-    --muted: #98a1ad;
-    --line: #262c34;
-    --accent: #4c8dff;
-    --good: #3fbd7a;
-    --warn: #d99a2b;
-    --bad: #f2735f;
+  :root:not(.light) {
+    color-scheme: dark;
+
+    --bg: var(--dark-bg);
+    --panel: var(--dark-panel);
+    --subtle: var(--dark-subtle);
+    --ink: var(--dark-ink);
+    --body: var(--dark-body);
+    --muted: var(--dark-muted);
+    --line: var(--dark-line);
+    --accent: var(--dark-accent);
+    --accent-ink: var(--dark-accent-ink);
+    --accent-fg: var(--dark-accent-fg);
+    --good: var(--dark-good);
+    --warn: var(--dark-warn);
+    --bad: var(--dark-bad);
   }
 }
 
@@ -44,12 +106,12 @@
 body {
   margin: 0;
   background: var(--bg);
-  color: var(--ink);
+  color: var(--body);
   font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
-a { color: var(--accent); }
+a { color: var(--accent-ink); }
 
 .wrap { max-width: 960px; margin: 0 auto; padding: 0 20px; }
 .wrap.narrow { max-width: 760px; }
@@ -106,11 +168,11 @@ h3 { font-size: 17px; margin: 26px 0 8px; }
 .plan .price { font-size: 34px; font-weight: 700; letter-spacing: -0.02em; margin: 6px 0 2px; }
 .plan .per { color: var(--muted); font-size: 15px; }
 .plan ul { list-style: none; padding: 0; margin: 16px 0 22px; }
-.plan li { padding: 5px 0 5px 24px; position: relative; color: var(--ink); }
+.plan li { padding: 5px 0 5px 24px; position: relative; color: var(--body); }
 .plan li::before { content: "✓"; position: absolute; left: 0; color: var(--good); font-weight: 700; }
 .plan .save {
   display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 999px;
-  background: rgba(26, 127, 75, 0.12); color: var(--good); font-size: 13px; font-weight: 600;
+  background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good); font-size: 13px; font-weight: 600;
 }
 .plan form { margin-top: auto; }
 
@@ -118,10 +180,10 @@ h3 { font-size: 17px; margin: 26px 0 8px; }
 
 .btn {
   display: inline-block; padding: 11px 20px; border-radius: 8px; border: 1px solid transparent;
-  background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 600;
+  background: var(--accent); color: var(--accent-fg); font: inherit; font-weight: 600;
   text-decoration: none; cursor: pointer; width: 100%; text-align: center;
 }
-.btn.alt { background: transparent; color: var(--ink); border-color: var(--line); }
+.btn.alt { background: transparent; color: var(--body); border-color: var(--line); }
 .btn.inline { width: auto; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 
@@ -142,9 +204,9 @@ h3 { font-size: 17px; margin: 26px 0 8px; }
 .banner { border-radius: var(--radius); padding: 16px 18px; margin: 0 0 20px; border: 1px solid; }
 .banner h3 { margin: 0 0 6px; font-size: 16px; }
 .banner p { margin: 0; font-size: 15px; }
-.banner.ok { border-color: rgba(26,127,75,.35); background: rgba(26,127,75,.08); }
-.banner.warn { border-color: rgba(168,100,0,.35); background: rgba(168,100,0,.08); }
-.banner.bad { border-color: rgba(180,35,24,.35); background: rgba(180,35,24,.08); }
+.banner.ok { border-color: color-mix(in srgb, var(--good) 35%, transparent); background: color-mix(in srgb, var(--good) 8%, transparent); }
+.banner.warn { border-color: color-mix(in srgb, var(--warn) 35%, transparent); background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.banner.bad { border-color: color-mix(in srgb, var(--bad) 35%, transparent); background: color-mix(in srgb, var(--bad) 8%, transparent); }
 
 /* ── Tables ─────────────────────────────────────────────────────────────── */
 
@@ -161,7 +223,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .timeline li:last-child { border-bottom: 0; }
 .timeline .when { min-width: 190px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .timeline .what { color: var(--muted); }
-.timeline li.now .what { color: var(--ink); }
+.timeline li.now .what { color: var(--body); }
 
 /* ── Docs ───────────────────────────────────────────────────────────────── */
 
@@ -173,11 +235,11 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .docs aside a:hover, .docs aside a.on { color: var(--ink); font-weight: 600; }
 .docs article > :first-child { margin-top: 0; }
 .docs code, .prose code {
-  background: var(--bg); border: 1px solid var(--line); border-radius: 5px;
+  background: var(--subtle); border: 1px solid var(--line); border-radius: 5px;
   padding: 1px 5px; font-size: 14px;
 }
 pre {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  background: var(--subtle); border: 1px solid var(--line); border-radius: 10px;
   padding: 14px 16px; overflow-x: auto; font-size: 14px; line-height: 1.5;
 }
 pre code { background: none; border: 0; padding: 0; }
