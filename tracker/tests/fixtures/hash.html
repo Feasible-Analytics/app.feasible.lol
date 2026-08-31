@@ -1,0 +1,70 @@
+<!--
+  hash.html
+  Hash routing, with the exclusions and the outbound link that broke alongside it.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  Every combination on this page is one the incumbent shipped as a separate
+  build: hash routing worked, exclusions worked, outbound links worked, and the
+  pairs did not.
+-->
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Hash — tracker fixture</title>
+		<script>
+			// Merged rather than assigned, so a test can inject its own switches
+			// through addInitScript and still have this page's default apply.
+			window.__feasible = Object.assign({ track: 1 }, window.__feasible);
+		</script>
+		<script
+			defer
+			data-domain="fixture.test"
+			data-captureOnLocalhost="1"
+			data-hash="1"
+			data-exclude="/hash.html#/private/**"
+			src="/js/script.js"
+		></script>
+		<style>
+			body { font: 16px/1.5 system-ui, sans-serif; margin: 2rem; }
+			button { font: inherit; padding: 0.4rem 0.8rem; margin: 0.2rem; }
+		</style>
+	</head>
+	<body>
+		<h1>Hash fixture</h1>
+
+		<button id="assign" type="button">location.hash = #/about</button>
+
+		<!--
+			A hash route changed through the History API. This is the case that
+			records exactly one pageview forever in a tracker that listens only
+			for hashchange, because pushState does not fire it.
+		-->
+		<button id="push" type="button">pushState #/settings</button>
+
+		<button id="private" type="button">go to the excluded #/private/42</button>
+		<button id="custom" type="button">fire a custom event</button>
+
+		<p><a id="outbound" href="https://example.com/from-hash">Outbound link</a></p>
+
+		<script>
+			document.getElementById("assign").onclick = () => {
+				location.hash = "#/about";
+			};
+
+			document.getElementById("push").onclick = () => {
+				history.pushState({}, "", "/hash.html#/settings");
+			};
+
+			document.getElementById("private").onclick = () => {
+				history.pushState({}, "", "/hash.html#/private/42");
+			};
+
+			document.getElementById("custom").onclick = () => {
+				window.feasible("Hash Custom", { props: { where: "hash" } });
+			};
+		</script>
+	</body>
+</html>

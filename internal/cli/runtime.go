@@ -24,6 +24,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
 )
 
 // drainDelay is how long a process keeps serving after readiness goes false. It
@@ -153,12 +154,16 @@ func serveUntilSignal(e *env, server *httpserver.Server, service *ingest.Service
 	return code
 }
 
-// ingestRoutes is the public surface of the ingest tier. It is one path today
-// and stays a mux so that the tracker script and the events API land beside it
-// without the handler having to grow a router of its own.
+// ingestRoutes is the public surface of the ingest tier.
+//
+// The noscript pixel is mounted here beside the scripted endpoint rather than
+// on the app, because it *is* an event: it goes through the same handler, the
+// same derivation and the same buffer, and a visitor with JavaScript disabled
+// must not become a second code path with its own bugs.
 func ingestRoutes(service *ingest.Service) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/api/event", service.Handler)
+	mux.Handle(tracker.PixelPath, &tracker.Pixel{Events: service.Handler})
 
 	return mux
 }

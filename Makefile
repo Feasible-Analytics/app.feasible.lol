@@ -77,7 +77,7 @@ CADDY_ENV = FEASIBLE_CADDY_BIND=$(BIND_HOST) \
 
 .DEFAULT_GOAL := help
 
-.PHONY: help assets build test test-integration lint check-env \
+.PHONY: help assets tracker build test test-tracker test-integration lint check-env \
 	migrate migrate-fresh caddy app ingest testsite dev dev-solo \
 	caddy-ts app-ts ingest-ts testsite-ts dev-ts dev-solo-ts require-tailscale
 
@@ -102,7 +102,9 @@ help:
 	@echo
 	@echo "  Toolchain:"
 	@echo "    make build      build ./$(BINARY) (runs the asset build first)"
-	@echo "    make test       unit tests"
+	@echo "    make tracker    build the browser script and check it fits the size budget"
+	@echo "    make test       unit tests, including the tracker size budget"
+	@echo "    make test-tracker       the tracker's end-to-end suite in a real browser"
 	@echo "    make test-integration   end-to-end tests through Caddy"
 	@echo "    make lint       go vet and golangci-lint"
 	@echo "    make check-env  every environment variable is in .env.sample"
@@ -110,6 +112,22 @@ help:
 	@echo "    make migrate-fresh      drop everything and rebuild"
 
 # ── Toolchain ─────────────────────────────────────────────────────────────────
+
+## tracker: build the browser script and enforce its size budget
+# The bundle is minified and gzipped here, and the build fails outright if it is
+# over budget. A tracking script that grows without a ceiling eventually costs a
+# customer their Core Web Vitals score, and there is no natural moment to start
+# caring — failing the build is the only enforcement that works.
+#
+# The same budget is enforced by a Go test over the embedded copy, which is what
+# catches an over-budget bundle on a machine with no Node at all. This target is
+# what catches it before it is ever committed.
+tracker:
+	@if command -v node >/dev/null 2>&1; then \
+		node tracker/build.js; \
+	else \
+		echo "node is not installed — skipping the tracker build (go test still enforces the budget)"; \
+	fi
 
 ## assets: build the front-end assets Go embeds
 # Building needs Node; running does not. From a clean checkout `go build` alone
@@ -119,7 +137,7 @@ help:
 # rather than by hand. It keeps `go build` and `go install` working for anyone
 # without a JavaScript toolchain, which is the whole promise of a single binary;
 # the JavaScript sources stay the source of truth.
-assets:
+assets: tracker
 	@if [ -f web/package.json ]; then \
 		echo "building front-end assets"; \
 		npm --prefix web ci && npm --prefix web run build; \
@@ -132,9 +150,18 @@ build: assets
 	@go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/$(BINARY)
 	@echo "built ./$(BINARY) $(VERSION) ($(COMMIT))"
 
-## test: unit tests
-test:
+## test: unit tests, and the tracker size budget
+# The tracker is rebuilt first so that the budget is measured against the source
+# in the working tree rather than against whatever was last committed.
+test: tracker
 	@go test ./...
+
+## test-tracker: the tracker's end-to-end suite, in a real browser
+# Playwright starts and stops its own fixture server, so this target leaves
+# nothing listening. The only honest test of a tracking script is a browser
+# loading a real page from a real origin.
+test-tracker: tracker
+	@npm --prefix tracker test
 
 ## test-integration: start everything, send an event, assert it landed
 # Tagged so `make test` stays fast and hermetic. The tests themselves arrive with

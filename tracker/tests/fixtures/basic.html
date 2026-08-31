@@ -1,0 +1,72 @@
+<!--
+  basic.html
+  The everyday page: a pageview, a custom event, and every kind of link.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Basic — tracker fixture</title>
+		<!--
+			The escape hatch. A real browser under automation sets
+			navigator.webdriver, so without saying "count this on purpose" the
+			headless rule would make the tracker untestable in the only
+			environment that tests it honestly.
+		-->
+		<script>
+			// Merged rather than assigned, so a test can inject its own switches
+			// through addInitScript and still have this page's default apply.
+			window.__feasible = Object.assign({ track: 1 }, window.__feasible);
+		</script>
+		<script defer data-domain="fixture.test" data-captureOnLocalhost="1" src="/js/script.js"></script>
+		<style>
+			body { font: 16px/1.5 system-ui, sans-serif; margin: 2rem; }
+			button { font: inherit; padding: 0.4rem 0.8rem; margin: 0.2rem; }
+		</style>
+	</head>
+	<body>
+		<h1>Basic fixture</h1>
+
+		<p><a id="internal" href="/spa.html">Internal link</a></p>
+		<p><a id="outbound" href="https://example.com/pricing">Outbound link</a></p>
+		<p><a id="outbound-blank" target="_blank" href="https://example.com/blank">Outbound, new tab</a></p>
+		<p><a id="download" href="/files/report.pdf">Download the report</a></p>
+		<p><a id="mailto" href="mailto:hello@example.com">Email us</a></p>
+
+		<!--
+			A link another script has already claimed. The tracker has to leave
+			it alone: a lightbox is not a click-through, and counting it reports
+			navigations that never happened.
+		-->
+		<p><a id="lightbox" href="https://example.com/photo.jpg">Open the lightbox</a></p>
+
+		<!--
+			The tagged element is two levels above where the click actually
+			lands, which is the ordinary case for any button with an icon in it.
+		-->
+		<button id="tagged" class="feasible-event-name=Signup feasible-event-plan=pro">
+			<span><svg id="tagged-icon" width="12" height="12" viewBox="0 0 12 12"><rect width="12" height="12" /></svg></span>
+			<span id="tagged-label">Sign up</span>
+		</button>
+
+		<button id="custom" type="button">Fire a custom event</button>
+		<button id="revenue" type="button">Fire a purchase</button>
+
+		<script>
+			document.getElementById("lightbox").addEventListener("click", (event) => {
+				event.preventDefault();
+			});
+
+			document.getElementById("custom").addEventListener("click", () => {
+				window.feasible("Custom Event", { props: { where: "basic" } });
+			});
+
+			document.getElementById("revenue").addEventListener("click", () => {
+				window.feasible("Purchase", { revenue: { amount: 42.5, currency: "USD" } });
+			});
+		</script>
+	</body>
+</html>

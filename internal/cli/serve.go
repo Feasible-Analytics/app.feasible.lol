@@ -16,6 +16,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
 )
 
 const serveHelp = `feasible serve — run the whole product in one process.
@@ -68,23 +69,40 @@ func runServe(e *env, args []string) int {
 		return ExitError
 	}
 
-	server := httpserver.New("app", e.cfg.App.Listen, serveRoutes(e, service))
+	// The secret that per-site script paths derive from. It is read here rather
+	// than lazily on the first request so that an unreadable data directory is
+	// a start-up failure with a path in the message, not a 404 on a customer's
+	// snippet an hour later.
+	secret, err := tracker.LoadSecret(e.cfg.App.DataDir)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return ExitError
+	}
+
+	server := httpserver.New("app", e.cfg.App.Listen, serveRoutes(e, service, secret))
 
 	return serveUntilSignal(e, server, service, manager.CloseAll, control.Close)
 }
 
-// serveRoutes is the app process's public surface. The dashboard, the stats API
-// and the tracker script land here in later milestones; what is real today is
-// the ingest endpoint, which the direct transport serves from this process
-// rather than from a separate tier.
-func serveRoutes(e *env, service *ingest.Service) http.Handler {
+// serveRoutes is the app process's public surface. The dashboard and the stats
+// API land here in later milestones; what is real today is the tracker script
+// and — with the direct transport — the ingest endpoint, which this process
+// serves rather than a separate tier.
+func serveRoutes(e *env, service *ingest.Service, secret []byte) http.Handler {
 	mux := http.NewServeMux()
+
+	// The script is served by the app rather than the ingest tier because it is
+	// a cacheable static asset with a database lookup behind it, and putting
+	// that on the front door would make the busiest process in the system do
+	// the one thing it is built to avoid.
+	mux.Handle(tracker.PathPrefix, tracker.New(secret, service.Sites))
 
 	// With the http transport a separate ingest tier owns /api/event, and
 	// answering it here too would mean two processes deriving the same event
 	// with two different site caches.
 	if e.cfg.App.Transport == config.TransportDirect {
 		mux.Handle("/api/event", service.Handler)
+		mux.Handle(tracker.PixelPath, &tracker.Pixel{Events: service.Handler})
 	}
 
 	return mux

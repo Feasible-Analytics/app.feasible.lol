@@ -1,0 +1,46 @@
+<!--
+  engagement.html
+  A page long enough to have a scroll depth worth measuring.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Engagement — tracker fixture</title>
+		<script>
+			// Merged rather than assigned, so a test can inject its own switches
+			// through addInitScript and still have this page's default apply.
+			window.__feasible = Object.assign({ track: 1 }, window.__feasible);
+		</script>
+		<script defer data-domain="fixture.test" data-captureOnLocalhost="1" src="/js/script.js"></script>
+		<style>
+			body { font: 16px/1.5 system-ui, sans-serif; margin: 0; }
+			section { height: 2000px; padding: 2rem; }
+			#one { background: #eef; }
+			#two { background: #efe; }
+			#three { background: #fee; }
+			#grown { display: none; height: 3000px; background: #ffe; }
+		</style>
+	</head>
+	<body>
+		<section id="one"><h1>Engagement fixture</h1><p>The top of the page.</p></section>
+		<section id="two"><h2>Halfway</h2></section>
+		<section id="three"><h2>The bottom</h2></section>
+
+		<!--
+			Content that appears after load, which is what a ResizeObserver is
+			for. Reading the height once at load and never again reports a
+			scroll depth against a page that no longer exists.
+		-->
+		<div id="grown">Grown later.</div>
+
+		<script>
+			window.grow = () => {
+				document.getElementById("grown").style.display = "block";
+			};
+		</script>
+	</body>
+</html>

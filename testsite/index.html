@@ -18,6 +18,22 @@
 		<!-- The tracker snippet, exactly as a customer would paste it. -->
 		<script defer data-domain="testsite.local" src="{{BASE_URL}}/js/script.js"></script>
 
+		<!--
+			The fallback for a browser with JavaScript turned off. The page URL
+			comes from the Referer header the image request carries, which is
+			why this is a one-liner rather than something that has to be
+			templated into every page.
+		-->
+		<noscript>
+			<img
+				src="{{BASE_URL}}/api/event/pixel.gif?d=testsite.local"
+				alt=""
+				width="1"
+				height="1"
+				style="position: absolute"
+			/>
+		</noscript>
+
 		<style>
 			body {
 				font: 16px/1.6 system-ui, sans-serif;

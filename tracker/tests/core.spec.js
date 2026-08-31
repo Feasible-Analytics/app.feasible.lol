@@ -1,0 +1,147 @@
+//
+// core.spec.js
+// The wire contract: what one event looks like, and how it gets there.
+//
+// Created: 2026-08-30
+// Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+//
+
+import { test, expect } from "@playwright/test";
+import { collect, named, settledCount, waitFor } from "./helpers.js";
+
+// The payload keys are the wire contract and are not ours to rename. They match
+// an established endpoint byte for byte, which is what lets somebody migrate by
+// changing one hostname.
+test("a pageview carries exactly the documented keys", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+
+	const [pageview] = named(state, "pageview");
+
+	expect(pageview.d).toBe("fixture.test");
+	expect(pageview.u).toContain("/basic.html");
+	expect(pageview.t).toBe("Basic — tracker fixture");
+	expect(pageview.v).toBe(1);
+
+	// Absent keys are left out rather than sent as null, which is what keeps a
+	// pageview under two hundred bytes.
+	expect(Object.keys(pageview).sort()).toEqual(["d", "n", "t", "u", "v"]);
+});
+
+// text/plain is not a nicety: application/json is not a simple content type, so
+// every event would cost an OPTIONS round trip before the POST.
+test("events are posted as text/plain, which needs no CORS preflight", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+
+	expect(state.requests[0].method).toBe("POST");
+	expect(state.requests[0].contentType).toBe("text/plain");
+});
+
+test("a custom event carries its properties", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+
+	await page.click("#custom");
+	await settledCount(state, "Custom Event", 1);
+
+	const [event] = named(state, "Custom Event");
+
+	expect(event.p).toEqual({ where: "basic" });
+	expect(event.u).toContain("/basic.html");
+	expect(event.d).toBe("fixture.test");
+});
+
+// Revenue goes out under `$`, which is the key the server reads.
+test("revenue is sent under the dollar key", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+
+	await page.click("#revenue");
+	await settledCount(state, "Purchase", 1);
+
+	expect(named(state, "Purchase")[0].$).toEqual({ amount: 42.5, currency: "USD" });
+});
+
+// The queue exists so that a call made before the bundle arrives is neither a
+// ReferenceError nor silently lost, and the alias is how a migrating site keeps
+// its existing calls working.
+test("events queued before the bundle loads are replayed, under both names", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/queue.html");
+
+	await settledCount(state, "Queued Early", 1);
+	await settledCount(state, "Legacy Queued", 1);
+
+	expect(named(state, "Queued Early")[0].p).toEqual({ when: "before" });
+
+	await page.click("#after");
+	await settledCount(state, "Legacy Later", 1);
+});
+
+// The pageview is drained after the queue, so a queued event never arrives
+// before the pageview it belongs to.
+test("the pageview arrives before the queued events", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/queue.html");
+	await settledCount(state, "Legacy Later", 0);
+	await waitFor(state, (events) => events.length >= 3, "three events");
+
+	expect(state.events[0].n).toBe("pageview");
+});
+
+// The callback is best effort and documented as such, but when we do get an
+// answer we have to pass it on — a signup form gated on it must not wait out
+// its own timeout on every successful send.
+test("the callback fires with the response status", async ({ page }) => {
+	await collect(page);
+
+	await page.goto("/basic.html");
+
+	const status = await page.evaluate(
+		() =>
+			new Promise((resolve) => {
+				window.feasible("Gated", { callback: (result) => resolve(result && result.status) });
+				setTimeout(() => resolve("timed out"), 3000);
+			}),
+	);
+
+	expect(status).toBe(202);
+});
+
+// No queue behind the endpoint can save an event whose HTTP request never
+// completed. The only place that event still exists is the browser it was sent
+// from, which is what the outbox is for.
+test("a failed event is kept and retried on the next pageview", async ({ page }) => {
+	const state = await collect(page);
+
+	// The first request — the first page's pageview — is refused outright.
+	state.fail = 1;
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+
+	expect(await page.evaluate(() => localStorage.getItem("feasible_outbox"))).toContain("basic.html");
+
+	await page.goto("/spa.html");
+
+	// Two pageviews for basic.html: the one that failed, replayed, and then the
+	// new page's own.
+	await waitFor(
+		state,
+		(events) => events.filter((e) => e.n === "pageview" && e.u.includes("basic.html")).length >= 2,
+		"the failed pageview was replayed",
+	);
+
+	expect(await page.evaluate(() => localStorage.getItem("feasible_outbox"))).toBe("[]");
+});

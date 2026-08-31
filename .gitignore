@@ -11,6 +11,12 @@ data/
 /dist/
 /feasible
 
+# JavaScript dependencies. tracker/dist/ is deliberately NOT ignored: the built
+# bundle is committed so `go build` embeds it without a JavaScript toolchain.
+node_modules/
+tracker/test-results/
+tracker/playwright-report/
+
 # Browser automation scratch (see global CLAUDE.md)
 .playwright/
 .playwright-cli/

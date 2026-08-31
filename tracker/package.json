@@ -1,0 +1,18 @@
+{
+	"name": "feasible-tracker",
+	"version": "1.0.0",
+	"description": "The feasible.lol browser tracking script.",
+	"license": "AGPL-3.0-or-later",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"build": "node build.js",
+		"size": "node build.js --check",
+		"test": "playwright test",
+		"test:headed": "playwright test --headed"
+	},
+	"devDependencies": {
+		"@playwright/test": "1.56.1",
+		"esbuild": "0.25.10"
+	}
+}

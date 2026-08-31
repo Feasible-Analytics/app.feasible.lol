@@ -1,0 +1,40 @@
+<!--
+  exclude.html
+  An excluded path, which must suppress custom events as well as pageviews.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Excluded — tracker fixture</title>
+		<script>
+			// Merged rather than assigned, so a test can inject its own switches
+			// through addInitScript and still have this page's default apply.
+			window.__feasible = Object.assign({ track: 1 }, window.__feasible);
+		</script>
+		<script
+			defer
+			data-domain="fixture.test"
+			data-captureOnLocalhost="1"
+			data-exclude="/exclude.html, /order/**"
+			src="/js/script.js"
+		></script>
+		<style>
+			body { font: 16px/1.5 system-ui, sans-serif; margin: 2rem; }
+		</style>
+	</head>
+	<body>
+		<h1>Excluded fixture</h1>
+
+		<button id="custom" type="button">fire a custom event</button>
+		<p><a id="outbound" href="https://example.com/from-excluded">Outbound link</a></p>
+
+		<script>
+			document.getElementById("custom").onclick = () =>
+				window.feasible("Order Placed", { props: { order: "12345" } });
+		</script>
+	</body>
+</html>
