@@ -133,6 +133,36 @@ func TestPricingStatesBothPrices(t *testing.T) {
 	}
 }
 
+// TestBillingCopyNamesStripeAsMerchantOfRecord keeps the checkout code, the
+// pricing page and the contract aligned on who owns the payment transaction and
+// its indirect-tax obligations.
+func TestBillingCopyNamesStripeAsMerchantOfRecord(t *testing.T) {
+	handler, _ := newHandler(t)
+
+	pricing := render(t, handler, "/pricing").Body.String()
+	terms, ok := findDoc(legal, "terms")
+	if !ok {
+		t.Fatal("there is no legal page for terms")
+	}
+
+	for name, body := range map[string]string{
+		"pricing": pricing,
+		"terms":   string(terms.Body),
+	} {
+		for _, want := range []string{"Stripe Managed Payments", "merchant of record", "collects, files and remits"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("the %s page never says %q", name, want)
+			}
+		}
+
+		for _, stale := range []string{"We are the merchant of record", "Cloudmanic Labs, LLC appears on your invoice"} {
+			if strings.Contains(body, stale) {
+				t.Errorf("the %s page still says %q", name, stale)
+			}
+		}
+	}
+}
+
 // TestPricingPublishesTheLifecycleTimetable is the "we would rather tell you
 // before you buy" promise. All four phases have to be on the page somebody reads
 // while deciding.

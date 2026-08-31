@@ -231,12 +231,9 @@ type CheckoutParams struct {
 	IdempotencyKey string
 }
 
-// CreateCheckoutSession starts a subscription checkout with tax enabled.
-//
-// automatic_tax and the address collection that goes with it are not optional:
-// we are the merchant of record, so Stripe Tax calculates and collects but the
-// registrations and the remittance are ours, and a session created without an
-// address produces an invoice we cannot correctly tax after the fact.
+// CreateCheckoutSession starts a subscription checkout through Stripe Managed
+// Payments. Stripe is the merchant of record and owns the indirect-tax
+// calculation, collection, filing and remittance for the transaction.
 func (c *Client) CreateCheckoutSession(ctx context.Context, params CheckoutParams) (*CheckoutSession, error) {
 	form := url.Values{}
 	form.Set("mode", "subscription")
@@ -244,18 +241,13 @@ func (c *Client) CreateCheckoutSession(ctx context.Context, params CheckoutParam
 	form.Set("line_items[0][quantity]", "1")
 	form.Set("success_url", params.SuccessURL)
 	form.Set("cancel_url", params.CancelURL)
-	form.Set("automatic_tax[enabled]", "true")
 	form.Set("billing_address_collection", "required")
-	form.Set("tax_id_collection[enabled]", "true")
 	form.Set("allow_promotion_codes", "true")
 
-	// We are the merchant of record. Stripe's Managed Payments would make
-	// Stripe the seller of record instead, which is a different business
-	// arrangement from the one this product is built on: Stripe Tax calculates
-	// and collects, and the registrations and remittance are ours. It is on by
-	// default on newer accounts, so it is switched off explicitly here rather
-	// than left to whatever the dashboard happens to be set to.
-	form.Set("managed_payments[enabled]", "false")
+	// The business arrangement must not depend on an account-level dashboard
+	// default. Managed Payments makes Stripe the merchant of record and is
+	// deliberately enabled on every checkout this product creates.
+	form.Set("managed_payments[enabled]", "true")
 
 	// The account id goes on the session, the subscription and the customer.
 	// Any one of the three can be the only thing a webhook carries, and an
@@ -271,19 +263,12 @@ func (c *Client) CreateCheckoutSession(ctx context.Context, params CheckoutParam
 	case params.CustomerID != "":
 		form.Set("customer", params.CustomerID)
 
-		// Stripe Tax needs the address on the customer, and the customer is
-		// ours rather than the checkout's. Without these the address collected
-		// at checkout is used for this invoice and then forgotten, and the next
-		// renewal is taxed from a stale one.
-		form.Set("customer_update[address]", "auto")
-		form.Set("customer_update[name]", "auto")
-
 	case params.Email != "":
 		form.Set("customer_email", params.Email)
 	}
 
 	var session CheckoutSession
-	if err := c.post(ctx, "/v1/checkout/sessions", form, params.IdempotencyKey, &session); err != nil {
+	if err := c.postWithVersion(ctx, "/v1/checkout/sessions", form, params.IdempotencyKey, ManagedPaymentsAPIVersion, &session); err != nil {
 		return nil, err
 	}
 

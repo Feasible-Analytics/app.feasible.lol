@@ -36,11 +36,17 @@ import (
 // configuration change rather than a code change.
 const APIBase = "https://api.stripe.com"
 
-// APIVersion pins the shape of every response. Without it Stripe uses whatever
-// version the account was created with, which means the same binary can see
-// different fields on two different deployments — and the first sign of that is
-// a subscription status this code has never heard of.
-const APIVersion = "2024-06-20"
+const (
+	// APIVersion pins the existing calls' response shapes. Without it Stripe
+	// uses whatever version the account was created with, which means the same
+	// binary can see different fields on two deployments.
+	APIVersion = "2024-06-20"
+
+	// ManagedPaymentsAPIVersion is the oldest API contract that supports Stripe
+	// as merchant of record. It is scoped to checkout creation so enabling
+	// Managed Payments cannot silently change subscription or invoice fields.
+	ManagedPaymentsAPIVersion = "2025-03-31.basil"
+)
 
 // requestTimeout bounds a call. A webhook handler that reconciles against
 // Stripe must not hold an HTTP connection open indefinitely because Stripe's
@@ -102,15 +108,20 @@ type errorEnvelope struct {
 	Error *Error `json:"error"`
 }
 
-// call performs one request and decodes the result. Every method in this
-// package goes through it, so authentication, the pinned API version, the
+// call performs one request with the package's default API version.
+func (c *Client) call(ctx context.Context, method, path string, form url.Values, idempotencyKey string, out any) error {
+	return c.callWithVersion(ctx, method, path, form, idempotencyKey, APIVersion, out)
+}
+
+// callWithVersion performs one request and decodes the result. Every method in
+// this package goes through it, so authentication, the pinned API version, the
 // idempotency key and error decoding cannot be forgotten on a new call.
 //
 // The idempotency key is not optional for writes. A create-checkout-session
 // call that times out and is retried without one produces two sessions, and in
 // the payment path a retry that creates a second object is the difference
 // between a customer paying once and paying twice.
-func (c *Client) call(ctx context.Context, method, path string, form url.Values, idempotencyKey string, out any) error {
+func (c *Client) callWithVersion(ctx context.Context, method, path string, form url.Values, idempotencyKey, apiVersion string, out any) error {
 	if !c.Configured() {
 		return fmt.Errorf("stripe: no secret key configured")
 	}
@@ -136,7 +147,7 @@ func (c *Client) call(ctx context.Context, method, path string, form url.Values,
 	}
 
 	req.SetBasicAuth(c.SecretKey, "")
-	req.Header.Set("Stripe-Version", APIVersion)
+	req.Header.Set("Stripe-Version", apiVersion)
 
 	if method != http.MethodGet {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -185,6 +196,12 @@ func (c *Client) call(ctx context.Context, method, path string, form url.Values,
 // post is a write. Every one takes an idempotency key.
 func (c *Client) post(ctx context.Context, path string, form url.Values, idempotencyKey string, out any) error {
 	return c.call(ctx, http.MethodPost, path, form, idempotencyKey, out)
+}
+
+// postWithVersion is a write against an endpoint that requires a newer API
+// contract than the rest of the client.
+func (c *Client) postWithVersion(ctx context.Context, path string, form url.Values, idempotencyKey, apiVersion string, out any) error {
+	return c.callWithVersion(ctx, http.MethodPost, path, form, idempotencyKey, apiVersion, out)
 }
 
 // get is a read. Reads need no idempotency key because repeating one changes
