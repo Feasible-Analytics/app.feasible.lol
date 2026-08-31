@@ -143,8 +143,19 @@ func lookupHost(host string) (Source, bool) {
 		return source, true
 	}
 
-	if root := registrable(host); root != host {
+	root := registrable(host)
+	if root != host {
 		if source, ok := hosts[root]; ok {
+			return source, true
+		}
+	}
+
+	// A global company runs one domain per country and they share no
+	// registrable domain with each other — google.co.uk and google.com are two
+	// separate purchases — so the last resort is the label before the public
+	// suffix.
+	if label, _, found := strings.Cut(root, "."); found {
+		if source, ok := secondLevel[label]; ok {
 			return source, true
 		}
 	}

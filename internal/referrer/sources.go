@@ -149,6 +149,24 @@ var hosts = map[string]Source{
 	"podcasts.apple.com": {"Apple Podcasts", CategoryAudio},
 }
 
+// secondLevel maps the label immediately before the public suffix onto a source,
+// which is what makes one entry cover a global company's whole country-domain
+// estate. Google alone runs nearly two hundred of them, and google.co.uk shares
+// no registrable domain with google.com, so the host map cannot reach it.
+var secondLevel = map[string]Source{
+	"google":     {"Google", CategorySearch},
+	"bing":       {"Bing", CategorySearch},
+	"yahoo":      {"Yahoo!", CategorySearch},
+	"yandex":     {"Yandex", CategorySearch},
+	"baidu":      {"Baidu", CategorySearch},
+	"ecosia":     {"Ecosia", CategorySearch},
+	"duckduckgo": {"DuckDuckGo", CategorySearch},
+	"startpage":  {"Startpage", CategorySearch},
+	"qwant":      {"Qwant", CategorySearch},
+	"amazon":     {"Amazon", CategoryShopping},
+	"ebay":       {"eBay", CategoryShopping},
+}
+
 // androidPackages maps an Android application id to a source. Android in-app
 // browsers send `android-app://<package>` as the referrer, which is not a URL
 // any host lookup can resolve, so without this every in-app click lands in
