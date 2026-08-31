@@ -94,8 +94,9 @@ func dimensionsArg() map[string]any {
 func dateRangeArg() map[string]any {
 	return map[string]any{
 		"description": "Either a preset — day, 7d, 28d, 91d, month, last_month, year, 12mo, all, " +
-			"24h or realtime — or a pair of dates as [\"2026-08-01\", \"2026-08-31\"], where the " +
-			"second date is included in full.",
+			"24h, realtime (the last 30 minutes) or 5m (who is on the site right now) — or a " +
+			"pair of dates as [\"2026-08-01\", \"2026-08-31\"], where the second date is " +
+			"included in full.",
 		"anyOf": []any{
 			map[string]any{"type": "string"},
 			map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 2, "maxItems": 2},

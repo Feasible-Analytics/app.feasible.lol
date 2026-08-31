@@ -30,6 +30,7 @@ const (
 	RangeAll          = "all"
 	RangeCustom       = "custom"
 	RangeRealtime     = "realtime"
+	RangeLast5Minutes = "5m"
 	RangeLast24Hours  = "24h"
 )
 
@@ -37,6 +38,14 @@ const (
 // session timeout, so it is exactly the window in which a visitor still counts
 // as being on the site.
 const RealtimeWindow = 30 * time.Minute
+
+// CurrentWindow is how far back "who is on the site right now" reaches. It is a
+// server-resolved preset rather than a pair of bounds the client computes,
+// because a realtime screen shows this figure beside a thirty-minute graph and
+// the two have to be cut by the same clock: a rate built from one window's
+// numerator and another's denominator is how a conversion rate comes out over
+// 100%.
+const CurrentWindow = 5 * time.Minute
 
 // dateLayout and dateTimeLayout are the two forms a custom bound may take. A
 // bare date is read as local midnight in the site's timezone, which is what
@@ -93,7 +102,7 @@ func (d DateRange) validate() error {
 	switch d.Preset {
 	case RangeDay, RangeLast7Days, RangeLast28Days, RangeLast91Days,
 		RangeMonth, RangeLastMonth, RangeYear, RangeLast12Months,
-		RangeAll, RangeRealtime, RangeLast24Hours:
+		RangeAll, RangeRealtime, RangeLast5Minutes, RangeLast24Hours:
 		return nil
 
 	case RangeCustom:
@@ -106,7 +115,7 @@ func (d DateRange) validate() error {
 		return nil
 
 	default:
-		return invalid("unknown date_range %q — use day, 7d, 28d, 91d, month, last_month, year, 12mo, all, realtime, 24h, or a pair of dates", d.Preset)
+		return invalid("unknown date_range %q — use day, 7d, 28d, 91d, month, last_month, year, 12mo, all, realtime, 5m, 24h, or a pair of dates", d.Preset)
 	}
 }
 
@@ -175,6 +184,10 @@ func (d DateRange) Resolve(now time.Time, loc *time.Location, earliest time.Time
 		resolved.Start = now.Add(-RealtimeWindow).Truncate(time.Second)
 		resolved.End = now.Truncate(time.Second).Add(time.Second)
 
+	case RangeLast5Minutes:
+		resolved.Start = now.Add(-CurrentWindow).Truncate(time.Second)
+		resolved.End = now.Truncate(time.Second).Add(time.Second)
+
 	case RangeLast24Hours:
 		resolved.Start = now.Add(-24 * time.Hour).Truncate(time.Second)
 		resolved.End = now.Truncate(time.Second).Add(time.Second)
@@ -203,7 +216,10 @@ func (d DateRange) Resolve(now time.Time, loc *time.Location, earliest time.Time
 // about how many points a graph can usefully draw: a year of hourly buckets is
 // nine thousand points nobody can read, and a week of monthly buckets is one.
 func chooseInterval(r Resolved) string {
-	if r.Preset == RangeRealtime {
+	// Both live windows are cut into minutes rather than by span. Five minutes
+	// falls under every threshold below and would otherwise come out as one
+	// hour bucket — a single point, which is not a graph.
+	if r.Preset == RangeRealtime || r.Preset == RangeLast5Minutes {
 		return IntervalMinute
 	}
 
