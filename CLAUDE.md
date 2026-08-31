@@ -75,6 +75,18 @@ This project is **AGPL-3.0-or-later**.
   is public and Harbor is not.
 - **Never name a competitor in this repository**, in issues, commits, code or comments. Say "the
   incumbent" or "a competitor". Specifics live in Harbor.
+- **Images in an issue or PR body must be public URLs, never repo-relative paths.** GitHub fetches
+  every image through its camo proxy with no authentication, so a path like
+  `internal/dashboard/screenshots/01-light.png` renders in a committed file but is a **broken image**
+  in a PR description. Upload it first and embed the URL it prints:
+
+  ```bash
+  ~/.claude/skills/github-issue-image/scripts/upload-public-image.sh path/to/shot.png
+  # -> https://screen-capture-osx.s3.us-east-1.amazonaws.com/public/<32-hex>.png
+  ```
+
+  Commit the screenshot to the repo as well when it is worth keeping — but the PR body links the
+  uploaded URL.
 
 ## Running the local apps — always through herdr
 
