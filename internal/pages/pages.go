@@ -75,14 +75,26 @@ type Handler struct {
 	// at a chosen point on the lifecycle clock.
 	Now func() time.Time
 
-	// CurrentTeam resolves the account a request is for.
-	//
-	// It is a function because sessions belong to the authentication package,
-	// which owns its own code. Until that lands, the default resolves the `team`
-	// parameter, and otherwise the only account on the install — which is right
-	// for a self-hoster and for local development, and is replaced by a single
-	// assignment once sessions exist.
-	CurrentTeam func(r *http.Request) (int64, error)
+	// OptionalAccount attaches account context to public pricing requests when
+	// a valid session exists. RequireAccount protects every account-specific
+	// commerce route. Both are injected so this package does not import auth.
+	OptionalAccount func(http.Handler) http.Handler
+	RequireAccount  func(http.Handler) http.Handler
+
+	// CurrentAccount reads only the identity established by the injected
+	// middleware. FormToken and ValidateForm reuse the application's CSRF
+	// implementation for forms rendered and handled by this package.
+	CurrentAccount func(r *http.Request) (Account, error)
+	FormToken      func(w http.ResponseWriter, r *http.Request) string
+	ValidateForm   func(w http.ResponseWriter, r *http.Request) bool
+}
+
+// Account is the authenticated billing identity pages needs. The account id
+// selects data and the email pre-fills hosted checkout; neither comes from a
+// query string or form body in an integrated deployment.
+type Account struct {
+	ID    int64
+	Email string
 }
 
 // now returns the handler's clock.
@@ -98,18 +110,50 @@ func (h *Handler) now() time.Time {
 // one place so that a new screen cannot be added without appearing in the list
 // somebody reads to find out what the product serves.
 func (h *Handler) Routes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /pricing", h.pricing)
-	mux.HandleFunc("GET /billing", h.billing)
-	mux.HandleFunc("GET /billing/upgrade", h.pricing)
-	mux.HandleFunc("POST /billing/checkout", h.checkout)
-	mux.HandleFunc("POST /billing/portal", h.portal)
-	mux.HandleFunc("GET /billing/portal", h.portal)
-	mux.HandleFunc("GET /billing/done", h.done)
-	mux.HandleFunc("GET /billing/export", h.export)
+	mux.Handle("GET /pricing", h.public(h.pricing))
+	mux.Handle("GET /billing", h.protected(h.billing, false))
+	mux.Handle("GET /billing/upgrade", h.public(h.pricing))
+	mux.Handle("POST /billing/checkout", h.protected(h.checkout, true))
+	mux.Handle("POST /billing/portal", h.protected(h.portal, true))
+	mux.Handle("GET /billing/portal", h.protected(h.portal, false))
+	mux.Handle("GET /billing/done", h.protected(h.done, false))
+	mux.Handle("GET /billing/export", h.protected(h.export, false))
 	mux.HandleFunc("GET /billing/assets/pages.css", h.stylesheet)
 	mux.HandleFunc("GET /docs", h.docs)
 	mux.HandleFunc("GET /docs/{slug}", h.doc)
 	mux.HandleFunc("GET /legal/{slug}", h.legal)
+}
+
+// public attaches optional account context without turning a public route into
+// an authenticated one. A standalone pages handler needs no middleware.
+func (h *Handler) public(next http.HandlerFunc) http.Handler {
+	handler := http.Handler(next)
+	if h.OptionalAccount != nil {
+		handler = h.OptionalAccount(handler)
+	}
+
+	return handler
+}
+
+// protected composes account authentication around the route and CSRF around
+// authenticated POSTs. Authentication is outermost so a signed-out form post
+// reaches sign-in rather than receiving a misleading token error.
+func (h *Handler) protected(next http.HandlerFunc, csrf bool) http.Handler {
+	handler := http.Handler(next)
+	if csrf && h.ValidateForm != nil {
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !h.ValidateForm(w, r) {
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+	if h.RequireAccount != nil {
+		handler = h.RequireAccount(handler)
+	}
+
+	return handler
 }
 
 // shell is what every template's layout reads.
@@ -118,14 +162,21 @@ type shell struct {
 	Nav        string
 	SalesEmail string
 	Enabled    bool
+	SignedIn   bool
 	TeamID     int64
+	CSRF       string
 }
 
 // newShell builds the common part of a page.
-func (h *Handler) newShell(title, nav string, teamID int64) shell {
+func (h *Handler) newShell(w http.ResponseWriter, r *http.Request, title, nav string, account Account) shell {
 	sales := h.SalesEmail
 	if sales == "" {
 		sales = "sales@feasible.lol"
+	}
+
+	csrf := ""
+	if account.ID > 0 && h.FormToken != nil {
+		csrf = h.FormToken(w, r)
 	}
 
 	return shell{
@@ -133,7 +184,9 @@ func (h *Handler) newShell(title, nav string, teamID int64) shell {
 		Nav:        nav,
 		SalesEmail: sales,
 		Enabled:    h.Billing != nil && h.Billing.Enabled(),
-		TeamID:     teamID,
+		SignedIn:   account.ID > 0,
+		TeamID:     account.ID,
+		CSRF:       csrf,
 	}
 }
 
@@ -161,9 +214,9 @@ type pricingData struct {
 // somebody deciding whether to pay should not have to log in to see the price,
 // and somebody whose dashboard is locked has to be able to reach it.
 func (h *Handler) pricing(w http.ResponseWriter, r *http.Request) {
-	teamID, _ := h.team(r)
+	account, _ := h.account(r)
 
-	h.render(w, pricingPage, pricingData{shell: h.newShell("Pricing", "pricing", teamID)})
+	h.render(w, pricingPage, pricingData{shell: h.newShell(w, r, "Pricing", "pricing", account)})
 }
 
 // billingData is everything the billing screen shows.
@@ -232,14 +285,14 @@ func (h *Handler) billing(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	now := h.now()
 
-	teamID, err := h.team(r)
+	account, err := h.account(r)
 	if err != nil {
-		h.message(w, r, "Billing", "No account selected",
-			[]string{err.Error()}, nil)
+		h.fail(w, err)
 		return
 	}
+	teamID := account.ID
 
-	data := billingData{shell: h.newShell("Billing", "billing", teamID)}
+	data := billingData{shell: h.newShell(w, r, "Billing", "billing", account)}
 	data.Account.Name = fmt.Sprintf("Account %d", teamID)
 
 	if h.Lifecycle != nil {
@@ -422,9 +475,9 @@ func timelineFor(state lifecycle.State, now time.Time) []timelineRow {
 // so the browser turns the POST into a GET; a 302 here leaves some clients
 // re-posting the form to the payment provider.
 func (h *Handler) checkout(w http.ResponseWriter, r *http.Request) {
-	teamID, err := h.team(r)
+	account, err := h.account(r)
 	if err != nil {
-		h.message(w, r, "Upgrade", "No account selected", []string{err.Error()}, nil)
+		h.fail(w, err)
 		return
 	}
 
@@ -435,7 +488,7 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := h.Billing.Checkout(r.Context(), teamID, r.FormValue("plan"), r.FormValue("email"))
+	session, err := h.Billing.Checkout(r.Context(), account.ID, r.FormValue("plan"), account.Email)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -447,9 +500,9 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request) {
 // portal redirects to the payment provider's Customer Portal, where card
 // updates, plan switches, invoices and cancellation all live.
 func (h *Handler) portal(w http.ResponseWriter, r *http.Request) {
-	teamID, err := h.team(r)
+	account, err := h.account(r)
 	if err != nil {
-		h.message(w, r, "Billing", "No account selected", []string{err.Error()}, nil)
+		h.fail(w, err)
 		return
 	}
 
@@ -460,7 +513,7 @@ func (h *Handler) portal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := h.Billing.Portal(r.Context(), teamID)
+	session, err := h.Billing.Portal(r.Context(), account.ID)
 	if err != nil {
 		h.message(w, r, "Billing", "No billing portal yet",
 			[]string{err.Error(), "A portal exists once an account has been through checkout at least once."},
@@ -477,9 +530,24 @@ func (h *Handler) portal(w http.ResponseWriter, r *http.Request) {
 // provider's signed payment result, and a return page that also flipped a switch
 // would be a second source of truth reachable by anyone who guessed the URL.
 func (h *Handler) done(w http.ResponseWriter, r *http.Request) {
+	account, err := h.account(r)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+
 	status := ""
-	if h.Billing != nil {
-		status, _ = h.Billing.CheckoutPaymentStatus(r.Context(), r.URL.Query().Get("session"))
+	sessionID := r.URL.Query().Get("session")
+	if h.Billing != nil && h.Billing.Stripe != nil && h.Billing.Stripe.Configured() && sessionID != "" {
+		session, sessionErr := h.Billing.Stripe.GetCheckoutSession(r.Context(), sessionID)
+		if sessionErr == nil {
+			if session.Metadata.TeamID() != account.ID {
+				http.NotFound(w, r)
+				return
+			}
+
+			status = session.PaymentStatus
+		}
 	}
 
 	heading := "Checkout submitted"
@@ -521,12 +589,10 @@ func (h *Handler) export(w http.ResponseWriter, r *http.Request) {
 
 // docs renders the documentation index.
 func (h *Handler) docs(w http.ResponseWriter, r *http.Request) {
-	teamID, _ := h.team(r)
-
 	h.render(w, docsPage, struct {
 		shell
 		Index []Doc
-	}{shell: h.newShell("Documentation", "docs", teamID), Index: documentation})
+	}{shell: h.newShell(w, r, "Documentation", "docs", Account{}), Index: documentation})
 }
 
 // doc renders one documentation page.
@@ -537,13 +603,11 @@ func (h *Handler) doc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	teamID, _ := h.team(r)
-
 	h.render(w, docPage, struct {
 		shell
 		Doc   Doc
 		Index []Doc
-	}{shell: h.newShell(page.Title, "docs", teamID), Doc: page, Index: documentation})
+	}{shell: h.newShell(w, r, page.Title, "docs", Account{}), Doc: page, Index: documentation})
 }
 
 // legal renders one of the three legal documents.
@@ -554,13 +618,11 @@ func (h *Handler) legal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	teamID, _ := h.team(r)
-
 	h.render(w, docPage, struct {
 		shell
 		Doc   Doc
 		Index []Doc
-	}{shell: h.newShell(page.Title, "legal", teamID), Doc: page, Index: legal})
+	}{shell: h.newShell(w, r, page.Title, "legal", Account{}), Doc: page, Index: legal})
 }
 
 // link is one button on a message page.
@@ -574,7 +636,7 @@ type link struct {
 // are all "here is what happened and here is where to go next", and giving each
 // its own template would be five templates that drift apart.
 func (h *Handler) message(w http.ResponseWriter, r *http.Request, title, heading string, paragraphs []string, links []link) {
-	teamID, _ := h.team(r)
+	account, _ := h.account(r)
 
 	h.render(w, messagePage, struct {
 		shell
@@ -582,7 +644,7 @@ func (h *Handler) message(w http.ResponseWriter, r *http.Request, title, heading
 		Paragraphs []string
 		Links      []link
 		Extra      template.HTML
-	}{shell: h.newShell(title, "billing", teamID), Heading: heading, Paragraphs: paragraphs, Links: links})
+	}{shell: h.newShell(w, r, title, "billing", account), Heading: heading, Paragraphs: paragraphs, Links: links})
 }
 
 // render writes one page, or reports the failure rather than sending half a
@@ -612,22 +674,25 @@ func (h *Handler) fail(w http.ResponseWriter, err error) {
 	http.Error(w, "something went wrong rendering this page", http.StatusInternalServerError)
 }
 
-// team resolves which account a request is about.
-func (h *Handler) team(r *http.Request) (int64, error) {
-	if h.CurrentTeam != nil {
-		return h.CurrentTeam(r)
+// account resolves the authenticated billing identity. The form-value fallback
+// keeps the standalone pages package usable for a single-user self-hosted
+// installation; the assembled app always injects CurrentAccount and therefore
+// never consults caller-controlled account or email values.
+func (h *Handler) account(r *http.Request) (Account, error) {
+	if h.CurrentAccount != nil {
+		return h.CurrentAccount(r)
 	}
 
 	if raw := r.FormValue("team"); raw != "" {
 		id, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || id < 1 {
-			return 0, fmt.Errorf("%q is not an account id", raw)
+			return Account{}, fmt.Errorf("%q is not an account id", raw)
 		}
 
-		return id, nil
+		return Account{ID: id, Email: r.FormValue("email")}, nil
 	}
 
-	return 0, fmt.Errorf("no account was named — add ?team=<id> until sign-in exists")
+	return Account{}, fmt.Errorf("no account was named")
 }
 
 // thousands formats a count with separators, because the numbers on this screen

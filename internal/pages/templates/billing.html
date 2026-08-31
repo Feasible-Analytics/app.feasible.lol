@@ -70,7 +70,7 @@
         {{ end }}
         {{ if .Plan.HasCustomer }}
         <form method="POST" action="/billing/portal" style="margin-top:14px">
-          {{ if .TeamID }}<input type="hidden" name="team" value="{{ .TeamID }}">{{ end }}
+          <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
           <button class="btn inline" type="submit">Manage card, invoices and plan</button>
         </form>
         {{ else }}
@@ -90,13 +90,13 @@
         </ul>
         <div style="display:flex;gap:10px">
           <form method="POST" action="/billing/checkout" style="flex:1">
+            <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
             <input type="hidden" name="plan" value="monthly">
-            {{ if .TeamID }}<input type="hidden" name="team" value="{{ .TeamID }}">{{ end }}
             <button class="btn" type="submit" {{ if not .Enabled }}disabled{{ end }}>Monthly</button>
           </form>
           <form method="POST" action="/billing/checkout" style="flex:1">
+            <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
             <input type="hidden" name="plan" value="yearly">
-            {{ if .TeamID }}<input type="hidden" name="team" value="{{ .TeamID }}">{{ end }}
             <button class="btn alt" type="submit" {{ if not .Enabled }}disabled{{ end }}>Yearly</button>
           </form>
         </div>

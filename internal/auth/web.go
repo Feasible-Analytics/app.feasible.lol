@@ -10,6 +10,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -32,6 +33,7 @@ type contextKey string
 const (
 	contextUser    contextKey = "feasible.auth.user"
 	contextSession contextKey = "feasible.auth.session"
+	contextTeam    contextKey = "feasible.auth.team"
 )
 
 // Handler is the whole server-rendered application. Everything it needs is a
@@ -164,6 +166,68 @@ func (h *Handler) GuardSite(domainOf func(*http.Request) string, next http.Handl
 
 		next.ServeHTTP(w, r)
 	}))
+}
+
+// OptionalAccount attaches a valid session and its account when both exist,
+// then always serves the public page. Pricing uses it to turn its call to
+// action into an authenticated checkout form without making prices private.
+func (h *Handler) OptionalAccount(next http.Handler) http.Handler {
+	return h.optional(func(w http.ResponseWriter, r *http.Request) {
+		user := userFrom(r)
+		if user == nil || !user.Verified() {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		team, err := h.Store.TeamForUser(r.Context(), user.ID)
+		if err == nil {
+			r = r.WithContext(context.WithValue(r.Context(), contextTeam, team))
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// RequireAccount admits only a fully verified session that belongs to an
+// account. It deliberately reuses require so email verification and team-wide
+// two-factor policy cannot drift between billing and the rest of the app.
+func (h *Handler) RequireAccount(next http.Handler) http.Handler {
+	return h.require(func(w http.ResponseWriter, r *http.Request) {
+		if teamFrom(r) == nil {
+			h.notFound(w, r)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// CurrentAccount returns the account and checkout address established by the
+// authentication middleware. Request parameters are never consulted, so a
+// caller cannot choose another account or another customer's billing email.
+func (h *Handler) CurrentAccount(r *http.Request) (int64, string, error) {
+	user := userFrom(r)
+	team := teamFrom(r)
+	if user == nil || team == nil {
+		return 0, "", fmt.Errorf("auth: request has no authenticated account")
+	}
+
+	return team.ID, user.Email, nil
+}
+
+// FormToken returns the existing auth CSRF token and renews its signed cookie.
+// Server-rendered packages use this callback without depending on auth types.
+func (h *Handler) FormToken(w http.ResponseWriter, r *http.Request) string {
+	token := h.csrfToken(r)
+	h.issueCSRF(w, token)
+
+	return token
+}
+
+// ValidateForm applies the same signed double-submit check used by every auth
+// form. It writes the 403 response itself when validation fails.
+func (h *Handler) ValidateForm(w http.ResponseWriter, r *http.Request) bool {
+	return h.checkCSRF(w, r)
 }
 
 // routes builds the route table.
@@ -320,6 +384,10 @@ func (h *Handler) require(next http.HandlerFunc) http.HandlerFunc {
 		r = r.WithContext(ctx)
 
 		team, err := h.Store.TeamForUser(r.Context(), user.ID)
+		if err == nil {
+			ctx = context.WithValue(r.Context(), contextTeam, team)
+			r = r.WithContext(ctx)
+		}
 		if err == nil && team.Require2FA && !user.TwoFactorEnabled() {
 			// The enrolment screen itself has to stay reachable, or the policy
 			// is a door locked from the inside.
@@ -345,6 +413,13 @@ func sessionFrom(r *http.Request) *Session {
 	session, _ := r.Context().Value(contextSession).(*Session)
 
 	return session
+}
+
+// teamFrom pulls the authenticated account back out of the request context.
+func teamFrom(r *http.Request) *Team {
+	team, _ := r.Context().Value(contextTeam).(*Team)
+
+	return team
 }
 
 // pathID reads a numeric path wildcard. A malformed id is zero, which every

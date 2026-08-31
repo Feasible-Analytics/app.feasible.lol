@@ -302,6 +302,52 @@ func extractCode(t *testing.T, body string) string {
 	return ""
 }
 
+// TestAccountMiddlewareRequiresVerificationAndIgnoresForgedTeams exercises the
+// boundary injected into commerce routes with a real session and membership.
+func TestAccountMiddlewareRequiresVerificationAndIgnoresForgedTeams(t *testing.T) {
+	app := newTestApp(t)
+	app.mux.Handle("GET /commerce-probe", app.RequireAccount(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		teamID, email, err := app.CurrentAccount(r)
+		if err != nil {
+			t.Errorf("resolve authenticated account: %v", err)
+			http.Error(w, "missing account", http.StatusInternalServerError)
+			return
+		}
+
+		_, _ = w.Write([]byte(strconv.FormatInt(teamID, 10) + "|" + email))
+	})))
+
+	c := newClient(t, app)
+
+	signedOut := c.get("/commerce-probe?team=999")
+	signedOut.Body.Close()
+	if signedOut.StatusCode != http.StatusFound || !strings.HasPrefix(signedOut.Header.Get("Location"), "/login?next=") {
+		t.Fatalf("signed-out account route answered %d and redirected to %q", signedOut.StatusCode, signedOut.Header.Get("Location"))
+	}
+
+	registered := c.post("/register", url.Values{
+		"email":    {"billing-owner@example.com"},
+		"password": {"a long enough password"},
+		"name":     {"Billing Owner"},
+	})
+	registered.Body.Close()
+
+	unverified := c.get("/commerce-probe?team=999")
+	unverified.Body.Close()
+	if unverified.StatusCode != http.StatusFound || unverified.Header.Get("Location") != "/verify-email" {
+		t.Fatalf("unverified account route answered %d and redirected to %q", unverified.StatusCode, unverified.Header.Get("Location"))
+	}
+
+	code := extractCode(t, app.sent.last(t).Text)
+	verified := c.post("/verify-email", url.Values{"code": {code}})
+	verified.Body.Close()
+
+	body := c.body("/commerce-probe?team=999")
+	if body != "1|billing-owner@example.com" {
+		t.Fatalf("commerce resolved %q, want the authenticated account and email", body)
+	}
+}
+
 // TestRegisterVerifyAndCreateASite walks the whole first-run path end to end,
 // which is the sequence every new customer takes and the one worth having a
 // single test for.

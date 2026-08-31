@@ -415,7 +415,7 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	// webhook. They are deliberately outside the gate: somebody whose dashboard
 	// is locked has to be able to reach the page where they would pay us, and
 	// the export link on it.
-	com.Routes(mux)
+	com.Routes(mux, app)
 
 	// The source icons the report rows are drawn with. Fetching them here
 	// rather than from the reader's browser is what keeps a dashboard from

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/access"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/auth"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
@@ -110,10 +111,13 @@ const lockedTeam = 1
 // stack is one assembled process, with an account on the lifecycle clock and a
 // working API key for it.
 type stack struct {
-	routes  http.Handler
-	gate    *access.Gate
-	key     string
-	dataDir string
+	routes       http.Handler
+	gate         *access.Gate
+	key          string
+	dataDir      string
+	sessionToken string
+	csrfToken    string
+	csrfCookie   string
 }
 
 // newStack assembles everything serve assembles, over a temporary data
@@ -168,6 +172,23 @@ func newStack(t *testing.T) *stack {
 		t.Fatal(err)
 	}
 
+	sessionToken, _, err := auth.NewStore(control).CreateSession(ctx, 1, "commerce integration test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	csrfResponse := httptest.NewRecorder()
+	csrfToken := app.FormToken(csrfResponse, httptest.NewRequest(http.MethodGet, "/pricing", nil))
+	csrfCookie := ""
+	for _, cookie := range csrfResponse.Result().Cookies() {
+		if cookie.Name == "feasible_csrf" {
+			csrfCookie = cookie.Name + "=" + cookie.Value
+		}
+	}
+	if csrfToken == "" || csrfCookie == "" {
+		t.Fatal("the commerce fixture could not mint a CSRF token")
+	}
+
 	public := buildPublic(e, control, service.Sites, manager, com.Gate)
 
 	// The site configuration screens are mounted the way serve mounts them,
@@ -185,10 +206,13 @@ func newStack(t *testing.T) *stack {
 	}
 
 	return &stack{
-		routes:  serveRoutes(e, service, manager, secret, dir, app, public, com, data.settings),
-		gate:    com.Gate,
-		key:     key,
-		dataDir: dir,
+		routes:       serveRoutes(e, service, manager, secret, dir, app, public, com, data.settings),
+		gate:         com.Gate,
+		key:          key,
+		dataDir:      dir,
+		sessionToken: sessionToken,
+		csrfToken:    csrfToken,
+		csrfCookie:   csrfCookie,
 	}
 }
 
@@ -214,7 +238,7 @@ func seedLapsedAccount(t *testing.T, dir string) {
 		sql  string
 		args []any
 	}{
-		{`INSERT INTO users (id, email, name, created_at, updated_at) VALUES (1, 'owner@example.com', 'Owner', ?, ?)`, []any{now, now}},
+		{`INSERT INTO users (id, email, name, email_verified_at, created_at, updated_at) VALUES (1, 'owner@example.com', 'Owner', ?, ?, ?)`, []any{now, now, now}},
 		{`INSERT INTO teams (id, name, created_at, updated_at) VALUES (?, 'Example Co', ?, ?)`, []any{lockedTeam, now, now}},
 		{`INSERT INTO team_memberships (team_id, user_id, role, created_at) VALUES (?, 1, 'owner', ?)`, []any{lockedTeam, now}},
 		{`INSERT INTO sites (id, account_id, domain, timezone, created_at, updated_at) VALUES (1, ?, 'example.com', 'UTC', ?, ?)`, []any{lockedTeam, now, now}},
@@ -299,6 +323,68 @@ func (s *stack) send(t *testing.T, method, path, body string, headers map[string
 // bearer is the header an API caller sends.
 func (s *stack) bearer() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + s.key, "Content-Type": "application/json"}
+}
+
+// signedInForm returns the cookies and content type an authenticated browser
+// sends to a server-rendered form. The caller still controls the submitted CSRF
+// value so missing and mismatched cases exercise the real validator.
+func (s *stack) signedInForm() map[string]string {
+	return map[string]string{
+		"Content-Type": "application/x-www-form-urlencoded",
+		"Cookie":       auth.SessionCookieName + "=" + s.sessionToken + "; " + s.csrfCookie,
+	}
+}
+
+// TestCommerceRoutesUseAuthAccountAndCSRF drives the assembled mux that ships.
+// It covers the original routing regression: public callers cannot select an
+// account, verified owners resolve their own team, and billing POSTs use auth's
+// signed CSRF cookie rather than trusting a hidden account id.
+func TestCommerceRoutesUseAuthAccountAndCSRF(t *testing.T) {
+	s := newStack(t)
+
+	pricing := s.send(t, http.MethodGet, "/pricing", "", nil)
+	if pricing.Code != http.StatusOK {
+		t.Fatalf("public pricing answered %d", pricing.Code)
+	}
+	for _, want := range []string{"/register?next=%2Fpricing", "/login?next=%2Fpricing"} {
+		if !strings.Contains(pricing.Body.String(), want) {
+			t.Errorf("signed-out pricing is missing %q", want)
+		}
+	}
+
+	signedOut := s.send(t, http.MethodGet, "/billing?team=999", "", nil)
+	if signedOut.Code != http.StatusFound || !strings.HasPrefix(signedOut.Header().Get("Location"), "/login?next=") {
+		t.Fatalf("signed-out billing answered %d and redirected to %q", signedOut.Code, signedOut.Header().Get("Location"))
+	}
+
+	headers := s.signedInForm()
+	signedIn := s.send(t, http.MethodGet, "/billing?team=999", "", headers)
+	if signedIn.Code != http.StatusOK {
+		t.Fatalf("signed-in billing answered %d: %s", signedIn.Code, signedIn.Body.String())
+	}
+	if !strings.Contains(signedIn.Body.String(), "Example Co") || strings.Contains(signedIn.Body.String(), "Account 999") {
+		t.Errorf("billing did not use the authenticated account: %s", signedIn.Body.String())
+	}
+
+	for name, token := range map[string]string{"missing": "", "mismatched": "not-the-token"} {
+		t.Run(name+" csrf", func(t *testing.T) {
+			body := "plan=monthly&team=999"
+			if token != "" {
+				body += "&csrf_token=" + token
+			}
+
+			response := s.send(t, http.MethodPost, "/billing/checkout", body, headers)
+			if response.Code != http.StatusForbidden {
+				t.Errorf("%s CSRF answered %d, want 403: %s", name, response.Code, response.Body.String())
+			}
+		})
+	}
+
+	valid := s.send(t, http.MethodPost, "/billing/checkout",
+		"plan=monthly&team=999&csrf_token="+s.csrfToken, headers)
+	if valid.Code != http.StatusOK || !strings.Contains(valid.Body.String(), "cannot take payments") {
+		t.Fatalf("valid authenticated checkout answered %d: %s", valid.Code, valid.Body.String())
+	}
 }
 
 // TestALockedAccountIsRefusedEveryReadPath walks every door this account's own

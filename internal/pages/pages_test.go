@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -87,7 +88,7 @@ func TestEveryPageRenders(t *testing.T) {
 		"/pricing",
 		"/billing?team=1",
 		"/billing/upgrade",
-		"/billing/done",
+		"/billing/done?team=1",
 		"/billing/export",
 		"/docs",
 		"/legal/privacy",
@@ -132,6 +133,22 @@ func TestPricingStatesBothPrices(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("the pricing page never says %q", want)
 		}
+	}
+}
+
+// TestSignedOutPricingStartsAuthentication keeps the public pricing page useful
+// without exposing checkout itself to an unauthenticated browser.
+func TestSignedOutPricingStartsAuthentication(t *testing.T) {
+	handler, _ := newHandler(t)
+
+	body := render(t, handler, "/pricing").Body.String()
+	for _, want := range []string{"/register?next=%2Fpricing", "/login?next=%2Fpricing", "Create an account", "Sign in to upgrade"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("signed-out pricing is missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `action="/billing/checkout"`) {
+		t.Error("signed-out pricing rendered a checkout form")
 	}
 }
 
@@ -195,9 +212,13 @@ func TestCheckoutReturnDistinguishesPaidAndPending(t *testing.T) {
 		if strings.HasSuffix(r.URL.Path, "/cs_paid") {
 			status = "paid"
 		}
+		teamID := "1"
+		if strings.HasSuffix(r.URL.Path, "/cs_other") {
+			teamID = "2"
+		}
 
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"id":"%s","object":"checkout.session","mode":"subscription","payment_status":%q}`, strings.TrimPrefix(r.URL.Path, "/v1/checkout/sessions/"), status)
+		fmt.Fprintf(w, `{"id":"%s","object":"checkout.session","mode":"subscription","payment_status":%q,"metadata":{"feasible_team_id":%q}}`, strings.TrimPrefix(r.URL.Path, "/v1/checkout/sessions/"), status, teamID)
 	}))
 	t.Cleanup(server.Close)
 
@@ -205,13 +226,16 @@ func TestCheckoutReturnDistinguishesPaidAndPending(t *testing.T) {
 	client := stripe.New("sk_test_fake")
 	client.BaseURL = server.URL
 	handler.Billing.Stripe = client
+	handler.CurrentAccount = func(*http.Request) (Account, error) {
+		return Account{ID: 1, Email: "owner@example.com"}, nil
+	}
 
-	paid := render(t, handler, "/billing/done?session=cs_paid").Body.String()
+	paid := render(t, handler, "/billing/done?team=999&session=cs_paid").Body.String()
 	if !strings.Contains(paid, "Payment confirmed") || !strings.Contains(paid, "signed notification") {
 		t.Fatalf("paid checkout copy is not conclusive but webhook-gated: %s", paid)
 	}
 
-	pending := render(t, handler, "/billing/done?session=cs_pending").Body.String()
+	pending := render(t, handler, "/billing/done?team=999&session=cs_pending").Body.String()
 	for _, want := range []string{"Payment processing", "has not settled yet", "current state"} {
 		if !strings.Contains(pending, want) {
 			t.Errorf("pending checkout copy is missing %q: %s", want, pending)
@@ -219,6 +243,11 @@ func TestCheckoutReturnDistinguishesPaidAndPending(t *testing.T) {
 	}
 	if strings.Contains(pending, "account is active") || strings.Contains(pending, "payment went through") {
 		t.Errorf("pending checkout promises paid access: %s", pending)
+	}
+
+	other := render(t, handler, "/billing/done?team=1&session=cs_other")
+	if other.Code != http.StatusNotFound {
+		t.Errorf("another account's checkout return answered %d, want 404", other.Code)
 	}
 }
 
@@ -352,6 +381,124 @@ func TestCheckoutWithoutAProviderExplainsItself(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "cannot take payments") {
 		t.Errorf("the page does not explain why checkout is unavailable: %s", recorder.Body.String())
+	}
+}
+
+// TestInjectedAccountAccessProtectsBillingAndCSRF verifies the package-level
+// contract used by auth: account routes require its middleware, forged account
+// ids are ignored, and authenticated POSTs run its CSRF check first.
+func TestInjectedAccountAccessProtectsBillingAndCSRF(t *testing.T) {
+	handler, _ := newHandler(t)
+	handler.RequireAccount = func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("X-Test-Session") != "verified" {
+				http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+	handler.CurrentAccount = func(*http.Request) (Account, error) {
+		return Account{ID: 1, Email: "owner@example.com"}, nil
+	}
+	handler.FormToken = func(http.ResponseWriter, *http.Request) string { return "trusted-token" }
+	handler.ValidateForm = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.PostFormValue("csrf_token") == "trusted-token" {
+			return true
+		}
+
+		http.Error(w, "bad token", http.StatusForbidden)
+
+		return false
+	}
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	signedOut := httptest.NewRecorder()
+	mux.ServeHTTP(signedOut, httptest.NewRequest(http.MethodGet, "/billing?team=999", nil))
+	if signedOut.Code != http.StatusFound || !strings.HasPrefix(signedOut.Header().Get("Location"), "/login?next=") {
+		t.Fatalf("signed-out billing answered %d and redirected to %q", signedOut.Code, signedOut.Header().Get("Location"))
+	}
+
+	signedInRequest := httptest.NewRequest(http.MethodGet, "/billing?team=999", nil)
+	signedInRequest.Header.Set("X-Test-Session", "verified")
+	signedIn := httptest.NewRecorder()
+	mux.ServeHTTP(signedIn, signedInRequest)
+	if signedIn.Code != http.StatusOK {
+		t.Fatalf("signed-in billing answered %d: %s", signedIn.Code, signedIn.Body.String())
+	}
+	if !strings.Contains(signedIn.Body.String(), "Example Co") || strings.Contains(signedIn.Body.String(), "Account 999") {
+		t.Errorf("billing did not resolve the authenticated account: %s", signedIn.Body.String())
+	}
+
+	for name, token := range map[string]string{"missing": "", "mismatched": "forged-token"} {
+		t.Run(name+" csrf", func(t *testing.T) {
+			form := url.Values{"plan": {"monthly"}, "team": {"999"}}
+			if token != "" {
+				form.Set("csrf_token", token)
+			}
+
+			request := httptest.NewRequest(http.MethodPost, "/billing/checkout", strings.NewReader(form.Encode()))
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			request.Header.Set("X-Test-Session", "verified")
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, request)
+
+			if response.Code != http.StatusForbidden {
+				t.Errorf("%s token answered %d, want 403", name, response.Code)
+			}
+		})
+	}
+}
+
+// TestCheckoutUsesAuthenticatedAccountAndEmail proves that caller-controlled
+// team and email fields cannot change the Stripe session being created.
+func TestCheckoutUsesAuthenticatedAccountAndEmail(t *testing.T) {
+	var posted url.Values
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parse Stripe form: %v", err)
+		}
+		posted = r.PostForm
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"cs_authenticated","url":"https://checkout.example/session"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	handler, _ := newHandler(t)
+	client := stripe.New("sk_test_fake")
+	client.BaseURL = server.URL
+	handler.Billing.Stripe = client
+	handler.CurrentAccount = func(*http.Request) (Account, error) {
+		return Account{ID: 1, Email: "owner@example.com"}, nil
+	}
+	handler.ValidateForm = func(http.ResponseWriter, *http.Request) bool { return true }
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	form := url.Values{
+		"plan":  {"monthly"},
+		"team":  {"999"},
+		"email": {"attacker@example.com"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/billing/checkout", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("checkout answered %d: %s", response.Code, response.Body.String())
+	}
+	if got := posted.Get("metadata[feasible_team_id]"); got != "1" {
+		t.Errorf("Stripe team metadata is %q, want authenticated team 1", got)
+	}
+	if got := posted.Get("customer_email"); got != "owner@example.com" {
+		t.Errorf("Stripe customer email is %q, want authenticated owner", got)
 	}
 }
 
