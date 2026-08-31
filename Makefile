@@ -99,7 +99,7 @@ FRESH ?= --fresh
 
 .DEFAULT_GOAL := help
 
-.PHONY: help assets tracker ui-css build test test-web test-tracker test-integration test-ecosystem \
+.PHONY: help assets tracker ui-css build test test-race test-web test-tracker test-integration test-ecosystem \
 	bench lint check-env \
 	migrate migrate-fresh seed seed-big seed-http caddy app ingest testsite dev dev-solo \
 	caddy-ts app-ts ingest-ts testsite-ts dev-ts dev-solo-ts require-tailscale

@@ -94,12 +94,12 @@ month settles well below twelve times that a year. Leave the write-ahead logs
 headroom: they are checkpointed automatically, but a full disk is not a state
 SQLite can write its way out of.
 
-**Throughput.** One process sustains a few thousand events a second through the
-whole accept path, which is far more than a site sending a million pageviews a
-month generates — that is under half an event a second on average. Accepting an
-event costs tens of microseconds and never waits on the disk. Reports read from
-summary tables in around a tenth of a second over a year of data; the same
-report from raw rows takes seconds, which is why the roll-up worker exists.
+**Throughput.** One process sustains around six thousand events a second through
+the whole accept path, which is far more than a site sending a million pageviews
+a month generates — that is under half an event a second on average. Accepting
+an event costs about thirteen microseconds and never waits on the disk. Reports
+read from summary tables in under a tenth of a second over a year of data; the
+same report from raw rows takes seconds, which is why the roll-up worker exists.
 
 **Building** needs Node as well, because the dashboard and the stylesheet are
 compiled before Go embeds them. Running never does.
