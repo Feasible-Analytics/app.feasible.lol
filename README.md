@@ -81,10 +81,10 @@ The internal listeners stay on `127.0.0.1` in every mode.
   feasible billing preflight --checkout-smoke
   ```
 
-  The smoke creates no customer or charge and immediately expires its Checkout
-  Session. The read-only form, without `--checkout-smoke`, reports the Stripe
-  Dashboard-only checks as required and exits non-zero rather than claiming the
-  deployment is ready.
+  The smoke creates no customer or charge and immediately expires monthly and
+  yearly Checkout Sessions. The read-only form, without `--checkout-smoke`,
+  reports the Stripe Dashboard-only checks as required and exits non-zero rather
+  than claiming the deployment is ready.
 
 ## What it needs to run
 

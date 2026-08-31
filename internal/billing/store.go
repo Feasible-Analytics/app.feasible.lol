@@ -23,6 +23,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -46,10 +48,24 @@ type Subscription struct {
 type Store struct {
 	db *sql.DB
 
+	// accountLocks serialize the provider read, mirror write, and lifecycle
+	// signal for each account while allowing unrelated accounts to reconcile in
+	// parallel.
+	accountLocks sync.Map
+
 	// Now is injectable so the webhook tests can assert on stored timestamps
 	// without depending on when the suite runs.
 	Now func() time.Time
 }
+
+// eventClaimLease allows a delivery whose process died mid-handler to be
+// reclaimed. It is comfortably longer than the bounded Stripe API calls in one
+// reconciliation, so a live handler cannot normally lose its claim.
+const eventClaimLease = 5 * time.Minute
+
+// outcomeProcessing is the transient event-log state held by the one delivery
+// attempt allowed to execute a handler.
+const outcomeProcessing = "processing"
 
 // NewStore builds a store over the control database.
 func NewStore(db *sql.DB) *Store {
@@ -69,6 +85,17 @@ func (s *Store) now() time.Time {
 	}
 
 	return s.Now().UTC()
+}
+
+// LockAccount obtains this store's lock for one account and returns its
+// unlock function. Keeping the lock on Store makes independently constructed
+// billing services sharing that store use the same serialization boundary.
+func (s *Store) LockAccount(teamID int64) func() {
+	value, _ := s.accountLocks.LoadOrStore(teamID, &sync.Mutex{})
+	lock := value.(*sync.Mutex)
+	lock.Lock()
+
+	return lock.Unlock
 }
 
 // Load reads one account's mirrored billing state. A team with no row has never
@@ -195,68 +222,128 @@ const (
 	OutcomeError = "error"
 )
 
-// ClaimEvent records a delivery and reports whether it still needs handling.
+// EventClaim identifies the atomic processing lease held for one event.
+type EventClaim struct {
+	Claimed    bool
+	Processing bool
+	StartedAt  int64
+}
+
+// ClaimEvent records a delivery and atomically claims its processing lease.
 //
-// The three-way answer is the whole of the idempotency design. A brand-new
-// event is claimed and handled. An event we have already applied is a
-// duplicate and is skipped. An event whose previous attempt failed is handled
-// again — which is safe precisely because the handler is a function of the
-// provider's current state, so a second run against a changed world produces
-// the right answer rather than replaying a stale one.
-func (s *Store) ClaimEvent(ctx context.Context, eventID, eventType string, teamID int64, payload []byte) (bool, error) {
+// A brand-new event or a failed prior attempt is claimed and handled. An event
+// already applied or currently handled is a duplicate and skipped. A processing
+// claim older than the lease can be reclaimed after a process crash.
+func (s *Store) ClaimEvent(ctx context.Context, eventID, eventType string, teamID int64, payload []byte) (EventClaim, error) {
 	now := s.now().Unix()
+	staleBefore := s.now().Add(-eventClaimLease).Unix()
 
-	var (
-		handled sql.NullInt64
-		outcome string
-	)
-
-	err := s.db.QueryRowContext(ctx, `
-		SELECT handled_at, outcome FROM stripe_events WHERE event_id = ?
-	`, eventID).Scan(&handled, &outcome)
-
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		// Not seen before. Record it now, so that even a handler that crashes
-		// leaves evidence the delivery arrived.
-		if _, err := s.db.ExecContext(ctx, `
-			INSERT INTO stripe_events (event_id, type, team_id, payload, received_at)
-			VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT (event_id) DO NOTHING
-		`, eventID, eventType, nullIfZero(teamID), string(payload), now); err != nil {
-			return false, fmt.Errorf("billing: claim event %s: %w", eventID, err)
-		}
-
-		return true, nil
-
-	case err != nil:
-		return false, fmt.Errorf("billing: claim event %s: %w", eventID, err)
-
-	case handled.Valid && outcome != OutcomeError:
-		return false, nil
-
-	default:
-		return true, nil
+	result, err := s.db.ExecContext(ctx, `
+		INSERT INTO stripe_events
+			(event_id, type, team_id, payload, received_at, handled_at, outcome)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (event_id) DO UPDATE SET
+			team_id    = COALESCE(excluded.team_id, stripe_events.team_id),
+			handled_at = excluded.handled_at,
+			outcome    = excluded.outcome,
+			error      = ''
+		WHERE stripe_events.outcome IN ('', ?)
+		   OR (stripe_events.outcome = ? AND stripe_events.handled_at <= ?)
+	`, eventID, eventType, nullIfZero(teamID), string(payload), now, now, outcomeProcessing,
+		OutcomeError, outcomeProcessing, staleBefore)
+	if err != nil {
+		return EventClaim{}, fmt.Errorf("billing: claim event %s: %w", eventID, err)
 	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return EventClaim{}, fmt.Errorf("billing: claim event %s: affected rows: %w", eventID, err)
+	}
+
+	if rows == 1 {
+		return EventClaim{Claimed: true, StartedAt: now}, nil
+	}
+
+	var outcome string
+	if err := s.db.QueryRowContext(ctx, `SELECT outcome FROM stripe_events WHERE event_id = ?`, eventID).Scan(&outcome); err != nil {
+		return EventClaim{}, fmt.Errorf("billing: inspect event claim %s: %w", eventID, err)
+	}
+
+	return EventClaim{Processing: outcome == outcomeProcessing}, nil
 }
 
 // FinishEvent records what the handler decided.
-func (s *Store) FinishEvent(ctx context.Context, eventID, outcome string, teamID int64, handlerErr error) error {
+func (s *Store) FinishEvent(ctx context.Context, eventID string, claim EventClaim, outcome string, teamID int64, handlerErr error) error {
 	message := ""
 	if handlerErr != nil {
 		message = handlerErr.Error()
 	}
 
-	_, err := s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 		UPDATE stripe_events
 		SET handled_at = ?, outcome = ?, error = ?, team_id = COALESCE(?, team_id)
-		WHERE event_id = ?
-	`, s.now().Unix(), outcome, message, nullIfZero(teamID), eventID)
+		WHERE event_id = ? AND outcome = ? AND handled_at = ?
+	`, s.now().Unix(), outcome, message, nullIfZero(teamID), eventID, outcomeProcessing, claim.StartedAt)
 	if err != nil {
 		return fmt.Errorf("billing: finish event %s: %w", eventID, err)
 	}
 
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("billing: finish event %s: affected rows: %w", eventID, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("billing: finish event %s: processing claim was lost", eventID)
+	}
+
 	return nil
+}
+
+// EventPayloads returns authenticated event bodies for one account and set of
+// types. Callers decode them with the provider model instead of extracting JSON
+// fields with string matching.
+func (s *Store) EventPayloads(ctx context.Context, teamID int64, eventTypes []string) ([][]byte, error) {
+	if teamID < 1 || len(eventTypes) == 0 {
+		return nil, nil
+	}
+
+	placeholders := make([]string, len(eventTypes))
+	args := make([]any, 0, len(eventTypes)+1)
+	args = append(args, teamID)
+
+	for i, eventType := range eventTypes {
+		placeholders[i] = "?"
+		args = append(args, eventType)
+	}
+
+	query := `
+		SELECT payload
+		FROM stripe_events
+		WHERE team_id = ? AND type IN (` + strings.Join(placeholders, ",") + `)
+		ORDER BY id DESC
+	`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("billing: event payloads for account %d: %w", teamID, err)
+	}
+	defer rows.Close()
+
+	var payloads [][]byte
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, fmt.Errorf("billing: event payloads for account %d: %w", teamID, err)
+		}
+
+		payloads = append(payloads, payload)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("billing: event payloads for account %d: %w", teamID, err)
+	}
+
+	return payloads, nil
 }
 
 // LoggedEvent is one delivery as the support screen shows it.

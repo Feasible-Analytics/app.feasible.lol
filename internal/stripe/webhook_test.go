@@ -25,8 +25,9 @@ const payload = `{
   "id": "evt_test_1",
   "type": "invoice.payment_failed",
   "created": 1772539200,
-  "data": {"object": {"id": "in_1", "object": "invoice", "customer": "cus_1", "subscription": "sub_1",
-                      "metadata": {"feasible_team_id": "7"}}}
+  "data": {"object": {"id": "in_1", "object": "invoice", "customer": "cus_1",
+                      "parent": {"type": "subscription_details", "subscription_details": {
+                        "subscription": "sub_1", "metadata": {"feasible_team_id": "7"}}}}}
 }`
 
 // TestValidSignatureIsAccepted is the happy path, exercised through the real
@@ -190,9 +191,11 @@ func TestCustomerIDIsFoundOnEveryObjectShape(t *testing.T) {
 // the subscription an event actually describes.
 func TestSubscriptionIDReadsEveryBillingObject(t *testing.T) {
 	cases := map[string]string{
-		`{"id":"evt_1","data":{"object":{"id":"sub_1","object":"subscription"}}}`:                           "sub_1",
-		`{"id":"evt_2","data":{"object":{"id":"in_1","object":"invoice","subscription":"sub_2"}}}`:          "sub_2",
-		`{"id":"evt_3","data":{"object":{"id":"cs_1","object":"checkout.session","subscription":"sub_3"}}}`: "sub_3",
+		`{"id":"evt_1","data":{"object":{"id":"sub_1","object":"subscription"}}}`:                                                                                    "sub_1",
+		`{"id":"evt_2","data":{"object":{"id":"in_1","object":"invoice","parent":{"type":"subscription_details","subscription_details":{"subscription":"sub_2"}}}}}`: "sub_2",
+		`{"id":"evt_3","data":{"object":{"id":"cs_1","object":"checkout.session","subscription":"sub_3"}}}`:                                                          "sub_3",
+		`{"id":"evt_4","data":{"object":{"id":"in_2","object":"invoice","subscription":"sub_legacy"}}}`:                                                              "sub_legacy",
+		`{"id":"evt_5","data":{"object":{"id":"in_3","object":"invoice","subscription":"sub_wrong","parent":{"type":"quote_details"}}}}`:                             "",
 	}
 
 	for body, want := range cases {

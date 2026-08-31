@@ -196,9 +196,15 @@ func (h *harness) travel(d time.Duration) {
 
 // deliver posts one signed event and returns the response.
 func (h *harness) deliver(id, eventType, object string) *httptest.ResponseRecorder {
+	return h.deliverCreated(id, eventType, object, h.now())
+}
+
+// deliverCreated posts one signed event whose provider creation time can differ
+// from its delivery time, reproducing Stripe's documented out-of-order delivery.
+func (h *harness) deliverCreated(id, eventType, object string, created time.Time) *httptest.ResponseRecorder {
 	h.t.Helper()
 
-	body := fmt.Sprintf(`{"id":%q,"type":%q,"created":%d,"data":{"object":%s}}`, id, eventType, h.now().Unix(), object)
+	body := fmt.Sprintf(`{"id":%q,"type":%q,"created":%d,"data":{"object":%s}}`, id, eventType, created.Unix(), object)
 
 	request := httptest.NewRequest(http.MethodPost, "/webhooks/stripe", strings.NewReader(body))
 	request.Header.Set("Stripe-Signature", stripe.SignPayload([]byte(body), webhookSecret, h.now()))
@@ -218,13 +224,19 @@ func subscriptionObject(status string) string {
 
 // invoiceObject is the payload shape of an invoice event.
 func invoiceObject() string {
-	return fmt.Sprintf(`{"id":"in_1","object":"invoice","customer":%q,"subscription":"sub_test_1","metadata":{"feasible_team_id":"1"}}`, customerID)
+	return invoiceObjectFor("in_1", "sub_test_1", now.Add(-time.Hour))
+}
+
+// invoiceObjectFor builds the pinned Basil invoice parent shape with explicit
+// provider creation time for evidence-order tests.
+func invoiceObjectFor(invoiceID, subscriptionID string, created time.Time) string {
+	return fmt.Sprintf(`{"id":%q,"object":"invoice","created":%d,"customer":%q,"parent":{"type":"subscription_details","subscription_details":{"subscription":%q,"metadata":{"feasible_team_id":"1"}}}}`, invoiceID, created.Unix(), customerID, subscriptionID)
 }
 
 // checkoutObject builds the session shape shared by immediate and delayed
 // payment events.
 func checkoutObject(paymentStatus string) string {
-	return fmt.Sprintf(`{"id":"cs_1","object":"checkout.session","customer":%q,"subscription":"sub_test_1","payment_status":%q,"metadata":{"feasible_team_id":"1"}}`, customerID, paymentStatus)
+	return fmt.Sprintf(`{"id":"cs_1","object":"checkout.session","created":%d,"customer":%q,"subscription":"sub_test_1","payment_status":%q,"metadata":{"feasible_team_id":"1"}}`, now.Add(-time.Hour).Unix(), customerID, paymentStatus)
 }
 
 // phase reads the account's current lifecycle phase.
@@ -408,33 +420,219 @@ func TestAsyncCheckoutFailureStaysFailed(t *testing.T) {
 	}
 }
 
-// TestDuplicateDeliveryIsIgnored is the idempotency guarantee. The provider
-// retries, and a handler that acted on every delivery would double-apply.
+// TestTerminalPaymentEvidenceUsesProviderOrder covers every paid/failed source
+// order and delivery order. The newer invoice must win whether it arrives first
+// or last, so arrival scheduling cannot decide account access.
+func TestTerminalPaymentEvidenceUsesProviderOrder(t *testing.T) {
+	cases := []struct {
+		name         string
+		newerState   string
+		newerArrives bool
+	}{
+		{name: "newer paid arrives first", newerState: PaymentPaid, newerArrives: true},
+		{name: "newer paid arrives last", newerState: PaymentPaid, newerArrives: false},
+		{name: "newer failed arrives first", newerState: PaymentFailed, newerArrives: true},
+		{name: "newer failed arrives last", newerState: PaymentFailed, newerArrives: false},
+	}
+
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.provider.set(stripe.StatusActive, false)
+
+			olderState := PaymentFailed
+			if test.newerState == PaymentFailed {
+				olderState = PaymentPaid
+			}
+
+			olderType := stripe.EventInvoicePaymentFailed
+			if olderState == PaymentPaid {
+				olderType = stripe.EventInvoicePaymentSucceed
+			}
+			newerType := stripe.EventInvoicePaymentFailed
+			if test.newerState == PaymentPaid {
+				newerType = stripe.EventInvoicePaymentSucceed
+			}
+
+			olderAt := h.now().Add(-2 * time.Hour)
+			newerAt := h.now().Add(-time.Hour)
+			older := func() {
+				h.deliverCreated("evt_older", olderType,
+					invoiceObjectFor("in_older", "sub_test_1", olderAt), olderAt.Add(time.Minute))
+			}
+			newer := func() {
+				h.deliverCreated("evt_newer", newerType,
+					invoiceObjectFor("in_newer", "sub_test_1", newerAt), newerAt.Add(time.Minute))
+			}
+
+			if test.newerArrives {
+				newer()
+				older()
+			} else {
+				older()
+				newer()
+			}
+
+			mirror, err := h.service.Store.Load(context.Background(), teamID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mirror.PaymentState != test.newerState {
+				t.Fatalf("payment state is %q, want newer %q", mirror.PaymentState, test.newerState)
+			}
+
+			wantPhase := lifecycle.PhaseGrace
+			if test.newerState == PaymentPaid {
+				wantPhase = lifecycle.PhaseActive
+			}
+			if got := h.phase(); got != wantPhase {
+				t.Fatalf("phase is %q, want %q", got, wantPhase)
+			}
+		})
+	}
+}
+
+// TestExactPaymentTimestampTieUsesSettlementSemantics makes the deterministic
+// tie rule explicit: proof of settlement outranks a failure for the same Stripe
+// object and second, regardless of which event is examined first.
+func TestExactPaymentTimestampTieUsesSettlementSemantics(t *testing.T) {
+	paid := PaymentUpdate{State: PaymentPaid, SourceID: "in_tie", SourceCreated: 10, EventCreated: 20}
+	failed := PaymentUpdate{State: PaymentFailed, SourceID: "in_tie", SourceCreated: 10, EventCreated: 20}
+
+	if !paymentUpdateAfter(paid, failed) {
+		t.Fatal("settlement did not outrank failure at an exact provider timestamp tie")
+	}
+	if paymentUpdateAfter(failed, paid) {
+		t.Fatal("failure outranked settlement at an exact provider timestamp tie")
+	}
+}
+
+// TestConcurrentPaymentTransitionsUseProviderOrder exercises the keyed account
+// lock with contradictory terminal events entering the handler at the same time.
+func TestConcurrentPaymentTransitionsUseProviderOrder(t *testing.T) {
+	for _, newerState := range []string{PaymentPaid, PaymentFailed} {
+		t.Run(newerState, func(t *testing.T) {
+			h := newHarness(t)
+			h.provider.set(stripe.StatusActive, false)
+
+			olderType := stripe.EventInvoicePaymentFailed
+			newerType := stripe.EventInvoicePaymentSucceed
+			if newerState == PaymentFailed {
+				olderType = stripe.EventInvoicePaymentSucceed
+				newerType = stripe.EventInvoicePaymentFailed
+			}
+
+			olderAt := h.now().Add(-2 * time.Hour)
+			newerAt := h.now().Add(-time.Hour)
+			start := make(chan struct{})
+			responses := make(chan *httptest.ResponseRecorder, 2)
+			var workers sync.WaitGroup
+
+			workers.Add(2)
+			go func() {
+				defer workers.Done()
+				<-start
+				responses <- h.deliverCreated("evt_concurrent_older", olderType,
+					invoiceObjectFor("in_concurrent_older", "sub_test_1", olderAt), olderAt.Add(time.Minute))
+			}()
+			go func() {
+				defer workers.Done()
+				<-start
+				responses <- h.deliverCreated("evt_concurrent_newer", newerType,
+					invoiceObjectFor("in_concurrent_newer", "sub_test_1", newerAt), newerAt.Add(time.Minute))
+			}()
+
+			close(start)
+			workers.Wait()
+			close(responses)
+
+			for response := range responses {
+				if response.Code != http.StatusOK {
+					t.Errorf("concurrent transition returned status %d: %s", response.Code, response.Body.String())
+				}
+			}
+
+			mirror, err := h.service.Store.Load(context.Background(), teamID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mirror.PaymentState != newerState {
+				t.Fatalf("concurrent payment state is %q, want newer %q", mirror.PaymentState, newerState)
+			}
+		})
+	}
+}
+
+// TestPendingNeverReplacesTerminalEvidence pins the monotonic source rule for a
+// Checkout Session even when its non-terminal completion event is created later.
+func TestPendingNeverReplacesTerminalEvidence(t *testing.T) {
+	for _, terminal := range []string{PaymentPaid, PaymentFailed} {
+		t.Run(terminal, func(t *testing.T) {
+			h := newHarness(t)
+
+			eventType := stripe.EventCheckoutAsyncPaymentSucceeded
+			if terminal == PaymentFailed {
+				eventType = stripe.EventCheckoutAsyncPaymentFailed
+			}
+
+			h.deliverCreated("evt_terminal", eventType, checkoutObject("unpaid"), h.now().Add(-time.Minute))
+			h.deliverCreated("evt_pending_late", stripe.EventCheckoutCompleted, checkoutObject("unpaid"), h.now())
+
+			mirror, err := h.service.Store.Load(context.Background(), teamID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mirror.PaymentState != terminal {
+				t.Fatalf("late pending changed %q terminal evidence to %q", terminal, mirror.PaymentState)
+			}
+		})
+	}
+}
+
+// TestDuplicateDeliveryIsIgnored is the concurrent idempotency guarantee. Many
+// copies can race through claim, but exactly one may read the provider and apply.
 func TestDuplicateDeliveryIsIgnored(t *testing.T) {
 	h := newHarness(t)
 
-	first := h.deliver("evt_dup", stripe.EventInvoicePaymentSucceed, invoiceObject())
-	if !strings.Contains(first.Body.String(), OutcomeApplied) {
-		t.Fatalf("first delivery: %s", first.Body.String())
+	const deliveries = 16
+	responses := make(chan *httptest.ResponseRecorder, deliveries)
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+
+	for i := 0; i < deliveries; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			responses <- h.deliver("evt_dup", stripe.EventInvoicePaymentSucceed, invoiceObject())
+		}()
 	}
 
-	before := h.provider.reads()
+	close(start)
+	workers.Wait()
+	close(responses)
 
-	for i := 0; i < 5; i++ {
-		again := h.deliver("evt_dup", stripe.EventInvoicePaymentSucceed, invoiceObject())
-
-		if again.Code != http.StatusOK {
-			t.Fatalf("redelivery %d: status %d", i, again.Code)
-		}
-		if !strings.Contains(again.Body.String(), OutcomeDuplicate) {
-			t.Fatalf("redelivery %d was not recognised as a duplicate: %s", i, again.Body.String())
+	applied := 0
+	duplicates := 0
+	processing := 0
+	for response := range responses {
+		switch {
+		case response.Code == http.StatusOK && strings.Contains(response.Body.String(), OutcomeApplied):
+			applied++
+		case response.Code == http.StatusOK && strings.Contains(response.Body.String(), OutcomeDuplicate):
+			duplicates++
+		case response.Code == http.StatusInternalServerError:
+			processing++
+		default:
+			t.Errorf("unexpected status %d and outcome: %s", response.Code, response.Body.String())
 		}
 	}
 
-	// A duplicate must not even ask the provider. Recognising it late would
-	// still be correct, but it would mean five network calls per retry storm.
-	if after := h.provider.reads(); after != before {
-		t.Errorf("duplicates cost %d extra provider reads", after-before)
+	if applied != 1 || duplicates+processing != deliveries-1 {
+		t.Errorf("outcomes are applied=%d duplicate=%d processing=%d", applied, duplicates, processing)
+	}
+	if reads := h.provider.reads(); reads != 1 {
+		t.Errorf("concurrent duplicates caused %d provider reads, want 1", reads)
 	}
 
 	var rows int
@@ -442,7 +640,38 @@ func TestDuplicateDeliveryIsIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 	if rows != 1 {
-		t.Errorf("six deliveries wrote %d event rows, want 1", rows)
+		t.Errorf("%d deliveries wrote %d event rows, want 1", deliveries, rows)
+	}
+}
+
+// TestStaleEventClaimCanBeRecovered ensures an in-progress duplicate is
+// retryable and that only the claimant holding the renewed lease may finish.
+func TestStaleEventClaimCanBeRecovered(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	payload := []byte(`{"id":"evt_lease"}`)
+
+	first, err := h.service.Store.ClaimEvent(ctx, "evt_lease", stripe.EventInvoicePaymentSucceed, teamID, payload)
+	if err != nil || !first.Claimed {
+		t.Fatalf("first claim is %+v, error %v", first, err)
+	}
+
+	inProgress, err := h.service.Store.ClaimEvent(ctx, "evt_lease", stripe.EventInvoicePaymentSucceed, teamID, payload)
+	if err != nil || inProgress.Claimed || !inProgress.Processing {
+		t.Fatalf("in-progress claim is %+v, error %v", inProgress, err)
+	}
+
+	h.travel(eventClaimLease + time.Second)
+	recovered, err := h.service.Store.ClaimEvent(ctx, "evt_lease", stripe.EventInvoicePaymentSucceed, teamID, payload)
+	if err != nil || !recovered.Claimed {
+		t.Fatalf("recovered claim is %+v, error %v", recovered, err)
+	}
+
+	if err := h.service.Store.FinishEvent(ctx, "evt_lease", first, OutcomeApplied, teamID, nil); err == nil {
+		t.Fatal("expired claimant was allowed to finish the renewed lease")
+	}
+	if err := h.service.Store.FinishEvent(ctx, "evt_lease", recovered, OutcomeApplied, teamID, nil); err != nil {
+		t.Fatalf("recovered claimant could not finish: %v", err)
 	}
 }
 
@@ -453,12 +682,21 @@ func TestDuplicateDeliveryIsIgnored(t *testing.T) {
 func TestOutOfOrderDeliveryDoesNotUndoAPayment(t *testing.T) {
 	h := newHarness(t)
 
-	// The world: the subscription is active and paid.
+	// The world: the subscription is active, and a settlement event is newer than
+	// the failed attempt that is still in transit.
 	h.provider.set(stripe.StatusActive, false)
+	invoice := invoiceObjectFor("in_recovered", "sub_test_1", h.now().Add(-10*time.Minute))
+	paidAt := h.now().Add(-time.Minute)
+	failedAt := h.now().Add(-2 * time.Minute)
+
+	paid := h.deliverCreated("evt_paid_first", stripe.EventInvoicePaymentSucceed, invoice, paidAt)
+	if paid.Code != http.StatusOK {
+		t.Fatalf("paid status %d: %s", paid.Code, paid.Body.String())
+	}
 
 	// A failure event that was generated minutes ago, delayed in transit, and is
 	// only arriving now. Its payload says past_due.
-	response := h.deliver("evt_stale_fail", stripe.EventInvoicePaymentFailed, invoiceObject())
+	response := h.deliverCreated("evt_stale_fail", stripe.EventInvoicePaymentFailed, invoice, failedAt)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", response.Code, response.Body.String())
 	}
@@ -468,6 +706,65 @@ func TestOutOfOrderDeliveryDoesNotUndoAPayment(t *testing.T) {
 	}
 	if !h.clockStart().IsZero() {
 		t.Fatal("a stale failure started the deletion clock on a paying account")
+	}
+}
+
+// TestInvoiceFinalizationFailureRevokesPaidEvidence covers Stripe's documented
+// state where the subscription remains active although the invoice cannot be
+// finalized or collected.
+func TestInvoiceFinalizationFailureRevokesPaidEvidence(t *testing.T) {
+	h := newHarness(t)
+	h.provider.set(stripe.StatusActive, false)
+
+	paidAt := h.now().Add(-2 * time.Hour)
+	h.deliverCreated("evt_initial_paid", stripe.EventInvoicePaymentSucceed,
+		invoiceObjectFor("in_initial", "sub_test_1", paidAt), paidAt.Add(time.Minute))
+	if got := h.phase(); got != lifecycle.PhaseActive {
+		t.Fatalf("initial settlement left phase %q", got)
+	}
+
+	failedAt := h.now().Add(-time.Hour)
+	response := h.deliverCreated("evt_finalize_failed", stripe.EventInvoiceFinalizationFailed,
+		invoiceObjectFor("in_uncollectable", "sub_test_1", failedAt), failedAt.Add(time.Minute))
+	if response.Code != http.StatusOK {
+		t.Fatalf("finalization failure status %d: %s", response.Code, response.Body.String())
+	}
+
+	mirror, err := h.service.Store.Load(context.Background(), teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mirror.Status != stripe.StatusActive || mirror.PaymentState != PaymentFailed {
+		t.Fatalf("active uncollectable subscription is status=%q payment=%q", mirror.Status, mirror.PaymentState)
+	}
+	if got := h.phase(); got != lifecycle.PhaseGrace {
+		t.Fatalf("finalization failure retained access in phase %q", got)
+	}
+}
+
+// TestInvoiceEvidenceRequiresCurrentSubscriptionID rejects one-off invoices,
+// malformed Basil parents, and invoices for another subscription on a customer.
+func TestInvoiceEvidenceRequiresCurrentSubscriptionID(t *testing.T) {
+	h := newHarness(t)
+	h.deliver("evt_paid", stripe.EventInvoicePaymentSucceed, invoiceObject())
+
+	missing := fmt.Sprintf(`{"id":"in_missing","object":"invoice","customer":%q,"metadata":{"feasible_team_id":"1"}}`, customerID)
+	wrongParent := fmt.Sprintf(`{"id":"in_quote","object":"invoice","customer":%q,"subscription":"sub_test_1","parent":{"type":"quote_details"},"metadata":{"feasible_team_id":"1"}}`, customerID)
+	mismatch := invoiceObjectFor("in_other", "sub_other", h.now())
+
+	for i, object := range []string{missing, wrongParent, mismatch} {
+		response := h.deliver(fmt.Sprintf("evt_ignored_invoice_%d", i), stripe.EventInvoicePaymentFailed, object)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), OutcomeIgnored) {
+			t.Errorf("invoice %d was not ignored: status=%d body=%s", i, response.Code, response.Body.String())
+		}
+	}
+
+	mirror, err := h.service.Store.Load(context.Background(), teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mirror.PaymentState != PaymentPaid || h.phase() != lifecycle.PhaseActive {
+		t.Fatalf("unmatched invoice changed payment=%q phase=%q", mirror.PaymentState, h.phase())
 	}
 }
 
@@ -587,12 +884,23 @@ func TestAPausedSubscriptionIsNotPaying(t *testing.T) {
 		t.Errorf("the mirror says %q, want paused", mirror.Status)
 	}
 
-	// Resuming puts it back.
+	// Resuming changes subscription collection state, but it does not prove a
+	// charge settled and therefore cannot clear the lapse by itself.
+	dayZero := h.clockStart()
 	h.provider.set(stripe.StatusActive, false)
 	h.deliver("evt_resumed", stripe.EventSubscriptionResumed, subscriptionObject(stripe.StatusActive))
 
+	if got := h.phase(); got != lifecycle.PhaseGrace {
+		t.Fatalf("resumed without settlement changed phase to %q", got)
+	}
+	if got := h.clockStart(); !got.Equal(dayZero) {
+		t.Fatalf("resumed moved the lapse clock from %s to %s", dayZero, got)
+	}
+
+	// A later invoice settlement is the evidence that restores access.
+	h.deliver("evt_paid_after_resume", stripe.EventInvoicePaymentSucceed, invoiceObject())
 	if got := h.phase(); got != lifecycle.PhaseActive {
-		t.Fatalf("after resuming, phase is %q, want active", got)
+		t.Fatalf("settlement after resume left phase %q, want active", got)
 	}
 }
 

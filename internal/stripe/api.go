@@ -187,6 +187,7 @@ type Product struct {
 // CheckoutSession is the object a checkout produces.
 type CheckoutSession struct {
 	ID            string `json:"id"`
+	Created       int64  `json:"created"`
 	URL           string `json:"url"`
 	Customer      string `json:"customer"`
 	Subscription  string `json:"subscription"`
@@ -203,6 +204,7 @@ type CheckoutSession struct {
 // WebhookEndpoint is one Stripe destination and the events sent to it.
 type WebhookEndpoint struct {
 	ID            string   `json:"id"`
+	APIVersion    string   `json:"api_version"`
 	URL           string   `json:"url"`
 	Status        string   `json:"status"`
 	EnabledEvents []string `json:"enabled_events"`
@@ -216,15 +218,70 @@ type PortalSession struct {
 
 // Invoice is the part of an invoice the webhook path reads.
 type Invoice struct {
-	ID           string `json:"id"`
-	Customer     string `json:"customer"`
+	ID           string         `json:"id"`
+	Created      int64          `json:"created"`
+	Customer     string         `json:"customer"`
+	Subscription string         `json:"subscription"`
+	Parent       *InvoiceParent `json:"parent"`
+	Status       string         `json:"status"`
+	AttemptCount int            `json:"attempt_count"`
+	Total        int64          `json:"total"`
+	Currency     string         `json:"currency"`
+	HostedURL    string         `json:"hosted_invoice_url"`
+	Metadata     Meta           `json:"metadata"`
+}
+
+// InvoiceParent is the Basil location of the object that generated an invoice.
+// Stripe removed the top-level subscription fields in 2025-03-31.basil, so a
+// subscription invoice is identified only when the parent type agrees with the
+// nested details.
+type InvoiceParent struct {
+	Type                string                      `json:"type"`
+	SubscriptionDetails *InvoiceSubscriptionDetails `json:"subscription_details"`
+}
+
+// InvoiceSubscriptionDetails identifies the subscription that generated an
+// invoice and carries the immutable metadata snapshot Stripe puts on it.
+type InvoiceSubscriptionDetails struct {
 	Subscription string `json:"subscription"`
-	Status       string `json:"status"`
-	AttemptCount int    `json:"attempt_count"`
-	Total        int64  `json:"total"`
-	Currency     string `json:"currency"`
-	HostedURL    string `json:"hosted_invoice_url"`
 	Metadata     Meta   `json:"metadata"`
+}
+
+// SubscriptionID returns the Basil subscription parent. The top-level fallback
+// is retained only for stored events rendered before Basil; once parent exists,
+// its type and nested id must be valid rather than falling back ambiguously.
+func (i *Invoice) SubscriptionID() string {
+	if i == nil {
+		return ""
+	}
+
+	if i.Parent != nil {
+		if i.Parent.Type != "subscription_details" || i.Parent.SubscriptionDetails == nil {
+			return ""
+		}
+
+		return i.Parent.SubscriptionDetails.Subscription
+	}
+
+	return i.Subscription
+}
+
+// TeamID returns the invoice metadata account id, including the Basil parent
+// snapshot used when the invoice itself has no metadata.
+func (i *Invoice) TeamID() int64 {
+	if i == nil {
+		return 0
+	}
+
+	if teamID := i.Metadata.TeamID(); teamID > 0 {
+		return teamID
+	}
+
+	if i.Parent != nil && i.Parent.Type == "subscription_details" && i.Parent.SubscriptionDetails != nil {
+		return i.Parent.SubscriptionDetails.Metadata.TeamID()
+	}
+
+	return 0
 }
 
 // list is Stripe's paginated envelope.

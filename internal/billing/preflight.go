@@ -208,6 +208,11 @@ func (s *Service) preflightWebhook(ctx context.Context, report *PreflightReport)
 			report.add(PreflightFail, "Webhook endpoint", fmt.Sprintf("%s is %s", wantURL, endpoint.Status))
 			return
 		}
+		if endpoint.APIVersion != stripe.ManagedPaymentsAPIVersion {
+			report.add(PreflightFail, "Webhook endpoint",
+				fmt.Sprintf("%s renders events as %q, want %q", wantURL, endpoint.APIVersion, stripe.ManagedPaymentsAPIVersion))
+			return
+		}
 
 		missing := missingWebhookEvents(endpoint.EnabledEvents)
 		if len(missing) > 0 {
@@ -246,6 +251,7 @@ func missingWebhookEvents(enabled []string) []string {
 		stripe.EventSubscriptionResumed,
 		stripe.EventInvoicePaymentSucceed,
 		stripe.EventInvoicePaymentFailed,
+		stripe.EventInvoiceFinalizationFailed,
 	}
 
 	var missing []string
@@ -258,27 +264,62 @@ func missingWebhookEvents(enabled []string) []string {
 	return missing
 }
 
-// preflightCheckout proves Stripe accepts the same Managed Payments parameters
-// used for customers, then expires the untouched session immediately.
+// preflightCheckout proves Stripe accepts both prices with the same Managed
+// Payments parameters used for customers, then attempts to expire every session
+// it created even when another creation or cleanup step fails.
 func (s *Service) preflightCheckout(ctx context.Context, report *PreflightReport) {
 	stamp := s.now().Format("20060102T150405.000000000")
-	session, err := s.Stripe.CreateCheckoutSession(ctx, stripe.CheckoutParams{
-		PriceID:        s.Plans.Monthly,
-		SuccessURL:     strings.TrimRight(s.BaseURL, "/") + "/billing/done?session={CHECKOUT_SESSION_ID}",
-		CancelURL:      strings.TrimRight(s.BaseURL, "/") + "/pricing",
-		IdempotencyKey: "managed-payments-preflight-create-" + stamp,
-	})
-	if err != nil {
-		report.add(PreflightFail, "Managed Payments checkout smoke", err.Error())
-		return
+	plans := []struct {
+		name    string
+		priceID string
+	}{
+		{name: "monthly", priceID: s.Plans.Monthly},
+		{name: "yearly", priceID: s.Plans.Yearly},
 	}
 
-	if err := s.Stripe.ExpireCheckoutSession(ctx, session.ID, "managed-payments-preflight-expire-"+session.ID); err != nil {
-		report.add(PreflightFail, "Managed Payments checkout smoke",
-			fmt.Sprintf("Stripe accepted session %s but it could not be expired: %v; expire it in the Dashboard", session.ID, err))
+	type createdSession struct {
+		plan string
+		id   string
+	}
+
+	var sessions []createdSession
+	var problems []string
+
+	for _, plan := range plans {
+		session, err := s.Stripe.CreateCheckoutSession(ctx, stripe.CheckoutParams{
+			PriceID:        plan.priceID,
+			SuccessURL:     strings.TrimRight(s.BaseURL, "/") + "/billing/done?session={CHECKOUT_SESSION_ID}",
+			CancelURL:      strings.TrimRight(s.BaseURL, "/") + "/pricing",
+			IdempotencyKey: "managed-payments-preflight-create-" + plan.name + "-" + stamp,
+		})
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("%s checkout creation failed: %v", plan.name, err))
+			continue
+		}
+		if strings.TrimSpace(session.ID) == "" {
+			problems = append(problems, fmt.Sprintf("%s checkout creation returned no session id, so cleanup could not be attempted", plan.name))
+			continue
+		}
+
+		sessions = append(sessions, createdSession{plan: plan.name, id: session.ID})
+	}
+
+	// Cleanup uses a context detached from a cancelled preflight so every known
+	// open session still receives an expiration attempt. The Stripe client's own
+	// request timeout continues to bound each call.
+	cleanupCtx := context.WithoutCancel(ctx)
+	for _, session := range sessions {
+		if err := s.Stripe.ExpireCheckoutSession(cleanupCtx, session.id, "managed-payments-preflight-expire-"+session.id); err != nil {
+			problems = append(problems,
+				fmt.Sprintf("%s cleanup failed for session %s: %v; expire it in the Dashboard", session.plan, session.id, err))
+		}
+	}
+
+	if len(problems) > 0 {
+		report.add(PreflightFail, "Managed Payments checkout smoke", strings.Join(problems, "; "))
 		return
 	}
 
 	report.add(PreflightPass, "Managed Payments checkout smoke",
-		"Stripe accepted and expired a customerless session; activation, terms, product tax-code eligibility, and request compatibility are verified")
+		"Stripe accepted and expired customerless monthly and yearly sessions; activation, terms, product tax-code eligibility, and request compatibility are verified")
 }

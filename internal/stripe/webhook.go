@@ -33,6 +33,7 @@ const (
 	EventSubscriptionResumed           = "customer.subscription.resumed"
 	EventInvoicePaymentSucceed         = "invoice.payment_succeeded"
 	EventInvoicePaymentFailed          = "invoice.payment_failed"
+	EventInvoiceFinalizationFailed     = "invoice.finalization_failed"
 )
 
 // SignatureTolerance is how far a webhook's timestamp may be from ours. Five
@@ -131,6 +132,14 @@ func (e *Event) SubscriptionID() string {
 	if object.Object == "subscription" {
 		return object.ID
 	}
+	if object.Object == "invoice" {
+		invoice, err := e.Invoice()
+		if err != nil {
+			return ""
+		}
+
+		return invoice.SubscriptionID()
+	}
 
 	return object.Subscription
 }
@@ -138,14 +147,46 @@ func (e *Event) SubscriptionID() string {
 // TeamID reads the account id out of the object's metadata, if it has any.
 func (e *Event) TeamID() int64 {
 	var object struct {
-		Metadata Meta `json:"metadata"`
+		Object   string `json:"object"`
+		Metadata Meta   `json:"metadata"`
 	}
 
 	if err := decodeJSON(e.Data.Object, &object); err != nil {
 		return 0
 	}
 
-	return object.Metadata.TeamID()
+	if teamID := object.Metadata.TeamID(); teamID > 0 {
+		return teamID
+	}
+
+	if object.Object == "invoice" {
+		invoice, err := e.Invoice()
+		if err != nil {
+			return 0
+		}
+
+		return invoice.TeamID()
+	}
+
+	return 0
+}
+
+// DecodeEvent decodes a Stripe event without verifying a delivery signature.
+// It is used only for events already stored after ParseWebhook authenticated
+// them, allowing durable source timestamps to be compared after a restart.
+func DecodeEvent(payload []byte) (*Event, error) {
+	var event Event
+	if err := decodeJSON(payload, &event); err != nil {
+		return nil, err
+	}
+
+	if event.ID == "" {
+		return nil, fmt.Errorf("stripe: webhook has no event id")
+	}
+
+	event.Raw = payload
+
+	return &event, nil
 }
 
 // ParseWebhook verifies a delivery's signature and decodes it.
@@ -199,18 +240,7 @@ func ParseWebhook(payload []byte, header, secret string, now time.Time) (*Event,
 		return nil, fmt.Errorf("stripe: webhook signature does not match")
 	}
 
-	var event Event
-	if err := decodeJSON(payload, &event); err != nil {
-		return nil, err
-	}
-
-	if event.ID == "" {
-		return nil, fmt.Errorf("stripe: webhook has no event id")
-	}
-
-	event.Raw = payload
-
-	return &event, nil
+	return DecodeEvent(payload)
 }
 
 // parseSignatureHeader splits Stripe-Signature into its timestamp and its v1

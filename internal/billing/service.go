@@ -28,25 +28,30 @@ type Plans struct {
 	Yearly  string
 }
 
-// PaymentState is durable evidence about the first payment for a subscription.
-// Stripe can report the subscription itself as active before an asynchronous
-// checkout payment has settled, so subscription status cannot answer this.
+// PaymentState is durable evidence about the latest payment attempt for a
+// subscription. Stripe can report the subscription itself as active before an
+// asynchronous checkout payment settles or while invoice finalization is
+// broken, so subscription status cannot answer this.
 const (
 	PaymentPending = "pending"
 	PaymentPaid    = "paid"
 	PaymentFailed  = "failed"
 )
 
-// PaymentUpdate attaches one checkout or invoice result to the subscription it
-// describes. An empty state means the webhook only asks for reconciliation.
+// PaymentUpdate attaches ordered Checkout Session or invoice evidence to the
+// subscription it describes. An empty state means the webhook only asks for
+// reconciliation and cannot itself establish payment.
 type PaymentUpdate struct {
 	State          string
 	SubscriptionID string
+	SourceID       string
+	SourceCreated  int64
+	EventCreated   int64
+	Trigger        string
 
-	// OnlyIfUnhealthy is used for stale-tolerant failure events such as an
-	// invoice retry. Async checkout failure leaves this false because it must
-	// override an active subscription status for that same checkout.
-	OnlyIfUnhealthy bool
+	// RequireSubscriptionMatch prevents an invoice or Checkout Session from
+	// changing an unrelated subscription owned by the same customer.
+	RequireSubscriptionMatch bool
 }
 
 // PriceFor maps a plan key from a URL onto a price id. An unknown key returns
@@ -102,29 +107,39 @@ func (s *Service) Enabled() bool {
 }
 
 // Reconcile brings one account into line with the payment provider's current
-// state, and is the only function in this package that changes anything.
+// state, and is the only function in this package that changes anything. The
+// boolean reports whether the triggering object matched the current account
+// subscription and was therefore reconciled.
 //
 // Current provider state remains authoritative for the subscription, while a
 // successful or failed payment event is durable evidence about whether that
 // otherwise-active subscription may grant access. This distinction is required
 // for asynchronous methods, where subscription status can get ahead of money.
-func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string, update PaymentUpdate) error {
+func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string, update PaymentUpdate) (bool, error) {
 	if teamID < 1 {
-		return fmt.Errorf("billing: cannot reconcile without an account id")
+		return false, fmt.Errorf("billing: cannot reconcile without an account id")
 	}
 
 	if customerID == "" {
-		return fmt.Errorf("billing: cannot reconcile account %d without a customer id", teamID)
+		return false, fmt.Errorf("billing: cannot reconcile account %d without a customer id", teamID)
 	}
+
+	unlock := s.Store.LockAccount(teamID)
+	defer unlock()
+	trigger := update.Trigger
 
 	existing, err := s.Store.Load(ctx, teamID)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	subscription, err := s.Stripe.ActiveSubscription(ctx, customerID)
 	if err != nil {
-		return err
+		return false, err
+	}
+
+	if update.RequireSubscriptionMatch && (update.SubscriptionID == "" || subscription == nil || update.SubscriptionID != subscription.ID) {
+		return false, nil
 	}
 
 	email := ""
@@ -142,6 +157,7 @@ func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string
 
 	if subscription != nil {
 		plan := stripe.Describe(subscription.PriceID(), s.Plans.Monthly, s.Plans.Yearly)
+		newSubscription := existing.SubscriptionID != subscription.ID
 
 		mirror.SubscriptionID = subscription.ID
 		mirror.Status = subscription.Status
@@ -152,7 +168,7 @@ func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string
 
 		// A never-before-seen subscription is not paid merely because Stripe calls
 		// it active. The checkout or invoice success event supplies that evidence.
-		if existing.SubscriptionID != subscription.ID {
+		if newSubscription {
 			mirror.PaymentState = PaymentPending
 		} else if mirror.PaymentState == "" && (existing.Status == stripe.StatusActive || existing.Status == stripe.StatusTrialing) {
 			// Existing subscriptions predate the payment_state column and were
@@ -160,8 +176,15 @@ func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string
 			mirror.PaymentState = PaymentPaid
 		}
 
+		if update.State != "" || newSubscription || mirror.PaymentState == PaymentPending {
+			update, err = s.latestPaymentUpdate(ctx, teamID, subscription.ID, update)
+			if err != nil {
+				return false, err
+			}
+		}
+
 		updateApplies := paymentUpdateApplies(update, subscription)
-		terminalPayment := existing.SubscriptionID == subscription.ID &&
+		terminalPayment := !newSubscription &&
 			(existing.PaymentState == PaymentPaid || existing.PaymentState == PaymentFailed)
 		if updateApplies && !(update.State == PaymentPending && terminalPayment) {
 			mirror.PaymentState = update.State
@@ -189,7 +212,7 @@ func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string
 	}
 
 	if err := s.Store.Save(ctx, mirror); err != nil {
-		return err
+		return false, err
 	}
 
 	// Pending means exactly that: preserve the trial or lapse clock as-is until
@@ -198,7 +221,7 @@ func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string
 	// Stripe has left an async subscription's own status as active.
 	var signal lifecycle.Signal
 	switch {
-	case subscription != nil && subscription.Paying() && mirror.PaymentState == PaymentPaid:
+	case subscription != nil && subscription.Paying() && mirror.PaymentState == PaymentPaid && trigger != stripe.EventSubscriptionResumed:
 		signal = lifecycle.SignalPaymentSucceeded
 	case mirror.PaymentState == PaymentFailed:
 		signal = lifecycle.SignalPaymentFailed
@@ -213,12 +236,12 @@ func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string
 				"status", mirror.Status, "payment_state", mirror.PaymentState)
 		}
 
-		return nil
+		return true, nil
 	}
 
 	transition, err := s.Lifecycle.Signal(ctx, teamID, signal)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if s.Log != nil {
@@ -228,13 +251,12 @@ func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string
 			"phase", string(transition.To), "changed", transition.Changed)
 	}
 
-	return nil
+	return true, nil
 }
 
-// paymentUpdateApplies rejects evidence for a different subscription and stale
-// retry failures after the provider already recovered. A customer can have an
-// old paid subscription and a second failed checkout, and the failed attempt
-// must not lapse the subscription that is actually paying.
+// paymentUpdateApplies rejects evidence for a different subscription. A customer
+// can have an old paid subscription and a second failed checkout, and the failed
+// attempt must not lapse the subscription that is actually paying.
 func paymentUpdateApplies(update PaymentUpdate, subscription *stripe.Subscription) bool {
 	if update.State == "" {
 		return false
@@ -242,11 +264,94 @@ func paymentUpdateApplies(update PaymentUpdate, subscription *stripe.Subscriptio
 	if update.SubscriptionID != "" && update.SubscriptionID != subscription.ID {
 		return false
 	}
-	if update.OnlyIfUnhealthy && subscription.Paying() {
-		return false
-	}
 
 	return true
+}
+
+// latestPaymentUpdate resolves the signed evidence stored for one subscription.
+// Provider object creation time orders separate Checkout Sessions or invoices;
+// event creation time orders changes to the same object; and terminal settlement
+// semantics break exact timestamp ties without relying on delivery order.
+func (s *Service) latestPaymentUpdate(ctx context.Context, teamID int64, subscriptionID string, current PaymentUpdate) (PaymentUpdate, error) {
+	payloads, err := s.Store.EventPayloads(ctx, teamID, paymentEvidenceEventTypes())
+	if err != nil {
+		return PaymentUpdate{}, err
+	}
+
+	best := PaymentUpdate{}
+	if current.SubscriptionID == subscriptionID && current.State != "" {
+		best = current
+	}
+
+	for _, payload := range payloads {
+		event, err := stripe.DecodeEvent(payload)
+		if err != nil {
+			return PaymentUpdate{}, fmt.Errorf("billing: decode stored payment event: %w", err)
+		}
+
+		candidate, err := paymentUpdate(event)
+		if err != nil {
+			return PaymentUpdate{}, fmt.Errorf("billing: decode stored payment evidence %s: %w", event.ID, err)
+		}
+		if candidate.SubscriptionID != subscriptionID || candidate.State == "" {
+			continue
+		}
+
+		if paymentUpdateAfter(candidate, best) {
+			best = candidate
+		}
+	}
+
+	return best, nil
+}
+
+// paymentUpdateAfter compares payment evidence independently of delivery order.
+// Pending is non-terminal and can never replace terminal evidence. Between paid
+// and failed, the newer provider object and then newer event wins; settlement
+// wins only when both Stripe timestamps are exactly tied.
+func paymentUpdateAfter(candidate, current PaymentUpdate) bool {
+	if current.State == "" {
+		return true
+	}
+
+	candidateTerminal := candidate.State == PaymentPaid || candidate.State == PaymentFailed
+	currentTerminal := current.State == PaymentPaid || current.State == PaymentFailed
+	if candidateTerminal != currentTerminal {
+		return candidateTerminal
+	}
+
+	candidateSource := candidate.SourceCreated
+	if candidateSource == 0 {
+		candidateSource = candidate.EventCreated
+	}
+	currentSource := current.SourceCreated
+	if currentSource == 0 {
+		currentSource = current.EventCreated
+	}
+
+	if candidateSource != currentSource {
+		return candidateSource > currentSource
+	}
+	if candidate.EventCreated != current.EventCreated {
+		return candidate.EventCreated > current.EventCreated
+	}
+
+	return paymentEvidenceRank(candidate.State) > paymentEvidenceRank(current.State)
+}
+
+// paymentEvidenceRank supplies the monotonic tie-break for one logical payment
+// object: settled outranks failed, and either terminal result outranks pending.
+func paymentEvidenceRank(state string) int {
+	switch state {
+	case PaymentPaid:
+		return 3
+	case PaymentFailed:
+		return 2
+	case PaymentPending:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // CheckoutPaymentStatus reads the return session only to choose honest copy.
