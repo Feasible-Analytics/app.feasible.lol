@@ -171,6 +171,28 @@ func TestSamplerSizesTheDatabases(t *testing.T) {
 	}
 }
 
+// TestSamplerReportsFreeSpace covers the one number here that predicts a
+// failure rather than describing one: every size gauge looks healthy right up
+// to the moment a database cannot grow.
+func TestSamplerReportsFreeSpace(t *testing.T) {
+	dir := t.TempDir()
+
+	if _, _, ok := diskSpace(dir); !ok {
+		t.Skip("this platform does not report free space")
+	}
+
+	values := gather(t, newSampler(Sources{DataDir: dir}))
+
+	total, available := values["feasible_disk_total_bytes"], values["feasible_disk_available_bytes"]
+
+	if total <= 0 {
+		t.Fatalf("total = %v, want a real filesystem size", total)
+	}
+	if available <= 0 || available > total {
+		t.Fatalf("available = %v with a total of %v", available, total)
+	}
+}
+
 // write makes a file of an exact size.
 func write(t *testing.T, path string, size int) {
 	t.Helper()

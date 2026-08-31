@@ -127,6 +127,14 @@ this system to leak. Drop counts by reason, write-buffer depth, roll-up freshnes
 and report latency are all there; per-site numbers belong to the customer and
 live on their own ingestion-health panel.
 
+### When it goes wrong
+
+[`ops/`](ops/) holds the operational half: continuous replication with
+Litestream, the load balancer's health-check settings, a runbook per failure this
+system actually has, and the game day that breaks things on purpose to check the
+runbooks are true. [`ops/README.md`](ops/README.md) lists every metric the binary
+emits, which is also the list a runbook is allowed to name.
+
 ### Before you push
 
 ```bash

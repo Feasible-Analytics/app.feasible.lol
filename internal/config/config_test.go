@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestLookupPrefersConfigDir is the Docker-secrets contract from the CLI issue:
@@ -132,6 +133,38 @@ func TestLoadFromDefaults(t *testing.T) {
 	}
 	if len(cfg.Ingest.Shards) != 1 {
 		t.Errorf("shards: got %v", cfg.Ingest.Shards)
+	}
+	if cfg.Litestream.ReplicaURL != "" {
+		t.Errorf("replica URL: got %q, want empty — an install that configured no replication has none", cfg.Litestream.ReplicaURL)
+	}
+}
+
+// TestLoadFromReplicationDefaults covers the one pairing among these values that
+// produces a replica nobody can restore from: retention has to outlive the
+// snapshot interval, or the snapshot a restore replays onto is deleted before
+// its replacement exists.
+func TestLoadFromReplicationDefaults(t *testing.T) {
+	loader, err := NewLoader(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(loader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Litestream.ConfigPath != DefaultLitestreamConfig {
+		t.Errorf("config path: got %q", cfg.Litestream.ConfigPath)
+	}
+	if cfg.Litestream.SyncInterval != time.Second {
+		t.Errorf("sync interval: got %s, want the one second the durability claim quotes", cfg.Litestream.SyncInterval)
+	}
+	if cfg.Litestream.Retention <= cfg.Litestream.SnapshotInterval {
+		t.Errorf("retention %s does not outlive the snapshot interval %s", cfg.Litestream.Retention, cfg.Litestream.SnapshotInterval)
+	}
+	if cfg.Litestream.WatchInterval <= 0 {
+		t.Errorf("watch interval: got %s — a new account would never be picked up", cfg.Litestream.WatchInterval)
 	}
 }
 
