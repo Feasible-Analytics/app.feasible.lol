@@ -177,7 +177,7 @@ func newStack(t *testing.T) *stack {
 		t.Fatal(err)
 	}
 
-	data := buildData(e, control, manager, service, site, false)
+	data := buildData(e, control, manager, service, site)
 
 	_, key, err := public.Keys.Create(ctx, lockedTeam, 1, "test", nil, 0)
 	if err != nil {

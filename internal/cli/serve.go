@@ -192,7 +192,7 @@ func runServe(e *env, args []string) int {
 	// Importing and exporting a site's history: the screens that start the work
 	// and the runner that does it. Both halves are built here so an import can
 	// only ever be started by a process that is also willing to run it.
-	data := buildData(e, control, manager, service, site, app.Google.Configured())
+	data := buildData(e, control, manager, service, site)
 
 	server := httpserver.New("app", e.cfg.App.Listen,
 		serveRoutes(e, service, manager, secret, e.cfg.App.DataDir, app, public, com, data.settings))
@@ -238,7 +238,7 @@ type dataStack struct {
 // Registration is by kind, so a job this build does not know about is discarded
 // with that reason on the row rather than retried forever by a process that can
 // never run it.
-func buildData(e *env, control *sql.DB, manager *accounts.Manager, service *ingest.Service, site *siteRules, googleConfigured bool) *dataStack {
+func buildData(e *env, control *sql.DB, manager *accounts.Manager, service *ingest.Service, site *siteRules) *dataStack {
 	queue := jobs.NewClient(control)
 	runner := jobs.NewRunner(queue)
 	runner.OnError = func(err error) { e.log.Error("job runner", "error", err) }
@@ -260,9 +260,8 @@ func buildData(e *env, control *sql.DB, manager *accounts.Manager, service *inge
 	// A nil application is what hides every Google feature. A button that sends
 	// somebody to Google and brings them back to invalid_client is worse than
 	// no button at all.
-	if googleConfigured {
-		app, _ := google.NewApp(e.cfg.App.Google.ClientID, e.cfg.App.Google.ClientSecret, e.cfg.App.BaseURL)
-		handler.Google = app
+	if oauth, ok := google.NewApp(e.cfg.App.Google.ClientID, e.cfg.App.Google.ClientSecret, e.cfg.App.BaseURL); ok {
+		handler.Google = oauth
 	}
 
 	return &dataStack{settings: handler, runner: runner}
