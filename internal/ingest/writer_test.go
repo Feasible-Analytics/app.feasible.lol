@@ -259,6 +259,89 @@ func TestMergedSessionIsRepairedOnDisk(t *testing.T) {
 	}
 }
 
+// TestALateEventThatStartsTheVisitRestampsWhatIsOnDisk covers the out-of-order
+// half of the denormalisation. Every event row holds a copy of its session's
+// acquisition, so an event that arrives late and turns out to be where the
+// visit actually began leaves rows behind that say something else — and one
+// visitor is then two rows on a source breakdown.
+func TestALateEventThatStartsTheVisitRestampsWhatIsOnDisk(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+
+	base := fixtureStart.Unix()
+
+	// The second page of the visit lands first and is written on its own, which
+	// is what a retry of the first one leaves behind.
+	second := writerEvent(1, EventPageview, base+60, "/pricing")
+	second.Source, second.Channel = "", "Direct"
+
+	if _, err := writer.Write(ctx, []Event{second}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now the page they arrived on.
+	landing := writerEvent(1, EventPageview, base, "/")
+	landing.Source, landing.Channel = "Hacker News", "Organic Social"
+
+	if _, err := writer.Write(ctx, []Event{landing}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := countRows(t, manager, 1, "SELECT COUNT(DISTINCT source_id) FROM events"); got != 1 {
+		t.Fatalf("the visit's events carry %d sources, want 1", got)
+	}
+
+	if got := countRows(t, manager, 1,
+		"SELECT COUNT(*) FROM events e JOIN dim_source s ON s.id = e.source_id WHERE s.value = 'Hacker News'",
+	); got != 2 {
+		t.Fatalf("%d events carry the visit's source, want 2", got)
+	}
+}
+
+// TestMergedEventsTakeTheSurvivorsAcquisition is the merge half of it. Events
+// written under the absorbed session were stamped with its acquisition, and
+// repointing them without restamping them leaves one visit reported under two
+// sources.
+func TestMergedEventsTakeTheSurvivorsAcquisition(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+
+	base := fixtureStart.Unix()
+
+	// Two visits more than thirty minutes apart, so they are separate until an
+	// event in the gap proves they were always one.
+	later := writerEvent(1, EventPageview, base+3000, "/checkout")
+	later.Source, later.Channel = "", "Direct"
+
+	if _, err := writer.Write(ctx, []Event{later}); err != nil {
+		t.Fatal(err)
+	}
+
+	landing := writerEvent(1, EventPageview, base, "/")
+	landing.Source, landing.Channel = "Hacker News", "Organic Social"
+
+	if _, err := writer.Write(ctx, []Event{landing}); err != nil {
+		t.Fatal(err)
+	}
+
+	bridge := writerEvent(1, EventPageview, base+1500, "/pricing")
+	bridge.Source, bridge.Channel = "", "Direct"
+
+	if _, err := writer.Write(ctx, []Event{bridge}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM sessions"); got != 1 {
+		t.Fatalf("sessions table holds %d rows after the bridge, want 1", got)
+	}
+
+	if got := countRows(t, manager, 1,
+		"SELECT COUNT(*) FROM events e JOIN dim_source s ON s.id = e.source_id WHERE s.value = 'Hacker News'",
+	); got != 3 {
+		t.Fatalf("%d events carry the surviving visit's source, want 3", got)
+	}
+}
+
 // TestDedupeTableIsPruned checks the table stays bounded. Twenty-four hours is
 // what keeps the index small enough for the lookup to stay cheap on the write
 // path.

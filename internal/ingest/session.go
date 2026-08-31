@@ -90,16 +90,23 @@ type Session struct {
 	// by construction instead of by every caller remembering it.
 	InteractiveNonPageview bool
 
-	// firstAt and firstTie mark the event the session's attribution and device
-	// block were taken from — the earliest one by timestamp. This is where
+	// FirstAt and FirstTie mark the event the session's attribution and device
+	// block were taken from — the visit's first pageview. This is where
 	// "attribution is frozen at session start" actually lives, and it is why a
 	// UTM tag on the second pageview of a visit is discarded.
 	FirstAt  int64
 	FirstTie string
 
-	// entryAt/exitAt mark the earliest and latest pageview. The tie strings are
-	// the event uuids, used only to break an exact timestamp tie so that two
-	// pageviews in the same second resolve the same way however they arrive.
+	// FirstIsPageview says the block above came from a pageview rather than
+	// from a custom event that opened the visit. A pageview replaces such a
+	// block whatever the timestamps say: only a page arrives from somewhere,
+	// so a conversion fired a second before the page loaded must not be what
+	// the visit is attributed to.
+	FirstIsPageview bool
+
+	// EntryAt/ExitAt mark the earliest and latest pageview. The tie strings
+	// order two events that share a second, so that they resolve the same way
+	// however they arrive.
 	EntryAt  int64
 	EntryTie string
 	ExitAt   int64
@@ -109,6 +116,13 @@ type Session struct {
 	// as a dirty set rather than with an UPDATE per event, which is the
 	// difference between a few hundred writes a second and tens of thousands.
 	Dirty bool
+
+	// Restamp means the attribution and device block changed after events had
+	// already been written carrying the old one — which is what a late event
+	// that turns out to be the real start of the visit does. Every event row
+	// holds a copy of its session's block, so those rows have to be rewritten
+	// or one visit is reported under two sources.
+	Restamp bool
 }
 
 // Duration is the visit length in seconds. It is derived from the two ends
@@ -530,6 +544,13 @@ func (c *SessionCache) TakeDirty(accountID int64) []*Session {
 				// pointer to the writer would let a concurrent fold change a
 				// row halfway through being written.
 				snapshot := *session
+
+				// The restamp travels on the snapshot and is cleared here,
+				// because it describes a repair the writer is about to make.
+				// Leaving it set would rewrite every event of the visit again
+				// on every later flush.
+				session.Restamp = false
+
 				dirty = append(dirty, &snapshot)
 			}
 		}
@@ -552,9 +573,9 @@ func (c *SessionCache) Redirty(accountID int64, sessions []*Session) {
 		return
 	}
 
-	wanted := make(map[int64]struct{}, len(sessions))
+	wanted := make(map[int64]*Session, len(sessions))
 	for _, session := range sessions {
-		wanted[session.ID] = struct{}{}
+		wanted[session.ID] = session
 	}
 
 	for i := range c.shards {
@@ -566,9 +587,18 @@ func (c *SessionCache) Redirty(accountID int64, sessions []*Session) {
 				if session.AccountID != accountID {
 					continue
 				}
-				if _, ok := wanted[session.ID]; ok {
-					session.Dirty = true
+
+				snapshot, ok := wanted[session.ID]
+				if !ok {
+					continue
 				}
+
+				session.Dirty = true
+
+				// A restamp the failed transaction was carrying goes back with
+				// the session. It is the only record that events on disk hold
+				// an attribution the session no longer has.
+				session.Restamp = session.Restamp || snapshot.Restamp
 			}
 		}
 		bucket.mu.Unlock()
@@ -736,8 +766,30 @@ const (
 	minInt64 = -maxInt64 - 1
 )
 
+// orderKey is how two events of one visit are ordered inside the second they
+// share. It is the derive stamp first and the event uuid second, both written
+// so that comparing the strings compares the values: the derive stamp says
+// which event the ingest tier actually saw first, and the uuid settles what is
+// left — two events with no stamp of their own, where the only requirement is
+// that the answer never changes.
+//
+// It is a property of the event and of nothing else, which is what keeps the
+// fold independent of arrival order: a batch replayed backwards carries the
+// same keys and therefore produces the same row.
+func orderKey(event *Event) string {
+	var stamp [20]byte
+
+	value := event.DerivedAt
+	for i := len(stamp) - 1; i >= 0; i-- {
+		stamp[i] = byte('0' + value%10)
+		value /= 10
+	}
+
+	return string(stamp[:]) + "|" + event.UUID.String()
+}
+
 // earlier reports whether one timestamped fact precedes another, breaking an
-// exact tie on the event uuid. The tie-break exists so two events in the same
+// exact tie on the order key. The tie-break exists so two events in the same
 // second always resolve identically, however they arrive — without it the
 // shuffled replay of a stream would produce a different entry page.
 func earlier(timestamp int64, tie string, thanTimestamp int64, thanTie string) bool {

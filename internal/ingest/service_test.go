@@ -17,6 +17,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -27,6 +28,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/geo"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/salts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
@@ -750,6 +752,228 @@ func TestClickIDValueIsNeverStored(t *testing.T) {
 	if details != 0 {
 		t.Fatal("the click id value reached event_details")
 	}
+}
+
+// fixedGeo places an address from a table. The harness ships no geolocation
+// database, so without it every visitor has an empty country and an assertion
+// about geo would pass by saying nothing.
+type fixedGeo map[string]geo.Location
+
+// Lookup answers from the table, and nothing for an address that is not in it.
+func (f fixedGeo) Lookup(addr netip.Addr) geo.Location { return f[addr.String()] }
+
+// Close satisfies the locator interface; there is nothing open to release.
+func (f fixedGeo) Close() error { return nil }
+
+// TestEveryEventCarriesItsSessionsAcquisition posts three visitors through the
+// real handler and asserts the two halves of one guarantee: a visit is
+// attributed to the first page it landed on, and every event of that visit
+// carries a copy of that attribution.
+//
+// Without both, a source breakdown counts the second page of a visit as another
+// Direct visitor, and three visitors come back as five across four rows with no
+// error anywhere — which is the failure mode this product exists to not have.
+//
+// Every request lands in the same second, which is what a burst of quick clicks
+// looks like: the stored timestamp is only accurate to the second, so the fold
+// cannot tell these pageviews apart on it alone.
+func TestEveryEventCarriesItsSessionsAcquisition(t *testing.T) {
+	dir := t.TempDir()
+	control := newControl(t, dir)
+
+	h := newHarness(t, control, filepath.Join(dir, "acquisition"), nil)
+
+	// One country per visitor, so "the event carries its session's country" is
+	// a claim that can fail rather than three empty strings agreeing.
+	h.service.Pipeline.Geo = fixedGeo{
+		visitors[0].ip: {Country: "US", Subdivision1: "US-NY", City: "Syracuse"},
+		visitors[1].ip: {Country: "GB", Subdivision1: "GB-ENG", City: "London"},
+		visitors[2].ip: {Country: "DE", Subdivision1: "DE-BE", City: "Berlin"},
+	}
+
+	at := fixtureStart.Unix()
+	site := "https://" + fixtureDomain
+
+	requests := []request{
+		{visitor: 0, timestamp: at, name: EventPageview, url: site + "/?utm_source=twitter&utm_medium=social"},
+		{visitor: 0, timestamp: at, name: EventPageview, url: site + "/pricing"},
+		{visitor: 0, timestamp: at, name: EventPageview, url: site + "/signup"},
+		{visitor: 1, timestamp: at, name: EventPageview, url: site + "/", referrer: "https://news.ycombinator.com/item?id=1"},
+		{visitor: 1, timestamp: at, name: EventPageview, url: site + "/pricing"},
+		{visitor: 2, timestamp: at, name: EventPageview, url: site + "/blog/hello", referrer: "https://www.google.com/"},
+	}
+
+	// One flush per request, so every event but the first of a visit is written
+	// into a session an earlier transaction already stored — which is where a
+	// copy taken at the wrong moment goes stale.
+	for _, r := range requests {
+		h.replay(t, []request{r})
+	}
+
+	// The breakdown a Sources card runs: three visitors, three sources, one
+	// visitor each.
+	sources := h.sourceVisitors(t)
+
+	want := map[string]int64{"X": 1, "Hacker News": 1, "Google": 1}
+	if !reflect.DeepEqual(sources, want) {
+		t.Errorf("visit:source gave %v, want %v", sources, want)
+	}
+
+	var total int64
+	for _, count := range sources {
+		total += count
+	}
+	if total != 3 {
+		t.Errorf("visit:source totals %d visitors across %d rows, want 3 across 3", total, len(sources))
+	}
+
+	// Every event carries its own session's block. This is the invariant the
+	// denormalisation exists for: the numbers on a breakdown add up only if an
+	// event and its visit can never disagree.
+	rows := h.eventAttribution(t)
+	if len(rows) != len(requests) {
+		t.Fatalf("stored %d events, want %d", len(rows), len(requests))
+	}
+
+	for _, row := range rows {
+		if row.Source != row.SessionSource || row.Channel != row.SessionChannel {
+			t.Errorf("%s (session %d) is %q/%q, but its visit is %q/%q",
+				row.Path, row.Session, row.Source, row.Channel, row.SessionSource, row.SessionChannel)
+		}
+
+		if row.Country != row.SessionCountry || row.Browser != row.SessionBrowser {
+			t.Errorf("%s (session %d) is %q/%q, but its visit is %q/%q",
+				row.Path, row.Session, row.Country, row.Browser, row.SessionCountry, row.SessionBrowser)
+		}
+	}
+
+	// And the visits themselves are attributed to the page they landed on,
+	// which is the half of this the fold owns. They are looked up by country
+	// because two of the three entered on the same page.
+	byCountry := map[string]sessionRow{}
+	for _, row := range h.sessionRows(t) {
+		byCountry[row.Country] = row
+	}
+
+	for country, source := range map[string]string{"US": "X", "GB": "Hacker News", "DE": "Google"} {
+		if byCountry[country].Source != source {
+			t.Errorf("the visit from %s is attributed to %q, want %q", country, byCountry[country].Source, source)
+		}
+	}
+}
+
+// sourceVisitors is the visitors-by-visit:source breakdown the dashboard's
+// Sources card asks for, written as the statement the query engine compiles for
+// that pair: a breakdown with no session-scoped metric reads the events table,
+// and visitors is counted on whichever table the query is already reading.
+// Answering it from that one table with no join is the whole point of copying
+// the block onto every event, so that is where it has to be right.
+func (h *harness) sourceVisitors(t testing.TB) map[string]int64 {
+	t.Helper()
+
+	account, err := h.manager.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := account.Reader().Query(`
+		SELECT source.value, COUNT(DISTINCT e.user_id)
+		FROM events e
+		JOIN dim_source source ON source.id = e.source_id
+		GROUP BY source.value`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	out := map[string]int64{}
+
+	for rows.Next() {
+		var (
+			source   string
+			visitors int64
+		)
+		if err := rows.Scan(&source, &visitors); err != nil {
+			t.Fatal(err)
+		}
+		out[source] = visitors
+	}
+
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	return out
+}
+
+// eventAttribution is one event beside the visit it belongs to. Reading both
+// sides in one row is what makes the assertion the guarantee itself — these two
+// must agree — rather than a restatement of the values the test happened to
+// send.
+type eventAttribution struct {
+	Path    string
+	Session int64
+
+	Source  string
+	Channel string
+	Country string
+	Browser string
+
+	SessionSource  string
+	SessionChannel string
+	SessionCountry string
+	SessionBrowser string
+}
+
+// eventAttribution reads every event joined to its session, in insertion order.
+func (h *harness) eventAttribution(t testing.TB) []eventAttribution {
+	t.Helper()
+
+	account, err := h.manager.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := account.Reader().Query(`
+		SELECT path.value, e.session_id,
+		       event_source.value, event_channel.value, event_country.value, event_browser.value,
+		       visit_source.value, visit_channel.value, visit_country.value, visit_browser.value
+		FROM events e
+		JOIN sessions s ON s.id = e.session_id
+		JOIN dim_pathname path          ON path.id          = e.pathname_id
+		JOIN dim_source   event_source  ON event_source.id  = e.source_id
+		JOIN dim_channel  event_channel ON event_channel.id = e.channel_id
+		JOIN dim_country  event_country ON event_country.id = e.country_id
+		JOIN dim_browser  event_browser ON event_browser.id = e.browser_id
+		JOIN dim_source   visit_source  ON visit_source.id  = s.source_id
+		JOIN dim_channel  visit_channel ON visit_channel.id = s.channel_id
+		JOIN dim_country  visit_country ON visit_country.id = s.country_id
+		JOIN dim_browser  visit_browser ON visit_browser.id = s.browser_id
+		ORDER BY e.id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	var out []eventAttribution
+
+	for rows.Next() {
+		var row eventAttribution
+		if err := rows.Scan(
+			&row.Path, &row.Session,
+			&row.Source, &row.Channel, &row.Country, &row.Browser,
+			&row.SessionSource, &row.SessionChannel, &row.SessionCountry, &row.SessionBrowser,
+		); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, row)
+	}
+
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	return out
 }
 
 // assertMetrics compares the six numbers, allowing for float noise on the three

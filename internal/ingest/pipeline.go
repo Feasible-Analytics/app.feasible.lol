@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -72,6 +73,12 @@ type Pipeline struct {
 	// Now is injectable so a replay test can drive the pipeline at a fixed
 	// instant rather than at whatever time the test suite happens to run.
 	Now func() time.Time
+
+	// derived is the high water mark of the nanosecond stamps handed out by
+	// tick. It is here rather than in a package variable so two pipelines in
+	// one process — a test suite runs several — cannot make each other's
+	// stamps jump.
+	derived atomic.Int64
 }
 
 // Debug is what X-Debug-Request returns: the resolved IP and every derived
@@ -339,6 +346,7 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 		AccountID: site.AccountID,
 		SiteID:    site.ID,
 		Timestamp: now.Unix(),
+		DerivedAt: p.tick(now),
 
 		Name:           payload.Name,
 		UserID:         userID,
@@ -389,6 +397,27 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 	_ = pageURL
 
 	return result, nil
+}
+
+// tick returns a strictly increasing nanosecond stamp for the event being
+// derived. It is the fold's tie-break between two events of one visit that
+// share a second, so it has to be strictly increasing rather than merely
+// non-decreasing: a clock with a coarse resolution — or an injected one that
+// does not move at all — would otherwise hand out the same value to every event
+// and leave the tie exactly as unsettled as it was.
+func (p *Pipeline) tick(now time.Time) int64 {
+	stamp := now.UnixNano()
+
+	for {
+		last := p.derived.Load()
+		if stamp <= last {
+			stamp = last + 1
+		}
+
+		if p.derived.CompareAndSwap(last, stamp) {
+			return stamp
+		}
+	}
 }
 
 // clock returns the pipeline's time source, defaulting to the real one so a
