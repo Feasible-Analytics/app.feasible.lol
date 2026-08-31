@@ -9,6 +9,8 @@
 package metrics
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -91,6 +93,39 @@ func TestSamplerSkipsWhatAProcessDoesNotHave(t *testing.T) {
 	}
 	if _, exists := values["feasible_sites_routed"]; !exists {
 		t.Error("the one accessor that was supplied was not reported")
+	}
+}
+
+// TestSamplerReportsTheJobQueue checks the two states are reported separately.
+// A queue that is filling up and one that is stuck on a single job look
+// identical in a total.
+func TestSamplerReportsTheJobQueue(t *testing.T) {
+	values := gather(t, newSampler(Sources{
+		Jobs: func(context.Context) (JobCounts, error) {
+			return JobCounts{Available: 12, Executing: 1}, nil
+		},
+	}))
+
+	if got := values["feasible_jobs/available"]; got != 12 {
+		t.Errorf("available = %v, want 12", got)
+	}
+	if got := values["feasible_jobs/executing"]; got != 1 {
+		t.Errorf("executing = %v, want 1", got)
+	}
+}
+
+// TestSamplerSkipsAQueueItCannotRead checks a failed read exports nothing. Zero
+// available jobs is what a healthy queue looks like, and reporting it for a
+// database we could not read would be an all-clear we have not earned.
+func TestSamplerSkipsAQueueItCannotRead(t *testing.T) {
+	values := gather(t, newSampler(Sources{
+		Jobs: func(context.Context) (JobCounts, error) {
+			return JobCounts{}, errors.New("database is locked")
+		},
+	}))
+
+	if _, exists := values["feasible_jobs/available"]; exists {
+		t.Error("a queue that could not be read still reported a depth")
 	}
 }
 

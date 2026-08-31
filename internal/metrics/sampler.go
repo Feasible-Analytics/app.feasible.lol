@@ -9,8 +9,10 @@
 package metrics
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -37,10 +39,28 @@ type Sources struct {
 	// OpenAccounts is how many account database handles are cached.
 	OpenAccounts func() int
 
+	// Jobs counts the background queue. It is a function rather than a number
+	// because only the process that owns the queue can answer it, and only the
+	// scrape knows when the answer is wanted.
+	Jobs func(ctx context.Context) (JobCounts, error)
+
 	// DataDir is the install. Its file sizes are the honest answer to "is the
 	// disk about to be the problem".
 	DataDir string
 }
+
+// JobCounts is the background queue, split into the two states worth watching.
+// A queue that is filling up and one that is stuck on a single job look
+// identical in a total and obvious side by side.
+type JobCounts struct {
+	Available int
+	Executing int
+}
+
+// jobQueryTimeout bounds the one query a scrape makes. A metrics endpoint that
+// hangs on a locked database is a monitoring outage on top of whatever was
+// already wrong.
+const jobQueryTimeout = 2 * time.Second
 
 // sampler reads the Sources on every scrape. It is a Collector rather than a
 // set of gauges updated on a timer because all of these are cheap to read and
@@ -53,6 +73,8 @@ type sampler struct {
 	sessions     *prometheus.Desc
 	sites        *prometheus.Desc
 	openAccounts *prometheus.Desc
+
+	jobs *prometheus.Desc
 
 	databaseBytes    *prometheus.Desc
 	walBytes         *prometheus.Desc
@@ -85,6 +107,11 @@ func newSampler(sources Sources) *sampler {
 			"feasible_database_open_handles",
 			"Account databases this process currently holds open.",
 			nil, nil),
+
+		jobs: prometheus.NewDesc(
+			"feasible_jobs",
+			"Background jobs by state. Available that keeps growing is a worker that has stopped; executing that never falls is a job that is stuck.",
+			[]string{"state"}, nil),
 
 		databaseBytes: prometheus.NewDesc(
 			"feasible_database_bytes",
@@ -120,7 +147,7 @@ func newSampler(sources Sources) *sampler {
 // is exactly what a process with no buffer does.
 func (s *sampler) Describe(out chan<- *prometheus.Desc) {
 	for _, desc := range []*prometheus.Desc{
-		s.bufferDepth, s.sessions, s.sites, s.openAccounts,
+		s.bufferDepth, s.sessions, s.sites, s.openAccounts, s.jobs,
 		s.databaseBytes, s.walBytes, s.walBytesMax, s.databaseCount, s.databaseReadable,
 	} {
 		out <- desc
@@ -142,9 +169,29 @@ func (s *sampler) Collect(out chan<- prometheus.Metric) {
 		out <- prometheus.MustNewConstMetric(s.openAccounts, prometheus.GaugeValue, float64(s.sources.OpenAccounts()))
 	}
 
+	if s.sources.Jobs != nil {
+		s.collectJobs(out)
+	}
+
 	if s.sources.DataDir != "" {
 		s.collectStorage(out)
 	}
+}
+
+// collectJobs reads the queue. A failed read exports nothing rather than a zero:
+// zero available jobs is what a healthy queue looks like, and reporting it for a
+// database we could not read would be an all-clear we have not earned.
+func (s *sampler) collectJobs(out chan<- prometheus.Metric) {
+	ctx, cancel := context.WithTimeout(context.Background(), jobQueryTimeout)
+	defer cancel()
+
+	counts, err := s.sources.Jobs(ctx)
+	if err != nil {
+		return
+	}
+
+	out <- prometheus.MustNewConstMetric(s.jobs, prometheus.GaugeValue, float64(counts.Available), "available")
+	out <- prometheus.MustNewConstMetric(s.jobs, prometheus.GaugeValue, float64(counts.Executing), "executing")
 }
 
 // collectStorage stats the databases. It is a handful of stat calls against a

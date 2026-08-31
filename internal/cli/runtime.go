@@ -130,14 +130,40 @@ func ingestHealth(checks *health.Set, control *sql.DB, service *ingest.Service, 
 // watchProcess tells the metrics endpoint what this process can report on. The
 // gauges are read on each scrape rather than pushed, so this is a set of
 // accessors rather than a copy of anything.
-func watchProcess(service *ingest.Service, manager *accounts.Manager, dataDir string) {
+//
+// The job queue is passed separately because only the process that runs the
+// worker should be reporting on it: an ingestor answering "no jobs are waiting"
+// about a queue it does not run would be an all-clear from the wrong place.
+func watchProcess(service *ingest.Service, manager *accounts.Manager, dataDir string, jobs func(context.Context) (metrics.JobCounts, error)) {
 	metrics.Watch(metrics.Sources{
 		BufferDepth:  func() int { return service.Buffer.Len() },
 		Sessions:     func() int { return service.Writer.Sessions().Len() },
 		Sites:        service.Sites.Len,
 		OpenAccounts: manager.OpenCount,
+		Jobs:         jobs,
 		DataDir:      dataDir,
 	})
+}
+
+// jobCounts reads the background queue's depth. The claim index covers the
+// state prefix, so this is the same access pattern the worker already makes
+// every few seconds rather than a new cost on the database.
+func jobCounts(control *sql.DB) func(context.Context) (metrics.JobCounts, error) {
+	return func(ctx context.Context) (metrics.JobCounts, error) {
+		var counts metrics.JobCounts
+
+		row := control.QueryRowContext(ctx, `
+			SELECT
+				COUNT(*) FILTER (WHERE state = 'available'),
+				COUNT(*) FILTER (WHERE state = 'executing')
+			FROM jobs`)
+
+		if err := row.Scan(&counts.Available, &counts.Executing); err != nil {
+			return metrics.JobCounts{}, fmt.Errorf("read the job queue: %w", err)
+		}
+
+		return counts, nil
+	}
 }
 
 // internalServer builds the loopback listener every process runs beside its

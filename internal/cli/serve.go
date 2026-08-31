@@ -169,7 +169,7 @@ func runServe(e *env, args []string) int {
 		func() bool { return !service.Sites.BuiltAt().IsZero() },
 		"the routing map has not been built yet"))
 
-	watchProcess(service, manager, e.cfg.App.DataDir)
+	watchProcess(service, manager, e.cfg.App.DataDir, jobCounts(control))
 
 	server := httpserver.New("app", e.cfg.App.Listen, serveRoutes(e, service, manager, secret, e.cfg.App.DataDir, app, public, com))
 	server.Health = checks

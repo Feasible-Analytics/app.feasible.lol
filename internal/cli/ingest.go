@@ -79,7 +79,7 @@ func runIngest(e *env, args []string) int {
 		func() bool { return service.Sites.Len() > 0 },
 		"the routing map is empty — every event would be dropped as an unknown site"))
 
-	watchProcess(service, manager, *dataDir)
+	watchProcess(service, manager, *dataDir, nil)
 
 	server := httpserver.New("ingest", e.cfg.Ingest.Listen, ingestRoutes(service))
 	server.Health = checks
