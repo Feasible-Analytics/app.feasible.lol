@@ -46,6 +46,10 @@ Commands:
   db migrate   Migrate control.db and every account database. Never automatic.
   db backup    Write a consistent snapshot of every database.
   seed         Generate realistic fake traffic to build and measure against.
+  api-key      Create, list and revoke public API keys. One key type, and it
+               works for the Stats API, the Sites API, webhooks and MCP.
+  mcp          Serve the Model Context Protocol over stdin and stdout, for a
+               desktop assistant. The remote transport is POST /mcp on serve.
 
 Flags:
   --version         Print version, commit and build date, then exit.
@@ -166,6 +170,10 @@ func Run(opts Options) int {
 		return runDB(e, args[1:])
 	case "seed":
 		return runSeed(e, args[1:])
+	case "mcp":
+		return runMCP(e, args[1:])
+	case "api-key":
+		return runAPIKeys(e, args[1:])
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", args[0])
 		fmt.Fprint(stderr, usage)

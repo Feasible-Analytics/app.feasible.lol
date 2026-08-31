@@ -340,3 +340,108 @@ func TestParseName(t *testing.T) {
 		}
 	}
 }
+
+// TestPublicAPIMigrationKeepsExistingKeys runs the control migrations in two
+// halves with data written in between.
+//
+// The 0004 migration rebuilds api_keys to change a column default, which SQLite
+// can only express by writing the table again — and a table rebuild is the one
+// migration shape that can silently drop rows. Migrating a fresh database would
+// never notice, because there is nothing in the table to lose.
+func TestPublicAPIMigrationKeepsExistingKeys(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Stop short of 0004, so the database is at the shape somebody upgrading
+	// from an earlier build actually has.
+	earlier := Set{Name: "control"}
+	for _, migration := range Control().Migrations {
+		if migration.Version < 3 {
+			earlier.Migrations = append(earlier.Migrations, migration)
+		}
+	}
+
+	if _, err := Run(ctx, db, earlier); err != nil {
+		t.Fatal(err)
+	}
+
+	seed := []string{
+		`INSERT INTO teams (id, name, created_at, updated_at) VALUES (1, 'Test', 0, 0)`,
+		`INSERT INTO users (id, email, created_at, updated_at) VALUES (1, 'a@example.test', 0, 0)`,
+		`INSERT INTO api_keys (id, team_id, user_id, name, key_hash, scopes, hourly_limit, created_at)
+		 VALUES (1, 1, 1, 'existing', 'deadbeef', '["stats:read"]', 600, 0)`,
+	}
+
+	for _, statement := range seed {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+
+	if _, err := Run(ctx, db, Control()); err != nil {
+		t.Fatalf("the 0004 migration failed on a database with data in it: %v", err)
+	}
+
+	var (
+		name   string
+		hash   string
+		scopes string
+		limit  int
+	)
+
+	if err := db.QueryRow(
+		`SELECT name, key_hash, scopes, hourly_limit FROM api_keys WHERE id = 1`).
+		Scan(&name, &hash, &scopes, &limit); err != nil {
+		t.Fatalf("the existing key did not survive the rebuild: %v", err)
+	}
+
+	if name != "existing" || hash != "deadbeef" || scopes != `["stats:read"]` {
+		t.Errorf("the key came back as %q/%q/%q", name, hash, scopes)
+	}
+
+	// The old hard-coded 600 becomes "take the deployment's configured limit",
+	// which is the whole point of the rebuild: the shipped default moves without
+	// anybody editing a database by hand.
+	if limit != 0 {
+		t.Errorf("hourly_limit = %d, want 0 meaning the configured default", limit)
+	}
+
+	// The new columns exist and the new default applies to a key created after
+	// the migration.
+	if _, err := db.Exec(
+		`INSERT INTO api_keys (team_id, user_id, key_hash, key_prefix, created_at) VALUES (1, 1, 'cafe', 'feas_ab', 0)`); err != nil {
+		t.Fatal(err)
+	}
+
+	var fresh sql.NullInt64
+	if err := db.QueryRow(`SELECT hourly_limit FROM api_keys WHERE key_hash = 'cafe'`).Scan(&fresh); err != nil {
+		t.Fatal(err)
+	}
+
+	if fresh.Int64 != 0 {
+		t.Errorf("a new key defaulted to %d", fresh.Int64)
+	}
+
+	// Everything else the migration adds has to be there too, because a
+	// half-applied migration is exactly what the transaction is supposed to make
+	// impossible.
+	for _, table := range []string{
+		"site_tracker_config", "site_custom_properties",
+		"webhook_endpoints", "webhook_deliveries",
+		"mcp_oauth_clients", "mcp_oauth_codes", "mcp_oauth_tokens",
+	} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+
+		if count != 1 {
+			t.Errorf("table %s was not created", table)
+		}
+	}
+}

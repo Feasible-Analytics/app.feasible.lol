@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Defaults are the values used when a variable is absent. They are deliberately
@@ -38,6 +39,19 @@ const (
 	DefaultIngestListen      = "127.0.0.1:19302"
 	DefaultIngestShards      = "http://127.0.0.1:19401"
 	DefaultIngestBufferPath  = "./data/ingest/buffer.db"
+
+	// DefaultAPIRateLimit is how many public-API requests one key may make an
+	// hour. It is configurable at all because the incumbent's equivalent is
+	// hard-coded at 600 even in the build people run on their own hardware, and
+	// the workaround people actually use is editing their database by hand.
+	DefaultAPIRateLimit = 10000
+
+	// DefaultWebhookTimeout bounds one delivery attempt, in seconds.
+	DefaultWebhookTimeout = 10
+
+	// DefaultWebhookPoll is how long the delivery worker waits when the queue is
+	// empty, in seconds. It loops without pausing while there is work.
+	DefaultWebhookPoll = 5
 )
 
 // Layout of the data directory. These are constants because both the migrate
@@ -161,12 +175,37 @@ type Ingest struct {
 	TrustedProxies []string
 }
 
+// API holds the values the public API, the MCP server and the webhook worker
+// read. They are their own section rather than part of App because the ingest
+// tier never reads any of them, and a section is how this file says which
+// process a variable belongs to.
+type API struct {
+	// RateLimit is requests per hour per key, for keys that carry no limit of
+	// their own.
+	RateLimit int
+
+	// WebhookTimeout bounds one delivery attempt. It is the only place in this
+	// system where we wait on somebody else's server, which is why it is short
+	// and why deliveries never happen on a request path.
+	WebhookTimeout time.Duration
+
+	// WebhookPoll is the idle interval of the delivery worker.
+	WebhookPoll time.Duration
+
+	// MCPKey is the API key `feasible mcp` runs its stdio session as. It is an
+	// environment variable rather than a flag because a desktop assistant
+	// launches the binary itself and can set one, where a secret passed on the
+	// command line is visible in the process list to every user on the machine.
+	MCPKey string
+}
+
 // Config is the whole configuration for the binary. Both sections are always
 // loaded, even in single-process mode, because `serve` with the direct
 // transport runs the ingest path in-process.
 type Config struct {
 	Shared Shared
 	App    App
+	API    API
 	Ingest Ingest
 }
 
@@ -320,6 +359,26 @@ func (l *Loader) Bool(name string, fallback bool) bool {
 	return parsed
 }
 
+// Int reads a whole-number variable.
+//
+// An unparseable or non-positive value falls back to the default rather than
+// failing the boot. Every number read through this is a limit or an interval,
+// and a typo in one must not stop a process starting — a rate limit of zero
+// would lock every customer out of the API it exists to protect.
+func (l *Loader) Int(name string, fallback int) int {
+	value, ok := l.lookup(name)
+	if !ok || value == "" {
+		return fallback
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+
+	return parsed
+}
+
 // Load reads the whole configuration. The .env file is only consulted outside
 // production: a stray .env on a production box silently overriding the real
 // deployment configuration is a failure mode worth designing out.
@@ -390,6 +449,12 @@ func LoadFrom(l *Loader) (*Config, error) {
 				ClientSecret: strings.TrimSpace(l.String("FEASIBLE_GOOGLE_CLIENT_SECRET", "")),
 			},
 			StripeSecretKey: strings.TrimSpace(l.String("FEASIBLE_STRIPE_SECRET_KEY", "")),
+		},
+		API: API{
+			RateLimit:      l.Int("FEASIBLE_API_RATE_LIMIT", DefaultAPIRateLimit),
+			WebhookTimeout: time.Duration(l.Int("FEASIBLE_WEBHOOK_TIMEOUT_SECONDS", DefaultWebhookTimeout)) * time.Second,
+			WebhookPoll:    time.Duration(l.Int("FEASIBLE_WEBHOOK_POLL_SECONDS", DefaultWebhookPoll)) * time.Second,
+			MCPKey:         strings.TrimSpace(l.String("FEASIBLE_MCP_API_KEY", "")),
 		},
 		Ingest: Ingest{
 			Listen:         l.String("FEASIBLE_INGEST_LISTEN", DefaultIngestListen),
