@@ -13,9 +13,11 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/statsapi"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
 )
 
@@ -79,17 +81,21 @@ func runServe(e *env, args []string) int {
 		return ExitError
 	}
 
-	server := httpserver.New("app", e.cfg.App.Listen, serveRoutes(e, service, secret))
+	server := httpserver.New("app", e.cfg.App.Listen, serveRoutes(e, service, manager, secret))
 
 	return serveUntilSignal(e, server, service, manager.CloseAll, control.Close)
 }
 
-// serveRoutes is the app process's public surface. The dashboard and the stats
-// API land here in later milestones; what is real today is the tracker script
-// and — with the direct transport — the ingest endpoint, which this process
-// serves rather than a separate tier.
-func serveRoutes(e *env, service *ingest.Service, secret []byte) http.Handler {
+// serveRoutes is the app process's public surface: the tracker script, the
+// stats API the dashboard runs on, and — with the direct transport — the ingest
+// endpoint, which this process serves rather than a separate tier.
+func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, secret []byte) http.Handler {
 	mux := http.NewServeMux()
+
+	// Every report in the product is this one endpoint with different metrics
+	// and dimensions. It reads the same in-memory site snapshot the ingest path
+	// does, so a dashboard query never touches control.db.
+	mux.Handle(statsapi.Pattern, statsapi.New(service.Sites, manager, e.log))
 
 	// The script is served by the app rather than the ingest tier because it is
 	// a cacheable static asset with a database lookup behind it, and putting
