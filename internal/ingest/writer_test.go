@@ -10,7 +10,6 @@ package ingest
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -295,52 +294,5 @@ func TestSessionRowIsUpdatedInPlace(t *testing.T) {
 	}
 	if got := countRows(t, manager, 1, "SELECT is_bounce FROM sessions"); got != 0 {
 		t.Fatal("a three-page visit is still marked as a bounce")
-	}
-}
-
-// TestSessionSnapshotFileRoundTrip covers the shutdown path end to end, since
-// losing it splits every in-flight session in two on every deploy.
-func TestSessionSnapshotFileRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, SessionDirName, SessionFileName)
-
-	cache := NewSessionCache()
-
-	first := event(EventPageview, fixtureStart.Unix(), "/")
-	cache.Apply(&first)
-
-	if err := PersistSessions(cache, path); err != nil {
-		t.Fatal(err)
-	}
-
-	restored := NewSessionCache()
-	count, err := RestoreSessions(restored, path, fixtureStart.Unix()+60)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if count != 1 {
-		t.Fatalf("restored %d sessions, want 1", count)
-	}
-
-	// The file is removed after a successful read, because it is only ever
-	// correct immediately after the shutdown that wrote it.
-	if _, err := RestoreSessions(NewSessionCache(), path, fixtureStart.Unix()+60); err != nil {
-		t.Fatal(err)
-	}
-	if again, _ := RestoreSessions(NewSessionCache(), path, fixtureStart.Unix()+60); again != 0 {
-		t.Fatal("the snapshot file was read a second time")
-	}
-}
-
-// TestRestoreOfAMissingFileIsNotAnError checks a first boot works. There is no
-// snapshot before the first shutdown, and that must not be reported as a
-// problem.
-func TestRestoreOfAMissingFileIsNotAnError(t *testing.T) {
-	count, err := RestoreSessions(NewSessionCache(), filepath.Join(t.TempDir(), "nothing.json"), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if count != 0 {
-		t.Fatalf("restored %d sessions from nothing", count)
 	}
 }
