@@ -45,6 +45,7 @@ Commands:
   ingest       Run the ingest tier only: accept events, buffer, forward.
   db migrate   Migrate control.db and every account database. Never automatic.
   db backup    Write a consistent snapshot of every database.
+  rollup       Build, rebuild or inspect the pre-aggregated report tables.
   seed         Generate realistic fake traffic to build and measure against.
   api-key      Create, list and revoke public API keys. One key type, and it
                works for the Stats API, the Sites API, webhooks and MCP.
@@ -174,6 +175,8 @@ func Run(opts Options) int {
 		return runMCP(e, args[1:])
 	case "api-key":
 		return runAPIKeys(e, args[1:])
+	case "rollup":
+		return runRollup(e, args[1:])
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", args[0])
 		fmt.Fprint(stderr, usage)

@@ -618,7 +618,7 @@ func (g *generator) finish(ctx context.Context) error {
 			}
 		}
 
-		if err := buildRollups(ctx, account.account); err != nil {
+		if err := buildRollups(ctx, account, g.start, g.now); err != nil {
 			return err
 		}
 	}

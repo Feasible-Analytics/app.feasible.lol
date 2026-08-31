@@ -43,11 +43,15 @@ type Engine struct {
 }
 
 // New builds an engine over an account's reader handle.
+//
+// It routes through the roll-up tables by default. That is safe on a database
+// where nothing has been built yet: the router asks what is covered before it
+// splits anything, finds nothing, and answers the whole range from raw.
 func New(db *sql.DB) *Engine {
 	return &Engine{
 		db:        db,
 		Now:       func() time.Time { return time.Now().UTC() },
-		Router:    RawRouter{},
+		Router:    NewRollupRouter(db),
 		MaxGroups: MaxGroups,
 	}
 }
@@ -144,7 +148,11 @@ func (e *Engine) Run(ctx context.Context, q Query) (*Result, error) {
 			PresentIndex: resolved.PresentIndex(),
 			Interval:     resolved.Interval,
 			SampleRate:   q.SampleRate,
-			Sources:      sourceNames(e.router().Route(&q, resolved)),
+
+			// Named from the segments the query actually read, not from a
+			// second call to the router: a router that answered differently the
+			// second time would label the numbers with the wrong provenance.
+			Sources: sourceNames(primary.segments),
 		},
 	}
 

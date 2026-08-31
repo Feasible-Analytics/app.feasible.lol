@@ -23,6 +23,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/rollup"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
 )
@@ -94,7 +95,10 @@ func buildIngest(ctx context.Context, e *env, dataDir string) (*ingest.Service, 
 // serveUntilSignal runs a listener until SIGINT or SIGTERM, then shuts
 // everything down in order. Returning an exit code rather than calling os.Exit
 // is what lets the whole command be driven from a test.
-func serveUntilSignal(e *env, server *httpserver.Server, service *ingest.Service, closers ...func() error) int {
+//
+// The roll-up worker is optional so that the ingest-only process, which has no
+// reports to make fast, does not summarise anything.
+func serveUntilSignal(e *env, server *httpserver.Server, service *ingest.Service, worker *rollup.Worker, closers ...func() error) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -104,6 +108,10 @@ func serveUntilSignal(e *env, server *httpserver.Server, service *ingest.Service
 	}
 
 	service.Start(ctx)
+
+	if worker != nil {
+		go worker.Run(ctx)
+	}
 
 	errs := make(chan error, 1)
 	go func() { errs <- server.Serve() }()

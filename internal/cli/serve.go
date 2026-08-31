@@ -22,6 +22,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/rollup"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/statsapi"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
 )
@@ -115,12 +116,21 @@ func runServe(e *env, args []string) int {
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	public.startWorker(workerCtx, e)
 
+	// The roll-up worker is the one background job in the product. There is no
+	// job runner yet, so it runs here beside the ingest service's own loops,
+	// and it is stopped by the same context they are.
+	worker := &rollup.Worker{
+		Accounts: manager,
+		Sites:    rollup.ControlLister(control),
+		Log:      e.log,
+	}
+
 	server := httpserver.New("app", e.cfg.App.Listen, serveRoutes(e, service, manager, secret, e.cfg.App.DataDir, app, public))
 
 	pruneCtx, stopPrune := context.WithCancel(context.Background())
 	go app.RunPrune(pruneCtx)
 
-	return serveUntilSignal(e, server, service, func() error { stopPrune(); stopWorker(); return nil }, manager.CloseAll, control.Close)
+	return serveUntilSignal(e, server, service, worker, func() error { stopPrune(); stopWorker(); return nil }, manager.CloseAll, control.Close)
 }
 
 // buildApp assembles the server-rendered application.
