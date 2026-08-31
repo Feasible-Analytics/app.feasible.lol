@@ -1,0 +1,229 @@
+/*
+ * styles.css
+ * The design system: teal on slate, the layout tokens, and the two flourishes.
+ *
+ * Created: 2026-08-30
+ * Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+ */
+
+@import "tailwindcss";
+@source "./";
+
+/* Dark mode is a class on <html>, not a media query, because the product has to
+   offer an explicit override. The media query is still honoured — the boot
+   script in index.html reads it — but it decides the class rather than the
+   styles, so one rule governs both paths. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* The palette is declared once as plain custom properties and mapped into
+   Tailwind's colour space `inline`, which makes a utility emit `var(--fs-…)`
+   rather than a literal. That is what lets `bg-card` be right in both themes
+   without a `dark:` twin on every element in the app. */
+@theme inline {
+	--color-accent: var(--fs-accent);
+	--color-page: var(--fs-page);
+	--color-card: var(--fs-card);
+	--color-line: var(--fs-line);
+	--color-body: var(--fs-body);
+	--color-muted: var(--fs-muted);
+	--color-up: var(--fs-up);
+	--color-down: var(--fs-down);
+	--color-bar: var(--fs-bar);
+	--color-bar-strong: var(--fs-bar-strong);
+	--color-zebra: var(--fs-zebra);
+	--color-hover: var(--fs-hover);
+
+	/* The system font stack, no webfont. It is the fastest possible choice and
+	   one fewer request on a product whose entire pitch is speed. */
+	--font-sans:
+		ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+		"Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+	--font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+	/* The layout numbers from the design system. They live here rather than as
+	   magic values in components so that "the card is 430 tall" is stated once. */
+	--container-shell: 1120px;
+	--spacing-card: 430px;
+	--spacing-cardbody: 356px;
+	--spacing-graph: 368px;
+	--spacing-row: 32px;
+	--spacing-drawerrow: 36px;
+	--spacing-control: 32px;
+
+	--ease-ui: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+:root {
+	color-scheme: light;
+
+	--fs-accent: #0d9488;
+	--fs-page: #f8fafc;
+	--fs-card: #ffffff;
+	--fs-line: #e2e8f0;
+	--fs-body: #1e293b;
+	--fs-muted: #64748b;
+	--fs-up: #059669;
+	--fs-down: #e11d48;
+
+	--fs-zebra: #f8fafc;
+	--fs-hover: #f1f5f9;
+
+	/* The report-row bar tint. Each card overrides the pair; these are the
+	   neutral defaults a card that forgot to would fall back to. */
+	--fs-bar: #f1f5f9;
+	--fs-bar-strong: #e2e8f0;
+
+	/* The scrim behind the drawer is deliberately light. A drawer that dims the
+	   page as hard as a modal throws away the one thing it is for, which is
+	   keeping the dashboard readable behind it. */
+	--fs-scrim: rgb(15 23 42 / 0.16);
+}
+
+.dark {
+	color-scheme: dark;
+
+	--fs-accent: #2dd4bf;
+	--fs-page: #020617;
+	--fs-card: #0f172a;
+	--fs-line: #1e293b;
+	--fs-body: #e2e8f0;
+	--fs-muted: #94a3b8;
+	--fs-up: #34d399;
+	--fs-down: #fb7185;
+
+	--fs-zebra: #0b1220;
+	--fs-hover: #1e293b;
+
+	/* Every card's tint collapses to the same neutral in the dark. The five
+	   hues only read against white; on slate they turn into five shades of mud
+	   that carry no meaning and cost contrast. */
+	--fs-bar: rgb(100 116 139 / 0.15);
+	--fs-bar-strong: rgb(100 116 139 / 0.3);
+
+	--fs-scrim: rgb(2 6 23 / 0.5);
+}
+
+/* The per-card tints, light mode only — the dark values above win because .dark
+   is applied to <html> and these are set on a descendant, so specificity has to
+   be handled by re-declaring them under .dark. */
+.tint-sources {
+	--fs-bar: #f0f9ff;
+	--fs-bar-strong: #e0f2fe;
+}
+
+.tint-pages {
+	--fs-bar: #f0fdfa;
+	--fs-bar-strong: #ccfbf1;
+}
+
+.dark .tint-sources,
+.dark .tint-pages {
+	--fs-bar: rgb(100 116 139 / 0.15);
+	--fs-bar-strong: rgb(100 116 139 / 0.3);
+}
+
+@layer base {
+	html {
+		background-color: var(--fs-page);
+	}
+
+	body {
+		background-color: var(--fs-page);
+		color: var(--fs-body);
+		-webkit-font-smoothing: antialiased;
+	}
+
+	/* Tabular figures everywhere a number sits in a column. Proportional digits
+	   make a table of counts shiver as the values change, which reads as the
+	   page being broken rather than the numbers being live. */
+	.tnum {
+		font-variant-numeric: tabular-nums;
+	}
+
+	:focus-visible {
+		outline: 2px solid var(--fs-accent);
+		outline-offset: 2px;
+	}
+}
+
+/* The spinner's 100ms grace. A query that answers in 80ms should never flash a
+   spinner at all: the delay on the fade is what removes almost all the
+   perceived loading flicker on a fast query, and costs a slow one nothing. */
+@keyframes fs-spinner-in {
+	from {
+		opacity: 0;
+	}
+
+	to {
+		opacity: 1;
+	}
+}
+
+.spinner-grace {
+	animation: fs-spinner-in 150ms var(--ease-ui) 100ms both;
+}
+
+@keyframes fs-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+.spinner-ring {
+	animation: fs-spin 700ms linear infinite;
+}
+
+/* The drawer's entry. Transform is what makes it read as a panel arriving from
+   off-screen rather than a box appearing; under prefers-reduced-motion it fades
+   in place instead, because the slide is exactly the movement that hurts. */
+@keyframes fs-drawer-in {
+	from {
+		transform: translateX(100%);
+	}
+
+	to {
+		transform: translateX(0);
+	}
+}
+
+@keyframes fs-scrim-in {
+	from {
+		opacity: 0;
+	}
+
+	to {
+		opacity: 1;
+	}
+}
+
+.drawer-panel {
+	animation: fs-drawer-in 200ms var(--ease-ui) both;
+}
+
+.drawer-scrim {
+	animation: fs-scrim-in 200ms var(--ease-ui) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.drawer-panel {
+		animation: fs-scrim-in 120ms var(--ease-ui) both;
+	}
+
+	.spinner-ring {
+		animation: none;
+	}
+
+	*,
+	*::before,
+	*::after {
+		transition-duration: 0.01ms !important;
+	}
+}
+
+/* The scrollbars inside cards and the drawer. The default macOS overlay bar is
+   invisible until you scroll, which makes a 100-row list look like an 8-row one
+   on a trackpad-only machine. */
+.scroll-thin {
+	scrollbar-width: thin;
+	scrollbar-color: var(--fs-line) transparent;
+}
