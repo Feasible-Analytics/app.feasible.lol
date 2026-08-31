@@ -17,6 +17,9 @@ node_modules
 tracker/test-results/
 tracker/playwright-report/
 
+# The dashboard's unit tests are bundled here before node --test runs them.
+web/.test-build/
+
 # Dependency directories the ecosystem packages create when somebody actually
 # installs them. Every package here vendors nothing and depends on nothing, so
 # these only ever appear on a contributor's machine.

@@ -9,9 +9,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { Metric, StatsResponse } from "../api/types";
-import { bucketLong, bucketShort, compact, metricTitle, metricValue } from "../lib/format";
+import { changePercent, comparisonSeries, previousBucketLabel } from "../lib/compare";
+import { bucketLong, bucketShort, compact, metricTitle, metricValue, rangeLabel } from "../lib/format";
 import { t } from "../lib/i18n";
-import { Failure, Spinner } from "./atoms";
+import { INVERTED } from "../lib/reports";
+import { ChangeChip, Failure, Spinner } from "./atoms";
 import { tileLabel, tileLabelLower } from "./TopStats";
 
 /**
@@ -35,6 +37,10 @@ const HEIGHT = 368;
 interface Props {
 	stats: { data: StatsResponse | null; loading: boolean; error: string | null; reload: () => void };
 	metric: Metric;
+	/** Whether to draw the earlier period underneath. The numbers ride on the
+	 *  same rows as the current period, so this only decides whether they are
+	 *  drawn, never whether they were asked for. */
+	comparing: boolean;
 }
 
 /**
@@ -44,7 +50,7 @@ interface Props {
  * engine only returns buckets that had traffic, so a chart built from the rows
  * alone would silently close up an empty Tuesday and draw a week as six days.
  */
-export function MainGraph({ stats, metric }: Props) {
+export function MainGraph({ stats, metric, comparing }: Props) {
 	// Zero until the wrapper has been measured. The chart is not drawn at a
 	// guessed width: a default that happens to be wider than the container
 	// paints a graph that runs off the side of its own card, and on a phone that
@@ -91,6 +97,12 @@ export function MainGraph({ stats, metric }: Props) {
 
 	const points = labels.map((label) => values.get(label) ?? null);
 
+	// The overlay is indexed by the *current* period's buckets, because that is
+	// how the engine matched the two: bucket three against bucket three. Its
+	// dates are different by definition, which is why the tooltip names them.
+	const previous = comparing ? comparisonSeries(data, 0) : [];
+	const comparisonBounds = data?.meta.comparison_date_range;
+
 	// The wrapper is rendered on every path, including the failure and the
 	// loading ones. Returning early instead would mean the ref was never
 	// attached on the first render, the observer never fired, and the chart drew
@@ -110,7 +122,12 @@ export function MainGraph({ stats, metric }: Props) {
 	const plotWidth = Math.max(80, width - PAD.left - PAD.right);
 	const plotHeight = HEIGHT - PAD.top - PAD.bottom;
 
-	const peak = Math.max(1, ...points.filter((value): value is number => value !== null));
+	// The overlay counts towards the axis. Scaling to the current period alone
+	// would clip a previous period that was busier, and a comparison whose worse
+	// half runs off the top of the chart is a comparison that flatters.
+	const plotted = [...points, ...previous].filter((value): value is number => value !== null);
+
+	const peak = Math.max(1, ...plotted);
 	const ceiling = niceCeiling(peak);
 
 	const x = (index: number) =>
@@ -123,6 +140,8 @@ export function MainGraph({ stats, metric }: Props) {
 
 	const hovered = hover !== null ? (points[hover] ?? null) : null;
 	const hoverLabel = hover !== null ? labels[hover] : undefined;
+	const hoveredEarlier = hover !== null ? (previous[hover] ?? null) : null;
+	const earlierRuns = contiguous(previous);
 
 	return (
 		<div ref={wrap} className="relative px-1" style={{ height: HEIGHT }}>
@@ -189,6 +208,24 @@ export function MainGraph({ stats, metric }: Props) {
 						</text>
 					) : null,
 				)}
+
+				{/* The earlier period is drawn first, thin and neutral, so the
+				    current period reads as the subject and the comparison as the
+				    backdrop. Reversing the weight makes the chart look like two
+				    series of equal standing, which is not the question anybody
+				    opened it to answer. */}
+				{earlierRuns.map((run) => (
+					<path
+						key={`earlier-${run.from}`}
+						d={linePath(previous, run.from, run.to, x, y)}
+						fill="none"
+						stroke="var(--fs-faint)"
+						strokeWidth={1.5}
+						strokeDasharray="3 3"
+						strokeLinecap="round"
+						strokeLinejoin="round"
+					/>
+				))}
 
 				{runs.map((run) => {
 					// The in-progress bucket is dashed, and only that one edge
@@ -277,8 +314,46 @@ export function MainGraph({ stats, metric }: Props) {
 						</p>
 					)}
 
+					{comparing && (
+						<p className="mt-1 flex items-baseline gap-1.5 border-t border-line pt-1 text-[11px] text-muted">
+							<span aria-hidden="true">{t("dashboard.graph.vs")}</span>
+							{hoveredEarlier === null ? (
+								<span>{t("dashboard.graph.no_data")}</span>
+							) : (
+								<>
+									<span className="tnum font-medium text-body">
+										{metricValue(metric, hoveredEarlier)}
+									</span>
+									{hovered !== null && (
+										<ChangeChip
+											change={changePercent(hovered, hoveredEarlier)}
+											invert={INVERTED.has(metric)}
+										/>
+									)}
+								</>
+							)}
+							{hover !== null && (
+								<span className="ml-auto">
+									{previousBucketLabel(comparisonBounds, interval, hover) ||
+										t("dashboard.graph.earlier_period")}
+								</span>
+							)}
+						</p>
+					)}
+
 					{present === hover && <p className="text-[11px] text-muted">{t("dashboard.graph.in_progress")}</p>}
 				</div>
+			)}
+
+			{/* The legend names the window the dashes are, because "previous
+			    period" is ambiguous the moment the range is a custom one. */}
+			{comparing && comparisonBounds && (
+				<p className="pointer-events-none absolute top-0 right-1 flex items-center gap-1.5 text-[11px] text-muted">
+					<svg width="16" height="2" aria-hidden="true" className="shrink-0">
+						<line x1="0" y1="1" x2="16" y2="1" stroke="var(--fs-faint)" strokeWidth="2" strokeDasharray="3 3" />
+					</svg>
+					{rangeLabel(comparisonBounds)}
+				</p>
 			)}
 		</div>
 	);

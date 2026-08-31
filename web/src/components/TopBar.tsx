@@ -8,7 +8,9 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import type { Preset } from "../api/types";
+import type { Filter, Preset } from "../api/types";
+import type { CompareMode } from "../lib/compare";
+import { COMPARE_LABELS } from "../lib/compare";
 import { rangeLabel } from "../lib/format";
 import { n, t } from "../lib/i18n";
 import type { Theme } from "../lib/prefs";
@@ -50,7 +52,28 @@ interface Props {
 	onTheme: (next: Theme) => void;
 	/** The window the server actually used, shown under a preset name. */
 	resolved: string[] | undefined;
+	/** The filters in force. The live pill carries them too, so the number in the
+	 *  bar is about the same population as the page under it. */
+	filters: Filter[];
+	onHelp: () => void;
+	/** Bumped when the keyboard asks for the custom-range form. A counter rather
+	 *  than a flag, because pressing the key twice has to open it twice. */
+	pickCustom: number;
 }
+
+/**
+ * The current-visitor window.
+ *
+ * Five minutes, and the same five minutes the realtime screen uses. Two windows
+ * both labelled "current visitors" is how somebody ends up reading a 30-minute
+ * count against a 5-minute one and concluding the dashboard cannot add up.
+ */
+const CURRENT_RANGE: Preset = "5m";
+
+/** Engagement pings fire on tab blur with no navigation behind them, so a
+ *  visitor whose only trace is a ping has left rather than arrived. Counting one
+ *  is what makes a live figure drift above the rest of the dashboard. */
+const NOT_ENGAGEMENT: Filter = ["is_not", "event:name", ["engagement"], { case_sensitive: true }];
 
 /**
  * TopBar is the one control surface on the page.
@@ -59,8 +82,9 @@ interface Props {
  * address bar is always a description of what is on screen — which is what
  * makes a dashboard link worth sending to somebody.
  */
-export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved }: Props) {
+export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, filters, onHelp, pickCustom }: Props) {
 	const label = periodLabel(state);
+	const live = state.preset === "realtime" && !state.from;
 
 	return (
 		<header className="sticky top-0 z-30 border-b border-line bg-card/95 backdrop-blur">
@@ -78,10 +102,28 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved }: P
 
 				<SitePicker current={state.domain} sites={sites} onPick={(domain) => onNavigate({ ...state, domain })} />
 
-				<CurrentVisitors domain={state.domain} />
+				<CurrentVisitors
+					domain={state.domain}
+					filters={filters}
+					live={live}
+					onOpen={() => onNavigate({ ...state, preset: "realtime", from: "", to: "", drawer: null })}
+				/>
 
 				<div className="ml-auto flex items-center gap-2">
-					<PeriodPicker state={state} label={label} onNavigate={onNavigate} resolved={resolved} />
+					{/* Comparison is hidden on the live view rather than disabled:
+					    there is no previous thirty minutes to compare the last
+					    thirty against, and a control that does nothing is worse
+					    than one that is not there. */}
+					{!live && <ComparePicker state={state} onNavigate={onNavigate} />}
+
+					<PeriodPicker
+						state={state}
+						label={label}
+						onNavigate={onNavigate}
+						resolved={resolved}
+						pickCustom={pickCustom}
+					/>
+					<HelpButton onHelp={onHelp} />
 					<ThemeToggle theme={theme} onTheme={onTheme} />
 				</div>
 			</div>
@@ -115,6 +157,10 @@ function SitePicker({ current, sites, onPick }: { current: string; sites: string
 		<label className="relative flex items-center">
 			<span className="sr-only">{t("dashboard.topbar.site")}</span>
 			<select
+				// The id is what the `0` shortcut reaches for. A ref threaded down
+				// from App would be the same lookup with more moving parts, on a
+				// control there is exactly one of.
+				id="site-picker"
 				value={current}
 				onChange={(event) => onPick(event.target.value)}
 				className="h-control cursor-pointer appearance-none rounded-md border border-line bg-card py-0 pr-7 pl-2.5 text-sm font-medium text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
@@ -131,15 +177,29 @@ function SitePicker({ current, sites, onPick }: { current: string; sites: string
 }
 
 /**
- * CurrentVisitors is the live pill.
+ * CurrentVisitors is the live pill, and a way into the live view.
  *
- * The window is the engine's realtime preset — thirty minutes, which is the
- * session timeout and therefore exactly the span in which somebody still counts
- * as being on the site. It refreshes every thirty seconds and skips the poll
- * entirely while the tab is in the background.
+ * It counts the same five minutes the realtime screen counts, with the same
+ * engagement exclusion, because "current visitors" has to be one number wherever
+ * it appears. It refreshes every thirty seconds and skips the poll entirely
+ * while the tab is in the background.
  */
-function CurrentVisitors({ domain }: { domain: string }) {
-	const stats = useStats(domain, { metrics: ["visitors"], date_range: "realtime" });
+function CurrentVisitors({
+	domain,
+	filters,
+	live,
+	onOpen,
+}: {
+	domain: string;
+	filters: Filter[];
+	live: boolean;
+	onOpen: () => void;
+}) {
+	const stats = useStats(domain, {
+		metrics: ["visitors"],
+		date_range: CURRENT_RANGE,
+		filters: [...filters, NOT_ENGAGEMENT],
+	});
 
 	useInterval(stats.reload, 30_000);
 
@@ -148,8 +208,13 @@ function CurrentVisitors({ domain }: { domain: string }) {
 	if (count === null) return null;
 
 	return (
-		<span
-			className="flex h-control items-center gap-2 rounded-md px-2 text-sm text-muted"
+		<button
+			type="button"
+			onClick={onOpen}
+			aria-pressed={live}
+			className={`flex h-control items-center gap-2 rounded-md px-2 text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover ${
+				live ? "text-accent" : "text-muted"
+			}`}
 			title={t("dashboard.topbar.current_visitors.help")}
 		>
 			<span className="relative flex size-2">
@@ -158,7 +223,56 @@ function CurrentVisitors({ domain }: { domain: string }) {
 			</span>
 			<span className="tnum font-medium text-body">{count}</span>
 			<span className="hidden sm:inline">{n("dashboard.topbar.current_visitors", count)}</span>
-		</span>
+		</button>
+	);
+}
+
+/**
+ * ComparePicker turns the comparison on and off and chooses what against.
+ *
+ * The mode is in the URL rather than in a preference, because a link to a
+ * dashboard showing "+40% year on year" is a link about the comparison as much
+ * as about the period, and a recipient who saw no comparison would not see the
+ * same page at all.
+ */
+function ComparePicker({ state, onNavigate }: { state: UrlState; onNavigate: (next: UrlState) => void }) {
+	const modes: CompareMode[] = ["off", "previous_period", "year_over_year"];
+
+	return (
+		<label className="relative flex items-center">
+			<span className="sr-only">{t("dashboard.compare.label")}</span>
+			<select
+				value={state.compare}
+				onChange={(event) => onNavigate({ ...state, compare: event.target.value as CompareMode })}
+				className={`h-control cursor-pointer appearance-none rounded-md border border-line bg-card py-0 pr-7 pl-2.5 text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover ${
+					state.compare === "off" ? "text-muted" : "font-medium text-body"
+				}`}
+			>
+				{modes.map((mode) => (
+					<option key={mode} value={mode}>
+						{t(COMPARE_LABELS[mode])}
+					</option>
+				))}
+			</select>
+			<Chevron className="pointer-events-none absolute right-2" />
+		</label>
+	);
+}
+
+/** HelpButton is how somebody who never presses `?` finds out that `?` does
+ *  something. A keyboard layer with no visible way in is a keyboard layer only
+ *  its author uses. */
+function HelpButton({ onHelp }: { onHelp: () => void }) {
+	return (
+		<button
+			type="button"
+			onClick={onHelp}
+			title={t("dashboard.shortcuts.open")}
+			aria-label={t("dashboard.shortcuts.title")}
+			className="hidden size-control items-center justify-center rounded-md border border-line bg-card text-sm text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover sm:flex"
+		>
+			?
+		</button>
 	);
 }
 
@@ -168,11 +282,13 @@ function PeriodPicker({
 	label,
 	onNavigate,
 	resolved,
+	pickCustom,
 }: {
 	state: UrlState;
 	label: string;
 	onNavigate: (next: UrlState) => void;
 	resolved: string[] | undefined;
+	pickCustom: number;
 }) {
 	const [open, setOpen] = useState(false);
 	const [custom, setCustom] = useState(false);
@@ -182,6 +298,16 @@ function PeriodPicker({
 		setOpen(false);
 		setCustom(false);
 	});
+
+	// The keyboard's route into the two-date form. It skips the menu entirely:
+	// somebody who pressed the shortcut has already chosen, and making them
+	// click "Custom range…" afterwards would be the shortcut doing half a job.
+	useEffect(() => {
+		if (pickCustom === 0) return;
+
+		setOpen(true);
+		setCustom(true);
+	}, [pickCustom]);
 
 	// Changing the period closes the drawer. A details view is about a slice of
 	// a specific window, and leaving it open over a different one would show

@@ -9,12 +9,28 @@
 import { useCallback, useEffect, useState } from "react";
 
 import type { DateRange, Preset } from "../api/types";
+import type { CompareMode } from "./compare";
+import type { FilterLabels, FilterState } from "./filters";
+import { readFilters, readLabels, writeFilters } from "./filters";
 
 /** The path the SPA is mounted under. It is a constant so the router and every
  *  link it builds cannot drift apart from the Go handler's prefix. */
 export const BASE = "/dashboard";
 
-const PRESETS: Preset[] = ["realtime", "day", "24h", "7d", "28d", "91d", "month", "last_month", "year", "12mo", "all"];
+const PRESETS: Preset[] = [
+	"realtime",
+	"5m",
+	"day",
+	"24h",
+	"7d",
+	"28d",
+	"91d",
+	"month",
+	"last_month",
+	"year",
+	"12mo",
+	"all",
+];
 
 /** DEFAULT_PRESET matches the engine's own default, so a bare /dashboard/site
  *  and an explicit ?period=28d are the same page rather than two. */
@@ -45,7 +61,14 @@ export interface UrlState {
 	/** Set only when preset is a custom range; the two bounds as YYYY-MM-DD. */
 	from: string;
 	to: string;
-	compare: "previous_period" | "year_over_year" | "off";
+	compare: CompareMode;
+	/** Every filter in force, ANDed together. In the URL rather than in state
+	 *  because a filtered dashboard is the thing people send each other, and a
+	 *  filter that vanishes on paste makes the link a lie. */
+	filters: FilterState[];
+	/** Display labels for values whose stored form says nothing on its own, so a
+	 *  recipient sees the same pill the sender did. */
+	labels: FilterLabels;
 	drawer: DrawerState | null;
 }
 
@@ -77,6 +100,8 @@ export function parse(url: URL): UrlState {
 		from: isDate(from) && isDate(to) ? from : "",
 		to: isDate(from) && isDate(to) ? to : "",
 		compare: compare === "year_over_year" || compare === "off" ? compare : "previous_period",
+		filters: readFilters(params),
+		labels: readLabels(params),
 		drawer: parseDrawer(params),
 	};
 }
@@ -126,6 +151,8 @@ export function href(state: UrlState): string {
 	}
 
 	if (state.compare !== "previous_period") params.set("compare", state.compare);
+
+	writeFilters(params, state.filters, state.labels);
 
 	const drawer = state.drawer;
 	if (drawer) {

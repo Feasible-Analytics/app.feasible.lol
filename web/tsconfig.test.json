@@ -1,0 +1,11 @@
+{
+	// The tests are the one place Node's own globals exist, so they get their own
+	// configuration rather than the browser bundle inheriting a test runner's
+	// types. The files under test are pulled in by their imports.
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"types": ["node"]
+	},
+	"include": ["src/**/*.test.ts"],
+	"exclude": []
+}
