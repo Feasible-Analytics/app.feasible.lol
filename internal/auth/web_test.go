@@ -353,6 +353,54 @@ func TestRegisterVerifyAndCreateASite(t *testing.T) {
 	}
 }
 
+// TestALockedAccountGetsTheSitesListWithoutItsNumbers is the last place a
+// locked account could still read its own traffic.
+//
+// The page has to stay open — it is the route to site settings and, two clicks
+// on, to the billing screen that unlocks everything — but the sparkline beside
+// each site is thirty days of that account's visitors, which is the report the
+// dashboard has just refused.
+func TestALockedAccountGetsTheSitesListWithoutItsNumbers(t *testing.T) {
+	app := newTestApp(t)
+	c := registerAndVerify(t, app)
+
+	resp := c.post("/sites/new", url.Values{
+		"domain":       {"example.com"},
+		"display_name": {"Marketing site"},
+		"timezone":     {"UTC"},
+	})
+	resp.Body.Close()
+
+	open := c.body("/sites")
+	if !strings.Contains(open, "<polyline") {
+		t.Fatalf("a paying account should see the sparkline:\n%s", open)
+	}
+
+	app.Access = func(int64) bool { return true }
+
+	locked := c.body("/sites")
+
+	if strings.Contains(locked, "<polyline") {
+		t.Error("a locked account was still shown its traffic")
+	}
+
+	// Everything that is not a number stays. Locking somebody out of the page
+	// that leads to billing is how an account becomes unrecoverable for the
+	// person trying to pay us.
+	if !strings.Contains(locked, "Marketing site") {
+		t.Errorf("the sites list itself was taken away:\n%s", locked)
+	}
+	if !strings.Contains(locked, "/settings") {
+		t.Error("the locked list has no route to settings")
+	}
+
+	app.Access = nil
+
+	if restored := c.body("/sites"); !strings.Contains(restored, "<polyline") {
+		t.Error("paying did not bring the sparklines back")
+	}
+}
+
 // TestSignedOutRequestsAreRedirected checks the gate on every signed-in route,
 // including that the path somebody asked for survives the detour.
 func TestSignedOutRequestsAreRedirected(t *testing.T) {

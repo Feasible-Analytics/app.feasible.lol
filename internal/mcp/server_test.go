@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/access"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
@@ -68,6 +69,81 @@ func TestUnknownMethodIsAProtocolError(t *testing.T) {
 
 	if response.Error.Code != codeMethodNotFound {
 		t.Errorf("code = %d, want %d", response.Error.Code, codeMethodNotFound)
+	}
+}
+
+// TestALockedAccountIsRefusedEveryMethodThatReadsData covers the second front
+// end onto the same numbers. An assistant holding a key for a locked account
+// could ask it every question the dashboard had just refused, which made the
+// lock a property of one URL prefix rather than of the account.
+func TestALockedAccountIsRefusedEveryMethodThatReadsData(t *testing.T) {
+	f := newFixture(t)
+	f.API.Access.Set(teamID, access.ReasonLifecycle)
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"a tool call", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query_stats","arguments":{"site_id":"example.com","metrics":["visitors"],"date_range":"7d"}}}`},
+		{"listing resources", `{"jsonrpc":"2.0","id":1,"method":"resources/list"}`},
+		{"reading a resource", `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"feasible://site/example.com/schema"}}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			response := f.Server.Handle(context.Background(), f.Key, []byte(tc.body))
+
+			if response == nil || response.Error == nil {
+				t.Fatalf("a locked account got %+v, want a refusal", response)
+			}
+
+			// Its own code, not the unauthorized one: reconnecting fixes a bad
+			// token and never fixes an unpaid invoice, and a client that cannot
+			// tell them apart will loop through its authorisation flow forever.
+			if response.Error.Code != codePaymentRequired {
+				t.Fatalf("code = %d, want %d", response.Error.Code, codePaymentRequired)
+			}
+
+			if !strings.Contains(response.Error.Message, "not currently paying") {
+				t.Errorf("the refusal does not say why: %q", response.Error.Message)
+			}
+			if !strings.Contains(response.Error.Message, "/billing") {
+				t.Errorf("the refusal does not say where to go: %q", response.Error.Message)
+			}
+		})
+	}
+}
+
+// TestALockedAccountStillCompletesTheHandshake is why the lock is per method
+// rather than on the whole connection. A client that cannot finish initialize
+// has nowhere to show the reason it failed, so it connects, sees what exists,
+// and is told the moment it asks for something real.
+func TestALockedAccountStillCompletesTheHandshake(t *testing.T) {
+	f := newFixture(t)
+	f.API.Access.Set(teamID, access.ReasonLifecycle)
+
+	for _, method := range []string{"initialize", "ping", "tools/list", "resources/templates/list", "prompts/list"} {
+		t.Run(method, func(t *testing.T) {
+			response := f.Server.Handle(context.Background(), f.Key,
+				[]byte(`{"jsonrpc":"2.0","id":1,"method":"`+method+`"}`))
+
+			if response == nil {
+				t.Fatalf("%s produced no response", method)
+			}
+			if response.Error != nil {
+				t.Fatalf("%s was refused: %s (code %d)", method, response.Error.Message, response.Error.Code)
+			}
+		})
+	}
+}
+
+// TestAPayingAccountIsNotRefused is the case a bug in the check would break for
+// everybody, so it is asserted rather than assumed.
+func TestAPayingAccountIsNotRefused(t *testing.T) {
+	f := newFixture(t)
+
+	if answer := f.tool(t, "list_sites", ""); answer.IsError {
+		t.Fatalf("a paying account's tool call failed: %+v", answer)
 	}
 }
 
@@ -631,9 +707,12 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 
+	// A real gate with nothing in it. Every test starts against an account that
+	// is paying; the ones that care lock it with Set.
 	api := &publicapi.API{
 		Keys:     keys,
 		Limiter:  apikeys.NewLimiter(0),
+		Access:   access.New(nil, nil, nil, nil),
 		Sites:    cache,
 		Control:  publicapi.NewControlStore(control),
 		Accounts: manager,

@@ -11,6 +11,7 @@ package access
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -352,5 +353,119 @@ func TestSetLocksWithoutARefresh(t *testing.T) {
 	}
 	if f.gate.Count() != 1 {
 		t.Errorf("the gate reports %d locked accounts, want 1", f.gate.Count())
+	}
+}
+
+// TestDormantSaysCollectionHasStopped is the difference between the two blocked
+// lifecycle phases, in the only place a customer can see it. Both refuse, but
+// telling a dormant account we are still recording its traffic is a promise it
+// discovers is false on the day it pays.
+func TestDormantSaysCollectionHasStopped(t *testing.T) {
+	f := newFixture(t)
+	f.lapse()
+
+	f.clock = gateNow.Add(lifecycle.GraceDays * lifecycle.Day)
+	f.refresh()
+
+	locked, _ := f.get("/dashboard/example.com", "")
+	if !strings.Contains(locked.Body.String(), "still collecting your data") {
+		t.Errorf("the locked page does not say collection continues: %s", locked.Body.String())
+	}
+
+	f.clock = gateNow.Add(lifecycle.LockedDays * lifecycle.Day)
+	f.refresh()
+
+	if reason, _ := f.gate.Locked(1); reason != ReasonDormant {
+		t.Fatalf("the reason is %q, want dormant", reason)
+	}
+
+	dormant, _ := f.get("/dashboard/example.com", "")
+
+	body := dormant.Body.String()
+	if strings.Contains(body, "still collecting your data") {
+		t.Error("the dormant page claims we are still collecting, which we are not")
+	}
+	if !strings.Contains(body, "stopped collecting") {
+		t.Errorf("the dormant page does not say collection stopped: %s", body)
+	}
+	if !strings.Contains(body, "/billing") {
+		t.Error("the dormant page does not link to billing")
+	}
+}
+
+// TestRefuseJSONNeverNegotiates is the entry point the public API and the MCP
+// endpoint call. Their callers are programs in every case, and an HTML page
+// produces a parse error in somebody's logs rather than the sentence that would
+// have explained it.
+func TestRefuseJSONNeverNegotiates(t *testing.T) {
+	f := newFixture(t)
+	f.gate.Set(1, ReasonLifecycle)
+
+	recorder := httptest.NewRecorder()
+
+	if !f.gate.RefuseJSON(recorder, 1) {
+		t.Fatal("a locked account was not refused")
+	}
+
+	if recorder.Code != http.StatusPaymentRequired {
+		t.Fatalf("status %d, want 402", recorder.Code)
+	}
+	if got := recorder.Header().Get("Content-Type"); !strings.Contains(got, "application/json") {
+		t.Errorf("the refusal is %q, want JSON", got)
+	}
+
+	var refusal Refusal
+	if err := json.NewDecoder(recorder.Body).Decode(&refusal); err != nil {
+		t.Fatal(err)
+	}
+
+	// All three fields are load-bearing. A caller has to be able to tell this
+	// from a permissions bug, read a sentence a person can act on, and find the
+	// page that fixes it without opening a support ticket.
+	if refusal.Reason != ReasonLifecycle {
+		t.Errorf("reason is %q", refusal.Reason)
+	}
+	if refusal.Action != "/billing" {
+		t.Errorf("action is %q, want /billing", refusal.Action)
+	}
+	if !strings.Contains(refusal.Error, "not currently paying") {
+		t.Errorf("the message does not say why: %q", refusal.Error)
+	}
+}
+
+// TestRefuseJSONPassesAnActiveAccount is the common case again, through the
+// entry point the API uses rather than the one the dashboard does.
+func TestRefuseJSONPassesAnActiveAccount(t *testing.T) {
+	f := newFixture(t)
+	f.refresh()
+
+	recorder := httptest.NewRecorder()
+
+	if f.gate.RefuseJSON(recorder, 1) {
+		t.Fatal("a paying account was refused")
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("the gate wrote a body for an account it let through: %q", recorder.Body.String())
+	}
+}
+
+// TestANilGateLocksNothing is what a self-hosted install is: no payment
+// provider, no clock, and nothing anywhere that should refuse a request. Every
+// component that can hold a gate holds nothing there, so a nil one has to
+// answer rather than panic.
+func TestANilGateLocksNothing(t *testing.T) {
+	var gate *Gate
+
+	if gate.Blocked(1) {
+		t.Error("a nil gate blocked an account")
+	}
+	if _, locked := gate.Check(1); locked {
+		t.Error("a nil gate reported an account locked")
+	}
+
+	recorder := httptest.NewRecorder()
+
+	if gate.RefuseJSON(recorder, 1) {
+		t.Error("a nil gate refused a request")
 	}
 }

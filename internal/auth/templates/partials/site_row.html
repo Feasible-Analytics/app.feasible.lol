@@ -37,13 +37,20 @@
     </p>
   </div>
 
-  <div class="hidden w-32 shrink-0 sm:block">
-    <svg viewBox="0 0 120 28" class="h-7 w-full text-accent" preserveAspectRatio="none" aria-hidden="true">
-      <polyline fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"
-                points="{{ sparkline .Site.Sparkline }}" />
-    </svg>
-    <p class="mt-0.5 text-right text-[10px] text-faint">{{ n $.Lang "auth.site_row.visits" (num .Site.Visitors) }}</p>
-  </div>
+  <!--
+    A locked account gets the row without the chart. The column is left out
+    rather than drawn empty, because a flat line and a "0 visits" caption are a
+    number we would be inventing about an account we are still collecting.
+  -->
+  {{ if not .Locked }}
+    <div class="hidden w-32 shrink-0 sm:block">
+      <svg viewBox="0 0 120 28" class="h-7 w-full text-accent" preserveAspectRatio="none" aria-hidden="true">
+        <polyline fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"
+                  points="{{ sparkline .Site.Sparkline }}" />
+      </svg>
+      <p class="mt-0.5 text-right text-[10px] text-faint">{{ n $.Lang "auth.site_row.visits" (num .Site.Visitors) }}</p>
+    </div>
+  {{ end }}
 
   <form method="post" action="/sites/{{ .Site.ID }}/pin" class="shrink-0">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">

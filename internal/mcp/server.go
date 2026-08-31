@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/access"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/publicapi"
@@ -106,6 +107,14 @@ func (s *Server) Handle(ctx context.Context, key *apikeys.Key, raw []byte) *rpcR
 
 // dispatch routes one method.
 func (s *Server) dispatch(ctx context.Context, key *apikeys.Key, request *rpcRequest) *rpcResponse {
+	// The lock is honoured here rather than in the HTTP transport so that a
+	// stdio session is refused on the same terms as a remote one. Both carry a
+	// key, both reach the same account, and a lock one transport ignored would
+	// be no lock at all.
+	if refusal, locked := s.refusal(key, request.Method); locked {
+		return failure(request.ID, codePaymentRequired, "%s Open %s to fix it.", refusal.Error, refusal.Action)
+	}
+
 	switch request.Method {
 	case "initialize":
 		return result(request.ID, initializeResult{
@@ -152,6 +161,36 @@ func (s *Server) dispatch(ctx context.Context, key *apikeys.Key, request *rpcReq
 	default:
 		return failure(request.ID, codeMethodNotFound, "no method named %q", request.Method)
 	}
+}
+
+// refusal reports whether a locked account is asking for its own data, and what
+// it should be told.
+//
+// The gate is read off the API rather than held here, because this server is a
+// second front end onto that API and not a second implementation of it: two
+// copies of the locked set is two answers to "may this account read", with no
+// way to say which one is right.
+func (s *Server) refusal(key *apikeys.Key, method string) (access.Refusal, bool) {
+	if key == nil || s.API == nil || !readsAccountData(method) {
+		return access.Refusal{}, false
+	}
+
+	return s.API.Access.Check(key.TeamID)
+}
+
+// readsAccountData reports whether a method reaches an account's own numbers.
+//
+// The handshake, the static lists and ping are deliberately not on it. A client
+// that cannot complete initialize cannot show anybody why it failed, so it
+// connects, lists what exists, and is told the reason the first time it asks
+// for something real.
+func readsAccountData(method string) bool {
+	switch method {
+	case "tools/call", "resources/list", "resources/read":
+		return true
+	}
+
+	return false
 }
 
 // describeTools renders the tool list.

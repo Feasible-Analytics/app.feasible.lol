@@ -11,6 +11,7 @@ package webhooks
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -652,5 +653,73 @@ func TestPlainHTTPIsRefused(t *testing.T) {
 		if !allowed && err == nil {
 			t.Errorf("%q was allowed", url)
 		}
+	}
+}
+
+// TestALockedAccountQueuesNothing closes the back door. A goal conversion or a
+// traffic spike posted to a customer's endpoint is the same data the dashboard
+// and the API have just refused, arriving on a schedule and needing no
+// credential at all — so a lock that stopped at the front door would hand back
+// everything it had refused.
+func TestALockedAccountQueuesNothing(t *testing.T) {
+	db := testControl(t)
+
+	store := NewStore(db)
+	store.Now = func() time.Time { return clockStart }
+
+	if _, err := store.Create(context.Background(), 1, nil, "https://example.org/hook", "hook", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	dispatcher := NewDispatcher(store)
+	dispatcher.Blocked = func(accountID int64) bool { return accountID == 1 }
+
+	queued, err := dispatcher.Publish(context.Background(), 1, Event{Type: EventGoalConverted})
+
+	// The refusal is an error rather than a quiet zero. A withheld event that
+	// nothing anywhere records is exactly the failure this product exists to
+	// stop making.
+	if !errors.Is(err, ErrLocked) {
+		t.Fatalf("err = %v, want ErrLocked", err)
+	}
+	if queued != 0 {
+		t.Fatalf("queued = %d for a locked account", queued)
+	}
+
+	var deliveries, jobs int
+
+	if err := db.QueryRow(`SELECT COUNT(*) FROM webhook_deliveries`).Scan(&deliveries); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM jobs`).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+
+	if deliveries != 0 || jobs != 0 {
+		t.Fatalf("a locked account left %d deliveries and %d jobs behind", deliveries, jobs)
+	}
+}
+
+// TestAnUnlockedAccountStillPublishes is the other half, and the one that would
+// silently stop every customer's integration if the check were inverted.
+func TestAnUnlockedAccountStillPublishes(t *testing.T) {
+	db := testControl(t)
+
+	store := NewStore(db)
+	store.Now = func() time.Time { return clockStart }
+
+	if _, err := store.Create(context.Background(), 1, nil, "https://example.org/hook", "hook", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	dispatcher := NewDispatcher(store)
+	dispatcher.Blocked = func(int64) bool { return false }
+
+	queued, err := dispatcher.Publish(context.Background(), 1, Event{Type: EventGoalConverted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued != 1 {
+		t.Fatalf("queued = %d, want 1", queued)
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/access"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
@@ -107,9 +108,13 @@ func newHarness(t *testing.T) *harness {
 
 	hooks := webhooks.NewStore(control)
 
+	// A real gate with nothing in it. Every test starts against an account that
+	// is paying, and the ones that care lock it with Set rather than by walking
+	// a ninety-day clock.
 	api := &API{
 		Keys:       keys,
 		Limiter:    apikeys.NewLimiter(0),
+		Access:     access.New(nil, nil, nil, nil),
 		Sites:      cache,
 		Control:    NewControlStore(control),
 		Accounts:   manager,

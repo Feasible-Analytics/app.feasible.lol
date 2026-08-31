@@ -52,6 +52,15 @@ type Handler struct {
 	// that the snippet somebody pastes seconds later already resolves.
 	SiteCache *sites.Cache
 
+	// Access is the account lock. Almost nothing this handler serves is gated —
+	// signing in, settings and the route to billing all stay open, because
+	// locking somebody out of the page where they would pay us is self-
+	// defeating — but the sites list draws a sparkline per site, and a
+	// sparkline is the account's numbers. It is a function rather than the gate
+	// itself so the signed-in application does not depend on billing existing,
+	// and nil locks nothing.
+	Access func(accountID int64) bool
+
 	BaseURL string
 	Log     *logger.Logger
 
@@ -74,6 +83,7 @@ type Options struct {
 	Deleter   *Deleter
 	Keyer     *tracker.Keyer
 	SiteCache *sites.Cache
+	Access    func(accountID int64) bool
 	BaseURL   string
 	Log       *logger.Logger
 }
@@ -99,6 +109,7 @@ func NewHandler(opts Options) (*Handler, error) {
 		Limiter:   NewLimiter(),
 		Keyer:     opts.Keyer,
 		SiteCache: opts.SiteCache,
+		Access:    opts.Access,
 		BaseURL:   strings.TrimRight(opts.BaseURL, "/"),
 		Log:       opts.Log,
 		Verifier:  &http.Client{Timeout: verifyTimeout},

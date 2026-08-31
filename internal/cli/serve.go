@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"path/filepath"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/access"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/auth"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
@@ -98,10 +99,17 @@ func runServe(e *env, args []string) int {
 		return ExitError
 	}
 
+	// The commercial half: taking money, counting billable volume, and the clock
+	// that eventually deletes an account that stops paying. It is built before
+	// the two front ends because both of them ask its access gate whether an
+	// account may still read its own data, and none of it fails when no payment
+	// provider is configured.
+	com := buildCommerce(e, control, manager, service.Sites, mailer)
+
 	// The signed-in application. It is built before the listener binds so that a
 	// broken template or an unreadable key is a start-up failure with a message,
 	// rather than a 500 on somebody's sign-in page.
-	app, err := buildApp(e, control, manager, service, secret, mailer)
+	app, err := buildApp(e, control, manager, service, secret, mailer, com.Gate)
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError
@@ -120,7 +128,7 @@ func runServe(e *env, args []string) int {
 	// of them, which is the difference between this and the product it competes
 	// with: their self-hosted build inherited a subscription check and showed
 	// people a paywall on their own instance.
-	public := buildPublic(e, control, service.Sites, manager)
+	public := buildPublic(e, control, service.Sites, manager, com.Gate)
 
 	// The worker's lifetime is tied to the process rather than to a request, so
 	// it gets a context of its own that shutdown cancels.
@@ -135,12 +143,6 @@ func runServe(e *env, args []string) int {
 		Sites:    rollup.ControlLister(control),
 		Log:      e.log,
 	}
-
-	// The commercial half: taking money, counting billable volume, and the clock
-	// that eventually deletes an account that stops paying. It is built after
-	// ingestion because it needs the same control database and the same site
-	// snapshot, and none of it fails when no payment provider is configured.
-	com := buildCommerce(e, control, manager, service.Sites, mailer)
 
 	// The shard counts billable events after each commit. This is assigned
 	// before anything is listening, so nothing reads it concurrently with the
@@ -169,7 +171,7 @@ func runServe(e *env, args []string) int {
 // missing key or an unparseable template stops the process with a message that
 // names the file — and so a test can build the same handler over a temporary
 // database.
-func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *ingest.Service, secret []byte, mailer *mail.Mailer) (*auth.Handler, error) {
+func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *ingest.Service, secret []byte, mailer *mail.Mailer, gate *access.Gate) (*auth.Handler, error) {
 	key, err := auth.LoadKey(e.cfg.App.DataDir, e.cfg.App.SecretKey)
 	if err != nil {
 		return nil, err
@@ -192,6 +194,7 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 		Deleter:   auth.NewDeleter(store, manager, e.cfg.App.DataDir, stripe, e.log),
 		Keyer:     tracker.NewKeyer(secret, service.Sites),
 		SiteCache: service.Sites,
+		Access:    gate.Blocked,
 		BaseURL:   e.cfg.App.BaseURL,
 		Log:       e.log,
 	})

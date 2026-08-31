@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/access"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
@@ -49,14 +50,20 @@ type publicStack struct {
 // self-hosted build inherited the check, and people running it on their own
 // hardware were shown a subscription prompt on their own instance. A plan check
 // in this function would be a bug.
-func buildPublic(e *env, control *sql.DB, cache *sites.Cache, manager *accounts.Manager) *publicStack {
+func buildPublic(e *env, control *sql.DB, cache *sites.Cache, manager *accounts.Manager, gate *access.Gate) *publicStack {
 	keys := apikeys.NewStore(control)
 	hooks := webhooks.NewStore(control)
 	dispatcher := webhooks.NewDispatcher(hooks)
 
+	// A locked account's numbers must not leave by the back door either. An
+	// outbound goal conversion or traffic spike is the same data the API is
+	// about to refuse, arriving at a customer's endpoint on a schedule.
+	dispatcher.Blocked = gate.Blocked
+
 	api := &publicapi.API{
 		Keys:       keys,
 		Limiter:    apikeys.NewLimiter(e.cfg.API.RateLimit),
+		Access:     gate,
 		Sites:      cache,
 		Control:    publicapi.NewControlStore(control),
 		Accounts:   manager,
@@ -91,7 +98,8 @@ func buildPublic(e *env, control *sql.DB, cache *sites.Cache, manager *accounts.
 // the same process also answers /api/event, the tracker script and the health
 // probes, none of which take an API key. Mounting the authenticated handler at
 // the root would put a bearer-token check in front of the event endpoint, which
-// is every customer's traffic.
+// is every customer's traffic — and, now that the same wrapper also carries the
+// account lock, would stop a locked account being collected at all.
 func (p *publicStack) mount(mux *http.ServeMux) {
 	routes := p.API.Routes()
 
