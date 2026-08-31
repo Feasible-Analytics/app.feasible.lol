@@ -1,0 +1,71 @@
+<p>The short version: no cookies, no persistent identifier, no cross-site tracking, no data
+sold or shared, and no IP address ever written to disk. The longer version below includes the
+part most products in this category leave out.</p>
+
+<h3>The visitor identifier is pseudonymous, not anonymous</h3>
+<p>We identify a returning visitor within a day by hashing their IP address, their user agent
+and the site's domain together with a secret salt. The salt is rotated every 24 hours and the
+old one is deleted, so the same person on the same device is a different identifier tomorrow,
+and the same person on two different sites is never the same identifier at all.</p>
+
+<p>That is a genuinely strong design, and it is still <em>pseudonymous</em> under the GDPR
+rather than anonymous. While a salt exists, somebody holding both the salt and the stored
+hashes could brute-force the inputs back out — the space of IP addresses and user agents is
+small enough to search. Deleting the salt after 24 hours is what closes that door, and it is
+the entire basis of the claim, which is why we treat the salt table as being as sensitive as
+raw address logs and why it is encrypted at rest.</p>
+
+<p>We say this plainly because the distinction is real and because a product that calls it
+"fully anonymous" is overstating what the maths gives you.</p>
+
+<h3>What we store</h3>
+<ul>
+  <li>The page path, with every query parameter except seven acquisition ones stripped.</li>
+  <li>The referrer's host, the source and the channel.</li>
+  <li>Country, and region or city where the data allows.</li>
+  <li>Device type, browser, operating system and their versions.</li>
+  <li>Screen size bucket, and the browser's primary language.</li>
+  <li>Time on page and scroll depth, when the script measured them.</li>
+  <li>Any custom properties you chose to send.</li>
+</ul>
+
+<h3>What we never store</h3>
+<ul>
+  <li><strong>The IP address.</strong> It is used for geolocation and the identifier and then
+      discarded, in the ingestion tier, before anything is written or forwarded. The type that
+      crosses that boundary has nowhere to put one.</li>
+  <li>The raw user agent string.</li>
+  <li>Click identifiers. We record that one was present — which is how a paid click is told
+      from an organic one — and never its value, because a click id is a unique per-click
+      identifier.</li>
+  <li>Anything in a query string other than the seven acquisition parameters.</li>
+</ul>
+
+<h3>Cookies</h3>
+<p>The tracking script sets none and reads none. It uses no local storage for identification.
+Most legal advice concludes that no consent banner is required for this design, but we are
+not your lawyers and your regulator is not ours — the facts above are what you need to give
+to somebody who is.</p>
+
+<h3>Who processes your data</h3>
+<p>For the hosted service, Cloudmanic Labs, LLC is the processor and you are the controller.
+Our sub-processors are listed in the <a href="/legal/dpa">data processing addendum</a>. We do
+not sell, rent or share visitor data, and there is no advertising business anywhere near
+this product.</p>
+
+<h3>Requests from a data subject</h3>
+<p>Because nothing we store identifies a person, an access or erasure request usually has
+nothing to match against — there is no row that says "this is Maria". If a custom property
+you sent does identify somebody, that property is yours and you can delete it. Write to us
+and we will help.</p>
+
+<h3>Deleting an account</h3>
+<p>Deletion removes the analytics database, the account records and the customer record with
+our payment provider. There is no soft delete and no recycle bin: keeping one would mean the
+deletion we spent ninety days warning you about was not real. See the timetable on the
+<a href="/pricing">pricing page</a>.</p>
+
+<h3>Where the data lives</h3>
+<p>On our own servers, in one SQLite database per account. There is no third-party data
+warehouse, no analytics-on-our-analytics, and no copy of your data anywhere we have not told
+you about.</p>

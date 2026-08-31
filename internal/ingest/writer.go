@@ -33,12 +33,25 @@ const DedupeRetention = 24 * time.Hour
 // the DELETE never shares a transaction with a burst of events.
 const prunePeriod = time.Minute
 
+// UsageRecorder is told what an account actually stored, so the billable volume
+// can be counted. It is an interface taking plain integers rather than the
+// billing package's own type, because nothing on the ingest path may depend on
+// billing — and because this is called after a commit, so an event that was
+// never stored can never be billed.
+type UsageRecorder interface {
+	Record(accountID int64, pageviews, customEvents int64)
+}
+
 // Writer applies batches to the account databases. It is the shard: everything
 // above it deals in HTTP and derived events, and it is the only thing that
 // knows a row from a column.
 type Writer struct {
 	accounts *accounts.Manager
 	sessions *SessionCache
+
+	// Usage counts the billable volume. It is optional: a self-hosted install
+	// has no billing at all, and ingestion must not depend on it existing.
+	Usage UsageRecorder
 
 	// Now is injectable so a replay test can control the dedupe window and the
 	// prune cutoff rather than depending on when the suite runs.
@@ -283,7 +296,42 @@ func (w *Writer) writeAccount(ctx context.Context, accountID int64, events []Eve
 		committed = append(committed, rows[i].event.UUID)
 	}
 
+	// Counting happens here, after the commit, and never before it. An event
+	// that was rolled back must not appear on somebody's bill, and a retry that
+	// is deduplicated must not be counted a second time — which is why this
+	// counts the rows this transaction wrote rather than the batch it was
+	// handed.
+	w.recordUsage(accountID, rows)
+
 	return committed, nil
+}
+
+// recordUsage tells the billing counter what this account just stored.
+//
+// The rule it implements is the whole of what we bill for: a pageview or a
+// custom event counts, and an engagement ping does not. An engagement ping is
+// the tracker's own heartbeat — it carries time on page and scroll depth and is
+// sent whether the visitor asked for it or not — so billing for it would charge
+// people for a feature they cannot turn off.
+func (w *Writer) recordUsage(accountID int64, rows []eventRow) {
+	if w.Usage == nil || len(rows) == 0 {
+		return
+	}
+
+	var pageviews, customEvents int64
+
+	for _, row := range rows {
+		switch {
+		case row.event.IsPageview():
+			pageviews++
+		case row.event.IsEngagement():
+			// Deliberately nothing.
+		default:
+			customEvents++
+		}
+	}
+
+	w.Usage.Record(accountID, pageviews, customEvents)
 }
 
 // eventRow pairs a derived event with the session it was folded into.

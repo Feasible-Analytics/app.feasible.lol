@@ -1,0 +1,106 @@
+{{ define "body" }}
+<div class="wrap">
+
+  <div class="hero">
+    <h1>One price. Every feature. No add-ons.</h1>
+    <p>Unlimited sites, unlimited team members, unlimited data retention, and a million
+       pageviews and custom events a month. There is no cheaper tier missing the thing
+       you need, and no enterprise tier hiding it.</p>
+  </div>
+
+  {{ if not .Enabled }}
+  <div class="banner warn">
+    <h3>This install cannot take payments</h3>
+    <p>No payment provider is configured here, which is the normal state of a self-hosted
+       install. Everything on this page describes the hosted service at feasible.lol.
+       Nothing about the software you are running is limited.</p>
+  </div>
+  {{ end }}
+
+  <section>
+    <div class="grid two">
+
+      <div class="panel plan">
+        <div class="per">Monthly</div>
+        <div class="price">$9.99</div>
+        <div class="per">per month, billed monthly</div>
+        <ul>
+          <li>1,000,000 pageviews + custom events a month</li>
+          <li>Unlimited sites</li>
+          <li>Unlimited team members</li>
+          <li>Unlimited retention — we never age your data out</li>
+          <li>Every feature: goals, funnels, custom properties, the API, exports</li>
+          <li>Cancel any time, from your own billing portal</li>
+        </ul>
+        <form method="POST" action="/billing/checkout">
+          <input type="hidden" name="plan" value="monthly">
+          {{ if .TeamID }}<input type="hidden" name="team" value="{{ .TeamID }}">{{ end }}
+          <button class="btn" type="submit" {{ if not .Enabled }}disabled{{ end }}>Start monthly</button>
+        </form>
+      </div>
+
+      <div class="panel plan">
+        <div class="per">Yearly <span class="save">2 months free</span></div>
+        <div class="price">$100</div>
+        <div class="per">per year — ten months' price for twelve</div>
+        <ul>
+          <li>Everything in monthly, at 17% less</li>
+          <li>One invoice a year instead of twelve</li>
+          <li>Pro-rata refund within 30 days if you change your mind</li>
+          <li>Switch to monthly whenever you like — it takes effect at renewal</li>
+          <li>Switching monthly to yearly prorates immediately</li>
+        </ul>
+        <form method="POST" action="/billing/checkout">
+          <input type="hidden" name="plan" value="yearly">
+          {{ if .TeamID }}<input type="hidden" name="team" value="{{ .TeamID }}">{{ end }}
+          <button class="btn" type="submit" {{ if not .Enabled }}disabled{{ end }}>Start yearly</button>
+        </form>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <h2>What happens if you stop paying</h2>
+    <div class="panel">
+      <p>We would rather tell you this before you buy than after. If a trial ends or a card
+         stops working, the same ninety-day sequence runs either way, and you get an email at
+         every step naming the exact date of the next one.</p>
+      <ul class="timeline">
+        <li><span class="when">Days 0 – 30</span><span class="what">Everything works. A banner appears, and we email you at day 23 and day 29.</span></li>
+        <li><span class="when">Days 30 – 60</span><span class="what">The dashboard locks, but <strong>we keep collecting</strong>. Pay before day 60 and your history has no gap in it.</span></li>
+        <li><span class="when">Days 60 – 90</span><span class="what">We stop collecting. Everything already recorded is kept, and the missing days show on your graphs as a labelled gap rather than as zeroes.</span></li>
+        <li><span class="when">Day 90</span><span class="what">We permanently delete the account: the analytics database, the account records and the customer record with our payment provider.</span></li>
+      </ul>
+      <p style="margin-top:16px">Your export works in every one of those phases, including the last day.
+         It is your data, and data portability is not something we switch off for non-payment.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Going over a million</h2>
+    <div class="panel">
+      <p>Nothing breaks and nothing is deleted. We email you at 70%, at 85% and at 100%,
+         and the first of those is the one that matters — it reaches you while there is still
+         a month of runway to have a conversation in.</p>
+      <p>One month over costs you nothing at all. Two consecutive months and we ask you to
+         reply within two weeks so we can move you to something that fits. If nobody replies,
+         the dashboard locks until somebody does — and even then we keep collecting, your
+         settings stay open, and your exports keep working.</p>
+      <p><a href="mailto:{{ .SalesEmail }}">{{ .SalesEmail }}</a> reaches a person.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Tax and refunds</h2>
+    <div class="panel">
+      <p>Prices are exclusive of tax. Sales tax, VAT or GST is calculated at checkout from
+         your billing address and shown before you pay. We are the merchant of record, and
+         Cloudmanic Labs, LLC appears on your invoice and your card statement.</p>
+      <p>Yearly plans are refunded pro rata within 30 days of purchase. Write to us and we
+         will do it — there is no form and no retention flow.</p>
+    </div>
+  </section>
+
+</div>
+{{ end }}

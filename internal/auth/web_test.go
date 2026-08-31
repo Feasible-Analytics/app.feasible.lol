@@ -40,11 +40,13 @@ type captureSender struct {
 	messages []mail.Message
 }
 
-// Send records a message.
-func (c *captureSender) Send(_ context.Context, msg mail.Message) error {
+// Send records a message and reports the acceptance a real transport would.
+// Anything else would be a transport that declined every message, which the
+// mailer correctly refuses to call a send.
+func (c *captureSender) Send(_ context.Context, msg mail.Message) (mail.Result, error) {
 	c.messages = append(c.messages, msg)
 
-	return nil
+	return mail.Result{Transport: "capture", Accepted: true, Detail: "captured"}, nil
 }
 
 // last returns the most recent message, failing the test when none was sent.
@@ -71,10 +73,7 @@ func newTestApp(t *testing.T) *testApp {
 
 	sender := &captureSender{}
 
-	mailer, err := mail.NewWithSender(sender, "feasible <no-reply@example.com>", "http://localhost:19312")
-	if err != nil {
-		t.Fatalf("build mailer: %v", err)
-	}
+	mailer := mail.NewWithTransport(sender, "feasible <no-reply@example.com>", "http://localhost:19312")
 
 	log := logger.New(logger.Options{Level: "error", Output: os.Stderr})
 

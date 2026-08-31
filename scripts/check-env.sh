@@ -24,12 +24,18 @@ fi
 # loader either as one of our own FEASIBLE_* literals or through a direct
 # os.Getenv for something outside our namespace, such as CONFIG_DIR. Test files
 # are excluded: they invent variables on purpose.
+#
+# .claude holds agent worktrees — whole other checkouts of this repository. A
+# variable that only exists on an unmerged branch is not a variable this
+# checkout reads, and scanning them makes the result depend on who else is
+# working right now.
+scan_excludes=(--exclude-dir=.claude --exclude-dir=.git --exclude-dir=node_modules)
 used="$(
   {
     grep -rhoE '"FEASIBLE_[A-Z0-9_]+"' \
-      --include='*.go' --exclude='*_test.go' "$ROOT" || true
+      --include='*.go' --exclude='*_test.go' "${scan_excludes[@]}" "$ROOT" || true
     grep -rhoE 'os\.(Getenv|LookupEnv)\("[A-Z][A-Z0-9_]*"' \
-      --include='*.go' --exclude='*_test.go' "$ROOT" |
+      --include='*.go' --exclude='*_test.go' "${scan_excludes[@]}" "$ROOT" |
       grep -oE '"[A-Z][A-Z0-9_]*"' || true
   } | tr -d '"' | sort -u
 )"
