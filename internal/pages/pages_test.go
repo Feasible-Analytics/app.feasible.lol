@@ -11,6 +11,7 @@ package pages
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/stripe"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/usage"
 )
 
@@ -126,17 +128,17 @@ func TestPricingStatesBothPrices(t *testing.T) {
 
 	body := render(t, handler, "/pricing").Body.String()
 
-	for _, want := range []string{"$9.99", "$100", "1,000,000 pageviews", "Unlimited sites", "Pro-rata refund within 30 days"} {
+	for _, want := range []string{"$9.99", "$100", "1,000,000 pageviews", "Unlimited sites", "pro-rata refund within 30 days"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the pricing page never says %q", want)
 		}
 	}
 }
 
-// TestBillingCopyNamesStripeAsMerchantOfRecord keeps the checkout code, the
-// pricing page and the contract aligned on who owns the payment transaction and
-// its indirect-tax obligations.
-func TestBillingCopyNamesStripeAsMerchantOfRecord(t *testing.T) {
+// TestBillingCopyQualifiesManagedPaymentsResponsibilities keeps the pricing
+// page and contract honest about both the merchant-of-record entity and the tax
+// obligations that remain with the seller outside Managed Payments coverage.
+func TestBillingCopyQualifiesManagedPaymentsResponsibilities(t *testing.T) {
 	handler, _ := newHandler(t)
 
 	pricing := render(t, handler, "/pricing").Body.String()
@@ -149,7 +151,8 @@ func TestBillingCopyNamesStripeAsMerchantOfRecord(t *testing.T) {
 		"pricing": pricing,
 		"terms":   string(terms.Body),
 	} {
-		for _, want := range []string{"Stripe Managed Payments", "merchant of record", "collects, files and remits"} {
+		body = strings.Join(strings.Fields(body), " ")
+		for _, want := range []string{"Stripe Managed Payments", "Sold through Link, LLC", "merchant of record", "seller taxes", "does not handle them"} {
 			if !strings.Contains(body, want) {
 				t.Errorf("the %s page never says %q", name, want)
 			}
@@ -159,6 +162,86 @@ func TestBillingCopyNamesStripeAsMerchantOfRecord(t *testing.T) {
 			if strings.Contains(body, stale) {
 				t.Errorf("the %s page still says %q", name, stale)
 			}
+		}
+	}
+}
+
+// TestRefundCopyDefersToLinkWhereRequired prevents our voluntary policy from
+// being presented as the only or controlling policy for Sold through Link
+// transactions.
+func TestRefundCopyDefersToLinkWhereRequired(t *testing.T) {
+	handler, _ := newHandler(t)
+
+	pricing := render(t, handler, "/pricing").Body.String()
+	terms, ok := findDoc(legal, "terms")
+	if !ok {
+		t.Fatal("there is no legal page for terms")
+	}
+
+	for name, body := range map[string]string{"pricing": pricing, "terms": string(terms.Body)} {
+		for _, want := range []string{"Link support", "refund policy controls", "applicable law"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("the %s page never says %q", name, want)
+			}
+		}
+	}
+}
+
+// TestCheckoutReturnDistinguishesPaidAndPending makes sure a browser redirect
+// cannot promise access before an asynchronous payment has settled.
+func TestCheckoutReturnDistinguishesPaidAndPending(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		status := "unpaid"
+		if strings.HasSuffix(r.URL.Path, "/cs_paid") {
+			status = "paid"
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":"%s","object":"checkout.session","mode":"subscription","payment_status":%q}`, strings.TrimPrefix(r.URL.Path, "/v1/checkout/sessions/"), status)
+	}))
+	t.Cleanup(server.Close)
+
+	handler, _ := newHandler(t)
+	client := stripe.New("sk_test_fake")
+	client.BaseURL = server.URL
+	handler.Billing.Stripe = client
+
+	paid := render(t, handler, "/billing/done?session=cs_paid").Body.String()
+	if !strings.Contains(paid, "Payment confirmed") || !strings.Contains(paid, "signed notification") {
+		t.Fatalf("paid checkout copy is not conclusive but webhook-gated: %s", paid)
+	}
+
+	pending := render(t, handler, "/billing/done?session=cs_pending").Body.String()
+	for _, want := range []string{"Payment processing", "has not settled yet", "current state"} {
+		if !strings.Contains(pending, want) {
+			t.Errorf("pending checkout copy is missing %q: %s", want, pending)
+		}
+	}
+	if strings.Contains(pending, "account is active") || strings.Contains(pending, "payment went through") {
+		t.Errorf("pending checkout promises paid access: %s", pending)
+	}
+}
+
+// TestBillingShowsPaymentStateAlongsideProviderStatus makes an active Stripe
+// subscription with a failed asynchronous payment understandable to customers
+// and support instead of displaying the misleading word "active" alone.
+func TestBillingShowsPaymentStateAlongsideProviderStatus(t *testing.T) {
+	handler, control := newHandler(t)
+	stamp := pagesNow.Unix()
+
+	if _, err := control.Exec(`
+		INSERT INTO subscriptions
+			(team_id, stripe_subscription_id, status, plan, stripe_price_id,
+			 payment_state, created_at, updated_at)
+		VALUES (1, 'sub_async', 'active', 'monthly', 'price_monthly', 'failed', ?, ?)
+	`, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+
+	body := render(t, handler, "/billing?team=1").Body.String()
+	for _, want := range []string{"Status", "active", "Payment", "failed"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("billing page is missing %q: %s", want, body)
 		}
 	}
 }

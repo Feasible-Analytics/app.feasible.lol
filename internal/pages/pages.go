@@ -213,6 +213,7 @@ type historyRow struct {
 type planPanel struct {
 	Label             string
 	Status            string
+	PaymentState      string
 	RenewsOn          string
 	CancelAtPeriodEnd bool
 	HasCustomer       bool
@@ -288,6 +289,7 @@ func (h *Handler) billing(w http.ResponseWriter, r *http.Request) {
 		data.Plan = planPanel{
 			Label:             firstNonEmpty(plan.Label, "No plan"),
 			Status:            firstNonEmpty(mirror.Status, "none"),
+			PaymentState:      mirror.PaymentState,
 			CancelAtPeriodEnd: mirror.CancelAtPeriodEnd,
 			HasCustomer:       mirror.CustomerID != "",
 		}
@@ -469,17 +471,39 @@ func (h *Handler) portal(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, session.URL, http.StatusSeeOther)
 }
 
-// done is where the payment provider returns after a successful checkout.
+// done is where the payment provider returns after checkout.
 //
 // It deliberately does not activate anything. The webhook does that, from the
-// provider's own current state, and a success page that also flipped a switch
+// provider's signed payment result, and a return page that also flipped a switch
 // would be a second source of truth reachable by anyone who guessed the URL.
 func (h *Handler) done(w http.ResponseWriter, r *http.Request) {
-	h.message(w, r, "Thank you", "You are all set",
-		[]string{
-			"Your payment went through and your account is active. If the dashboard still shows a banner, give it a few seconds — we are confirming it with our payment provider rather than taking this page's word for it.",
-			"Your receipt is on its way by email, and every invoice is available from your billing portal.",
-		},
+	status := ""
+	if h.Billing != nil {
+		status, _ = h.Billing.CheckoutPaymentStatus(r.Context(), r.URL.Query().Get("session"))
+	}
+
+	heading := "Checkout submitted"
+	paragraphs := []string{
+		"We are confirming the payment with Stripe. Your account changes only after the signed payment notification arrives.",
+		"Link sends a receipt after payment is confirmed. You can return to billing to see the current account state.",
+	}
+
+	switch status {
+	case "paid", "no_payment_required":
+		heading = "Payment confirmed"
+		paragraphs = []string{
+			"Stripe has confirmed your payment. Your account activates from the signed notification; if billing has not updated yet, give it a few seconds.",
+			"Link sends your receipt by email and keeps your invoices with the transaction.",
+		}
+	case "unpaid":
+		heading = "Payment processing"
+		paragraphs = []string{
+			"Checkout is complete, but your payment method has not settled yet. Your account remains in its current state until Stripe confirms payment.",
+			"We will update billing automatically when processing succeeds or fails. Link sends the receipt only after payment is confirmed.",
+		}
+	}
+
+	h.message(w, r, "Thank you", heading, paragraphs,
 		[]link{{Label: "Open the dashboard", URL: "/dashboard/"}, {Label: "Billing", URL: "/billing"}})
 }
 

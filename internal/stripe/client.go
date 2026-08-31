@@ -42,8 +42,8 @@ const (
 	// binary can see different fields on two deployments.
 	APIVersion = "2024-06-20"
 
-	// ManagedPaymentsAPIVersion is the oldest API contract that supports Stripe
-	// as merchant of record. It is scoped to checkout creation so enabling
+	// ManagedPaymentsAPIVersion is the oldest API contract that supports Managed
+	// Payments. It is scoped to checkout creation so enabling
 	// Managed Payments cannot silently change subscription or invoice fields.
 	ManagedPaymentsAPIVersion = "2025-03-31.basil"
 )
@@ -208,6 +208,12 @@ func (c *Client) postWithVersion(ctx context.Context, path string, form url.Valu
 // nothing.
 func (c *Client) get(ctx context.Context, path string, form url.Values, out any) error {
 	return c.call(ctx, http.MethodGet, path, form, "", out)
+}
+
+// getWithVersion is a read against an endpoint whose response must use a newer
+// API contract than the rest of the client.
+func (c *Client) getWithVersion(ctx context.Context, path string, form url.Values, apiVersion string, out any) error {
+	return c.callWithVersion(ctx, http.MethodGet, path, form, "", apiVersion, out)
 }
 
 // del removes an object.

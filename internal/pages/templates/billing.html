@@ -61,6 +61,7 @@
         <div class="numbers">
           <div><div class="k">Plan</div><div class="v">{{ .Plan.Label }}</div></div>
           <div><div class="k">Status</div><div class="v">{{ .Plan.Status }}</div></div>
+          {{ if .Plan.PaymentState }}<div><div class="k">Payment</div><div class="v">{{ .Plan.PaymentState }}</div></div>{{ end }}
         </div>
         {{ if .Plan.RenewsOn }}
         <p style="margin-top:14px;color:var(--muted)">

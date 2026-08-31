@@ -221,6 +221,12 @@ func invoiceObject() string {
 	return fmt.Sprintf(`{"id":"in_1","object":"invoice","customer":%q,"subscription":"sub_test_1","metadata":{"feasible_team_id":"1"}}`, customerID)
 }
 
+// checkoutObject builds the session shape shared by immediate and delayed
+// payment events.
+func checkoutObject(paymentStatus string) string {
+	return fmt.Sprintf(`{"id":"cs_1","object":"checkout.session","customer":%q,"subscription":"sub_test_1","payment_status":%q,"metadata":{"feasible_team_id":"1"}}`, customerID, paymentStatus)
+}
+
 // phase reads the account's current lifecycle phase.
 func (h *harness) phase() lifecycle.Phase {
 	h.t.Helper()
@@ -251,7 +257,7 @@ func TestCheckoutActivatesTheAccount(t *testing.T) {
 	h := newHarness(t)
 
 	response := h.deliver("evt_1", stripe.EventCheckoutCompleted,
-		fmt.Sprintf(`{"id":"cs_1","object":"checkout.session","customer":%q,"subscription":"sub_test_1","metadata":{"feasible_team_id":"1"}}`, customerID))
+		checkoutObject("paid"))
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", response.Code, response.Body.String())
@@ -277,6 +283,128 @@ func TestCheckoutActivatesTheAccount(t *testing.T) {
 	}
 	if mirror.BillingEmail != "owner@example.com" {
 		t.Errorf("billing email is %q", mirror.BillingEmail)
+	}
+	if mirror.PaymentState != PaymentPaid {
+		t.Errorf("payment state is %q, want paid", mirror.PaymentState)
+	}
+}
+
+// TestAsyncCheckoutWaitsForPayment proves checkout completion is not payment
+// evidence for a delayed method, while the later success event is.
+func TestAsyncCheckoutWaitsForPayment(t *testing.T) {
+	h := newHarness(t)
+
+	if _, err := h.service.StartTrial(context.Background(), teamID); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := h.deliver("evt_pending", stripe.EventCheckoutCompleted, checkoutObject("unpaid")).Code; code != http.StatusOK {
+		t.Fatalf("pending checkout status %d", code)
+	}
+	if got := h.phase(); got != lifecycle.PhaseGrace {
+		t.Fatalf("pending payment changed trial access to %q", got)
+	}
+
+	// Subscription events can arrive after checkout completion while Stripe's
+	// subscription object already says active. They still are not payment proof.
+	h.deliver("evt_active_while_pending", stripe.EventSubscriptionUpdated, subscriptionObject(stripe.StatusActive))
+	if got := h.phase(); got != lifecycle.PhaseGrace {
+		t.Fatalf("active subscription bypassed pending payment: phase is %q", got)
+	}
+
+	mirror, err := h.service.Store.Load(context.Background(), teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mirror.PaymentState != PaymentPending {
+		t.Fatalf("payment state is %q, want pending", mirror.PaymentState)
+	}
+
+	h.deliver("evt_async_paid", stripe.EventCheckoutAsyncPaymentSucceeded, checkoutObject("paid"))
+	if got := h.phase(); got != lifecycle.PhaseActive {
+		t.Fatalf("async success left phase %q, want active", got)
+	}
+
+	// A delayed completion delivery cannot downgrade final success back to
+	// pending. Stripe does not guarantee webhook delivery order.
+	h.deliver("evt_pending_arrived_late", stripe.EventCheckoutCompleted, checkoutObject("unpaid"))
+	mirror, err = h.service.Store.Load(context.Background(), teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mirror.PaymentState != PaymentPaid || h.phase() != lifecycle.PhaseActive {
+		t.Fatalf("late completion changed final success: payment=%q phase=%q", mirror.PaymentState, h.phase())
+	}
+}
+
+// TestAsyncSuccessWaitsForSubscriptionState handles the provider API lagging
+// behind its success webhook. Payment evidence is retained, but access waits
+// until the subscription itself is healthy too.
+func TestAsyncSuccessWaitsForSubscriptionState(t *testing.T) {
+	h := newHarness(t)
+
+	if _, err := h.service.StartTrial(context.Background(), teamID); err != nil {
+		t.Fatal(err)
+	}
+	h.provider.set(stripe.StatusIncomplete, false)
+
+	h.deliver("evt_async_paid", stripe.EventCheckoutAsyncPaymentSucceeded, checkoutObject("paid"))
+	if got := h.phase(); got != lifecycle.PhaseGrace {
+		t.Fatalf("success with an incomplete subscription changed phase to %q", got)
+	}
+
+	mirror, err := h.service.Store.Load(context.Background(), teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mirror.PaymentState != PaymentPaid {
+		t.Fatalf("payment evidence was lost while subscription lagged: %q", mirror.PaymentState)
+	}
+
+	h.deliver("evt_subscription_still_lagging", stripe.EventSubscriptionUpdated, subscriptionObject(stripe.StatusIncomplete))
+	mirror, err = h.service.Store.Load(context.Background(), teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mirror.PaymentState != PaymentPaid || h.phase() != lifecycle.PhaseGrace {
+		t.Fatalf("incomplete update lost payment evidence: payment=%q phase=%q", mirror.PaymentState, h.phase())
+	}
+
+	h.provider.set(stripe.StatusActive, false)
+	h.deliver("evt_subscription_caught_up", stripe.EventSubscriptionUpdated, subscriptionObject(stripe.StatusActive))
+	if got := h.phase(); got != lifecycle.PhaseActive {
+		t.Fatalf("healthy subscription did not apply retained payment: phase is %q", got)
+	}
+}
+
+// TestAsyncCheckoutFailureStaysFailed proves Stripe's active subscription
+// status cannot reactivate access after the asynchronous payment fails.
+func TestAsyncCheckoutFailureStaysFailed(t *testing.T) {
+	h := newHarness(t)
+
+	if _, err := h.service.StartTrial(context.Background(), teamID); err != nil {
+		t.Fatal(err)
+	}
+
+	h.deliver("evt_pending", stripe.EventCheckoutCompleted, checkoutObject("unpaid"))
+	h.deliver("evt_async_failed", stripe.EventCheckoutAsyncPaymentFailed, checkoutObject("unpaid"))
+
+	if got := h.phase(); got != lifecycle.PhaseGrace {
+		t.Fatalf("failed async payment left phase %q, want grace", got)
+	}
+
+	// A later active snapshot must preserve the failed payment gate.
+	h.deliver("evt_active_after_failure", stripe.EventSubscriptionUpdated, subscriptionObject(stripe.StatusActive))
+	if got := h.phase(); got != lifecycle.PhaseGrace {
+		t.Fatalf("active subscription undid async failure: phase is %q", got)
+	}
+
+	mirror, err := h.service.Store.Load(context.Background(), teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mirror.Status != stripe.StatusActive || mirror.PaymentState != PaymentFailed {
+		t.Fatalf("mirror is status=%q payment=%q", mirror.Status, mirror.PaymentState)
 	}
 }
 

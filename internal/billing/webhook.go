@@ -132,6 +132,8 @@ func (h *Webhook) Handle(ctx context.Context, event *stripe.Event) (string, erro
 func (h *Webhook) apply(ctx context.Context, event *stripe.Event, teamID int64) (string, error) {
 	switch event.Type {
 	case stripe.EventCheckoutCompleted,
+		stripe.EventCheckoutAsyncPaymentSucceeded,
+		stripe.EventCheckoutAsyncPaymentFailed,
 		stripe.EventSubscriptionCreated,
 		stripe.EventSubscriptionUpdated,
 		stripe.EventSubscriptionDeleted,
@@ -153,7 +155,12 @@ func (h *Webhook) apply(ctx context.Context, event *stripe.Event, teamID int64) 
 			return OutcomeIgnored, nil
 		}
 
-		if err := h.Service.Reconcile(ctx, teamID, customerID); err != nil {
+		update, err := paymentUpdate(event)
+		if err != nil {
+			return OutcomeError, err
+		}
+
+		if err := h.Service.Reconcile(ctx, teamID, customerID, update); err != nil {
 			return OutcomeError, err
 		}
 
@@ -162,6 +169,42 @@ func (h *Webhook) apply(ctx context.Context, event *stripe.Event, teamID int64) 
 	default:
 		return OutcomeIgnored, nil
 	}
+}
+
+// paymentUpdate separates conclusive payment evidence from subscription state.
+// A completed Checkout Session with payment_status=unpaid is only pending; the
+// later async success or failure event is what may change account access.
+func paymentUpdate(event *stripe.Event) (PaymentUpdate, error) {
+	update := PaymentUpdate{SubscriptionID: event.SubscriptionID()}
+
+	switch event.Type {
+	case stripe.EventCheckoutCompleted:
+		session, err := event.CheckoutSession()
+		if err != nil {
+			return PaymentUpdate{}, err
+		}
+
+		switch session.PaymentStatus {
+		case "paid", "no_payment_required":
+			update.State = PaymentPaid
+		default:
+			update.State = PaymentPending
+		}
+
+	case stripe.EventCheckoutAsyncPaymentSucceeded,
+		stripe.EventInvoicePaymentSucceed,
+		stripe.EventSubscriptionResumed:
+		update.State = PaymentPaid
+
+	case stripe.EventCheckoutAsyncPaymentFailed:
+		update.State = PaymentFailed
+
+	case stripe.EventInvoicePaymentFailed:
+		update.State = PaymentFailed
+		update.OnlyIfUnhealthy = true
+	}
+
+	return update, nil
 }
 
 // route works out which account an event belongs to.

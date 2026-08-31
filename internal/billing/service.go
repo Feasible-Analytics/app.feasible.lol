@@ -28,6 +28,27 @@ type Plans struct {
 	Yearly  string
 }
 
+// PaymentState is durable evidence about the first payment for a subscription.
+// Stripe can report the subscription itself as active before an asynchronous
+// checkout payment has settled, so subscription status cannot answer this.
+const (
+	PaymentPending = "pending"
+	PaymentPaid    = "paid"
+	PaymentFailed  = "failed"
+)
+
+// PaymentUpdate attaches one checkout or invoice result to the subscription it
+// describes. An empty state means the webhook only asks for reconciliation.
+type PaymentUpdate struct {
+	State          string
+	SubscriptionID string
+
+	// OnlyIfUnhealthy is used for stale-tolerant failure events such as an
+	// invoice retry. Async checkout failure leaves this false because it must
+	// override an active subscription status for that same checkout.
+	OnlyIfUnhealthy bool
+}
+
 // PriceFor maps a plan key from a URL onto a price id. An unknown key returns
 // empty, which the handler turns into a 400 rather than silently charging
 // somebody for the wrong thing.
@@ -83,19 +104,22 @@ func (s *Service) Enabled() bool {
 // Reconcile brings one account into line with the payment provider's current
 // state, and is the only function in this package that changes anything.
 //
-// It is deliberately a function of (account, provider state) and of nothing
-// else — not of the event that triggered it, not of the local mirror, and not
-// of the order deliveries arrived in. That is what makes duplicate and
-// out-of-order webhooks harmless: running it twice produces the same answer,
-// and running it on a stale event produces the answer for the world as it is
-// now rather than as it was when the event was created.
-func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string) error {
+// Current provider state remains authoritative for the subscription, while a
+// successful or failed payment event is durable evidence about whether that
+// otherwise-active subscription may grant access. This distinction is required
+// for asynchronous methods, where subscription status can get ahead of money.
+func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string, update PaymentUpdate) error {
 	if teamID < 1 {
 		return fmt.Errorf("billing: cannot reconcile without an account id")
 	}
 
 	if customerID == "" {
 		return fmt.Errorf("billing: cannot reconcile account %d without a customer id", teamID)
+	}
+
+	existing, err := s.Store.Load(ctx, teamID)
+	if err != nil {
+		return err
 	}
 
 	subscription, err := s.Stripe.ActiveSubscription(ctx, customerID)
@@ -113,6 +137,7 @@ func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string
 		CustomerID:   customerID,
 		Status:       "none",
 		BillingEmail: email,
+		PaymentState: existing.PaymentState,
 	}
 
 	if subscription != nil {
@@ -125,6 +150,23 @@ func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string
 		mirror.CurrentPeriodEnd = subscription.PeriodEnd()
 		mirror.CancelAtPeriodEnd = subscription.CancelAtPeriodEnd
 
+		// A never-before-seen subscription is not paid merely because Stripe calls
+		// it active. The checkout or invoice success event supplies that evidence.
+		if existing.SubscriptionID != subscription.ID {
+			mirror.PaymentState = PaymentPending
+		} else if mirror.PaymentState == "" && (existing.Status == stripe.StatusActive || existing.Status == stripe.StatusTrialing) {
+			// Existing subscriptions predate the payment_state column and were
+			// already gated from a paid provider status before this migration.
+			mirror.PaymentState = PaymentPaid
+		}
+
+		updateApplies := paymentUpdateApplies(update, subscription)
+		terminalPayment := existing.SubscriptionID == subscription.ID &&
+			(existing.PaymentState == PaymentPaid || existing.PaymentState == PaymentFailed)
+		if updateApplies && !(update.State == PaymentPending && terminalPayment) {
+			mirror.PaymentState = update.State
+		}
+
 		// A paused subscription can still report `active`, which is the exact
 		// shape of the race that has bitten this product category: two
 		// contradictory update events arriving together, one of which says the
@@ -133,20 +175,45 @@ func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string
 		if subscription.Paused() {
 			mirror.Status = stripe.StatusPaused
 		}
+
+		pendingCheckout := update.State == PaymentPending && updateApplies
+		confirmedPayment := update.State == PaymentPaid && updateApplies
+		settling := subscription.Status == stripe.StatusIncomplete && !subscription.Paused()
+		if !subscription.Paying() && !pendingCheckout && !confirmedPayment && !settling {
+			mirror.PaymentState = PaymentFailed
+		}
+	} else if update.State == PaymentPending {
+		mirror.PaymentState = PaymentPending
+	} else {
+		mirror.PaymentState = PaymentFailed
 	}
 
 	if err := s.Store.Save(ctx, mirror); err != nil {
 		return err
 	}
 
-	// One question, asked of the provider's current state, decides everything:
-	// is this account paying right now? Paying resets the machine to Active and
-	// cancels every pending email. Not paying starts the clock — and because
-	// the machine ignores a start signal for a clock already running, day 0
-	// stays at the first failure however many times this runs.
-	signal := lifecycle.SignalPaymentFailed
-	if subscription.Paying() {
+	// Pending means exactly that: preserve the trial or lapse clock as-is until
+	// Stripe supplies a final async event. Paid resets the clock only while the
+	// subscription is also currently healthy. Failed starts the clock even when
+	// Stripe has left an async subscription's own status as active.
+	var signal lifecycle.Signal
+	switch {
+	case subscription != nil && subscription.Paying() && mirror.PaymentState == PaymentPaid:
 		signal = lifecycle.SignalPaymentSucceeded
+	case mirror.PaymentState == PaymentFailed:
+		signal = lifecycle.SignalPaymentFailed
+	case subscription != nil && !subscription.Paying() && mirror.PaymentState != PaymentPending:
+		signal = lifecycle.SignalPaymentFailed
+	}
+
+	if signal == "" {
+		if s.Log != nil {
+			s.Log.Info("billing reconciled without changing access",
+				"team", teamID, "customer", customerID,
+				"status", mirror.Status, "payment_state", mirror.PaymentState)
+		}
+
+		return nil
 	}
 
 	transition, err := s.Lifecycle.Signal(ctx, teamID, signal)
@@ -157,11 +224,47 @@ func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string
 	if s.Log != nil {
 		s.Log.Info("billing reconciled",
 			"team", teamID, "customer", customerID,
-			"status", mirror.Status, "plan", mirror.Plan,
+			"status", mirror.Status, "payment_state", mirror.PaymentState, "plan", mirror.Plan,
 			"phase", string(transition.To), "changed", transition.Changed)
 	}
 
 	return nil
+}
+
+// paymentUpdateApplies rejects evidence for a different subscription and stale
+// retry failures after the provider already recovered. A customer can have an
+// old paid subscription and a second failed checkout, and the failed attempt
+// must not lapse the subscription that is actually paying.
+func paymentUpdateApplies(update PaymentUpdate, subscription *stripe.Subscription) bool {
+	if update.State == "" {
+		return false
+	}
+	if update.SubscriptionID != "" && update.SubscriptionID != subscription.ID {
+		return false
+	}
+	if update.OnlyIfUnhealthy && subscription.Paying() {
+		return false
+	}
+
+	return true
+}
+
+// CheckoutPaymentStatus reads the return session only to choose honest copy.
+// Account activation still belongs exclusively to the signed webhook path.
+func (s *Service) CheckoutPaymentStatus(ctx context.Context, sessionID string) (string, error) {
+	if s == nil || s.Stripe == nil || !s.Stripe.Configured() {
+		return "", fmt.Errorf("billing: no payment provider is configured on this install")
+	}
+	if sessionID == "" {
+		return "", fmt.Errorf("billing: checkout return has no session id")
+	}
+
+	session, err := s.Stripe.GetCheckoutSession(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+
+	return session.PaymentStatus, nil
 }
 
 // StartTrial enrols a brand-new account. The trial takes no card, so there is

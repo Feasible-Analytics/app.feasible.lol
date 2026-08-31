@@ -82,6 +82,27 @@ func TestBillingUnknownSubcommand(t *testing.T) {
 	}
 }
 
+// TestBillingPreflightRunsBeforeDatabaseSetup makes the deployment gate usable
+// on a fresh host and proves missing credentials fail with an exact diagnosis.
+func TestBillingPreflightRunsBeforeDatabaseSetup(t *testing.T) {
+	t.Setenv("FEASIBLE_STRIPE_SECRET_KEY", "")
+	t.Setenv("FEASIBLE_STRIPE_PRODUCT", "")
+	t.Setenv("FEASIBLE_STRIPE_PRICE_MONTHLY", "")
+	t.Setenv("FEASIBLE_STRIPE_PRICE_YEARLY", "")
+	t.Setenv("FEASIBLE_STRIPE_WEBHOOK_SECRET", "")
+
+	code, stdout, stderr := run(t, "billing", "preflight")
+	if code != ExitError {
+		t.Fatalf("exit code %d, stdout: %s, stderr: %s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "FAIL") || !strings.Contains(stdout, "FEASIBLE_STRIPE_SECRET_KEY") {
+		t.Fatalf("preflight did not diagnose credentials: %q", stdout)
+	}
+	if !strings.Contains(stderr, "not ready") {
+		t.Fatalf("preflight stderr is %q", stderr)
+	}
+}
+
 // TestBillingTrialAndStatus is the path an operator actually walks: put an
 // account on the clock, then ask what is going to happen to it.
 func TestBillingTrialAndStatus(t *testing.T) {

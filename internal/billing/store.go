@@ -39,6 +39,7 @@ type Subscription struct {
 	CurrentPeriodEnd  time.Time
 	CancelAtPeriodEnd bool
 	BillingEmail      string
+	PaymentState      string
 }
 
 // Store is every read and write this package makes against control.db.
@@ -83,9 +84,10 @@ func (s *Store) Load(ctx context.Context, teamID int64) (Subscription, error) {
 
 	err := s.db.QueryRowContext(ctx, `
 		SELECT stripe_customer_id, stripe_subscription_id, status, plan,
-		       stripe_price_id, current_period_end, cancel_at_period_end, billing_email
+		       stripe_price_id, current_period_end, cancel_at_period_end, billing_email,
+		       payment_state
 		FROM subscriptions WHERE team_id = ?
-	`, teamID).Scan(&customer, &subID, &out.Status, &out.Plan, &out.PriceID, &periodEnd, &cancelAtEnd, &out.BillingEmail)
+	`, teamID).Scan(&customer, &subID, &out.Status, &out.Plan, &out.PriceID, &periodEnd, &cancelAtEnd, &out.BillingEmail, &out.PaymentState)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return Subscription{TeamID: teamID, Status: "none"}, nil
@@ -127,8 +129,8 @@ func (s *Store) Save(ctx context.Context, sub Subscription) error {
 		INSERT INTO subscriptions
 			(team_id, stripe_customer_id, stripe_subscription_id, status, plan,
 			 stripe_price_id, current_period_end, cancel_at_period_end, billing_email,
-			 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 payment_state, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (team_id) DO UPDATE SET
 			stripe_customer_id     = excluded.stripe_customer_id,
 			stripe_subscription_id = excluded.stripe_subscription_id,
@@ -140,9 +142,10 @@ func (s *Store) Save(ctx context.Context, sub Subscription) error {
 			billing_email          = CASE WHEN excluded.billing_email <> ''
 			                              THEN excluded.billing_email
 			                              ELSE subscriptions.billing_email END,
+			payment_state          = excluded.payment_state,
 			updated_at             = excluded.updated_at
 	`, sub.TeamID, nullIfEmpty(sub.CustomerID), nullIfEmpty(sub.SubscriptionID), sub.Status, sub.Plan,
-		sub.PriceID, periodEnd, cancelAtEnd, sub.BillingEmail, now, now)
+		sub.PriceID, periodEnd, cancelAtEnd, sub.BillingEmail, sub.PaymentState, now, now)
 	if err != nil {
 		return fmt.Errorf("billing: save %d: %w", sub.TeamID, err)
 	}

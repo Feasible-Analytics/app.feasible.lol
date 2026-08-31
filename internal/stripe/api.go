@@ -83,12 +83,16 @@ type Item struct {
 
 // Price is a Stripe price.
 type Price struct {
-	ID         string     `json:"id"`
-	Product    string     `json:"product"`
-	Nickname   string     `json:"nickname"`
-	UnitAmount int64      `json:"unit_amount"`
-	Currency   string     `json:"currency"`
-	Recurring  *Recurring `json:"recurring"`
+	ID          string     `json:"id"`
+	Product     string     `json:"product"`
+	Nickname    string     `json:"nickname"`
+	UnitAmount  int64      `json:"unit_amount"`
+	Currency    string     `json:"currency"`
+	Recurring   *Recurring `json:"recurring"`
+	Active      bool       `json:"active"`
+	LiveMode    bool       `json:"livemode"`
+	Type        string     `json:"type"`
+	TaxBehavior string     `json:"tax_behavior"`
 }
 
 // Recurring is a price's billing interval.
@@ -170,19 +174,38 @@ type Customer struct {
 	Meta    Meta   `json:"metadata"`
 }
 
+// Product is the Stripe catalogue object the two configured prices must share.
+type Product struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	TaxCode   string `json:"tax_code"`
+	Active    bool   `json:"active"`
+	LiveMode  bool   `json:"livemode"`
+	Shippable *bool  `json:"shippable"`
+}
+
 // CheckoutSession is the object a checkout produces.
 type CheckoutSession struct {
-	ID           string `json:"id"`
-	URL          string `json:"url"`
-	Customer     string `json:"customer"`
-	Subscription string `json:"subscription"`
-	Status       string `json:"status"`
-	Mode         string `json:"mode"`
-	Metadata     Meta   `json:"metadata"`
+	ID            string `json:"id"`
+	URL           string `json:"url"`
+	Customer      string `json:"customer"`
+	Subscription  string `json:"subscription"`
+	Status        string `json:"status"`
+	PaymentStatus string `json:"payment_status"`
+	Mode          string `json:"mode"`
+	Metadata      Meta   `json:"metadata"`
 
 	// CustomerEmail is what they typed at checkout, and is the address every
 	// lifecycle email goes to when the account has no other billing contact.
 	CustomerEmail string `json:"customer_email"`
+}
+
+// WebhookEndpoint is one Stripe destination and the events sent to it.
+type WebhookEndpoint struct {
+	ID            string   `json:"id"`
+	URL           string   `json:"url"`
+	Status        string   `json:"status"`
+	EnabledEvents []string `json:"enabled_events"`
 }
 
 // PortalSession is a Customer Portal link.
@@ -232,8 +255,8 @@ type CheckoutParams struct {
 }
 
 // CreateCheckoutSession starts a subscription checkout through Stripe Managed
-// Payments. Stripe is the merchant of record and owns the indirect-tax
-// calculation, collection, filing and remittance for the transaction.
+// Payments. Sold through Link, LLC is merchant of record for supported
+// transactions; the seller retains tax duties outside that supported scope.
 func (c *Client) CreateCheckoutSession(ctx context.Context, params CheckoutParams) (*CheckoutSession, error) {
 	form := url.Values{}
 	form.Set("mode", "subscription")
@@ -245,15 +268,17 @@ func (c *Client) CreateCheckoutSession(ctx context.Context, params CheckoutParam
 	form.Set("allow_promotion_codes", "true")
 
 	// The business arrangement must not depend on an account-level dashboard
-	// default. Managed Payments makes Stripe the merchant of record and is
-	// deliberately enabled on every checkout this product creates.
+	// default. Managed Payments makes Sold through Link, LLC merchant of record
+	// for supported transactions and is deliberately enabled on every checkout.
 	form.Set("managed_payments[enabled]", "true")
 
 	// The account id goes on the session, the subscription and the customer.
 	// Any one of the three can be the only thing a webhook carries, and an
 	// event we cannot route to an account is an event we cannot act on.
-	form.Set("metadata["+TeamMetadataKey+"]", strconv.FormatInt(params.TeamID, 10))
-	form.Set("subscription_data[metadata]["+TeamMetadataKey+"]", strconv.FormatInt(params.TeamID, 10))
+	if params.TeamID > 0 {
+		form.Set("metadata["+TeamMetadataKey+"]", strconv.FormatInt(params.TeamID, 10))
+		form.Set("subscription_data[metadata]["+TeamMetadataKey+"]", strconv.FormatInt(params.TeamID, 10))
+	}
 
 	// A subscription checkout always creates a customer, so there is nothing to
 	// ask for here — only whether to reuse one we already have. An account that
@@ -328,6 +353,48 @@ func (c *Client) GetCheckoutSession(ctx context.Context, id string) (*CheckoutSe
 	}
 
 	return &session, nil
+}
+
+// ExpireCheckoutSession closes an unused checkout so nobody can complete it.
+// Deployment smoke tests call this immediately after Stripe accepts a session.
+func (c *Client) ExpireCheckoutSession(ctx context.Context, id, idempotencyKey string) error {
+	var session CheckoutSession
+
+	return c.postWithVersion(ctx, "/v1/checkout/sessions/"+url.PathEscape(id)+"/expire", nil, idempotencyKey, ManagedPaymentsAPIVersion, &session)
+}
+
+// GetProduct reads the configured catalogue product for deployment checks.
+func (c *Client) GetProduct(ctx context.Context, id string) (*Product, error) {
+	var product Product
+	if err := c.getWithVersion(ctx, "/v1/products/"+url.PathEscape(id), nil, ManagedPaymentsAPIVersion, &product); err != nil {
+		return nil, err
+	}
+
+	return &product, nil
+}
+
+// GetPrice reads one configured recurring price for deployment checks.
+func (c *Client) GetPrice(ctx context.Context, id string) (*Price, error) {
+	var price Price
+	if err := c.getWithVersion(ctx, "/v1/prices/"+url.PathEscape(id), nil, ManagedPaymentsAPIVersion, &price); err != nil {
+		return nil, err
+	}
+
+	return &price, nil
+}
+
+// ListWebhookEndpoints reads every endpoint Stripe can return in one page. The
+// API's maximum page size is 100, far above the number one deployment uses.
+func (c *Client) ListWebhookEndpoints(ctx context.Context) ([]WebhookEndpoint, error) {
+	form := url.Values{}
+	form.Set("limit", "100")
+
+	var page list[WebhookEndpoint]
+	if err := c.getWithVersion(ctx, "/v1/webhook_endpoints", form, ManagedPaymentsAPIVersion, &page); err != nil {
+		return nil, err
+	}
+
+	return page.Data, nil
 }
 
 // ActiveSubscription finds the subscription a customer is actually paying on.
