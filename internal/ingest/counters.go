@@ -32,6 +32,17 @@ const (
 	ReasonShieldPage         = "shield_page"
 	ReasonNoSessionForEngage = "no_session_for_engagement"
 	ReasonRateLimited        = "rate_limited"
+
+	// ReasonInvalidPayload is a body we read but could not use — props or
+	// revenue that are not the shape the field is for. It is a drop rather
+	// than a 4xx because the sender is a beacon: a status code it cannot act
+	// on only produces a retry that fails identically.
+	ReasonInvalidPayload = "invalid_payload"
+
+	// ReasonInternalError is our failure, not the sender's. It exists so that
+	// a salt store that will not open shows up as our outage on the health
+	// panel instead of as every customer's traffic quietly stopping.
+	ReasonInternalError = "internal_error"
 )
 
 // Reasons is every value the dropped header can carry. Tests assert that
@@ -50,6 +61,8 @@ var Reasons = []string{
 	ReasonShieldPage,
 	ReasonNoSessionForEngage,
 	ReasonRateLimited,
+	ReasonInvalidPayload,
+	ReasonInternalError,
 }
 
 // IsClassification reports whether a reason still results in a stored row. The
@@ -96,6 +109,11 @@ const (
 	TruncationPropValue  = "prop_value_too_long"
 	TruncationURL        = "url_too_long"
 	TruncationEngagement = "engagement_time_clamped"
+
+	// TruncationPropUnsupported counts properties whose value was an object,
+	// an array or null. They are as lost as a thirty-first property is, and
+	// the whole point of this type is that nothing is lost quietly.
+	TruncationPropUnsupported = "prop_value_unsupported"
 )
 
 // NewCounters builds an empty set.
@@ -142,6 +160,9 @@ func (c *Counters) Truncated(siteID int64, truncation Truncation) {
 	}
 	if truncation.PropValuesTruncated > 0 {
 		c.truncs[counterKey{siteID, TruncationPropValue}] += int64(truncation.PropValuesTruncated)
+	}
+	if truncation.PropsUnsupported > 0 {
+		c.truncs[counterKey{siteID, TruncationPropUnsupported}] += int64(truncation.PropsUnsupported)
 	}
 	if truncation.URLTruncated {
 		c.truncs[counterKey{siteID, TruncationURL}]++

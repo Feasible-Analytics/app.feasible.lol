@@ -28,6 +28,14 @@ const HeaderDropped = "x-feasible-dropped"
 // owns the proxy, rather than by us reading logs they cannot see.
 const HeaderDebug = "X-Debug-Request"
 
+// IsDebugRequest reports whether this request wants the derived event back
+// instead of a write. Both the handler and the pipeline ask, because the answer
+// changes how far the pipeline derives a dropped event: a debug request is
+// worth the extra work, an ordinary one is not.
+func IsDebugRequest(r *http.Request) bool {
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get(HeaderDebug)), "true")
+}
+
 // Handler serves the public ingest endpoint.
 type Handler struct {
 	Pipeline *Pipeline
@@ -89,17 +97,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	debug := strings.EqualFold(strings.TrimSpace(r.Header.Get(HeaderDebug)), "true")
-
 	result, err := h.Pipeline.Derive(r.Context(), r, payload)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+	if err != nil && h.Log != nil {
+		// The sender can do nothing about a salt store that will not open or a
+		// props object it cannot see, so the detail belongs in our log and only
+		// the reason travels back.
+		h.Log.Error("event could not be derived", "domain", payload.Domain, "error", err)
 	}
 
 	// The debug view is answered before anything is written, so running it
 	// against production is free of side effects and safe to hand to a customer.
-	if debug {
+	// It is answered even when the event was dropped or failed to derive: the
+	// one curl somebody runs is the one about an event that did not count, and
+	// it has to come back with the drop reason and everything derived so far.
+	if IsDebugRequest(r) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(result.Debug)
@@ -113,8 +124,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.Counters.Truncated(result.Debug.SiteID, result.Truncation)
 	}
 
-	if result.DropReason != "" {
-		h.drop(w, result.Debug.SiteID, payload.Domain, result.DropReason)
+	if result.DropReason != "" || result.Event == nil {
+		// A derive that produced no event and no reason is a bug on our side
+		// rather than anything the sender did, and it still answers 202: a
+		// beacon given a 4xx retries, and the retry would fail the same way.
+		reason := result.DropReason
+		if reason == "" {
+			reason = ReasonInternalError
+		}
+
+		h.drop(w, result.Debug.SiteID, payload.Domain, reason)
 		return
 	}
 
@@ -128,7 +147,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.Counters.Dropped(event.SiteID, event.BotReason)
 	}
 
-	h.Buffer.Add(r.Context(), *event)
+	h.Buffer.Add(*event)
 	h.Counters.Accepted(event.SiteID)
 
 	if h.Log != nil {

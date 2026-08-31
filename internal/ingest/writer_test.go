@@ -326,6 +326,67 @@ func TestSessionIDsSurviveARestart(t *testing.T) {
 	}
 }
 
+// TestRevivedPingSurvivesAFailedCommit is the one case where an event can be
+// lost with nothing left to retry it. Adopting a parked ping takes it out of the
+// orphan map, and the ping is not in the batch the sender will redeliver — so a
+// transaction that rolls back after the adoption leaves its row unwritten and
+// nothing anywhere able to write it.
+func TestRevivedPingSurvivesAFailedCommit(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+
+	base := fixtureStart.Unix()
+
+	// The ping arrives before its own pageview and is parked, not written.
+	ping := writerEvent(1, EventEngagement, base, "/")
+	if _, err := writer.Write(ctx, []Event{ping}); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events"); got != 0 {
+		t.Fatalf("wrote %d rows for a parked ping, want 0", got)
+	}
+
+	account, err := manager.Open(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A trigger is the cheapest deterministic "the transaction fails on the way
+	// in" — the fold has already happened by the time the insert runs.
+	if _, err := account.Writer().ExecContext(ctx,
+		`CREATE TRIGGER refuse_events BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'disk full'); END`,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	view := writerEvent(1, EventPageview, base+10, "/")
+	if _, err := writer.Write(ctx, []Event{view}); err == nil {
+		t.Fatal("the write succeeded while every insert was being refused")
+	}
+
+	if _, err := account.Writer().ExecContext(ctx, "DROP TRIGGER refuse_events"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The sender retries exactly what it sent: the pageview, and nothing about
+	// the ping, which it has long since had a 202 for.
+	if _, err := writer.Write(ctx, []Event{view}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events"); got != 2 {
+		t.Fatalf("events table holds %d rows, want 2 — the adopted ping's row was lost by the rollback", got)
+	}
+
+	// And it landed on the visit it belongs to rather than one of its own.
+	if got := countRows(t, manager, 1, "SELECT COUNT(DISTINCT session_id) FROM events"); got != 1 {
+		t.Fatalf("the two rows point at %d sessions, want 1", got)
+	}
+	if got := countRows(t, manager, 1, "SELECT started_at FROM sessions"); got != base {
+		t.Fatalf("session started at %d, want %d — the ping did not reach the fold", got, base)
+	}
+}
+
 // TestSessionRowIsUpdatedInPlace checks the whole reason this schema needs no
 // sign column: a visit is one row, changed as it goes.
 func TestSessionRowIsUpdatedInPlace(t *testing.T) {

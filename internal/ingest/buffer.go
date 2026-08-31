@@ -11,6 +11,7 @@ package ingest
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,6 +26,12 @@ const DefaultBufferSize = 250
 // a second is short enough that a dashboard looks live and long enough that a
 // quiet site does not pay a transaction per pageview.
 const DefaultFlushInterval = 500 * time.Millisecond
+
+// FlushTimeout bounds one flush the buffer starts on its own behalf. Without a
+// bound a wedged shard would park a goroutine and its batch for the life of the
+// process; with one the batch comes back to the front of the buffer and is
+// retried by the next flush.
+const FlushTimeout = 30 * time.Second
 
 // Buffer holds derived events until there are enough of them to be worth a
 // transaction. Every event goes through it, even in single-process mode where
@@ -48,6 +55,12 @@ type Buffer struct {
 	// write. An append during a flush lands in the next batch rather than
 	// blocking the request that made it.
 	flushing sync.Mutex
+
+	// scheduled means a size-triggered flush is already on its way. Without it
+	// every append past the size threshold starts another goroutine that can
+	// only queue behind the first, so one slow shard turns a burst of traffic
+	// into a pile of goroutines. The ticker picks up anything this skips.
+	scheduled atomic.Bool
 }
 
 // NewBuffer builds a buffer over a transport. Zero or negative bounds fall back
@@ -66,20 +79,34 @@ func NewBuffer(transport Transport, size int, interval time.Duration) *Buffer {
 // Add appends an event and flushes if the batch is full. It never blocks on the
 // write itself: the visitor's page is waiting on this call, and a slow disk
 // must not become a slow page.
-func (b *Buffer) Add(ctx context.Context, event Event) {
+//
+// It deliberately takes no context. The only context a caller could pass is the
+// request's, and the flush outlives the request by design — a write that
+// inherited it would be cancelled the moment the 202 was sent, which is a
+// buffer that never writes anything except on its ticker.
+func (b *Buffer) Add(event Event) {
 	b.mu.Lock()
 	b.pending = append(b.pending, event)
 	full := len(b.pending) >= b.size
 	b.mu.Unlock()
 
-	if !full {
+	if !full || !b.scheduled.CompareAndSwap(false, true) {
 		return
 	}
 
 	// The flush runs on its own goroutine so the request returns immediately.
 	// Losing the buffered events in a crash is the trade store-and-forward
 	// exists to make: the alternative is a visitor waiting on an fsync.
-	go b.flush(ctx)
+	go func() {
+		defer b.scheduled.Store(false)
+
+		ctx, cancel := context.WithTimeout(context.Background(), FlushTimeout)
+		defer cancel()
+
+		// flush already reports through OnError, so the error is swallowed here
+		// rather than reported twice.
+		_ = b.flush(ctx)
+	}()
 }
 
 // Flush writes everything buffered right now. It is exported so shutdown and
