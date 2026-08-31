@@ -1,0 +1,64 @@
+<!doctype html>
+<!--
+  index.html
+  The shell the dashboard boots from.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="robots" content="noindex, nofollow" />
+		<title>Dashboard · feasible.lol</title>
+
+		<!--
+			Inlined rather than served as a file. A browser asks for /favicon.ico
+			whether or not anything points at one, and a 404 in the console of a
+			product whose pitch is "nothing fails silently" is a bad first
+			impression for a request we can answer with no round trip at all.
+		-->
+		<link
+			rel="icon"
+			href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d9488'/%3E%3Ctext x='16' y='23' text-anchor='middle' fill='white' font-family='system-ui,sans-serif' font-size='21' font-weight='700'%3Ef%3C/text%3E%3C/svg%3E"
+		/>
+
+		<!--
+			The theme is decided before the first paint, in a blocking inline
+			script. Deciding it in React instead means the page paints white,
+			then flips to slate a frame later, and that flash is the single most
+			noticeable defect a dark-mode dashboard can ship with.
+		-->
+		<script>
+			(function () {
+				try {
+					var saved = localStorage.getItem("feasible.theme");
+					var dark =
+						saved === "dark" ||
+						(saved !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+					if (dark) document.documentElement.classList.add("dark");
+				} catch (e) {
+					/* A browser with storage disabled still gets the system theme. */
+				}
+			})();
+		</script>
+
+		<link rel="stylesheet" href="__CSS__" />
+	</head>
+	<body>
+		<div id="root"></div>
+
+		<!--
+			The site list is written into the page by the server rather than
+			fetched. It is the one piece of data every screen needs before it
+			can ask a single question, and a round trip for it would put a blank
+			frame in front of every load for no benefit.
+		-->
+		<script id="feasible-bootstrap" type="application/json">
+			__BOOTSTRAP__
+		</script>
+
+		<script src="__JS__" defer></script>
+	</body>
+</html>

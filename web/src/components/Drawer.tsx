@@ -1,0 +1,447 @@
+//
+// Drawer.tsx
+// The details view: a right-side drawer, not a centred modal.
+//
+// Created: 2026-08-30
+// Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+//
+
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import type { DateRange, Filter, StatsRequest } from "../api/types";
+import { exact, metricValue } from "../lib/format";
+import type { CardDef } from "../lib/reports";
+import { BREAKDOWNS, DRAWER_HEADINGS, DRAWER_METRICS, findTab, groupsOf, labelOf, subTabsOf } from "../lib/reports";
+import type { DrawerState } from "../lib/url";
+import { useStats } from "../lib/useStats";
+import { Empty, Failure, Favicon, Spinner } from "./atoms";
+
+/**
+ * The details view is a drawer rather than a centred modal, and the difference
+ * is not decoration.
+ *
+ * A modal dims the page and takes the context away exactly when somebody is
+ * drilling into it. The drawer keeps the dashboard readable behind a light
+ * scrim, so you can still see the totals the row you clicked is a slice of, and
+ * it has the horizontal room for five metric columns and a secondary breakdown
+ * — neither of which fits in a centred box.
+ */
+
+/** One page of rows. A hundred is where a details list stops being something
+ *  you read and starts being something you search, which is why the header has
+ *  a search box and explicit paging rather than an infinite scroll that never
+ *  lets you reach the end. */
+const PAGE = 100;
+
+interface Props {
+	domain: string;
+	card: CardDef;
+	state: DrawerState;
+	range: DateRange;
+	onChange: (next: DrawerState) => void;
+	onClose: () => void;
+	/** The element that opened the drawer; focus goes back to it on close. */
+	opener: HTMLElement | null;
+}
+
+/**
+ * Drawer renders the full breakdown for one card.
+ *
+ * Every piece of its state that describes *what is on screen* — the tab, the
+ * page, the sort, the search, the breakdown — is in the URL. That is what makes
+ * a details view worth linking to, and it is why Back closes the drawer instead
+ * of leaving the dashboard.
+ */
+export function Drawer({ domain, card, state, range, onChange, onClose, opener }: Props) {
+	const panel = useRef<HTMLDivElement>(null);
+	const tab = findTab(card, state.tab);
+
+	// The search box types faster than a four-second query can answer, so the
+	// input is local and the URL only catches up once typing stops.
+	const [typed, setTyped] = useState(state.search);
+
+	useEffect(() => setTyped(state.search), [state.search]);
+
+	useEffect(() => {
+		if (typed === state.search) return;
+
+		const id = setTimeout(() => onChange({ ...state, search: typed, page: 1 }), 300);
+
+		return () => clearTimeout(id);
+	}, [typed, state, onChange]);
+
+	useFocusTrap(panel, onClose, opener);
+
+	const filters = useMemo<Filter[]>(() => {
+		const list: Filter[] = [...(tab.filters ?? [])];
+
+		if (state.search.trim()) {
+			list.push(["contains", tab.dimension, [state.search.trim()], { case_sensitive: false }]);
+		}
+
+		return list;
+	}, [tab, state.search]);
+
+	const dimensions = state.breakdown ? [tab.dimension, state.breakdown] : [tab.dimension];
+
+	const body: StatsRequest = {
+		metrics: DRAWER_METRICS,
+		date_range: range,
+		dimensions,
+		filters: filters.length ? filters : undefined,
+		order_by: [[state.sort, state.descending ? "desc" : "asc"]],
+		pagination: { limit: PAGE, offset: (state.page - 1) * PAGE },
+		include: { total_rows: true },
+	};
+
+	const stats = useStats(domain, body);
+	const rows = stats.data?.results ?? [];
+	const totalRows = stats.data?.meta.total_rows ?? 0;
+	const warnings = stats.data?.meta.metric_warnings ?? {};
+
+	const first = totalRows === 0 ? 0 : (state.page - 1) * PAGE + 1;
+	const last = Math.min(state.page * PAGE, totalRows);
+	const lastPage = Math.max(1, Math.ceil(totalRows / PAGE));
+
+	const groups = groupsOf(card);
+	const subTabs = subTabsOf(card, tab);
+	const breakdown = BREAKDOWNS.find((entry) => entry.id === state.breakdown);
+
+	/** sort flips a column, or switches to it descending first — which is what
+	 *  somebody clicking "Bounce" almost always wants to see. */
+	const sort = (key: string) => {
+		if (state.sort === key) onChange({ ...state, descending: !state.descending, page: 1 });
+		else onChange({ ...state, sort: key, descending: true, page: 1 });
+	};
+
+	return (
+		<div className="fixed inset-0 z-50">
+			{/* The scrim is light on purpose. Dimming the page as hard as a modal
+			    would throw away the only reason this is a drawer. */}
+			<button
+				type="button"
+				aria-label="Close details"
+				onClick={onClose}
+				className="drawer-scrim absolute inset-0 bg-[var(--fs-scrim)]"
+			/>
+
+			<div
+				ref={panel}
+				role="dialog"
+				aria-modal="true"
+				aria-label={`${card.title} — ${tab.label}`}
+				className="drawer-panel absolute inset-y-0 right-0 flex w-full flex-col border-l border-line bg-card shadow-2xl min-[900px]:w-[max(560px,min(50vw,900px))]"
+			>
+				<div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line px-4 py-2.5">
+					<input
+						type="search"
+						value={typed}
+						onChange={(event) => setTyped(event.target.value)}
+						placeholder={`Search ${tab.heading.toLowerCase()}…`}
+						aria-label={`Search ${tab.heading}`}
+						className="h-control min-w-0 flex-1 rounded-md border border-line bg-page px-2.5 text-sm text-body placeholder:text-muted"
+					/>
+
+					<label className="flex items-center">
+						<span className="sr-only">Break down by</span>
+						<select
+							value={state.breakdown}
+							onChange={(event) => onChange({ ...state, breakdown: event.target.value, page: 1 })}
+							className="h-control cursor-pointer rounded-md border border-line bg-card px-2 text-sm text-body"
+						>
+							{BREAKDOWNS.map((entry) => (
+								<option key={entry.id || "none"} value={entry.id}>
+									{entry.label}
+								</option>
+							))}
+						</select>
+					</label>
+
+					<span className="tnum ml-auto text-xs text-muted">
+						{totalRows === 0 ? "0" : `${first}–${last} of ${exact(totalRows)}`}
+					</span>
+
+					<Pager
+						page={state.page}
+						lastPage={lastPage}
+						onGo={(page) => onChange({ ...state, page })}
+					/>
+
+					<button
+						type="button"
+						onClick={onClose}
+						aria-label="Close details"
+						className="flex size-control items-center justify-center rounded-md border border-line text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
+					>
+						✕
+					</button>
+				</div>
+
+				{/* The card's own tabs repeat here so a dimension can be switched
+				    without closing and reopening. */}
+				<div className="scroll-thin flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-line px-4 py-1.5">
+					{groups.map((group) => (
+						<DrawerTab
+							key={group.key}
+							label={group.label}
+							active={(tab.group ?? tab.id) === group.key}
+							onClick={() => onChange({ ...state, tab: group.tab.id, page: 1, search: "" })}
+						/>
+					))}
+
+					{subTabs.length > 0 && (
+						<>
+							<span aria-hidden="true" className="mx-1 h-4 w-px bg-line" />
+							{subTabs.map((entry) => (
+								<DrawerTab
+									key={entry.id}
+									label={entry.label}
+									active={tab.id === entry.id}
+									onClick={() => onChange({ ...state, tab: entry.id, page: 1, search: "" })}
+								/>
+							))}
+						</>
+					)}
+				</div>
+
+				<div className="scroll-thin min-h-0 flex-1 overflow-auto">
+					{stats.error ? (
+						<div className="h-64">
+							<Failure message={stats.error} onRetry={stats.reload} />
+						</div>
+					) : !stats.data ? (
+						<div className="h-64">
+							<Spinner label="Loading details" />
+						</div>
+					) : rows.length === 0 ? (
+						<div className="h-64">
+							<Empty what={state.search ? `${tab.noun} matching “${state.search}”` : tab.noun} />
+						</div>
+					) : (
+						<table className="w-full border-collapse text-sm">
+							<thead className="sticky top-0 z-10 bg-card">
+								<tr className="border-b border-line">
+									<Th
+										label={tab.heading}
+										sorted={state.sort === tab.dimension}
+										descending={state.descending}
+										onSort={() => sort(tab.dimension)}
+										align="left"
+										grow
+									/>
+									{breakdown?.id && <Th label={breakdown.label} align="left" grow />}
+									{DRAWER_METRICS.map((metric) => (
+										<Th
+											key={metric}
+											label={DRAWER_HEADINGS[metric] ?? metric}
+											sorted={state.sort === metric}
+											descending={state.descending}
+											onSort={() => sort(metric)}
+											align="right"
+										/>
+									))}
+								</tr>
+							</thead>
+
+							<tbody>
+								{rows.map((row, index) => {
+									const name = labelOf(tab, row.dimensions[0] ?? "");
+
+									return (
+										<tr
+											key={`${row.dimensions.join("|")}-${index}`}
+											className={`h-drawerrow ${index % 2 === 1 ? "bg-zebra" : ""}`}
+										>
+											<td className="w-full max-w-0 px-4">
+												<span className="flex items-center gap-2">
+													{tab.favicon && <Favicon name={row.dimensions[0] || "Direct"} />}
+													<span className="truncate text-body" title={name}>
+														{name}
+													</span>
+												</span>
+											</td>
+
+											{breakdown?.id && (
+												<td className="w-full max-w-0 px-3">
+													<span className="block truncate text-muted" title={row.dimensions[1] || "Unknown"}>
+														{row.dimensions[1] || "Unknown"}
+													</span>
+												</td>
+											)}
+
+											{DRAWER_METRICS.map((metric, position) => (
+												<td key={metric} className="tnum px-3 text-right whitespace-nowrap text-body">
+													{metricValue(metric, row.metrics[position] ?? 0)}
+												</td>
+											))}
+										</tr>
+									);
+								})}
+							</tbody>
+						</table>
+					)}
+				</div>
+
+				{Object.keys(warnings).length > 0 && (
+					<footer className="shrink-0 border-t border-line px-4 py-2">
+						{Object.entries(warnings).map(([metric, warning]) => (
+							<p key={metric} className="text-[11px] leading-relaxed text-muted">
+								<span className="font-medium text-body">{DRAWER_HEADINGS[metric] ?? metric}:</span>{" "}
+								{warning.warning}
+							</p>
+						))}
+					</footer>
+				)}
+			</div>
+		</div>
+	);
+}
+
+/** Pager is the explicit prev/next. Explicit rather than infinite scroll
+ *  because a details list is something people page through looking for a row,
+ *  and an infinite list has no "I have seen everything" state. */
+function Pager({ page, lastPage, onGo }: { page: number; lastPage: number; onGo: (page: number) => void }) {
+	return (
+		<span className="flex items-center gap-1">
+			<button
+				type="button"
+				aria-label="Previous page"
+				disabled={page <= 1}
+				onClick={() => onGo(page - 1)}
+				className="flex size-control items-center justify-center rounded-md border border-line text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover disabled:opacity-30"
+			>
+				‹
+			</button>
+			<button
+				type="button"
+				aria-label="Next page"
+				disabled={page >= lastPage}
+				onClick={() => onGo(page + 1)}
+				className="flex size-control items-center justify-center rounded-md border border-line text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover disabled:opacity-30"
+			>
+				›
+			</button>
+		</span>
+	);
+}
+
+/** Th is one sortable, sticky column heading. A heading with no onSort is a
+ *  column the engine cannot order by — the secondary breakdown — and it renders
+ *  as plain text rather than as a button that does nothing. */
+function Th({
+	label,
+	sorted,
+	descending,
+	onSort,
+	align,
+	grow = false,
+}: {
+	label: string;
+	sorted?: boolean;
+	descending?: boolean;
+	onSort?: () => void;
+	align: "left" | "right";
+	/** The label columns absorb the slack; the metric columns size to their
+	 *  contents, so five of them never squeeze the name down to an ellipsis. */
+	grow?: boolean;
+}) {
+	const classes = `px-3 py-2 text-[11px] font-medium tracking-wide uppercase ${
+		align === "right" ? "text-right whitespace-nowrap" : "px-4 text-left"
+	} ${grow ? "w-full" : "w-px"} ${sorted ? "text-accent" : "text-muted"}`;
+
+	if (!onSort) {
+		return (
+			<th scope="col" className={classes}>
+				{label}
+			</th>
+		);
+	}
+
+	return (
+		<th scope="col" className={classes} aria-sort={sorted ? (descending ? "descending" : "ascending") : "none"}>
+			<button
+				type="button"
+				onClick={onSort}
+				className="transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent"
+			>
+				{label}
+				{sorted && <span aria-hidden="true"> {descending ? "↓" : "↑"}</span>}
+			</button>
+		</th>
+	);
+}
+
+/** DrawerTab is the drawer's copy of a card tab. */
+function DrawerTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+	return (
+		<button
+			type="button"
+			aria-pressed={active}
+			onClick={onClick}
+			className={`shrink-0 rounded-sm px-2 py-1 text-xs whitespace-nowrap transition-colors duration-150 ease-[var(--ease-ui)] ${
+				active ? "bg-accent/10 font-medium text-accent" : "text-muted hover:text-body"
+			}`}
+		>
+			{label}
+		</button>
+	);
+}
+
+/**
+ * useFocusTrap keeps the keyboard inside the drawer and gives it back on close.
+ *
+ * Returning focus to the row that opened it is the half people notice: without
+ * it, closing the drawer drops a keyboard user back at the top of the document
+ * and they have to tab all the way down to where they were.
+ */
+function useFocusTrap(panel: React.RefObject<HTMLElement | null>, onClose: () => void, opener: HTMLElement | null): void {
+	useEffect(() => {
+		const node = panel.current;
+		if (!node) return;
+
+		const focusables = () =>
+			Array.from(
+				node.querySelectorAll<HTMLElement>(
+					'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])',
+				),
+			).filter((element) => element.offsetParent !== null);
+
+		focusables()[0]?.focus();
+
+		const onKey = (event: KeyboardEvent) => {
+			if (event.key === "Escape") {
+				event.stopPropagation();
+				onClose();
+				return;
+			}
+
+			if (event.key !== "Tab") return;
+
+			const list = focusables();
+			const firstElement = list[0];
+			const lastElement = list[list.length - 1];
+			if (!firstElement || !lastElement) return;
+
+			if (event.shiftKey && document.activeElement === firstElement) {
+				event.preventDefault();
+				lastElement.focus();
+			} else if (!event.shiftKey && document.activeElement === lastElement) {
+				event.preventDefault();
+				firstElement.focus();
+			}
+		};
+
+		document.addEventListener("keydown", onKey);
+
+		// The page behind must not scroll while the drawer is open, or a
+		// trackpad flick moves the dashboard instead of the list being read.
+		const previousOverflow = document.body.style.overflow;
+		document.body.style.overflow = "hidden";
+
+		return () => {
+			document.removeEventListener("keydown", onKey);
+			document.body.style.overflow = previousOverflow;
+			opener?.focus();
+		};
+	}, [panel, onClose, opener]);
+}

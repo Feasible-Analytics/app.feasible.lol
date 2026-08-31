@@ -8,6 +8,8 @@
 
 package referrer
 
+import "strings"
+
 // Category is what kind of site a referrer is. It exists because the acquisition
 // channel is a function of the category rather than the name: every search
 // engine behaves the same way in the channel rules, and enumerating them by name
@@ -235,4 +237,62 @@ var utmSourceAliases = map[string]Source{
 	"perplexity":   {"Perplexity", CategoryAI},
 	"amazon":       {"Amazon", CategoryShopping},
 	"spotify":      {"Spotify", CategoryAudio},
+}
+
+// hostsByName is the reverse of `hosts`: a canonical source name to the shortest
+// hostname that resolves to it. It is built once at start-up rather than
+// searched linearly, because the favicon proxy asks this question once per
+// distinct source on every dashboard load.
+//
+// Shortest wins so that a source with several hostnames — google.com,
+// google.co.uk, www.google.de — resolves to the one that is actually the
+// company's front door, which is also the one whose icon exists.
+var hostsByName = buildHostsByName()
+
+// buildHostsByName inverts the source table.
+func buildHostsByName() map[string]string {
+	byName := make(map[string]string, len(hosts))
+
+	for host, source := range hosts {
+		existing, seen := byName[source.Name]
+		if !seen || len(host) < len(existing) || (len(host) == len(existing) && host < existing) {
+			byName[source.Name] = host
+		}
+	}
+
+	return byName
+}
+
+// HostFor resolves a source name back to a hostname an icon can be fetched for.
+//
+// A report groups by the canonical source name — "Hacker News", not
+// "news.ycombinator.com" — so anything wanting an icon for a row has only the
+// display name to work from. Names that are not in the table are usually a
+// hostname already, because that is what an unrecognised referrer falls back
+// to, and those are returned unchanged.
+//
+// It returns an empty string for a name that is neither, which is the honest
+// answer for "Direct" or a channel name: there is no site to fetch an icon from.
+func HostFor(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+
+	if host, ok := hostsByName[name]; ok {
+		return host
+	}
+
+	lowered := strings.ToLower(name)
+	if host, ok := hostsByName[lowered]; ok {
+		return host
+	}
+
+	// An unrecognised referrer is stored as its own hostname, so a name with a
+	// dot in it and nothing else in it is one.
+	if strings.Contains(lowered, ".") && !strings.ContainsAny(lowered, " /?#@:") {
+		return strings.TrimPrefix(lowered, "www.")
+	}
+
+	return ""
 }
