@@ -51,11 +51,25 @@ type Handler struct {
 	// Now is the clock every date range is resolved against, injectable so a
 	// test can ask what "today" returns without waiting for tomorrow.
 	Now func() time.Time
+
+	// live holds the answers to reports whose range reaches today. A finished
+	// period is never held: it cannot change, and it is already answered from
+	// the summary tables in single-digit milliseconds.
+	live *cache
 }
 
 // New builds a handler over the site cache and the account manager.
 func New(cache *sites.Cache, manager *accounts.Manager, log *logger.Logger) *Handler {
-	return &Handler{Sites: cache, Accounts: manager, Log: log}
+	return &Handler{Sites: cache, Accounts: manager, Log: log, live: newCache(CacheTTL, CacheEntries)}
+}
+
+// now reads the handler's clock.
+func (h *Handler) now() time.Time {
+	if h.Now == nil {
+		return time.Now().UTC()
+	}
+
+	return h.Now()
 }
 
 // request is the wire form. It is a struct of its own rather than query.Query
@@ -130,6 +144,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A dashboard refreshes itself and is left open, so the same handful of
+	// live reports arrive over and over with a few new events between them.
+	key := cacheKey(sites.Normalise(domain), body)
+
+	if held, ok := h.live.get(key); ok {
+		h.writeBody(w, http.StatusOK, held)
+		return
+	}
+
 	account, err := h.Accounts.Open(r.Context(), site.AccountID)
 	if err != nil {
 		h.internal(w, "open account", err)
@@ -153,7 +176,35 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.write(w, http.StatusOK, result)
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		h.internal(w, "encode result", err)
+		return
+	}
+
+	if h.stillRunning(result) {
+		h.live.put(key, encoded)
+	}
+
+	h.writeBody(w, http.StatusOK, encoded)
+}
+
+// stillRunning reports whether a report's period has not finished, which is the
+// only kind worth holding. The bound comes from the echoed query rather than
+// from the request, because that is the window the engine actually resolved —
+// a preset, a relative range and an explicit pair of dates all end up there in
+// one form.
+func (h *Handler) stillRunning(result *query.Result) bool {
+	if len(result.Query.DateRange) != 2 {
+		return false
+	}
+
+	end, err := time.Parse(time.RFC3339, result.Query.DateRange[1])
+	if err != nil {
+		return false
+	}
+
+	return end.After(h.now())
 }
 
 // domain reads the site out of the URL, falling back to parsing the path so the
@@ -257,6 +308,18 @@ func (h *Handler) write(w http.ResponseWriter, status int, body any) {
 	w.WriteHeader(status)
 
 	if err := json.NewEncoder(w).Encode(body); err != nil && h.Log != nil {
+		h.Log.Error("stats response could not be written", "error", err)
+	}
+}
+
+// writeBody sends an already-encoded response. A held answer is bytes rather
+// than a struct, so re-encoding it on every hit would spend most of what the
+// cache saves.
+func (h *Handler) writeBody(w http.ResponseWriter, status int, body []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	if _, err := w.Write(append(body, '\n')); err != nil && h.Log != nil {
 		h.Log.Error("stats response could not be written", "error", err)
 	}
 }

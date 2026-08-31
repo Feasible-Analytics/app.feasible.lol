@@ -36,9 +36,20 @@ type executor struct {
 	pushDown  bool
 	truncated bool
 
+	// segments is what the router decided, kept so the response can name where
+	// the numbers came from without asking the router a second time.
+	segments []Segment
+
 	// comparison marks the executor that answers the earlier period. It never
 	// paginates: its rows are looked up by key, not read off a page.
 	comparison bool
+
+	// The summary read this query maps onto, worked out once. The router has
+	// already decided the same thing; recomputing it here costs nothing and
+	// keeps the router's signature free of a type only the reader needs.
+	rollupRead    rollupRead
+	rollupUsable  bool
+	rollupPlanned bool
 }
 
 // dimMode selects which session column an event-scoped page dimension maps to.
@@ -60,8 +71,14 @@ type compiledDim struct {
 
 // statement is one rendered aggregate query.
 type statement struct {
-	table      table
-	alias      string
+	table table
+	alias string
+
+	// nameOverride replaces the fact table's name, which is how a summary read
+	// reuses this renderer. It is a field rather than a second renderer so
+	// that the two paths can never drift in how they order their arguments.
+	nameOverride string
+
 	joins      []string
 	dims       []compiledDim
 	columns    []expr
@@ -103,7 +120,12 @@ func (s statement) render() (string, []any) {
 		b.addExpr(column).add(fmt.Sprintf(" AS m%d", i))
 	}
 
-	b.add(" FROM " + s.table.name() + " " + s.alias)
+	name := s.table.name()
+	if s.nameOverride != "" {
+		name = s.nameOverride
+	}
+
+	b.add(" FROM " + name + " " + s.alias)
 
 	for _, join := range s.joins {
 		b.add(" " + join)
@@ -348,7 +370,11 @@ func (x *executor) execute(ctx context.Context, restrict map[int][]any) (*groupS
 	// A range can only be answered from more than one source if every metric
 	// adds up across the split. Counting distinct visitors does not, so a query
 	// asking for them is read from one source over the whole range.
-	if len(segments) > 1 && !Splittable(x.query, x.plan) {
+	//
+	// A summary-backed split is the exception: those buckets carry the
+	// carry-over counts that make a distinct count re-aggregate exactly, and
+	// the seam between the last summarised day and today is corrected below.
+	if len(segments) > 1 && !rollupBacked(segments) && !Splittable(x.query, x.plan) {
 		segments = []Segment{{Range: x.resolved, Source: SourceRaw}}
 	}
 
@@ -356,10 +382,19 @@ func (x *executor) execute(ctx context.Context, restrict map[int][]any) (*groupS
 	// that ordered and paginated it. Neither can a gap-filled time series,
 	// whose empty buckets do not exist in any table.
 	x.pushDown = x.canPushDown() && len(segments) == 1 && !timeOnly(x.query) && !x.comparison
+	x.segments = segments
 
 	groups := newGroupSet()
 
 	for _, segment := range segments {
+		if segment.Source == SourceRollup {
+			if err := x.rollupPass(ctx, x.plan.Primary, segment, groups, restrict, true); err != nil {
+				return nil, err
+			}
+
+			continue
+		}
+
 		if err := x.primaryPass(ctx, segment.Range, groups, restrict); err != nil {
 			return nil, err
 		}
@@ -389,6 +424,16 @@ func (x *executor) execute(ctx context.Context, restrict map[int][]any) (*groupS
 	}
 
 	for _, segment := range segments {
+		if segment.Source == SourceRollup {
+			if x.plan.HasSecondary {
+				if err := x.rollupPass(ctx, x.plan.Secondary, segment, groups, keys, false); err != nil {
+					return nil, err
+				}
+			}
+
+			continue
+		}
+
 		if x.plan.HasSecondary {
 			if err := x.secondaryPass(ctx, segment.Range, groups, keys); err != nil {
 				return nil, err
@@ -399,6 +444,15 @@ func (x *executor) execute(ctx context.Context, restrict map[int][]any) (*groupS
 			if err := x.specialPass(ctx, name, segment.Range, groups, keys); err != nil {
 				return nil, err
 			}
+		}
+	}
+
+	// The last summarised day and today are two reads of the same visitors and
+	// the same visits, so anything present on both sides of the boundary has
+	// now been counted twice. This removes it.
+	if rollupBacked(segments) && len(segments) > 1 {
+		if err := x.seamPass(ctx, segments[len(segments)-1].Range, groups); err != nil {
+			return nil, err
 		}
 	}
 
@@ -820,7 +874,11 @@ func (x *executor) finalise(ctx context.Context, groups *groupSet) ([]Row, int, 
 	}
 
 	if x.pushDown && x.query.Include.TotalRows {
-		counted, err := x.countGroups(ctx)
+		// A page cut by the database does not know how many groups it came
+		// from, so it is counted again — from whichever source answered the
+		// page, or the count would be a full raw scan behind a query that
+		// avoided one.
+		counted, err := x.countGroupsIn(ctx)
 		if err != nil {
 			return nil, 0, err
 		}

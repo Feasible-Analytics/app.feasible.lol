@@ -69,5 +69,7 @@ func runIngest(e *env, args []string) int {
 	// drop it all, so readiness waits for the site cache to hold something.
 	server.Ready = func() bool { return service.Sites.Len() > 0 }
 
-	return serveUntilSignal(e, server, service, manager.CloseAll, control.Close)
+	// No roll-up worker: the ingest tier answers no reports, and summarising
+	// from here would put a second process on the account's write lock.
+	return serveUntilSignal(e, server, service, nil, manager.CloseAll, control.Close)
 }
