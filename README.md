@@ -50,14 +50,14 @@ stays readable:
 ```bash
 make caddy             # :19300 — the only port you open in a browser
 make app               # :19301, plus :19401 internal, loopback only
-make ingest            # :19302
+make ingest            # :19302, plus :19402 internal, loopback only
 make testsite          # :19303 — a real page with the snippet installed
 ```
 
 `make dev` runs all three at once. Every runnable target has a `-ts` twin
 (`make app-ts`, `make dev-ts`) that binds to the Tailscale address and moves
 `FEASIBLE_APP_BASE_URL` with it, so the app is reachable from another machine.
-The internal listener stays on `127.0.0.1` in every mode.
+The internal listeners stay on `127.0.0.1` in every mode.
 
 `make` on its own lists everything.
 
