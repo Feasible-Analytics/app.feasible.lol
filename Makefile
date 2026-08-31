@@ -75,10 +75,28 @@ CADDY_ENV = FEASIBLE_CADDY_BIND=$(BIND_HOST) \
 	FEASIBLE_CADDY_APP_UPSTREAM=$(BIND_HOST):$(PORT_APP) \
 	FEASIBLE_CADDY_INGEST_UPSTREAM=$(BIND_HOST):$(PORT_INGEST)
 
+# ── Seeding ───────────────────────────────────────────────────────────────────
+# The size of a seeded dataset, overridable on the command line:
+#
+#   make seed PAGEVIEWS=250000 DAYS=90 SITES=3
+#
+# SEED is fixed so two runs produce the same database. Change it and you get a
+# different but equally valid dataset; leave it and "this query got slower" can
+# never mean "this is different data".
+PAGEVIEWS   ?= 120000
+DAYS        ?= 42
+SITES       ?= 5
+SEED        ?= 20260830
+HTTP_EVENTS ?= 200
+
+# FRESH deletes the seeded databases before generating. Clear it — FRESH= — to
+# add another run's worth of traffic to what is already there.
+FRESH ?= --fresh
+
 .DEFAULT_GOAL := help
 
 .PHONY: help assets tracker build test test-tracker test-integration lint check-env \
-	migrate migrate-fresh caddy app ingest testsite dev dev-solo \
+	migrate migrate-fresh seed seed-big seed-http caddy app ingest testsite dev dev-solo \
 	caddy-ts app-ts ingest-ts testsite-ts dev-ts dev-solo-ts require-tailscale
 
 # ── Help ──────────────────────────────────────────────────────────────────────
@@ -110,6 +128,12 @@ help:
 	@echo "    make check-env  every environment variable is in .env.sample"
 	@echo "    make migrate    migrate control.db and every account database"
 	@echo "    make migrate-fresh      drop everything and rebuild"
+	@echo
+	@echo "  Data to build and measure against:"
+	@echo "    make seed       ~$(PAGEVIEWS) pageviews over $(DAYS) days across $(SITES) sites"
+	@echo "    make seed-big   one site, a million pageviews in a month"
+	@echo "    make seed-http  ~$(HTTP_EVENTS) events over real HTTP, end to end"
+	@echo "                    make seed PAGEVIEWS=250000 DAYS=90 SITES=3"
 
 # ── Toolchain ─────────────────────────────────────────────────────────────────
 
@@ -192,6 +216,31 @@ migrate: build
 ## migrate-fresh: drop everything and rebuild
 migrate-fresh: build
 	@$(APP_ENV) ./$(BINARY) db migrate --fresh
+
+# ── Seed data ─────────────────────────────────────────────────────────────────
+# Nothing in the product can be built or measured against an empty database, and
+# the performance numbers in the plan stay estimates until something generates
+# enough rows to time. The generator calls the same functions the ingest path
+# calls and skips only the network.
+
+## seed: realistic fake traffic across the whole fixture
+seed: build
+	@$(APP_ENV) ./$(BINARY) seed $(FRESH) \
+		--pageviews $(PAGEVIEWS) --days $(DAYS) --sites $(SITES) --seed $(SEED)
+
+## seed-big: one site, a million pageviews in a month
+# The budget is two minutes. A twenty-minute seed is a seed nobody runs, and a
+# dataset nobody generates measures nothing.
+seed-big:
+	@$(MAKE) --no-print-directory seed PAGEVIEWS=1000000 DAYS=30 SITES=1
+
+## seed-http: a couple of hundred events over the real wire
+# A different tool for a different job: correctness, not volume. It starts an
+# ingest listener on an ephemeral loopback port, sends events through the real
+# handler over real HTTP, then stops it — including when something fails.
+# Point it at an instance you are already running with --url instead.
+seed-http: build
+	@$(APP_ENV) ./$(BINARY) seed --http --http-events $(HTTP_EVENTS)
 
 # ── Processes, one per terminal ───────────────────────────────────────────────
 

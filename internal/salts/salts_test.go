@@ -332,3 +332,47 @@ func TestDayIsPureUTCArithmetic(t *testing.T) {
 		t.Fatal("a local morning after local midnight rotated the salt early")
 	}
 }
+
+// TestSetRandomMakesTheSaltReproducible covers the one hook that exists for the
+// seed generator. A generated dataset has to hash to the same visitor ids every
+// time it is built, and it cannot while the salt underneath it is fresh random
+// on every run.
+func TestSetRandomMakesTheSaltReproducible(t *testing.T) {
+	now := at(2026, time.August, 30, 9, 0)
+
+	first := saltFromFixedSource(t, &now)
+	second := saltFromFixedSource(t, &now)
+
+	if !bytes.Equal(first, second) {
+		t.Fatalf("two stores on one source produced different salts: %x and %x", first, second)
+	}
+
+	// The default source is the real one, so an ordinary store must not be
+	// reproducible: a predictable salt is a reversible fingerprint.
+	store := newStore(t, newControlDB(t), &now)
+
+	pair, err := store.Pair(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if bytes.Equal(pair.Current, first) {
+		t.Fatal("a store using the default source produced the seeded salt")
+	}
+}
+
+// saltFromFixedSource builds a store over a fixed byte source and returns the
+// salt it creates for the day.
+func saltFromFixedSource(t *testing.T, now *time.Time) []byte {
+	t.Helper()
+
+	store := newStore(t, newControlDB(t), now)
+	store.SetRandom(bytes.NewReader(bytes.Repeat([]byte{0x11, 0x22, 0x33, 0x44}, 64)))
+
+	pair, err := store.Pair(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return pair.Current
+}
