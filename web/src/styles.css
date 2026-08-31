@@ -46,6 +46,31 @@
 	   page as hard as a modal throws away the one thing it is for, which is
 	   keeping the dashboard readable behind it. */
 	--fs-scrim: rgb(15 23 42 / 0.16);
+
+	/* The shortcut overlay is the one modal in the product, and it is the one
+	   surface whose content has nothing to do with the numbers behind it. It
+	   dims properly, because there is nothing back there worth reading while it
+	   is open. */
+	--fs-scrim-modal: rgb(15 23 42 / 0.45);
+
+	/* The choropleth ramp, five steps from the palest teal to the accent. It is
+	   the same teal family as the accent in ui/tokens.css and is written out
+	   step by step rather than interpolated, because a map has to pick a shade
+	   per country and five named steps is what a legend can explain.
+
+	   These live here rather than in the shared token file for the same reason
+	   the row tints above do: there is no map on a sign-in form, and exporting
+	   a palette to one consumer is how a shared file becomes a junk drawer. */
+	/* A step darker than the card's usual neutral, on purpose. The palest teal on
+	   the ramp is very light, and "nobody at all" has to be tellable from "one
+	   visitor" at a glance or a broken tracker looks like a quiet week. */
+	--fs-map-empty: #e2e8f0;
+	--fs-map-line: #94a3b8;
+	--fs-map-1: #ccfbf1;
+	--fs-map-2: #99f6e4;
+	--fs-map-3: #5eead4;
+	--fs-map-4: #2dd4bf;
+	--fs-map-5: #14b8a6;
 }
 
 .dark {
@@ -56,6 +81,19 @@
 	--fs-bar-strong: rgb(100 116 139 / 0.3);
 
 	--fs-scrim: rgb(2 6 23 / 0.5);
+	--fs-scrim-modal: rgb(2 6 23 / 0.7);
+
+	/* The dark ramp runs the other way through the same teal: from the deepest
+	   shade up to the accent, so "more visitors" is still "brighter" against a
+	   dark card. The empty and the border are slate rather than teal — a country
+	   with nothing in it must not read as the bottom of the scale. */
+	--fs-map-empty: #1e293b;
+	--fs-map-line: #334155;
+	--fs-map-1: #134e4a;
+	--fs-map-2: #115e59;
+	--fs-map-3: #0f766e;
+	--fs-map-4: #0d9488;
+	--fs-map-5: #14b8a6;
 }
 
 /* The per-card tints, light mode only — the dark values above win because .dark
@@ -71,8 +109,26 @@
 	--fs-bar-strong: #ccfbf1;
 }
 
+.tint-locations {
+	--fs-bar: #f5f3ff;
+	--fs-bar-strong: #ede9fe;
+}
+
+.tint-devices {
+	--fs-bar: #fffbeb;
+	--fs-bar-strong: #fef3c7;
+}
+
+.tint-languages {
+	--fs-bar: #fff1f2;
+	--fs-bar-strong: #ffe4e6;
+}
+
 .dark .tint-sources,
-.dark .tint-pages {
+.dark .tint-pages,
+.dark .tint-locations,
+.dark .tint-devices,
+.dark .tint-languages {
 	--fs-bar: rgb(100 116 139 / 0.15);
 	--fs-bar-strong: rgb(100 116 139 / 0.3);
 }
@@ -159,6 +215,12 @@
 	animation: fs-scrim-in 200ms var(--ease-ui) both;
 }
 
+/* The shortcut overlay fades rather than slides. It arrives in the middle of the
+   viewport, where a slide would have no direction to come from. */
+.modal-in {
+	animation: fs-scrim-in 150ms var(--ease-ui) both;
+}
+
 @media (prefers-reduced-motion: reduce) {
 	.drawer-panel {
 		animation: fs-scrim-in 120ms var(--ease-ui) both;
@@ -173,6 +235,37 @@
 	*::after {
 		transition-duration: 0.01ms !important;
 	}
+}
+
+/* The map's countries. The hairline is what makes a country with no visitors
+   read as a country rather than as a hole in the map, so it is on every outline
+   at every shade rather than only on the filled ones. */
+.map-country {
+	stroke: var(--fs-map-line);
+	stroke-width: 0.4;
+	stroke-linejoin: round;
+	transition:
+		fill 150ms var(--ease-ui),
+		stroke 150ms var(--ease-ui);
+}
+
+.map-country[role="button"]:hover,
+.map-country-on {
+	stroke: var(--fs-accent);
+	stroke-width: 1.2;
+}
+
+/* The page's focus ring is an outline, and an outline on an SVG path is drawn
+   round its bounding box rather than its shape — a rectangle over half a
+   continent. The stroke is the honest focus indicator here. */
+.map-country:focus {
+	outline: none;
+}
+
+.map-country:focus-visible {
+	outline: none;
+	stroke: var(--fs-accent);
+	stroke-width: 1.6;
 }
 
 /* The scrollbars inside cards and the drawer. The default macOS overlay bar is

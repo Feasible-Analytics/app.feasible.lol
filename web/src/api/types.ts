@@ -26,6 +26,10 @@ export type Metric =
  *  apart all agree on which days were in the window. */
 export type Preset =
 	| "realtime"
+	/** The last five minutes: who is on the site right now. It is a preset rather
+	 *  than a pair of bounds so that it and the thirty-minute graph beside it are
+	 *  cut by the same clock. */
+	| "5m"
 	| "day"
 	| "24h"
 	| "7d"
@@ -42,9 +46,10 @@ export type DateRange = Preset | [string, string];
 
 export type Interval = "minute" | "hour" | "day" | "week" | "month";
 
-/** A filter is the positional array form the query API already speaks. Nothing
- *  in this milestone builds one, but the request type carries it so a filter UI
- *  is a new component rather than a new request shape. */
+/** A filter is the positional array form the query API already speaks. The
+ *  dashboard's own filter model lives in lib/filters.ts and is converted to this
+ *  shape on the way out, so the readable form and the wire form have one
+ *  translation between them rather than one per caller. */
 export type Filter = [string, string, string[]] | [string, string, string[], { case_sensitive: boolean }];
 
 export type Order = [string, "asc" | "desc"];

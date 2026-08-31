@@ -206,6 +206,6 @@ func presets() []string {
 	return []string{
 		query.RangeDay, query.RangeLast7Days, query.RangeLast28Days, query.RangeLast91Days,
 		query.RangeMonth, query.RangeLastMonth, query.RangeYear, query.RangeLast12Months,
-		query.RangeAll, query.RangeLast24Hours, query.RangeRealtime,
+		query.RangeAll, query.RangeLast24Hours, query.RangeRealtime, query.RangeLast5Minutes,
 	}
 }

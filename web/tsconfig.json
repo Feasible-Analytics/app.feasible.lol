@@ -13,7 +13,13 @@
 		"skipLibCheck": true,
 		"isolatedModules": true,
 		"verbatimModuleSyntax": true,
-		"forceConsistentCasingInFileNames": true
+		"forceConsistentCasingInFileNames": true,
+		// The bundle runs in a browser and has no Node globals. Naming the types
+		// explicitly keeps @types/node — which the tests need — from quietly
+		// putting `process` and `Buffer` in scope here, where reaching for either
+		// would compile cleanly and then fail in the browser.
+		"types": ["react", "react-dom"]
 	},
-	"include": ["src"]
+	"include": ["src"],
+	"exclude": ["src/**/*.test.ts"]
 }

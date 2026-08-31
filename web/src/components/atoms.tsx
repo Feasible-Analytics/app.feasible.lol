@@ -68,9 +68,14 @@ export function ChangeChip({ change, invert = false }: { change: number | null |
  * exceeding pageviews — and both are correct. A footnote nobody can find is the
  * same as no footnote, so the explanation sits on the number itself.
  */
-export function InfoDot({ text }: { text: string }) {
+export function InfoDot({ text }: { text: string | string[] }) {
 	const [open, setOpen] = useState(false);
 	const id = useId();
+
+	// A tab can add a caveat of its own on top of the card's — "cities are
+	// approximate" is true of one tab and false of the two beside it — so the
+	// note is a list of paragraphs rather than one string.
+	const paragraphs = (Array.isArray(text) ? text : [text]).filter(Boolean);
 
 	return (
 		<span className="relative inline-flex">
@@ -95,9 +100,11 @@ export function InfoDot({ text }: { text: string }) {
 				<span
 					id={id}
 					role="tooltip"
-					className="absolute top-6 left-1/2 z-30 w-64 -translate-x-1/2 rounded-md border border-line bg-card p-3 text-xs leading-relaxed font-normal text-body shadow-lg"
+					className="absolute top-6 left-1/2 z-30 flex w-64 -translate-x-1/2 flex-col gap-2 rounded-md border border-line bg-card p-3 text-xs leading-relaxed font-normal text-body shadow-lg"
 				>
-					{text}
+					{paragraphs.map((paragraph) => (
+						<span key={paragraph}>{paragraph}</span>
+					))}
 				</span>
 			)}
 		</span>
@@ -160,6 +167,25 @@ export function Favicon({ name }: { name: string }) {
 			loading="lazy"
 			className="size-4 shrink-0 rounded-[3px]"
 		/>
+	);
+}
+
+/**
+ * Flag is the country marker on a location row.
+ *
+ * It is two regional indicator code points rendered by the platform, not an
+ * image: a flag per row as a request would mean a fan-out to some icon host on
+ * every paint of the locations card, which is exactly the behaviour this product
+ * exists to not have. It is decorative — the row's own text already names the
+ * country — so screen readers skip it.
+ */
+export function Flag({ glyph }: { glyph: string }) {
+	if (!glyph) return null;
+
+	return (
+		<span aria-hidden="true" className="w-4 shrink-0 text-center text-sm leading-none">
+			{glyph}
+		</span>
 	);
 }
 

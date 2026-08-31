@@ -229,6 +229,11 @@ func TestTheRouterRefusesEverythingItCannotAnswerExactly(t *testing.T) {
 			why:   "a half-hour window of raw rows is already fast",
 		},
 		{
+			name:  "the current-visitor window",
+			query: Query{SiteIDs: []int64{1}, Metrics: []string{"visitors"}, DateRange: DateRange{Preset: RangeLast5Minutes}},
+			why:   "the last five minutes are inside today, and there is no summary of a day that has not finished",
+		},
+		{
 			name:  "hourly with no time dimension",
 			query: Query{SiteIDs: []int64{1}, Metrics: []string{"visitors"}, DateRange: DateRange{Preset: RangeLast24Hours}},
 			why:   "hourly buckets are only ever correct read one at a time",

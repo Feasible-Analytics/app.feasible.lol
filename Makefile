@@ -95,7 +95,7 @@ FRESH ?= --fresh
 
 .DEFAULT_GOAL := help
 
-.PHONY: help assets tracker ui-css build test test-tracker test-integration test-ecosystem \
+.PHONY: help assets tracker ui-css build test test-web test-tracker test-integration test-ecosystem \
 	lint check-env \
 	migrate migrate-fresh seed seed-big seed-http caddy app ingest testsite dev dev-solo \
 	caddy-ts app-ts ingest-ts testsite-ts dev-ts dev-solo-ts require-tailscale
@@ -123,6 +123,7 @@ help:
 	@echo "    make build      build ./$(BINARY) (runs the asset build first)"
 	@echo "    make tracker    build the browser script and check it fits the size budget"
 	@echo "    make test       unit tests, including the tracker size budget"
+	@echo "    make test-web   the dashboard's unit tests on their own"
 	@echo "    make test-tracker       the tracker's end-to-end suite in a real browser"
 	@echo "    make test-integration   end-to-end tests through Caddy"
 	@echo "    make test-ecosystem     the SDKs and the plugin, in whichever toolchains you have"
@@ -193,8 +194,23 @@ build: assets
 ## test: unit tests, and the tracker size budget
 # The tracker is rebuilt first so that the budget is measured against the source
 # in the working tree rather than against whatever was last committed.
-test: tracker
+test: tracker test-web
 	@go test ./...
+
+## test-web: the dashboard's unit tests
+# The URL filter encoding, the comparison arithmetic and the period stepping are
+# the pieces of the dashboard that are pure functions with a contract, and all
+# three are the kind of thing a rendering test would pass while getting wrong. A
+# machine with no JavaScript toolchain skips them rather than failing, the same
+# way the tracker build does — the Go suite still has to pass there.
+test-web:
+	@if [ -d web/node_modules ]; then \
+		npm --prefix web test; \
+	elif command -v npm >/dev/null 2>&1; then \
+		npm --prefix web ci --silent && npm --prefix web test; \
+	else \
+		echo "npm is not installed — skipping the dashboard unit tests"; \
+	fi
 
 ## test-race: the same tests under the race detector
 # Its own target with its own timeout. The detector slows every test by roughly

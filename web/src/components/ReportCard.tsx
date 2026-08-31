@@ -8,19 +8,33 @@
 
 import { useEffect } from "react";
 
-import type { DateRange, StatsRequest } from "../api/types";
+import type { DateRange, Filter, StatsRequest } from "../api/types";
+import type { FilterState } from "../lib/filters";
 import { compact, exact, percent } from "../lib/format";
 import { t } from "../lib/i18n";
+import { flagFor } from "../lib/labels";
 import { usePref } from "../lib/prefs";
 import type { CardDef, Tab } from "../lib/reports";
 import { PRIMARY, findTab, groupsOf, labelOf, subTabsOf } from "../lib/reports";
 import { useNearViewport, useStats } from "../lib/useStats";
-import { Bar, Empty, Failure, Favicon, InfoDot, Spinner } from "./atoms";
+import { Bar, Empty, Failure, Favicon, Flag, InfoDot, Spinner } from "./atoms";
+import { WorldMap } from "./WorldMap";
 
 /** How many rows the card previews. The rest live in the details drawer: a card
  *  is a shape, not a table, and nine rows is where the shape stops being
  *  readable at 534px wide. */
 const ROWS = 9;
+
+/** How many rows the map asks for. A choropleth needs every country at once —
+ *  the ninth-busiest is not where a world map stops being interesting — and
+ *  there are fewer than 250 of them, so this is the whole answer rather than a
+ *  page of it. */
+const MAP_ROWS = 300;
+
+/** One shared empty set for a card whose dimension carries no filter, so the
+ *  map does not get a fresh object on every render and repaint every country
+ *  for nothing. */
+const EMPTY_SELECTION: ReadonlySet<string> = new Set();
 
 interface Props {
 	domain: string;
@@ -34,6 +48,19 @@ interface Props {
 	/** The tab the drawer is currently showing, so the card and the drawer stay
 	 *  in step while both are open. */
 	drawerTab?: string;
+	/** Every filter in force. The card sends them with its own query — a card
+	 *  that ignored them would sit next to the totals showing a different
+	 *  population, which is the shape of every "these two numbers disagree" bug
+	 *  in a reporting product. */
+	filters: Filter[];
+	/** Clicking a row filters the whole dashboard by it, and clicking it again
+	 *  takes the filter off. */
+	onFilter: (filter: FilterState, label: string) => void;
+	/** The filtered values, keyed by dimension. The card looks up its own active
+	 *  tab rather than being handed one dimension's worth: which tab is showing
+	 *  is remembered per card in localStorage, so the card is the only thing that
+	 *  knows it. */
+	selected: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 /**
@@ -43,7 +70,17 @@ interface Props {
  * engine is slow: a four-second sources query does not hold up the graph, and
  * the fixed 430px height means nothing below it moves when the answer lands.
  */
-export function ReportCard({ domain, card, range, total, onOpenDetails, drawerTab }: Props) {
+export function ReportCard({
+	domain,
+	card,
+	range,
+	total,
+	onOpenDetails,
+	drawerTab,
+	filters,
+	onFilter,
+	selected,
+}: Props) {
 	const [ref, near] = useNearViewport<HTMLElement>();
 
 	// Which tab you last had open is a personal preference, not something a
@@ -63,16 +100,22 @@ export function ReportCard({ domain, card, range, total, onOpenDetails, drawerTa
 		if (drawerTab && drawerTab !== tabId) setTabId(drawerTab);
 	}, [drawerTab, tabId, setTabId]);
 
+	// The tab's own filters come first and the reader's after, because the tab's
+	// are part of what the report means — "Campaigns" is traffic that carried a
+	// tag — and dropping them would change the report rather than widen it.
+	const combined = [...(active.filters ?? []), ...filters];
+
 	const body: StatsRequest = {
 		metrics: [PRIMARY],
 		date_range: range,
 		dimensions: [active.dimension],
-		pagination: { limit: ROWS },
-		filters: active.filters,
+		pagination: { limit: active.map ? MAP_ROWS : ROWS },
+		filters: combined.length ? combined : undefined,
 	};
 
 	const stats = useStats(domain, body, near);
 	const rows = stats.data?.results ?? [];
+	const on = selected.get(active.dimension);
 	const peak = Math.max(1, ...rows.map((row) => row.metrics[0] ?? 0));
 	const groups = groupsOf(card);
 	const subTabs = subTabsOf(card, active);
@@ -85,7 +128,11 @@ export function ReportCard({ domain, card, range, total, onOpenDetails, drawerTa
 			<header className="flex h-10 shrink-0 items-center gap-2 px-5">
 				<h2 className="flex shrink-0 items-center gap-1.5 text-sm font-semibold text-body">
 					{t(card.titleId)}
-					{card.caveatId && <InfoDot text={t(card.caveatId)} />}
+					{(active.caveatId || card.caveatId) && (
+						<InfoDot
+							text={[active.caveatId, card.caveatId].filter(Boolean).map((id) => t(id as string))}
+						/>
+					)}
 				</h2>
 
 				<div className="scroll-thin ml-auto flex items-center gap-0.5 overflow-x-auto">
@@ -127,6 +174,8 @@ export function ReportCard({ domain, card, range, total, onOpenDetails, drawerTa
 					<Spinner label={t("dashboard.card.loading", { title: t(card.titleId) })} />
 				) : rows.length === 0 ? (
 					<Empty what={t(active.nounId)} />
+				) : active.map ? (
+					<WorldMap rows={rows} onFilter={onFilter} selected={on ?? EMPTY_SELECTION} />
 				) : (
 					<>
 						<div className="flex h-6 items-center text-[11px] font-medium tracking-wide text-muted uppercase">
@@ -137,15 +186,41 @@ export function ReportCard({ domain, card, range, total, onOpenDetails, drawerTa
 						<ul>
 							{rows.map((row) => {
 								const value = row.metrics[0] ?? 0;
-								const name = labelOf(active, row.dimensions[0] ?? "");
+								const raw = row.dimensions[0] ?? "";
+								const name = labelOf(active, raw);
+								const filtered = on?.has(raw) ?? false;
 
 								return (
 									<li key={name} className="group/row relative flex h-row items-center">
 										<Bar share={value / peak} />
 
-										<span className="relative flex min-w-0 flex-1 items-center gap-2 pl-2 text-sm text-body">
-											{active.favicon && <Favicon name={row.dimensions[0] || "Direct"} />}
-											<span className="truncate" title={name}>
+										{/* The whole row is the control. A separate
+										    "filter by this" affordance would be a
+										    second target on a 32px row, and the row
+										    itself is what everybody clicks first. */}
+										<button
+											type="button"
+											aria-pressed={filtered}
+											onClick={() =>
+												onFilter({ operator: "is", dimension: active.dimension, values: [raw] }, name)
+											}
+											title={t(
+												filtered ? "dashboard.row.stop_filtering" : "dashboard.row.filter_by",
+												{ name },
+											)}
+											className="absolute inset-0 rounded-sm"
+										>
+											<span className="sr-only">
+												{t(filtered ? "dashboard.row.stop_filtering" : "dashboard.row.filter_by", {
+													name,
+												})}
+											</span>
+										</button>
+
+										<span className="pointer-events-none relative flex min-w-0 flex-1 items-center gap-2 pl-2 text-sm text-body">
+											{active.favicon && <Favicon name={raw || "Direct"} />}
+											<Flag glyph={flagFor(active.dimension, raw)} />
+											<span className={`truncate ${filtered ? "font-medium text-accent" : ""}`} title={name}>
 												{name}
 											</span>
 										</span>
@@ -156,7 +231,7 @@ export function ReportCard({ domain, card, range, total, onOpenDetails, drawerTa
 										    hover to reveal it — three classes, and the
 										    thing that makes these tables feel
 										    expensive. */}
-										<span className="relative flex w-32 shrink-0 items-center">
+										<span className="pointer-events-none relative flex w-32 shrink-0 items-center">
 											<span
 												className="tnum w-16 translate-x-16 text-right text-sm font-medium text-body transition-transform duration-150 ease-[var(--ease-ui)] group-hover/card:translate-x-0"
 												title={exact(value)}

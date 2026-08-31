@@ -8,6 +8,7 @@
 
 import type { Filter, Metric } from "../api/types";
 import { t } from "./i18n";
+import { valueLabel } from "./labels";
 
 /**
  * A tab is one dimension, plus the wording that makes its numbers readable.
@@ -41,6 +42,15 @@ export interface Tab {
 	groupId?: string;
 	/** The word an empty state uses: "No sources in this period". */
 	nounId: string;
+	/** A footnote about this tab's numbers specifically. It sits beside the card's
+	 *  own caveat rather than replacing it, because "cities are approximate" is
+	 *  true of one tab and false of the two next to it. */
+	caveatId?: string;
+	/** Draw this tab as the choropleth rather than as a list. It is the same
+	 *  query and the same dimension as the tab beside it — a second view of one
+	 *  report, not a second report — which is why it is a flag here rather than
+	 *  a card of its own. */
+	map?: boolean;
 }
 
 export interface CardDef {
@@ -164,7 +174,136 @@ export const PAGES: CardDef = {
 	],
 };
 
-export const CARDS: CardDef[] = [SOURCES, PAGES];
+/** The wording every dimension derived from a browser's own self-description
+ *  uses for a blank. It is one id because a malformed or synthetic user agent
+ *  blanks browser, operating system, device class and screen size all at once,
+ *  and four different spellings of that would look like four bugs. */
+const NOT_SET = "dashboard.value.not_set";
+
+export const LOCATIONS: CardDef = {
+	id: "locations",
+	titleId: "dashboard.report.locations.title",
+	tint: "tint-locations",
+	caveatId: "dashboard.report.locations.caveat",
+	tabs: [
+		{
+			id: "map",
+			labelId: "dashboard.tab.map",
+			headingId: "dashboard.dimension.country",
+			dimension: "visit:country",
+			emptyLabelId: NOT_SET,
+			nounId: "dashboard.noun.countries",
+			map: true,
+		},
+		{
+			id: "countries",
+			labelId: "dashboard.tab.countries",
+			headingId: "dashboard.dimension.country",
+			dimension: "visit:country",
+			emptyLabelId: NOT_SET,
+			nounId: "dashboard.noun.countries",
+		},
+		{
+			id: "regions",
+			labelId: "dashboard.tab.regions",
+			headingId: "dashboard.dimension.region",
+			dimension: "visit:region",
+			emptyLabelId: NOT_SET,
+			nounId: "dashboard.noun.regions",
+		},
+		{
+			id: "cities",
+			labelId: "dashboard.tab.cities",
+			headingId: "dashboard.dimension.city",
+			dimension: "visit:city",
+			emptyLabelId: NOT_SET,
+			nounId: "dashboard.noun.cities",
+			caveatId: "dashboard.report.locations.cities_caveat",
+		},
+	],
+};
+
+export const DEVICES: CardDef = {
+	id: "devices",
+	titleId: "dashboard.report.devices.title",
+	tint: "tint-devices",
+	caveatId: "dashboard.report.devices.caveat",
+	tabs: [
+		{
+			id: "browser",
+			labelId: "dashboard.dimension.browser",
+			groupId: "dashboard.group.browsers",
+			headingId: "dashboard.dimension.browser",
+			dimension: "visit:browser",
+			emptyLabelId: NOT_SET,
+			nounId: "dashboard.noun.browsers",
+		},
+		{
+			id: "browser_version",
+			labelId: "dashboard.tab.version",
+			groupId: "dashboard.group.browsers",
+			headingId: "dashboard.dimension.browser_version",
+			dimension: "visit:browser_version",
+			emptyLabelId: NOT_SET,
+			nounId: "dashboard.noun.browser_versions",
+		},
+		{
+			id: "os",
+			labelId: "dashboard.tab.system",
+			groupId: "dashboard.group.systems",
+			headingId: "dashboard.dimension.os",
+			dimension: "visit:os",
+			emptyLabelId: NOT_SET,
+			nounId: "dashboard.noun.operating_systems",
+		},
+		{
+			id: "os_version",
+			labelId: "dashboard.tab.version",
+			groupId: "dashboard.group.systems",
+			headingId: "dashboard.dimension.os_version",
+			dimension: "visit:os_version",
+			emptyLabelId: NOT_SET,
+			nounId: "dashboard.noun.system_versions",
+		},
+		{
+			id: "device",
+			labelId: "dashboard.tab.type",
+			groupId: "dashboard.group.devices",
+			headingId: "dashboard.dimension.device",
+			dimension: "visit:device",
+			emptyLabelId: NOT_SET,
+			nounId: "dashboard.noun.device_types",
+		},
+		{
+			id: "screen",
+			labelId: "dashboard.tab.screen",
+			groupId: "dashboard.group.devices",
+			headingId: "dashboard.dimension.screen",
+			dimension: "visit:screen",
+			emptyLabelId: NOT_SET,
+			nounId: "dashboard.noun.screen_sizes",
+		},
+	],
+};
+
+export const LANGUAGES: CardDef = {
+	id: "languages",
+	titleId: "dashboard.report.languages.title",
+	tint: "tint-languages",
+	caveatId: "dashboard.report.languages.caveat",
+	tabs: [
+		{
+			id: "languages",
+			labelId: "dashboard.report.languages.title",
+			headingId: "dashboard.dimension.language",
+			dimension: "visit:language",
+			emptyLabelId: NOT_SET,
+			nounId: "dashboard.noun.languages",
+		},
+	],
+};
+
+export const CARDS: CardDef[] = [SOURCES, PAGES, LOCATIONS, DEVICES, LANGUAGES];
 
 /**
  * The secondary dimensions a drawer can break its list down by.
@@ -177,12 +316,29 @@ export const CARDS: CardDef[] = [SOURCES, PAGES];
 export const BREAKDOWNS: { id: string; labelId: string }[] = [
 	{ id: "", labelId: "dashboard.breakdown.none" },
 	{ id: "visit:country", labelId: "dashboard.dimension.country" },
+	{ id: "visit:city", labelId: "dashboard.dimension.city" },
 	{ id: "visit:device", labelId: "dashboard.dimension.device" },
+	{ id: "visit:screen", labelId: "dashboard.dimension.screen" },
 	{ id: "visit:browser", labelId: "dashboard.dimension.browser" },
 	{ id: "visit:os", labelId: "dashboard.dimension.os" },
+	{ id: "visit:language", labelId: "dashboard.dimension.language" },
 	{ id: "visit:channel", labelId: "dashboard.dimension.channel" },
 	{ id: "visit:source", labelId: "dashboard.dimension.source" },
 ];
+
+/**
+ * tableTabs is a card with its map tab removed.
+ *
+ * The details drawer is a table, and a map has no table form. Leaving the tab
+ * in there would open a second copy of the Countries table under a name that
+ * promises a picture, which is the kind of small lie that makes people stop
+ * trusting the tab strip.
+ */
+export function tableTabs(card: CardDef): CardDef {
+	if (!card.tabs.some((tab) => tab.map)) return card;
+
+	return { ...card, tabs: card.tabs.filter((tab) => !tab.map) };
+}
 
 /** findCard resolves a card id from the URL, tolerating a stale link. */
 export function findCard(id: string): CardDef | undefined {
@@ -225,7 +381,7 @@ export function subTabsOf(card: CardDef, active: Tab): Tab[] {
  *  tab's own wording rather than a blank row. The value itself is the visitor's
  *  own data and is never translated. */
 export function labelOf(tab: Tab, value: string): string {
-	if (value) return value;
+	if (value) return valueLabel(tab.dimension, value);
 
 	return t(tab.emptyLabelId ?? "dashboard.value.none");
 }

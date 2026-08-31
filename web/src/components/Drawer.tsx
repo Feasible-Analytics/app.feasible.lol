@@ -9,13 +9,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { DateRange, Filter, StatsRequest } from "../api/types";
+import type { CompareMode } from "../lib/compare";
+import type { FilterState } from "../lib/filters";
 import { exact, metricValue } from "../lib/format";
 import { formatterLocale, t } from "../lib/i18n";
+import { flagFor } from "../lib/labels";
 import type { CardDef } from "../lib/reports";
-import { BREAKDOWNS, DRAWER_HEADINGS, DRAWER_METRICS, findTab, groupsOf, labelOf, subTabsOf } from "../lib/reports";
+import {
+	BREAKDOWNS,
+	DRAWER_HEADINGS,
+	DRAWER_METRICS,
+	INVERTED,
+	findTab,
+	groupsOf,
+	labelOf,
+	subTabsOf,
+	tableTabs,
+} from "../lib/reports";
 import type { DrawerState } from "../lib/url";
 import { useStats } from "../lib/useStats";
-import { Empty, Failure, Favicon, Spinner } from "./atoms";
+import { ChangeChip, Empty, Failure, Favicon, Flag, Spinner } from "./atoms";
 
 /**
  * The details view is a drawer rather than a centred modal, and the difference
@@ -43,6 +56,17 @@ interface Props {
 	onClose: () => void;
 	/** The element that opened the drawer; focus goes back to it on close. */
 	opener: HTMLElement | null;
+	/** The dashboard's filters. The drawer is a bigger view of the card behind
+	 *  it, so it has to be looking at the same population — a details view that
+	 *  ignored the filters would show rows the card it opened from does not. */
+	filters: Filter[];
+	/** Off, or the mode the earlier period is chosen by. */
+	compare: CompareMode;
+	/** Clicking a row filters the whole dashboard and closes the drawer, which is
+	 *  what somebody who just found the row they wanted is asking for. */
+	onFilter: (filter: FilterState, label: string) => void;
+	/** Values already filtered on this tab's dimension. */
+	selected: ReadonlySet<string>;
 }
 
 /**
@@ -53,9 +77,26 @@ interface Props {
  * a details view worth linking to, and it is why Back closes the drawer instead
  * of leaving the dashboard.
  */
-export function Drawer({ domain, card, state, range, onChange, onClose, opener }: Props) {
+export function Drawer({
+	domain,
+	card,
+	state,
+	range,
+	onChange,
+	onClose,
+	opener,
+	filters: applied,
+	compare,
+	onFilter,
+	selected,
+}: Props) {
 	const panel = useRef<HTMLDivElement>(null);
-	const tab = findTab(card, state.tab);
+
+	// The drawer shows the card without its map: everything in here is a table,
+	// and findTab falls back to the first tab, so a link saved on the map opens
+	// the list of the same countries rather than nothing.
+	const listing = tableTabs(card);
+	const tab = findTab(listing, state.tab);
 
 	// The search box types faster than a four-second query can answer, so the
 	// input is local and the URL only catches up once typing stops.
@@ -74,14 +115,14 @@ export function Drawer({ domain, card, state, range, onChange, onClose, opener }
 	useFocusTrap(panel, onClose, opener);
 
 	const filters = useMemo<Filter[]>(() => {
-		const list: Filter[] = [...(tab.filters ?? [])];
+		const list: Filter[] = [...(tab.filters ?? []), ...applied];
 
 		if (state.search.trim()) {
 			list.push(["contains", tab.dimension, [state.search.trim()], { case_sensitive: false }]);
 		}
 
 		return list;
-	}, [tab, state.search]);
+	}, [tab, state.search, applied]);
 
 	const dimensions = state.breakdown ? [tab.dimension, state.breakdown] : [tab.dimension];
 
@@ -92,7 +133,13 @@ export function Drawer({ domain, card, state, range, onChange, onClose, opener }
 		filters: filters.length ? filters : undefined,
 		order_by: [[state.sort, state.descending ? "desc" : "asc"]],
 		pagination: { limit: PAGE, offset: (state.page - 1) * PAGE },
-		include: { total_rows: true },
+		include: {
+			total_rows: true,
+			// The earlier period is looked up by the keys already on this page
+			// rather than paginated on its own, so a comparison costs one extra
+			// query and never attaches a number to the wrong row.
+			comparisons: compare === "off" ? undefined : { mode: compare },
+		},
 	};
 
 	const stats = useStats(domain, body);
@@ -104,8 +151,8 @@ export function Drawer({ domain, card, state, range, onChange, onClose, opener }
 	const last = Math.min(state.page * PAGE, totalRows);
 	const lastPage = Math.max(1, Math.ceil(totalRows / PAGE));
 
-	const groups = groupsOf(card);
-	const subTabs = subTabsOf(card, tab);
+	const groups = groupsOf(listing);
+	const subTabs = subTabsOf(listing, tab);
 	const breakdown = BREAKDOWNS.find((entry) => entry.id === state.breakdown);
 
 	/** sort flips a column, or switches to it descending first — which is what
@@ -240,7 +287,12 @@ export function Drawer({ domain, card, state, range, onChange, onClose, opener }
 										align="left"
 										grow
 									/>
-									{breakdown?.id && <Th label={t(breakdown.labelId)} align="left" grow />}
+									{/* The breakdown column sizes to its contents rather
+									    than sharing the slack with the label column. Two
+									    growing columns split the width evenly, which
+									    squeezed "Desktop" down to an ellipsis next to a
+									    city name with room to spare. */}
+									{breakdown?.id && <Th label={t(breakdown.labelId)} align="left" />}
 									{DRAWER_METRICS.map((metric) => (
 										<Th
 											key={metric}
@@ -256,7 +308,9 @@ export function Drawer({ domain, card, state, range, onChange, onClose, opener }
 
 							<tbody>
 								{rows.map((row, index) => {
-									const name = labelOf(tab, row.dimensions[0] ?? "");
+									const raw = row.dimensions[0] ?? "";
+									const name = labelOf(tab, raw);
+									const on = selected.has(raw);
 
 									return (
 										<tr
@@ -264,18 +318,39 @@ export function Drawer({ domain, card, state, range, onChange, onClose, opener }
 											className={`h-drawerrow ${index % 2 === 1 ? "bg-zebra" : ""}`}
 										>
 											<td className="w-full max-w-0 px-4">
-												<span className="flex items-center gap-2">
-													{tab.favicon && <Favicon name={row.dimensions[0] || "Direct"} />}
-													<span className="truncate text-body" title={name}>
+												{/* The label is the control here rather than the
+												    whole row: the drawer's rows carry five
+												    numbers a reader wants to select and copy,
+												    and a row-wide button eats the selection. */}
+												<button
+													type="button"
+													aria-pressed={on}
+													onClick={() =>
+														onFilter({ operator: "is", dimension: tab.dimension, values: [raw] }, name)
+													}
+													title={t(
+														on ? "dashboard.row.stop_filtering" : "dashboard.row.filter_by",
+														{ name },
+													)}
+													className="flex w-full items-center gap-2 text-left"
+												>
+													{tab.favicon && <Favicon name={raw || "Direct"} />}
+													<Flag glyph={flagFor(tab.dimension, raw)} />
+													<span
+														className={`truncate transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent ${
+															on ? "font-medium text-accent" : "text-body"
+														}`}
+														title={name}
+													>
 														{name}
 													</span>
-												</span>
+												</button>
 											</td>
 
 											{breakdown?.id && (
-												<td className="w-full max-w-0 px-3">
+												<td className="px-3">
 													<span
-														className="block truncate text-muted"
+														className="block max-w-48 truncate text-muted"
 														title={row.dimensions[1] || t("dashboard.value.unknown")}
 													>
 														{row.dimensions[1] || t("dashboard.value.unknown")}
@@ -285,7 +360,19 @@ export function Drawer({ domain, card, state, range, onChange, onClose, opener }
 
 											{DRAWER_METRICS.map((metric, position) => (
 												<td key={metric} className="tnum px-3 text-right whitespace-nowrap text-body">
-													{metricValue(metric, row.metrics[position] ?? 0)}
+													<span className="inline-flex items-baseline gap-1.5">
+														{metricValue(metric, row.metrics[position] ?? 0)}
+														{/* The delta rides on the sorted column only.
+														    Five change chips on a 36px row is a
+														    wall of arrows, and the column somebody
+														    ordered by is the one they are reading. */}
+														{compare !== "off" && metric === state.sort && (
+															<ChangeChip
+																change={row.comparison?.change[position]}
+																invert={INVERTED.has(metric)}
+															/>
+														)}
+													</span>
 												</td>
 											))}
 										</tr>

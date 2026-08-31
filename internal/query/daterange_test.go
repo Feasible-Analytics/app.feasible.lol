@@ -47,6 +47,7 @@ func TestPresetsResolveToLocalBoundaries(t *testing.T) {
 		{RangeYear, "2026-01-01T00:00:00Z", "2027-01-01T00:00:00Z"},
 		{RangeLast12Months, "2025-09-01T00:00:00Z", "2026-09-01T00:00:00Z"},
 		{RangeRealtime, "2026-08-30T11:30:00Z", "2026-08-30T12:00:01Z"},
+		{RangeLast5Minutes, "2026-08-30T11:55:00Z", "2026-08-30T12:00:01Z"},
 		{RangeLast24Hours, "2026-08-29T12:00:00Z", "2026-08-30T12:00:01Z"},
 	}
 
@@ -288,5 +289,46 @@ func TestBadDateRangeIsACallerError(t *testing.T) {
 
 	if err := (DateRange{Preset: "fortnight"}).validate(); err == nil {
 		t.Fatal("an unknown preset must be refused")
+	}
+}
+
+// TestTheLiveWindowsBucketByTheMinute pins the two windows a realtime screen is
+// built from. Five minutes is shorter than every span threshold, so without the
+// explicit case it would come back as a single hour bucket — one point, which
+// draws no graph and hides the shape the screen exists to show.
+func TestTheLiveWindowsBucketByTheMinute(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+
+	for _, preset := range []string{RangeRealtime, RangeLast5Minutes} {
+		resolved, err := DateRange{Preset: preset}.Resolve(now, time.UTC, time.Time{})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if resolved.Interval != IntervalMinute {
+			t.Errorf("%s buckets by %s, want %s", preset, resolved.Interval, IntervalMinute)
+		}
+	}
+}
+
+// TestTheCurrentWindowSitsInsideTheRealtimeWindow guards the trap that makes a
+// realtime rate read over 100%: the "on the site now" figure and the graph
+// beside it are cut from the same clock, with the shorter window wholly inside
+// the longer one, so a ratio between them can never exceed one.
+func TestTheCurrentWindowSitsInsideTheRealtimeWindow(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+
+	live, err := DateRange{Preset: RangeRealtime}.Resolve(now, time.UTC, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	current, err := DateRange{Preset: RangeLast5Minutes}.Resolve(now, time.UTC, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if current.Start.Before(live.Start) || !current.End.Equal(live.End) {
+		t.Fatalf("the current window %s is not inside the realtime window %s", current, live)
 	}
 }
