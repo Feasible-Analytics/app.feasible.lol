@@ -7,38 +7,23 @@
  */
 
 @import "tailwindcss";
+
+/* The palette, and the dark variant that switches it. It is imported rather
+   than declared here because the server-rendered screens in internal/auth/
+   compile their own Tailwind stylesheet and have to read the same colours: two
+   stylesheets is fine, two palettes is how the sign-in page ended up a
+   different brand from the dashboard it leads to. */
+@import "../../ui/tokens.css";
+
 @source "./";
 
-/* Dark mode is a class on <html>, not a media query, because the product has to
-   offer an explicit override. The media query is still honoured — the boot
-   script in index.html reads it — but it decides the class rather than the
-   styles, so one rule governs both paths. */
-@custom-variant dark (&:where(.dark, .dark *));
-
-/* The palette is declared once as plain custom properties and mapped into
-   Tailwind's colour space `inline`, which makes a utility emit `var(--fs-…)`
-   rather than a literal. That is what lets `bg-card` be right in both themes
-   without a `dark:` twin on every element in the app. */
+/* The tokens that are the dashboard's alone. The report-row tints and the
+   drawer scrim have no counterpart on a sign-in form, and the layout numbers
+   describe a card grid that only exists here, so they stay out of the shared
+   file rather than being exported to one consumer. */
 @theme inline {
-	--color-accent: var(--fs-accent);
-	--color-page: var(--fs-page);
-	--color-card: var(--fs-card);
-	--color-line: var(--fs-line);
-	--color-body: var(--fs-body);
-	--color-muted: var(--fs-muted);
-	--color-up: var(--fs-up);
-	--color-down: var(--fs-down);
 	--color-bar: var(--fs-bar);
 	--color-bar-strong: var(--fs-bar-strong);
-	--color-zebra: var(--fs-zebra);
-	--color-hover: var(--fs-hover);
-
-	/* The system font stack, no webfont. It is the fastest possible choice and
-	   one fewer request on a product whose entire pitch is speed. */
-	--font-sans:
-		ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
-		"Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
-	--font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
 	/* The layout numbers from the design system. They live here rather than as
 	   magic values in components so that "the card is 430 tall" is stated once. */
@@ -49,25 +34,9 @@
 	--spacing-row: 32px;
 	--spacing-drawerrow: 36px;
 	--spacing-control: 32px;
-
-	--ease-ui: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 :root {
-	color-scheme: light;
-
-	--fs-accent: #0d9488;
-	--fs-page: #f8fafc;
-	--fs-card: #ffffff;
-	--fs-line: #e2e8f0;
-	--fs-body: #1e293b;
-	--fs-muted: #64748b;
-	--fs-up: #059669;
-	--fs-down: #e11d48;
-
-	--fs-zebra: #f8fafc;
-	--fs-hover: #f1f5f9;
-
 	/* The report-row bar tint. Each card overrides the pair; these are the
 	   neutral defaults a card that forgot to would fall back to. */
 	--fs-bar: #f1f5f9;
@@ -80,20 +49,6 @@
 }
 
 .dark {
-	color-scheme: dark;
-
-	--fs-accent: #2dd4bf;
-	--fs-page: #020617;
-	--fs-card: #0f172a;
-	--fs-line: #1e293b;
-	--fs-body: #e2e8f0;
-	--fs-muted: #94a3b8;
-	--fs-up: #34d399;
-	--fs-down: #fb7185;
-
-	--fs-zebra: #0b1220;
-	--fs-hover: #1e293b;
-
 	/* Every card's tint collapses to the same neutral in the dark. The five
 	   hues only read against white; on slate they turn into five shades of mud
 	   that carry no meaning and cost contrast. */

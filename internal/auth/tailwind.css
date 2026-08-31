@@ -10,7 +10,21 @@
  * toolchain. Rebuild it with `make ui-css` after changing a template.
  */
 
-@import "tailwindcss";
+/* `source(none)` switches off Tailwind's automatic file discovery, which starts
+   from wherever the compiler was invoked. Without it the class list depends on
+   the working directory: run from the repository root and the stylesheet
+   silently grows every class name in the React dashboard and the tracker
+   fixtures, none of which this file styles. The one `@source` below is then the
+   whole scanned surface, whoever runs the build and from where. */
+@import "tailwindcss" source(none);
+
+/* The palette, shared verbatim with the React dashboard. These screens and the
+   dashboard are the same product to the person looking at them, and importing
+   the colours rather than restating them is what stops the two surfaces drifting
+   on to different accents again. Every colour utility below resolves to one of
+   the roles defined there — a bare `slate-200` or `indigo-600` in a template
+   means a token is missing, not that a colour was picked. */
+@import "../../ui/tokens.css";
 
 /* Only these templates are scanned. Pointing Tailwind at the repository root
    would pull class names out of the React dashboard and the tracker tests,
@@ -22,4 +36,21 @@
    the script running, which reads as a page that flashes its own internals. */
 [x-cloak] {
   display: none !important;
+}
+
+@layer base {
+  /* The page background is painted on <html> as well as <body> so that
+     over-scrolling past the end of a short form shows the theme's own colour
+     rather than the browser's white. */
+  html {
+    background-color: var(--fs-page);
+  }
+
+  /* The focus ring is the accent colour on both surfaces. It is declared once
+     here rather than per-control because a keyboard user finding a different
+     ring on every input is how a form starts feeling unfinished. */
+  :focus-visible {
+    outline: 2px solid var(--fs-accent);
+    outline-offset: 2px;
+  }
 }

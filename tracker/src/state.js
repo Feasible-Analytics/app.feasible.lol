@@ -9,10 +9,12 @@
 // Aliasing the browser globals once is not a style preference: the minifier can
 // shorten a module-level binding but cannot shorten `window`, and these names
 // appear dozens of times across the bundle. It is worth several hundred bytes.
+//
+// `navigator` is deliberately not aliased. It is read in exactly one place, so
+// the alias would cost more bytes than the two it saves.
 export const win = window;
 export const doc = document;
 export const loc = location;
-export const nav = navigator;
 
 // The tracker version reported as `v`. It is an integer because the server
 // stores it as one, and it exists so that "which script is this site running"

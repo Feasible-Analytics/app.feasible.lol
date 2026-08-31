@@ -1,0 +1,149 @@
+/*
+ * tokens.css
+ * The brand palette, in one file both Tailwind builds import.
+ *
+ * Created: 2026-08-30
+ * Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+ *
+ * There are two front ends — the React dashboard in web/ and the
+ * server-rendered screens in internal/auth/ — and each compiles its own
+ * Tailwind stylesheet. Two stylesheets is fine; two palettes is not, and the
+ * two drifting apart is exactly how the auth screens ended up on a different
+ * accent colour from the product they belong to.
+ *
+ * This file is the only place a colour is written down. Both stylesheets import
+ * it, so a change here reaches both surfaces on the next build and neither can
+ * be corrected without the other.
+ *
+ * Teal on slate, deliberately unlike the incumbent's indigo. That is not a
+ * decoration: it is the one visual thing that makes this look like its own
+ * product rather than a fork of theirs, so a raw `indigo-600` anywhere in a
+ * template is a bug rather than a matter of taste.
+ */
+
+/* Dark mode is a class on <html>, not a media query, because the product has to
+   offer an explicit override. The media query is still honoured — a small
+   blocking script on each surface reads it — but it decides the class rather
+   than the styles, so one rule governs both paths. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* The palette is declared once below as plain custom properties and mapped into
+   Tailwind's colour space `inline`, which makes a utility emit `var(--fs-…)`
+   rather than a literal. That is what lets `bg-card` be right in both themes
+   without a `dark:` twin on every element. */
+@theme inline {
+	--color-accent: var(--fs-accent);
+	--color-accent-hover: var(--fs-accent-hover);
+	--color-accent-ink: var(--fs-accent-ink);
+
+	--color-page: var(--fs-page);
+	--color-card: var(--fs-card);
+	--color-subtle: var(--fs-subtle);
+	--color-line: var(--fs-line);
+	--color-field: var(--fs-field);
+	--color-hover: var(--fs-hover);
+	--color-zebra: var(--fs-zebra);
+
+	--color-heading: var(--fs-heading);
+	--color-body: var(--fs-body);
+	--color-muted: var(--fs-muted);
+	--color-faint: var(--fs-faint);
+
+	/* The text that sits on top of a saturated fill — a primary button, a status
+	   pip. It flips with the theme because the fills lighten in the dark, and
+	   white on a teal-400 button is the one contrast failure this palette can
+	   produce. */
+	--color-fill-fg: var(--fs-fill-fg);
+
+	--color-up: var(--fs-up);
+	--color-up-ink: var(--fs-up-ink);
+	--color-down: var(--fs-down);
+	--color-down-ink: var(--fs-down-ink);
+	--color-warn: var(--fs-warn);
+	--color-warn-ink: var(--fs-warn-ink);
+
+	--color-code: var(--fs-code);
+	--color-code-fg: var(--fs-code-fg);
+
+	/* The system font stack, no webfont. It is the fastest possible choice and
+	   one fewer request on a product whose entire pitch is speed. */
+	--font-sans:
+		ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+		"Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+	--font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+	--ease-ui: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+:root {
+	color-scheme: light;
+
+	--fs-accent: #0d9488;
+	--fs-accent-hover: #14b8a6;
+
+	/* Accent-coloured *text* is a shade darker than the accent fill. teal-600 on
+	   white is 3.1:1, which is fine for a button's background and not fine for
+	   the words on a link. */
+	--fs-accent-ink: #0f766e;
+
+	--fs-page: #f8fafc;
+	--fs-card: #ffffff;
+	--fs-subtle: #f1f5f9;
+	--fs-line: #e2e8f0;
+	--fs-field: #cbd5e1;
+	--fs-hover: #f1f5f9;
+	--fs-zebra: #f8fafc;
+
+	--fs-heading: #0f172a;
+	--fs-body: #1e293b;
+	--fs-muted: #64748b;
+	--fs-faint: #94a3b8;
+
+	--fs-fill-fg: #ffffff;
+
+	--fs-up: #059669;
+	--fs-up-ink: #065f46;
+	--fs-down: #e11d48;
+	--fs-down-ink: #9f1239;
+	--fs-warn: #d97706;
+	--fs-warn-ink: #92400e;
+
+	--fs-code: #0f172a;
+	--fs-code-fg: #e2e8f0;
+}
+
+.dark {
+	color-scheme: dark;
+
+	--fs-accent: #2dd4bf;
+	--fs-accent-hover: #5eead4;
+	--fs-accent-ink: #5eead4;
+
+	--fs-page: #020617;
+	--fs-card: #0f172a;
+	--fs-subtle: #1e293b;
+	--fs-line: #1e293b;
+	--fs-field: #334155;
+	--fs-hover: #1e293b;
+	--fs-zebra: #0b1220;
+
+	--fs-heading: #f1f5f9;
+	--fs-body: #e2e8f0;
+	--fs-muted: #94a3b8;
+	--fs-faint: #64748b;
+
+	/* Near-black rather than white: every fill above is a 400-level colour in
+	   the dark, and they are bright enough that light text on them is unreadable
+	   where it was fine on the 600-level light-mode fills. */
+	--fs-fill-fg: #020617;
+
+	--fs-up: #34d399;
+	--fs-up-ink: #6ee7b7;
+	--fs-down: #fb7185;
+	--fs-down-ink: #fda4af;
+	--fs-warn: #fbbf24;
+	--fs-warn-ink: #fcd34d;
+
+	--fs-code: #020617;
+	--fs-code-fg: #e2e8f0;
+}

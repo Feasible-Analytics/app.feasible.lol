@@ -10,23 +10,23 @@
 -->
 {{ define "content" }}
 <div class="mx-auto max-w-2xl">
-  <h1 class="text-2xl font-semibold text-slate-900">Signed-in devices</h1>
-  <p class="mt-1 text-sm text-slate-500">
+  <h1 class="text-2xl font-semibold text-heading">Signed-in devices</h1>
+  <p class="mt-1 text-sm text-muted">
     Every browser signed in to your account. A session ends by itself after 14 days without use.
   </p>
 
-  <div class="mt-8 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-    <ul class="divide-y divide-slate-100">
+  <div class="mt-8 overflow-hidden rounded-2xl border border-line bg-card shadow-sm">
+    <ul class="divide-y divide-line">
       {{ range .Data.Sessions }}
         <li class="flex items-center gap-4 px-5 py-4">
           <div class="min-w-0 flex-1">
-            <p class="text-sm font-medium text-slate-900">
+            <p class="text-sm font-medium text-heading">
               {{ .DeviceLabel }}
               {{ if eq .ID $.Data.CurrentID }}
-                <span class="ml-2 rounded-md bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-indigo-700">This browser</span>
+                <span class="ml-2 rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-accent-ink">This browser</span>
               {{ end }}
             </p>
-            <p class="mt-0.5 text-xs text-slate-500">
+            <p class="mt-0.5 text-xs text-muted">
               Last used {{ ago .LastSeenAt }} · signed in {{ ago .CreatedAt }} · expires {{ date .ExpiresAt }}
             </p>
           </div>
@@ -34,7 +34,7 @@
           <form method="post" action="/settings/sessions/revoke">
             <input type="hidden" name="csrf_token" value="{{ $.CSRF }}">
             <input type="hidden" name="session_id" value="{{ .ID }}">
-            <button type="submit" class="text-sm font-medium text-rose-600 hover:text-rose-500">
+            <button type="submit" class="text-sm font-medium text-down hover:text-down">
               {{ if eq .ID $.Data.CurrentID }}Sign out{{ else }}Revoke{{ end }}
             </button>
           </form>
@@ -47,7 +47,7 @@
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <input type="hidden" name="all" value="1">
     <button type="submit"
-            class="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+            class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">
       Sign out everywhere else
     </button>
   </form>
