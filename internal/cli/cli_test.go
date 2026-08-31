@@ -60,7 +60,7 @@ func TestHelp(t *testing.T) {
 		t.Fatalf("exit code %d", code)
 	}
 
-	for _, want := range []string{"serve", "ingest", "db migrate", "db backup", "--trace-events"} {
+	for _, want := range []string{"serve", "ingest", "db migrate", "db backup", "seed", "--trace-events"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("help does not mention %q", want)
 		}

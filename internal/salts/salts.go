@@ -31,6 +31,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 )
@@ -79,6 +80,12 @@ type Store struct {
 	// for real midnight would never be written.
 	now func() time.Time
 
+	// random is where new salts and their nonces come from. It is injectable
+	// for one caller only — the seed generator, which has to produce the same
+	// visitor ids on every run, and cannot while the salt underneath them is
+	// random. Serving processes never replace it.
+	random io.Reader
+
 	mu     sync.RWMutex
 	cached Pair
 }
@@ -98,13 +105,22 @@ func NewStore(db *sql.DB, key []byte) (*Store, error) {
 		return nil, fmt.Errorf("salts: %w", err)
 	}
 
-	return &Store{db: db, aead: aead, now: time.Now}, nil
+	return &Store{db: db, aead: aead, now: time.Now, random: rand.Reader}, nil
 }
 
 // SetClock replaces the store's clock. It exists for the rotation tests, which
 // have to observe what happens across a UTC midnight without waiting for one.
 func (s *Store) SetClock(now func() time.Time) {
 	s.now = now
+}
+
+// SetRandom replaces the source new salts are drawn from. Only the seed
+// generator calls it: a fake dataset has to hash to the same visitor ids every
+// time it is generated, and it cannot while the salt is freshly random on every
+// run. Nothing that serves traffic may call this — a predictable salt is a
+// reversible fingerprint.
+func (s *Store) SetRandom(random io.Reader) {
+	s.random = random
 }
 
 // Day returns the UTC day number a timestamp falls in. Integer division on a
@@ -171,7 +187,7 @@ func (s *Store) Refresh(ctx context.Context) (Pair, error) {
 // read the winner's row.
 func (s *Store) ensureToday(ctx context.Context, now time.Time) error {
 	raw := make([]byte, Size)
-	if _, err := rand.Read(raw); err != nil {
+	if _, err := io.ReadFull(s.random, raw); err != nil {
 		return fmt.Errorf("salts: generate: %w", err)
 	}
 
@@ -287,7 +303,7 @@ func (s *Store) Run(ctx context.Context, onError func(error)) {
 // which is the standard GCM layout and means the stored blob is self-contained.
 func (s *Store) seal(raw []byte) ([]byte, error) {
 	nonce := make([]byte, s.aead.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
+	if _, err := io.ReadFull(s.random, nonce); err != nil {
 		return nil, fmt.Errorf("salts: nonce: %w", err)
 	}
 
