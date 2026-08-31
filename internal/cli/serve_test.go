@@ -176,7 +176,13 @@ func newStack(t *testing.T) *stack {
 	}
 
 	return &stack{
-		routes:  serveRoutes(e, service, manager, secret, dir, app, public, com),
+		// The site configuration screens are deliberately absent from this
+		// fixture. They sit behind sign-in and site ownership rather than the
+		// access gate, because none of them reads a number: shields and path
+		// cleaning change what a still-collecting account counts, and export
+		// is the one thing a locked customer must always be able to do — the
+		// refusal page itself offers it alongside paying.
+		routes:  serveRoutes(e, service, manager, secret, dir, app, public, com, nil),
 		gate:    com.Gate,
 		key:     key,
 		dataDir: dir,

@@ -126,6 +126,46 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
 }
 
+// GuardSite wraps a handler owned by another package in this package's sign-in
+// check, and refuses a site the signed-in team does not own.
+//
+// It exists so that a screen living outside this package is not thereby outside
+// its authorisation. The site configuration screens edit which traffic a site
+// counts and prepare a full archive of it, and mounting them beside the signed
+// in application without this would make both reachable by anybody who can
+// reach the port.
+//
+// A request naming no site is let through on sign-in alone. That is what the
+// OAuth callback needs: Google redirects to one registered URI, so that request
+// carries its site in the state parameter and is authorised when the state is
+// verified rather than from the path.
+func (h *Handler) GuardSite(domainOf func(*http.Request) string, next http.Handler) http.Handler {
+	return http.HandlerFunc(h.require(func(w http.ResponseWriter, r *http.Request) {
+		domain := domainOf(r)
+		if domain == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		team, err := h.Store.TeamForUser(r.Context(), userFrom(r).ID)
+		if err != nil {
+			h.notFound(w, r)
+			return
+		}
+
+		// A site somebody else owns answers exactly as a site that does not
+		// exist. Telling the difference would turn this into a way to ask which
+		// domains are tracked here.
+		site, err := h.Store.SiteByDomain(r.Context(), domain)
+		if err != nil || site.AccountID != team.ID {
+			h.notFound(w, r)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	}))
+}
+
 // routes builds the route table.
 //
 // Method-qualified patterns mean a GET to a form-submission path is a 405

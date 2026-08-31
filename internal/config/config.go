@@ -158,7 +158,9 @@ type SMTP struct {
 	StartTLS bool
 }
 
-// GoogleOAuth is the client for Google sign-in.
+// GoogleOAuth is the one OAuth application every Google feature shares: signing
+// in with Google, importing history from Analytics, and reading Search Console
+// are three scopes on one client, not three clients.
 //
 // Both values being empty is a supported state, not an error: the credentials
 // are issued out of band, and a binary that refused to boot without them would
@@ -168,7 +170,9 @@ type GoogleOAuth struct {
 	ClientSecret string
 }
 
-// Configured reports whether Google sign-in can be offered.
+// Configured reports whether the Google features can be offered. A half-filled
+// client is unusable rather than partly usable — Google rejects a request
+// missing either value — so the features hide themselves instead.
 func (g GoogleOAuth) Configured() bool {
 	return g.ClientID != "" && g.ClientSecret != ""
 }

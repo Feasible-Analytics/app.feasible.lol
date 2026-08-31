@@ -58,6 +58,12 @@ type compileContext struct {
 	engagementNameID int64
 
 	sampleRate float64
+
+	// pathClean says at least one of the query's sites has path cleaning rules
+	// materialised. It is resolved once per query so that the grouper and the
+	// filter compiler cannot disagree about whether a page is the raw path or
+	// the cleaned one.
+	pathClean bool
 }
 
 // metric is one number a query can ask for.

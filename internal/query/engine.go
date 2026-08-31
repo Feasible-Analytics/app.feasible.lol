@@ -116,7 +116,7 @@ func (e *Engine) Run(ctx context.Context, q Query) (*Result, error) {
 		return nil, err
 	}
 
-	compile, err := e.compileContext(ctx, q.SampleRate)
+	compile, err := e.compileContext(ctx, &q)
 	if err != nil {
 		return nil, err
 	}
@@ -171,6 +171,11 @@ func (e *Engine) Run(ctx context.Context, q Query) (*Result, error) {
 	if q.Include.TotalRows {
 		result.Meta.TotalRows = &total
 	}
+
+	// The gaps are attached whether or not any rows came back. "Your imported
+	// history does not carry country, so none of it is in this number" is most
+	// of the answer when a filtered breakdown comes back looking thin.
+	result.Meta.ImportGaps = primary.importGaps()
 
 	if q.SampleRate < 1 {
 		for _, name := range q.Metrics {
@@ -313,8 +318,17 @@ func (e *Engine) attachComparison(ctx context.Context, q *Query, blueprint *plan
 // keys off. They are read once per query rather than per expression, and a name
 // this account has never recorded resolves to -1 so it matches no row — id 0 is
 // the empty string, and matching that would count every event with no name.
-func (e *Engine) compileContext(ctx context.Context, sampleRate float64) (compileContext, error) {
-	compile := compileContext{pageviewNameID: -1, engagementNameID: -1, sampleRate: sampleRate}
+func (e *Engine) compileContext(ctx context.Context, q *Query) (compileContext, error) {
+	compile := compileContext{pageviewNameID: -1, engagementNameID: -1, sampleRate: q.SampleRate}
+
+	// Path cleaning is one indexed existence check per query rather than a
+	// decision taken per row, and it is taken here so that every statement the
+	// query goes on to build reads the page dimension the same way.
+	cleaned, err := hasPathCleaning(ctx, e, q.SiteIDs)
+	if err != nil {
+		return compile, err
+	}
+	compile.pathClean = cleaned
 
 	rows, err := e.db.QueryContext(ctx,
 		"SELECT id, value FROM "+intern.EventName.Table()+" WHERE value IN (?, ?)",

@@ -1,0 +1,66 @@
+{{define "body"}}
+<h1>Shields</h1>
+<p class="lede">Traffic you do not want counted. Blocked addresses are checked in the ingest tier —
+the only place the raw IP still exists — and everything else is checked at the shard where these
+rules are live. A change here applies within about fifteen seconds.</p>
+
+<section class="card">
+  <h2>Your own traffic</h2>
+  <p class="hint">This is the address this page resolved you to, using exactly the same header
+  precedence the event endpoint uses. Blocking it here blocks the traffic you generate yourself.</p>
+
+  <div class="myip">
+    <span class="addr">{{.Viewer.Address}}</span>
+    <span class="pill">seen via {{.Viewer.Source}}</span>
+    {{if not .Viewer.Private}}
+    <form method="post" action="/settings/{{.Domain}}/shields/add" style="margin:0">
+      <input type="hidden" name="kind" value="ip">
+      <input type="hidden" name="value" value="{{.Viewer.Address}}">
+      <input type="hidden" name="note" value="My own traffic">
+      <button>Block my own traffic</button>
+    </form>
+    {{end}}
+  </div>
+
+  {{if .Viewer.Private}}
+  <div class="notice warn"><strong>This is not your public address.</strong> {{.Viewer.Warning}}</div>
+  {{end}}
+</section>
+
+{{range .Groups}}
+<section class="card">
+  <h2>{{.Title}}</h2>
+  <p class="hint">{{.Hint}}</p>
+
+  {{if .Rules}}
+  <table>
+    <thead><tr><th style="width:38%">Rule</th><th>Note</th><th style="width:80px"></th></tr></thead>
+    <tbody>
+    {{range .Rules}}
+      <tr>
+        <td><code>{{.Value}}</code></td>
+        <td class="muted">{{.Note}}</td>
+        <td>
+          <form method="post" action="/settings/{{$.Domain}}/shields/delete" style="margin:0">
+            <input type="hidden" name="id" value="{{.ID}}">
+            <button class="link">Remove</button>
+          </form>
+        </td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="muted small">No {{.Title}} rules yet.</p>
+  {{end}}
+
+  <form class="inline" method="post" action="/settings/{{$.Domain}}/shields/add">
+    <input type="hidden" name="kind" value="{{.Kind}}">
+    <input type="text" name="value" placeholder="{{.Placeholder}}" required>
+    <input type="text" name="note" placeholder="Note (optional)">
+    <button class="ghost">Add rule</button>
+    <span class="muted small">{{len .Rules}} of {{$.MaxRules}} used</span>
+  </form>
+</section>
+{{end}}
+{{end}}

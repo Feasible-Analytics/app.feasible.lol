@@ -1,0 +1,82 @@
+{{define "body"}}
+<h1>Path cleaning</h1>
+<p class="lede">Merge URLs that are really one page — an id in a path, a trailing slash — into the
+route you think in. Rules are applied at query time, so they fix the history you already have, and
+at ingest, so the path dimension stops growing. They are tried in order and the first match wins.</p>
+
+<section class="card">
+  <h2>Rules</h2>
+  <p class="hint">A pattern is a regular expression. A replacement may refer back to a capture group
+  with <code>$1</code>. Deleting every rule puts the original paths back: nothing stored is rewritten.</p>
+
+  <form method="post" action="/settings/{{.Domain}}/paths/save">
+    <table>
+      <thead><tr>
+        <th style="width:34px">#</th><th style="width:36%">Pattern</th>
+        <th style="width:24%">Replacement</th><th>Label</th><th style="width:70px">On</th>
+      </tr></thead>
+      <tbody>
+      {{range $i, $rule := .Rules}}
+        <tr>
+          <td class="muted">{{$rule.Position}}</td>
+          <td><input type="text" name="pattern" value="{{$rule.Pattern}}" style="width:100%"></td>
+          <td><input type="text" name="replacement" value="{{$rule.Replacement}}" style="width:100%"></td>
+          <td><input type="text" name="label" value="{{$rule.Label}}" style="width:100%"></td>
+          <td><input type="checkbox" name="enabled-{{$i}}" {{if $rule.Enabled}}checked{{end}}></td>
+        </tr>
+      {{end}}
+        <tr>
+          <td class="muted">{{len .Rules}}</td>
+          <td><input type="text" name="pattern" placeholder="^/users/[0-9a-f-]{36}" style="width:100%"></td>
+          <td><input type="text" name="replacement" placeholder="/users/:id" style="width:100%"></td>
+          <td><input type="text" name="label" placeholder="User pages" style="width:100%"></td>
+          <td><input type="checkbox" name="enabled-{{len .Rules}}" checked></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="inline">
+      <button name="action" value="preview" class="ghost">Preview</button>
+      <button name="action" value="save">Save rules</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Trailing slashes</h2>
+  <p class="hint">Most sites serve the same page at <code>/about</code> and <code>/about/</code>,
+  and the two are otherwise two permanent rows on every report. A few sites genuinely serve
+  different content at each, so this ships switched off rather than decided for you.</p>
+  <form method="post" action="/settings/{{.Domain}}/paths/trailing-slash">
+    <button class="ghost">{{if .TrailingSlashOn}}Stop merging trailing slashes{{else}}Merge trailing slashes{{end}}</button>
+  </form>
+</section>
+
+{{if .Previewed}}
+<section class="card">
+  <h2>Preview — {{len .Merges}} merge{{if ne (len .Merges) 1}}s{{end}}</h2>
+  <p class="hint">This is exactly what saving these rules would do, and how many stored rows each
+  merge moves. Nothing has been saved yet.</p>
+
+  {{if .Merges}}
+  <table>
+    <thead><tr><th style="width:46%">Becomes</th><th>Merged from</th><th class="num" style="width:90px">Rows</th></tr></thead>
+    <tbody>
+    {{range .Merges}}
+      <tr>
+        <td><code>{{.Target}}</code></td>
+        <td>
+          <span class="muted small">{{.Paths}} path{{if ne .Paths 1}}s{{end}}</span>
+          <ul class="merge">{{range .Sources}}<li>{{.Path}} <span class="muted">({{.Rows}})</span></li>{{end}}
+          {{if .Hidden}}<li class="muted">and {{.Hidden}} more</li>{{end}}</ul>
+        </td>
+        <td class="num">{{.Rows}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="muted small">These rules would not merge anything on this site.</p>
+  {{end}}
+</section>
+{{end}}
+{{end}}
