@@ -34,19 +34,39 @@ const DataDirName = "geoip"
 
 // mmdbRecord is the subset of a DB-IP or GeoIP2 record we decode. Decoding a
 // narrow struct rather than a map is what keeps a lookup allocation-light on a
-// path that runs once per event.
+// path that runs once per event: the reader skips every key the struct does not
+// name, so the nine other languages in a `names` map are never materialised.
+//
+// The shape has to satisfy both schemas because the file underneath us is a
+// licensing decision that has already changed once. DB-IP Lite names its
+// subdivisions and cities and gives them neither an ISO code nor a geoname id,
+// so a struct that asks only for `iso_code` and `geoname_id` decodes cleanly
+// and comes back empty on every event.
 type mmdbRecord struct {
 	Country struct {
 		ISOCode string `maxminddb:"iso_code"`
 	} `maxminddb:"country"`
 
-	Subdivisions []struct {
-		ISOCode string `maxminddb:"iso_code"`
-	} `maxminddb:"subdivisions"`
+	Subdivisions []mmdbSubdivision `maxminddb:"subdivisions"`
 
 	City struct {
-		GeoNameID uint `maxminddb:"geoname_id"`
+		Names mmdbNames `maxminddb:"names"`
 	} `maxminddb:"city"`
+}
+
+// mmdbSubdivision is one level of region. Both fields are read because the two
+// schemas disagree about which one exists, and a reader that works with either
+// file is what keeps swapping the database a file swap rather than a rewrite.
+type mmdbSubdivision struct {
+	ISOCode string    `maxminddb:"iso_code"`
+	Names   mmdbNames `maxminddb:"names"`
+}
+
+// mmdbNames is the localised-name map, narrowed to the one language we store.
+// English is not a preference so much as the only key every record in these
+// databases is guaranteed to have.
+type mmdbNames struct {
+	English string `maxminddb:"en"`
 }
 
 // MMDB reads locations from one or two memory-mapped databases. Both are
@@ -146,18 +166,33 @@ func (m *MMDB) Lookup(addr netip.Addr) Location {
 	}
 
 	location := Location{
-		Country:       record.Country.ISOCode,
-		CityGeonameID: int64(record.City.GeoNameID),
+		Country: record.Country.ISOCode,
+		City:    record.City.Names.English,
 	}
 
 	if len(record.Subdivisions) > 0 {
-		location.Subdivision1 = qualify(location.Country, record.Subdivisions[0].ISOCode)
+		location.Subdivision1 = region(location.Country, record.Subdivisions[0])
 	}
 	if len(record.Subdivisions) > 1 {
-		location.Subdivision2 = qualify(location.Country, record.Subdivisions[1].ISOCode)
+		location.Subdivision2 = region(location.Country, record.Subdivisions[1])
 	}
 
 	return location
+}
+
+// region picks the string a report groups by for one subdivision. The code is
+// preferred where a database supplies one because it is stable across releases
+// and languages, and the name is the fallback because DB-IP Lite supplies
+// nothing else — and an empty region column on every event is worse than a
+// region spelled the way a person would say it.
+func region(country string, subdivision mmdbSubdivision) string {
+	if subdivision.ISOCode != "" {
+		return qualify(country, subdivision.ISOCode)
+	}
+
+	// A name is not prefixed with the country. "England" already reads as a
+	// place, where "GB-England" reads as a code that no standard defines.
+	return subdivision.Names.English
 }
 
 // qualify turns a bare subdivision code into a full ISO-3166-2 code. The

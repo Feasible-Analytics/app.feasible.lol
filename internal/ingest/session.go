@@ -65,9 +65,9 @@ type Session struct {
 	UTMMedium   string
 	UTMCampaign string
 
-	Country       string
-	Region        string
-	CityGeonameID int64
+	Country string
+	Region  string
+	City    string
 
 	DeviceType     string
 	ScreenSize     string

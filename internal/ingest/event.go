@@ -69,9 +69,9 @@ type Event struct {
 	// what separates a paid click from an organic one.
 	ClickIDParam string
 
-	Country       string
-	Region        string
-	CityGeonameID int64
+	Country string
+	Region  string
+	City    string
 
 	DeviceType     string
 	ScreenSize     string

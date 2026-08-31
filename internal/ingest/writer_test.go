@@ -55,10 +55,65 @@ func writerEvent(accountID int64, name string, timestamp int64, path string) Eve
 	e.UserID = testUser + accountID
 	e.Browser = "Chrome"
 	e.Country = "US"
+	e.Region = "US-NY"
+	e.City = "Syracuse"
 	e.Source = "Google"
 	e.Channel = "Organic Search"
 
 	return e
+}
+
+// TestCityIsInternedLikeEveryOtherPlace pins the column the geolocation fix
+// depends on. The database we ship carries city names and no ids, so a city
+// that did not reach dim_city would be a permanently empty column on every
+// event — which is the state this replaced.
+func TestCityIsInternedLikeEveryOtherPlace(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+
+	if _, err := writer.Write(ctx, []Event{writerEvent(1, EventPageview, fixtureStart.Unix(), "/")}); err != nil {
+		t.Fatal(err)
+	}
+
+	account, err := manager.Open(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Read the name back through the dimension table on both fact tables, which
+	// is exactly what a report does.
+	for _, query := range []string{
+		"SELECT c.value FROM events e JOIN dim_city c ON c.id = e.city_id",
+		"SELECT c.value FROM sessions s JOIN dim_city c ON c.id = s.city_id",
+	} {
+		var city string
+		if err := account.Reader().QueryRow(query).Scan(&city); err != nil {
+			t.Fatalf("%s: %v", query, err)
+		}
+		if city != "Syracuse" {
+			t.Errorf("%s gave %q, want Syracuse", query, city)
+		}
+	}
+}
+
+// TestAnEventWithNoCityStoresTheEmptyID checks the other half of interning: a
+// visitor the database cannot place has to land on id 0 rather than on a NULL
+// that every GROUP BY would then have to handle specially.
+func TestAnEventWithNoCityStoresTheEmptyID(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+
+	unplaced := writerEvent(1, EventPageview, fixtureStart.Unix(), "/")
+	unplaced.Region = ""
+	unplaced.City = ""
+
+	if _, err := writer.Write(ctx, []Event{unplaced}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := countRows(t, manager, 1, "SELECT city_id FROM events"); got != 0 {
+		t.Fatalf("an unplaced visitor stored city_id %d, want 0", got)
+	}
 }
 
 // TestWriteIsIdempotent is the point of the dedupe table. The classic case is a
