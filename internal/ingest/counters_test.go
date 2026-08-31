@@ -76,6 +76,7 @@ func TestTruncationCountsEveryKind(t *testing.T) {
 		PropsDropped:        7,
 		PropNamesTruncated:  2,
 		PropValuesTruncated: 3,
+		PropsUnsupported:    4,
 		URLTruncated:        true,
 		EngagementClamped:   true,
 	})
@@ -86,11 +87,12 @@ func TestTruncationCountsEveryKind(t *testing.T) {
 	}
 
 	want := map[string]int64{
-		TruncationProps:      7,
-		TruncationPropName:   2,
-		TruncationPropValue:  3,
-		TruncationURL:        1,
-		TruncationEngagement: 1,
+		TruncationProps:           7,
+		TruncationPropName:        2,
+		TruncationPropValue:       3,
+		TruncationPropUnsupported: 4,
+		TruncationURL:             1,
+		TruncationEngagement:      1,
 	}
 
 	for reason, wanted := range want {

@@ -82,7 +82,7 @@ func TestFlushGroupsByShard(t *testing.T) {
 
 	ctx := context.Background()
 	for _, shard := range []int{0, 1, 0, 1, 2} {
-		buffer.Add(ctx, bufferEvent(shard))
+		buffer.Add(bufferEvent(shard))
 	}
 
 	if err := buffer.Flush(ctx); err != nil {
@@ -113,9 +113,8 @@ func TestFlushOnSize(t *testing.T) {
 	transport := &recording{}
 	buffer := NewBuffer(transport, 3, time.Hour)
 
-	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		buffer.Add(ctx, bufferEvent(0))
+		buffer.Add(bufferEvent(0))
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -142,7 +141,7 @@ func TestFlushOnInterval(t *testing.T) {
 
 	go buffer.Run(ctx)
 
-	buffer.Add(ctx, bufferEvent(0))
+	buffer.Add(bufferEvent(0))
 
 	deadline := time.Now().Add(2 * time.Second)
 	for transport.count() == 0 && time.Now().Before(deadline) {
@@ -168,7 +167,7 @@ func TestFinalFlushOnShutdown(t *testing.T) {
 		close(done)
 	}()
 
-	buffer.Add(ctx, bufferEvent(0))
+	buffer.Add(bufferEvent(0))
 	cancel()
 
 	select {
@@ -194,7 +193,7 @@ func TestUncommittedEventsAreRequeued(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		buffer.Add(ctx, bufferEvent(0))
+		buffer.Add(bufferEvent(0))
 	}
 
 	if err := buffer.Flush(ctx); err == nil {
@@ -228,7 +227,7 @@ func TestFlushErrorIsReported(t *testing.T) {
 	buffer.OnError = func(err error) { reported = err }
 
 	ctx := context.Background()
-	buffer.Add(ctx, bufferEvent(0))
+	buffer.Add(bufferEvent(0))
 
 	if err := buffer.Flush(ctx); err == nil {
 		t.Fatal("the flush reported success")

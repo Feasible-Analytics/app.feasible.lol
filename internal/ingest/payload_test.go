@@ -263,6 +263,63 @@ func TestPropValueTypes(t *testing.T) {
 	}
 }
 
+// TestUnstorablePropValuesAreCounted is the same promise as the thirty-property
+// cap, in another guise: an object, an array or a null is sent, nothing is
+// stored for it, and a customer looking for that filter value has to be able to
+// find out why rather than watch it not appear.
+func TestUnstorablePropValuesAreCounted(t *testing.T) {
+	props, truncation, err := ParseProps([]byte(`{"kept":"text","obj":{"a":1},"arr":[1,2],"nil":null}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(props) != 1 {
+		t.Fatalf("stored %d properties, want only the scalar one", len(props))
+	}
+	if truncation.PropsUnsupported != 3 {
+		t.Fatalf("counted %d unstorable properties, want 3 — the rest vanished silently", truncation.PropsUnsupported)
+	}
+	if !truncation.Any() {
+		t.Fatal("Any() says nothing was cut, so the handler never records the count")
+	}
+}
+
+// TestScreenSizeBuckets checks the viewport width becomes one of four buckets.
+// Storing raw pixel widths would grow a dimension row per device and answer no
+// question anybody asks; the boundaries are the breakpoints layouts are already
+// written against.
+func TestScreenSizeBuckets(t *testing.T) {
+	cases := []struct {
+		body string
+		want string
+	}{
+		{`{"n":"pageview","u":"https://example.com/","d":"example.com","w":390}`, ScreenMobile},
+		{`{"n":"pageview","u":"https://example.com/","d":"example.com","w":575}`, ScreenMobile},
+		{`{"n":"pageview","u":"https://example.com/","d":"example.com","w":576}`, ScreenTablet},
+		{`{"n":"pageview","u":"https://example.com/","d":"example.com","w":991}`, ScreenTablet},
+		{`{"n":"pageview","u":"https://example.com/","d":"example.com","w":992}`, ScreenLaptop},
+		{`{"n":"pageview","u":"https://example.com/","d":"example.com","w":1440}`, ScreenDesktop},
+		{`{"n":"pageview","u":"https://example.com/","d":"example.com","w":2560}`, ScreenDesktop},
+
+		// Nothing usable is no bucket rather than a made-up one.
+		{`{"n":"pageview","u":"https://example.com/","d":"example.com"}`, ""},
+		{`{"n":"pageview","u":"https://example.com/","d":"example.com","w":0}`, ""},
+		{`{"n":"pageview","u":"https://example.com/","d":"example.com","w":-800}`, ""},
+		{`{"n":"pageview","u":"https://example.com/","d":"example.com","w":999999}`, ""},
+	}
+
+	for _, test := range cases {
+		payload, err := ParsePayload([]byte(test.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if got := payload.ScreenSize(); got != test.want {
+			t.Errorf("%s: screen size = %q, want %q", test.body, got, test.want)
+		}
+	}
+}
+
 // TestRevenueIsMinorUnits checks money never becomes a float. A currency amount
 // in a float is a rounding error waiting for a large enough report.
 func TestRevenueIsMinorUnits(t *testing.T) {

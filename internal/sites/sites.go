@@ -97,7 +97,7 @@ func (c *Cache) Refresh(ctx context.Context) error {
 			return fmt.Errorf("sites: refresh: %w", err)
 		}
 
-		byDomain[normalise(site.Domain)] = site
+		byDomain[Normalise(site.Domain)] = site
 	}
 
 	if err := rows.Err(); err != nil {
@@ -113,7 +113,7 @@ func (c *Cache) Refresh(ctx context.Context) error {
 // deliberately trivial: an atomic load and a map read, with no locks, no
 // allocation and no I/O.
 func (c *Cache) Lookup(domain string) (Site, bool) {
-	site, ok := c.snap.Load().byDomain[normalise(domain)]
+	site, ok := c.snap.Load().byDomain[Normalise(domain)]
 
 	return site, ok
 }
@@ -128,7 +128,7 @@ func (c *Cache) Set(site Site) {
 	for domain, existing := range current.byDomain {
 		byDomain[domain] = existing
 	}
-	byDomain[normalise(site.Domain)] = site
+	byDomain[Normalise(site.Domain)] = site
 
 	c.snap.Store(&snapshot{byDomain: byDomain, builtAt: current.builtAt})
 }
@@ -179,11 +179,16 @@ func (c *Cache) Run(ctx context.Context, onError func(error)) {
 	}
 }
 
-// normalise puts a domain into the one form the map is keyed by. A tracker
+// Normalise puts a domain into the one form the map is keyed by. A tracker
 // snippet that says "WWW.Example.com" and a site registered as "example.com"
 // are the same site, and treating them as two is a silent, total data loss for
 // whichever one is not in the map.
-func normalise(domain string) string {
+//
+// It is exported because the visitor fingerprint has to hash this exact string
+// rather than the raw payload field. Hashing the raw one gives a site whose
+// pages disagree about the spelling of their own domain a different visitor id
+// per spelling, and no later job can put those visitors back together.
+func Normalise(domain string) string {
 	domain = strings.ToLower(strings.TrimSpace(domain))
 	domain = strings.TrimSuffix(domain, ".")
 	domain = strings.TrimPrefix(domain, "www.")

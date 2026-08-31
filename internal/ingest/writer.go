@@ -67,6 +67,13 @@ type accountLock struct {
 	// everything else.
 	pending map[uuid.UUID]int64
 
+	// deferred holds rows for engagement pings that were adopted out of the
+	// orphan map by a batch whose transaction then failed. Adoption is not
+	// undoable — the pings are gone from the cache and were never in the
+	// batch — so the rows are carried here until a transaction commits them.
+	// Without it their events rows are never written at all.
+	deferred []eventRow
+
 	lastPruned time.Time
 }
 
@@ -183,11 +190,13 @@ func (w *Writer) writeAccount(ctx context.Context, accountID int64, events []Eve
 	committed := make([]uuid.UUID, 0, len(events))
 	committed = append(committed, duplicates...)
 
-	if len(fresh) == 0 {
-		return committed, nil
-	}
+	// Rows carried over from a failed commit go first: they are the oldest
+	// events in the batch and nothing else will ever bring them back.
+	carried := state.deferred
+	rows := make([]eventRow, 0, len(fresh)+len(carried))
+	rows = append(rows, carried...)
 
-	rows := make([]eventRow, 0, len(fresh))
+	var adopted []eventRow
 
 	for i := range fresh {
 		event := &fresh[i]
@@ -214,12 +223,20 @@ func (w *Writer) writeAccount(ctx context.Context, accountID int64, events []Eve
 		// a retry delivered the batch in.
 		for _, ping := range revived {
 			state.pending[ping.UUID] = session.ID
-			rows = append(rows, eventRow{event: ping, sessionID: session.ID})
+			row := eventRow{event: ping, sessionID: session.ID}
+			rows = append(rows, row)
+			adopted = append(adopted, row)
 		}
 	}
 
 	dirty := w.sessions.TakeDirty(accountID)
 	merges := w.sessions.TakeMerges(accountID)
+
+	// Nothing to do is the common shape of a retried batch the shard has
+	// already seen, and it must not cost a transaction.
+	if len(rows) == 0 && len(dirty) == 0 && len(merges) == 0 {
+		return committed, nil
+	}
 
 	// Interning may insert a dimension row, so it has to finish before the
 	// transaction takes the single write connection.
@@ -232,9 +249,18 @@ func (w *Writer) writeAccount(ctx context.Context, accountID int64, events []Eve
 		// The fold already happened in memory. Putting the sessions back in the
 		// dirty set and keeping the pending ids is what makes the retry write
 		// the same rows rather than folding them a second time.
-		w.sessions.Redirty(dirty)
+		w.sessions.Redirty(accountID, dirty)
+
+		// The pings adopted by this attempt are no longer in the orphan map and
+		// are not in the batch the sender will retry, so this is the only place
+		// they still exist. Holding them is what makes adoption survive a
+		// rollback instead of losing their rows for good.
+		state.deferred = append(carried, adopted...)
+
 		return committed, err
 	}
+
+	state.deferred = nil
 
 	for i := range rows {
 		delete(state.pending, rows[i].event.UUID)
@@ -406,7 +432,7 @@ func insertEvent(ctx context.Context, tx *sql.Tx, row eventRow, ids *dimensionID
 			site_id, timestamp, name_id, user_id, session_id,
 			hostname_id, pathname_id, page_title_id,
 			referrer_id, source_id, channel_id, utm_source_id, utm_medium_id, utm_campaign_id,
-			country_id, region_id, city_geoname_id,
+			country_id, region_id, city_id,
 			device_type_id, screen_size_id, browser_id, browser_version_id,
 			os_id, os_version_id, language_id,
 			scroll_depth, engagement_time, bot_reason_id, is_imported, has_details
@@ -415,7 +441,7 @@ func insertEvent(ctx context.Context, tx *sql.Tx, row eventRow, ids *dimensionID
 		ids.of(intern.Hostname, event.Hostname), ids.of(intern.Pathname, event.Pathname), ids.of(intern.PageTitle, event.PageTitle),
 		ids.of(intern.Referrer, event.Referrer), ids.of(intern.Source, event.Source), ids.of(intern.Channel, event.Channel),
 		ids.of(intern.UTMSource, event.UTMSource), ids.of(intern.UTMMedium, event.UTMMedium), ids.of(intern.UTMCampaign, event.UTMCampaign),
-		ids.of(intern.Country, event.Country), ids.of(intern.Region, event.Region), event.CityGeonameID,
+		ids.of(intern.Country, event.Country), ids.of(intern.Region, event.Region), ids.of(intern.City, event.City),
 		ids.of(intern.DeviceType, event.DeviceType), ids.of(intern.ScreenSize, event.ScreenSize),
 		ids.of(intern.Browser, event.Browser), ids.of(intern.BrowserVersion, event.BrowserVersion),
 		ids.of(intern.OS, event.OS), ids.of(intern.OSVersion, event.OSVersion), ids.of(intern.Language, event.Language),
@@ -480,7 +506,7 @@ func upsertSession(ctx context.Context, tx *sql.Tx, session *Session, ids *dimen
 			pageviews, events, entry_page_id, exit_page_id, entry_hostname_id, exit_hostname_id,
 			entry_props,
 			referrer_id, source_id, channel_id, utm_source_id, utm_medium_id, utm_campaign_id,
-			country_id, region_id, city_geoname_id,
+			country_id, region_id, city_id,
 			device_type_id, screen_size_id, browser_id, browser_version_id,
 			os_id, os_version_id, language_id, is_imported
 		) VALUES (?,?,?,?,?,?,?, ?,?,?,?,?,?, ?, ?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?,?)
@@ -504,7 +530,7 @@ func upsertSession(ctx context.Context, tx *sql.Tx, session *Session, ids *dimen
 			utm_campaign_id   = excluded.utm_campaign_id,
 			country_id        = excluded.country_id,
 			region_id         = excluded.region_id,
-			city_geoname_id   = excluded.city_geoname_id,
+			city_id           = excluded.city_id,
 			device_type_id    = excluded.device_type_id,
 			screen_size_id    = excluded.screen_size_id,
 			browser_id        = excluded.browser_id,
@@ -520,7 +546,7 @@ func upsertSession(ctx context.Context, tx *sql.Tx, session *Session, ids *dimen
 		props,
 		ids.of(intern.Referrer, session.Referrer), ids.of(intern.Source, session.Source), ids.of(intern.Channel, session.Channel),
 		ids.of(intern.UTMSource, session.UTMSource), ids.of(intern.UTMMedium, session.UTMMedium), ids.of(intern.UTMCampaign, session.UTMCampaign),
-		ids.of(intern.Country, session.Country), ids.of(intern.Region, session.Region), session.CityGeonameID,
+		ids.of(intern.Country, session.Country), ids.of(intern.Region, session.Region), ids.of(intern.City, session.City),
 		ids.of(intern.DeviceType, session.DeviceType), ids.of(intern.ScreenSize, session.ScreenSize),
 		ids.of(intern.Browser, session.Browser), ids.of(intern.BrowserVersion, session.BrowserVersion),
 		ids.of(intern.OS, session.OS), ids.of(intern.OSVersion, session.OSVersion), ids.of(intern.Language, session.Language),

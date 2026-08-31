@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -81,10 +82,16 @@ type Debug struct {
 	ClientIPSource string `json:"client_ip_source"`
 	TrustedProxy   bool   `json:"trusted_proxy_configured"`
 
-	Domain    string `json:"domain"`
-	SiteID    int64  `json:"site_id"`
-	AccountID int64  `json:"account_id"`
-	Shard     int    `json:"shard"`
+	Domain string `json:"domain"`
+
+	// SiteDomain is the normalised domain the event routed on, which is also
+	// the third fingerprint input. It is here so that "why do I have twice the
+	// visitors I should" can be answered by reading two curls side by side.
+	SiteDomain string `json:"site_domain"`
+
+	SiteID    int64 `json:"site_id"`
+	AccountID int64 `json:"account_id"`
+	Shard     int   `json:"shard"`
 
 	EventName string `json:"event_name"`
 	Timestamp int64  `json:"timestamp"`
@@ -108,12 +115,13 @@ type Debug struct {
 	UTMTerm      string `json:"utm_term"`
 	ClickIDParam string `json:"click_id_param"`
 
-	Country       string `json:"country"`
-	Region        string `json:"region"`
-	Subdivision2  string `json:"subdivision2"`
-	CityGeonameID int64  `json:"city_geoname_id"`
+	Country      string `json:"country"`
+	Region       string `json:"region"`
+	Subdivision2 string `json:"subdivision2"`
+	City         string `json:"city"`
 
 	DeviceType     string `json:"device_type"`
+	ScreenSize     string `json:"screen_size"`
 	Browser        string `json:"browser"`
 	BrowserVersion string `json:"browser_version"`
 	OS             string `json:"os"`
@@ -143,7 +151,9 @@ type Result struct {
 //
 //  2. resolve the client IP
 //  3. bot filter — user agent, datacentre ranges, referrer spam
-//  4. build the debug view
+//  4. build the debug view, which is filled as each step below produces a
+//     field rather than only on the way out — a debug request has to answer
+//     "why did this not count" with everything derived up to the drop
 //  5. IP shield rules — here, because it is the last place the raw IP exists
 //  6. parse the user agent
 //  7. geolocate, then discard the IP
@@ -159,6 +169,28 @@ type Result struct {
 // stays where it is current.
 func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload) (Result, error) {
 	var result Result
+
+	// A debug request keeps deriving past a drop. The one curl a customer runs
+	// is about an event that did not count, so answering it with the reason and
+	// nothing else is answering the easy half of the question. Ordinary traffic
+	// still stops at the first drop: a stale snippet pointed at a domain we do
+	// not serve must not cost a fingerprint and a geolocation per event.
+	debug := IsDebugRequest(r)
+
+	// stop records the first drop reason and reports whether derivation should
+	// end here.
+	stop := func(reason string) bool {
+		if result.DropReason == "" {
+			result.DropReason = reason
+			result.Debug.DropReason = reason
+		}
+
+		// Whatever was cut before the drop is part of the answer too — an event
+		// can be dropped *and* have carried more than we could keep.
+		result.Debug.Truncation = result.Truncation
+
+		return !debug
+	}
 
 	// Step 2. The single highest-leverage configuration in the system, and the
 	// one that fails silently behind a 202 in every direction.
@@ -187,8 +219,12 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 	// internal link from an acquisition.
 	pageURL, hostname, pathname, params, urlTruncated := parseEventURL(payload.URL)
 	result.Truncation.URLTruncated = urlTruncated
+	result.Debug.Hostname = hostname
+	result.Debug.Pathname = pathname
+	result.Debug.PageTitle = strings.TrimSpace(payload.Title)
 
 	source := referrer.Parse(referrerInput, hostname)
+	result.Debug.Referrer = source.Referrer
 
 	// Step 3. Classification, not deletion: the row is still written with its
 	// reason attached, and the customer gets a toggle. Deleting it means a
@@ -198,9 +234,7 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 	result.Debug.BotReason = botReason
 
 	site, known := p.Sites.Lookup(payload.Domain)
-	if !known {
-		result.DropReason = ReasonUnknownSite
-		result.Debug.DropReason = result.DropReason
+	if !known && stop(ReasonUnknownSite) {
 		return result, nil
 	}
 
@@ -212,27 +246,21 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 	// A lapsed account keeps sending until its grace period runs out, because
 	// dropping a paying customer's traffic the instant a card fails loses data
 	// they can never get back.
-	if site.AcceptTrafficUntil > 0 && now.Unix() > site.AcceptTrafficUntil {
-		result.DropReason = ReasonAccountDormant
-		result.Debug.DropReason = result.DropReason
+	if site.AcceptTrafficUntil > 0 && now.Unix() > site.AcceptTrafficUntil && stop(ReasonAccountDormant) {
 		return result, nil
 	}
 
+	// Not in the routing map means drop, by design: shards are the source of
+	// truth for what they own, and forwarding to a shard that does not hold the
+	// account would write the data into the wrong file.
 	shard, routed := p.Shards.Shard(site.AccountID)
-	if !routed {
-		// Not in the routing map means drop, by design: shards are the source
-		// of truth for what they own, and forwarding to a shard that does not
-		// hold the account would write the data into the wrong file.
-		result.DropReason = ReasonSiteDeleted
-		result.Debug.DropReason = result.DropReason
+	if !routed && stop(ReasonSiteDeleted) {
 		return result, nil
 	}
 	result.Debug.Shard = shard
 
 	// Step 5. The customer's blocked-IP list has to run here and nowhere else.
-	if p.Shield != nil && p.Shield.Blocked(site.ID, client.Addr) {
-		result.DropReason = ReasonShieldIP
-		result.Debug.DropReason = result.DropReason
+	if p.Shield != nil && p.Shield.Blocked(site.ID, client.Addr) && stop(ReasonShieldIP) {
 		return result, nil
 	}
 
@@ -249,27 +277,52 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 	// domain as the fourth term.
 	pair, err := p.Salts.Pair(ctx)
 	if err != nil {
+		// Without a salt there is no visitor id, so there is no event. It is
+		// our failure rather than the sender's, and it is counted as ours.
+		stop(ReasonInternalError)
 		return result, err
 	}
 
+	// The third term is the domain the routing map is keyed by, never the raw
+	// "d" field. A site whose pages disagree about their own spelling —
+	// "Example.com" on one, "www.example.com" on another — resolves to one site
+	// either way, and hashing the raw field would give each spelling its own
+	// visitor id with no way to put them back together afterwards.
+	siteDomain := sites.Normalise(payload.Domain)
+	if known {
+		siteDomain = sites.Normalise(site.Domain)
+	}
+
 	rootDomain := RootDomain(hostname)
-	userID := Fingerprint(pair.Current, rawUserAgent, clientIP, payload.Domain, rootDomain)
+	userID := Fingerprint(pair.Current, rawUserAgent, clientIP, siteDomain, rootDomain)
 
 	var previousUserID int64
 	if len(pair.Previous) == salts.Size {
-		previousUserID = Fingerprint(pair.Previous, rawUserAgent, clientIP, payload.Domain, rootDomain)
+		previousUserID = Fingerprint(pair.Previous, rawUserAgent, clientIP, siteDomain, rootDomain)
 	}
 
+	result.Debug.SiteDomain = siteDomain
+	result.Debug.UserID = userID
+	result.Debug.PreviousUserID = previousUserID
+	result.Debug.RootDomain = rootDomain
+	result.Debug.SaltDay = pair.Day
+
+	// A props object we cannot read is a drop with a reason rather than a 4xx.
+	// The sender is a beacon: a status code it cannot act on produces a retry
+	// that fails in exactly the same way.
 	props, propTruncation, err := ParseProps(payload.Props)
 	if err != nil {
+		stop(ReasonInvalidPayload)
 		return result, err
 	}
 	result.Truncation.PropsDropped = propTruncation.PropsDropped
 	result.Truncation.PropNamesTruncated = propTruncation.PropNamesTruncated
 	result.Truncation.PropValuesTruncated = propTruncation.PropValuesTruncated
+	result.Truncation.PropsUnsupported = propTruncation.PropsUnsupported
 
 	revenue, err := ParseRevenue(payload.Revenue)
 	if err != nil {
+		stop(ReasonInvalidPayload)
 		return result, err
 	}
 
@@ -305,11 +358,12 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 		UTMTerm:      acquisition.utmTerm,
 		ClickIDParam: acquisition.clickID,
 
-		Country:       location.Country,
-		Region:        location.Subdivision1,
-		CityGeonameID: location.CityGeonameID,
+		Country: location.Country,
+		Region:  location.Subdivision1,
+		City:    location.City,
 
 		DeviceType:     agent.Device,
+		ScreenSize:     payload.ScreenSize(),
 		Browser:        agent.Browser,
 		BrowserVersion: agent.BrowserVersion,
 		OS:             agent.OS,
@@ -488,15 +542,72 @@ func parseEventURL(raw string) (parsed *url.URL, hostname, pathname string, para
 	// The limit is on the path, excluding the domain and the query string,
 	// because the path is what grows without bound.
 	if len(pathname) > MaxURLLength {
-		pathname = pathname[:MaxURLLength]
+		pathname = truncatePath(pathname, MaxURLLength)
 		truncated = true
 	}
 
 	// url.Query already URI-decodes, which is what makes
 	// utm_source=Android%20App display as "Android App".
-	params = parsed.Query()
+	params = retainAcquisitionParams(parsed.Query())
 
 	return parsed, hostname, pathname, params, truncated
+}
+
+// truncatePath cuts an escaped path to a byte limit without leaving half of
+// something behind. Cutting mid-"%C3%BC" leaves a path ending in "%C" that no
+// decoder can read and that groups as its own page on every report, and cutting
+// mid-rune does the same to a path a browser sent unescaped.
+func truncatePath(path string, limit int) string {
+	if len(path) <= limit {
+		return path
+	}
+
+	cut := path[:limit]
+
+	// A percent escape is three bytes. If one started in the last two, the
+	// whole escape goes rather than its first byte or two.
+	for i := len(cut) - 1; i >= 0 && i >= len(cut)-2; i-- {
+		if cut[i] == '%' {
+			cut = cut[:i]
+			break
+		}
+	}
+
+	// Whatever is left has to end on a rune boundary too, for the same reason.
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+
+	return cut
+}
+
+// retainAcquisitionParams drops every query parameter that is not one we act
+// on. It is what makes the closed list in AcquisitionParams real rather than a
+// comment: nothing downstream can read a parameter the list does not name, so a
+// session token or an email address in a query string cannot reach an event by
+// somebody adding one lookup.
+func retainAcquisitionParams(values url.Values) url.Values {
+	if len(values) == 0 {
+		return values
+	}
+
+	kept := make(url.Values, len(AcquisitionParams)+len(clickIDParams))
+
+	for _, name := range AcquisitionParams {
+		if value, ok := values[name]; ok {
+			kept[name] = value
+		}
+	}
+
+	// The click id parameters are kept for their *name* only — the channel
+	// rules read whether one was present, and the value is never stored.
+	for _, name := range clickIDParams {
+		if value, ok := values[name]; ok {
+			kept[name] = value
+		}
+	}
+
+	return kept
 }
 
 // primaryLanguage takes the first tag from an Accept-Language header. The
@@ -559,9 +670,10 @@ func fillDebug(debug *Debug, event *Event, saltDay int64, rootDomain, subdivisio
 	debug.Country = event.Country
 	debug.Region = event.Region
 	debug.Subdivision2 = subdivision2
-	debug.CityGeonameID = event.CityGeonameID
+	debug.City = event.City
 
 	debug.DeviceType = event.DeviceType
+	debug.ScreenSize = event.ScreenSize
 	debug.Browser = event.Browser
 	debug.BrowserVersion = event.BrowserVersion
 	debug.OS = event.OS

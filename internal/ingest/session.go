@@ -26,6 +26,13 @@ const sessionTimeoutSeconds = int64(SessionTimeout / time.Second)
 // competes with ingestion for the shard locks.
 const SweepInterval = 10 * time.Second
 
+// DirtyGrace is how long past its last event a session whose rows have never
+// been written is kept. A writer wedged for an hour is not going to save it,
+// and keeping every dirty session forever turns one stuck shard into a process
+// that grows until it is killed — which loses the whole cache rather than one
+// visit.
+const DirtyGrace = time.Hour
+
 // sessionShards is how many independently locked buckets the cache has. It is a
 // power of two so the bucket is a mask rather than a modulo, and 64 is enough
 // that lock contention disappears well past the throughput one box can reach.
@@ -65,9 +72,9 @@ type Session struct {
 	UTMMedium   string
 	UTMCampaign string
 
-	Country       string
-	Region        string
-	CityGeonameID int64
+	Country string
+	Region  string
+	City    string
 
 	DeviceType     string
 	ScreenSize     string
@@ -174,6 +181,17 @@ type SessionCache struct {
 	// so that draining it does not have to walk or lock every shard.
 	mergeMu sync.Mutex
 	merges  []Merge
+
+	// OnOrphanExpired is called for every engagement ping whose visit never
+	// arrived. The ping is a genuine drop at that point, and by then the
+	// response went out half an hour ago — so this callback is the only way the
+	// drop can be counted and told to anyone at all.
+	OnOrphanExpired func(*Event)
+
+	// OnSessionAbandoned is called for a dirty session evicted long after its
+	// last event. It means a write never landed and its last few events are
+	// gone, which is data loss and has to be said out loud.
+	OnSessionAbandoned func(*Session)
 }
 
 // sessionBucket is one independently locked slice of the cache. Each key maps
@@ -306,8 +324,20 @@ func (c *SessionCache) Apply(event *Event) (*Session, bool, []*Event) {
 	session.fold(event)
 
 	revived := bucket.adopt(key, session)
+
+	// Pings parked under the pre-rotation fingerprint live in that key's own
+	// bucket, which is a different shard 63 times in 64. Adopting them from
+	// this one finds nothing and drops every engagement ping in flight across
+	// 00:00 UTC, silently.
 	if found != key {
-		revived = append(revived, bucket.adopt(found, session)...)
+		previousBucket := c.bucket(found)
+		if previousBucket != bucket {
+			previousBucket.mu.Lock()
+			revived = append(revived, previousBucket.adopt(found, session)...)
+			previousBucket.mu.Unlock()
+		} else {
+			revived = append(revived, previousBucket.adopt(found, session)...)
+		}
 	}
 
 	bucket.mu.Unlock()
@@ -412,29 +442,25 @@ func (b *sessionBucket) claim(key sessionKey, timestamp int64) (*Session, []int6
 		return winner, nil
 	}
 
-	// Absorbing can widen the winner's window, which can bring a further
-	// session into reach, so this repeats until nothing more is bridged.
+	// One pass is exhaustive. What a session is bridged by is the *event's*
+	// window, and absorbing changes only the winner's — so the set of sessions
+	// this event bridges is fixed before the first absorb and cannot grow
+	// while they are being folded together.
 	var absorbed []int64
 
-	for changed := true; changed; {
-		changed = false
-		kept := live[:0]
+	kept := live[:0]
 
-		for _, candidate := range live {
-			if candidate == winner || !candidate.covers(timestamp) {
-				kept = append(kept, candidate)
-				continue
-			}
-
-			winner.absorb(candidate)
-			absorbed = append(absorbed, candidate.ID)
-			changed = true
+	for _, candidate := range live {
+		if candidate == winner || !candidate.covers(timestamp) {
+			kept = append(kept, candidate)
+			continue
 		}
 
-		live = kept
+		winner.absorb(candidate)
+		absorbed = append(absorbed, candidate.ID)
 	}
 
-	b.sessions[key] = live
+	b.sessions[key] = kept
 
 	return winner, absorbed
 }
@@ -513,10 +539,15 @@ func (c *SessionCache) TakeDirty(accountID int64) []*Session {
 	return dirty
 }
 
-// Redirty puts sessions back in the dirty set after a failed write. Without it
-// a transaction that rolled back would leave the cache believing rows are on
-// disk that never landed, and the next flush would skip them forever.
-func (c *SessionCache) Redirty(sessions []*Session) {
+// Redirty puts one account's sessions back in the dirty set after a failed
+// write. Without it a transaction that rolled back would leave the cache
+// believing rows are on disk that never landed, and the next flush would skip
+// them forever.
+//
+// The account is part of the match, not context: session ids are allocated per
+// account, so id 7 exists in every account database and matching on the id
+// alone would dirty an unrelated customer's row on every failed write.
+func (c *SessionCache) Redirty(accountID int64, sessions []*Session) {
 	if len(sessions) == 0 {
 		return
 	}
@@ -532,6 +563,9 @@ func (c *SessionCache) Redirty(sessions []*Session) {
 		bucket.mu.Lock()
 		for _, live := range bucket.sessions {
 			for _, session := range live {
+				if session.AccountID != accountID {
+					continue
+				}
 				if _, ok := wanted[session.ID]; ok {
 					session.Dirty = true
 				}
@@ -546,6 +580,14 @@ func (c *SessionCache) Redirty(sessions []*Session) {
 // definition, so nothing else would ever notice it.
 func (c *SessionCache) Sweep(now int64) int {
 	removed := 0
+
+	// What expired is reported after every bucket is unlocked. The callbacks
+	// take locks of their own — a counter, a log — and calling them under a
+	// shard lock would put the sweep in the way of live ingestion.
+	var (
+		expired   []*Event
+		abandoned []*Session
+	)
 
 	for i := range c.shards {
 		bucket := &c.shards[i]
@@ -562,6 +604,7 @@ func (c *SessionCache) Sweep(now int64) int {
 					kept = append(kept, orphan)
 					continue
 				}
+				expired = append(expired, orphan)
 				removed++
 			}
 
@@ -576,12 +619,23 @@ func (c *SessionCache) Sweep(now int64) int {
 			kept := live[:0]
 
 			for _, session := range live {
-				// A dirty session is kept regardless of age: dropping it would
-				// lose the last few events of a visit that has not been
-				// written yet.
-				if session.Dirty || now-session.LastSeenAt <= sessionTimeoutSeconds {
+				if now-session.LastSeenAt <= sessionTimeoutSeconds {
 					kept = append(kept, session)
 					continue
+				}
+
+				// A dirty session is held past the timeout, because dropping it
+				// would lose the last few events of a visit that has not been
+				// written yet. It is not held forever: past the grace period the
+				// write is not coming, and an unbounded cache costs every other
+				// visit in memory rather than this one.
+				if session.Dirty && now-session.LastSeenAt <= sessionTimeoutSeconds+int64(DirtyGrace/time.Second) {
+					kept = append(kept, session)
+					continue
+				}
+
+				if session.Dirty {
+					abandoned = append(abandoned, session)
 				}
 				removed++
 			}
@@ -593,6 +647,18 @@ func (c *SessionCache) Sweep(now int64) int {
 			bucket.sessions[key] = kept
 		}
 		bucket.mu.Unlock()
+	}
+
+	if c.OnOrphanExpired != nil {
+		for _, orphan := range expired {
+			c.OnOrphanExpired(orphan)
+		}
+	}
+
+	if c.OnSessionAbandoned != nil {
+		for _, session := range abandoned {
+			c.OnSessionAbandoned(session)
+		}
 	}
 
 	return removed

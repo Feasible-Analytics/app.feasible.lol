@@ -55,10 +55,65 @@ func writerEvent(accountID int64, name string, timestamp int64, path string) Eve
 	e.UserID = testUser + accountID
 	e.Browser = "Chrome"
 	e.Country = "US"
+	e.Region = "US-NY"
+	e.City = "Syracuse"
 	e.Source = "Google"
 	e.Channel = "Organic Search"
 
 	return e
+}
+
+// TestCityIsInternedLikeEveryOtherPlace pins the column the geolocation fix
+// depends on. The database we ship carries city names and no ids, so a city
+// that did not reach dim_city would be a permanently empty column on every
+// event — which is the state this replaced.
+func TestCityIsInternedLikeEveryOtherPlace(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+
+	if _, err := writer.Write(ctx, []Event{writerEvent(1, EventPageview, fixtureStart.Unix(), "/")}); err != nil {
+		t.Fatal(err)
+	}
+
+	account, err := manager.Open(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Read the name back through the dimension table on both fact tables, which
+	// is exactly what a report does.
+	for _, query := range []string{
+		"SELECT c.value FROM events e JOIN dim_city c ON c.id = e.city_id",
+		"SELECT c.value FROM sessions s JOIN dim_city c ON c.id = s.city_id",
+	} {
+		var city string
+		if err := account.Reader().QueryRow(query).Scan(&city); err != nil {
+			t.Fatalf("%s: %v", query, err)
+		}
+		if city != "Syracuse" {
+			t.Errorf("%s gave %q, want Syracuse", query, city)
+		}
+	}
+}
+
+// TestAnEventWithNoCityStoresTheEmptyID checks the other half of interning: a
+// visitor the database cannot place has to land on id 0 rather than on a NULL
+// that every GROUP BY would then have to handle specially.
+func TestAnEventWithNoCityStoresTheEmptyID(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+
+	unplaced := writerEvent(1, EventPageview, fixtureStart.Unix(), "/")
+	unplaced.Region = ""
+	unplaced.City = ""
+
+	if _, err := writer.Write(ctx, []Event{unplaced}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := countRows(t, manager, 1, "SELECT city_id FROM events"); got != 0 {
+		t.Fatalf("an unplaced visitor stored city_id %d, want 0", got)
+	}
 }
 
 // TestWriteIsIdempotent is the point of the dedupe table. The classic case is a
@@ -268,6 +323,67 @@ func TestSessionIDsSurviveARestart(t *testing.T) {
 
 	if got := countRows(t, second, 1, "SELECT COUNT(*) FROM sessions"); got != 2 {
 		t.Fatalf("sessions table holds %d rows after a restart, want 2", got)
+	}
+}
+
+// TestRevivedPingSurvivesAFailedCommit is the one case where an event can be
+// lost with nothing left to retry it. Adopting a parked ping takes it out of the
+// orphan map, and the ping is not in the batch the sender will redeliver — so a
+// transaction that rolls back after the adoption leaves its row unwritten and
+// nothing anywhere able to write it.
+func TestRevivedPingSurvivesAFailedCommit(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+
+	base := fixtureStart.Unix()
+
+	// The ping arrives before its own pageview and is parked, not written.
+	ping := writerEvent(1, EventEngagement, base, "/")
+	if _, err := writer.Write(ctx, []Event{ping}); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events"); got != 0 {
+		t.Fatalf("wrote %d rows for a parked ping, want 0", got)
+	}
+
+	account, err := manager.Open(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A trigger is the cheapest deterministic "the transaction fails on the way
+	// in" — the fold has already happened by the time the insert runs.
+	if _, err := account.Writer().ExecContext(ctx,
+		`CREATE TRIGGER refuse_events BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'disk full'); END`,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	view := writerEvent(1, EventPageview, base+10, "/")
+	if _, err := writer.Write(ctx, []Event{view}); err == nil {
+		t.Fatal("the write succeeded while every insert was being refused")
+	}
+
+	if _, err := account.Writer().ExecContext(ctx, "DROP TRIGGER refuse_events"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The sender retries exactly what it sent: the pageview, and nothing about
+	// the ping, which it has long since had a 202 for.
+	if _, err := writer.Write(ctx, []Event{view}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events"); got != 2 {
+		t.Fatalf("events table holds %d rows, want 2 — the adopted ping's row was lost by the rollback", got)
+	}
+
+	// And it landed on the visit it belongs to rather than one of its own.
+	if got := countRows(t, manager, 1, "SELECT COUNT(DISTINCT session_id) FROM events"); got != 1 {
+		t.Fatalf("the two rows point at %d sessions, want 1", got)
+	}
+	if got := countRows(t, manager, 1, "SELECT started_at FROM sessions"); got != base {
+		t.Fatalf("session started at %d, want %d — the ping did not reach the fold", got, base)
 	}
 }
 
