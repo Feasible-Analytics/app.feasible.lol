@@ -221,15 +221,15 @@ func TestPropertyDimensionNames(t *testing.T) {
 // that cannot be true. A percentage outside 0 to 100 is a bug, and it should
 // look like a small wrong number rather than a screenshot on the internet.
 func TestClampHoldsRatesInsideTheirRange(t *testing.T) {
-	if got := clamp(4294967271, true); got != 100 {
+	if got := clamp(4294967271, true, false); got != 100 {
 		t.Errorf("clamp(4294967271) = %v, want 100", got)
 	}
 
-	if got := clamp(-3, true); got != 0 {
+	if got := clamp(-3, true, false); got != 0 {
 		t.Errorf("clamp(-3) = %v, want 0", got)
 	}
 
-	if got := clamp(-3, false); got != 0 {
+	if got := clamp(-3, false, false); got != 0 {
 		t.Errorf("a negative count clamps to 0, got %v", got)
 	}
 

@@ -51,6 +51,17 @@ func (t table) timeColumn() string {
 	return "timestamp"
 }
 
+// propCorrelation is the column a session-scoped property's subquery is joined
+// back on: the row's own id on `sessions`, and the session it belongs to on
+// `events`.
+func (t table) propCorrelation() string {
+	if t == tableSessions {
+		return "s.id"
+	}
+
+	return "e.session_id"
+}
+
 // plan is the compiler's decision about how a query is answered: which table
 // produces the paginated result set, which one contributes the rest, and what
 // the answer will mean when a session-scoped metric had to be re-scoped to
@@ -81,6 +92,14 @@ type plan struct {
 
 	// Dimensions are the resolved group-by dimensions, in request order.
 	Dimensions []dimension
+
+	// Scopes is the declared scope of every registered custom property, read
+	// from the account's allow-list. It is carried on the plan because three
+	// separate decisions turn on it — whether a property can answer a
+	// session-scoped metric, which denominator a rate divides by, and whether
+	// a re-scoping is worth warning about — and a property scoped differently
+	// by each of them would be worse than one with no scope at all.
+	Scopes map[string]string
 }
 
 // Session-scoped metrics that are ratios over the whole visit. These are the
@@ -106,7 +125,14 @@ func isSessionRatio(name string) bool {
 // the screen. Where there is a correctly-scoped answer we return it and say so;
 // where there is not, we refuse.
 func decide(q *Query) (*plan, error) {
-	p := &plan{MetricTable: map[string]table{}}
+	return decideScoped(q, nil)
+}
+
+// decideScoped is decide with the account's declared property scopes. It is
+// the entry point the engine uses; decide is the same thing for a caller with
+// no registry, where every property is event-scoped.
+func decideScoped(q *Query, scopes map[string]string) (*plan, error) {
+	p := &plan{MetricTable: map[string]table{}, Scopes: scopes}
 
 	for _, name := range q.Dimensions {
 		resolved, err := resolveDimension(name)
@@ -210,6 +236,14 @@ func checkDimensionScopes(p *plan, needsSessions bool) error {
 			continue
 		}
 
+		// A property registered as session-scoped does have a visit-grain
+		// answer: it has one value per visit by declaration, so "the bounce
+		// rate of the B variant" is a question with an answer. This is what
+		// declaring a scope buys, and it is why the allow-list carries one.
+		if resolved.sessionScoped(p.Scopes) {
+			continue
+		}
+
 		return invalid(
 			"%q is an event-scoped dimension and cannot break down a session-scoped metric — "+
 				"visits, bounce rate, visit duration and views per visit describe a whole visit, "+
@@ -269,13 +303,13 @@ const sessionSemiJoinWarning = "computed over whole visits that contain a matchi
 // number that looks like a triumph and means nothing.
 func checkConversionGoal(q *Query, p *plan) error {
 	for _, name := range p.Specials {
-		if name != "conversion_rate" {
+		if name != "conversion_rate" && name != "group_conversion_rate" {
 			continue
 		}
 
-		if !hasGoal(q) {
-			return invalid("conversion_rate needs a goal to measure — add a has_done filter, " +
-				"a filter on event:name or event:props:<key>, or break down by event:name")
+		if !hasGoal(q, p.Scopes) {
+			return invalid(name + " needs a goal to measure — add a has_done filter, " +
+				"a filter on event:name or an event-scoped event:props:<key>, or break down by event:name")
 		}
 	}
 

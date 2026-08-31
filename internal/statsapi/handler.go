@@ -87,6 +87,11 @@ type request struct {
 	Include    query.Include    `json:"include"`
 	Timezone   string           `json:"timezone"`
 	SampleRate float64          `json:"sample_rate"`
+
+	// Currency is the ISO 4217 code the money metrics are totalled in. It is
+	// optional: with one currency in the data the compiler resolves it, and
+	// with several it refuses rather than adding them together.
+	Currency string `json:"currency"`
 }
 
 // errorBody is what a failure looks like. One field, always the same shape, so
@@ -283,6 +288,7 @@ func (r *request) toQuery(site sites.Site) query.Query {
 		Pagination: r.Pagination,
 		Include:    r.Include,
 		SampleRate: r.SampleRate,
+		Currency:   r.Currency,
 	}
 }
 

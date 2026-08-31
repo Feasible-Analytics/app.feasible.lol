@@ -63,6 +63,12 @@ type visitor struct {
 	UA       string
 	Width    int
 	Language string
+
+	// Variant is the A/B group this person is in. It is a property of the
+	// person rather than of an event, which is what makes it the seed's one
+	// session-scoped property: a conversion rate filtered by it has to divide
+	// by the visitors in that variant, not by everybody.
+	Variant string
 }
 
 // visitorFor builds the person at an index. It takes the agent and language
@@ -82,11 +88,17 @@ func visitorFor(index uint32, agents, langs *chooser) visitor {
 	// visitors from one address, exactly as it does in reality.
 	build := int(mix(seed^0x77a1) % 64)
 
+	variant := "control"
+	if mix(seed^0x63d1)%2 == 0 {
+		variant = "treatment"
+	}
+
 	return visitor{
 		IP:       visitorIP(index, vpn),
 		UA:       fmt.Sprintf("%s Build/%d", entry.UA, build),
 		Width:    viewport(entry.Width, uniform(mix(seed^0x2c9e))),
 		Language: languages[langs.pick(uniform(mix(seed^0x40b7)))],
+		Variant:  variant,
 	}
 }
 

@@ -103,7 +103,15 @@ func (e *Engine) Run(ctx context.Context, q Query) (*Result, error) {
 		return nil, err
 	}
 
-	blueprint, err := decide(&q)
+	// The declared property scopes are read before anything is planned,
+	// because whether a property describes a hit or a whole visit changes
+	// which table can answer it and which denominator a rate divides by.
+	scopes, err := e.propertyScopes(ctx, q.SiteIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	blueprint, err := decideScoped(&q, scopes)
 	if err != nil {
 		return nil, err
 	}
@@ -339,6 +347,49 @@ func (e *Engine) compileContext(ctx context.Context, sampleRate float64) (compil
 	}
 
 	return compile, nil
+}
+
+// propertyScopes reads the account's property allow-list for the sites in a
+// query. It is one small query against a table with a row per registered
+// property, and it runs per query rather than being cached because a scope
+// somebody just corrected has to take effect on the next refresh rather than
+// after a process restart.
+func (e *Engine) propertyScopes(ctx context.Context, sites []int64) (map[string]string, error) {
+	condition := inInt64("site_id", sites)
+
+	rows, err := e.db.QueryContext(ctx,
+		"SELECT name, scope FROM allowed_properties WHERE "+condition.SQL, condition.Args...)
+	if err != nil {
+		return nil, fmt.Errorf("query: read property scopes: %w", err)
+	}
+	defer rows.Close()
+
+	scopes := map[string]string{}
+
+	for rows.Next() {
+		var name, scope string
+
+		if err := rows.Scan(&name, &scope); err != nil {
+			return nil, fmt.Errorf("query: read property scopes: %w", err)
+		}
+
+		// Two sites of one account disagreeing about a name resolves to event
+		// scope, which is the conservative reading: an event-scoped
+		// denominator counts everybody, where a session-scoped one narrows the
+		// set a rate is measured over.
+		if existing, ok := scopes[name]; ok && existing != scope {
+			scopes[name] = propScopeEvent
+			continue
+		}
+
+		scopes[name] = scope
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("query: read property scopes: %w", err)
+	}
+
+	return scopes, nil
 }
 
 // earliestEvent finds the site's first event, which is what "all time" starts

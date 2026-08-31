@@ -85,6 +85,11 @@ type metric struct {
 	// sampling; a total is not, and scaling it back up is the only thing that
 	// makes a sampled total comparable with an unsampled one.
 	Scaled bool
+
+	// Signed marks a metric that may legitimately be negative. Only money is:
+	// a refund is a negative amount, and a total clamped at zero would hide a
+	// month that lost more than it took.
+	Signed bool
 }
 
 // metrics is the registry. The definitions here are the product: if one of them
@@ -213,9 +218,53 @@ var metrics = map[string]metric{
 		Combine: func(v []float64) float64 { return 100 * ratio(component(v, 0), component(v, 1)) },
 	},
 
+	// The two conversion rates differ in one thing and it is the divisor. This
+	// one divides by every visitor in the period, so a breakdown by source
+	// answers "what share of all our visitors came from this source and
+	// converted" — the numbers down the column add up to the overall rate.
 	"conversion_rate": {
 		Name: "conversion_rate", Scope: scopeSpecial, Percentage: true,
 		Combine: func(v []float64) float64 { return 100 * ratio(component(v, 0), component(v, 1)) },
+	},
+
+	// This one divides within each group, so the same breakdown answers "of
+	// the visitors from this source, what share converted" — which is how you
+	// tell a good source from a big one. Reaching for the wrong one of these
+	// two is not a smaller answer than the right one; it is a different
+	// question with a plausible number attached, and nothing on the screen
+	// says which was asked.
+	"group_conversion_rate": {
+		Name: "group_conversion_rate", Scope: scopeSpecial, Percentage: true,
+		Combine: func(v []float64) float64 { return 100 * ratio(component(v, 0), component(v, 1)) },
+	},
+
+	// The three revenue metrics. Money is stored as an integer count of minor
+	// units and every one of these rounds back to a whole minor unit, because
+	// a total of 1099.9999999999998 cents is not more accurate than 1100 and
+	// is a screenshot waiting to happen.
+	//
+	// They are signed: a refund is a negative amount, and clamping it away
+	// would report a month with more refunds than sales as a month with no
+	// money in it at all.
+	"total_revenue": {
+		Name: "total_revenue", Scope: scopeSpecial, Scaled: true, Signed: true,
+		Combine: func(v []float64) float64 { return math.Round(component(v, 0)) },
+	},
+
+	// Average revenue is per conversion — the money divided by the events that
+	// carried some. Dividing by every event instead would report the average
+	// order value of a site whose visitors mostly read the blog as pennies.
+	"average_revenue": {
+		Name: "average_revenue", Scope: scopeSpecial, Signed: true,
+		Combine: func(v []float64) float64 { return math.Round(ratio(component(v, 0), component(v, 1))) },
+	},
+
+	// Revenue per visitor divides by everybody who could have paid, not by the
+	// people who did. Dividing by the payers would make it the average order
+	// value under a different name.
+	"revenue_per_visitor": {
+		Name: "revenue_per_visitor", Scope: scopeSpecial, Signed: true,
+		Combine: func(v []float64) float64 { return math.Round(ratio(component(v, 0), component(v, 1))) },
 	},
 }
 
@@ -226,7 +275,8 @@ var metrics = map[string]metric{
 // the same visitor can appear in both halves.
 func (m metric) additive(t table) bool {
 	switch m.Name {
-	case "visitors", "time_on_page", "scroll_depth", "exit_rate", "conversion_rate":
+	case "visitors", "time_on_page", "scroll_depth", "exit_rate",
+		"conversion_rate", "group_conversion_rate", "revenue_per_visitor":
 		return false
 	case "visits":
 		// A visit is a row on `sessions` and a distinct session id on
@@ -296,13 +346,16 @@ func ratio(numerator, denominator float64) float64 {
 // percentage outside 0 to 100 is a bug rather than a data point, and the
 // difference between showing a slightly wrong number and showing 4,294,967,271%
 // is the difference between a support ticket and a screenshot on the internet.
-func clamp(value float64, percentage bool) float64 {
+func clamp(value float64, percentage, signed bool) float64 {
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		return 0
 	}
 
 	if !percentage {
-		if value < 0 {
+		// A signed metric is money and may be below zero; everything else
+		// counts something, and a negative count is a bug rather than a
+		// smaller number.
+		if value < 0 && !signed {
 			return 0
 		}
 		return value

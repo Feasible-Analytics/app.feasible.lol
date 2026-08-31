@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
 )
 
@@ -66,11 +67,19 @@ const (
 // propPrefix is the wire prefix for a custom property dimension.
 const propPrefix = "event:props:"
 
-// maxPropKeyLength bounds a property name. A property key is written into a
-// JSON path, and while the path travels as a bind parameter rather than as SQL,
-// an unbounded key is still an unbounded string in every error message and log
-// line that mentions it.
-const maxPropKeyLength = 64
+// maxPropKeyLength bounds a property name. It is the ingest limit rather than
+// a second opinion: a name longer than the tracker will store is a name no
+// report could ever match, and two different limits would mean a property that
+// can be sent and not queried.
+const maxPropKeyLength = ingest.MaxPropNameLength
+
+// The two scopes a property can be registered under. They are strings rather
+// than a type because they arrive from the account database, and this package
+// only ever compares them.
+const (
+	propScopeEvent   = "event"
+	propScopeSession = "session"
+)
 
 // dimensions is the registry. Names follow the established query-API
 // vocabulary, because a shared vocabulary is what lets somebody point an
@@ -275,4 +284,31 @@ func (d dimension) isProp() bool {
 // needs is the check resolveDimension already made.
 func (d dimension) jsonPath() string {
 	return `$."` + d.PropKey + `"`
+}
+
+// scopeOf returns the scope a property was registered under, defaulting to
+// event scope for one nobody registered.
+//
+// The default is the conservative one. An event-scoped property is treated as
+// describing the conversion, so a rate filtered by it divides by everybody; a
+// session-scoped one describes the audience, so the rate divides only by the
+// visitors who had that value. Guessing "session" for an unregistered property
+// would silently narrow a denominator nobody asked to narrow.
+func (d dimension) scopeOf(scopes map[string]string) string {
+	if !d.isProp() {
+		return ""
+	}
+
+	if scopes[d.PropKey] == propScopeSession {
+		return propScopeSession
+	}
+
+	return propScopeEvent
+}
+
+// sessionScoped reports that this dimension describes a whole visit rather
+// than one hit. A session-scoped property has one value per visit by
+// declaration, which is what makes grouping visits by it meaningful at all.
+func (d dimension) sessionScoped(scopes map[string]string) bool {
+	return d.isProp() && d.scopeOf(scopes) == propScopeSession
 }

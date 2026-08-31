@@ -61,6 +61,11 @@ const (
 	WarnGroupsTruncated = "groups_truncated"
 	WarnSampled         = "sampled"
 	WarnNoCoverage      = "no_coverage"
+
+	// WarnMissingRate marks a money figure that left something out because no
+	// exchange rate covered its currency. Revenue that quietly vanishes from a
+	// total is the one number a customer will not double-check.
+	WarnMissingRate = "missing_rate"
 )
 
 // Meta is everything about the answer that is not a number in a row.
@@ -112,6 +117,7 @@ type ResolvedQuery struct {
 	Pagination Pagination `json:"pagination"`
 	Include    Include    `json:"include"`
 	SampleRate float64    `json:"sample_rate"`
+	Currency   string     `json:"currency,omitempty"`
 }
 
 // resolvedQuery builds the echo. The bounds are rendered in the site's timezone
@@ -143,6 +149,7 @@ func resolvedQuery(q *Query, r Resolved) ResolvedQuery {
 		Pagination: q.Pagination,
 		Include:    q.Include,
 		SampleRate: q.SampleRate,
+		Currency:   q.Currency,
 	}
 }
 

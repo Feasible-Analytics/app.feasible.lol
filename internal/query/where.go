@@ -13,9 +13,10 @@ package query
 // on each: `event:page` is a column on `events` and a translation on
 // `sessions`, and the translation is the whole guard rail.
 type whereBuilder struct {
-	table table
-	alias string
-	ctx   compileContext
+	table  table
+	alias  string
+	ctx    compileContext
+	scopes map[string]string
 
 	sites      []int64
 	rangeStart int64
@@ -29,11 +30,12 @@ type whereBuilder struct {
 }
 
 // newWhereBuilder builds a compiler for one table over a resolved range.
-func newWhereBuilder(t table, ctx compileContext, sites []int64, r Resolved) *whereBuilder {
+func newWhereBuilder(t table, ctx compileContext, scopes map[string]string, sites []int64, r Resolved) *whereBuilder {
 	return &whereBuilder{
 		table:      t,
 		alias:      t.alias(),
 		ctx:        ctx,
+		scopes:     scopes,
 		sites:      sites,
 		rangeStart: r.Start.Unix(),
 		rangeEnd:   r.End.Unix(),
@@ -249,14 +251,29 @@ func (b *whereBuilder) prop(f Filter, d dimension) (expr, error) {
 		Args: predicate.Args,
 	}
 
+	// A property declared session-scoped describes the visit, so filtering on
+	// it selects whole visits on either table. Matching only the events that
+	// repeated the property would answer "the hits that mentioned the variant"
+	// where the caller asked for "the visits in it".
+	if d.sessionScoped(b.scopes) {
+		inner := expr{SQL: "e2.id IN (" + details.SQL + ")", Args: details.Args}
+
+		return negate(b.visitsWith(inner), f.Negated()), nil
+	}
+
 	if b.table == tableEvents {
 		return negate(expr{SQL: b.alias + ".id IN (" + details.SQL + ")", Args: details.Args}, f.Negated()), nil
 	}
 
 	// At session grain a property filter selects whole visits containing a
-	// matching event. There is no entry analogue for an arbitrary property, so
-	// this is the only scoping that exists, and it is reported.
-	b.semiJoined = true
+	// matching event. For an event-scoped property that is a re-scoping and is
+	// reported as one; for a property declared session-scoped it is not — the
+	// property describes the visit, so selecting visits by it is exactly what
+	// the caller asked for, and a warning there would be noise that trains
+	// people to ignore the real ones.
+	if !d.sessionScoped(b.scopes) {
+		b.semiJoined = true
+	}
 
 	inner := expr{SQL: "e2.id IN (" + details.SQL + ")", Args: details.Args}
 
@@ -276,6 +293,7 @@ func (b *whereBuilder) hasDone(f Filter) (expr, error) {
 		table:      tableEvents,
 		alias:      "e2",
 		ctx:        b.ctx,
+		scopes:     b.scopes,
 		sites:      b.sites,
 		rangeStart: b.rangeStart,
 		rangeEnd:   b.rangeEnd,
@@ -286,6 +304,15 @@ func (b *whereBuilder) hasDone(f Filter) (expr, error) {
 		return expr{}, err
 	}
 
+	return b.visitsWith(condition), nil
+}
+
+// visitsWith selects the visits containing an event that matches a condition,
+// expressed against whichever table is being read. It is one function because
+// two features need exactly this set — a has_done filter and a session-scoped
+// property — and two spellings of "the visits that did this" would eventually
+// disagree about one of them.
+func (b *whereBuilder) visitsWith(condition expr) expr {
 	sites := inInt64("e2.site_id", b.sites)
 
 	column := b.alias + ".id"
@@ -293,6 +320,9 @@ func (b *whereBuilder) hasDone(f Filter) (expr, error) {
 		column = b.alias + ".session_id"
 	}
 
+	// The window is applied to the inner events too: without it a match from
+	// last year would select a visit from today, and with it the lookup uses
+	// the same index every other query on the table does.
 	sql := column + " IN (SELECT e2.session_id FROM events e2 WHERE " + sites.SQL +
 		" AND e2.timestamp >= ? AND e2.timestamp < ? AND " + condition.SQL + ")"
 
@@ -300,7 +330,7 @@ func (b *whereBuilder) hasDone(f Filter) (expr, error) {
 	args = append(args, b.rangeStart, b.rangeEnd)
 	args = append(args, condition.Args...)
 
-	return expr{SQL: sql, Args: args}, nil
+	return expr{SQL: sql, Args: args}
 }
 
 // values builds the positive predicate for one filter's value list against a
