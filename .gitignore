@@ -23,3 +23,6 @@ tracker/playwright-report/
 
 # macOS
 .DS_Store
+
+# Agent worktree scratch
+.claude/worktrees/
