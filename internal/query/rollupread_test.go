@@ -170,8 +170,18 @@ func TestEveryMetricEitherMapsOntoTheSummaryOrIsRefused(t *testing.T) {
 		"scroll_depth": false,
 
 		// Composites, each needing a second query of its own shape.
-		"exit_rate":       false,
-		"conversion_rate": false,
+		"exit_rate":             false,
+		"conversion_rate":       false,
+		"group_conversion_rate": false,
+
+		// Money is not summarised. The roll-up tables carry no revenue column,
+		// and adding one would mean picking a reporting currency at write time
+		// — which is the one thing a report has to be free to choose. These
+		// fall back to raw, and the numbers are small because a revenue report
+		// is scoped to the visits that converted.
+		"total_revenue":       false,
+		"average_revenue":     false,
+		"revenue_per_visitor": false,
 	}
 
 	for _, name := range MetricNames() {
