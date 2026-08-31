@@ -232,6 +232,22 @@ func (w *Writer) writeAccount(ctx context.Context, accountID int64, events []Eve
 	dirty := w.sessions.TakeDirty(accountID)
 	merges := w.sessions.TakeMerges(accountID)
 
+	// Every event takes its session's acquisition, geo and device block.
+	// Stamping here rather than as each event is folded is what makes it
+	// correct under the out-of-order path: a later event in this same batch can
+	// turn out to be the real start of the visit, and the snapshots above are
+	// the sessions as they stand after every fold in it.
+	//
+	// It also has to happen before the interning below, or the values written
+	// onto the rows would have no dimension ids.
+	sessions := sessionsByID(dirty)
+
+	for _, row := range rows {
+		if session, ok := sessions[row.sessionID]; ok {
+			session.stamp(row.event)
+		}
+	}
+
 	// Nothing to do is the common shape of a retried batch the shard has
 	// already seen, and it must not cost a transaction.
 	if len(rows) == 0 && len(dirty) == 0 && len(merges) == 0 {
@@ -370,10 +386,28 @@ func (w *Writer) commit(ctx context.Context, db *sql.DB, state *accountLock, row
 
 	now := w.clock()
 
+	// The surviving sessions the merge repair below stamps from. Almost every
+	// batch merges nothing, so the index is only built when one does.
+	var sessions map[int64]*Session
+	if len(merges) > 0 {
+		sessions = sessionsByID(dirty)
+	}
+
 	// Merges come first so that events written by an earlier batch are pointed
 	// at the surviving session before this batch's rows are counted against it.
 	for _, merge := range merges {
-		if _, err := tx.ExecContext(ctx, "UPDATE events SET session_id = ? WHERE session_id = ?", merge.Survivor, merge.Absorbed); err != nil {
+		update := "UPDATE events SET session_id = ? WHERE session_id = ?"
+		args := []any{merge.Survivor, merge.Absorbed}
+
+		// Those events were stamped with the absorbed session's block, and the
+		// visit they belong to is the survivor's now. Repointing them without
+		// restamping them would leave one visit reported under two sources.
+		if survivor, ok := sessions[merge.Survivor]; ok {
+			update = "UPDATE events SET session_id = ?, " + sessionStampSet + " WHERE session_id = ?"
+			args = append([]any{merge.Survivor}, append(sessionStampArgs(survivor, ids), merge.Absorbed)...)
+		}
+
+		if _, err := tx.ExecContext(ctx, update, args...); err != nil {
 			return fmt.Errorf("write batch: merge sessions: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE id = ?", merge.Absorbed); err != nil {
@@ -384,6 +418,20 @@ func (w *Writer) commit(ctx context.Context, db *sql.DB, state *accountLock, row
 	for _, session := range dirty {
 		if err := upsertSession(ctx, tx, session, ids); err != nil {
 			return err
+		}
+
+		if !session.Restamp {
+			continue
+		}
+
+		// A late event turned out to be the start of this visit, so the rows
+		// already on disk carry a block the session no longer has. This batch's
+		// own rows were stamped from this same snapshot, so they need no repair.
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE events SET "+sessionStampSet+" WHERE session_id = ?",
+			append(sessionStampArgs(session, ids), session.ID)...,
+		); err != nil {
+			return fmt.Errorf("write batch: restamp events: %w", err)
 		}
 	}
 
@@ -484,6 +532,56 @@ func insertEvent(ctx context.Context, tx *sql.Tx, row eventRow, ids *dimensionID
 	}
 
 	return nil
+}
+
+// sessionStampSet assigns a session's acquisition, geo and device block to its
+// event rows. It is written once because both repairs need it — the merge that
+// repoints events at a surviving session, and the restamp after a late event
+// changed where a visit came from — and two copies of a sixteen-column
+// assignment list is two chances for one of them to forget a column and leave
+// a breakdown that does not add up.
+const sessionStampSet = `referrer_id = ?, source_id = ?, channel_id = ?, ` +
+	`utm_source_id = ?, utm_medium_id = ?, utm_campaign_id = ?, ` +
+	`country_id = ?, region_id = ?, city_id = ?, ` +
+	`device_type_id = ?, screen_size_id = ?, browser_id = ?, browser_version_id = ?, ` +
+	`os_id = ?, os_version_id = ?, language_id = ?`
+
+// sessionStampArgs are the bound values for sessionStampSet, in its order. The
+// ids come from the batch's interning, so every value one of these statements
+// writes already has a dimension row.
+func sessionStampArgs(session *Session, ids *dimensionIDs) []any {
+	return []any{
+		ids.of(intern.Referrer, session.Referrer),
+		ids.of(intern.Source, session.Source),
+		ids.of(intern.Channel, session.Channel),
+		ids.of(intern.UTMSource, session.UTMSource),
+		ids.of(intern.UTMMedium, session.UTMMedium),
+		ids.of(intern.UTMCampaign, session.UTMCampaign),
+		ids.of(intern.Country, session.Country),
+		ids.of(intern.Region, session.Region),
+		ids.of(intern.City, session.City),
+		ids.of(intern.DeviceType, session.DeviceType),
+		ids.of(intern.ScreenSize, session.ScreenSize),
+		ids.of(intern.Browser, session.Browser),
+		ids.of(intern.BrowserVersion, session.BrowserVersion),
+		ids.of(intern.OS, session.OS),
+		ids.of(intern.OSVersion, session.OSVersion),
+		ids.of(intern.Language, session.Language),
+	}
+}
+
+// sessionsByID indexes a batch's dirty sessions so an event row can find the
+// visit it belongs to. The snapshots are the sessions as they stand after every
+// fold in the batch, which is why they are the only correct thing to stamp an
+// event from.
+func sessionsByID(dirty []*Session) map[int64]*Session {
+	byID := make(map[int64]*Session, len(dirty))
+
+	for _, session := range dirty {
+		byID[session.ID] = session
+	}
+
+	return byID
 }
 
 // upsertSession writes a session row, updating it in place when it already

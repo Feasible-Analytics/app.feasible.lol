@@ -76,15 +76,32 @@ func (s *Session) fold(event *Event) {
 		s.InteractiveNonPageview = true
 	}
 
-	tie := event.UUID.String()
+	tie := orderKey(event)
 
 	// Attribution and the device block are frozen at session start: they come
-	// from the earliest event, whenever it arrives. This is the rule that
-	// generates the most support questions — a UTM tag on the second pageview of
-	// a visit is discarded — and it is correct: it produces last-click-per-
-	// session attribution.
-	if earlier(event.Timestamp, tie, s.FirstAt, s.FirstTie) {
+	// from the visit's first pageview, whenever it arrives. This is the rule
+	// that generates the most support questions — a UTM tag on the second
+	// pageview of a visit is discarded — and it is correct: it produces
+	// last-click-per-session attribution.
+	//
+	// A pageview replaces a block taken from a custom event whatever the
+	// timestamps say. Only a page arrives from somewhere: a conversion fired in
+	// the same second as the page load carries no referrer of its own, and
+	// letting it win attributes the whole visit to Direct. A visit that never
+	// has a pageview keeps its earliest event's block, because an unattributed
+	// visit is worse than one attributed to the event that opened it.
+	pageview := event.IsPageview()
+
+	if (pageview && !s.FirstIsPageview) ||
+		(pageview == s.FirstIsPageview && earlier(event.Timestamp, tie, s.FirstAt, s.FirstTie)) {
+		// Replacing a block the session already had means the events written so
+		// far carry the old one. The writer reads this and rewrites them.
+		if s.FirstAt != maxInt64 {
+			s.Restamp = true
+		}
+
 		s.FirstAt, s.FirstTie = event.Timestamp, tie
+		s.FirstIsPageview = pageview
 
 		s.Referrer = event.Referrer
 		s.Source = event.Source
@@ -128,6 +145,38 @@ func (s *Session) fold(event *Event) {
 	}
 }
 
+// stamp copies the session's acquisition, geo and device block onto one of its
+// events. Every event row carries that copy, which is the entire reason a
+// source, country or browser breakdown of an event metric is one scan with no
+// join — and the only thing that makes such a breakdown add up: an event that
+// kept its own referrer instead reports the second page of a visit as a
+// separate Direct visitor, so three visitors come back as five.
+//
+// The session must be folded before this is called. Which event the block comes
+// from is a decision only the fold can make, and stamping an event from a
+// session that has not yet seen it hands it the block of whatever arrived
+// first.
+func (s *Session) stamp(event *Event) {
+	event.Referrer = s.Referrer
+	event.Source = s.Source
+	event.Channel = s.Channel
+	event.UTMSource = s.UTMSource
+	event.UTMMedium = s.UTMMedium
+	event.UTMCampaign = s.UTMCampaign
+
+	event.Country = s.Country
+	event.Region = s.Region
+	event.City = s.City
+
+	event.DeviceType = s.DeviceType
+	event.ScreenSize = s.ScreenSize
+	event.Browser = s.Browser
+	event.BrowserVersion = s.BrowserVersion
+	event.OS = s.OS
+	event.OSVersion = s.OSVersion
+	event.Language = s.Language
+}
+
 // absorb folds one session into another. It is the repair for an out-of-order
 // event that bridged two sessions which were always one visit, and it combines
 // every field the same way fold does — a merge that lost the entry page would
@@ -146,8 +195,17 @@ func (s *Session) absorb(other *Session) {
 	s.Events += other.Events
 	s.InteractiveNonPageview = s.InteractiveNonPageview || other.InteractiveNonPageview
 
-	if earlier(other.FirstAt, other.FirstTie, s.FirstAt, s.FirstTie) {
+	// The same precedence the fold uses, for the same reason: the surviving
+	// session is attributed to the first pageview of the visit the two of them
+	// turned out to be.
+	if (other.FirstIsPageview && !s.FirstIsPageview) ||
+		(other.FirstIsPageview == s.FirstIsPageview && earlier(other.FirstAt, other.FirstTie, s.FirstAt, s.FirstTie)) {
+		// The survivor already has events on disk carrying the block it is
+		// giving up.
+		s.Restamp = true
+
 		s.FirstAt, s.FirstTie = other.FirstAt, other.FirstTie
+		s.FirstIsPageview = other.FirstIsPageview
 		s.Referrer, s.Source, s.Channel = other.Referrer, other.Source, other.Channel
 		s.UTMSource, s.UTMMedium, s.UTMCampaign = other.UTMSource, other.UTMMedium, other.UTMCampaign
 		s.Country, s.Region, s.City = other.Country, other.Region, other.City

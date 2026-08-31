@@ -289,6 +289,78 @@ func TestAttributionIsFrozenAtSessionStart(t *testing.T) {
 	}
 }
 
+// TestAttributionSurvivesASharedSecond is the other half of the freeze. A
+// stored timestamp is only accurate to the second, so the pageviews of a quick
+// visit routinely share one, and settling that on the event uuid alone hands
+// the visit to whichever page drew the lower id: a coin toss that leaves the
+// same visit Direct on one site and attributed on the next, with nothing anyone
+// can point at.
+func TestAttributionSurvivesASharedSecond(t *testing.T) {
+	landing := event(EventPageview, 1000, "/")
+	landing.DerivedAt = 1
+	landing.Source = "Hacker News"
+	landing.Channel = "Organic Social"
+
+	pricing := event(EventPageview, 1000, "/pricing")
+	pricing.DerivedAt = 2
+
+	signup := event(EventPageview, 1000, "/signup")
+	signup.DerivedAt = 3
+
+	// Every arrival order has to give the same answer, because the order the
+	// ingest tier saw them in travels on the events themselves.
+	for _, arrivals := range [][]Event{
+		{landing, pricing, signup},
+		{signup, pricing, landing},
+		{pricing, landing, signup},
+	} {
+		session := applyAll(t, arrivals)
+
+		if session.Source != "Hacker News" || session.Channel != "Organic Social" {
+			t.Fatalf("attribution = %q/%q, want Hacker News/Organic Social", session.Source, session.Channel)
+		}
+		if session.EntryPage != "/" {
+			t.Fatalf("entry_page = %q, want / — the first of the three", session.EntryPage)
+		}
+	}
+}
+
+// TestAttributionPrefersAPageviewOverACustomEvent covers the precedence between
+// the two kinds of first event. Only a page arrives from somewhere: a
+// conversion reported a moment before the page it happened on carries no
+// referrer of its own, and letting it win makes the visit Direct.
+func TestAttributionPrefersAPageviewOverACustomEvent(t *testing.T) {
+	conversion := event("signup", 999, "/pricing")
+
+	landing := event(EventPageview, 1000, "/")
+	landing.Source = "Google"
+	landing.Channel = "Organic Search"
+
+	session := applyAll(t, []Event{conversion, landing})
+
+	if session.Source != "Google" || session.Channel != "Organic Search" {
+		t.Fatalf("attribution = %q/%q, want Google/Organic Search", session.Source, session.Channel)
+	}
+}
+
+// TestAVisitWithNoPageviewKeepsItsFirstEvent checks the fallback. A visit made
+// entirely of custom events is unusual but real — a server-side integration
+// reporting conversions — and leaving it unattributed would be worse than
+// attributing it to the event that opened it.
+func TestAVisitWithNoPageviewKeepsItsFirstEvent(t *testing.T) {
+	first := event("signup", 1000, "/pricing")
+	first.Source = "Google"
+	first.Channel = "Organic Search"
+
+	second := event("upgrade", 1100, "/pricing")
+
+	session := applyAll(t, []Event{second, first})
+
+	if session.Source != "Google" || session.Channel != "Organic Search" {
+		t.Fatalf("attribution = %q/%q, want Google/Organic Search", session.Source, session.Channel)
+	}
+}
+
 // TestNewSessionAfterTheTimeout checks the lookup rule: a gap of more than
 // thirty minutes starts a new visit.
 func TestNewSessionAfterTheTimeout(t *testing.T) {
@@ -489,12 +561,15 @@ func TestShuffledStreamProducesAnIdenticalRow(t *testing.T) {
 }
 
 // normalise strips the fields that legitimately differ between two runs — the
-// allocated id and the dirty flag — so the comparison is about the accumulated
-// facts and nothing else.
+// allocated id, and the two flags that say what the writer still owes the
+// database rather than what the visit was. A shuffled stream reaches the same
+// row by a different route, and a late event that turns out to have started the
+// visit leaves rows on disk to rewrite where an in-order one never wrote them.
 func normalise(session *Session) Session {
 	copied := *session
 	copied.ID = 0
 	copied.Dirty = false
+	copied.Restamp = false
 
 	return copied
 }

@@ -41,6 +41,16 @@ type Event struct {
 	// rather than arrival order, which is what makes a retry harmless.
 	Timestamp int64
 
+	// DerivedAt is the nanosecond this event was derived, forced strictly
+	// increasing within the process. Timestamp is only accurate to the second,
+	// so two pageviews of one visit routinely share one, and the accumulation
+	// rules would otherwise have to settle "which came first" on the event
+	// uuid — a coin toss that hands a visit's attribution to whichever page
+	// happened to draw the lower id. This is stamped once, travels with the
+	// event, and is never stored, so a retried or reordered delivery settles
+	// the tie exactly the way the first delivery did.
+	DerivedAt int64
+
 	Name string
 
 	// UserID is the fingerprint under today's salt. PreviousUserID is the same
