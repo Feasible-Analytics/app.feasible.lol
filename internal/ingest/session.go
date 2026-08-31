@@ -183,6 +183,12 @@ type SessionCache struct {
 type sessionBucket struct {
 	mu       sync.Mutex
 	sessions map[sessionKey][]*Session
+
+	// orphans holds engagement pings that arrived before the visit they belong
+	// to. An engagement carries no page of its own, so it cannot open a session
+	// — but dropping it outright would make the fold depend on arrival order,
+	// and time-on-page is computed from exactly these events.
+	orphans map[sessionKey][]*Event
 }
 
 // NewSessionCache builds an empty cache.
@@ -191,6 +197,7 @@ func NewSessionCache() *SessionCache {
 
 	for i := range cache.shards {
 		cache.shards[i].sessions = map[sessionKey][]*Session{}
+		cache.shards[i].orphans = map[sessionKey][]*Event{}
 	}
 
 	return cache
@@ -233,17 +240,26 @@ func (c *SessionCache) bucket(key sessionKey) *sessionBucket {
 	return &c.shards[(mixed>>32)&(sessionShards-1)]
 }
 
-// Apply folds one event into its session, creating one if there is none, and
-// returns the session the event belongs to. This is the function the two
-// unrecoverable decisions live in; every rule it applies is keyed off the
-// event's own timestamp rather than the order it arrived in.
-func (c *SessionCache) Apply(event *Event) (*Session, bool) {
+// MaxOrphanEngagements caps how many early engagement pings one visitor may
+// have parked at once. It is a bound on what a client can make us hold, not a
+// tuning knob: a real visit produces a handful.
+const MaxOrphanEngagements = 32
+
+// Apply folds one event into its session, creating one if there is none. It
+// returns the session, whether the event should be written, and any parked
+// engagement pings this event has just given a home to.
+//
+// This is the function the two unrecoverable decisions live in. Every rule it
+// applies is keyed off the event's own timestamp rather than the order it
+// arrived in.
+func (c *SessionCache) Apply(event *Event) (*Session, bool, []*Event) {
 	key := sessionKey{siteID: event.SiteID, userID: event.UserID}
 	bucket := c.bucket(key)
 
 	bucket.mu.Lock()
 
 	session, absorbed := bucket.claim(key, event.Timestamp)
+	found := key
 
 	// The previous salt is a session-lookup fallback and nothing else. Without
 	// it a visitor who is mid-visit at 00:00 UTC gets a new fingerprint, a new
@@ -261,15 +277,22 @@ func (c *SessionCache) Apply(event *Event) (*Session, bool) {
 		} else {
 			session, absorbed = previousBucket.claim(previousKey, event.Timestamp)
 		}
+
+		if session != nil {
+			found = previousKey
+		}
 	}
 
 	if session == nil {
-		// An engagement ping with no live session has nothing to attach to. It
-		// carries no page of its own, so inventing a session for it would
-		// create a visit with no entry page and inflate the visit count.
+		// An engagement ping has no page of its own, so opening a visit with it
+		// would produce a session with no entry page and inflate the visit
+		// count. Parking it instead of dropping it is what keeps the fold
+		// independent of arrival order: a retry that delivers the ping before
+		// its pageview must still produce the same row.
 		if event.IsEngagement() {
+			bucket.park(key, event)
 			bucket.mu.Unlock()
-			return nil, false
+			return nil, false, nil
 		}
 
 		session = c.newSession(event)
@@ -281,11 +304,71 @@ func (c *SessionCache) Apply(event *Event) (*Session, bool) {
 	event.UserID = session.UserID
 
 	session.fold(event)
+
+	revived := bucket.adopt(key, session)
+	if found != key {
+		revived = append(revived, bucket.adopt(found, session)...)
+	}
+
 	bucket.mu.Unlock()
 
 	c.recordMerges(session, absorbed)
 
-	return session, true
+	return session, true, revived
+}
+
+// park holds an engagement ping until the visit it belongs to appears. A ping
+// already parked is ignored, so a redelivery cannot be counted twice — the
+// database's dedupe table cannot help here, because a parked event has never
+// been written.
+func (b *sessionBucket) park(key sessionKey, event *Event) {
+	waiting := b.orphans[key]
+	if len(waiting) >= MaxOrphanEngagements {
+		return
+	}
+
+	for _, existing := range waiting {
+		if existing.UUID == event.UUID {
+			return
+		}
+	}
+
+	copied := *event
+	b.orphans[key] = append(waiting, &copied)
+}
+
+// adopt folds every parked ping the session now covers and returns them, so the
+// writer stores the rows it skipped earlier. The caller must hold the bucket
+// lock.
+func (b *sessionBucket) adopt(key sessionKey, session *Session) []*Event {
+	waiting := b.orphans[key]
+	if len(waiting) == 0 {
+		return nil
+	}
+
+	var (
+		kept    []*Event
+		revived []*Event
+	)
+
+	for _, orphan := range waiting {
+		if !session.covers(orphan.Timestamp) {
+			kept = append(kept, orphan)
+			continue
+		}
+
+		orphan.UserID = session.UserID
+		session.fold(orphan)
+		revived = append(revived, orphan)
+	}
+
+	if len(kept) == 0 {
+		delete(b.orphans, key)
+	} else {
+		b.orphans[key] = kept
+	}
+
+	return revived
 }
 
 // claim returns the session an event at this timestamp belongs to, absorbing
@@ -468,6 +551,27 @@ func (c *SessionCache) Sweep(now int64) int {
 		bucket := &c.shards[i]
 
 		bucket.mu.Lock()
+
+		// A ping whose visit never turned up is a genuine drop. Expiring them
+		// here is what stops a client that only ever sends engagement events
+		// from growing the cache without bound.
+		for key, waiting := range bucket.orphans {
+			var kept []*Event
+			for _, orphan := range waiting {
+				if now-orphan.Timestamp <= sessionTimeoutSeconds {
+					kept = append(kept, orphan)
+					continue
+				}
+				removed++
+			}
+
+			if len(kept) == 0 {
+				delete(bucket.orphans, key)
+				continue
+			}
+			bucket.orphans[key] = kept
+		}
+
 		for key, live := range bucket.sessions {
 			kept := live[:0]
 

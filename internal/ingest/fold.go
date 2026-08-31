@@ -67,10 +67,12 @@ func (s *Session) fold(event *Event) {
 
 	if event.IsPageview() {
 		s.Pageviews++
-	} else if event.Interactive {
+	} else if event.Interactive && !event.IsEngagement() {
 		// A non-pageview interactive event ends a bounce on its own, which is
 		// how a single-page site with a working sign-up form stops reporting a
-		// hundred per cent bounce rate.
+		// hundred per cent bounce rate. An engagement ping is excluded because
+		// it is emitted by the tracker rather than by a person: counting it
+		// would make the bounce rate of every site zero.
 		s.InteractiveNonPageview = true
 	}
 

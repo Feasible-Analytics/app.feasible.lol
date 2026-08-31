@@ -193,18 +193,29 @@ func (w *Writer) writeAccount(ctx context.Context, accountID int64, events []Eve
 		event := &fresh[i]
 
 		sessionID, known := state.pending[event.UUID]
-		if !known {
-			session, ok := w.sessions.Apply(event)
-			if !ok {
-				// An engagement ping with no live session. It is a real drop
-				// with a real reason, and the caller counts it.
-				continue
-			}
-			sessionID = session.ID
-			state.pending[event.UUID] = sessionID
+		if known {
+			rows = append(rows, eventRow{event: event, sessionID: sessionID})
+			continue
 		}
 
-		rows = append(rows, eventRow{event: event, sessionID: sessionID})
+		session, ok, revived := w.sessions.Apply(event)
+		if !ok {
+			// An engagement ping with no visit to attach to yet. It is parked
+			// rather than lost, and comes back below when its pageview arrives.
+			continue
+		}
+
+		state.pending[event.UUID] = session.ID
+		rows = append(rows, eventRow{event: event, sessionID: session.ID})
+
+		// A ping that arrived before its own pageview was never written. Now
+		// that the visit exists, its row is written with everything else — this
+		// is where time-on-page and scroll depth stop depending on which order
+		// a retry delivered the batch in.
+		for _, ping := range revived {
+			state.pending[ping.UUID] = session.ID
+			rows = append(rows, eventRow{event: ping, sessionID: session.ID})
+		}
 	}
 
 	dirty := w.sessions.TakeDirty(accountID)
