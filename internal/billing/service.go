@@ -960,8 +960,19 @@ func (s *Service) Checkout(ctx context.Context, teamID int64, planKey, email str
 		}
 
 		switch {
-		case session.Status == "open":
+		case session.Status == "open" && claim.Plan == planKey && claim.PriceID == priceID:
 			return session, nil
+		case session.Status == "open":
+			// A customer who backs out of one plan must be able to choose the
+			// other. Persist the old session before replacing its claim so a
+			// crash cannot leave both subscription checkouts usable.
+			if err := s.Store.RememberCheckoutCleanup(ctx, teamID, claim.SessionID); err != nil {
+				return nil, err
+			}
+			if err := s.Store.MarkCheckoutStatus(ctx, teamID, "expired"); err != nil {
+				return nil, err
+			}
+			claim.Status = "expired"
 		case session.Status == "complete" || session.Subscription != "":
 			if existing.CustomerID == "" {
 				if err := s.Store.MarkCheckoutStatus(ctx, teamID, "complete"); err != nil {

@@ -141,6 +141,25 @@ header.top nav { margin-left: auto; display: flex; gap: 20px; }
 header.top nav a { color: var(--muted); text-decoration: none; font-size: 15px; }
 header.top nav a:hover, header.top nav a.on { color: var(--ink); }
 
+@media (max-width: 380px) {
+  header.top .wrap {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+    height: auto;
+    padding-bottom: 10px;
+    padding-top: 10px;
+  }
+
+  header.top nav {
+    justify-content: space-between;
+    gap: 8px;
+    margin-left: 0;
+  }
+
+  header.top nav a { font-size: 14px; }
+}
+
 /* ── Blocks ─────────────────────────────────────────────────────────────── */
 
 .hero { padding: 56px 0 28px; }
