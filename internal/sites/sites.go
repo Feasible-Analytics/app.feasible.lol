@@ -133,6 +133,22 @@ func (c *Cache) Set(site Site) {
 	c.snap.Store(&snapshot{byDomain: byDomain, builtAt: current.builtAt})
 }
 
+// Domains lists every domain in the snapshot. The tracker's per-site script
+// paths are an opaque token derived from the domain, and reading one back means
+// deriving the token for each known domain — which needs the list, not a
+// lookup. It returns a fresh slice so a caller cannot mutate the snapshot every
+// event reads.
+func (c *Cache) Domains() []string {
+	current := c.snap.Load()
+
+	domains := make([]string, 0, len(current.byDomain))
+	for domain := range current.byDomain {
+		domains = append(domains, domain)
+	}
+
+	return domains
+}
+
 // Len reports how many sites the snapshot holds. A routing map that suddenly
 // went empty looks exactly like every customer stopping at once, so the count
 // belongs on the health panel.
