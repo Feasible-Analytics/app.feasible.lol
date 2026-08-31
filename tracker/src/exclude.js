@@ -6,7 +6,7 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-import { win, loc, nav } from "./state.js";
+import { win, loc } from "./state.js";
 
 // The localStorage key a person sets to keep their own visits out of the
 // numbers.
@@ -17,26 +17,31 @@ const IGNORE_KEY = "feasible_ignore";
 //
 // Documented consequence: a Capacitor, Cordova or Electron shell serves its
 // pages from one of these, so a hybrid app records nothing until
-// `captureOnLocalhost` is set. That is a deliberate default — the alternative
-// is every developer's own reloads landing in production numbers — but it has
-// to be said out loud rather than discovered.
+// `data-capture-on-localhost` is set. That is a deliberate default — the
+// alternative is every developer's own reloads landing in production numbers —
+// but it has to be said out loud rather than discovered.
 const LOCAL_HOST = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)?$/;
 
 let patterns = null;
 
-// escape makes a literal safe to drop into a regular expression. `*` is left
-// alone because it is the wildcard the caller means.
-function escape(value) {
-	return value.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
-}
-
 // compile turns one glob into a regular expression, once. `*` stops at a path
 // separator and `**` crosses them, which is the distinction that makes
 // `/blog/*` and `/blog/**` two different rules rather than a typo.
+//
+// Splitting on the wildcards first is what leaves them out of the escaping:
+// every other regular-expression metacharacter in what is left is a literal the
+// customer typed and has to be neutered, and `*` is the one thing they meant.
+// The escape is inlined rather than named because the bundle is on a hard byte
+// budget and a one-call helper is pure overhead there.
 function compile(pattern) {
 	const body = pattern
 		.split("**")
-		.map((segment) => segment.split("*").map(escape).join("[^/]*"))
+		.map((segment) =>
+			segment
+				.split("*")
+				.map((literal) => literal.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+				.join("[^/]*"),
+		)
 		.join(".*");
 
 	return new RegExp("^" + body + "$");
@@ -101,7 +106,7 @@ export function ignoreReason(cfg) {
 		// checking it silently discards every visit from everyone who has the
 		// extension — which is what happened to the incumbent, for as long as it
 		// took somebody to notice and report it.
-		if (win._phantom || win.__nightmare || nav.webdriver || win.Cypress) {
+		if (win._phantom || win.__nightmare || navigator.webdriver || win.Cypress) {
 			return "automated";
 		}
 	}

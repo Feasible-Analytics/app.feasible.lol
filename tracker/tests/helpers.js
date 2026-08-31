@@ -34,6 +34,10 @@ export async function collect(page, options = {}) {
 
 		state.requests.push({
 			method: request.method(),
+			// The endpoint is recorded because `data-api` has no other visible
+			// effect: an event sent to the wrong URL looks identical to one sent
+			// to the right one from inside the payload.
+			url: request.url(),
 			contentType: request.headers()["content-type"] || "",
 			body,
 		});

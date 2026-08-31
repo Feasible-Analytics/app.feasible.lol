@@ -25,8 +25,20 @@ const FILE_TYPES =
 // are the entire configuration surface of the legacy-compatible variant, so a
 // missing or misspelled one has to degrade to the default rather than throw
 // during load.
+//
+// `name` is always the hyphenated spelling, because that is HTML's own
+// convention for `data-*` and the only one anybody types from memory. The
+// second lookup strips the hyphens out and is what keeps every installation
+// that predates the rename working: the parser lowercases attribute names, so
+// a snippet written `data-captureOnLocalhost` reaches us as
+// `data-captureonlocalhost`, which is exactly the hyphen-stripped form. Both
+// spellings are read rather than one being retired, because an attribute that
+// silently does nothing is the worst kind of attribute — the script simply
+// stops tracking and says nothing about why.
 function read(el, name) {
-	return (el && el.getAttribute("data-" + name)) || "";
+	if (!el) return "";
+
+	return el.getAttribute("data-" + name) || el.getAttribute("data-" + name.replace(/-/g, "")) || "";
 }
 
 // resolve produces the settings this page runs with.
@@ -71,26 +83,30 @@ export function resolve() {
 		// a developer's own machine.
 		m: !!read(el, "manual"),
 		h: !!read(el, "hash"),
-		l: !!read(el, "captureOnLocalhost"),
+		l: !!read(el, "capture-on-localhost"),
 		...baked,
 	};
 
 	// The endpoint defaults to the origin the script itself came from, which is
 	// what makes a reverse proxy work with no second setting to keep in sync.
 	if (!cfg.a) {
-		let origin = "";
-
 		try {
-			origin = new URL(el.src).origin;
+			cfg.a = new URL(el.src).origin;
 		} catch {
-			origin = win.origin || "";
+			cfg.a = win.origin || "";
 		}
 
-		cfg.a = origin + "/api/event";
+		cfg.a += "/api/event";
 	}
 
 	cfg.x = cfg.x ? (Array.isArray(cfg.x) ? cfg.x : cfg.x.split(/\s*,\s*/)) : [];
-	cfg.f = "," + [].concat(cfg.f || FILE_TYPES).join(",").toLowerCase().replace(/\./g, "") + ",";
+
+	// The baked configuration may hand this over as an array while an attribute
+	// is always a string. Coercing rather than branching is what makes both one
+	// line: an array stringifies to its elements joined by commas, which is
+	// already the shape the lookup wants, and the bundle is on a byte budget
+	// that a second code path for the same result does not earn.
+	cfg.f = "," + ("" + (cfg.f || FILE_TYPES)).toLowerCase().replace(/\./g, "") + ",";
 
 	return cfg;
 }

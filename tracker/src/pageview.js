@@ -8,7 +8,7 @@
 
 import { doc, loc, page } from "./state.js";
 import { send, drain } from "./send.js";
-import { excluded } from "./exclude.js";
+import { excluded, warn } from "./exclude.js";
 import * as engagement from "./engagement.js";
 
 let cfg = null;
@@ -77,7 +77,16 @@ export function pageview(opts) {
 	// Exclusions are checked at send time rather than at load time, because in
 	// an SPA the page that is excluded is often not the one the document
 	// started on.
-	if (excluded(cfg)) return;
+	//
+	// It says so in the console for the same reason every other refusal does: a
+	// glob that matches more than its author meant it to looks exactly like a
+	// tracker that is broken, and the only difference between a five-second
+	// diagnosis and a support conversation is whether the page said which rule
+	// fired.
+	if (excluded(cfg)) {
+		warn("excluded path");
+		return;
+	}
 
 	const target = options.u ? new URL(options.u, loc.href).href : url();
 

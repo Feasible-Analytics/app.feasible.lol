@@ -52,7 +52,9 @@ function tagFor(el) {
 // The format is `feasible-event-<key>=<value>`, with `name` naming the event
 // and every other key becoming a property. `+` stands for a space, because a
 // class attribute cannot contain one. A bare `feasible-event-<Name>` with no
-// `=` is the same thing with the `name=` left off.
+// `=` is the same thing with the `name=` left off, which is why a missing `=`
+// resolves to the `name` key rather than to a branch of its own: `slice(0)`
+// over the whole segment is exactly the value the shorthand means.
 function parseTag(el) {
 	let name = "";
 	const props = {};
@@ -63,12 +65,7 @@ function parseTag(el) {
 		const rest = cls.slice(TAG.length);
 		const eq = rest.indexOf("=");
 
-		if (eq < 0) {
-			name = rest.replace(/\+/g, " ");
-			continue;
-		}
-
-		const key = rest.slice(0, eq);
+		const key = eq < 0 ? "name" : rest.slice(0, eq);
 		const value = rest.slice(eq + 1).replace(/\+/g, " ");
 
 		if (key === "name") name = value;

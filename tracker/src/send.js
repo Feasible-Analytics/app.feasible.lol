@@ -28,10 +28,7 @@ const OUTBOX_MAX = 10;
 // otherwise unreachable in a modern browser and would go untested.
 export const KEEPALIVE = (() => {
 	try {
-		const hatch = win.__feasible;
-		if (hatch && hatch.nk) return false;
-
-		return "keepalive" in new Request("");
+		return !(win.__feasible || "").nk && "keepalive" in new Request("");
 	} catch {
 		return false;
 	}
