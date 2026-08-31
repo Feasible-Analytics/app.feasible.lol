@@ -31,8 +31,9 @@ import (
 type Dimension string
 
 // The dimensions, one per interned column in the analytics schema. City is
-// absent on purpose: a geoname id is already a stable integer from the
-// geolocation database, so interning it would only add indirection.
+// interned like every other place name because the database we ship carries
+// city names and no ids, so the alternative is a GeoNames lookup table shipped
+// solely to turn an id back into the string the dashboard renders.
 const (
 	EventName      Dimension = "event_name"
 	Hostname       Dimension = "hostname"
@@ -46,6 +47,7 @@ const (
 	UTMCampaign    Dimension = "utm_campaign"
 	Country        Dimension = "country"
 	Region         Dimension = "region"
+	City           Dimension = "city"
 	DeviceType     Dimension = "device_type"
 	ScreenSize     Dimension = "screen_size"
 	Browser        Dimension = "browser"
@@ -64,7 +66,7 @@ const (
 var Dimensions = []Dimension{
 	EventName, Hostname, Pathname, PageTitle,
 	Referrer, Source, Channel, UTMSource, UTMMedium, UTMCampaign,
-	Country, Region,
+	Country, Region, City,
 	DeviceType, ScreenSize, Browser, BrowserVersion, OS, OSVersion, Language,
 	BotReason,
 }

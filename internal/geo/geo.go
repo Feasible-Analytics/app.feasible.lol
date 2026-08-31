@@ -37,18 +37,22 @@ type Location struct {
 	// empty string when we do not know.
 	Country string
 
-	// Subdivision1 is the first-level region code (ISO-3166-2, for example
-	// "US-CA"). Empty when the database is country-level or has no answer.
+	// Subdivision1 is the first-level region. It is an ISO-3166-2 code
+	// ("US-CA") when the database carries one and the English region name
+	// ("England") when it does not, because DB-IP Lite names its subdivisions
+	// and never codes them. Empty when the database is country-level or has no
+	// answer.
 	Subdivision1 string
 
-	// Subdivision2 is the second-level region code, which most countries do not
-	// have at all.
+	// Subdivision2 is the second-level region, which most countries do not have
+	// at all. It follows the same code-then-name rule as Subdivision1.
 	Subdivision2 string
 
-	// CityGeonameID is the GeoNames identifier for the city. It is stored as an
-	// integer rather than a name because the id is stable across database
-	// releases and across languages, where a city name is neither.
-	CityGeonameID int64
+	// City is the English city name. A name rather than a GeoNames id because
+	// DB-IP Lite ships no ids at all, and because the name is what a dashboard
+	// renders — storing the id would mean shipping a GeoNames lookup table
+	// purely to turn it back into this string.
+	City string
 }
 
 // IsZero reports whether nothing at all was resolved. Callers use it to decide
@@ -56,7 +60,7 @@ type Location struct {
 // which is how a missing database becomes visible instead of silently turning
 // every map grey.
 func (l Location) IsZero() bool {
-	return l.Country == "" && l.Subdivision1 == "" && l.Subdivision2 == "" && l.CityGeonameID == 0
+	return l.Country == "" && l.Subdivision1 == "" && l.Subdivision2 == "" && l.City == ""
 }
 
 // Locator answers "where is this address". It is an interface so that swapping

@@ -108,10 +108,10 @@ type Debug struct {
 	UTMTerm      string `json:"utm_term"`
 	ClickIDParam string `json:"click_id_param"`
 
-	Country       string `json:"country"`
-	Region        string `json:"region"`
-	Subdivision2  string `json:"subdivision2"`
-	CityGeonameID int64  `json:"city_geoname_id"`
+	Country      string `json:"country"`
+	Region       string `json:"region"`
+	Subdivision2 string `json:"subdivision2"`
+	City         string `json:"city"`
 
 	DeviceType     string `json:"device_type"`
 	Browser        string `json:"browser"`
@@ -305,9 +305,9 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 		UTMTerm:      acquisition.utmTerm,
 		ClickIDParam: acquisition.clickID,
 
-		Country:       location.Country,
-		Region:        location.Subdivision1,
-		CityGeonameID: location.CityGeonameID,
+		Country: location.Country,
+		Region:  location.Subdivision1,
+		City:    location.City,
 
 		DeviceType:     agent.Device,
 		Browser:        agent.Browser,
@@ -559,7 +559,7 @@ func fillDebug(debug *Debug, event *Event, saltDay int64, rootDomain, subdivisio
 	debug.Country = event.Country
 	debug.Region = event.Region
 	debug.Subdivision2 = subdivision2
-	debug.CityGeonameID = event.CityGeonameID
+	debug.City = event.City
 
 	debug.DeviceType = event.DeviceType
 	debug.Browser = event.Browser

@@ -36,7 +36,7 @@ type SessionSnapshot struct {
 
 // sessionSnapshotVersion is bumped whenever Session gains or loses a field that
 // the fold depends on.
-const sessionSnapshotVersion = 1
+const sessionSnapshotVersion = 2
 
 // SessionFilePath is where the snapshot lives under a data directory.
 func SessionFilePath(dataDir string) string {
