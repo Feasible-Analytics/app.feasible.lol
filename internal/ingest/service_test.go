@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,11 +35,31 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
-// fixtureDomain is the one site the harness sends to. It is fixed because the
-// site domain is a fingerprint input, and changing it between the two runs
-// would make the visitor ids differ for a reason that has nothing to do with
-// ordering.
+// fixtureDomain is the spelling the site is registered under. The requests
+// deliberately do not all use it — see domainSpellings.
 const fixtureDomain = "example.com"
+
+// domainSpellings are the ways one site's own pages spell its own domain: a
+// snippet somebody typed by hand, a trailing dot from a copied FQDN, www on one
+// page and the apex on another. Sending only one of them is how a harness hides
+// a fingerprint bug, because the site domain is a fingerprint input: hashing
+// the spelling rather than the resolved site gives each spelling its own set of
+// visitors, and no later job can put them back together.
+//
+// The spelling a request uses is a function of the request itself, so shuffling
+// the stream cannot change which spelling an event was sent with.
+var domainSpellings = []string{
+	"example.com",
+	"www.example.com",
+	"Example.com",
+	"EXAMPLE.com",
+	"example.com.",
+}
+
+// urlHosts are the hosts the pages are actually served from. A browser
+// lower-cases the host in location.href, so the disagreement a real site has is
+// between its apex and its www name rather than one of case.
+var urlHosts = []string{"example.com", "www.example.com"}
 
 // fixtureSaltKey pins the salt encryption key, so both replays read the same
 // salt out of the same control database and therefore compute the same
@@ -65,6 +86,42 @@ var visitors = []visitor{
 	{"203.0.113.12", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"},
 	{"198.51.100.20", "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0"},
 	{"198.51.100.21", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15"},
+}
+
+// visitorAt returns one person by index. The first five are the hand-written
+// ones above; beyond that they are generated, which is what lets the same
+// fixture be replayed as many distinct people at once without hand-writing a
+// stream long enough to fill a production-sized write buffer.
+//
+// The generated addresses come out of 198.18.0.0/15, the benchmarking range: it
+// is reserved, so no test can accidentally geolocate to somewhere real.
+func visitorAt(i int) visitor {
+	if i < len(visitors) {
+		return visitors[i]
+	}
+
+	return visitor{
+		ip:        fmt.Sprintf("198.18.%d.%d", (i/250)%256, i%250),
+		userAgent: visitors[i%len(visitors)].userAgent,
+	}
+}
+
+// pick chooses one of a set of interchangeable values from a request, so that
+// the choice is a property of the event rather than of when it arrived.
+// Anything that varied with arrival order would make the shuffled run differ
+// from the ordered one for a reason that has nothing to do with the fold.
+func pick(options []string, r request) string {
+	sum := uint64(r.visitor) * 1099511628211
+	sum ^= uint64(r.timestamp)
+
+	for i := 0; i < len(r.url); i++ {
+		sum = (sum ^ uint64(r.url[i])) * 1099511628211
+	}
+	for i := 0; i < len(r.name); i++ {
+		sum = (sum ^ uint64(r.name[i])) * 1099511628211
+	}
+
+	return options[sum%uint64(len(options))]
 }
 
 // visitSpec describes one visit in the fixture. The expected metrics are
@@ -265,13 +322,59 @@ func stream() []request {
 	return out
 }
 
+// expandedStream is the fixture replayed as several sets of distinct people at
+// once. It exists so a replay can be long enough to fill a production-sized
+// write buffer without hand-writing hundreds of visits: every extra set is the
+// same visits by new visitors, so the expected numbers stay computable by hand.
+func expandedStream(sets int) []request {
+	var out []request
+
+	for set := 0; set < sets; set++ {
+		for _, r := range stream() {
+			r.visitor += set * len(visitors)
+			out = append(out, r)
+		}
+	}
+
+	sort.SliceStable(out, func(i, j int) bool { return out[i].timestamp < out[j].timestamp })
+
+	return out
+}
+
+// expectedFor scales the six metrics to an expanded stream. The three counts
+// multiply by the number of sets and the three ratios do not, because every set
+// is the same visits by different people.
+func expectedFor(sets int) metrics {
+	m := expected()
+
+	m.Visitors *= int64(sets)
+	m.Visits *= int64(sets)
+	m.Pageviews *= int64(sets)
+
+	return m
+}
+
 // harness is one wired-up ingest service over its own account database, sharing
 // a control database with its twin so both runs see the same salt and the same
 // site.
 type harness struct {
 	service *Service
 	manager *accounts.Manager
-	clock   time.Time
+
+	// clock is unix seconds rather than a time.Time because the write buffer
+	// flushes on its own goroutine at production sizes, and that goroutine
+	// reads the clock while the test is setting it for the next request.
+	clock atomic.Int64
+}
+
+// now is the clock every part of the pipeline reads.
+func (h *harness) now() time.Time {
+	return time.Unix(h.clock.Load(), 0).UTC()
+}
+
+// setClock moves the harness clock to the moment an event happened.
+func (h *harness) setClock(at time.Time) {
+	h.clock.Store(at.Unix())
 }
 
 // newControl builds the shared control database with one team and one site. It
@@ -315,26 +418,49 @@ func newHarness(t testing.TB, control *sql.DB, dataDir string, wrap func(Transpo
 	manager := accounts.NewManager(dataDir)
 	t.Cleanup(func() { manager.CloseAll() })
 
-	h := &harness{manager: manager, clock: fixtureStart}
+	h := &harness{manager: manager}
+	h.setClock(fixtureStart)
 
 	service, err := NewService(context.Background(), control, manager, Options{
 		DataDir: dataDir,
 		SaltKey: fixtureSaltKey,
-		Now:     func() time.Time { return h.clock },
+		Now:     h.now,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.service = service
 
-	// A buffer far larger than the stream, so flushes happen only where the
-	// test asks for them and the comparison is not racing a timer.
+	// The buffer is built with the same bounds production runs with. A harness
+	// that raises them writes every event through a path production never
+	// takes: a buffer bigger than the stream can never flush on size, so the
+	// size trigger and the flush that runs while the next request is being
+	// accepted are both untested.
 	var transport Transport = NewDirect(service.Writer)
 	if wrap != nil {
 		transport = wrap(transport)
 	}
 
-	service.Buffer = NewBuffer(transport, 1<<20, time.Hour)
+	service.Buffer = NewBuffer(transport, DefaultBufferSize, DefaultFlushInterval)
+
+	// Store-and-forward answers 202 before it writes, so a failed flush is
+	// invisible unless something is listening for it. Production logs it; the
+	// harness fails, because a run that lost half its events would otherwise
+	// only show up as a metric nobody could explain.
+	//
+	// The error is recorded rather than reported from the callback, because a
+	// flush runs on its own goroutine and may outlive the request that started
+	// it — reporting from there would be a log call after the test finished.
+	var flushErr atomic.Pointer[error]
+
+	service.Buffer.OnError = func(err error) { flushErr.CompareAndSwap(nil, &err) }
+
+	t.Cleanup(func() {
+		if err := flushErr.Load(); err != nil {
+			t.Errorf("write buffer flush failed: %v", *err)
+		}
+	})
+
 	service.Handler.Buffer = service.Buffer
 
 	return h
@@ -346,12 +472,18 @@ func newHarness(t testing.TB, control *sql.DB, dataDir string, wrap func(Transpo
 func (h *harness) send(t testing.TB, r request) *httptest.ResponseRecorder {
 	t.Helper()
 
-	h.clock = time.Unix(r.timestamp, 0).UTC()
+	h.clock.Store(r.timestamp)
+
+	// The snippet's domain and the host the page was served from are both
+	// varied, in a way that depends only on the event. Every spelling resolves
+	// to the same site, so every one of them has to produce the same visitor.
+	domain := pick(domainSpellings, r)
+	url := strings.Replace(r.url, "https://"+fixtureDomain, "https://"+pick(urlHosts, r), 1)
 
 	payload := map[string]any{
 		"n": r.name,
-		"u": r.url,
-		"d": fixtureDomain,
+		"u": url,
+		"d": domain,
 		"r": r.referrer,
 	}
 	if len(r.props) > 0 {
@@ -372,8 +504,9 @@ func (h *harness) send(t testing.TB, r request) *httptest.ResponseRecorder {
 	// integration.
 	req := httptest.NewRequest(http.MethodPost, "/api/event", strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "text/plain")
-	req.Header.Set("User-Agent", visitors[r.visitor].userAgent)
-	req.Header.Set("X-Forwarded-For", visitors[r.visitor].ip)
+	person := visitorAt(r.visitor)
+	req.Header.Set("User-Agent", person.userAgent)
+	req.Header.Set("X-Forwarded-For", person.ip)
 
 	recorder := httptest.NewRecorder()
 	h.service.Handler.ServeHTTP(recorder, req)
@@ -598,6 +731,7 @@ func TestReplayInOrder(t *testing.T) {
 	got := h.metrics(t)
 
 	assertMetrics(t, got, want)
+	assertNothingDropped(t, h)
 }
 
 // TestReplayShuffledWithDuplicatesMatches is run two, and the single
@@ -645,6 +779,7 @@ func TestReplayShuffledWithDuplicatesMatches(t *testing.T) {
 			}
 
 			assertMetrics(t, replayed.metrics(t), wantMetrics)
+			assertNothingDropped(t, replayed)
 
 			if got := replayed.eventCount(t); got != wantEvents {
 				t.Fatalf("events written = %d, want %d after %d redeliveries — a duplicate was counted",
@@ -655,6 +790,113 @@ func TestReplayShuffledWithDuplicatesMatches(t *testing.T) {
 				t.Fatalf("session rows differ after shuffling\n got: %s\nwant: %s", render(gotRows), render(wantRows))
 			}
 		})
+	}
+}
+
+// counting is a transport that records what the buffer handed it. It is how a
+// test tells "the buffer flushed because it filled up" from "the buffer flushed
+// because the test asked it to", which is the difference between exercising the
+// production trigger and exercising the test's own.
+type counting struct {
+	inner Transport
+
+	batches atomic.Int64
+	events  atomic.Int64
+}
+
+// Send passes the batch through, counting it on the way.
+func (c *counting) Send(ctx context.Context, shard int, batch []Event) ([]uuid.UUID, error) {
+	c.batches.Add(1)
+	c.events.Add(int64(len(batch)))
+
+	return c.inner.Send(ctx, shard, batch)
+}
+
+// replayUnflushed sends a stream and never calls Flush. Everything is written
+// by the buffer's own size trigger, on the buffer's own goroutine, while later
+// requests are still being accepted — which is how every event in production is
+// written and is a path a harness with a buffer bigger than its fixture can
+// never reach.
+func (h *harness) replayUnflushed(t testing.TB, requests []request) {
+	t.Helper()
+
+	for i, r := range requests {
+		if recorder := h.send(t, r); recorder.Code != http.StatusAccepted {
+			t.Fatalf("request %d: status %d, want 202: %s", i, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
+// drain writes the tail the size trigger left behind. A stream is never an
+// exact multiple of the buffer, so the last partial batch is still in memory
+// when the final request returns — the ticker takes it in production and
+// shutdown takes it on the way out, which is the same call this makes.
+//
+// One Flush is enough even with a flush already running: Flush waits on the
+// same lock the running one holds, and nothing can be added behind it.
+func (h *harness) drain(t testing.TB) {
+	t.Helper()
+
+	if err := h.service.Buffer.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// assertNothingDropped fails if the replay lost an event. Without it a fixture
+// that started being rejected — a domain spelling nothing recognises, a payload
+// the parser tightened up on — would show as numbers that no longer match,
+// which says nothing about why.
+func assertNothingDropped(t testing.TB, h *harness) {
+	t.Helper()
+
+	for _, count := range h.service.Counters.Snapshot().Dropped {
+		t.Errorf("%d events were dropped for site %d as %q", count.Count, count.SiteID, count.Reason)
+	}
+}
+
+// TestReplayAtProductionBufferBounds replays a stream long enough to fill the
+// real write buffer, with the real bounds and no flush the test controls.
+//
+// It exists because a harness that raises the buffer past the length of its own
+// fixture tests a path production never takes: the size trigger never fires, no
+// flush ever runs beside a request being accepted, and two of the three ways an
+// event reaches disk go untested. The numbers are the same six, scaled by the
+// number of people replaying the fixture at once.
+func TestReplayAtProductionBufferBounds(t *testing.T) {
+	dir := t.TempDir()
+	control := newControl(t, dir)
+
+	// Enough sets that the stream is comfortably longer than the buffer, so the
+	// size trigger fires several times rather than once at the very end.
+	const sets = 20
+
+	requests := expandedStream(sets)
+	if len(requests) <= DefaultBufferSize {
+		t.Fatalf("the stream is %d events and the buffer holds %d — it would never flush on size",
+			len(requests), DefaultBufferSize)
+	}
+
+	var transport *counting
+
+	h := newHarness(t, control, filepath.Join(dir, "production"), func(inner Transport) Transport {
+		transport = &counting{inner: inner}
+		return transport
+	})
+
+	h.replayUnflushed(t, requests)
+
+	sizeTriggered := transport.batches.Load()
+	if sizeTriggered == 0 {
+		t.Fatal("nothing was written before the final flush, so the size trigger never fired")
+	}
+
+	h.drain(t)
+
+	assertMetrics(t, h.metrics(t), expectedFor(sets))
+	assertNothingDropped(t, h)
+
+	if got, want := transport.events.Load(), int64(len(requests)); got != want {
+		t.Fatalf("the transport was handed %d events, want %d", got, want)
 	}
 }
 
@@ -669,7 +911,7 @@ func TestSessionSurvivesSaltRotation(t *testing.T) {
 
 	// The salt for the day before has to exist, or there is no previous salt to
 	// fall back to — which is the whole mechanism under test.
-	h.clock = time.Date(2026, time.August, 30, 23, 0, 0, 0, time.UTC)
+	h.setClock(time.Date(2026, time.August, 30, 23, 0, 0, 0, time.UTC))
 	if _, err := h.service.Salts.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
