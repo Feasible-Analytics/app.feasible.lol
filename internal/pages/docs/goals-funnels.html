@@ -1,0 +1,38 @@
+<h3>Goals</h3>
+<p>A goal is one of two things: a page somebody reached, or a custom event they sent.</p>
+
+<p>A <strong>pageview goal</strong> matches a path, optionally with wildcards —
+<code>/checkout/thank-you</code>, or <code>/blog/**</code>. It costs nothing towards your monthly
+volume, because the pageview it matches has already been counted.</p>
+
+<p>A <strong>custom event goal</strong> matches an event you send by name:</p>
+<pre><code>window.feasible('Signup')
+window.feasible('Purchase', { revenue: { amount: 49.00, currency: 'USD' } })</code></pre>
+<p>Custom events do count towards your monthly volume, because each one is an event we
+received and stored.</p>
+
+<h3>Goals start when you create them</h3>
+<p>This is the single most common surprise, so it has its own paragraph. A goal is evaluated
+as events arrive, not retroactively over your history. Creating a goal today gives you a
+number that starts at zero today. If you need it for a campaign, create it before the
+campaign starts.</p>
+
+<h3>Funnels</h3>
+<p>A funnel is an ordered list of goals, and it counts visitors who completed each step in
+order within one visit. Two rules follow from that and both matter:</p>
+<ul>
+  <li>A visitor who completes step three without step two is not in the funnel at step three.
+      Skipping a step means leaving the funnel.</li>
+  <li>A funnel is scoped to a visit. Somebody who signs up on Monday and buys on Thursday is
+      two visits, and does not complete a funnel that contains both. Measure that with a goal
+      pair rather than a funnel.</li>
+</ul>
+
+<p>Funnel steps are evaluated by the same event stream everything else reads, so a funnel
+built today over goals created last month is complete from the day each goal was created —
+never from before it.</p>
+
+<h3>Revenue</h3>
+<p>Revenue is attached to a custom event with an amount and a currency. It is stored exactly
+as sent and never converted at write time, so a change in exchange rates can never rewrite a
+past quarter. Conversion, if you want it, happens at read time and shows the rate it used.</p>

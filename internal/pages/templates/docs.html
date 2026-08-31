@@ -1,0 +1,19 @@
+{{ define "body" }}
+<div class="wrap">
+  <div class="hero">
+    <h1>Documentation</h1>
+    <p>How to install it, what every number means, and where the surprising bits are.
+       We would rather write down the confusing parts than let you find them on a dashboard.</p>
+  </div>
+  <section>
+    <div class="grid two">
+      {{ range .Index }}
+      <a class="panel" href="/docs/{{ .Slug }}" style="text-decoration:none;color:inherit">
+        <h3 style="margin:0 0 6px">{{ .Title }}</h3>
+        <p style="margin:0;color:var(--muted)">{{ .Summary }}</p>
+      </a>
+      {{ end }}
+    </div>
+  </section>
+</div>
+{{ end }}

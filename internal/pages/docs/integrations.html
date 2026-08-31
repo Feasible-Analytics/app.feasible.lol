@@ -1,0 +1,39 @@
+<p>There is nothing to integrate. The script is a script tag, so anything that lets you add
+one is supported. The list below is the ones people ask about, and the one line each needs.</p>
+
+<h3>WordPress</h3>
+<p>Paste the snippet into your theme's header, or into any "header and footer scripts"
+plugin. Do not add it to a caching plugin's "defer JavaScript" list — it is already
+deferred, and deferring it twice can drop the first pageview of a session.</p>
+
+<h3>Shopify</h3>
+<p><em>Online Store → Themes → Edit code → theme.liquid</em>, inside <code>&lt;head&gt;</code>. Checkout
+is a separate surface: add the snippet under <em>Settings → Checkout → Order status page
+additional scripts</em> if you want purchases counted.</p>
+
+<h3>Next.js, Nuxt, SvelteKit, Astro</h3>
+<p>Put the tag in the root document — <code>app/layout.tsx</code>, <code>app.html</code>,
+<code>Layout.astro</code>. Client-side routing is handled by the script itself; do not also fire
+a manual pageview on route change, or every navigation is counted twice.</p>
+
+<h3>React, Vue and other single-page apps</h3>
+<p>Same rule: one tag in <code>index.html</code>. The script listens for history changes.</p>
+
+<h3>Webflow, Squarespace, Framer, Ghost</h3>
+<p>Each has a "custom code" or "code injection" field in site settings. The head section is
+the right one.</p>
+
+<h3>Google Tag Manager</h3>
+<p>It works, and we would rather you did not. A tag manager is itself the thing most often
+blocked, so loading our script through it turns one blockable request into two. If you must,
+use a Custom HTML tag firing on <em>All Pages — Page View</em>, with "support document.write"
+switched off.</p>
+
+<h3>Mobile apps and anything without a browser</h3>
+<p>Post to the events endpoint directly. See <a href="/docs/api">the APIs</a>.</p>
+
+<h3>Visitors with JavaScript disabled</h3>
+<p>A no-script pixel is available and goes through the identical pipeline — the same
+derivation, the same session rules, the same storage. It is one image tag inside
+<code>&lt;noscript&gt;</code>. It cannot measure time on page or scroll depth, because nothing is
+running to measure them.</p>

@@ -1,0 +1,45 @@
+<p>Every option is a <code>data-</code> attribute on the script tag. There are no build flags and
+no separate script variants to choose between: one file, and the attributes decide what it
+does.</p>
+
+<h3>data-domain <em>(required)</em></h3>
+<p>The site this page belongs to, exactly as registered. It is the routing key for the whole
+system. A page whose <code>data-domain</code> does not match a registered site is dropped with the
+reason <code>unknown_site</code>, which you can see on the ingestion health panel.</p>
+
+<h3>data-api</h3>
+<p>Send events somewhere other than the default endpoint. This is what you set when you
+proxy the requests through your own domain — see <a href="/docs/proxying">proxying</a>.</p>
+
+<h3>data-exclude</h3>
+<p>A comma-separated list of path patterns that are never counted. <code>*</code> matches within a
+path segment and <code>**</code> matches across segments, so <code>/admin/**</code> excludes an entire
+subtree. Excluded pages send nothing at all, rather than sending and being filtered later.</p>
+
+<h3>data-include</h3>
+<p>The inverse, for a site where most pages should not be counted. If both are present,
+<code>data-exclude</code> is applied after <code>data-include</code>.</p>
+
+<h3>data-hash</h3>
+<p>Treat the URL fragment as part of the page. Set it only if your routing genuinely uses
+hashes; on a normal site it turns every in-page anchor into a separate pageview.</p>
+
+<h3>data-manual</h3>
+<p>Stop automatic pageviews entirely and send them yourself with
+<code>window.feasible('pageview')</code>. It exists for applications whose idea of a "page" does
+not match the URL. Use it sparingly: a manual pageview that is missed is data nothing can
+recover.</p>
+
+<h3>data-outbound, data-file-downloads</h3>
+<p>Automatically record clicks on links that leave your site, and on links to files. Both
+arrive as custom events, so both count towards your monthly volume.</p>
+
+<h3>data-revenue</h3>
+<p>Allow revenue amounts on custom events. Amounts are stored with their currency and are
+never converted at write time, so a change to exchange rates cannot rewrite last quarter.</p>
+
+<h3>Local development</h3>
+<p>The script does nothing on <code>localhost</code> and on private addresses by default, so your
+development traffic never reaches your production numbers. Set
+<code>localStorage.feasible_local = "true"</code> in your browser console to opt one machine in
+while you are testing an install.</p>

@@ -1,0 +1,57 @@
+<p>One binary and one directory. No Docker, no external database, no queue, and no feature
+that only exists in the hosted version. The software is AGPL-3.0-or-later.</p>
+
+<pre><code>./feasible db migrate
+./feasible serve</code></pre>
+
+<p>That is the whole deployment. <code>serve</code> runs the dashboard, the API, the tracker and
+ingestion in one process, which is what almost every self-hoster should run.</p>
+
+<h3>The data directory</h3>
+<p>Everything lives under <code>FEASIBLE_APP_DATA_DIR</code>: <code>control.db</code>, one SQLite
+database per account, the geolocation data, the refreshed bot lists and the salt key. Back
+up that directory and you have backed up the entire install.</p>
+
+<p>Use <code>./feasible db backup</code> rather than copying files. It takes a proper consistent
+snapshot; copying a SQLite file that is being written to gives you a file that looks fine
+and is not.</p>
+
+<h3>Migrations never run on boot</h3>
+<p>Two processes racing a migration is a classic self-hosting failure, and with one database
+per account the operation is slow enough that it has to be deliberate and observable. A
+binary that is newer than its databases refuses to start and tells you to run
+<code>db migrate</code>.</p>
+
+<h3>Configuration</h3>
+<p>Every variable is documented in <code>.env.sample</code>, with a comment and a default. A
+variable that is not in that file does not exist — the build fails if the source reads one
+that is missing. Values resolve from <code>$CONFIG_DIR/&lt;NAME&gt;</code> (for Docker and systemd
+secrets), then the environment, then <code>.env</code> outside production.</p>
+
+<h3>Email</h3>
+<p>Set <code>FEASIBLE_APP_MAIL_TRANSPORT=smtp</code> and point it at a relay. The default
+<code>log</code> transport writes rendered messages to <code>tmp/mail/</code> and sends nothing, which
+is what makes local development need no mail service at all.</p>
+
+<p>Set <code>FEASIBLE_APP_MAIL_FROM</code> to an address your relay is allowed to send as. A
+relay rejecting a From address it does not own is the most common reason a self-hoster's mail
+silently stops.</p>
+
+<h3>Billing on a self-hosted install</h3>
+<p>There is none, and nothing is limited because of it. With no payment provider configured
+the billing screens say so, the lifecycle clock is never started, and no account is ever
+locked or deleted for non-payment. The account lifecycle exists to manage the hosted
+service's own subscriptions, not to enforce anything on you.</p>
+
+<h3>Behind a reverse proxy</h3>
+<p>Set <code>FEASIBLE_INGEST_TRUSTED_PROXIES</code> to your load balancer and nothing else. The
+default is empty — nobody — because an unconditionally trusted address header lets any
+visitor forge their own geolocation and split their own fingerprint.</p>
+
+<p>Keep <code>FEASIBLE_APP_INTERNAL_LISTEN</code> on loopback. It serves the salts that can turn a
+visitor identifier back into an address, and it must not be routable from anywhere.</p>
+
+<h3>City-level geolocation</h3>
+<p>Country-level data is embedded in the binary, so geolocation works out of the box with
+nothing to download. City-level data is a larger, differently licensed file that is fetched
+on first run when you supply a key. It is not a paid feature; it is an extra file.</p>

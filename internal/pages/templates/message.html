@@ -1,0 +1,16 @@
+{{ define "body" }}
+<div class="wrap narrow">
+  <div class="hero">
+    <h1>{{ .Heading }}</h1>
+  </div>
+  <section>
+    <div class="panel prose">
+      {{ range .Paragraphs }}<p>{{ . }}</p>{{ end }}
+      {{ if .Extra }}{{ .Extra }}{{ end }}
+      {{ range .Links }}
+      <a class="btn alt inline" href="{{ .URL }}" style="margin-right:8px">{{ .Label }}</a>
+      {{ end }}
+    </div>
+  </section>
+</div>
+{{ end }}

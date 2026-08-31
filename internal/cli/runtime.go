@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -99,8 +100,30 @@ func buildIngest(ctx context.Context, e *env, dataDir string) (*ingest.Service, 
 // The roll-up worker is optional so that the ingest-only process, which has no
 // reports to make fast, does not summarise anything.
 func serveUntilSignal(e *env, server *httpserver.Server, service *ingest.Service, worker *rollup.Worker, closers ...func() error) int {
+	return serveUntilSignalWith(e, server, service, worker, nil, closers...)
+}
+
+// serveUntilSignalWith is serveUntilSignal plus the process's own background
+// loops — the billing sweeps, the usage flush and the access gate.
+//
+// They are started here rather than by their own package so that shutdown waits
+// for them. The usage recorder flushes its last interval on the way out, and a
+// process that exited without waiting would lose the events an account was
+// billed for, every single deploy.
+func serveUntilSignalWith(e *env, server *httpserver.Server, service *ingest.Service, worker *rollup.Worker, background func(context.Context, func(func())), closers ...func() error) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	var loops sync.WaitGroup
+
+	run := func(fn func()) {
+		loops.Add(1)
+
+		go func() {
+			defer loops.Done()
+			fn()
+		}()
+	}
 
 	if err := server.Listen(); err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
@@ -109,8 +132,14 @@ func serveUntilSignal(e *env, server *httpserver.Server, service *ingest.Service
 
 	service.Start(ctx)
 
+	// The roll-up worker is not waited on: it holds no unflushed state, and a
+	// summary it did not finish is rebuilt on the next pass.
 	if worker != nil {
 		go worker.Run(ctx)
+	}
+
+	if background != nil {
+		background(ctx, run)
 	}
 
 	errs := make(chan error, 1)
@@ -151,6 +180,12 @@ func serveUntilSignal(e *env, server *httpserver.Server, service *ingest.Service
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		code = ExitError
 	}
+
+	// The loops observe the cancelled context and flush on their way out. The
+	// databases below are closed only once they have, or the final usage flush
+	// would land on a handle that is already gone.
+	stop()
+	loops.Wait()
 
 	for _, closer := range closers {
 		if err := closer(); err != nil {

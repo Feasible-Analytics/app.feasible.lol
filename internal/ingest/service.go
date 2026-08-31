@@ -43,6 +43,11 @@ type Options struct {
 	BufferSize    int
 	FlushInterval time.Duration
 
+	// Usage counts the billable volume an account stores. It is optional
+	// because a self-hosted install has no billing, and ingestion must never
+	// depend on billing existing.
+	Usage UsageRecorder
+
 	// Now replaces the system clock everywhere in the pipeline. It exists for
 	// the replay harness, which has to drive a stream across a UTC midnight
 	// without waiting for one, and it has to reach the salt store before its
@@ -159,6 +164,7 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 
 	writer := NewWriter(manager, sessionCache)
 	writer.Now = now
+	writer.Usage = opts.Usage
 
 	service := &Service{
 		now:      now,

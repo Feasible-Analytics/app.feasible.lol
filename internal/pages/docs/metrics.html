@@ -1,0 +1,52 @@
+<p>Most of these are what you would expect. The four at the bottom are the ones that surprise
+people, and they surprise people in every analytics product — we would rather write them
+down than let you discover them in a meeting.</p>
+
+<h3>The metrics</h3>
+<ul>
+  <li><strong>Pageviews</strong> — one per page load, plus one per client-side route change.</li>
+  <li><strong>Visitors</strong> — distinct people in the selected period, counted by the daily
+      visitor identifier described in <a href="/docs/privacy">privacy</a>.</li>
+  <li><strong>Visits</strong> (sessions) — a run of activity that ends after 30 minutes of
+      silence, or at midnight in the site's timezone.</li>
+  <li><strong>Views per visit</strong> — pageviews divided by visits.</li>
+  <li><strong>Bounce rate</strong> — the share of visits with exactly one pageview and no
+      interaction. An engagement ping is not an interaction.</li>
+  <li><strong>Visit duration</strong> — last activity minus first activity within a visit.
+      A single-page visit has a duration only if the tab reported time on page.</li>
+  <li><strong>Time on page</strong> — measured by the script while the tab is visible, so a
+      page left open in a background tab does not accumulate hours.</li>
+  <li><strong>Scroll depth</strong> — the furthest point reached, as a percentage of the
+      document height at the moment it was measured.</li>
+</ul>
+
+<h3>Four things that are not bugs</h3>
+
+<h4>Visitors are not additive</h4>
+<p>The visitors for January plus the visitors for February is not the visitors for
+January-to-February, because somebody who came in both months is one person across the range
+and two people across the two months. This is true of every product that counts distinct
+people. Do not sum a visitors column.</p>
+
+<h4>Unique visitors can exceed pageviews</h4>
+<p>An event that is not a pageview — a custom event, an outbound click — can be the only
+thing a visitor sends. Filter to a segment made of those and you will see more visitors than
+pageviews, which is arithmetic rather than an error.</p>
+
+<h4>Attribution is frozen at the start of a visit</h4>
+<p>The source, campaign and channel are decided by the first event in a visit and then
+stamped onto every event in it. A visitor who arrives from a search, then clicks one of your
+own emails mid-visit, stays attributed to the search. This is what makes a report add up: if
+attribution changed mid-visit, the same visit would appear under two sources and every total
+on the page would be larger than reality.</p>
+
+<h4>Goals do not backfill</h4>
+<p>A goal starts counting from the moment you create it. It is not a retroactive query over
+what you already collected — the historic events were not evaluated against a rule that did
+not exist. Create the goal before the campaign, not after it.</p>
+
+<h3>What is not counted towards your bill</h3>
+<p>Engagement pings and pageview goals. A pageview goal is a saved view of pageviews you have
+already paid for, and an engagement ping is the script's own heartbeat. Billing either would
+be charging you for the same event twice. See <a href="/docs/api">the APIs</a> for exactly which
+event names are which.</p>

@@ -34,8 +34,9 @@ const (
 	DefaultAppBaseURL        = "http://localhost:19300"
 	DefaultAppTransport      = TransportDirect
 	DefaultAppMailTransport  = MailTransportLog
-	DefaultAppMailFrom       = "feasible.lol <no-reply@feasible.lol>"
-	DefaultSMTPPort          = "587"
+	DefaultAppMailFrom       = "feasible.lol <hello@feasible.lol>"
+	DefaultAppSalesEmail     = "sales@feasible.lol"
+	DefaultSMTPPort          = 587
 	DefaultIngestListen      = "127.0.0.1:19302"
 	DefaultIngestShards      = "http://127.0.0.1:19401"
 	DefaultIngestBufferPath  = "./data/ingest/buffer.db"
@@ -118,10 +119,15 @@ type App struct {
 	Transport      string
 	MailTransport  string
 
-	// MailFrom is the From address on every transactional message. It is here
-	// rather than beside the SMTP settings because the log transport needs it
-	// too, and a message with no sender is a message that cannot be replied to.
+	// MailFrom is the envelope sender on every message the product sends. A
+	// relay rejects a From it does not own, and that rejection is the most
+	// common reason a self-hoster's mail stops arriving with nothing in our
+	// logs to explain it.
 	MailFrom string
+
+	// SalesEmail is where the volume ladder points a growing customer. It is
+	// configurable because a self-hoster's "talk to us" address is not ours.
+	SalesEmail string
 
 	// SecretKey encrypts the two-factor secrets and signs the short-lived
 	// cookies, as 32 hex-encoded bytes. Empty means one is generated under the
@@ -131,21 +137,24 @@ type App struct {
 
 	SMTP   SMTP
 	Google GoogleOAuth
-
-	// StripeSecretKey lets the delete-account flow remove the payment
-	// provider's customer record. Empty means billing is not configured, which
-	// is the normal state of a self-hosted install.
-	StripeSecretKey string
+	Stripe Stripe
 }
 
-// SMTP is the mail server the smtp transport talks to. It is a nested struct so
-// that "which of these five strings belongs to mail" is answered by the type
-// rather than by a naming convention.
+// SMTP is the relay the smtp mail transport uses. It is a nested struct so that
+// "which of these belongs to mail" is answered by the type rather than by a
+// naming convention, and none of it is read unless MailTransport is "smtp".
 type SMTP struct {
-	Host     string
-	Port     string
+	Host string
+
+	// Port decides the encryption as well as the destination: 465 is TLS from
+	// the first byte and everything else negotiates it after EHLO. It is a
+	// number rather than a string so that decision can be made by comparison
+	// rather than by parsing it again at the point of use.
+	Port int
+
 	Username string
 	Password string
+	StartTLS bool
 }
 
 // GoogleOAuth is the client for Google sign-in.
@@ -161,6 +170,33 @@ type GoogleOAuth struct {
 // Configured reports whether Google sign-in can be offered.
 func (g GoogleOAuth) Configured() bool {
 	return g.ClientID != "" && g.ClientSecret != ""
+}
+
+// Stripe is the payment provider's configuration. Every field is empty on a
+// self-hosted install, which is a supported state rather than a broken one:
+// billing degrades to "not available here" instead of failing to boot.
+//
+// The secret key on its own is enough for the delete-account flow to remove a
+// customer record; taking money needs the prices too, which is what Enabled
+// reports.
+type Stripe struct {
+	SecretKey      string
+	PublishableKey string
+	Product        string
+	PriceMonthly   string
+	PriceYearly    string
+
+	// WebhookSecret verifies every delivery. Empty makes the endpoint refuse
+	// everything, which is correct: an unverified webhook endpoint is a public
+	// URL that changes billing state.
+	WebhookSecret string
+}
+
+// Enabled reports whether this install can take money. Both prices are
+// required as well as the key, because a checkout against a missing price
+// fails at the provider in front of somebody who was trying to pay.
+func (s Stripe) Enabled() bool {
+	return s.SecretKey != "" && s.PriceMonthly != "" && s.PriceYearly != ""
 }
 
 // Ingest holds the values only the `ingest` process reads.
@@ -362,9 +398,10 @@ func (l *Loader) Bool(name string, fallback bool) bool {
 // Int reads a whole-number variable.
 //
 // An unparseable or non-positive value falls back to the default rather than
-// failing the boot. Every number read through this is a limit or an interval,
-// and a typo in one must not stop a process starting — a rate limit of zero
-// would lock every customer out of the API it exists to protect.
+// failing the boot. Every number read through this is a limit, an interval or a
+// port, and a typo in one must not stop a process starting — a rate limit of
+// zero would lock every customer out of the API it exists to protect, and a
+// port of zero would bind the mail relay to nothing.
 func (l *Loader) Int(name string, fallback int) int {
 	value, ok := l.lookup(name)
 	if !ok || value == "" {
@@ -437,18 +474,27 @@ func LoadFrom(l *Loader) (*Config, error) {
 			Transport:      strings.ToLower(l.String("FEASIBLE_APP_TRANSPORT", DefaultAppTransport)),
 			MailTransport:  strings.ToLower(l.String("FEASIBLE_APP_MAIL_TRANSPORT", DefaultAppMailTransport)),
 			MailFrom:       l.String("FEASIBLE_APP_MAIL_FROM", DefaultAppMailFrom),
+			SalesEmail:     l.String("FEASIBLE_APP_SALES_EMAIL", DefaultAppSalesEmail),
 			SecretKey:      strings.TrimSpace(l.String("FEASIBLE_APP_SECRET_KEY", "")),
 			SMTP: SMTP{
 				Host:     strings.TrimSpace(l.String("FEASIBLE_SMTP_HOST", "")),
-				Port:     strings.TrimSpace(l.String("FEASIBLE_SMTP_PORT", DefaultSMTPPort)),
+				Port:     l.Int("FEASIBLE_SMTP_PORT", DefaultSMTPPort),
 				Username: l.String("FEASIBLE_SMTP_USERNAME", ""),
 				Password: l.String("FEASIBLE_SMTP_PASSWORD", ""),
+				StartTLS: l.Bool("FEASIBLE_SMTP_STARTTLS", true),
 			},
 			Google: GoogleOAuth{
 				ClientID:     strings.TrimSpace(l.String("FEASIBLE_GOOGLE_CLIENT_ID", "")),
 				ClientSecret: strings.TrimSpace(l.String("FEASIBLE_GOOGLE_CLIENT_SECRET", "")),
 			},
-			StripeSecretKey: strings.TrimSpace(l.String("FEASIBLE_STRIPE_SECRET_KEY", "")),
+			Stripe: Stripe{
+				SecretKey:      strings.TrimSpace(l.String("FEASIBLE_STRIPE_SECRET_KEY", "")),
+				PublishableKey: strings.TrimSpace(l.String("FEASIBLE_STRIPE_PUBLISHABLE_KEY", "")),
+				Product:        strings.TrimSpace(l.String("FEASIBLE_STRIPE_PRODUCT", "")),
+				PriceMonthly:   strings.TrimSpace(l.String("FEASIBLE_STRIPE_PRICE_MONTHLY", "")),
+				PriceYearly:    strings.TrimSpace(l.String("FEASIBLE_STRIPE_PRICE_YEARLY", "")),
+				WebhookSecret:  strings.TrimSpace(l.String("FEASIBLE_STRIPE_WEBHOOK_SECRET", "")),
+			},
 		},
 		API: API{
 			RateLimit:      l.Int("FEASIBLE_API_RATE_LIMIT", DefaultAPIRateLimit),
@@ -571,6 +617,19 @@ func (c *Config) Validate() error {
 	case MailTransportLog, MailTransportSMTP:
 	default:
 		return fmt.Errorf("FEASIBLE_APP_MAIL_TRANSPORT: %q is not log or smtp", c.App.MailTransport)
+	}
+
+	// A relay with no host cannot send anything, and finding that out at the
+	// moment a deletion warning is due is far too late.
+	if c.App.MailTransport == MailTransportSMTP && c.App.SMTP.Host == "" {
+		return fmt.Errorf("FEASIBLE_APP_MAIL_TRANSPORT is smtp but FEASIBLE_SMTP_HOST is empty")
+	}
+
+	// Half-configured billing is worse than none: a secret key with no prices
+	// produces a checkout button that fails at the provider, in front of
+	// somebody who was trying to pay us.
+	if c.App.Stripe.SecretKey != "" && (c.App.Stripe.PriceMonthly == "" || c.App.Stripe.PriceYearly == "") {
+		return fmt.Errorf("FEASIBLE_STRIPE_SECRET_KEY is set but FEASIBLE_STRIPE_PRICE_MONTHLY or _PRICE_YEARLY is empty")
 	}
 
 	if c.Shared.SaltKey != "" && len(c.Shared.SaltKey) != 64 {

@@ -24,11 +24,13 @@ type capture struct {
 	messages []Message
 }
 
-// Send records a message.
-func (c *capture) Send(_ context.Context, msg Message) error {
+// Send records a message and reports the acceptance a real transport would.
+// Anything else would be a transport that declined every message, which the
+// mailer correctly turns into an error.
+func (c *capture) Send(_ context.Context, msg Message) (Result, error) {
 	c.messages = append(c.messages, msg)
 
-	return nil
+	return Result{Transport: "capture", Accepted: true, Detail: "captured"}, nil
 }
 
 // newTestMailer builds a mailer over a capturing transport.
@@ -37,10 +39,7 @@ func newTestMailer(t *testing.T) (*Mailer, *capture) {
 
 	sender := &capture{}
 
-	mailer, err := NewWithSender(sender, "feasible <no-reply@example.com>", "https://example.com")
-	if err != nil {
-		t.Fatalf("build mailer: %v", err)
-	}
+	mailer := NewWithTransport(sender, "feasible <no-reply@example.com>", "https://example.com")
 
 	return mailer, sender
 }
@@ -122,16 +121,20 @@ func TestEveryMessageRenders(t *testing.T) {
 	}
 }
 
-// TestLogTransportWritesTheMessage checks the transport that makes local
-// development and a first-run self-hoster work with no SMTP service at all — a
-// verification email that cannot be sent would make the first screen of the
-// product a dead end.
-func TestLogTransportWritesTheMessage(t *testing.T) {
+// TestLogTransportNamesTheRecipientInTheFilename checks the transport that
+// makes local development and a first-run self-hoster work with no SMTP service
+// at all — a verification email that cannot be sent would make the first screen
+// of the product a dead end.
+//
+// The body is checked by containment rather than equality because the written
+// file also carries the recipient, subject and tag as an HTML comment, so that
+// an artefact opened a week later says who it was for.
+func TestLogTransportNamesTheRecipientInTheFilename(t *testing.T) {
 	dir := t.TempDir()
 
-	sender := &LogSender{Dir: dir}
+	sender := &LogTransport{Dir: dir}
 
-	err := sender.Send(context.Background(), Message{To: "a@example.com", Subject: "Hello", HTML: "<p>Hi</p>"})
+	_, err := sender.Send(context.Background(), Message{To: "a@example.com", Subject: "Hello", HTML: "<p>Hi</p>"})
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
@@ -150,7 +153,7 @@ func TestLogTransportWritesTheMessage(t *testing.T) {
 		t.Fatalf("read message: %v", err)
 	}
 
-	if string(body) != "<p>Hi</p>" {
+	if !strings.Contains(string(body), "<p>Hi</p>") {
 		t.Errorf("the rendered message was not written: %q", body)
 	}
 
@@ -179,12 +182,36 @@ func TestNewRejectsAnUnknownTransport(t *testing.T) {
 // TestBaseURLLosesItsTrailingSlash checks the one place a stray slash would
 // produce a double one in every link in every email.
 func TestBaseURLLosesItsTrailingSlash(t *testing.T) {
-	mailer, err := NewWithSender(&capture{}, "a@example.com", "https://example.com/")
-	if err != nil {
-		t.Fatalf("build mailer: %v", err)
-	}
+	mailer := NewWithTransport(&capture{}, "a@example.com", "https://example.com/")
 
 	if mailer.BaseURL() != "https://example.com" {
 		t.Errorf("want %q, got %q", "https://example.com", mailer.BaseURL())
+	}
+}
+
+// TestTextFromHTMLKeepsTheContent checks the crude tag strip. It only has to
+// handle four templates we wrote ourselves, and what matters is that the code
+// and the link survive.
+func TestTextFromHTMLKeepsTheContent(t *testing.T) {
+	text := textFromHTML(`<div><p>Hi Sam,</p>
+
+	<p>Your code is <strong>12345678</strong>.</p>
+
+	<p><a href="https://example.com/x">https://example.com/x</a></p></div>`)
+
+	for _, fragment := range []string{"Hi Sam,", "12345678", "https://example.com/x"} {
+		if !strings.Contains(text, fragment) {
+			t.Errorf("the text part lost %q:\n%s", fragment, text)
+		}
+	}
+
+	if strings.Contains(text, "<") || strings.Contains(text, ">") {
+		t.Errorf("tags should be stripped:\n%s", text)
+	}
+
+	// Stripping block tags leaves runs of blank lines, and a column of gaps is
+	// not a readable message.
+	if strings.Contains(text, "\n\n\n") {
+		t.Errorf("blank lines should be collapsed:\n%q", text)
 	}
 }

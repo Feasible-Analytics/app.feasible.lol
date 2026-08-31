@@ -1,0 +1,68 @@
+<p>Two APIs: one to send events, one to read numbers back. Both are HTTP and JSON, and both
+are documented here in full — there is no separate paid tier for API access.</p>
+
+<h3>Sending events</h3>
+<pre><code>POST /api/event
+Content-Type: application/json
+
+{
+  "n": "pageview",
+  "d": "example.com",
+  "u": "https://example.com/pricing",
+  "r": "https://duckduckgo.com/"
+}</code></pre>
+
+<p>The response is <code>202 Accepted</code> as soon as the event is durably buffered, before it
+reaches the database that will hold it. If we could not use the event, the reason is in the
+<code>x-feasible-dropped</code> response header and on your ingestion health panel — a beacon
+cannot act on a status code, so the reason travels in a header instead of a 4xx.</p>
+
+<table>
+  <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>n</code></td><td>Event name. <code>pageview</code>, <code>engagement</code>, or your own.</td></tr>
+    <tr><td><code>d</code></td><td>Domain, matching a registered site.</td></tr>
+    <tr><td><code>u</code></td><td>The page URL.</td></tr>
+    <tr><td><code>r</code></td><td>The referrer, if any.</td></tr>
+    <tr><td><code>p</code></td><td>Custom properties, as an object.</td></tr>
+    <tr><td><code>$</code></td><td>Revenue, as <code>{"amount": …, "currency": "USD"}</code>.</td></tr>
+  </tbody>
+</table>
+
+<p>Only <code>pageview</code> and your own event names are billable. <code>engagement</code> is the
+script's heartbeat and is never counted towards your monthly volume.</p>
+
+<h3>Stating attribution for a server-side event</h3>
+<p>An offline or delayed conversion has no referrer of its own and would otherwise be Direct
+forever. Send the attribution explicitly and it is used in place of the referrer.</p>
+
+<h3>Debugging one request</h3>
+<p>Send <code>X-Debug-Request: 1</code> with any event and the response is the fully derived
+event: the address we resolved and where from, the visitor identifier, the geolocation, the
+channel, and every field we would store. It is the fastest way to prove a proxy is passing
+the visitor's address through, and it answers "why did this not count" without a support
+ticket.</p>
+
+<h3>Reading numbers back</h3>
+<pre><code>POST /api/stats/example.com/query
+Authorization: Bearer &lt;api key&gt;
+
+{
+  "metrics": ["visitors", "pageviews", "bounce_rate"],
+  "date_range": "30d",
+  "dimensions": ["visit:source"],
+  "filters": [["is", "visit:country", ["US"]]]
+}</code></pre>
+
+<p>Every report in the product is this one request with different metrics and dimensions.
+There is no per-card endpoint and there will not be one: a handler per card is a handler per
+way for the same number to be wrong.</p>
+
+<p>API keys are created in your account settings, shown once, and stored only as a hash. They
+carry an hourly rate limit, and the limit is per key so one runaway script cannot starve
+your dashboard.</p>
+
+<h3>Exporting everything</h3>
+<p>The export gives you every event we hold for an account in a portable format. It works in
+every phase of an account's life, including a locked or dormant one and including the day
+before a scheduled deletion. It is your data.</p>

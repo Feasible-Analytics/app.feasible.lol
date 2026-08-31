@@ -1,0 +1,140 @@
+{{ define "body" }}
+<div class="wrap">
+
+  <div class="hero">
+    <h1>Billing</h1>
+    <p>{{ .Account.Name }} — what you are using, what you are paying, and what happens next.</p>
+  </div>
+
+  {{ with .Status }}
+  <div class="banner {{ .Tone }}">
+    <h3>{{ .Heading }}</h3>
+    <p>{{ .Detail }}</p>
+  </div>
+  {{ end }}
+
+  <section>
+    <div class="panel">
+      <h2 style="margin-top:0">Usage this month</h2>
+      <div class="meter {{ .Usage.Tone }}"><span style="width:{{ .Usage.BarWidth }}%"></span></div>
+      <div class="numbers">
+        <div><div class="k">Billable</div><div class="v">{{ .Usage.Billable }}</div></div>
+        <div><div class="k">Included</div><div class="v">{{ .Usage.Limit }}</div></div>
+        <div><div class="k">Used</div><div class="v">{{ .Usage.Percent }}%</div></div>
+        {{ if .Usage.Projected }}
+        <div><div class="k">Month-end estimate</div><div class="v">{{ .Usage.Projected }}</div></div>
+        {{ end }}
+      </div>
+      <p style="color:var(--muted);margin-top:14px">
+        Billable means pageviews plus custom events, across every site on this account, for
+        the calendar month in UTC. Engagement pings and pageview goals are not counted —
+        they would be charging you twice for something you already sent.
+      </p>
+    </div>
+  </section>
+
+  {{ if .History }}
+  <section>
+    <h2>The last few months</h2>
+    <div class="panel scroll">
+      <table>
+        <thead><tr><th>Month</th><th class="num">Pageviews</th><th class="num">Custom events</th><th class="num">Billable</th></tr></thead>
+        <tbody>
+        {{ range .History }}
+          <tr>
+            <td>{{ .Period }}</td>
+            <td class="num">{{ .Pageviews }}</td>
+            <td class="num">{{ .CustomEvents }}</td>
+            <td class="num">{{ .Billable }}</td>
+          </tr>
+        {{ end }}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {{ end }}
+
+  <section>
+    <h2>Your plan</h2>
+    <div class="grid two">
+      <div class="panel">
+        <div class="numbers">
+          <div><div class="k">Plan</div><div class="v">{{ .Plan.Label }}</div></div>
+          <div><div class="k">Status</div><div class="v">{{ .Plan.Status }}</div></div>
+        </div>
+        {{ if .Plan.RenewsOn }}
+        <p style="margin-top:14px;color:var(--muted)">
+          {{ if .Plan.CancelAtPeriodEnd }}Ends on {{ .Plan.RenewsOn }}.{{ else }}Renews on {{ .Plan.RenewsOn }}.{{ end }}
+        </p>
+        {{ end }}
+        {{ if .Plan.HasCustomer }}
+        <form method="POST" action="/billing/portal" style="margin-top:14px">
+          {{ if .TeamID }}<input type="hidden" name="team" value="{{ .TeamID }}">{{ end }}
+          <button class="btn inline" type="submit">Manage card, invoices and plan</button>
+        </form>
+        {{ else }}
+        <p style="margin-top:14px;color:var(--muted)">No card on file. Nothing has been charged and no
+           customer record exists with our payment provider.</p>
+        {{ end }}
+      </div>
+
+      <div class="panel plan">
+        <div class="per">Upgrade</div>
+        <div class="price">$9.99<span class="per"> / month</span></div>
+        <div class="per">or $100 a year <span class="save">2 months free</span></div>
+        <ul>
+          <li>1,000,000 pageviews + custom events</li>
+          <li>Unlimited sites, members and retention</li>
+          <li>Every feature, no add-ons</li>
+        </ul>
+        <div style="display:flex;gap:10px">
+          <form method="POST" action="/billing/checkout" style="flex:1">
+            <input type="hidden" name="plan" value="monthly">
+            {{ if .TeamID }}<input type="hidden" name="team" value="{{ .TeamID }}">{{ end }}
+            <button class="btn" type="submit" {{ if not .Enabled }}disabled{{ end }}>Monthly</button>
+          </form>
+          <form method="POST" action="/billing/checkout" style="flex:1">
+            <input type="hidden" name="plan" value="yearly">
+            {{ if .TeamID }}<input type="hidden" name="team" value="{{ .TeamID }}">{{ end }}
+            <button class="btn alt" type="submit" {{ if not .Enabled }}disabled{{ end }}>Yearly</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  {{ if .Timeline }}
+  <section>
+    <h2>What happens next</h2>
+    <div class="panel">
+      <ul class="timeline">
+        {{ range .Timeline }}
+        <li {{ if .Now }}class="now"{{ end }}><span class="when">{{ .When }}</span><span class="what">{{ .What }}</span></li>
+        {{ end }}
+      </ul>
+    </div>
+  </section>
+  {{ end }}
+
+  <section>
+    <h2>Your data</h2>
+    <div class="panel">
+      <p>Export works in every phase of an account's life, including the day before deletion.
+         It is your data and portability is not conditional on payment.</p>
+      <a class="btn alt inline" href="/billing/export">Download everything</a>
+    </div>
+  </section>
+
+  {{ if .Growing }}
+  <section>
+    <h2>Growing past a million</h2>
+    <div class="panel">
+      <p>You are close to, or past, the volume included in the plan. Nothing breaks and
+         nothing is deleted — but there is usually a better arrangement at this size.</p>
+      <a class="btn inline" href="mailto:{{ .SalesEmail }}?subject=Enterprise%20volume%20for%20{{ .Account.Name }}">Email {{ .SalesEmail }}</a>
+    </div>
+  </section>
+  {{ end }}
+
+</div>
+{{ end }}

@@ -1,0 +1,36 @@
+<p>A custom property is a key and a value attached to an event, so you can break a report down
+by something only your application knows — a plan name, a category, a variant.</p>
+
+<pre><code>window.feasible('Signup', {
+  props: { plan: 'yearly', referred_by: 'partner' }
+})</code></pre>
+
+<h3>The limits, and what happens at each one</h3>
+<ul>
+  <li><strong>30 properties per event.</strong> The rest are dropped and counted as
+      <code>props_over_limit</code> on the ingestion health panel.</li>
+  <li><strong>300 characters per name, 2,000 per value.</strong> Longer ones are truncated
+      and counted, not rejected.</li>
+  <li><strong>Strings, numbers and booleans only.</strong> An object, an array or a null is
+      dropped and counted as <code>prop_value_unsupported</code>. It is as lost as a
+      thirty-first property, and the whole point of that panel is that nothing is lost
+      quietly.</li>
+</ul>
+
+<h3>Do not put personal data in a property</h3>
+<p>Email addresses, names, user ids, session tokens. A property is stored as sent and shown
+on a dashboard, and we cannot un-store it for you afterwards. If you need to segment by user,
+send a value that identifies a group rather than a person.</p>
+
+<p>The same applies to query strings. Every parameter except the seven acquisition ones is
+stripped from the stored path before anything is written, precisely because sites do put
+tokens and addresses in them.</p>
+
+<h3>Reading them back</h3>
+<p>Every property is available as a dimension in the query API and as a breakdown in the
+dashboard, and can be combined with any filter. There is no separate "custom dimensions"
+allowance to configure and no extra charge for using them.</p>
+
+<h3>A property is not free</h3>
+<p>The custom event carrying it counts towards your monthly volume. The properties themselves
+do not add to that count — one event with thirty properties is one billable event.</p>

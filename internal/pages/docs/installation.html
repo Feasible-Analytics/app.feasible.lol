@@ -1,0 +1,30 @@
+<p>One script tag, on every page you want counted. Nothing else is required — no cookie
+banner, no consent gate, no build step.</p>
+
+<pre><code>&lt;script defer data-domain="example.com" src="https://feasible.lol/js/f.js"&gt;&lt;/script&gt;</code></pre>
+
+<p><code>data-domain</code> must match the site exactly as you registered it. It is how an event
+is routed to your account, and an event for a domain we do not hold is dropped with a
+reason you can see on the ingestion health panel — never silently.</p>
+
+<h3>Where to put it</h3>
+<p>Anywhere in <code>&lt;head&gt;</code> or <code>&lt;body&gt;</code>. It is deferred, so it never blocks rendering
+and never appears in your Core Web Vitals. If your site is a single-page application the
+script picks up route changes on its own; you do not need to call anything on navigation.</p>
+
+<h3>Multiple domains</h3>
+<p>Give each site its own snippet with its own <code>data-domain</code>. A staging copy pointed at
+your production domain will mix staging traffic into your real numbers, and there is no way
+to unpick it afterwards — use a separate site, or exclude the hostname.</p>
+
+<h3>Checking it works</h3>
+<p>Load a page and watch the ingestion health panel. Every event we accept, classify or drop
+is counted there with a reason. If nothing arrives at all, the three usual causes are a
+<code>data-domain</code> that does not match, an ad blocker (see <a href="/docs/proxying">proxying</a>),
+and a content security policy that does not allow the script host.</p>
+
+<h3>Server-side events</h3>
+<p>Anything that happens away from a browser — a webhook, a background job, an offline
+conversion — can be posted straight to the events endpoint. See
+<a href="/docs/api">the APIs</a> for the payload, including how to state the attribution for an
+event that has no referrer of its own.</p>

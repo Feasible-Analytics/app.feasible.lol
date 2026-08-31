@@ -1,0 +1,44 @@
+{{ define "layout" }}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ .Title }} · feasible.lol</title>
+<link rel="stylesheet" href="/billing/assets/pages.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/">feasible.lol</a>
+    <nav>
+      <a href="/pricing" {{ if eq .Nav "pricing" }}class="on"{{ end }}>Pricing</a>
+      <a href="/billing" {{ if eq .Nav "billing" }}class="on"{{ end }}>Billing</a>
+      <a href="/docs" {{ if eq .Nav "docs" }}class="on"{{ end }}>Docs</a>
+      <a href="/dashboard/">Dashboard</a>
+    </nav>
+  </div>
+</header>
+
+{{ template "body" . }}
+
+<footer class="bottom">
+  <div class="wrap">
+    <nav>
+      <a href="/pricing">Pricing</a>
+      <a href="/docs">Documentation</a>
+      <a href="/legal/privacy">Privacy &amp; data policy</a>
+      <a href="/legal/terms">Terms</a>
+      <a href="/legal/dpa">Data processing addendum</a>
+      <a href="mailto:{{ .SalesEmail }}">Talk to us</a>
+    </nav>
+    <address>
+      Cloudmanic Labs, LLC<br>
+      901 Brutscher Street, D112<br>
+      Newberg, OR 97132<br>
+      United States
+    </address>
+  </div>
+</footer>
+</body>
+</html>
+{{ end }}

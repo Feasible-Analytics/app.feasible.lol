@@ -1,0 +1,54 @@
+<p>Ad blockers block analytics by hostname. Serving the script and the events endpoint from
+your own domain is the only reliable way around that, and it costs you two proxy rules.</p>
+
+<p>It is also better for your visitors: the request goes to a host they already trust, and it
+reuses a connection their browser has open.</p>
+
+<h3>What to proxy</h3>
+<ul>
+  <li>The script — a static file, cacheable for a long time.</li>
+  <li>The events endpoint — a POST, never cached.</li>
+</ul>
+
+<h3>Caddy</h3>
+<pre><code>example.com {
+    handle /stats/js/* {
+        uri strip_prefix /stats
+        reverse_proxy https://feasible.lol {
+            header_up Host feasible.lol
+        }
+    }
+    handle /stats/api/event {
+        rewrite * /api/event
+        reverse_proxy https://feasible.lol {
+            header_up Host feasible.lol
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+}</code></pre>
+
+<h3>nginx</h3>
+<pre><code>location = /stats/api/event {
+    proxy_pass https://feasible.lol/api/event;
+    proxy_set_header Host feasible.lol;
+    proxy_set_header X-Forwarded-For $remote_addr;
+}
+location /stats/js/ {
+    proxy_pass https://feasible.lol/js/;
+    proxy_set_header Host feasible.lol;
+}</code></pre>
+
+<h3>Then point the script at your proxy</h3>
+<pre><code>&lt;script defer data-domain="example.com"
+        data-api="/stats/api/event"
+        src="/stats/js/f.js"&gt;&lt;/script&gt;</code></pre>
+
+<h3>The one thing to get right</h3>
+<p>Your proxy must pass the visitor's address on, and our side must be told which proxy to
+trust. Without both, every visitor geolocates to your proxy's data centre and shares one
+fingerprint — which means one visitor, from one country, forever. There is no way to repair
+that after the fact, so check a page load on the ingestion health panel before you leave it
+running.</p>
+
+<p>The address itself is used for geolocation and the visitor fingerprint and then discarded.
+It is never written to disk and never leaves the ingestion tier.</p>

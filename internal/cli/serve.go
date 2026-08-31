@@ -87,10 +87,21 @@ func runServe(e *env, args []string) int {
 		return ExitError
 	}
 
+	// One mailer for the whole process. Every message the product sends — the
+	// verification code, the password reset and the ten lifecycle notices —
+	// leaves through the same transport, so the From address and the SMTP relay
+	// can only be wrong in one place, and a misconfigured transport is a
+	// start-up failure rather than a deletion warning nobody receives.
+	mailer, err := buildMailer(e)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return ExitError
+	}
+
 	// The signed-in application. It is built before the listener binds so that a
 	// broken template or an unreadable key is a start-up failure with a message,
 	// rather than a 500 on somebody's sign-in page.
-	app, err := buildApp(e, control, manager, service, secret)
+	app, err := buildApp(e, control, manager, service, secret, mailer)
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError
@@ -116,21 +127,40 @@ func runServe(e *env, args []string) int {
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	public.startWorker(workerCtx, e)
 
-	// The roll-up worker is the one background job in the product. There is no
-	// job runner yet, so it runs here beside the ingest service's own loops,
-	// and it is stopped by the same context they are.
+	// The roll-up worker keeps the pre-aggregated report tables current. There
+	// is no job runner yet, so it runs here beside the ingest service's own
+	// loops, and it is stopped by the same context they are.
 	worker := &rollup.Worker{
 		Accounts: manager,
 		Sites:    rollup.ControlLister(control),
 		Log:      e.log,
 	}
 
-	server := httpserver.New("app", e.cfg.App.Listen, serveRoutes(e, service, manager, secret, e.cfg.App.DataDir, app, public))
+	// The commercial half: taking money, counting billable volume, and the clock
+	// that eventually deletes an account that stops paying. It is built after
+	// ingestion because it needs the same control database and the same site
+	// snapshot, and none of it fails when no payment provider is configured.
+	com := buildCommerce(e, control, manager, service.Sites, mailer)
+
+	// The shard counts billable events after each commit. This is assigned
+	// before anything is listening, so nothing reads it concurrently with the
+	// write.
+	service.Writer.Usage = com.IngestRecorder()
+
+	e.log.Info("billing configuration",
+		"payments", com.Billing.Enabled(),
+		"webhooks", e.cfg.App.Stripe.WebhookSecret != "",
+		"mail_from", e.cfg.App.MailFrom,
+		"sales_email", e.cfg.App.SalesEmail,
+	)
+
+	server := httpserver.New("app", e.cfg.App.Listen, serveRoutes(e, service, manager, secret, e.cfg.App.DataDir, app, public, com))
 
 	pruneCtx, stopPrune := context.WithCancel(context.Background())
 	go app.RunPrune(pruneCtx)
 
-	return serveUntilSignal(e, server, service, worker, func() error { stopPrune(); stopWorker(); return nil }, manager.CloseAll, control.Close)
+	return serveUntilSignalWith(e, server, service, worker, com.Start,
+		func() error { stopPrune(); stopWorker(); return nil }, manager.CloseAll, control.Close)
 }
 
 // buildApp assembles the server-rendered application.
@@ -139,7 +169,7 @@ func runServe(e *env, args []string) int {
 // missing key or an unparseable template stops the process with a message that
 // names the file — and so a test can build the same handler over a temporary
 // database.
-func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *ingest.Service, secret []byte) (*auth.Handler, error) {
+func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *ingest.Service, secret []byte, mailer *mail.Mailer) (*auth.Handler, error) {
 	key, err := auth.LoadKey(e.cfg.App.DataDir, e.cfg.App.SecretKey)
 	if err != nil {
 		return nil, err
@@ -150,22 +180,8 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 		return nil, err
 	}
 
-	mailer, err := mail.New(mail.Options{
-		Transport: e.cfg.App.MailTransport,
-		From:      e.cfg.App.MailFrom,
-		BaseURL:   e.cfg.App.BaseURL,
-		SMTPHost:  e.cfg.App.SMTP.Host,
-		SMTPPort:  e.cfg.App.SMTP.Port,
-		SMTPUser:  e.cfg.App.SMTP.Username,
-		SMTPPass:  e.cfg.App.SMTP.Password,
-		Log:       e.log,
-	})
-	if err != nil {
-		return nil, err
-	}
-
 	store := auth.NewStore(control)
-	stripe := auth.NewStripe(e.cfg.App.StripeSecretKey, e.log)
+	stripe := auth.NewStripe(e.cfg.App.Stripe.SecretKey, e.log)
 
 	return auth.NewHandler(auth.Options{
 		Store:     store,
@@ -182,10 +198,10 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 }
 
 // serveRoutes is the app process's public surface: the tracker script, the
-// stats API the dashboard runs on, the server-rendered application, and — with
-// the direct transport — the ingest endpoint, which this process serves rather
-// than a separate tier.
-func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, secret []byte, dataDir string, app http.Handler, public *publicStack) http.Handler {
+// stats API the dashboard runs on, the server-rendered application, the pages
+// that sell it, and — with the direct transport — the ingest endpoint, which
+// this process serves rather than a separate tier.
+func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, secret []byte, dataDir string, app http.Handler, public *publicStack, com *commerce) http.Handler {
 	mux := http.NewServeMux()
 
 	// The signed-in application is mounted at the root, so it owns every path
@@ -196,12 +212,22 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	// Every report in the product is this one endpoint with different metrics
 	// and dimensions. It reads the same in-memory site snapshot the ingest path
 	// does, so a dashboard query never touches control.db.
-	mux.Handle(statsapi.Pattern, statsapi.New(service.Sites, manager, e.log))
+	//
+	// The access gate wraps it as well as the dashboard, and that is the point:
+	// the numbers come from here, so a lock that only covered the HTML would be
+	// no lock at all.
+	mux.Handle(statsapi.Pattern, com.Gate.Protect(statsapi.New(service.Sites, manager, e.log)))
 
 	// The compiled React dashboard, served out of the binary. It reads the site
 	// snapshot only to render the site picker; every number on it comes from
 	// the stats endpoint above.
-	mux.Handle(dashboard.PathPrefix, dashboard.New(service.Sites))
+	mux.Handle(dashboard.PathPrefix, com.Gate.Protect(dashboard.New(service.Sites)))
+
+	// Pricing, billing, docs and the legal pages, plus the payment provider's
+	// webhook. They are deliberately outside the gate: somebody whose dashboard
+	// is locked has to be able to reach the page where they would pay us, and
+	// the export link on it.
+	com.Routes(mux)
 
 	// The source icons the report rows are drawn with. Fetching them here
 	// rather than from the reader's browser is what keeps a dashboard from
