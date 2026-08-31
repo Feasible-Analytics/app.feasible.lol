@@ -43,6 +43,7 @@ const TeamMetadataKey = "feasible_team_id"
 // deliveries could disagree about.
 type Subscription struct {
 	ID                 string  `json:"id"`
+	Created            int64   `json:"created"`
 	Customer           string  `json:"customer"`
 	Status             string  `json:"status"`
 	CurrentPeriodEnd   int64   `json:"current_period_end"`
@@ -156,6 +157,23 @@ func (s *Subscription) Paying() bool {
 	}
 }
 
+// BlocksCheckout reports whether a subscription can still charge, retry, or
+// settle. Only Stripe's terminal states are safe beside a replacement;
+// unknown future states fail closed so a new status cannot create a second
+// chargeable subscription by surprise.
+func (s *Subscription) BlocksCheckout() bool {
+	if s == nil {
+		return false
+	}
+
+	switch s.Status {
+	case StatusCanceled, StatusIncompleteExpired:
+		return false
+	default:
+		return true
+	}
+}
+
 // PeriodEnd is when the current paid period runs out.
 func (s *Subscription) PeriodEnd() time.Time {
 	if s == nil || s.CurrentPeriodEnd == 0 {
@@ -218,17 +236,27 @@ type PortalSession struct {
 
 // Invoice is the part of an invoice the webhook path reads.
 type Invoice struct {
-	ID           string         `json:"id"`
-	Created      int64          `json:"created"`
-	Customer     string         `json:"customer"`
-	Subscription string         `json:"subscription"`
-	Parent       *InvoiceParent `json:"parent"`
-	Status       string         `json:"status"`
-	AttemptCount int            `json:"attempt_count"`
-	Total        int64          `json:"total"`
-	Currency     string         `json:"currency"`
-	HostedURL    string         `json:"hosted_invoice_url"`
-	Metadata     Meta           `json:"metadata"`
+	ID           string                   `json:"id"`
+	Created      int64                    `json:"created"`
+	Customer     string                   `json:"customer"`
+	Subscription string                   `json:"subscription"`
+	Parent       *InvoiceParent           `json:"parent"`
+	Status       string                   `json:"status"`
+	AutoAdvance  bool                     `json:"auto_advance"`
+	AttemptCount int                      `json:"attempt_count"`
+	Total        int64                    `json:"total"`
+	Currency     string                   `json:"currency"`
+	HostedURL    string                   `json:"hosted_invoice_url"`
+	Metadata     Meta                     `json:"metadata"`
+	Paid         bool                     `json:"paid"`
+	Transitions  InvoiceStatusTransitions `json:"status_transitions"`
+}
+
+// InvoiceStatusTransitions carries provider evidence timestamps. PaidAt is
+// Stripe's durable settlement instant and is used instead of webhook receipt
+// time when day-90 deletion races a delayed payment event.
+type InvoiceStatusTransitions struct {
+	PaidAt int64 `json:"paid_at"`
 }
 
 // InvoiceParent is the Basil location of the object that generated an invoice.
@@ -357,6 +385,31 @@ func (c *Client) CreateCheckoutSession(ctx context.Context, params CheckoutParam
 	return &session, nil
 }
 
+// CheckoutSessions reads every provider session. Metadata filtering happens
+// locally because Stripe does not expose metadata as a list filter; completed
+// sessions matter too because an orphan may already have created a customer and
+// subscription before its id reached control.db.
+func (c *Client) CheckoutSessions(ctx context.Context) ([]CheckoutSession, error) {
+	form := url.Values{}
+	form.Set("limit", "100")
+
+	var sessions []CheckoutSession
+	for {
+		var page list[CheckoutSession]
+		if err := c.getWithVersion(ctx, "/v1/checkout/sessions", form, ManagedPaymentsAPIVersion, &page); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, page.Data...)
+		if !page.HasMore {
+			return sessions, nil
+		}
+		if len(page.Data) == 0 {
+			return nil, fmt.Errorf("stripe: checkout sessions page said has_more without any data")
+		}
+		form.Set("starting_after", page.Data[len(page.Data)-1].ID)
+	}
+}
+
 // CreatePortalSession returns a Customer Portal link. Card updates, plan
 // switches, invoice history and cancellation all live there rather than being
 // rebuilt in this product: Stripe already handles SCA, 3D Secure and every
@@ -387,6 +440,62 @@ func (c *Client) GetSubscription(ctx context.Context, id string) (*Subscription,
 	}
 
 	return &subscription, nil
+}
+
+// SetSubscriptionCollectionPaused quiesces or restores collection while day-90
+// deletion checks provider truth. The stable idempotency key makes a process
+// retry apply the same transition rather than creating another operation.
+func (c *Client) SetSubscriptionCollectionPaused(ctx context.Context, id string, paused bool, idempotencyKey string) (*Subscription, error) {
+	form := url.Values{}
+	if paused {
+		form.Set("pause_collection[behavior]", "void")
+	} else {
+		form.Set("pause_collection", "")
+	}
+
+	var subscription Subscription
+	if err := c.post(ctx, "/v1/subscriptions/"+url.PathEscape(id), form, idempotencyKey, &subscription); err != nil {
+		return nil, err
+	}
+
+	return &subscription, nil
+}
+
+// SetInvoiceAutoAdvance disables or restores Stripe's automatic finalization,
+// reminders, reconciliation, and payment retries for one draft or open invoice.
+// Day-90 deletion uses it because pausing a subscription does not affect an
+// invoice that was created before the pause.
+func (c *Client) SetInvoiceAutoAdvance(ctx context.Context, id string, enabled bool, idempotencyKey string) (*Invoice, error) {
+	form := url.Values{}
+	form.Set("auto_advance", strconv.FormatBool(enabled))
+
+	var invoice Invoice
+	if err := c.post(ctx, "/v1/invoices/"+url.PathEscape(id), form, idempotencyKey, &invoice); err != nil {
+		return nil, err
+	}
+
+	return &invoice, nil
+}
+
+// VoidInvoice irreversibly removes the manual and portal payment opportunity
+// from an already-open invoice. Disabling auto_advance only stops automatic
+// retries, so day-90 deletion must void open invoices before its final read.
+func (c *Client) VoidInvoice(ctx context.Context, id, idempotencyKey string) (*Invoice, error) {
+	var invoice Invoice
+	if err := c.post(ctx, "/v1/invoices/"+url.PathEscape(id)+"/void", nil, idempotencyKey, &invoice); err != nil {
+		return nil, err
+	}
+
+	return &invoice, nil
+}
+
+// DeleteDraftInvoice removes an invoice that is not payable yet but could be
+// manually finalized after the day-90 final read. Draft deletion is the only
+// way to make that provider transition impossible.
+func (c *Client) DeleteDraftInvoice(ctx context.Context, id, idempotencyKey string) error {
+	var invoice Invoice
+
+	return c.delWithKey(ctx, "/v1/invoices/"+url.PathEscape(id), idempotencyKey, &invoice)
 }
 
 // GetCustomer reads a customer. A customer Stripe has deleted comes back with
@@ -454,49 +563,115 @@ func (c *Client) ListWebhookEndpoints(ctx context.Context) ([]WebhookEndpoint, e
 	return page.Data, nil
 }
 
-// ActiveSubscription finds the subscription a customer is actually paying on.
-//
-// It reads every subscription rather than trusting the id an event carried,
-// because a customer who cancelled and resubscribed has two, and acting on the
-// dead one would leave a paying customer's account marked as lapsed. A customer
-// with no live subscription returns nil, which is not an error — it is the
-// normal state of somebody who cancelled.
-func (c *Client) ActiveSubscription(ctx context.Context, customerID string) (*Subscription, error) {
+// Subscriptions reads every page of a customer's subscription history. Callers
+// need the whole set both to detect any chargeable state and to keep evidence
+// attached to the subscription that produced it.
+func (c *Client) Subscriptions(ctx context.Context, customerID string) ([]Subscription, error) {
 	form := url.Values{}
 	form.Set("customer", customerID)
 	form.Set("status", "all")
 	form.Set("limit", "100")
 	form.Set("expand[]", "data.items.data.price")
 
-	// A paying subscription wins outright. Otherwise the most recently ended
-	// one is returned so the caller can mirror its plan and status rather than
-	// showing a customer nothing at all.
-	var fallback *Subscription
+	var subscriptions []Subscription
 
 	for {
 		var page list[Subscription]
 		if err := c.get(ctx, "/v1/subscriptions", form, &page); err != nil {
 			return nil, err
 		}
-
-		for i := range page.Data {
-			candidate := &page.Data[i]
-
-			if candidate.Paying() {
-				return candidate, nil
-			}
-
-			if fallback == nil || candidate.CurrentPeriodEnd > fallback.CurrentPeriodEnd {
-				copy := *candidate
-				fallback = &copy
-			}
-		}
+		subscriptions = append(subscriptions, page.Data...)
 
 		if !page.HasMore {
-			return fallback, nil
+			return subscriptions, nil
 		}
 		if len(page.Data) == 0 {
 			return nil, fmt.Errorf("stripe: subscriptions page said has_more without any data")
+		}
+
+		form.Set("starting_after", page.Data[len(page.Data)-1].ID)
+	}
+}
+
+// SelectSubscription chooses the deterministic row displayed and reconciled.
+// Healthy subscriptions outrank settling ones, settling ones outrank terminal
+// history, and recency uses creation time before period end and id. This keeps
+// an older canceled annual plan from hiding a newer monthly subscription.
+func SelectSubscription(subscriptions []Subscription) *Subscription {
+	var selected *Subscription
+
+	for i := range subscriptions {
+		candidate := &subscriptions[i]
+		if selected == nil || subscriptionAfter(candidate, selected) {
+			copy := *candidate
+			selected = &copy
+		}
+	}
+
+	return selected
+}
+
+// subscriptionAfter applies the deterministic display precedence.
+func subscriptionAfter(candidate, current *Subscription) bool {
+	candidateRank := subscriptionDisplayRank(candidate)
+	currentRank := subscriptionDisplayRank(current)
+	if candidateRank != currentRank {
+		return candidateRank > currentRank
+	}
+	if candidate.Created != current.Created {
+		return candidate.Created > current.Created
+	}
+	if candidate.CurrentPeriodEnd != current.CurrentPeriodEnd {
+		return candidate.CurrentPeriodEnd > current.CurrentPeriodEnd
+	}
+
+	return candidate.ID > current.ID
+}
+
+// subscriptionDisplayRank keeps useful live truth ahead of terminal history.
+func subscriptionDisplayRank(subscription *Subscription) int {
+	if subscription.Paying() {
+		return 3
+	}
+	if subscription.BlocksCheckout() {
+		return 2
+	}
+
+	return 1
+}
+
+// ActiveSubscription remains the single-row compatibility helper. It now
+// delegates to the complete set and deterministic selection; billing decisions
+// that need blocking truth consume Subscriptions directly.
+func (c *Client) ActiveSubscription(ctx context.Context, customerID string) (*Subscription, error) {
+	subscriptions, err := c.Subscriptions(ctx, customerID)
+	if err != nil {
+		return nil, err
+	}
+
+	return SelectSubscription(subscriptions), nil
+}
+
+// Invoices reads every invoice for one customer, including historical paid
+// evidence needed to close the day-90 webhook delay window.
+func (c *Client) Invoices(ctx context.Context, customerID string) ([]Invoice, error) {
+	form := url.Values{}
+	form.Set("customer", customerID)
+	form.Set("limit", "100")
+
+	var invoices []Invoice
+	for {
+		var page list[Invoice]
+		if err := c.get(ctx, "/v1/invoices", form, &page); err != nil {
+			return nil, err
+		}
+		invoices = append(invoices, page.Data...)
+
+		if !page.HasMore {
+			return invoices, nil
+		}
+		if len(page.Data) == 0 {
+			return nil, fmt.Errorf("stripe: invoices page said has_more without any data")
 		}
 
 		form.Set("starting_after", page.Data[len(page.Data)-1].ID)

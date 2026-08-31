@@ -44,6 +44,30 @@ func TestCreateUserMakesATeam(t *testing.T) {
 	}
 }
 
+// TestCreateUserNeverReusesADeletedTeamID protects a permanent analytics
+// tombstone from being mistaken for a later signup, including the immediate
+// settings deletion path that does not retain a lifecycle audit.
+func TestCreateUserNeverReusesADeletedTeamID(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	user, deleted, err := s.CreateUser(ctx, "deleted@example.com", "Deleted", "hash", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteTeamRows(ctx, deleted.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, replacement, err := s.CreateUser(ctx, "replacement@example.com", "Replacement", "hash", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.ID <= deleted.ID {
+		t.Fatalf("replacement team id is %d, want greater than deleted id %d", replacement.ID, deleted.ID)
+	}
+}
+
 // TestCreateUserRejectsADuplicateEmail checks the driver's uniqueness error is
 // turned into the sentinel the registration form branches on, and that a
 // difference in case still collides — the column is COLLATE NOCASE and an

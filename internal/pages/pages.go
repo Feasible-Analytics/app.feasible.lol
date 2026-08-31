@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -491,7 +492,7 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request) {
 	if h.Billing == nil || !h.Billing.Enabled() {
 		h.message(w, r, "Upgrade", "This install cannot take payments",
 			[]string{"No payment provider is configured here. That is the normal state of a self-hosted install, and nothing about the software you are running is limited by it."},
-			[]link{{Label: "Back to billing", URL: "/billing"}})
+			[]link{{Label: "Back to billing", URL: accountURL("/billing", account.ID, nil)}})
 		return
 	}
 
@@ -516,7 +517,7 @@ func (h *Handler) portal(w http.ResponseWriter, r *http.Request) {
 	if h.Billing == nil || !h.Billing.Enabled() {
 		h.message(w, r, "Billing", "This install cannot take payments",
 			[]string{"No payment provider is configured here, so there is no billing portal to open."},
-			[]link{{Label: "Back to billing", URL: "/billing"}})
+			[]link{{Label: "Back to billing", URL: accountURL("/billing", account.ID, nil)}})
 		return
 	}
 
@@ -524,7 +525,7 @@ func (h *Handler) portal(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.message(w, r, "Billing", "No billing portal yet",
 			[]string{err.Error(), "A portal exists once an account has been through checkout at least once."},
-			[]link{{Label: "See the plans", URL: "/pricing"}})
+			[]link{{Label: "See the plans", URL: accountURL("/pricing", account.ID, nil)}})
 		return
 	}
 
@@ -578,20 +579,42 @@ func (h *Handler) done(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.message(w, r, "Thank you", heading, paragraphs,
-		[]link{{Label: "Open the dashboard", URL: "/dashboard/"}, {Label: "Billing", URL: "/billing"}})
+	links := []link{{Label: "Open the dashboard", URL: "/dashboard/"},
+		{Label: "Billing", URL: accountURL("/billing", account.ID, nil)}}
+	if status == "unpaid" {
+		links = append(links, link{Label: "Retry checkout", URL: accountURL("/pricing", account.ID, nil)})
+	}
+	h.message(w, r, "Thank you", heading, paragraphs, links)
 }
 
 // export is the download-everything page. It is reachable in every phase,
 // including a locked or dormant account and the day before a deletion, because
 // data portability is not something we may switch off for non-payment.
 func (h *Handler) export(w http.ResponseWriter, r *http.Request) {
+	account, err := h.account(r)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+
 	h.message(w, r, "Export", "Download everything we hold",
 		[]string{
 			"Your export contains every event we have stored for this account, in a portable format you can load somewhere else.",
 			"It works in every state an account can be in — including a locked dashboard, a stopped collection, and the day before a scheduled deletion. It is your data.",
 		},
-		[]link{{Label: "Billing", URL: "/billing"}, {Label: "How exports work", URL: "/docs/api"}})
+		[]link{{Label: "Billing", URL: accountURL("/billing", account.ID, nil)}, {Label: "How exports work", URL: "/docs/api"}})
+}
+
+// accountURL carries an already-authorized team through local billing links.
+// Every destination revalidates membership; the query merely prevents an
+// intentional non-default selection from silently becoming the default team.
+func accountURL(path string, teamID int64, values url.Values) string {
+	if values == nil {
+		values = url.Values{}
+	}
+	values.Set("team", strconv.FormatInt(teamID, 10))
+
+	return path + "?" + values.Encode()
 }
 
 // docs renders the documentation index.

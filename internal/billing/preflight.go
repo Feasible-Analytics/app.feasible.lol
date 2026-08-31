@@ -16,6 +16,10 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/stripe"
 )
 
+// managedPaymentsTaxCode is Stripe's exact SaaS/digital-service tax category
+// approved for this product's Managed Payments catalogue.
+const managedPaymentsTaxCode = "txcd_10103001"
+
 // PreflightStatus is whether one deployment requirement passed, failed, or
 // still needs the opt-in checkout smoke that Stripe cannot expose as a field.
 type PreflightStatus string
@@ -117,8 +121,8 @@ func (s *Service) preflightProduct(ctx context.Context, report *PreflightReport)
 	if !product.Active {
 		problems = append(problems, "product is inactive")
 	}
-	if product.TaxCode == "" {
-		problems = append(problems, "product has no tax code")
+	if product.TaxCode != managedPaymentsTaxCode {
+		problems = append(problems, fmt.Sprintf("product tax code is %q, want %s", product.TaxCode, managedPaymentsTaxCode))
 	}
 	if product.Shippable != nil && *product.Shippable {
 		problems = append(problems, "product is marked shippable, but Managed Payments supports digital products")

@@ -144,15 +144,26 @@ func (s *Store) CreateUser(ctx context.Context, email, name, passwordHash, googl
 
 	trialEnds := now.AddDate(0, 0, TrialDays)
 
-	teamResult, err := tx.ExecContext(ctx, `
-		INSERT INTO teams (name, trial_ends_at, accept_traffic_until, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?)
-	`, teamName, trialEnds.Unix(), trialEnds.AddDate(0, 0, 30).Unix(), now.Unix(), now.Unix())
-	if err != nil {
-		return nil, nil, fmt.Errorf("auth: create team: %w", err)
+	// SQLite may reuse the largest deleted INTEGER PRIMARY KEY. The sequence is
+	// independent of team rows, so every deletion path permanently reserves ids.
+	var teamID int64
+	if err := tx.QueryRowContext(ctx, `
+		UPDATE team_id_sequence
+		SET last_id = MAX(
+			last_id,
+			COALESCE((SELECT MAX(id) FROM teams), 0),
+			COALESCE((SELECT MAX(team_id) FROM account_deletions), 0)
+		) + 1
+		WHERE singleton = 1
+		RETURNING last_id
+	`).Scan(&teamID); err != nil {
+		return nil, nil, fmt.Errorf("auth: allocate team id: %w", err)
 	}
 
-	teamID, err := teamResult.LastInsertId()
+	_, err = tx.ExecContext(ctx, `
+			INSERT INTO teams (id, name, trial_ends_at, accept_traffic_until, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, teamID, teamName, trialEnds.Unix(), trialEnds.AddDate(0, 0, 30).Unix(), now.Unix(), now.Unix())
 	if err != nil {
 		return nil, nil, fmt.Errorf("auth: create team: %w", err)
 	}

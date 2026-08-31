@@ -332,8 +332,21 @@ func TestAccountMiddlewareRequiresVerificationRolesAndMembership(t *testing.T) {
 
 		_, _ = w.Write([]byte(strconv.FormatInt(teamID, 10) + "|" + email))
 	})))
+	app.mux.Handle("GET /commerce-optional", app.OptionalAccount(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		teamID, _, err := app.CurrentAccount(r)
+		if err != nil {
+			_, _ = w.Write([]byte("public"))
+			return
+		}
+		_, _ = w.Write([]byte(strconv.FormatInt(teamID, 10)))
+	})))
 
 	c := newClient(t, app)
+	selectedSignedOut := c.get("/commerce-optional?team=2")
+	selectedSignedOut.Body.Close()
+	if selectedSignedOut.StatusCode != http.StatusFound || selectedSignedOut.Header.Get("Location") != "/login?next=%2Fcommerce-optional%3Fteam%3D2" {
+		t.Fatalf("selected signed-out route answered %d at %q", selectedSignedOut.StatusCode, selectedSignedOut.Header.Get("Location"))
+	}
 
 	signedOut := c.get("/commerce-probe?team=999")
 	signedOut.Body.Close()
@@ -390,12 +403,31 @@ func TestAccountMiddlewareRequiresVerificationRolesAndMembership(t *testing.T) {
 			t.Errorf("authorized team %s resolved %q", allowed, got)
 		}
 	}
+	if got := c.body("/commerce-optional?team=2"); got != "2" {
+		t.Fatalf("optional selected team resolved %q", got)
+	}
 	for _, denied := range []string{"3", "4"} {
 		response := c.get("/commerce-probe?team=" + denied)
 		response.Body.Close()
 		if response.StatusCode != http.StatusNotFound {
 			t.Errorf("non-billing team %s answered %d, want 404", denied, response.StatusCode)
 		}
+	}
+	if _, err := app.store.DB().Exec(`DELETE FROM team_memberships WHERE team_id = 2 AND user_id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	removed := c.get("/commerce-probe?team=2")
+	removed.Body.Close()
+	if removed.StatusCode != http.StatusNotFound {
+		t.Fatalf("removed billing membership answered %d, want 404", removed.StatusCode)
+	}
+	removedOptional := c.get("/commerce-optional?team=2")
+	removedOptional.Body.Close()
+	if removedOptional.StatusCode != http.StatusNotFound {
+		t.Fatalf("removed optional membership answered %d, want 404", removedOptional.StatusCode)
+	}
+	if got := c.body("/commerce-probe"); got != "1|billing-owner@example.com" {
+		t.Fatalf("removed selected membership fell back as %q", got)
 	}
 }
 
@@ -457,7 +489,7 @@ func TestPurchaseIntentSurvivesAuthentication(t *testing.T) {
 	t.Run("typed verification", func(t *testing.T) {
 		app := newTestApp(t)
 		c := newClient(t, app)
-		next := "/pricing?plan=monthly"
+		next := "/pricing?plan=monthly&team=1"
 
 		registered := c.post("/register", url.Values{
 			"email":    {"monthly@example.com"},
@@ -465,7 +497,7 @@ func TestPurchaseIntentSurvivesAuthentication(t *testing.T) {
 			"next":     {next},
 		})
 		registered.Body.Close()
-		if got := registered.Header.Get("Location"); got != "/verify-email?next=%2Fpricing%3Fplan%3Dmonthly" {
+		if got := registered.Header.Get("Location"); got != "/verify-email?next=%2Fpricing%3Fplan%3Dmonthly%26team%3D1" {
 			t.Fatalf("registration intent redirected to %q", got)
 		}
 
@@ -482,7 +514,7 @@ func TestPurchaseIntentSurvivesAuthentication(t *testing.T) {
 	t.Run("one tap link in another browser", func(t *testing.T) {
 		app := newTestApp(t)
 		registering := newClient(t, app)
-		next := "/pricing?plan=yearly"
+		next := "/pricing?plan=yearly&team=1"
 
 		registered := registering.post("/register", url.Values{
 			"email":    {"yearly@example.com"},
@@ -514,10 +546,10 @@ func TestPurchaseIntentSurvivesAuthentication(t *testing.T) {
 		loggedIn := fresh.post("/login", url.Values{
 			"email":    {"person@example.com"},
 			"password": {"a long enough password"},
-			"next":     {"/pricing?plan=monthly"},
+			"next":     {"/pricing?plan=monthly&team=1"},
 		})
 		loggedIn.Body.Close()
-		if got := loggedIn.Header.Get("Location"); got != "/pricing?plan=monthly" {
+		if got := loggedIn.Header.Get("Location"); got != "/pricing?plan=monthly&team=1" {
 			t.Fatalf("login redirected to %q", got)
 		}
 
@@ -867,7 +899,7 @@ func TestTwoFactorSetupAndChallenge(t *testing.T) {
 	resp = fresh.post("/login", url.Values{
 		"email":    {"person@example.com"},
 		"password": {"a long enough password"},
-		"next":     {"/pricing?plan=yearly"},
+		"next":     {"/pricing?plan=yearly&team=1"},
 	})
 	resp.Body.Close()
 
@@ -888,7 +920,7 @@ func TestTwoFactorSetupAndChallenge(t *testing.T) {
 	if resp.StatusCode != http.StatusFound {
 		t.Errorf("the right code should complete the sign-in, got %d", resp.StatusCode)
 	}
-	if got := resp.Header.Get("Location"); got != "/pricing?plan=yearly" {
+	if got := resp.Header.Get("Location"); got != "/pricing?plan=yearly&team=1" {
 		t.Errorf("two-factor sign-in lost purchase intent and redirected to %q", got)
 	}
 }

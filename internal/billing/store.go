@@ -113,10 +113,105 @@ func (s *Store) LockAccount(teamID int64) func() {
 	return lock.Unlock
 }
 
+// AccountLease is one process's durable ownership of an account billing
+// critical section. Renew is also the fencing check used before side effects.
+type AccountLease struct {
+	store       *Store
+	teamID      int64
+	token       string
+	localUnlock func()
+	releaseOnce sync.Once
+	done        chan struct{}
+	wg          sync.WaitGroup
+	mu          sync.Mutex
+	lost        error
+}
+
+// Renew extends a live lease only while its token is still current and its old
+// deadline has not passed. A worker that paused too long cannot resume after a
+// replacement process has become eligible to acquire the account.
+func (l *AccountLease) Renew(ctx context.Context) error {
+	if l == nil || l.store == nil || l.token == "" {
+		return nil
+	}
+	l.mu.Lock()
+	lost := l.lost
+	l.mu.Unlock()
+	if lost != nil {
+		return lost
+	}
+
+	now := l.store.now()
+	result, err := l.store.db.ExecContext(ctx, `
+		UPDATE billing_account_leases
+		SET expires_at = ?, updated_at = ?
+		WHERE team_id = ? AND token = ? AND expires_at > ?
+	`, now.Add(accountLeaseDuration).Unix(), now.Unix(), l.teamID, l.token, now.Unix())
+	if err != nil {
+		return fmt.Errorf("billing: renew account %d lease: %w", l.teamID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("billing: renew account %d lease: affected rows: %w", l.teamID, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("billing: account %d lease expired or was replaced", l.teamID)
+	}
+
+	return nil
+}
+
+// heartbeat renews a real-time critical section while provider pagination is in
+// progress. Explicit Renew calls remain the fencing check before side effects.
+func (l *AccountLease) heartbeat() {
+	defer l.wg.Done()
+	ticker := time.NewTicker(accountLeaseDuration / 3)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-l.done:
+			return
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			err := l.Renew(ctx)
+			cancel()
+			if err != nil {
+				l.mu.Lock()
+				if l.lost == nil {
+					l.lost = err
+				}
+				l.mu.Unlock()
+				return
+			}
+		}
+	}
+}
+
+// Release removes only this lease token and releases the process-local lock.
+func (l *AccountLease) Release() {
+	if l == nil {
+		return
+	}
+
+	l.releaseOnce.Do(func() {
+		if l.done != nil {
+			close(l.done)
+			l.wg.Wait()
+		}
+		if l.store != nil && l.token != "" {
+			_, _ = l.store.db.Exec(`DELETE FROM billing_account_leases WHERE team_id = ? AND token = ?`, l.teamID, l.token)
+		}
+		if l.localUnlock != nil {
+			l.localUnlock()
+		}
+	})
+}
+
 // AcquireAccountLease serialises billing work for one account across Store
-// instances and processes. The returned release only removes its own token, so
-// an expired worker cannot unlock a newer worker's lease.
-func (s *Store) AcquireAccountLease(ctx context.Context, teamID int64) (func(), error) {
+// instances and processes. The returned lease removes only its own token, so an
+// expired worker cannot unlock a newer worker's lease.
+func (s *Store) AcquireAccountLease(ctx context.Context, teamID int64) (*AccountLease, error) {
 	localUnlock := s.LockAccount(teamID)
 	token, err := randomToken()
 	if err != nil {
@@ -128,8 +223,9 @@ func (s *Store) AcquireAccountLease(ctx context.Context, teamID int64) (func(), 
 	defer ticker.Stop()
 
 	for {
-		now := s.now().Unix()
-		expires := s.now().Add(accountLeaseDuration).Unix()
+		nowTime := s.now()
+		now := nowTime.Unix()
+		expires := nowTime.Add(accountLeaseDuration).Unix()
 
 		result, err := s.db.ExecContext(ctx, `
 			INSERT INTO billing_account_leases (team_id, token, expires_at, updated_at)
@@ -141,6 +237,13 @@ func (s *Store) AcquireAccountLease(ctx context.Context, teamID int64) (func(), 
 			WHERE billing_account_leases.expires_at <= ?
 		`, teamID, token, expires, now, now)
 		if err != nil {
+			// Team deletion cascades the lease row. A reconciler that was already
+			// waiting may then lose the INSERT to the foreign key; let it enter the
+			// read side so DeletionStarted can observe the immutable audit instead
+			// of turning a completed deletion into a perpetual webhook retry.
+			if deleting, inspectErr := s.DeletionStarted(ctx, teamID); inspectErr == nil && deleting {
+				return &AccountLease{localUnlock: localUnlock}, nil
+			}
 			localUnlock()
 			return nil, fmt.Errorf("billing: acquire account %d lease: %w", teamID, err)
 		}
@@ -151,10 +254,13 @@ func (s *Store) AcquireAccountLease(ctx context.Context, teamID int64) (func(), 
 			return nil, fmt.Errorf("billing: acquire account %d lease: affected rows: %w", teamID, err)
 		}
 		if rows == 1 {
-			return func() {
-				_, _ = s.db.Exec(`DELETE FROM billing_account_leases WHERE team_id = ? AND token = ?`, teamID, token)
-				localUnlock()
-			}, nil
+			lease := &AccountLease{
+				store: s, teamID: teamID, token: token, localUnlock: localUnlock,
+				done: make(chan struct{}),
+			}
+			lease.wg.Add(1)
+			go lease.heartbeat()
+			return lease, nil
 		}
 
 		select {
@@ -175,6 +281,63 @@ func randomToken() (string, error) {
 	}
 
 	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+// QuiescenceObject is a reversible Stripe mutation recorded before the provider
+// call. The row survives a process crash and is removed only after restoration
+// or the account's team cascade completes deletion.
+type QuiescenceObject struct {
+	Type string
+	ID   string
+}
+
+// RememberQuiescence durably records a provider object before mutating it.
+func (s *Store) RememberQuiescence(ctx context.Context, teamID int64, objectType, id string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO billing_quiescence_objects (team_id, object_type, stripe_id, created_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT (team_id, object_type, stripe_id) DO NOTHING
+	`, teamID, objectType, id, s.now().Unix())
+	if err != nil {
+		return fmt.Errorf("billing: remember %s %s quiescence for %d: %w", objectType, id, teamID, err)
+	}
+
+	return nil
+}
+
+// QuiescenceObjects lists every reversible mutation still owned by an account.
+func (s *Store) QuiescenceObjects(ctx context.Context, teamID int64) ([]QuiescenceObject, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT object_type, stripe_id
+		FROM billing_quiescence_objects
+		WHERE team_id = ?
+		ORDER BY object_type, stripe_id
+	`, teamID)
+	if err != nil {
+		return nil, fmt.Errorf("billing: list quiescence for %d: %w", teamID, err)
+	}
+	defer rows.Close()
+
+	var objects []QuiescenceObject
+	for rows.Next() {
+		var object QuiescenceObject
+		if err := rows.Scan(&object.Type, &object.ID); err != nil {
+			return nil, fmt.Errorf("billing: list quiescence for %d: %w", teamID, err)
+		}
+		objects = append(objects, object)
+	}
+
+	return objects, rows.Err()
+}
+
+// ForgetQuiescence clears the durable restoration list after every provider
+// object has been restored successfully.
+func (s *Store) ForgetQuiescence(ctx context.Context, teamID int64) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM billing_quiescence_objects WHERE team_id = ?`, teamID); err != nil {
+		return fmt.Errorf("billing: clear quiescence for %d: %w", teamID, err)
+	}
+
+	return nil
 }
 
 // Load reads one account's mirrored billing state. A team with no row has never
@@ -219,6 +382,20 @@ func (s *Store) Load(ctx context.Context, teamID int64) (Subscription, error) {
 	}
 
 	return out, nil
+}
+
+// DeletionStarted reports whether day-90 destruction has become terminal for
+// an account. A late webhook may be older than local processing time, but once
+// the immutable deletion audit exists it must never recreate billing state.
+func (s *Store) DeletionStarted(ctx context.Context, teamID int64) (bool, error) {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM account_deletions WHERE team_id = ?)
+	`, teamID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("billing: inspect deletion %d: %w", teamID, err)
+	}
+
+	return exists == 1, nil
 }
 
 // Save writes the mirror back. It is a full overwrite rather than a set of
@@ -321,6 +498,15 @@ type CheckoutClaim struct {
 	SessionURL     string
 	Status         string
 	ClaimToken     string
+	ExpiresAt      time.Time
+	CustomerID     string
+	BillingEmail   string
+}
+
+// Expired reports whether a provider call that never stored a session may be
+// replaced. Claims with a session are resolved from Stripe instead.
+func (c CheckoutClaim) Expired(now time.Time) bool {
+	return c.Status == "creating" && c.SessionID == "" && !c.ExpiresAt.After(now.UTC())
 }
 
 // CheckoutClaimForAccount loads an existing checkout intent, returning false
@@ -328,12 +514,15 @@ type CheckoutClaim struct {
 func (s *Store) CheckoutClaimForAccount(ctx context.Context, teamID int64) (CheckoutClaim, bool, error) {
 	var claim CheckoutClaim
 
+	var expiresAt int64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT team_id, plan, stripe_price_id, idempotency_key, session_id,
-		       session_url, status, claim_token
+		       session_url, status, claim_token, claim_expires_at,
+		       customer_id, billing_email
 		FROM billing_checkouts WHERE team_id = ?
 	`, teamID).Scan(&claim.TeamID, &claim.Plan, &claim.PriceID, &claim.IdempotencyKey,
-		&claim.SessionID, &claim.SessionURL, &claim.Status, &claim.ClaimToken)
+		&claim.SessionID, &claim.SessionURL, &claim.Status, &claim.ClaimToken, &expiresAt,
+		&claim.CustomerID, &claim.BillingEmail)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CheckoutClaim{}, false, nil
 	}
@@ -341,12 +530,14 @@ func (s *Store) CheckoutClaimForAccount(ctx context.Context, teamID int64) (Chec
 		return CheckoutClaim{}, false, fmt.Errorf("billing: load checkout claim %d: %w", teamID, err)
 	}
 
+	claim.ExpiresAt = time.Unix(expiresAt, 0).UTC()
+
 	return claim, true, nil
 }
 
 // NewCheckoutClaim replaces an absent or expired checkout with a fresh intent.
 // Callers hold the account lease, so a plain upsert is sufficient here.
-func (s *Store) NewCheckoutClaim(ctx context.Context, teamID int64, plan, priceID string) (CheckoutClaim, error) {
+func (s *Store) NewCheckoutClaim(ctx context.Context, teamID int64, plan, priceID, customerID, billingEmail string) (CheckoutClaim, error) {
 	token, err := randomToken()
 	if err != nil {
 		return CheckoutClaim{}, err
@@ -360,13 +551,17 @@ func (s *Store) NewCheckoutClaim(ctx context.Context, teamID int64, plan, priceI
 		IdempotencyKey: fmt.Sprintf("checkout-%d-%s", teamID, token),
 		Status:         "creating",
 		ClaimToken:     token,
+		ExpiresAt:      s.now().Add(accountLeaseDuration),
+		CustomerID:     customerID,
+		BillingEmail:   billingEmail,
 	}
 
-	_, err = s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO billing_checkouts
 			(team_id, plan, stripe_price_id, idempotency_key, session_id,
-			 session_url, status, claim_token, claim_expires_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, '', '', 'creating', ?, ?, ?, ?)
+			 session_url, status, claim_token, claim_expires_at, customer_id,
+			 billing_email, created_at, updated_at)
+		VALUES (?, ?, ?, ?, '', '', 'creating', ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (team_id) DO UPDATE SET
 			plan = excluded.plan,
 			stripe_price_id = excluded.stripe_price_id,
@@ -376,22 +571,46 @@ func (s *Store) NewCheckoutClaim(ctx context.Context, teamID int64, plan, priceI
 			status = 'creating',
 			claim_token = excluded.claim_token,
 			claim_expires_at = excluded.claim_expires_at,
+			customer_id = excluded.customer_id,
+			billing_email = excluded.billing_email,
 			created_at = excluded.created_at,
 			updated_at = excluded.updated_at
 		WHERE billing_checkouts.status = 'expired'
+		   OR (billing_checkouts.status = 'creating'
+		       AND billing_checkouts.session_id = ''
+		       AND billing_checkouts.claim_expires_at <= ?)
 	`, teamID, plan, priceID, claim.IdempotencyKey, token,
-		s.now().Add(accountLeaseDuration).Unix(), now, now)
+		claim.ExpiresAt.Unix(), customerID, billingEmail, now, now, now)
 	if err != nil {
 		return CheckoutClaim{}, fmt.Errorf("billing: create checkout claim %d: %w", teamID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return CheckoutClaim{}, fmt.Errorf("billing: create checkout claim %d: affected rows: %w", teamID, err)
+	}
+	if affected != 1 {
+		return CheckoutClaim{}, fmt.Errorf("billing: create checkout claim %d: an unexpired claim already exists", teamID)
 	}
 
 	return claim, nil
 }
 
+// ErrCheckoutClaimReplaced reports that a late provider response belongs to an
+// expired claim. SaveCheckoutSession records the session for durable cleanup
+// before returning this error.
+var ErrCheckoutClaimReplaced = errors.New("billing: checkout claim was replaced")
+
 // SaveCheckoutSession attaches Stripe's response to the pre-existing claim.
-// Matching the token means a stale retry cannot overwrite a replacement claim.
+// Matching the token means a stale retry cannot overwrite a replacement claim;
+// a mismatch atomically records the late session for cleanup.
 func (s *Store) SaveCheckoutSession(ctx context.Context, claim CheckoutClaim, sessionID, sessionURL, status string) error {
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("billing: save checkout session %d: %w", claim.TeamID, err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is harmless
+
+	result, err := tx.ExecContext(ctx, `
 		UPDATE billing_checkouts
 		SET session_id = ?, session_url = ?, status = ?, updated_at = ?
 		WHERE team_id = ? AND claim_token = ?
@@ -405,7 +624,69 @@ func (s *Store) SaveCheckoutSession(ctx context.Context, claim CheckoutClaim, se
 		return fmt.Errorf("billing: save checkout session %d: affected rows: %w", claim.TeamID, err)
 	}
 	if rows != 1 {
-		return fmt.Errorf("billing: save checkout session %d: claim was replaced", claim.TeamID)
+		now := s.now().Unix()
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO billing_checkout_cleanup (session_id, team_id, created_at, updated_at)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT (session_id) DO UPDATE SET updated_at = excluded.updated_at
+		`, sessionID, claim.TeamID, now, now); err != nil {
+			return fmt.Errorf("billing: remember late checkout session %s: %w", sessionID, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("billing: remember late checkout session %s: %w", sessionID, err)
+		}
+		return ErrCheckoutClaimReplaced
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("billing: save checkout session %d: %w", claim.TeamID, err)
+	}
+
+	return nil
+}
+
+// CheckoutCleanupSessions lists late sessions whose provider expiration has not
+// yet been acknowledged.
+func (s *Store) CheckoutCleanupSessions(ctx context.Context, teamID int64) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT session_id FROM billing_checkout_cleanup WHERE team_id = ? ORDER BY session_id
+	`, teamID)
+	if err != nil {
+		return nil, fmt.Errorf("billing: list checkout cleanup for %d: %w", teamID, err)
+	}
+	defer rows.Close()
+
+	var sessions []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("billing: list checkout cleanup for %d: %w", teamID, err)
+		}
+		sessions = append(sessions, id)
+	}
+
+	return sessions, rows.Err()
+}
+
+// RememberCheckoutCleanup records a provider session before attempting to
+// expire it, including sessions discovered only through provider metadata.
+func (s *Store) RememberCheckoutCleanup(ctx context.Context, teamID int64, sessionID string) error {
+	now := s.now().Unix()
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO billing_checkout_cleanup (session_id, team_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT (session_id) DO UPDATE SET updated_at = excluded.updated_at
+	`, sessionID, teamID, now, now); err != nil {
+		return fmt.Errorf("billing: remember checkout cleanup %s: %w", sessionID, err)
+	}
+
+	return nil
+}
+
+// FinishCheckoutCleanup forgets a session only after Stripe confirms it is no
+// longer usable.
+func (s *Store) FinishCheckoutCleanup(ctx context.Context, sessionID string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM billing_checkout_cleanup WHERE session_id = ?`, sessionID); err != nil {
+		return fmt.Errorf("billing: finish checkout cleanup %s: %w", sessionID, err)
 	}
 
 	return nil

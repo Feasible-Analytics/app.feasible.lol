@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -174,21 +175,48 @@ func (h *Handler) GuardSite(domainOf func(*http.Request) string, next http.Handl
 func (h *Handler) OptionalAccount(next http.Handler) http.Handler {
 	return h.optional(func(w http.ResponseWriter, r *http.Request) {
 		user := userFrom(r)
-		if user == nil || !user.Verified() {
+		explicitTeam := strings.TrimSpace(r.FormValue("team")) != ""
+		if user == nil {
+			if explicitTeam {
+				http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !user.Verified() {
+			if explicitTeam {
+				http.Redirect(w, r, verificationPath(r.URL.RequestURI()), http.StatusFound)
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		requested, err := billingTeamID(r)
 		if err != nil {
-			next.ServeHTTP(w, r)
+			h.notFound(w, r)
 			return
 		}
 
 		team, _, err := h.Store.BillingTeamForUser(r.Context(), user.ID, requested)
-		if err == nil && (!team.Require2FA || user.TwoFactorEnabled()) {
-			r = r.WithContext(context.WithValue(r.Context(), contextTeam, team))
+		if err != nil {
+			if requested > 0 {
+				h.notFound(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
 		}
+		if team.Require2FA && !user.TwoFactorEnabled() {
+			if requested > 0 {
+				http.Redirect(w, r, "/settings/security?required=1", http.StatusFound)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		r = r.WithContext(context.WithValue(r.Context(), contextTeam, team))
 
 		next.ServeHTTP(w, r)
 	})

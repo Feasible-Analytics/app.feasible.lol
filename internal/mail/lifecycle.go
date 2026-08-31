@@ -51,6 +51,7 @@ func (m *LifecycleMailer) Notify(ctx context.Context, notice lifecycle.Notice) (
 	if err != nil {
 		return "", err
 	}
+	msg.MessageID = notice.MessageKey
 
 	result, err := m.Sender.Send(ctx, msg)
 	if err != nil {

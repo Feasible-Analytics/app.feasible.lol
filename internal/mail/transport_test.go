@@ -10,11 +10,49 @@ package mail
 
 import (
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// TestSMTPConversationDeadlineBoundsAStalledRelay accepts TCP and then never
+// sends the SMTP greeting. The whole conversation deadline, not only dialing,
+// must release the outbox worker well before its five-minute lease can expire.
+func TestSMTPConversationDeadlineBoundsAStalledRelay(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+
+	accepted := make(chan struct{})
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		close(accepted)
+		time.Sleep(500 * time.Millisecond)
+	}()
+
+	address := listener.Addr().(*net.TCPAddr)
+	transport := &SMTPTransport{Config: SMTPConfig{
+		Host: "127.0.0.1", Port: address.Port, From: "sender@example.com", Timeout: 50 * time.Millisecond,
+	}}
+	started := time.Now()
+	_, err = transport.Send(context.Background(), Message{To: "owner@example.com", Subject: "test", Text: "test", HTML: "<p>test</p>"})
+	if err == nil {
+		t.Fatal("stalled SMTP greeting did not time out")
+	}
+	<-accepted
+	if elapsed := time.Since(started); elapsed > 300*time.Millisecond {
+		t.Fatalf("stalled SMTP conversation lasted %s", elapsed)
+	}
+}
 
 // TestLogTransportWritesTheRenderedBody is what makes local development need no
 // mail service: the message is a file you can open, not an escaped string in a
@@ -79,6 +117,40 @@ func TestLogTransportCreatesItsDirectory(t *testing.T) {
 
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatalf("the directory was not created: %v", err)
+	}
+}
+
+// TestStableMessageIDSurvivesTransportRetries documents the provider-accepted
+// before local-ack window. SMTP may deliver twice, but every retry carries the
+// same Message-ID; the local transport also overwrites one stable artifact
+// instead of pretending two logical notices were created.
+func TestStableMessageIDSurvivesTransportRetries(t *testing.T) {
+	dir := t.TempDir()
+	transport := &LogTransport{Dir: dir}
+	message := Message{
+		To: "owner@example.com", Subject: "Deletion tomorrow", Tag: "deletion_tomorrow",
+		HTML: "<p>One notice.</p>", Text: "One notice.",
+		MessageID: "lifecycle-1-1772538000-deletion_tomorrow",
+	}
+	first, err := transport.Send(context.Background(), message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := transport.Send(context.Background(), message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Detail != second.Detail || len(entries) != 1 {
+		t.Fatalf("stable retry paths are %q and %q with %d files", first.Detail, second.Detail, len(entries))
+	}
+	raw := Render("feasible <no-reply@example.com>", message)
+	want := "Message-ID: <lifecycle-1-1772538000-deletion-tomorrow@feasible.lol>"
+	if !strings.Contains(raw, want) {
+		t.Fatalf("SMTP retry is missing %q", want)
 	}
 }
 

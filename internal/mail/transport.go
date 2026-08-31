@@ -59,12 +59,16 @@ func (t *LogTransport) Send(_ context.Context, msg Message) (Result, error) {
 	}
 
 	name := fmt.Sprintf("%s-%s-%s.html", t.stamp().Format("20060102-150405.000"), safeName(msg.Tag), safeName(msg.To))
+	if msg.MessageID != "" {
+		name = safeName(msg.MessageID) + ".html"
+	}
 	path := filepath.Join(dir, name)
 
 	// The headers are written into the file as a comment rather than only
 	// logged, so the artefact on disk is self-describing when somebody opens it
 	// a week later with no terminal scrollback to go with it.
-	body := fmt.Sprintf("<!--\nTo: %s\nSubject: %s\nTag: %s\n-->\n%s", msg.To, msg.Subject, msg.Tag, msg.HTML)
+	body := fmt.Sprintf("<!--\nTo: %s\nSubject: %s\nTag: %s\nMessage-ID: %s\n-->\n%s",
+		msg.To, msg.Subject, msg.Tag, msg.MessageID, msg.HTML)
 
 	// The file is readable only by the account that wrote it. These artefacts
 	// hold live password-reset links and verification codes, and tmp/ on a
@@ -176,6 +180,15 @@ func (t *SMTPTransport) Send(ctx context.Context, msg Message) (Result, error) {
 	if err != nil {
 		result.Detail = err.Error()
 		return result, fmt.Errorf("mail: dial %s: %w", addr, err)
+	}
+	deadline := time.Now().Add(timeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		conn.Close()
+		result.Detail = err.Error()
+		return result, fmt.Errorf("mail: set %s conversation deadline: %w", addr, err)
 	}
 
 	// Port 465 speaks TLS from the first byte; 587 and 25 negotiate it after
@@ -295,6 +308,9 @@ func Render(from string, msg Message) string {
 	b.WriteString("To: " + msg.To + "\r\n")
 	b.WriteString("Subject: " + msg.Subject + "\r\n")
 	b.WriteString("Date: " + time.Now().UTC().Format(time.RFC1123Z) + "\r\n")
+	if msg.MessageID != "" {
+		b.WriteString("Message-ID: <" + safeName(msg.MessageID) + "@feasible.lol>\r\n")
+	}
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: multipart/alternative; boundary=\"" + boundary + "\"\r\n")
 	b.WriteString("\r\n")

@@ -157,6 +157,40 @@ func TestPreflightRejectsIncompatibleCatalogueAndWebhook(t *testing.T) {
 	}
 }
 
+// TestPreflightRequiresTheExactManagedPaymentsTaxCode rejects a syntactically
+// valid Stripe category that describes a different product and accepts only the
+// catalogue code approved for Feasible's digital service.
+func TestPreflightRequiresTheExactManagedPaymentsTaxCode(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		taxCode string
+		ready   bool
+	}{
+		{name: "wrong valid code", taxCode: "txcd_10000000", ready: false},
+		{name: "exact code", taxCode: managedPaymentsTaxCode, ready: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"id":"prod_feasible","name":"feasible.lol","active":true,"shippable":false,"tax_code":%q}`, test.taxCode)
+			}))
+			t.Cleanup(server.Close)
+
+			client := stripe.New("sk_test_fake")
+			client.BaseURL = server.URL
+			service := &Service{Stripe: client, Plans: Plans{Product: "prod_feasible"}}
+			var report PreflightReport
+			_, ready := service.preflightProduct(context.Background(), &report)
+			if ready != test.ready {
+				t.Fatalf("tax code %s readiness is %t, want %t: %+v", test.taxCode, ready, test.ready, report.Checks)
+			}
+			if !test.ready && !strings.Contains(preflightText(report), managedPaymentsTaxCode) {
+				t.Fatalf("wrong-code report does not name %s: %+v", managedPaymentsTaxCode, report.Checks)
+			}
+		})
+	}
+}
+
 // TestPreflightRejectsWebhookAPIVersion pins the endpoint's event rendering to
 // the same Basil shape the invoice decoder expects.
 func TestPreflightRejectsWebhookAPIVersion(t *testing.T) {

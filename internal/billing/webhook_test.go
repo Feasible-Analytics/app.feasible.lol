@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -53,6 +54,15 @@ type provider struct {
 	periodEnd   int64
 	cancelAtEnd bool
 
+	invoiceStatus      string
+	invoiceAutoAdvance bool
+	invoicePaidAt      int64
+	settleOnCustomerAt int64
+	settleOnVoidAt     int64
+	customerDeleted    bool
+	pauseStarted       chan struct{}
+	continuePause      chan struct{}
+
 	// calls counts subscription reads, so a test can prove the handler asked
 	// rather than trusted.
 	calls int
@@ -75,7 +85,7 @@ func (p *provider) reads() int {
 	return p.calls
 }
 
-// ServeHTTP answers the three endpoints the reconciler calls.
+// ServeHTTP answers the provider endpoints used by reconciliation and purge.
 func (p *provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -83,10 +93,28 @@ func (p *provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	switch {
-	case strings.HasPrefix(r.URL.Path, "/v1/customers/"):
+	case r.Method == http.MethodDelete && r.URL.Path == "/v1/invoices/in_test_1":
+		p.invoiceStatus = ""
+		p.invoiceAutoAdvance = false
+		_, _ = w.Write([]byte(`{"id":"in_test_1","deleted":true}`))
+
+	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/v1/customers/"):
+		p.customerDeleted = true
+		fmt.Fprintf(w, `{"id":%q,"deleted":true}`, customerID)
+
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/customers/"):
+		if p.settleOnCustomerAt != 0 {
+			p.invoiceStatus = "paid"
+			p.invoiceAutoAdvance = false
+			p.invoicePaidAt = p.settleOnCustomerAt
+			p.settleOnCustomerAt = 0
+		}
 		fmt.Fprintf(w, `{"id":%q,"email":"owner@example.com","object":"customer"}`, customerID)
 
-	case r.URL.Path == "/v1/subscriptions":
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions":
+		_, _ = w.Write([]byte(`{"object":"list","has_more":false,"data":[]}`))
+
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/subscriptions":
 		p.calls++
 
 		pause := "null"
@@ -100,6 +128,61 @@ func (p *provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"items":{"data":[{"id":"si_1","price":{"id":%q,"object":"price"}}]},
 			"metadata":{"feasible_team_id":"1"}
 		}]}`, customerID, p.status, p.periodEnd, p.cancelAtEnd, pause, p.priceID)
+
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/subscriptions/sub_test_1":
+		if p.pauseStarted != nil {
+			close(p.pauseStarted)
+			p.pauseStarted = nil
+			continuePause := p.continuePause
+			p.mu.Unlock()
+			<-continuePause
+			p.mu.Lock()
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		p.paused = r.PostForm.Get("pause_collection[behavior]") != ""
+		pause := "null"
+		if p.paused {
+			pause = `{"behavior":"void"}`
+		}
+		fmt.Fprintf(w, `{"id":"sub_test_1","customer":%q,"status":%q,"pause_collection":%s}`, customerID, p.status, pause)
+
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/invoices":
+		if p.invoiceStatus == "" {
+			_, _ = w.Write([]byte(`{"object":"list","has_more":false,"data":[]}`))
+			return
+		}
+		fmt.Fprintf(w, `{"object":"list","has_more":false,"data":[{
+			"id":"in_test_1","created":%d,"customer":%q,"status":%q,
+			"auto_advance":%t,"paid":%t,"status_transitions":{"paid_at":%d},
+			"parent":{"type":"subscription_details","subscription_details":{"subscription":"sub_test_1"}}
+		}]}`, now.Add(-time.Hour).Unix(), customerID, p.invoiceStatus,
+			p.invoiceAutoAdvance, p.invoiceStatus == "paid", p.invoicePaidAt)
+
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/invoices/in_test_1":
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		p.invoiceAutoAdvance = r.PostForm.Get("auto_advance") == "true"
+		fmt.Fprintf(w, `{"id":"in_test_1","customer":%q,"status":%q,"auto_advance":%t}`, customerID, p.invoiceStatus, p.invoiceAutoAdvance)
+
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/invoices/in_test_1/void":
+		if p.settleOnVoidAt != 0 {
+			p.invoiceStatus = "paid"
+			p.invoicePaidAt = p.settleOnVoidAt
+			p.status = stripe.StatusActive
+			p.settleOnVoidAt = 0
+		}
+		if p.invoiceStatus == "paid" {
+			http.Error(w, `{"error":{"type":"invalid_request_error","message":"invoice already paid"}}`, http.StatusBadRequest)
+			return
+		}
+		p.invoiceStatus = "void"
+		p.invoiceAutoAdvance = false
+		fmt.Fprintf(w, `{"id":"in_test_1","customer":%q,"status":"void","auto_advance":false}`, customerID)
 
 	default:
 		http.NotFound(w, r)
@@ -789,15 +872,21 @@ func TestCheckoutRecoversAfterSessionPersistenceFailure(t *testing.T) {
 	var providerMu sync.Mutex
 	requests := 0
 	keys := make(map[string]int)
+	var prices []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/checkout/sessions" {
 			http.NotFound(w, r)
 			return
 		}
 
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		providerMu.Lock()
 		requests++
 		keys[r.Header.Get("Idempotency-Key")]++
+		prices = append(prices, r.PostForm.Get("line_items[0][price]"))
 		providerMu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
@@ -851,6 +940,368 @@ func TestCheckoutRecoversAfterSessionPersistenceFailure(t *testing.T) {
 	if requests != 2 || len(keys) != 1 || keys[""] != 0 {
 		t.Fatalf("provider requests=%d idempotency keys=%v, want two requests with one non-empty key", requests, keys)
 	}
+	if len(prices) != 2 || prices[0] != "price_monthly" || prices[1] != "price_monthly" {
+		t.Fatalf("live claim changed plans across restart: %v", prices)
+	}
+}
+
+// TestExpiredCheckoutClaimIsReplacedAtTheBoundary exercises failure, restart,
+// exact expiry, concurrent reclaim, a monthly-to-yearly change, and a late
+// response from the abandoned provider call. Stripe idempotency is deliberately
+// not reused after expiry; the old session is explicitly neutralized instead.
+func TestExpiredCheckoutClaimIsReplacedAtTheBoundary(t *testing.T) {
+	h := newHarness(t)
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+
+	var providerMu sync.Mutex
+	var forms []url.Values
+	var keys []string
+	expiredOld := 0
+	oldExpired := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions":
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			providerMu.Lock()
+			index := len(forms)
+			forms = append(forms, r.PostForm)
+			keys = append(keys, r.Header.Get("Idempotency-Key"))
+			providerMu.Unlock()
+			if index == 0 {
+				close(firstStarted)
+				<-releaseFirst
+				_, _ = w.Write([]byte(`{"id":"cs_old","status":"open","url":"https://checkout.example/old"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"cs_new","status":"open","url":"https://checkout.example/new"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions":
+			providerMu.Lock()
+			expired := oldExpired
+			providerMu.Unlock()
+			if expired {
+				_, _ = w.Write([]byte(`{"object":"list","has_more":false,"data":[]}`))
+			} else {
+				_, _ = w.Write([]byte(`{"object":"list","has_more":false,"data":[{"id":"cs_old","status":"open","metadata":{"feasible_team_id":"1"}}]}`))
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions/cs_new":
+			_, _ = w.Write([]byte(`{"id":"cs_new","status":"open","url":"https://checkout.example/new"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions/cs_old":
+			providerMu.Lock()
+			expired := oldExpired
+			providerMu.Unlock()
+			status := "open"
+			if expired {
+				status = "expired"
+			}
+			fmt.Fprintf(w, `{"id":"cs_old","status":%q,"metadata":{"feasible_team_id":"1"}}`, status)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions/cs_old/expire":
+			providerMu.Lock()
+			expiredOld++
+			oldExpired = true
+			providerMu.Unlock()
+			_, _ = w.Write([]byte(`{"id":"cs_old","status":"expired"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	first := *h.service
+	first.Stripe = stripe.New("sk_test_fake")
+	first.Stripe.BaseURL = server.URL
+	first.Store = NewStore(h.control)
+	first.Store.Now = func() time.Time { return h.now() }
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := first.Checkout(context.Background(), teamID, "monthly", "owner@example.com")
+		firstResult <- err
+	}()
+	<-firstStarted
+
+	secondControl, err := store.Open(h.controlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { secondControl.Close() })
+	second := first
+	second.Store = NewStore(secondControl)
+	second.Store.Now = func() time.Time { return h.now() }
+
+	// One second before expiry, a restarted process cannot steal the live
+	// account lease or replace its checkout claim.
+	h.travel(accountLeaseDuration - time.Second)
+	liveCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := second.Checkout(liveCtx, teamID, "yearly", "owner@example.com"); err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("live claim replacement returned %v", err)
+	}
+
+	thirdControl, err := store.Open(h.controlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { thirdControl.Close() })
+	third := first
+	third.Store = NewStore(thirdControl)
+	third.Store.Now = func() time.Time { return h.now() }
+
+	// At the exact boundary, two restarted workers race to replace monthly with
+	// yearly. The durable lease permits one create; the other reads its session.
+	h.travel(time.Second)
+	start := make(chan struct{})
+	results := make(chan *stripe.CheckoutSession, 2)
+	errors := make(chan error, 2)
+	var workers sync.WaitGroup
+	for _, service := range []*Service{&second, &third} {
+		workers.Add(1)
+		go func(service *Service) {
+			defer workers.Done()
+			<-start
+			session, err := service.Checkout(context.Background(), teamID, "yearly", "owner@example.com")
+			results <- session
+			errors <- err
+		}(service)
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for session := range results {
+		if session == nil || session.ID != "cs_new" {
+			t.Fatalf("concurrent expiry reclaim returned %+v", session)
+		}
+	}
+
+	close(releaseFirst)
+	if err := <-firstResult; err == nil ||
+		(!strings.Contains(err.Error(), "claim was replaced") && !strings.Contains(err.Error(), "lease expired or was replaced")) {
+		t.Fatalf("late old checkout returned %v", err)
+	}
+
+	claim, found, err := second.Store.CheckoutClaimForAccount(context.Background(), teamID)
+	if err != nil || !found {
+		t.Fatalf("replacement claim found=%t error=%v", found, err)
+	}
+	var cleanupRows int
+	if err := h.control.QueryRow(`SELECT COUNT(*) FROM billing_checkout_cleanup`).Scan(&cleanupRows); err != nil {
+		t.Fatal(err)
+	}
+	providerMu.Lock()
+	defer providerMu.Unlock()
+	if len(forms) != 2 || len(keys) != 2 {
+		t.Fatalf("provider creates forms=%d keys=%d, want old plus one replacement", len(forms), len(keys))
+	}
+	if forms[0].Get("line_items[0][price]") != "price_monthly" || forms[1].Get("line_items[0][price]") != "price_yearly" {
+		t.Fatalf("provider plan attempts are %q then %q", forms[0].Get("line_items[0][price]"), forms[1].Get("line_items[0][price]"))
+	}
+	if keys[0] == "" || keys[1] == "" || keys[0] == keys[1] || claim.IdempotencyKey != keys[1] {
+		t.Fatalf("replacement keys=%v stored=%q", keys, claim.IdempotencyKey)
+	}
+	if claim.Plan != "yearly" || claim.PriceID != "price_yearly" || claim.SessionID != "cs_new" || expiredOld != 2 || cleanupRows != 0 {
+		t.Fatalf("replacement claim=%+v expired_old=%d cleanup=%d", claim, expiredOld, cleanupRows)
+	}
+}
+
+// TestExpiredCheckoutRestartPersistsCleanupFailure proves recovery does not
+// depend on Stripe retaining an idempotency key. An orphan is discovered by
+// metadata, persisted before expiration, and blocks replacement until cleanup
+// succeeds on a later process attempt.
+func TestExpiredCheckoutRestartPersistsCleanupFailure(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	old, err := h.service.Store.NewCheckoutClaim(ctx, teamID, "monthly", "price_monthly", "", "owner@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.travel(accountLeaseDuration)
+
+	var mu sync.Mutex
+	expireCalls := 0
+	created := 0
+	expired := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions":
+			if expired {
+				_, _ = w.Write([]byte(`{"object":"list","has_more":false,"data":[]}`))
+			} else {
+				_, _ = w.Write([]byte(`{"object":"list","has_more":false,"data":[{"id":"cs_orphan","status":"open","metadata":{"feasible_team_id":"1"}}]}`))
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions/cs_orphan":
+			status := "open"
+			if expired {
+				status = "expired"
+			}
+			fmt.Fprintf(w, `{"id":"cs_orphan","status":%q}`, status)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions/cs_orphan/expire":
+			expireCalls++
+			if expireCalls == 1 {
+				http.Error(w, `{"error":{"type":"api_error","message":"temporary"}}`, http.StatusInternalServerError)
+				return
+			}
+			expired = true
+			_, _ = w.Write([]byte(`{"id":"cs_orphan","status":"expired"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions":
+			created++
+			_, _ = w.Write([]byte(`{"id":"cs_new","status":"open","url":"https://checkout.example/new"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	h.service.Stripe = stripe.New("sk_test_fake")
+	h.service.Stripe.BaseURL = server.URL
+
+	if _, err := h.service.Checkout(ctx, teamID, "yearly", "owner@example.com"); err == nil || !strings.Contains(err.Error(), "temporary") {
+		t.Fatalf("first orphan cleanup returned %v", err)
+	}
+	var cleanup int
+	if err := h.control.QueryRow(`SELECT COUNT(*) FROM billing_checkout_cleanup WHERE session_id = 'cs_orphan'`).Scan(&cleanup); err != nil {
+		t.Fatal(err)
+	}
+	if cleanup != 1 || created != 0 {
+		t.Fatalf("failed cleanup rows=%d provider creates=%d", cleanup, created)
+	}
+
+	session, err := h.service.Checkout(ctx, teamID, "yearly", "owner@example.com")
+	if err != nil || session == nil || session.ID != "cs_new" {
+		t.Fatalf("recovered checkout session=%+v error=%v", session, err)
+	}
+	claim, found, err := h.service.Store.CheckoutClaimForAccount(ctx, teamID)
+	if err != nil || !found {
+		t.Fatalf("replacement claim found=%t error=%v", found, err)
+	}
+	if err := h.control.QueryRow(`SELECT COUNT(*) FROM billing_checkout_cleanup`).Scan(&cleanup); err != nil {
+		t.Fatal(err)
+	}
+	if cleanup != 0 || created != 1 || claim.Plan != "yearly" || claim.IdempotencyKey == old.IdempotencyKey {
+		t.Fatalf("cleanup=%d creates=%d claim=%+v old_key=%q", cleanup, created, claim, old.IdempotencyKey)
+	}
+}
+
+// TestCompletedCheckoutTruthBlocksOnlyAnUntrackedSubscription distinguishes an
+// orphan completion from harmless history. A first customer's completed session
+// blocks replacement, while an existing customer's terminal subscription may
+// start a new checkout after its historical completion is inspected.
+func TestCompletedCheckoutTruthBlocksOnlyAnUntrackedSubscription(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		existingCustomer bool
+		wantCreate       int
+		wantError        string
+	}{
+		{name: "untracked first customer", wantError: "completed before it could be recorded locally"},
+		{name: "terminal existing customer", existingCustomer: true, wantCreate: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			ctx := context.Background()
+			customer := ""
+			if tc.existingCustomer {
+				customer = customerID
+				if err := h.service.Store.Save(ctx, Subscription{
+					TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_terminal",
+					Status: stripe.StatusCanceled, Plan: "monthly", PriceID: "price_monthly",
+					PaymentState: PaymentFailed,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			claim, err := h.service.Store.NewCheckoutClaim(ctx, teamID, "monthly", "price_monthly", customer, "owner@example.com")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.existingCustomer {
+				if err := h.service.Store.SaveCheckoutSession(ctx, claim, "cs_complete", "", "complete"); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				h.travel(accountLeaseDuration)
+			}
+
+			creates := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/v1/subscriptions":
+					_, _ = w.Write([]byte(`{"object":"list","has_more":false,"data":[{"id":"sub_terminal","status":"canceled"}]}`))
+				case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions":
+					_, _ = w.Write([]byte(`{"object":"list","has_more":false,"data":[{"id":"cs_complete","status":"complete","subscription":"sub_terminal","metadata":{"feasible_team_id":"1"}}]}`))
+				case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions/cs_complete":
+					_, _ = w.Write([]byte(`{"id":"cs_complete","status":"complete","subscription":"sub_terminal","metadata":{"feasible_team_id":"1"}}`))
+				case r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions":
+					creates++
+					_, _ = w.Write([]byte(`{"id":"cs_replacement","status":"open","url":"https://checkout.example/replacement"}`))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(server.Close)
+			h.service.Stripe = stripe.New("sk_test_fake")
+			h.service.Stripe.BaseURL = server.URL
+
+			session, err := h.service.Checkout(ctx, teamID, "yearly", "owner@example.com")
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("completed orphan session=%+v error=%v", session, err)
+				}
+			} else if err != nil || session == nil || session.ID != "cs_replacement" {
+				t.Fatalf("terminal replacement session=%+v error=%v", session, err)
+			}
+			if creates != tc.wantCreate {
+				t.Fatalf("provider creates=%d, want %d", creates, tc.wantCreate)
+			}
+		})
+	}
+}
+
+// TestExpiredAccountLeaseCannotContinueOrReleaseReplacement proves token and
+// deadline fencing across independent Store connections.
+func TestExpiredAccountLeaseCannotContinueOrReleaseReplacement(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	first, err := h.service.Store.AcquireAccountLease(ctx, teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.travel(accountLeaseDuration)
+	if err := first.Renew(ctx); err == nil || !strings.Contains(err.Error(), "expired or was replaced") {
+		t.Fatalf("expired lease renewed with %v", err)
+	}
+
+	secondControl, err := store.Open(h.controlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { secondControl.Close() })
+	secondStore := NewStore(secondControl)
+	secondStore.Now = func() time.Time { return h.now() }
+	second, err := secondStore.AcquireAccountLease(ctx, teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Release()
+	var leases int
+	if err := h.control.QueryRow(`SELECT COUNT(*) FROM billing_account_leases WHERE team_id = 1`).Scan(&leases); err != nil {
+		t.Fatal(err)
+	}
+	if leases != 1 {
+		t.Fatalf("expired release removed replacement: rows=%d", leases)
+	}
+	second.Release()
 }
 
 // TestCheckoutRefusesAnExistingChargeableSubscription ensures plan changes use
@@ -881,6 +1332,89 @@ func TestCheckoutRefusesAnExistingChargeableSubscription(t *testing.T) {
 	}
 	if claims != 0 {
 		t.Fatalf("blocked plan change wrote %d checkout claims", claims)
+	}
+}
+
+// TestMixedSubscriptionHistoryCannotHideChargeableTruth proves every page and
+// every subscription participates in billing decisions. An older canceled
+// annual plan cannot hide a newer active monthly plan, and payment evidence for
+// the canceled subscription cannot be attached to the selected live one.
+func TestMixedSubscriptionHistoryCannotHideChargeableTruth(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	creates := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/subscriptions" && r.URL.Query().Get("starting_after") == "":
+			_, _ = w.Write([]byte(`{"object":"list","has_more":true,"data":[{
+				"id":"sub_old_annual","created":100,"customer":"cus_test_1","status":"canceled",
+				"current_period_end":1000,"items":{"data":[{"price":{"id":"price_yearly"}}]}
+			}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/subscriptions":
+			_, _ = w.Write([]byte(`{"object":"list","has_more":false,"data":[{
+				"id":"sub_new_monthly","created":200,"customer":"cus_test_1","status":"active",
+				"current_period_end":2000,"items":{"data":[{"price":{"id":"price_monthly"}}]}
+			}]}`))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/customers/"):
+			_, _ = w.Write([]byte(`{"id":"cus_test_1","email":"owner@example.com"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions":
+			creates++
+			_, _ = w.Write([]byte(`{"id":"cs_forbidden","status":"open"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	h.service.Stripe = stripe.New("sk_test_fake")
+	h.service.Stripe.BaseURL = server.URL
+
+	if err := h.service.Store.Save(ctx, Subscription{
+		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_old_annual",
+		Status: stripe.StatusCanceled, Plan: "yearly", PriceID: "price_yearly",
+		PaymentState: PaymentFailed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.service.Checkout(ctx, teamID, "monthly", "owner@example.com"); err == nil || !strings.Contains(err.Error(), "sub_new_monthly") {
+		t.Fatalf("mixed history checkout returned %v", err)
+	}
+	if creates != 0 {
+		t.Fatalf("mixed history created %d checkout sessions", creates)
+	}
+
+	applied, err := h.service.Reconcile(ctx, teamID, customerID, PaymentUpdate{
+		State: PaymentPaid, SubscriptionID: "sub_old_annual", SourceID: "in_old",
+		SourceCreated: 300, EventCreated: 300,
+		Trigger: stripe.EventInvoicePaymentSucceed, RequireSubscriptionMatch: true,
+	})
+	if err != nil || !applied {
+		t.Fatalf("historical evidence reconciliation applied=%t error=%v", applied, err)
+	}
+	mirror, err := h.service.Store.Load(ctx, teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mirror.SubscriptionID != "sub_new_monthly" || mirror.Plan != "monthly" || mirror.PaymentState != PaymentPending {
+		t.Fatalf("historical invoice selected misleading mirror %+v", mirror)
+	}
+}
+
+// TestReturnURLPreservesStripePlaceholderAndEscapesValues pins the only
+// deliberate exception to ordinary query escaping: Stripe requires literal
+// braces around its Checkout Session placeholder, while every other value must
+// remain URL encoded.
+func TestReturnURLPreservesStripePlaceholderAndEscapesValues(t *testing.T) {
+	h := newHarness(t)
+	got := h.service.returnURL("/billing/done", url.Values{
+		"session": {"{CHECKOUT_SESSION_ID}"},
+		"team":    {"2"},
+		"label":   {"month & year"},
+	})
+	want := "https://feasible.lol/billing/done?label=month+%26+year&session={CHECKOUT_SESSION_ID}&team=2"
+	if got != want {
+		t.Fatalf("return URL is %q, want %q", got, want)
 	}
 }
 
@@ -1373,6 +1907,356 @@ func TestEveryHandledEventIsInTheLog(t *testing.T) {
 	// answers "did it arrive" as well as "did it do anything".
 	if outcomes["evt_log_3"] != OutcomeIgnored {
 		t.Errorf("an unhandled type was recorded as %q", outcomes["evt_log_3"])
+	}
+}
+
+// TestDay90RevalidatesSettlementBeforeDeletion reproduces the provider/local
+// race exactly: payment settles after reconciliation reads the subscription but
+// before it writes the failed mirror. Day 90 must recover from paid_at evidence,
+// and a delayed webhook must repair a mirror write that failed after lifecycle
+// activation instead of leaving the account locked or deleting it.
+func TestDay90RevalidatesSettlementBeforeDeletion(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	failureAt := h.now().Add(-lifecycle.DeletionDays * lifecycle.Day)
+	paidAt := h.now().Add(-time.Hour)
+
+	h.provider.mu.Lock()
+	h.provider.status = stripe.StatusActive
+	h.provider.invoiceStatus = "open"
+	h.provider.invoiceAutoAdvance = true
+	h.provider.settleOnCustomerAt = paidAt.Unix()
+	h.provider.mu.Unlock()
+
+	applied, err := h.service.Reconcile(ctx, teamID, customerID, PaymentUpdate{
+		State:                    PaymentFailed,
+		SubscriptionID:           "sub_test_1",
+		SourceID:                 "in_failed",
+		SourceCreated:            failureAt.Unix(),
+		EventCreated:             failureAt.Unix(),
+		Trigger:                  stripe.EventInvoicePaymentFailed,
+		RequireSubscriptionMatch: true,
+	})
+	if err != nil || !applied {
+		t.Fatalf("failed reconciliation applied=%t error=%v", applied, err)
+	}
+	if mirror, err := h.service.Store.Load(ctx, teamID); err != nil || mirror.PaymentState != PaymentFailed {
+		t.Fatalf("local mirror after provider-side settlement is %+v error=%v", mirror, err)
+	}
+
+	// Make the first post-recovery mirror write crash. The lifecycle transition
+	// occurs first, so this fault must not leave an otherwise-paid account locked.
+	if _, err := h.control.Exec(`
+		CREATE TRIGGER fail_paid_mirror
+		BEFORE UPDATE OF payment_state ON subscriptions
+		WHEN NEW.payment_state = 'paid'
+		BEGIN
+			SELECT RAISE(FAIL, 'simulated paid mirror crash');
+		END
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	h.service.Lifecycle.Purger.Payments = h.service
+	h.service.Lifecycle.Purger.Customers = h.service
+	state, err := lifecycle.NewStore(h.control).Load(ctx, teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = h.service.Lifecycle.Purger.Purge(ctx, lifecycle.Account{
+		TeamID: 1, TeamName: "Example Co", Email: "owner@example.com",
+		CustomerID: customerID, State: state,
+	}, h.now())
+	if err == nil || !strings.Contains(err.Error(), "simulated paid mirror crash") {
+		t.Fatalf("day-90 recovery returned %v", err)
+	}
+	if got := h.phase(); got != lifecycle.PhaseActive {
+		t.Fatalf("failed mirror write left paid lifecycle in %q, want active", got)
+	}
+	var deletions int
+	if err := h.control.QueryRow(`SELECT COUNT(*) FROM account_deletions WHERE team_id = 1`).Scan(&deletions); err != nil {
+		t.Fatal(err)
+	}
+	if deletions != 0 {
+		t.Fatalf("provider-paid account acquired %d deletion audits", deletions)
+	}
+
+	if _, err := h.control.Exec(`DROP TRIGGER fail_paid_mirror`); err != nil {
+		t.Fatal(err)
+	}
+	response := h.deliverCreated("evt_paid_after_day_90", stripe.EventInvoicePaymentSucceed,
+		invoiceObjectFor("in_test_1", "sub_test_1", paidAt), paidAt)
+	if response.Code != http.StatusOK {
+		t.Fatalf("delayed paid event answered %d: %s", response.Code, response.Body.String())
+	}
+	if mirror, err := h.service.Store.Load(ctx, teamID); err != nil || mirror.PaymentState != PaymentPaid {
+		t.Fatalf("delayed paid event left mirror %+v error=%v", mirror, err)
+	}
+
+	h.provider.mu.Lock()
+	defer h.provider.mu.Unlock()
+	if h.provider.paused || h.provider.customerDeleted {
+		t.Fatalf("recovered provider state paused=%t deleted=%t", h.provider.paused, h.provider.customerDeleted)
+	}
+}
+
+// TestDay90RecoversSettlementAtTheVoidFence covers the last provider race: an
+// invoice settles after the final pre-mutation read, exactly when deletion tries
+// to void it. The failed void is re-read as paid_at evidence and recovery wins.
+func TestDay90RecoversSettlementAtTheVoidFence(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	failureAt := h.now().Add(-lifecycle.DeletionDays * lifecycle.Day)
+	paidAt := h.now().Add(-time.Second)
+
+	if err := h.service.Store.Save(ctx, Subscription{
+		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_test_1",
+		Status: stripe.StatusPastDue, Plan: "monthly", PriceID: "price_monthly",
+		PaymentState: PaymentFailed, PaymentFailedAt: failureAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.service.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentFailed, failureAt); err != nil {
+		t.Fatal(err)
+	}
+	h.provider.mu.Lock()
+	h.provider.status = stripe.StatusPastDue
+	h.provider.invoiceStatus = "open"
+	h.provider.invoiceAutoAdvance = true
+	h.provider.settleOnVoidAt = paidAt.Unix()
+	h.provider.mu.Unlock()
+
+	h.service.Lifecycle.Purger.Payments = h.service
+	h.service.Lifecycle.Purger.Customers = h.service
+	state, err := lifecycle.NewStore(h.control).Load(ctx, teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.Lifecycle.Purger.Purge(ctx, lifecycle.Account{
+		TeamID: teamID, TeamName: "Example Co", Email: "owner@example.com",
+		CustomerID: customerID, State: state,
+	}, h.now()); err != nil {
+		t.Fatal(err)
+	}
+
+	var teams, deletions, quiescence int
+	for query, target := range map[string]*int{
+		`SELECT COUNT(*) FROM teams WHERE id = 1`:                           &teams,
+		`SELECT COUNT(*) FROM account_deletions WHERE team_id = 1`:          &deletions,
+		`SELECT COUNT(*) FROM billing_quiescence_objects WHERE team_id = 1`: &quiescence,
+	} {
+		if err := h.control.QueryRow(query).Scan(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if teams != 1 || deletions != 0 || quiescence != 0 || h.phase() != lifecycle.PhaseActive {
+		t.Fatalf("settled-at-void recovery teams=%d deletions=%d quiescence=%d phase=%q",
+			teams, deletions, quiescence, h.phase())
+	}
+	h.provider.mu.Lock()
+	defer h.provider.mu.Unlock()
+	if h.provider.paused || h.provider.customerDeleted || h.provider.invoiceStatus != "paid" {
+		t.Fatalf("settled-at-void provider paused=%t deleted=%t invoice=%q",
+			h.provider.paused, h.provider.customerDeleted, h.provider.invoiceStatus)
+	}
+}
+
+// TestDay90RestoresDurableQuiescenceAfterProcessCrash seeds the exact state left
+// by a crash after provider mutation. A paid mirror causes the replacement
+// worker to restore every recorded object and clear the durable recovery rows.
+func TestDay90RestoresDurableQuiescenceAfterProcessCrash(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	failureAt := h.now().Add(-lifecycle.DeletionDays * lifecycle.Day)
+	if _, err := h.service.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentFailed, failureAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.Store.Save(ctx, Subscription{
+		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_test_1",
+		Status: stripe.StatusActive, Plan: "monthly", PriceID: "price_monthly",
+		PaymentState: PaymentPaid, EvidenceEventAt: h.now().Add(-time.Minute).Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, object := range []QuiescenceObject{{Type: "subscription", ID: "sub_test_1"}, {Type: "invoice", ID: "in_test_1"}} {
+		if err := h.service.Store.RememberQuiescence(ctx, teamID, object.Type, object.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.provider.mu.Lock()
+	h.provider.status = stripe.StatusActive
+	h.provider.paused = true
+	h.provider.invoiceStatus = "draft"
+	h.provider.invoiceAutoAdvance = false
+	h.provider.mu.Unlock()
+
+	h.service.Lifecycle.Purger.Payments = h.service
+	state, err := lifecycle.NewStore(h.control).Load(ctx, teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.Lifecycle.Purger.Purge(ctx, lifecycle.Account{
+		TeamID: teamID, TeamName: "Example Co", Email: "owner@example.com",
+		CustomerID: customerID, State: state,
+	}, h.now()); err != nil {
+		t.Fatal(err)
+	}
+
+	var recoveryRows int
+	if err := h.control.QueryRow(`SELECT COUNT(*) FROM billing_quiescence_objects WHERE team_id = 1`).Scan(&recoveryRows); err != nil {
+		t.Fatal(err)
+	}
+	h.provider.mu.Lock()
+	defer h.provider.mu.Unlock()
+	if recoveryRows != 0 || h.provider.paused || !h.provider.invoiceAutoAdvance || h.phase() != lifecycle.PhaseActive {
+		t.Fatalf("crash recovery rows=%d paused=%t invoice_auto=%t phase=%q",
+			recoveryRows, h.provider.paused, h.provider.invoiceAutoAdvance, h.phase())
+	}
+}
+
+// TestPurgeLeaseWinsAgainstIndependentReconciliation proves the day-90 worker
+// and a second process share one durable account lease. Reconciliation waits
+// while provider collection is quiesced, then observes the immutable deletion
+// audit even though the team and its lease row have already cascaded away.
+func TestPurgeLeaseWinsAgainstIndependentReconciliation(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	failureAt := h.now().Add(-lifecycle.DeletionDays * lifecycle.Day)
+
+	if err := h.service.Store.Save(ctx, Subscription{
+		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_test_1",
+		Status: stripe.StatusPastDue, Plan: "monthly", PriceID: "price_monthly",
+		PaymentState: PaymentFailed, PaymentFailedAt: failureAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.service.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentFailed, failureAt); err != nil {
+		t.Fatal(err)
+	}
+
+	h.provider.mu.Lock()
+	h.provider.status = stripe.StatusPastDue
+	h.provider.invoiceStatus = "open"
+	h.provider.invoiceAutoAdvance = true
+	h.provider.pauseStarted = make(chan struct{})
+	h.provider.continuePause = make(chan struct{})
+	pauseStarted := h.provider.pauseStarted
+	continuePause := h.provider.continuePause
+	h.provider.mu.Unlock()
+
+	h.service.Lifecycle.Purger.Payments = h.service
+	h.service.Lifecycle.Purger.Customers = h.service
+	state, err := lifecycle.NewStore(h.control).Load(ctx, teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secondControl, err := store.Open(h.controlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { secondControl.Close() })
+	second := *h.service
+	second.Store = NewStore(secondControl)
+	second.Store.Now = func() time.Time { return h.now() }
+
+	purgeErr := make(chan error, 1)
+	go func() {
+		purgeErr <- h.service.Lifecycle.Purger.Purge(ctx, lifecycle.Account{
+			TeamID: 1, TeamName: "Example Co", Email: "owner@example.com",
+			CustomerID: customerID, State: state,
+		}, h.now())
+	}()
+	<-pauseStarted
+
+	type reconcileResult struct {
+		applied bool
+		err     error
+	}
+	reconciled := make(chan reconcileResult, 1)
+	go func() {
+		applied, err := second.Reconcile(ctx, teamID, customerID, PaymentUpdate{
+			State: PaymentPaid, SubscriptionID: "sub_test_1", SourceID: "in_late",
+			SourceCreated: h.now().Unix(), EventCreated: h.now().Unix(),
+			Trigger: stripe.EventInvoicePaymentSucceed, RequireSubscriptionMatch: true,
+		})
+		reconciled <- reconcileResult{applied: applied, err: err}
+	}()
+
+	select {
+	case result := <-reconciled:
+		t.Fatalf("reconciliation bypassed live purge lease: %+v", result)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(continuePause)
+	if err := <-purgeErr; err != nil {
+		t.Fatal(err)
+	}
+	result := <-reconciled
+	if result.err != nil || result.applied {
+		t.Fatalf("post-deletion reconciliation is %+v, want ignored", result)
+	}
+
+	var completed int64
+	if err := h.control.QueryRow(`SELECT completed_at FROM account_deletions WHERE team_id = 1`).Scan(&completed); err != nil {
+		t.Fatal(err)
+	}
+	if completed == 0 {
+		t.Fatal("deletion audit was not completed")
+	}
+}
+
+// TestLostDeletionClaimRestoresProviderCollection covers the final local race:
+// a paid mirror committed before purge took the lease, but the stale lifecycle
+// snapshot still reached provider quiescence. Losing the conditional deletion
+// claim must restore both the subscription and its pre-existing open invoice.
+func TestLostDeletionClaimRestoresProviderCollection(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	failureAt := h.now().Add(-lifecycle.DeletionDays * lifecycle.Day)
+	if _, err := h.service.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentFailed, failureAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.Store.Save(ctx, Subscription{
+		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_test_1",
+		Status: stripe.StatusPastDue, Plan: "monthly", PriceID: "price_monthly",
+		PaymentState: PaymentPaid,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.provider.mu.Lock()
+	h.provider.status = stripe.StatusPastDue
+	h.provider.invoiceStatus = "open"
+	h.provider.invoiceAutoAdvance = true
+	h.provider.mu.Unlock()
+
+	h.service.Lifecycle.Purger.Payments = h.service
+	state, err := lifecycle.NewStore(h.control).Load(ctx, teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.Lifecycle.Purger.Purge(ctx, lifecycle.Account{
+		TeamID: 1, TeamName: "Example Co", Email: "owner@example.com",
+		CustomerID: customerID, State: state,
+	}, h.now()); err != nil {
+		t.Fatal(err)
+	}
+
+	h.provider.mu.Lock()
+	defer h.provider.mu.Unlock()
+	if h.provider.paused || !h.provider.invoiceAutoAdvance || h.provider.customerDeleted {
+		t.Fatalf("lost claim left provider paused=%t invoice_auto_advance=%t deleted=%t",
+			h.provider.paused, h.provider.invoiceAutoAdvance, h.provider.customerDeleted)
+	}
+	var teams, deletions int
+	if err := h.control.QueryRow(`SELECT COUNT(*) FROM teams WHERE id = 1`).Scan(&teams); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.control.QueryRow(`SELECT COUNT(*) FROM account_deletions WHERE team_id = 1`).Scan(&deletions); err != nil {
+		t.Fatal(err)
+	}
+	if teams != 1 || deletions != 0 {
+		t.Fatalf("lost claim teams=%d deletions=%d", teams, deletions)
 	}
 }
 

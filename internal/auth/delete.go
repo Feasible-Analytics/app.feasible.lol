@@ -14,7 +14,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -66,21 +65,12 @@ func (d *Deleter) DeleteAccount(ctx context.Context, userID, teamID int64) error
 		}
 	}
 
-	// The handle has to be closed before the file is removed, or the process
-	// keeps writing into an unlinked inode until it exits — the WAL and the
-	// shared-memory file would survive as well, on the path the next account
-	// with the same id would be given.
-	if err := d.manager.Close(teamID); err != nil {
-		return err
-	}
-
 	if err := d.store.DeleteTeamRows(ctx, teamID, userID); err != nil {
 		return err
 	}
 
 	dir := accounts.Dir(d.dataDir, teamID)
-
-	if err := os.RemoveAll(dir); err != nil {
+	if err := d.manager.Delete(teamID); err != nil {
 		return fmt.Errorf("auth: delete account database %s: %w", dir, err)
 	}
 

@@ -61,9 +61,21 @@ func TestDeleteAccountRemovesTheDatabaseFile(t *testing.T) {
 	if _, err := os.Stat(accounts.Dir(dataDir, team.ID)); !os.IsNotExist(err) {
 		t.Error("the account directory should be gone too, along with the WAL")
 	}
-
+	if _, err := os.Stat(accounts.DeletedMarker(dataDir, team.ID)); err != nil {
+		t.Fatalf("the permanent deletion marker is missing: %v", err)
+	}
+	if _, err := manager.Open(ctx, team.ID); err == nil {
+		t.Fatal("the settings deletion path recreated the deleted account database")
+	}
 	if _, err := s.UserByID(ctx, user.ID); err != ErrNotFound {
 		t.Errorf("the user should be gone, got %v", err)
+	}
+	_, replacement, err := s.CreateUser(ctx, "replacement@example.com", "", "hash", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.ID <= team.ID {
+		t.Fatalf("settings deletion reused team id %d for replacement %d", team.ID, replacement.ID)
 	}
 }
 

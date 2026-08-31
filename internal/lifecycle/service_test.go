@@ -128,8 +128,13 @@ func (h *harness) now() time.Time {
 
 // travel moves the clock to a whole number of days after day 0.
 func (h *harness) travel(days int) {
+	h.setClock(at(days))
+}
+
+// setClock moves the injected clock to an exact instant.
+func (h *harness) setClock(now time.Time) {
 	h.mu.Lock()
-	h.clock = at(days)
+	h.clock = now
 	h.mu.Unlock()
 }
 
@@ -364,6 +369,10 @@ func TestLapseNoticeLinksToSafeSelectedBillingPage(t *testing.T) {
 	if notice.PortalURL != "https://feasible.lol/billing?team=1" {
 		t.Fatalf("lapse notice portal URL is %q", notice.PortalURL)
 	}
+	if notice.UpgradeURL != "https://feasible.lol/billing/upgrade?team=1" ||
+		notice.ExportURL != "https://feasible.lol/billing/export?team=1" {
+		t.Fatalf("lapse account URLs are upgrade=%q export=%q", notice.UpgradeURL, notice.ExportURL)
+	}
 }
 
 // TestEmailsAreIdempotentAcrossRepeatedSweeps is the guarantee that a retried
@@ -396,6 +405,196 @@ func TestEmailsAreIdempotentAcrossRepeatedSweeps(t *testing.T) {
 
 	if len(seen) != 4 {
 		t.Errorf("day 45 sent %d distinct emails, want 4", len(seen))
+	}
+}
+
+// TestLifecycleOutboxRetriesExpiredClaimsAndExcludesLiveWorkers proves a crash
+// before send becomes retryable, while concurrent workers cannot both own the
+// message during the live lease.
+func TestLifecycleOutboxRetriesExpiredClaimsAndExcludesLiveWorkers(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	if _, err := h.service.Signal(ctx, 1, SignalTrialStarted); err != nil {
+		t.Fatal(err)
+	}
+	h.travel(Sequence[0].Day)
+	started := day0
+	now := h.service.now()
+
+	secondControl, err := store.Open(filepath.Join(h.dataDir, "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { secondControl.Close() })
+	stores := []*Store{h.store, NewStore(secondControl)}
+	start := make(chan struct{})
+	results := make(chan bool, len(stores))
+	var workers sync.WaitGroup
+	for _, outbox := range stores {
+		workers.Add(1)
+		go func(outbox *Store) {
+			defer workers.Done()
+			<-start
+			_, claimed, err := outbox.ClaimEmail(ctx, 1, started, Sequence[0].Template, "owner@example.com", now)
+			if err != nil {
+				t.Errorf("claim email: %v", err)
+			}
+			results <- claimed
+		}(outbox)
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+
+	claimed := 0
+	for result := range results {
+		if result {
+			claimed++
+		}
+	}
+	if claimed != 1 {
+		t.Fatalf("concurrent workers won %d live email leases, want 1", claimed)
+	}
+
+	if err := h.service.sendDue(ctx, Account{TeamID: 1, TeamName: "Example Co", Email: "owner@example.com",
+		State: State{Trigger: TriggerTrial, StartedAt: started}}, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.sent) != 0 {
+		t.Fatal("a second worker sent through a live email lease")
+	}
+
+	retryAt := now.Add(emailLeaseDuration + time.Second)
+	h.setClock(retryAt)
+	if err := h.service.sendDue(ctx, Account{TeamID: 1, TeamName: "Example Co", Email: "owner@example.com",
+		State: State{Trigger: TriggerTrial, StartedAt: started}}, retryAt); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.sent) != 1 {
+		t.Fatalf("expired pre-send claim produced %d messages, want 1", len(h.sent))
+	}
+}
+
+// TestLifecycleOutboxAcceptedBeforeAckRetryKeepsMessageIdentity documents the
+// unavoidable SMTP window: a crash after relay acceptance but before the local
+// completion transaction may duplicate, but the retry carries one Message-ID.
+func TestLifecycleOutboxAcceptedBeforeAckRetryKeepsMessageIdentity(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	if _, err := h.service.Signal(ctx, 1, SignalTrialStarted); err != nil {
+		t.Fatal(err)
+	}
+	started := day0
+	now := at(Sequence[0].Day)
+	h.setClock(now)
+	account := Account{TeamID: 1, TeamName: "Example Co", Email: "owner@example.com",
+		State: State{Trigger: TriggerTrial, StartedAt: started}}
+
+	notice := h.service.notice(account, Sequence[0], now)
+	claim, claimed, err := h.store.ClaimNotice(ctx, started, notice, now)
+	if err != nil || !claimed {
+		t.Fatalf("first claim is %+v claimed=%t error=%v", claim, claimed, err)
+	}
+	notice.MessageKey = claim.MessageKey
+	if _, err := h.service.Notify.Notify(ctx, notice); err != nil {
+		t.Fatal(err)
+	}
+	// Simulated crash: the accepted transport result is never acknowledged to
+	// the outbox. The next worker may send again after the lease expires.
+	retryAt := now.Add(emailLeaseDuration + time.Second)
+	h.setClock(retryAt)
+	if err := h.service.sendDue(ctx, account, retryAt); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.sent) != 2 || h.sent[0].MessageKey == "" || h.sent[0].MessageKey != h.sent[1].MessageKey {
+		t.Fatalf("accepted-before-ack retry identities are %+v", []string{h.sent[0].MessageKey, h.sent[1].MessageKey})
+	}
+
+	if _, claimed, err := h.store.ClaimEmail(ctx, 1, started, Sequence[0].Template,
+		account.Email, now.Add(2*emailLeaseDuration)); err != nil || claimed {
+		t.Fatalf("completed outbox row was reclaimable: claimed=%t error=%v", claimed, err)
+	}
+}
+
+// TestDeletionConfirmationTakesAFreshLeaseAfterASlowSweep ensures processing an
+// earlier recipient cannot make a later confirmation lease expired on arrival.
+func TestDeletionConfirmationTakesAFreshLeaseAfterASlowSweep(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	started := day0.Add(-DeletionDays * Day)
+	for teamID := int64(1); teamID <= 2; teamID++ {
+		if _, err := h.control.Exec(`
+			INSERT INTO account_deletions
+				(team_id, team_name, contact_email, clock_started_at, started_at, completed_at,
+				 local_removed_at, provider_removed_at, control_removed_at)
+			VALUES (?, 'Deleted Team', 'owner@example.com', ?, ?, ?, ?, ?, ?)
+		`, teamID, started.Unix(), day0.Unix(), day0.Unix(), day0.Unix(), day0.Unix(), day0.Unix()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	competitor := NewStore(h.control)
+	call := 0
+	h.service.Notify = NotifierFunc(func(_ context.Context, notice Notice) (string, error) {
+		call++
+		if call == 1 {
+			h.setClock(h.now().Add(emailLeaseDuration + time.Second))
+		}
+		if call == 2 {
+			_, claimed, err := competitor.ClaimNotice(ctx, started, notice, h.now())
+			if err != nil {
+				t.Fatalf("competing confirmation claim: %v", err)
+			}
+			if claimed {
+				t.Fatal("second confirmation was claimed with an already-expired lease")
+			}
+		}
+
+		return "captured", nil
+	})
+
+	if err := h.service.sendConfirmations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if call != 2 {
+		t.Fatalf("sent %d confirmations, want 2", call)
+	}
+}
+
+// TestLifecycleOutboxRetryUsesItsOriginalPayload changes every mutable input
+// after a pre-send crash. The retry must keep the first recipient, team name,
+// day, dates, and selected-team links under the same stable message identity.
+func TestLifecycleOutboxRetryUsesItsOriginalPayload(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	if _, err := h.service.Signal(ctx, 1, SignalTrialStarted); err != nil {
+		t.Fatal(err)
+	}
+	firstAt := at(Sequence[0].Day)
+	h.setClock(firstAt)
+	account := Account{TeamID: 1, TeamName: "Original Co", Email: "first@example.com",
+		State: State{Trigger: TriggerTrial, StartedAt: day0}}
+	original := h.service.notice(account, Sequence[0], firstAt)
+	claim, claimed, err := h.store.ClaimNotice(ctx, day0, original, firstAt)
+	if err != nil || !claimed {
+		t.Fatalf("original claim=%+v claimed=%t error=%v", claim, claimed, err)
+	}
+
+	changed := account
+	changed.TeamName = "Renamed Co"
+	changed.Email = "second@example.com"
+	retryAt := firstAt.Add(24 * time.Hour)
+	h.setClock(retryAt)
+	if err := h.service.sendDue(ctx, changed, retryAt); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.sent) != 1 {
+		t.Fatalf("payload retry sent %d notices", len(h.sent))
+	}
+	got := h.sent[0]
+	if got.To != original.To || got.TeamName != original.TeamName || got.Day != original.Day ||
+		got.UpgradeURL != original.UpgradeURL || got.ExportURL != original.ExportURL || got.MessageKey != claim.MessageKey {
+		t.Fatalf("payload changed across retry: original=%+v retry=%+v", original, got)
 	}
 }
 
@@ -529,12 +728,9 @@ func TestSuccessfulPaymentRepairsFinalizationAfterACrash(t *testing.T) {
 		t.Fatal(err)
 	}
 	started := h.service.now()
-	if _, err := h.control.Exec(`
-		INSERT INTO lifecycle_emails
-			(team_id, started_at, template, recipient, outcome, sent_at)
-		VALUES (1, ?, 'day_89', 'owner@example.com', '', ?)
-	`, started.Unix(), started.Unix()); err != nil {
-		t.Fatal(err)
+	if _, claimed, err := h.store.ClaimEmail(ctx, 1, started, TemplateDeletionTomorrow,
+		"owner@example.com", started); err != nil || !claimed {
+		t.Fatalf("claim pending email: claimed=%t error=%v", claimed, err)
 	}
 	if err := h.store.OpenGap(ctx, 1, started.Add(LockedDays*Day)); err != nil {
 		t.Fatal(err)
@@ -550,7 +746,7 @@ func TestSuccessfulPaymentRepairsFinalizationAfterACrash(t *testing.T) {
 	}
 
 	var pending int
-	if err := h.control.QueryRow(`SELECT COUNT(*) FROM lifecycle_emails WHERE team_id = 1 AND outcome = ''`).Scan(&pending); err != nil {
+	if err := h.control.QueryRow(`SELECT COUNT(*) FROM lifecycle_outbox WHERE team_id = 1 AND completed_at IS NULL`).Scan(&pending); err != nil {
 		t.Fatal(err)
 	}
 	if pending != 0 {
@@ -656,9 +852,9 @@ func TestDeletionRemovesTheStripeCustomer(t *testing.T) {
 	}
 }
 
-// TestDeletionSurvivesAFailingPaymentProvider is the rule that a provider we
-// cannot reach must not stop us destroying the data we hold on the day we
-// promised. The failure is recorded so somebody can finish the job by hand.
+// TestDeletionSurvivesAFailingPaymentProvider removes local data on schedule but
+// keeps the immutable audit retryable until the provider customer is also gone.
+// No confirmation may claim the stored card was removed before that succeeds.
 func TestDeletionSurvivesAFailingPaymentProvider(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t)
@@ -679,18 +875,39 @@ func TestDeletionSurvivesAFailingPaymentProvider(t *testing.T) {
 	}
 
 	h.travel(90)
-	h.sweep()
+	if _, err := h.service.Sweep(ctx); err == nil || !contains(err.Error(), "payment provider is unreachable") {
+		t.Fatalf("failed provider deletion returned %v", err)
+	}
 
 	if exists(h.accountFile()) {
 		t.Fatal("a payment provider outage stopped the data being deleted")
 	}
 
 	var notes string
-	if err := h.control.QueryRow(`SELECT notes FROM account_deletions WHERE team_id = 1`).Scan(&notes); err != nil {
+	var completed, providerRemoved sql.NullInt64
+	if err := h.control.QueryRow(`
+		SELECT notes, completed_at, provider_removed_at FROM account_deletions WHERE team_id = 1
+	`).Scan(&notes, &completed, &providerRemoved); err != nil {
 		t.Fatal(err)
 	}
-	if notes == "" || !contains(notes, "NOT removed") {
-		t.Errorf("the failure was not recorded: %q", notes)
+	if notes == "" || !contains(notes, "NOT removed") || completed.Valid || providerRemoved.Valid {
+		t.Errorf("provider failure was not left retryable: notes=%q completed=%v provider=%v", notes, completed, providerRemoved)
+	}
+	if len(h.templates()) != len(Sequence)-1 {
+		t.Fatal("a deletion confirmation was sent before provider cleanup")
+	}
+
+	h.purger.Customers = removerFunc(func(context.Context, string) error { return nil })
+	if _, err := h.service.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.control.QueryRow(`
+		SELECT completed_at, provider_removed_at FROM account_deletions WHERE team_id = 1
+	`).Scan(&completed, &providerRemoved); err != nil {
+		t.Fatal(err)
+	}
+	if !completed.Valid || !providerRemoved.Valid || h.templates()[len(h.templates())-1] != TemplateAccountDeleted {
+		t.Fatalf("provider retry completion=%v provider=%v templates=%v", completed, providerRemoved, h.templates())
 	}
 }
 
@@ -723,6 +940,133 @@ func TestDeletionIsIdempotent(t *testing.T) {
 	}
 	if records != 1 {
 		t.Errorf("three purges wrote %d deletion records, want 1", records)
+	}
+}
+
+// TestDeletionControlTransactionRecoversAroundTeamRemoval injects crashes on
+// both sides of the team DELETE. The transaction must roll back the team and
+// confirmation together, while the immutable pending audit remains sufficient
+// to finish the deletion on the next pass.
+func TestDeletionControlTransactionRecoversAroundTeamRemoval(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		trigger string
+		teams   int
+	}{
+		{
+			name: "immediately before team removal",
+			trigger: `CREATE TRIGGER crash_before_team_delete
+				BEFORE DELETE ON teams
+				BEGIN SELECT RAISE(FAIL, 'crash before team removal'); END`,
+			teams: 1,
+		},
+		{
+			name: "immediately after team removal",
+			trigger: `CREATE TRIGGER crash_after_team_delete
+				BEFORE UPDATE OF completed_at ON account_deletions
+				WHEN NEW.completed_at IS NOT NULL
+				BEGIN SELECT RAISE(FAIL, 'crash after team removal'); END`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			h := newHarness(t)
+			if _, err := h.service.Signal(ctx, 1, SignalPaymentFailed); err != nil {
+				t.Fatal(err)
+			}
+			state, err := h.store.Load(ctx, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.control.Exec(tc.trigger); err != nil {
+				t.Fatal(err)
+			}
+			account := Account{TeamID: 1, TeamName: "Example Co", Email: "owner@example.com", State: state}
+			if err := h.purger.Purge(ctx, account, at(DeletionDays)); err == nil {
+				t.Fatal("injected deletion crash did not fail")
+			}
+
+			var teams, confirmations int
+			var completed sql.NullInt64
+			if err := h.control.QueryRow(`SELECT COUNT(*) FROM teams WHERE id = 1`).Scan(&teams); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.control.QueryRow(`SELECT completed_at FROM account_deletions WHERE team_id = 1`).Scan(&completed); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.control.QueryRow(`SELECT COUNT(*) FROM lifecycle_outbox WHERE team_id = 1 AND template = ?`, TemplateAccountDeleted).Scan(&confirmations); err != nil {
+				t.Fatal(err)
+			}
+			if teams != tc.teams || completed.Valid || confirmations != 0 {
+				t.Fatalf("crash split control state: teams=%d completed=%v confirmations=%d", teams, completed, confirmations)
+			}
+
+			if _, err := h.control.Exec(`DROP TRIGGER ` + map[string]string{
+				"immediately before team removal": "crash_before_team_delete",
+				"immediately after team removal":  "crash_after_team_delete",
+			}[tc.name]); err != nil {
+				t.Fatal(err)
+			}
+			pending, err := h.purger.PendingDeletions(ctx)
+			if err != nil || len(pending) != 1 {
+				t.Fatalf("pending deletion recovery is %+v error=%v", pending, err)
+			}
+			if err := h.purger.Purge(ctx, pending[0], at(DeletionDays)); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.control.QueryRow(`SELECT COUNT(*) FROM teams WHERE id = 1`).Scan(&teams); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.control.QueryRow(`SELECT COUNT(*) FROM lifecycle_outbox WHERE team_id = 1 AND template = ? AND completed_at IS NULL`, TemplateAccountDeleted).Scan(&confirmations); err != nil {
+				t.Fatal(err)
+			}
+			eligible, err := h.purger.PendingConfirmations(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if teams != 0 || confirmations != 1 || len(eligible) != 1 {
+				t.Fatalf("recovered deletion teams=%d confirmations=%d eligible=%+v", teams, confirmations, eligible)
+			}
+		})
+	}
+}
+
+// TestLegacyCrashAfterTeamRemovalRemainsDiscoverable covers the state emitted
+// by the older non-atomic implementation: the team is already gone but its
+// immutable audit is incomplete. A sweep must rediscover it, complete the
+// audit, and send the leased confirmation without any membership rows left.
+func TestLegacyCrashAfterTeamRemovalRemainsDiscoverable(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	if _, err := h.service.Signal(ctx, 1, SignalPaymentFailed); err != nil {
+		t.Fatal(err)
+	}
+	state, err := h.store.Load(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := Account{TeamID: 1, TeamName: "Example Co", Email: "owner@example.com", State: state}
+	claimed, err := h.purger.claim(ctx, account, at(DeletionDays))
+	if err != nil || !claimed {
+		t.Fatalf("legacy deletion claim=%t error=%v", claimed, err)
+	}
+	if _, err := h.control.Exec(`DELETE FROM teams WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+
+	h.travel(DeletionDays)
+	if _, err := h.service.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var completed, notified sql.NullInt64
+	if err := h.control.QueryRow(`SELECT completed_at, notified_at FROM account_deletions WHERE team_id = 1`).Scan(&completed, &notified); err != nil {
+		t.Fatal(err)
+	}
+	if !completed.Valid || !notified.Valid {
+		t.Fatalf("legacy audit completion=%v notification=%v", completed, notified)
+	}
+	if templates := h.templates(); len(templates) != 1 || templates[0] != TemplateAccountDeleted {
+		t.Fatalf("legacy recovery sent %v", templates)
 	}
 }
 

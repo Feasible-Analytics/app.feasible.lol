@@ -72,6 +72,8 @@ func TestControlMigratesAFreshDatabase(t *testing.T) {
 		"site_folders", "sites", "guest_memberships", "subscriptions",
 		"usage_counters", "api_keys", "shared_links", "salts", "jobs",
 		"email_verification_codes", "password_reset_tokens",
+		"billing_account_leases", "billing_quiescence_objects", "billing_checkouts",
+		"billing_checkout_cleanup", "lifecycle_account_leases", "lifecycle_outbox", "team_id_sequence",
 	} {
 		if !tableExists(t, db, table) {
 			t.Errorf("control schema is missing %s", table)
@@ -119,9 +121,18 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 		INSERT INTO account_lifecycle
 			(team_id, trigger, started_at, created_at, updated_at)
 		VALUES (1, 'lapse', 10, 10, 10);
-		INSERT INTO stripe_events
+		INSERT INTO lifecycle_emails
+			(team_id, started_at, template, recipient, outcome, sent_at)
+		VALUES
+			(1, 10, 'ending_soon', 'billing@example.com', 'smtp/accepted: queued', 20),
+			(1, 10, 'ending_tomorrow', 'billing@example.com', 'failed: relay down', 21);
+			INSERT INTO stripe_events
 			(event_id, type, team_id, payload, received_at, handled_at, outcome)
-		VALUES ('evt_existing', 'invoice.payment_failed', 1, '{}', 10, 10, 'applied');
+			VALUES ('evt_existing', 'invoice.payment_failed', 1, '{}', 10, 10, 'applied');
+			INSERT INTO account_deletions
+				(team_id, team_name, contact_email, stripe_customer_id,
+				 clock_started_at, started_at, notes)
+			VALUES (99, 'Historical deletion', 'old@example.com', 'cus_old', 1, 91, 'claimed');
 	`); err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +158,10 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 			customer, subscription, paymentState, failedAt)
 	}
 
-	for _, table := range []string{"billing_account_leases", "billing_checkouts"} {
+	for _, table := range []string{
+		"billing_account_leases", "billing_quiescence_objects", "billing_checkouts",
+		"billing_checkout_cleanup", "lifecycle_account_leases", "lifecycle_outbox", "team_id_sequence",
+	} {
 		if !tableExists(t, db, table) {
 			t.Errorf("upgraded control schema is missing %s", table)
 		}
@@ -162,6 +176,39 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 	}
 	if events != 1 || clocks != 1 {
 		t.Fatalf("upgrade retained events=%d clocks=%d, want one each", events, clocks)
+	}
+
+	var completed, retryable int
+	if err := db.QueryRowContext(ctx, `
+		SELECT
+			SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END),
+			SUM(CASE WHEN completed_at IS NULL AND lease_expires_at = 0 THEN 1 ELSE 0 END)
+		FROM lifecycle_outbox WHERE team_id = 1
+	`).Scan(&completed, &retryable); err != nil {
+		t.Fatal(err)
+	}
+	if completed != 1 || retryable != 1 {
+		t.Fatalf("upgraded outbox has completed=%d retryable=%d, want one each", completed, retryable)
+	}
+
+	var localRemoved, providerRemoved, controlRemoved sql.NullInt64
+	if err := db.QueryRowContext(ctx, `
+		SELECT local_removed_at, provider_removed_at, control_removed_at
+		FROM account_deletions WHERE team_id = 99
+	`).Scan(&localRemoved, &providerRemoved, &controlRemoved); err != nil {
+		t.Fatal(err)
+	}
+	if localRemoved.Valid || providerRemoved.Valid || controlRemoved.Valid {
+		t.Fatalf("historical deletion checkpoints are local=%v provider=%v control=%v",
+			localRemoved, providerRemoved, controlRemoved)
+	}
+
+	var lastTeamID int64
+	if err := db.QueryRowContext(ctx, `SELECT last_id FROM team_id_sequence WHERE singleton = 1`).Scan(&lastTeamID); err != nil {
+		t.Fatal(err)
+	}
+	if lastTeamID != 99 {
+		t.Fatalf("team id sequence started at %d, want historical maximum 99", lastTeamID)
 	}
 }
 

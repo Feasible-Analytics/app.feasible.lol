@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -218,7 +219,13 @@ func (c *Client) getWithVersion(ctx context.Context, path string, form url.Value
 
 // del removes an object.
 func (c *Client) del(ctx context.Context, path string, out any) error {
-	return c.call(ctx, http.MethodDelete, path, nil, "", out)
+	return c.delWithKey(ctx, path, "", out)
+}
+
+// delWithKey removes an object with a stable retry identity when the caller is
+// performing a crash-recoverable provider transition.
+func (c *Client) delWithKey(ctx context.Context, path, idempotencyKey string, out any) error {
+	return c.call(ctx, http.MethodDelete, path, nil, idempotencyKey, out)
 }
 
 // decodeJSON is used by the webhook parser, which has a raw body rather than a
@@ -228,6 +235,13 @@ func decodeJSON(raw []byte, out any) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	if err := decoder.Decode(out); err != nil {
 		return fmt.Errorf("stripe: decode: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return fmt.Errorf("stripe: decode: trailing JSON value")
+		}
+		return fmt.Errorf("stripe: decode: trailing content: %w", err)
 	}
 
 	return nil

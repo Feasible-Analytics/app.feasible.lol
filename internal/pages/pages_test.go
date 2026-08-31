@@ -90,7 +90,7 @@ func TestEveryPageRenders(t *testing.T) {
 		"/billing?team=1",
 		"/billing/upgrade",
 		"/billing/done?team=1",
-		"/billing/export",
+		"/billing/export?team=1",
 		"/docs",
 		"/legal/privacy",
 		"/legal/terms",
@@ -121,6 +121,23 @@ func TestEveryPageRenders(t *testing.T) {
 				t.Errorf("%s is missing %q from the footer", path, line)
 			}
 		}
+	}
+}
+
+// TestLayoutNavigationPreservesTheSelectedTeam keeps ordinary navigation from
+// silently switching a multi-team user back to their default billing account.
+func TestLayoutNavigationPreservesTheSelectedTeam(t *testing.T) {
+	handler, _ := newHandler(t)
+	handler.CurrentAccount = func(*http.Request) (Account, error) {
+		return Account{ID: 27, Email: "billing@example.com"}, nil
+	}
+
+	body := render(t, handler, "/pricing?team=27").Body.String()
+	if count := strings.Count(body, `href="/pricing?team=27"`); count != 2 {
+		t.Errorf("selected-team pricing navigation appeared %d times, want header and footer: %s", count, body)
+	}
+	if !strings.Contains(body, `href="/billing?team=27"`) {
+		t.Errorf("selected-team billing navigation is missing: %s", body)
 	}
 }
 
@@ -245,9 +262,9 @@ func TestCheckoutReturnDistinguishesPaidAndPending(t *testing.T) {
 		if strings.HasSuffix(r.URL.Path, "/cs_paid") {
 			status = "paid"
 		}
-		teamID := "1"
+		teamID := "2"
 		if strings.HasSuffix(r.URL.Path, "/cs_other") {
-			teamID = "2"
+			teamID = "1"
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -260,15 +277,18 @@ func TestCheckoutReturnDistinguishesPaidAndPending(t *testing.T) {
 	client.BaseURL = server.URL
 	handler.Billing.Stripe = client
 	handler.CurrentAccount = func(*http.Request) (Account, error) {
-		return Account{ID: 1, Email: "owner@example.com"}, nil
+		return Account{ID: 2, Email: "owner@example.com"}, nil
 	}
 
-	paid := render(t, handler, "/billing/done?team=999&session=cs_paid").Body.String()
+	paid := render(t, handler, "/billing/done?team=2&session=cs_paid").Body.String()
 	if !strings.Contains(paid, "Payment confirmed") || !strings.Contains(paid, "signed notification") {
 		t.Fatalf("paid checkout copy is not conclusive but webhook-gated: %s", paid)
 	}
+	if !strings.Contains(paid, "/billing?team=2") {
+		t.Fatalf("paid checkout return lost selected team: %s", paid)
+	}
 
-	pending := render(t, handler, "/billing/done?team=999&session=cs_pending").Body.String()
+	pending := render(t, handler, "/billing/done?team=2&session=cs_pending").Body.String()
 	for _, want := range []string{"Payment processing", "has not settled yet", "current state"} {
 		if !strings.Contains(pending, want) {
 			t.Errorf("pending checkout copy is missing %q: %s", want, pending)
@@ -277,8 +297,11 @@ func TestCheckoutReturnDistinguishesPaidAndPending(t *testing.T) {
 	if strings.Contains(pending, "account is active") || strings.Contains(pending, "payment went through") {
 		t.Errorf("pending checkout promises paid access: %s", pending)
 	}
+	if !strings.Contains(pending, "/billing?team=2") || !strings.Contains(pending, "/pricing?team=2") {
+		t.Errorf("pending retry links lost selected team: %s", pending)
+	}
 
-	other := render(t, handler, "/billing/done?team=1&session=cs_other")
+	other := render(t, handler, "/billing/done?team=2&session=cs_other")
 	if other.Code != http.StatusNotFound {
 		t.Errorf("another account's checkout return answered %d, want 404", other.Code)
 	}
@@ -388,7 +411,7 @@ func TestBillingAlwaysOffersTheExport(t *testing.T) {
 
 		body := render(t, handler, "/billing?team=1").Body.String()
 
-		if !strings.Contains(body, "/billing/export") {
+		if !strings.Contains(body, "/billing/export?team=1") {
 			t.Errorf("day %d has no export link", day)
 		}
 	}
@@ -502,12 +525,15 @@ func TestCheckoutUsesAuthenticatedAccountAndEmail(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	handler, _ := newHandler(t)
+	handler, control := newHandler(t)
+	if _, err := control.Exec(`INSERT INTO teams (id, name, created_at, updated_at) VALUES (2, 'Second Team', ?, ?)`, pagesNow.Unix(), pagesNow.Unix()); err != nil {
+		t.Fatal(err)
+	}
 	client := stripe.New("sk_test_fake")
 	client.BaseURL = server.URL
 	handler.Billing.Stripe = client
 	handler.CurrentAccount = func(*http.Request) (Account, error) {
-		return Account{ID: 1, Email: "owner@example.com"}, nil
+		return Account{ID: 2, Email: "owner@example.com"}, nil
 	}
 	handler.ValidateForm = func(http.ResponseWriter, *http.Request) bool { return true }
 
@@ -527,11 +553,72 @@ func TestCheckoutUsesAuthenticatedAccountAndEmail(t *testing.T) {
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("checkout answered %d: %s", response.Code, response.Body.String())
 	}
-	if got := posted.Get("metadata[feasible_team_id]"); got != "1" {
-		t.Errorf("Stripe team metadata is %q, want authenticated team 1", got)
+	if got := posted.Get("metadata[feasible_team_id]"); got != "2" {
+		t.Errorf("Stripe team metadata is %q, want authenticated team 2", got)
 	}
 	if got := posted.Get("customer_email"); got != "owner@example.com" {
 		t.Errorf("Stripe customer email is %q, want authenticated owner", got)
+	}
+	for field, want := range map[string]string{
+		"success_url": "https://feasible.lol/billing/done?session={CHECKOUT_SESSION_ID}&team=2",
+		"cancel_url":  "https://feasible.lol/pricing?plan=monthly&team=2",
+	} {
+		if got := posted.Get(field); got != want {
+			t.Errorf("Stripe %s is %q, want %q", field, got, want)
+		}
+	}
+}
+
+// TestPortalPreservesTheAuthenticatedTeamInItsReturnURL covers a non-default
+// team. The form's forged selector is ignored, and Stripe returns to the exact
+// membership-selected account instead of silently reopening the default team.
+func TestPortalPreservesTheAuthenticatedTeamInItsReturnURL(t *testing.T) {
+	var posted url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parse Stripe form: %v", err)
+		}
+		posted = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"bps_selected","url":"https://billing.example/session"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	handler, control := newHandler(t)
+	if _, err := control.Exec(`INSERT INTO teams (id, name, created_at, updated_at) VALUES (2, 'Second Team', ?, ?)`, pagesNow.Unix(), pagesNow.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if err := handler.Billing.Store.Save(context.Background(), billing.Subscription{
+		TeamID: 2, CustomerID: "cus_second", SubscriptionID: "sub_second",
+		Status: stripe.StatusActive, Plan: "monthly", PriceID: "price_monthly",
+		PaymentState: billing.PaymentPaid,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client := stripe.New("sk_test_fake")
+	client.BaseURL = server.URL
+	handler.Billing.Stripe = client
+	handler.CurrentAccount = func(*http.Request) (Account, error) {
+		return Account{ID: 2, Email: "owner@example.com"}, nil
+	}
+	handler.ValidateForm = func(http.ResponseWriter, *http.Request) bool { return true }
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+	form := url.Values{"team": {"999"}}
+	request := httptest.NewRequest(http.MethodPost, "/billing/portal", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "https://billing.example/session" {
+		t.Fatalf("portal answered %d at %q: %s", response.Code, response.Header().Get("Location"), response.Body.String())
+	}
+	if got := posted.Get("customer"); got != "cus_second" {
+		t.Errorf("portal customer is %q, want selected account customer", got)
+	}
+	if got := posted.Get("return_url"); got != "https://feasible.lol/billing?team=2" {
+		t.Errorf("portal return URL is %q", got)
 	}
 }
 

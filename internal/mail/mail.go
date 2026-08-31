@@ -94,6 +94,11 @@ type Message struct {
 	HTML    string
 	Text    string
 
+	// MessageID is a stable outbox identity. SMTP relays are not required to
+	// deduplicate it, but carrying the same value on a retry makes the
+	// provider-accepted/pre-ack duplicate window explicit and traceable.
+	MessageID string
+
 	// Tag names the template. It is carried through to the transport so a log
 	// line says which message went out, rather than only that one did.
 	Tag string

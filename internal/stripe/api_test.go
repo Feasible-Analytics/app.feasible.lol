@@ -135,3 +135,112 @@ func TestActiveSubscriptionPaginatesUntilAPayingRecord(t *testing.T) {
 		t.Fatalf("subscription lookup made %d requests, want 2", requests)
 	}
 }
+
+// TestSubscriptionsPreserveMixedPagedTruth proves pagination returns every
+// status instead of collapsing the customer to one fallback before billing can
+// detect a retryable subscription.
+func TestSubscriptionsPreserveMixedPagedTruth(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("starting_after") == "" {
+			_, _ = w.Write([]byte(`{"has_more":true,"data":[
+				{"id":"sub_canceled_annual","created":10,"status":"canceled","current_period_end":9999,"items":{"data":[{"price":{"id":"price_yearly"}}]}},
+				{"id":"sub_past_due_monthly","created":30,"status":"past_due","current_period_end":300,"items":{"data":[{"price":{"id":"price_monthly"}}]}}
+			]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"has_more":false,"data":[
+			{"id":"sub_active_monthly","created":20,"status":"active","current_period_end":200,"items":{"data":[{"price":{"id":"price_monthly"}}]}}
+		]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client := New("sk_test_fake")
+	client.BaseURL = server.URL
+	subscriptions, err := client.Subscriptions(context.Background(), "cus_mixed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subscriptions) != 3 {
+		t.Fatalf("subscription history has %d rows, want 3", len(subscriptions))
+	}
+	selected := SelectSubscription(subscriptions)
+	if selected == nil || selected.ID != "sub_active_monthly" {
+		t.Fatalf("selected subscription is %+v, want active monthly", selected)
+	}
+}
+
+// TestSubscriptionSelectionAndBlockingAreDeterministic pins both independent
+// decisions: display recency cannot be distorted by an old annual period end,
+// and every nonterminal or unknown provider status blocks another checkout.
+func TestSubscriptionSelectionAndBlockingAreDeterministic(t *testing.T) {
+	selected := SelectSubscription([]Subscription{
+		{ID: "sub_old_annual", Created: 10, Status: StatusCanceled, CurrentPeriodEnd: 9999},
+		{ID: "sub_new_monthly", Created: 20, Status: StatusCanceled, CurrentPeriodEnd: 100},
+	})
+	if selected == nil || selected.ID != "sub_new_monthly" {
+		t.Fatalf("terminal selection is %+v, want newer monthly", selected)
+	}
+
+	for _, status := range []string{
+		StatusActive, StatusTrialing, StatusPastDue, StatusUnpaid,
+		StatusIncomplete, StatusPaused, "future_settling_status",
+	} {
+		if !(&Subscription{Status: status}).BlocksCheckout() {
+			t.Errorf("status %q did not block checkout", status)
+		}
+	}
+	for _, status := range []string{StatusCanceled, StatusIncompleteExpired} {
+		if (&Subscription{Status: status}).BlocksCheckout() {
+			t.Errorf("terminal status %q blocked checkout", status)
+		}
+	}
+}
+
+// TestCheckoutSessionsPaginatesAndVoidInvoiceUsesIdempotency covers the two
+// recovery writes that close untracked or manually payable Stripe objects.
+func TestCheckoutSessionsPaginatesAndVoidInvoiceUsesIdempotency(t *testing.T) {
+	var voidKey string
+	var deleteKey string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions" && r.URL.Query().Get("starting_after") == "":
+			_, _ = w.Write([]byte(`{"has_more":true,"data":[{"id":"cs_1","status":"open"}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions":
+			_, _ = w.Write([]byte(`{"has_more":false,"data":[{"id":"cs_2","status":"open"}]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/invoices/in_open/void":
+			voidKey = r.Header.Get("Idempotency-Key")
+			_, _ = w.Write([]byte(`{"id":"in_open","status":"void"}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/invoices/in_draft":
+			deleteKey = r.Header.Get("Idempotency-Key")
+			_, _ = w.Write([]byte(`{"id":"in_draft","deleted":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := New("sk_test_fake")
+	client.BaseURL = server.URL
+	sessions, err := client.CheckoutSessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 || sessions[0].ID != "cs_1" || sessions[1].ID != "cs_2" {
+		t.Fatalf("open checkout pages are %+v", sessions)
+	}
+	invoice, err := client.VoidInvoice(context.Background(), "in_open", "void-in-open")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invoice.Status != "void" || voidKey != "void-in-open" {
+		t.Fatalf("void invoice=%+v idempotency=%q", invoice, voidKey)
+	}
+	if err := client.DeleteDraftInvoice(context.Background(), "in_draft", "delete-in-draft"); err != nil {
+		t.Fatal(err)
+	}
+	if deleteKey != "delete-in-draft" {
+		t.Fatalf("draft deletion idempotency=%q", deleteKey)
+	}
+}

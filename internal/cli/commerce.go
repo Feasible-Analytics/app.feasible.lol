@@ -84,6 +84,7 @@ func buildCommerce(e *env, control *sql.DB, manager *accounts.Manager, siteCache
 		Accounts:  manager,
 		DataDir:   e.cfg.App.DataDir,
 		Customers: billingService,
+		Payments:  billingService,
 		Log:       e.log,
 	}
 

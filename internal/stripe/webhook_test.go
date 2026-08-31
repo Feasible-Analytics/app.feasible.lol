@@ -160,6 +160,27 @@ func TestAnEventWithNoIDIsRejected(t *testing.T) {
 	}
 }
 
+// TestEventJSONRequiresEOF accepts insignificant trailing whitespace but
+// rejects a second document or garbage after the authenticated event. Stored
+// historical payloads use the same decoder, so neither path can accept a valid
+// prefix and silently ignore what follows it.
+func TestEventJSONRequiresEOF(t *testing.T) {
+	whitespace := payload + " \n\t"
+	if _, err := ParseWebhook([]byte(whitespace), SignPayload([]byte(whitespace), secret, sentAt), secret, sentAt); err != nil {
+		t.Fatalf("trailing whitespace was rejected: %v", err)
+	}
+
+	for _, suffix := range []string{` {"id":"evt_second"}`, ` trailing-garbage`} {
+		body := payload + suffix
+		if _, err := ParseWebhook([]byte(body), SignPayload([]byte(body), secret, sentAt), secret, sentAt); err == nil {
+			t.Errorf("signed payload with suffix %q was accepted", suffix)
+		}
+		if _, err := DecodeEvent([]byte(body)); err == nil {
+			t.Errorf("stored payload with suffix %q was accepted", suffix)
+		}
+	}
+}
+
 // TestCustomerIDIsFoundOnEveryObjectShape checks the routing fallback. Each of
 // the object types this product acts on puts the customer somewhere slightly
 // different, and an event we cannot route is an event we cannot act on.
