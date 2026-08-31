@@ -87,16 +87,18 @@ the machine they were taken on.
 | OS | Linux, macOS or BSD, x86-64 or arm64 | |
 | Anything else | nothing | |
 
-**Disk is the number that grows.** An event is roughly 250 bytes with its
-indexes, so a million pageviews a month is about a gigabyte a year before
-roll-ups and rather less after old raw rows age out. Give the write-ahead logs
-room: they are checkpointed automatically, but a busy install wants headroom
-rather than a full disk.
+**Disk is the number that grows.** A million pageviews is about 300 MB once it
+is indexed and summarised — roughly 210 bytes an event, measured rather than
+guessed. Raw rows age out and roll-ups do not, so a site sending a million a
+month settles well below twelve times that a year. Leave the write-ahead logs
+headroom: they are checkpointed automatically, but a full disk is not a state
+SQLite can write its way out of.
 
-**Throughput.** One process sustains a few thousand events a second on a modern
-laptop core, which is far more than a site sending a million pageviews a month
-generates — that is under half an event a second on average. Reports read from
-summary tables in the low hundreds of milliseconds over a year of data; the same
+**Throughput.** One process sustains a few thousand events a second through the
+whole accept path, which is far more than a site sending a million pageviews a
+month generates — that is under half an event a second on average. Accepting an
+event costs tens of microseconds and never waits on the disk. Reports read from
+summary tables in around a tenth of a second over a year of data; the same
 report from raw rows takes seconds, which is why the roll-up worker exists.
 
 **Building** needs Node as well, because the dashboard and the stylesheet are
