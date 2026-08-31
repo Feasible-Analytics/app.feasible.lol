@@ -188,7 +188,7 @@ type request struct {
 // metrics are the six core numbers. They are the contract the dashboard is
 // built on, and the whole point of the harness is that they do not move when
 // the delivery order does.
-type metrics struct {
+type coreMetrics struct {
 	Visitors      int64
 	Visits        int64
 	Pageviews     int64
@@ -200,7 +200,7 @@ type metrics struct {
 // expected computes the six metrics from the fixture specs by direct
 // arithmetic. Nothing here folds an event: the counts come from the shape of
 // each visit, so a bug in the fold cannot make the expectation agree with it.
-func expected() metrics {
+func expected() coreMetrics {
 	seen := map[int]struct{}{}
 
 	var (
@@ -228,7 +228,7 @@ func expected() metrics {
 		totalDuration += last - first
 	}
 
-	return metrics{
+	return coreMetrics{
 		Visitors:      int64(len(seen)),
 		Visits:        visits,
 		Pageviews:     pageviews,
@@ -344,7 +344,7 @@ func expandedStream(sets int) []request {
 // expectedFor scales the six metrics to an expanded stream. The three counts
 // multiply by the number of sets and the three ratios do not, because every set
 // is the same visits by different people.
-func expectedFor(sets int) metrics {
+func expectedFor(sets int) coreMetrics {
 	m := expected()
 
 	m.Visitors *= int64(sets)
@@ -544,7 +544,7 @@ func (h *harness) replay(t testing.TB, requests []request) {
 // metrics reads the six core numbers back out of the account database, using
 // the definitions the dashboard will use. They are stated here in SQL rather
 // than derived in Go on purpose: these are the queries that have to be right.
-func (h *harness) metrics(t testing.TB) metrics {
+func (h *harness) metrics(t testing.TB) coreMetrics {
 	t.Helper()
 
 	account, err := h.manager.Open(context.Background(), 1)
@@ -554,7 +554,7 @@ func (h *harness) metrics(t testing.TB) metrics {
 
 	db := account.Reader()
 
-	var m metrics
+	var m coreMetrics
 
 	scan := func(query string, into any) {
 		if err := db.QueryRow(query).Scan(into); err != nil {
@@ -1220,7 +1220,7 @@ func (h *harness) eventAttribution(t testing.TB) []eventAttribution {
 
 // assertMetrics compares the six numbers, allowing for float noise on the three
 // that are ratios.
-func assertMetrics(t testing.TB, got, want metrics) {
+func assertMetrics(t testing.TB, got, want coreMetrics) {
 	t.Helper()
 
 	if got.Visitors != want.Visitors {

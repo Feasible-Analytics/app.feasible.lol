@@ -15,7 +15,8 @@ PORT_CADDY        ?= 19300
 PORT_APP          ?= 19301
 PORT_INGEST       ?= 19302
 PORT_SITE         ?= 19303
-PORT_APP_INTERNAL ?= 19401
+PORT_APP_INTERNAL    ?= 19401
+PORT_INGEST_INTERNAL ?= 19402
 
 # ── Addresses ─────────────────────────────────────────────────────────────────
 # BIND_HOST is what the processes listen on; PUBLIC_HOST is what ends up in URLs.
@@ -29,10 +30,12 @@ PUBLIC_HOST ?= localhost
 BASE_URL      = http://$(PUBLIC_HOST):$(PORT_CADDY)
 SOLO_BASE_URL = http://$(PUBLIC_HOST):$(PORT_APP)
 
-# The internal listener never moves off loopback, in any mode. /internal/salts
+# The internal listeners never move off loopback, in any mode. /internal/salts
 # hands out the secret that turns a visitor hash back into an IP address, and
-# putting that on the tailnet would expose it to every device on it.
-INTERNAL_LISTEN = 127.0.0.1:$(PORT_APP_INTERNAL)
+# putting that on the tailnet would expose it to every device on it. /metrics
+# sits beside it and stays there for the same reason.
+INTERNAL_LISTEN        = 127.0.0.1:$(PORT_APP_INTERNAL)
+INGEST_INTERNAL_LISTEN = 127.0.0.1:$(PORT_INGEST_INTERNAL)
 
 # ── Tailscale ─────────────────────────────────────────────────────────────────
 # The App Store build does not put the CLI on PATH, hence the fallback path.
@@ -68,7 +71,8 @@ APP_ENV = FEASIBLE_APP_LISTEN=$(BIND_HOST):$(PORT_APP) \
 	FEASIBLE_APP_INTERNAL_LISTEN=$(INTERNAL_LISTEN) \
 	FEASIBLE_APP_BASE_URL=$(BASE_URL)
 
-INGEST_ENV = FEASIBLE_INGEST_LISTEN=$(BIND_HOST):$(PORT_INGEST)
+INGEST_ENV = FEASIBLE_INGEST_LISTEN=$(BIND_HOST):$(PORT_INGEST) \
+	FEASIBLE_INGEST_INTERNAL_LISTEN=$(INGEST_INTERNAL_LISTEN)
 
 CADDY_ENV = FEASIBLE_CADDY_BIND=$(BIND_HOST) \
 	FEASIBLE_CADDY_PORT=$(PORT_CADDY) \

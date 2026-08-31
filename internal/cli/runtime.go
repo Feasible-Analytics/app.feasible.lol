@@ -21,8 +21,11 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/geo"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/metrics"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/rollup"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
@@ -93,14 +96,76 @@ func buildIngest(ctx context.Context, e *env, dataDir string) (*ingest.Service, 
 	return service, control, manager, nil
 }
 
-// serveUntilSignal runs a listener until SIGINT or SIGTERM, then shuts
+// ingestHealth registers what any process that accepts events depends on. Both
+// process shapes call it, so neither can end up with a readiness probe that
+// checks less than the other; what differs between them is registered by the
+// caller.
+//
+// The geolocation database is deliberately optional. It is a data file this
+// system is designed to run without — a missing one means countries are
+// unknown, not that events are lost — and a readiness probe that failed on it
+// would turn a downgraded dashboard into an outage.
+func ingestHealth(checks *health.Set, control *sql.DB, service *ingest.Service, dataDir string) {
+	checks.Require("control_db", health.Database(control))
+
+	// Every account database is created under here on an account's first
+	// event, so a directory that cannot be written to is a process that will
+	// accept traffic and then fail to store it.
+	checks.Require("account_directory", health.Directory(filepath.Join(dataDir, config.AccountDatabaseDir)))
+
+	// Without a salt there is no visitor id and therefore no event: every
+	// request would be accepted, counted as our own internal error, and
+	// thrown away.
+	checks.Require("salts", func(ctx context.Context) error {
+		_, err := service.Salts.Pair(ctx)
+		return err
+	})
+
+	checks.Optional("geolocation", health.Condition(func() bool {
+		_, missing := service.Geo.(geo.Unknown)
+		return !missing
+	}, "no geolocation database is loaded — countries will be unknown"))
+}
+
+// watchProcess tells the metrics endpoint what this process can report on. The
+// gauges are read on each scrape rather than pushed, so this is a set of
+// accessors rather than a copy of anything.
+func watchProcess(service *ingest.Service, manager *accounts.Manager, dataDir string) {
+	metrics.Watch(metrics.Sources{
+		BufferDepth:  func() int { return service.Buffer.Len() },
+		Sessions:     func() int { return service.Writer.Sessions().Len() },
+		Sites:        service.Sites.Len,
+		OpenAccounts: manager.OpenCount,
+		DataDir:      dataDir,
+	})
+}
+
+// internalServer builds the loopback listener every process runs beside its
+// public one: the metrics endpoint, and the same two health probes.
+//
+// Metrics live here rather than on the public listener because /metrics is an
+// operations endpoint. Nothing on it is customer data, but our event rate,
+// error rate and account count are not the internet's business, and no operator
+// expects to have to firewall a path.
+func internalServer(name, addr string, checks *health.Set) *httpserver.Server {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", metrics.Handler())
+
+	server := httpserver.New(name, addr, mux)
+	server.Health = checks
+
+	return server
+}
+
+// serveUntilSignal runs the listeners until SIGINT or SIGTERM, then shuts
 // everything down in order. Returning an exit code rather than calling os.Exit
 // is what lets the whole command be driven from a test.
 //
 // The roll-up worker is optional so that the ingest-only process, which has no
-// reports to make fast, does not summarise anything.
-func serveUntilSignal(e *env, server *httpserver.Server, service *ingest.Service, worker *rollup.Worker, closers ...func() error) int {
-	return serveUntilSignalWith(e, server, service, worker, nil, closers...)
+// reports to make fast, does not summarise anything. The internal listener is
+// optional for the same reason a test does not want a second port bound.
+func serveUntilSignal(e *env, server, internal *httpserver.Server, service *ingest.Service, worker *rollup.Worker, closers ...func() error) int {
+	return serveUntilSignalWith(e, server, internal, service, worker, nil, closers...)
 }
 
 // serveUntilSignalWith is serveUntilSignal plus the process's own background
@@ -110,7 +175,7 @@ func serveUntilSignal(e *env, server *httpserver.Server, service *ingest.Service
 // for them. The usage recorder flushes its last interval on the way out, and a
 // process that exited without waiting would lose the events an account was
 // billed for, every single deploy.
-func serveUntilSignalWith(e *env, server *httpserver.Server, service *ingest.Service, worker *rollup.Worker, background func(context.Context, func(func())), closers ...func() error) int {
+func serveUntilSignalWith(e *env, server, internal *httpserver.Server, service *ingest.Service, worker *rollup.Worker, background func(context.Context, func(func())), closers ...func() error) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -128,6 +193,24 @@ func serveUntilSignalWith(e *env, server *httpserver.Server, service *ingest.Ser
 	if err := server.Listen(); err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError
+	}
+
+	// The internal listener is bound before anything starts, so that a port
+	// already in use is a start-up error naming the port rather than a metrics
+	// endpoint that silently never came up.
+	if internal != nil {
+		if err := internal.Listen(); err != nil {
+			fmt.Fprintf(e.stderr, "%v\n", err)
+			return ExitError
+		}
+
+		go func() {
+			if err := internal.Serve(); err != nil {
+				e.log.Error("the internal listener stopped", "error", err)
+			}
+		}()
+
+		e.log.Info("internal listener", "addr", internal.Addr(), "metrics", "/metrics")
 	}
 
 	service.Start(ctx)
@@ -176,6 +259,16 @@ func serveUntilSignalWith(e *env, server *httpserver.Server, service *ingest.Ser
 		code = ExitError
 	}
 
+	// The internal listener goes last and without a drain: nothing is in front
+	// of it, and keeping it up through the public drain means a scrape taken
+	// during the shutdown still gets an answer.
+	if internal != nil {
+		if err := internal.Shutdown(shutdownCtx, 0); err != nil {
+			fmt.Fprintf(e.stderr, "%v\n", err)
+			code = ExitError
+		}
+	}
+
 	if err := service.Stop(shutdownCtx); err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		code = ExitError
@@ -205,8 +298,8 @@ func serveUntilSignalWith(e *env, server *httpserver.Server, service *ingest.Ser
 // must not become a second code path with its own bugs.
 func ingestRoutes(service *ingest.Service) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/api/event", service.Handler)
-	mux.Handle(tracker.PixelPath, &tracker.Pixel{Events: service.Handler})
+	mux.Handle("/api/event", metrics.Instrument(metrics.HandlerEvent, service.Handler))
+	mux.Handle(tracker.PixelPath, metrics.Instrument(metrics.HandlerEvent, &tracker.Pixel{Events: service.Handler}))
 
 	return mux
 }

@@ -29,6 +29,21 @@ func TestIngestReportsShards(t *testing.T) {
 	}
 }
 
+// TestIngestReportsItsInternalListener checks the loopback address serving
+// /metrics is resolved and reported. It defaults to a different port from the
+// app's so that both processes can run on one machine, and a collision would
+// otherwise only show up as a process that refuses to start.
+func TestIngestReportsItsInternalListener(t *testing.T) {
+	code, stdout, stderr := run(t, "ingest", "-check")
+
+	if code != ExitOK {
+		t.Fatalf("exit code %d, stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "internal_listen=127.0.0.1:19402") {
+		t.Fatalf("the internal listener was not reported: %q", stdout)
+	}
+}
+
 // TestIngestListenFlagOverrides covers the same override the app has, since
 // running two ingestors side by side is the normal way to test forwarding.
 func TestIngestListenFlagOverrides(t *testing.T) {

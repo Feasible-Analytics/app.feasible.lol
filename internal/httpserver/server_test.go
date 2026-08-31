@@ -12,8 +12,11 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 )
 
 // newTestServer binds a server on a kernel-chosen port and serves it, returning
@@ -71,17 +74,26 @@ func TestHealthProbes(t *testing.T) {
 	}
 }
 
-// TestReadinessRespectsTheProcessCondition checks the extra condition a process
-// supplies — an empty routing map, say. Returning false keeps traffic away
-// without the process appearing dead and being restarted.
-func TestReadinessRespectsTheProcessCondition(t *testing.T) {
+// TestReadinessRespectsTheProcessDependencies checks the components a process
+// registers — an empty routing map, say. A failed one keeps traffic away
+// without the process appearing dead and being restarted, and it names itself
+// in the body so that whoever was woken up knows which one it was.
+func TestReadinessRespectsTheProcessDependencies(t *testing.T) {
 	server, base := newTestServer(t, http.NotFoundHandler())
 
 	ready := false
-	server.Ready = func() bool { return ready }
 
-	if code, _ := get(t, base+PathReady); code != http.StatusServiceUnavailable {
-		t.Fatalf("readiness = %d, want 503 while the process says it is not ready", code)
+	checks := &health.Set{}
+	checks.Require("routing_map", health.Condition(func() bool { return ready }, "the routing map is empty"))
+	server.Health = checks
+
+	code, body := get(t, base+PathReady)
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("readiness = %d, want 503 while a dependency is failing", code)
+	}
+
+	if !strings.Contains(body, "routing_map") || !strings.Contains(body, "the routing map is empty") {
+		t.Errorf("the body does not say which dependency failed or why: %s", body)
 	}
 
 	// Liveness must stay true regardless: a liveness probe that failed on a
@@ -92,8 +104,31 @@ func TestReadinessRespectsTheProcessCondition(t *testing.T) {
 	}
 
 	ready = true
-	if code, _ := get(t, base+PathReady); code != http.StatusOK {
-		t.Fatalf("readiness = %d, want 200 once the process is ready", code)
+
+	code, body = get(t, base+PathReady)
+	if code != http.StatusOK {
+		t.Fatalf("readiness = %d, want 200 once every dependency is up: %s", code, body)
+	}
+}
+
+// TestReadinessReportsDegradedWithoutRefusingTraffic checks that an optional
+// dependency is visible and harmless. A missing geolocation database is the
+// case this exists for: it makes the dashboard worse and must never make the
+// process refuse traffic.
+func TestReadinessReportsDegradedWithoutRefusingTraffic(t *testing.T) {
+	server, base := newTestServer(t, http.NotFoundHandler())
+
+	checks := &health.Set{}
+	checks.Optional("geolocation", health.Condition(func() bool { return false }, "no database is loaded"))
+	server.Health = checks
+
+	code, body := get(t, base+PathReady)
+	if code != http.StatusOK {
+		t.Fatalf("readiness = %d, want 200 — an optional dependency must not refuse traffic", code)
+	}
+
+	if !strings.Contains(body, health.StatusDegraded) {
+		t.Errorf("the body does not report the degraded component: %s", body)
 	}
 }
 

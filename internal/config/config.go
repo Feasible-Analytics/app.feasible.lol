@@ -27,19 +27,20 @@ import (
 // the safe, single-machine, self-hoster values: someone who runs the binary with
 // no configuration at all gets a working process bound to loopback.
 const (
-	DefaultEnv               = "development"
-	DefaultAppListen         = "127.0.0.1:19301"
-	DefaultAppInternalListen = "127.0.0.1:19401"
-	DefaultAppDataDir        = "./data"
-	DefaultAppBaseURL        = "http://localhost:19300"
-	DefaultAppTransport      = TransportDirect
-	DefaultAppMailTransport  = MailTransportLog
-	DefaultAppMailFrom       = "feasible.lol <hello@feasible.lol>"
-	DefaultAppSalesEmail     = "sales@feasible.lol"
-	DefaultSMTPPort          = 587
-	DefaultIngestListen      = "127.0.0.1:19302"
-	DefaultIngestShards      = "http://127.0.0.1:19401"
-	DefaultIngestBufferPath  = "./data/ingest/buffer.db"
+	DefaultEnv                  = "development"
+	DefaultAppListen            = "127.0.0.1:19301"
+	DefaultAppInternalListen    = "127.0.0.1:19401"
+	DefaultAppDataDir           = "./data"
+	DefaultAppBaseURL           = "http://localhost:19300"
+	DefaultAppTransport         = TransportDirect
+	DefaultAppMailTransport     = MailTransportLog
+	DefaultAppMailFrom          = "feasible.lol <hello@feasible.lol>"
+	DefaultAppSalesEmail        = "sales@feasible.lol"
+	DefaultSMTPPort             = 587
+	DefaultIngestListen         = "127.0.0.1:19302"
+	DefaultIngestInternalListen = "127.0.0.1:19402"
+	DefaultIngestShards         = "http://127.0.0.1:19401"
+	DefaultIngestBufferPath     = "./data/ingest/buffer.db"
 
 	// DefaultAPIRateLimit is how many public-API requests one key may make an
 	// hour. It is configurable at all because the incumbent's equivalent is
@@ -201,7 +202,15 @@ func (s Stripe) Enabled() bool {
 
 // Ingest holds the values only the `ingest` process reads.
 type Ingest struct {
-	Listen     string
+	Listen string
+
+	// InternalListen is the loopback address serving /metrics and the health
+	// probes. It is a second listener rather than a path on the first because
+	// the first is the public front door, and an endpoint that tells the
+	// internet our event rate, error rate and account count is free
+	// reconnaissance for anybody deciding whether we are worth attacking.
+	InternalListen string
+
 	Shards     []string
 	BufferPath string
 
@@ -504,6 +513,7 @@ func LoadFrom(l *Loader) (*Config, error) {
 		},
 		Ingest: Ingest{
 			Listen:         l.String("FEASIBLE_INGEST_LISTEN", DefaultIngestListen),
+			InternalListen: l.String("FEASIBLE_INGEST_INTERNAL_LISTEN", DefaultIngestInternalListen),
 			BufferPath:     l.String("FEASIBLE_INGEST_BUFFER_PATH", DefaultIngestBufferPath),
 			TrustedProxies: parseList(l.String("FEASIBLE_INGEST_TRUSTED_PROXIES", "")),
 		},
