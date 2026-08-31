@@ -12,9 +12,11 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"path/filepath"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/dashboard"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/statsapi"
@@ -81,7 +83,7 @@ func runServe(e *env, args []string) int {
 		return ExitError
 	}
 
-	server := httpserver.New("app", e.cfg.App.Listen, serveRoutes(e, service, manager, secret))
+	server := httpserver.New("app", e.cfg.App.Listen, serveRoutes(e, service, manager, secret, e.cfg.App.DataDir))
 
 	return serveUntilSignal(e, server, service, manager.CloseAll, control.Close)
 }
@@ -89,13 +91,31 @@ func runServe(e *env, args []string) int {
 // serveRoutes is the app process's public surface: the tracker script, the
 // stats API the dashboard runs on, and — with the direct transport — the ingest
 // endpoint, which this process serves rather than a separate tier.
-func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, secret []byte) http.Handler {
+func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, secret []byte, dataDir string) http.Handler {
 	mux := http.NewServeMux()
 
 	// Every report in the product is this one endpoint with different metrics
 	// and dimensions. It reads the same in-memory site snapshot the ingest path
 	// does, so a dashboard query never touches control.db.
 	mux.Handle(statsapi.Pattern, statsapi.New(service.Sites, manager, e.log))
+
+	// The compiled React dashboard, served out of the binary. It reads the site
+	// snapshot only to render the site picker; every number on it comes from
+	// the stats endpoint above.
+	mux.Handle(dashboard.PathPrefix, dashboard.New(service.Sites))
+
+	// The source icons the report rows are drawn with. Fetching them here
+	// rather than from the reader's browser is what keeps a dashboard from
+	// telling every site that ever linked to yours that somebody is looking at
+	// their referral traffic.
+	mux.Handle(dashboard.FaviconPattern, dashboard.NewFavicons(filepath.Join(dataDir, "favicons"), e.log))
+
+	// The root is the dashboard until the marketing site and the auth screens
+	// exist. A bare hostname answering 404 looks like a failed deploy, which is
+	// the first thing anybody checks and the last thing we want it to look like.
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, dashboard.PathPrefix, http.StatusFound)
+	})
 
 	// The script is served by the app rather than the ingest tier because it is
 	// a cacheable static asset with a database lookup behind it, and putting
