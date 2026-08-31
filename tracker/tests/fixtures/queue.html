@@ -1,0 +1,51 @@
+<!--
+  queue.html
+  Calls made before the bundle exists, and the second global name a migration keeps.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Queue — tracker fixture</title>
+		<script>
+			// Merged rather than assigned, so a test can inject its own switches
+			// through addInitScript and still have this page's default apply.
+			window.__feasible = Object.assign({ track: 1 }, window.__feasible);
+
+			// The stub a snippet defines. Without it an event fired by a
+			// framework that mounts before a deferred script runs is a
+			// ReferenceError, and every one of those calls is lost.
+			window.feasible =
+				window.feasible ||
+				function () {
+					(window.feasible.q = window.feasible.q || []).push(arguments);
+				};
+
+			window.legacy =
+				window.legacy ||
+				function () {
+					(window.legacy.q = window.legacy.q || []).push(arguments);
+				};
+
+			window.feasible("Queued Early", { props: { when: "before" } });
+			window.legacy("Legacy Queued");
+		</script>
+		<script
+			defer
+			data-domain="fixture.test"
+			data-captureOnLocalhost="1"
+			data-alias="legacy"
+			src="/js/script.js"
+		></script>
+	</head>
+	<body>
+		<h1>Queue fixture</h1>
+		<button id="after" type="button">fire through the alias after load</button>
+		<script>
+			document.getElementById("after").onclick = () => window.legacy("Legacy Later");
+		</script>
+	</body>
+</html>

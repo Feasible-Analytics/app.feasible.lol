@@ -1,0 +1,51 @@
+<!--
+  manual.html
+  Manual pageviews, which must not cost the site anything else.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  The incumbent's manual build silently dropped the bfcache listener and
+  engagement along with the automatic pageview, so a site that took control of
+  its own pageviews quietly lost two unrelated features.
+-->
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Manual — tracker fixture</title>
+		<script>
+			// Merged rather than assigned, so a test can inject its own switches
+			// through addInitScript and still have this page's default apply.
+			window.__feasible = Object.assign({ track: 1 }, window.__feasible);
+		</script>
+		<script
+			defer
+			data-domain="fixture.test"
+			data-captureOnLocalhost="1"
+			data-manual="1"
+			src="/js/script.js"
+		></script>
+		<style>
+			body { font: 16px/1.5 system-ui, sans-serif; margin: 2rem; }
+			button { font: inherit; padding: 0.4rem 0.8rem; margin: 0.2rem; }
+			.tall { height: 4000px; background: linear-gradient(#fff, #ddd); }
+		</style>
+	</head>
+	<body>
+		<h1>Manual fixture</h1>
+
+		<button id="pageview" type="button">feasible('pageview')</button>
+		<button id="custom-url" type="button">feasible('pageview') with a custom URL</button>
+		<p><a id="outbound" href="https://example.com/from-manual">Outbound link</a></p>
+
+		<div class="tall">Scroll me.</div>
+
+		<script>
+			document.getElementById("pageview").onclick = () => window.feasible("pageview");
+
+			document.getElementById("custom-url").onclick = () =>
+				window.feasible("pageview", { u: "/manual.html/step-two" });
+		</script>
+	</body>
+</html>

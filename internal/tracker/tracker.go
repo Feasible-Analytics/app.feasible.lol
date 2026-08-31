@@ -242,9 +242,11 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, cfg map[string]a
 	w.Header().Set("Cache-Control", CacheControl)
 	w.Header().Set("ETag", etag)
 
-	// The script is fetched cross-origin by every site we serve, and a site
-	// with a strict CSP has to be able to name us in `script-src`. Nothing here
-	// is secret, so it is readable by anyone.
+	// The script is fetched cross-origin by every site we serve, so it is
+	// readable by anyone; nothing in it is secret. A site with a strict CSP has
+	// to allow this origin in `script-src` *and* in `connect-src` — allowing
+	// only the first loads a script that is then blocked from sending anything,
+	// which looks exactly like a tracker that does not work.
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {

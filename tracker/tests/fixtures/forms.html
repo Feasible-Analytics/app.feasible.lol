@@ -1,0 +1,45 @@
+<!--
+  forms.html
+  The two form shapes that break a tracker which calls form.submit().
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Forms — tracker fixture</title>
+		<script>
+			// Merged rather than assigned, so a test can inject its own switches
+			// through addInitScript and still have this page's default apply.
+			window.__feasible = Object.assign({ track: 1 }, window.__feasible);
+		</script>
+		<script defer data-domain="fixture.test" data-captureOnLocalhost="1" src="/js/script.js"></script>
+		<style>
+			body { font: 16px/1.5 system-ui, sans-serif; margin: 2rem; }
+			button, input { font: inherit; margin: 0.2rem; }
+		</style>
+	</head>
+	<body>
+		<h1>Forms fixture</h1>
+
+		<!--
+			Two submit buttons and a field called "submit". form.submit() drops
+			the clicked button's name and value, so the server cannot tell save
+			from publish — and the field shadows the method entirely, so the
+			call throws "not a function".
+		-->
+		<form id="multi" class="feasible-event-name=Article+Saved" action="/basic.html" method="get">
+			<input type="text" name="title" value="A title" />
+			<input type="hidden" name="submit" value="shadowed" />
+			<button type="submit" name="action" value="save">Save</button>
+			<button type="submit" name="action" value="publish">Publish</button>
+		</form>
+
+		<form id="plain" action="/basic.html" method="get">
+			<input type="text" name="email" value="hello@example.com" />
+			<button type="submit">Subscribe</button>
+		</form>
+	</body>
+</html>

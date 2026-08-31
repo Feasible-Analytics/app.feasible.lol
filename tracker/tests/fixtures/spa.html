@@ -1,0 +1,61 @@
+<!--
+  spa.html
+  A single-page application's navigation, through every API a router uses.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>SPA — tracker fixture</title>
+		<script>
+			// Merged rather than assigned, so a test can inject its own switches
+			// through addInitScript and still have this page's default apply.
+			window.__feasible = Object.assign({ track: 1 }, window.__feasible);
+		</script>
+		<script defer data-domain="fixture.test" data-captureOnLocalhost="1" src="/js/script.js"></script>
+		<style>
+			body { font: 16px/1.5 system-ui, sans-serif; margin: 2rem; }
+			button { font: inherit; padding: 0.4rem 0.8rem; margin: 0.2rem; }
+		</style>
+	</head>
+	<body>
+		<h1 id="heading">SPA fixture</h1>
+
+		<button id="push" type="button">pushState /spa.html/one</button>
+		<button id="replace" type="button">replaceState /spa.html/two</button>
+		<button id="query" type="button">pushState ?page=2</button>
+
+		<!--
+			The pair a router fires in one tick: a pushState immediately
+			corrected by a replaceState. Reporting both would count two
+			pageviews for one navigation, and reporting the first would report a
+			URL the visitor never saw.
+		-->
+		<button id="push-then-replace" type="button">pushState then replaceState</button>
+
+		<button id="back" type="button">history.back()</button>
+
+		<script>
+			const set = (fn, url, title) => {
+				history[fn]({}, "", url);
+				document.title = title;
+				document.getElementById("heading").textContent = title;
+			};
+
+			document.getElementById("push").onclick = () => set("pushState", "/spa.html/one", "One");
+			document.getElementById("replace").onclick = () => set("replaceState", "/spa.html/two", "Two");
+			document.getElementById("query").onclick = () => set("pushState", "/spa.html?page=2", "Page two");
+
+			document.getElementById("push-then-replace").onclick = () => {
+				history.pushState({}, "", "/spa.html/interim");
+				history.replaceState({}, "", "/spa.html/settled");
+				document.title = "Settled";
+			};
+
+			document.getElementById("back").onclick = () => history.back();
+		</script>
+	</body>
+</html>

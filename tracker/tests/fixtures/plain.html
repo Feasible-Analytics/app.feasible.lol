@@ -1,0 +1,25 @@
+<!--
+  plain.html
+  The snippet with nothing added: no escape hatch, no localhost opt-in.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  This is what the exclusion rules look like from the outside, and the only
+  fixture that must send nothing at all.
+-->
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Plain — tracker fixture</title>
+		<script defer data-domain="fixture.test" src="/js/script.js"></script>
+	</head>
+	<body>
+		<h1>Plain fixture</h1>
+		<button id="custom" type="button">fire a custom event</button>
+		<script>
+			document.getElementById("custom").onclick = () => window.feasible && window.feasible("Nope");
+		</script>
+	</body>
+</html>
