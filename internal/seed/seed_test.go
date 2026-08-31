@@ -34,12 +34,34 @@ func fixedNow() time.Time {
 // report on a real run.
 func tinyRun(t *testing.T, seed int64) (string, *Result) {
 	t.Helper()
+	return runSeed(t, seed, 4000)
+}
+
+// smallRun seeds a fraction of tinyRun's volume, for the one test that runs the
+// generator three times. Determinism is a property rather than a quantity — a
+// seed either reproduces its rows or it does not, and it decides that in the
+// first handful of events. Three full runs under the race detector took this
+// package past the ten-minute per-package timeout, which left `-race` reporting
+// nothing at all for the concurrent code it exists to check. The day and site
+// counts are unchanged, because those drive real branches in the generator.
+func smallRun(t *testing.T, seed int64) (string, *Result) {
+	t.Helper()
+	return runSeed(t, seed, 400)
+}
+
+// runSeed generates a dataset into a temporary directory. The volume is a
+// parameter because the tests want two different things from it: most assert
+// properties that hold at any size, while the awkward-cases test needs enough
+// events for the rare shapes — a third currency, a visitor behind a VPN — to
+// actually occur.
+func runSeed(t *testing.T, seed int64, pageviews int64) (string, *Result) {
+	t.Helper()
 
 	dir := t.TempDir()
 
 	result, err := Run(context.Background(), Options{
 		DataDir:   dir,
-		Pageviews: 4000,
+		Pageviews: pageviews,
 		Days:      14,
 		Sites:     5,
 		Seed:      seed,
@@ -57,8 +79,8 @@ func tinyRun(t *testing.T, seed int64) (string, *Result) {
 // or a performance measurement taken a week apart is comparing two datasets
 // rather than two queries.
 func TestRunIsDeterministic(t *testing.T) {
-	firstDir, first := tinyRun(t, 99)
-	secondDir, second := tinyRun(t, 99)
+	firstDir, first := smallRun(t, 99)
+	secondDir, second := smallRun(t, 99)
 
 	if first.Events != second.Events || first.Sessions != second.Sessions {
 		t.Fatalf("two runs of one seed disagree: %d/%d events, %d/%d sessions",
@@ -74,7 +96,7 @@ func TestRunIsDeterministic(t *testing.T) {
 
 	// A different seed has to produce different data, or the seed is not being
 	// used and every run is the same dataset by accident.
-	otherDir, _ := tinyRun(t, 100)
+	otherDir, _ := smallRun(t, 100)
 
 	if digest(t, otherDir) == firstDigest {
 		t.Fatal("two different seeds produced identical data")

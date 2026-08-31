@@ -43,6 +43,23 @@ jobs:
 
       - run: make test
 
+  # The ingest pipeline, the write buffer and the roll-up worker are all
+  # concurrent, and a data race there corrupts numbers quietly rather than
+  # crashing. It is a separate job because the detector is roughly ten times
+  # slower, and holding the fast feedback hostage to it helps nobody.
+  race:
+    name: Race detector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: make test-race
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

@@ -127,6 +127,7 @@ help:
 	@echo "    make test-integration   end-to-end tests through Caddy"
 	@echo "    make test-ecosystem     the SDKs and the plugin, in whichever toolchains you have"
 	@echo "    make lint       go vet and golangci-lint"
+	@echo "    make test-race  the same tests under the race detector"
 	@echo "    make check-env  every environment variable is in .env.sample"
 	@echo "    make migrate    migrate control.db and every account database"
 	@echo "    make migrate-fresh      drop everything and rebuild"
@@ -194,6 +195,14 @@ build: assets
 # in the working tree rather than against whatever was last committed.
 test: tracker
 	@go test ./...
+
+## test-race: the same tests under the race detector
+# Its own target with its own timeout. The detector slows every test by roughly
+# an order of magnitude, so the ten-minute per-package default expires in the
+# packages that matter most here — the roll-up worker and the ingest pipeline are
+# the concurrent code, and a detector that times out reports nothing at all.
+test-race:
+	@go test -race -timeout 40m ./...
 
 ## test-tracker: the tracker's end-to-end suite, in a real browser
 # Playwright starts and stops its own fixture server, so this target leaves
