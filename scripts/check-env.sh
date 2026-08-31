@@ -25,11 +25,18 @@ fi
 # os.Getenv for something outside our namespace, such as CONFIG_DIR. Test files
 # are excluded: they invent variables on purpose.
 #
-# .claude holds agent worktrees — whole other checkouts of this repository. A
-# variable that only exists on an unmerged branch is not a variable this
-# checkout reads, and scanning them makes the result depend on who else is
-# working right now.
-scan_excludes=(--exclude-dir=.claude --exclude-dir=.git --exclude-dir=node_modules)
+# Two directories are skipped. .claude holds agent worktrees, which are whole
+# other checkouts of this repository, so scanning them makes the result depend
+# on who else happens to be working right now. ecosystem/ holds separate
+# distributables — their variables are documented for the person installing
+# that package, and listing them here would tell an operator to set a variable
+# this binary never reads.
+scan_excludes=(
+  --exclude-dir=.claude
+  --exclude-dir=ecosystem
+  --exclude-dir=.git
+  --exclude-dir=node_modules
+)
 used="$(
   {
     grep -rhoE '"FEASIBLE_[A-Z0-9_]+"' \

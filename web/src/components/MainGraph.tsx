@@ -10,8 +10,9 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { Metric, StatsResponse } from "../api/types";
 import { bucketLong, bucketShort, compact, metricTitle, metricValue } from "../lib/format";
+import { t } from "../lib/i18n";
 import { Failure, Spinner } from "./atoms";
-import { TILE_LABELS } from "./TopStats";
+import { tileLabel, tileLabelLower } from "./TopStats";
 
 /**
  * The chart is drawn by hand in SVG rather than by a charting library.
@@ -100,7 +101,7 @@ export function MainGraph({ stats, metric }: Props) {
 				{stats.error ? (
 					<Failure message={stats.error} onRetry={stats.reload} />
 				) : (
-					<Spinner label="Loading the graph" />
+					<Spinner label={t("dashboard.graph.loading")} />
 				)}
 			</div>
 		);
@@ -133,7 +134,7 @@ export function MainGraph({ stats, metric }: Props) {
 				width={width}
 				height={HEIGHT}
 				role="img"
-				aria-label={`${TILE_LABELS[metric] ?? metric} over time`}
+				aria-label={t("dashboard.graph.aria", { metric: tileLabel(metric) })}
 				onPointerMove={(event) => {
 					const rect = event.currentTarget.getBoundingClientRect();
 					const offset = event.clientX - rect.left;
@@ -268,17 +269,15 @@ export function MainGraph({ stats, metric }: Props) {
 					<p className="text-[11px] text-muted">{bucketLong(hoverLabel, interval)}</p>
 
 					{hovered === null ? (
-						<p className="text-sm font-medium text-body">No data</p>
+						<p className="text-sm font-medium text-body">{t("dashboard.graph.no_data")}</p>
 					) : (
 						<p className="tnum text-sm font-semibold text-body" title={metricTitle(metric, hovered)}>
 							{metricValue(metric, hovered)}{" "}
-							<span className="text-xs font-normal text-muted">
-								{TILE_LABELS[metric]?.toLowerCase() ?? metric}
-							</span>
+							<span className="text-xs font-normal text-muted">{tileLabelLower(metric)}</span>
 						</p>
 					)}
 
-					{present === hover && <p className="text-[11px] text-muted">Still in progress</p>}
+					{present === hover && <p className="text-[11px] text-muted">{t("dashboard.graph.in_progress")}</p>}
 				</div>
 			)}
 		</div>

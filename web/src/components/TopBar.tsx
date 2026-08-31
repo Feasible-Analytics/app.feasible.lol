@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { Preset } from "../api/types";
 import { rangeLabel } from "../lib/format";
+import { n, t } from "../lib/i18n";
 import type { Theme } from "../lib/prefs";
 import type { UrlState } from "../lib/url";
 import { useStats } from "../lib/useStats";
@@ -22,20 +23,23 @@ import { useInterval } from "../lib/useStats";
  * because a range resolved on the client is a range the graph, the tables and
  * an export can disagree about. Yesterday has no preset, so it travels as an
  * explicit pair of dates like any other custom range.
+ *
+ * The names are message ids, translated where the menu is drawn. The preset
+ * beside each one is a wire value the engine reads and is never translated.
  */
-const PERIODS: { id: string; label: string; preset?: Preset }[] = [
-	{ id: "day", label: "Today", preset: "day" },
-	{ id: "yesterday", label: "Yesterday" },
-	{ id: "realtime", label: "Realtime", preset: "realtime" },
-	{ id: "24h", label: "Last 24 hours", preset: "24h" },
-	{ id: "7d", label: "Last 7 days", preset: "7d" },
-	{ id: "28d", label: "Last 28 days", preset: "28d" },
-	{ id: "91d", label: "Last 91 days", preset: "91d" },
-	{ id: "month", label: "Month to date", preset: "month" },
-	{ id: "last_month", label: "Last month", preset: "last_month" },
-	{ id: "year", label: "Year to date", preset: "year" },
-	{ id: "12mo", label: "Last 12 months", preset: "12mo" },
-	{ id: "all", label: "All time", preset: "all" },
+const PERIODS: { id: string; labelId: string; preset?: Preset }[] = [
+	{ id: "day", labelId: "dashboard.topbar.period.day", preset: "day" },
+	{ id: "yesterday", labelId: "dashboard.topbar.period.yesterday" },
+	{ id: "realtime", labelId: "dashboard.topbar.period.realtime", preset: "realtime" },
+	{ id: "24h", labelId: "dashboard.topbar.period.24h", preset: "24h" },
+	{ id: "7d", labelId: "dashboard.topbar.period.7d", preset: "7d" },
+	{ id: "28d", labelId: "dashboard.topbar.period.28d", preset: "28d" },
+	{ id: "91d", labelId: "dashboard.topbar.period.91d", preset: "91d" },
+	{ id: "month", labelId: "dashboard.topbar.period.month", preset: "month" },
+	{ id: "last_month", labelId: "dashboard.topbar.period.last_month", preset: "last_month" },
+	{ id: "year", labelId: "dashboard.topbar.period.year", preset: "year" },
+	{ id: "12mo", labelId: "dashboard.topbar.period.12mo", preset: "12mo" },
+	{ id: "all", labelId: "dashboard.topbar.period.all", preset: "all" },
 ];
 
 interface Props {
@@ -85,11 +89,16 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved }: P
 	);
 }
 
-/** periodLabel names the current range for the button face. */
+/** periodLabel names the current range for the button face. A custom range is
+ *  shown as its own two dates, which are already the reader's own input. */
 function periodLabel(state: UrlState): string {
-	if (state.from && state.to) return state.from === state.to ? state.from : `${state.from} – ${state.to}`;
+	if (state.from && state.to) {
+		return state.from === state.to ? state.from : t("dashboard.format.range", { from: state.from, to: state.to });
+	}
 
-	return PERIODS.find((period) => period.preset === state.preset)?.label ?? state.preset;
+	const period = PERIODS.find((entry) => entry.preset === state.preset);
+
+	return period ? t(period.labelId) : state.preset;
 }
 
 /**
@@ -104,7 +113,7 @@ function SitePicker({ current, sites, onPick }: { current: string; sites: string
 
 	return (
 		<label className="relative flex items-center">
-			<span className="sr-only">Site</span>
+			<span className="sr-only">{t("dashboard.topbar.site")}</span>
 			<select
 				value={current}
 				onChange={(event) => onPick(event.target.value)}
@@ -141,14 +150,14 @@ function CurrentVisitors({ domain }: { domain: string }) {
 	return (
 		<span
 			className="flex h-control items-center gap-2 rounded-md px-2 text-sm text-muted"
-			title="Visitors seen in the last 30 minutes — the window a visit stays open for"
+			title={t("dashboard.topbar.current_visitors.help")}
 		>
 			<span className="relative flex size-2">
 				<span className="absolute inline-flex size-full animate-ping rounded-full bg-accent opacity-60" />
 				<span className="relative inline-flex size-2 rounded-full bg-accent" />
 			</span>
 			<span className="tnum font-medium text-body">{count}</span>
-			<span className="hidden sm:inline">current visitor{count === 1 ? "" : "s"}</span>
+			<span className="hidden sm:inline">{n("dashboard.topbar.current_visitors", count)}</span>
 		</span>
 	);
 }
@@ -222,7 +231,7 @@ function PeriodPicker({
 									active ? "font-medium text-accent" : "text-body"
 								}`}
 							>
-								{period.label}
+								{t(period.labelId)}
 							</button>
 						);
 					})}
@@ -246,7 +255,7 @@ function PeriodPicker({
 							onClick={() => setCustom(true)}
 							className="w-full rounded-sm px-2.5 py-1.5 text-left text-sm text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
 						>
-							Custom range…
+							{t("dashboard.topbar.custom_range")}
 						</button>
 					)}
 
@@ -270,7 +279,7 @@ function CustomRange({ from, to, onApply }: { from: string; to: string; onApply:
 	return (
 		<div className="flex flex-col gap-2 px-2.5 py-2">
 			<label className="flex items-center justify-between gap-2 text-xs text-muted">
-				From
+				{t("dashboard.topbar.from")}
 				<input
 					type="date"
 					value={start}
@@ -280,7 +289,7 @@ function CustomRange({ from, to, onApply }: { from: string; to: string; onApply:
 				/>
 			</label>
 			<label className="flex items-center justify-between gap-2 text-xs text-muted">
-				To
+				{t("dashboard.topbar.to")}
 				<input
 					type="date"
 					value={end}
@@ -295,11 +304,20 @@ function CustomRange({ from, to, onApply }: { from: string; to: string; onApply:
 				onClick={() => onApply(start, end)}
 				className="h-control rounded-md bg-accent text-sm font-medium text-white transition-opacity duration-150 ease-[var(--ease-ui)] hover:opacity-90 disabled:opacity-40 dark:text-slate-950"
 			>
-				Apply
+				{t("dashboard.topbar.apply")}
 			</button>
 		</div>
 	);
 }
+
+/** What each theme is called mid-sentence. The ids are written out rather than
+ *  built from the theme name, so every string the dashboard can ask for is
+ *  findable by searching the source for its id. */
+const THEME_NAMES: Record<Theme, string> = {
+	light: "dashboard.theme.light",
+	dark: "dashboard.theme.dark",
+	system: "dashboard.theme.system",
+};
 
 /** ThemeToggle cycles light, dark and system. Three states rather than two
  *  because "follow the OS" is the setting most people actually want, and a
@@ -307,13 +325,14 @@ function CustomRange({ from, to, onApply }: { from: string; to: string; onApply:
 function ThemeToggle({ theme, onTheme }: { theme: Theme; onTheme: (next: Theme) => void }) {
 	const next: Theme = theme === "system" ? "light" : theme === "light" ? "dark" : "system";
 	const glyph = theme === "system" ? "◐" : theme === "light" ? "☀" : "☾";
+	const description = t("dashboard.topbar.theme", { current: t(THEME_NAMES[theme]), next: t(THEME_NAMES[next]) });
 
 	return (
 		<button
 			type="button"
 			onClick={() => onTheme(next)}
-			title={`Theme: ${theme}. Switch to ${next}.`}
-			aria-label={`Theme: ${theme}. Switch to ${next}.`}
+			title={description}
+			aria-label={description}
 			className="flex size-control items-center justify-center rounded-md border border-line bg-card text-sm text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
 		>
 			{glyph}

@@ -95,7 +95,8 @@ FRESH ?= --fresh
 
 .DEFAULT_GOAL := help
 
-.PHONY: help assets tracker ui-css build test test-tracker test-integration lint check-env \
+.PHONY: help assets tracker ui-css build test test-tracker test-integration test-ecosystem \
+	lint check-env \
 	migrate migrate-fresh seed seed-big seed-http caddy app ingest testsite dev dev-solo \
 	caddy-ts app-ts ingest-ts testsite-ts dev-ts dev-solo-ts require-tailscale
 
@@ -124,6 +125,7 @@ help:
 	@echo "    make test       unit tests, including the tracker size budget"
 	@echo "    make test-tracker       the tracker's end-to-end suite in a real browser"
 	@echo "    make test-integration   end-to-end tests through Caddy"
+	@echo "    make test-ecosystem     the SDKs and the plugin, in whichever toolchains you have"
 	@echo "    make lint       go vet and golangci-lint"
 	@echo "    make check-env  every environment variable is in .env.sample"
 	@echo "    make migrate    migrate control.db and every account database"
@@ -205,6 +207,15 @@ test-tracker: tracker
 # the ingest pipeline; the target exists now so CI and the docs have one name.
 test-integration: build
 	@go test -tags=integration -count=1 ./...
+
+## test-ecosystem: every SDK's own tests, in whichever toolchains are installed
+# Each package under ecosystem/ is destined for its own repository, so none of
+# them is part of `go test ./...` and none of them can be tested by the Go
+# toolchain alone. A missing toolchain is a note rather than a failure: nobody
+# should need PHP, Python, Ruby and Node installed to work on the Go binary, and
+# a target that fails on a machine without them is a target people stop running.
+test-ecosystem:
+	@./scripts/test-ecosystem.sh
 
 ## lint: go vet, plus golangci-lint when it is installed
 # golangci-lint is not required to work on this project — `make app` has to run

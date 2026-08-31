@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 )
 
@@ -73,18 +74,18 @@ func (h *Handler) showSites(w http.ResponseWriter, r *http.Request) {
 		folder.Sites = byFolder[folder.ID]
 	}
 
-	p := h.newPage(r, "Sites", "sites")
+	p := h.newPage(r, tr(r, "auth.title.sites"), "sites")
 	p.Data["Sites"] = loose
 	p.Data["Folders"] = folders
 	p.Data["Total"] = len(list)
 	p.Data["Sort"] = order
 
 	if r.URL.Query().Get("welcome") == "1" {
-		p.Flash = "Your email is confirmed. Add your first site to start collecting."
+		p.Flash = i18n.T(p.Lang, "auth.flash.email_confirmed")
 	}
 
 	if r.URL.Query().Get("deleted") == "1" {
-		p.Flash = "That site has been deleted."
+		p.Flash = i18n.T(p.Lang, "auth.flash.site_deleted")
 	}
 
 	h.render(w, r, "sites", p, http.StatusOK)
@@ -92,7 +93,7 @@ func (h *Handler) showSites(w http.ResponseWriter, r *http.Request) {
 
 // showNewSite renders the create-site form.
 func (h *Handler) showNewSite(w http.ResponseWriter, r *http.Request) {
-	p := h.newPage(r, "Add a site", "sites")
+	p := h.newPage(r, tr(r, "auth.title.site_new"), "sites")
 	p.Data["Timezones"] = CommonTimezones()
 
 	h.render(w, r, "site_new", p, http.StatusOK)
@@ -136,14 +137,14 @@ func (h *Handler) doNewSite(w http.ResponseWriter, r *http.Request) {
 
 	site, err := h.Store.CreateSite(r.Context(), team.ID, domain, displayName, timezone)
 	if err != nil {
-		p := h.newPage(r, "Add a site", "sites")
+		p := h.newPage(r, tr(r, "auth.title.site_new"), "sites")
 		p.Data["Timezones"] = CommonTimezones()
 		p.Data["Domain"] = domain
 		p.Data["DisplayName"] = displayName
 		p.Data["Timezone"] = timezone
 
 		if errors.Is(err, ErrDomainTaken) {
-			p.Error = "That domain is already being tracked. If it is yours and you have lost access, get in touch."
+			p.Error = i18n.T(p.Lang, "auth.error.domain_taken")
 		} else {
 			p.Error = strings.TrimPrefix(err.Error(), "auth: ")
 		}
@@ -211,7 +212,7 @@ func (h *Handler) showSiteSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := h.newPage(r, site.Label()+" settings", "sites")
+	p := h.newPage(r, tr(r, "auth.title.site_settings", "site", site.Label()), "sites")
 	p.Data["Site"] = site
 	p.Data["Folders"] = folders
 	p.Data["Timezones"] = CommonTimezones()
@@ -221,12 +222,11 @@ func (h *Handler) showSiteSettings(w http.ResponseWriter, r *http.Request) {
 
 	switch r.URL.Query().Get("saved") {
 	case "general":
-		p.Flash = "Saved."
+		p.Flash = i18n.T(p.Lang, "auth.flash.saved")
 	case "domain":
-		p.Flash = "The domain has been changed. The old one keeps collecting for the next " +
-			strconv.Itoa(int(DualWriteWindow.Hours())) + " hours, so update your snippet before then."
+		p.Flash = i18n.N(p.Lang, "auth.flash.domain_changed", int(DualWriteWindow.Hours()))
 	case "reset":
-		p.Flash = "Every recorded pageview for this site has been deleted. Your goals and settings are untouched."
+		p.Flash = i18n.T(p.Lang, "auth.flash.stats_reset")
 	}
 
 	h.render(w, r, "site_settings", p, http.StatusOK)
@@ -251,10 +251,11 @@ func (h *Handler) doSiteGeneral(w http.ResponseWriter, r *http.Request) {
 	err := h.Store.UpdateSiteGeneral(r.Context(), team.ID, site.ID,
 		r.PostFormValue("display_name"), timezone, r.PostFormValue("is_public") == "1")
 	if err != nil {
-		p := h.newPage(r, site.Label()+" settings", "sites")
+		p := h.newPage(r, tr(r, "auth.title.site_settings", "site", site.Label()), "sites")
 		p.Data["Site"] = site
 		p.Data["Timezones"] = CommonTimezones()
 		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
+		p.Data["DualWriteHours"] = int(DualWriteWindow.Hours())
 		p.Error = strings.TrimPrefix(err.Error(), "auth: ")
 
 		h.render(w, r, "site_settings", p, http.StatusBadRequest)
@@ -289,13 +290,14 @@ func (h *Handler) doSiteDomain(w http.ResponseWriter, r *http.Request) {
 
 	err := h.Store.ChangeDomain(r.Context(), team.ID, site.ID, r.PostFormValue("domain"))
 	if err != nil {
-		p := h.newPage(r, site.Label()+" settings", "sites")
+		p := h.newPage(r, tr(r, "auth.title.site_settings", "site", site.Label()), "sites")
 		p.Data["Site"] = site
 		p.Data["Timezones"] = CommonTimezones()
 		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
+		p.Data["DualWriteHours"] = int(DualWriteWindow.Hours())
 
 		if errors.Is(err, ErrDomainTaken) {
-			p.Error = "That domain is already being tracked by another site."
+			p.Error = i18n.T(p.Lang, "auth.error.domain_taken_elsewhere")
 		} else {
 			p.Error = strings.TrimPrefix(err.Error(), "auth: ")
 		}
@@ -325,11 +327,12 @@ func (h *Handler) doSiteReset(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if strings.TrimSpace(r.PostFormValue("confirm")) != site.Domain {
-		p := h.newPage(r, site.Label()+" settings", "sites")
+		p := h.newPage(r, tr(r, "auth.title.site_settings", "site", site.Label()), "sites")
 		p.Data["Site"] = site
 		p.Data["Timezones"] = CommonTimezones()
 		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
-		p.Error = "Type the domain exactly to confirm the reset."
+		p.Data["DualWriteHours"] = int(DualWriteWindow.Hours())
+		p.Error = i18n.T(p.Lang, "auth.error.confirm_reset")
 
 		h.render(w, r, "site_settings", p, http.StatusBadRequest)
 
@@ -358,11 +361,12 @@ func (h *Handler) doSiteDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if strings.TrimSpace(r.PostFormValue("confirm")) != site.Domain {
-		p := h.newPage(r, site.Label()+" settings", "sites")
+		p := h.newPage(r, tr(r, "auth.title.site_settings", "site", site.Label()), "sites")
 		p.Data["Site"] = site
 		p.Data["Timezones"] = CommonTimezones()
 		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
-		p.Error = "Type the domain exactly to confirm the deletion."
+		p.Data["DualWriteHours"] = int(DualWriteWindow.Hours())
+		p.Error = i18n.T(p.Lang, "auth.error.confirm_delete")
 
 		h.render(w, r, "site_settings", p, http.StatusBadRequest)
 

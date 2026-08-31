@@ -1,0 +1,26 @@
+{
+  "common.action.save": "Speichern",
+  "common.action.cancel": "Abbrechen",
+  "common.action.confirm": "Bestätigen",
+  "common.action.copied": "Kopiert",
+  "common.action.retry": "Erneut versuchen",
+  "common.action.menu": "Menü",
+
+  "common.state.loading": "Wird geladen…",
+  "common.state.never": "nie",
+  "common.state.expired": "abgelaufen",
+  "common.state.dash": "—",
+
+  "common.time.just_now": "gerade eben",
+  "common.time.yesterday": "gestern",
+  "common.time.minutes_ago_one": "vor {count} Minute",
+  "common.time.minutes_ago_other": "vor {count} Minuten",
+  "common.time.hours_ago_one": "vor {count} Stunde",
+  "common.time.hours_ago_other": "vor {count} Stunden",
+  "common.time.days_ago_one": "vor {count} Tag",
+  "common.time.days_ago_other": "vor {count} Tagen",
+  "common.time.minutes_left_one": "{count} Minute",
+  "common.time.minutes_left_other": "{count} Minuten",
+  "common.time.hours_left_one": "{count} Stunde",
+  "common.time.hours_left_other": "{count} Stunden"
+}

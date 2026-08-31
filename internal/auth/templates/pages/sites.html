@@ -13,37 +13,36 @@
 <div x-data="siteList()">
   <div class="flex flex-wrap items-center justify-between gap-3">
     <div>
-      <h1 class="text-2xl font-semibold text-heading">Sites</h1>
-      <p class="mt-1 text-sm text-muted">{{ .Data.Total }} site{{ if ne .Data.Total 1 }}s{{ end }} in this account.</p>
+      <h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "auth.sites.title" }}</h1>
+      <p class="mt-1 text-sm text-muted">{{ n $.Lang "auth.sites.count" .Data.Total }}</p>
     </div>
 
     <div class="flex items-center gap-2">
-      <label for="sort" class="sr-only">Sort</label>
+      <label for="sort" class="sr-only">{{ t $.Lang "auth.sites.sort_label" }}</label>
       <select id="sort" onchange="window.location = '/sites?sort=' + this.value"
               class="rounded-xl border border-field bg-card px-3 py-2 text-sm text-body">
-        <option value="" {{ if eq .Data.Sort "" }}selected{{ end }}>Manual order</option>
-        <option value="traffic" {{ if eq .Data.Sort "traffic" }}selected{{ end }}>Most traffic</option>
-        <option value="name" {{ if eq .Data.Sort "name" }}selected{{ end }}>Name</option>
-        <option value="created" {{ if eq .Data.Sort "created" }}selected{{ end }}>Newest</option>
+        <option value="" {{ if eq .Data.Sort "" }}selected{{ end }}>{{ t $.Lang "auth.sites.sort_manual" }}</option>
+        <option value="traffic" {{ if eq .Data.Sort "traffic" }}selected{{ end }}>{{ t $.Lang "auth.sites.sort_traffic" }}</option>
+        <option value="name" {{ if eq .Data.Sort "name" }}selected{{ end }}>{{ t $.Lang "auth.sites.sort_name" }}</option>
+        <option value="created" {{ if eq .Data.Sort "created" }}selected{{ end }}>{{ t $.Lang "auth.sites.sort_newest" }}</option>
       </select>
 
       <a href="/sites/new"
          class="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
-        Add a site
+        {{ t $.Lang "auth.sites.add" }}
       </a>
     </div>
   </div>
 
   {{ if and (not .Data.Sites) (not .Data.Folders) }}
     <div class="mt-10 rounded-2xl border border-dashed border-field bg-card p-12 text-center">
-      <h2 class="text-lg font-medium text-heading">No sites yet</h2>
+      <h2 class="text-lg font-medium text-heading">{{ t $.Lang "auth.sites.empty_title" }}</h2>
       <p class="mx-auto mt-2 max-w-md text-sm text-muted">
-        Add the first one and we will give you a snippet, tell you where to paste it, and wait
-        with you for the first pageview.
+        {{ t $.Lang "auth.sites.empty_body" }}
       </p>
       <a href="/sites/new"
          class="mt-6 inline-block rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
-        Add your first site
+        {{ t $.Lang "auth.sites.empty_action" }}
       </a>
     </div>
   {{ else }}
@@ -63,17 +62,17 @@
               </div>
 
               <form method="post" action="/folders/{{ .ID }}/delete"
-                    onsubmit="return confirm('Delete this folder? The sites inside it move back to the top level.')">
+                    onsubmit="return confirm('{{ t $.Lang "auth.sites.folder_delete_confirm" }}')">
                 <input type="hidden" name="csrf_token" value="{{ $.CSRF }}">
-                <button type="submit" class="text-xs text-faint hover:text-down">Delete folder</button>
+                <button type="submit" class="text-xs text-faint hover:text-down">{{ t $.Lang "auth.sites.folder_delete" }}</button>
               </form>
             </header>
 
             <ul class="divide-y divide-line" data-folder-list="{{ .ID }}">
               {{ range .Sites }}
-                {{ template "site_row.html" (dict "Site" . "CSRF" $.CSRF) }}
+                {{ template "site_row.html" (dict "Site" . "CSRF" $.CSRF "Lang" $.Lang) }}
               {{ else }}
-                <li class="px-5 py-6 text-sm text-faint">Drag a site here.</li>
+                <li class="px-5 py-6 text-sm text-faint">{{ t $.Lang "auth.sites.folder_empty" }}</li>
               {{ end }}
             </ul>
           </section>
@@ -85,13 +84,13 @@
       <div class="mt-8 rounded-2xl border border-line bg-card shadow-sm">
         {{ if .Data.Folders }}
           <header class="border-b border-line px-5 py-3">
-            <h2 class="text-sm font-semibold text-heading">Not in a folder</h2>
+            <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.sites.loose_heading" }}</h2>
           </header>
         {{ end }}
 
         <ul class="divide-y divide-line" data-folder-list="0">
           {{ range .Data.Sites }}
-            {{ template "site_row.html" (dict "Site" . "CSRF" $.CSRF) }}
+            {{ template "site_row.html" (dict "Site" . "CSRF" $.CSRF "Lang" $.Lang) }}
           {{ end }}
         </ul>
       </div>
@@ -101,13 +100,13 @@
   <form method="post" action="/folders" class="mt-8 flex items-end gap-2">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <div>
-      <label for="folder-name" class="block text-xs font-medium text-muted">New folder</label>
-      <input id="folder-name" name="name" type="text" placeholder="Client work" required
+      <label for="folder-name" class="block text-xs font-medium text-muted">{{ t $.Lang "auth.sites.folder_new_label" }}</label>
+      <input id="folder-name" name="name" type="text" placeholder="{{ t $.Lang "auth.sites.folder_new_placeholder" }}" required
              class="mt-1 rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
     </div>
     <button type="submit"
             class="rounded-xl border border-field px-4 py-2 text-sm font-medium text-body hover:bg-hover">
-      Create
+      {{ t $.Lang "auth.sites.folder_create" }}
     </button>
   </form>
 </div>

@@ -1,0 +1,44 @@
+#
+# pyproject.toml
+# Package metadata for the feasible Python SDK.
+#
+# Created: 2026-08-30
+# Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+#
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "feasible"
+version = "1.0.0"
+description = "Server-side event tracking for feasible.lol, with the visitor's IP and User-Agent as required arguments."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Cloudmanic Labs, LLC" }]
+keywords = ["analytics", "privacy", "tracking", "feasible", "events"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Topic :: Internet :: WWW/HTTP",
+    "Typing :: Typed",
+]
+
+# The standard library is the whole dependency list. An analytics SDK that drags
+# in an HTTP stack causes version conflicts in applications whose actual work has
+# nothing to do with analytics.
+dependencies = []
+
+[project.urls]
+Homepage = "https://feasible.lol"
+
+[tool.setuptools]
+packages = ["feasible"]
+
+[tool.setuptools.package-data]
+feasible = ["py.typed"]

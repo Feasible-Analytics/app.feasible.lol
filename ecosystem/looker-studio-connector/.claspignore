@@ -1,0 +1,19 @@
+#
+# .claspignore
+# What clasp must not push into the Apps Script project.
+#
+# Created: 2026-08-30
+# Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+#
+# The Node test suite is the reason this file exists. Apps Script has no module
+# system, so a pushed test/params.test.js would be concatenated into the same
+# global scope as the connector and its `require` calls would fail at load,
+# breaking every entry point.
+#
+
+test/**
+node_modules/**
+README.md
+LICENSE
+.claspignore
+.clasp.json

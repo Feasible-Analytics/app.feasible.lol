@@ -13,18 +13,20 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 )
 
 // showAccountSettings renders the profile and password screen.
 func (h *Handler) showAccountSettings(w http.ResponseWriter, r *http.Request) {
-	p := h.newPage(r, "Account", "settings")
+	p := h.newPage(r, tr(r, "auth.title.account"), "settings")
 	p.Data["MinLength"] = MinPasswordLength
 
 	switch r.URL.Query().Get("saved") {
 	case "profile":
-		p.Flash = "Your profile has been saved."
+		p.Flash = i18n.T(p.Lang, "auth.flash.profile_saved")
 	case "password":
-		p.Flash = "Your password has been changed, and every other browser has been signed out."
+		p.Flash = i18n.T(p.Lang, "auth.flash.password_changed")
 	}
 
 	h.render(w, r, "settings_account", p, http.StatusOK)
@@ -67,14 +69,14 @@ func (h *Handler) doChangePassword(w http.ResponseWriter, r *http.Request) {
 	current := r.PostFormValue("current_password")
 	next := r.PostFormValue("new_password")
 
-	p := h.newPage(r, "Account", "settings")
+	p := h.newPage(r, tr(r, "auth.title.account"), "settings")
 	p.Data["MinLength"] = MinPasswordLength
 
 	// Somebody who signed up with Google has no current password to give, so
 	// the field is not demanded of them — setting the first password is not a
 	// change of anything.
 	if user.PasswordHash != "" && !CheckPassword(user.PasswordHash, current) {
-		p.Error = "Your current password is not right."
+		p.Error = i18n.T(p.Lang, "auth.error.current_password")
 		h.render(w, r, "settings_account", p, http.StatusUnauthorized)
 
 		return
@@ -112,12 +114,12 @@ func (h *Handler) showSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := h.newPage(r, "Signed-in devices", "settings")
+	p := h.newPage(r, tr(r, "auth.title.sessions"), "settings")
 	p.Data["Sessions"] = list
 	p.Data["CurrentID"] = session.ID
 
 	if r.URL.Query().Get("revoked") == "1" {
-		p.Flash = "That device has been signed out."
+		p.Flash = i18n.T(p.Lang, "auth.flash.device_revoked")
 	}
 
 	h.render(w, r, "settings_sessions", p, http.StatusOK)
@@ -173,7 +175,7 @@ func (h *Handler) doRevokeSession(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) showSecurity(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r)
 
-	p := h.newPage(r, "Two-factor authentication", "settings")
+	p := h.newPage(r, tr(r, "auth.title.security"), "settings")
 	p.Data["Enabled"] = user.TwoFactorEnabled()
 	p.Data["RecoveryLeft"] = RecoveryCodesLeft(user)
 	p.Data["HasPassword"] = user.PasswordHash != ""
@@ -190,11 +192,11 @@ func (h *Handler) showSecurity(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.URL.Query().Get("required") == "1" {
-		p.Error = "Your team requires two-factor authentication. Set it up to carry on."
+		p.Error = i18n.T(p.Lang, "auth.error.two_factor_required")
 	}
 
 	if r.URL.Query().Get("disabled") == "1" {
-		p.Flash = "Two-factor authentication is off."
+		p.Flash = i18n.T(p.Lang, "auth.flash.two_factor_off")
 	}
 
 	h.render(w, r, "settings_security", p, http.StatusOK)
@@ -214,7 +216,7 @@ func (h *Handler) doStartTwoFactor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := h.newPage(r, "Two-factor authentication", "settings")
+	p := h.newPage(r, tr(r, "auth.title.security"), "settings")
 	p.Data["Enabled"] = false
 	p.Data["Enrolling"] = true
 	p.Data["Secret"] = key.Secret()
@@ -260,9 +262,9 @@ func (h *Handler) doEnableTwoFactor(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r)
 
 	if !h.Limiter.Allow(SubjectKey(strconv.FormatInt(user.ID, 10), "2fa-setup"), TwoFactorAttempts, TwoFactorWindow) {
-		p := h.newPage(r, "Two-factor authentication", "settings")
+		p := h.newPage(r, tr(r, "auth.title.security"), "settings")
 		p.Data["Enrolling"] = true
-		p.Error = "Too many attempts. Wait a minute and try again."
+		p.Error = i18n.T(p.Lang, "auth.error.too_many_attempts")
 
 		h.render(w, r, "settings_security", p, http.StatusTooManyRequests)
 
@@ -278,10 +280,10 @@ func (h *Handler) doEnableTwoFactor(w http.ResponseWriter, r *http.Request) {
 	if !valid {
 		key, keyErr := h.Store.TOTPKey(r.Context(), h.Sealer, user)
 
-		p := h.newPage(r, "Two-factor authentication", "settings")
+		p := h.newPage(r, tr(r, "auth.title.security"), "settings")
 		p.Data["Enrolling"] = true
 		p.Data["HasPassword"] = user.PasswordHash != ""
-		p.Error = "That code is not right. Check the time on your phone, then try the next code."
+		p.Error = i18n.T(p.Lang, "auth.error.totp_code")
 
 		if keyErr == nil {
 			p.Data["Secret"] = key.Secret()
@@ -302,7 +304,7 @@ func (h *Handler) doEnableTwoFactor(w http.ResponseWriter, r *http.Request) {
 
 	// The codes are shown here and nowhere else, ever. Storing a readable copy
 	// so they could be shown again would defeat the point of hashing them.
-	p := h.newPage(r, "Save your recovery codes", "settings")
+	p := h.newPage(r, tr(r, "auth.title.recovery_codes"), "settings")
 	p.Data["Codes"] = codes
 
 	h.render(w, r, "recovery_codes", p, http.StatusOK)
@@ -317,11 +319,11 @@ func (h *Handler) doRegenerateRecovery(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r)
 
 	if user.PasswordHash != "" && !CheckPassword(user.PasswordHash, r.PostFormValue("password")) {
-		p := h.newPage(r, "Two-factor authentication", "settings")
+		p := h.newPage(r, tr(r, "auth.title.security"), "settings")
 		p.Data["Enabled"] = user.TwoFactorEnabled()
 		p.Data["RecoveryLeft"] = RecoveryCodesLeft(user)
 		p.Data["HasPassword"] = true
-		p.Error = "Your password is not right."
+		p.Error = i18n.T(p.Lang, "auth.error.password")
 
 		h.render(w, r, "settings_security", p, http.StatusUnauthorized)
 
@@ -336,9 +338,9 @@ func (h *Handler) doRegenerateRecovery(w http.ResponseWriter, r *http.Request) {
 
 	h.Log.Info("recovery codes regenerated", "user", user.ID)
 
-	p := h.newPage(r, "Save your recovery codes", "settings")
+	p := h.newPage(r, tr(r, "auth.title.recovery_codes"), "settings")
 	p.Data["Codes"] = codes
-	p.Flash = "Your old recovery codes no longer work."
+	p.Flash = i18n.T(p.Lang, "auth.flash.recovery_regenerated")
 
 	h.render(w, r, "recovery_codes", p, http.StatusOK)
 }
@@ -355,20 +357,20 @@ func (h *Handler) doDisableTwoFactor(w http.ResponseWriter, r *http.Request) {
 
 	user := userFrom(r)
 
-	p := h.newPage(r, "Two-factor authentication", "settings")
+	p := h.newPage(r, tr(r, "auth.title.security"), "settings")
 	p.Data["Enabled"] = user.TwoFactorEnabled()
 	p.Data["RecoveryLeft"] = RecoveryCodesLeft(user)
 	p.Data["HasPassword"] = user.PasswordHash != ""
 
 	if team, err := h.Store.TeamForUser(r.Context(), user.ID); err == nil && team.Require2FA {
-		p.Error = "Your team requires two-factor authentication, so it cannot be turned off."
+		p.Error = i18n.T(p.Lang, "auth.error.two_factor_locked")
 		h.render(w, r, "settings_security", p, http.StatusForbidden)
 
 		return
 	}
 
 	if user.PasswordHash != "" && !CheckPassword(user.PasswordHash, r.PostFormValue("password")) {
-		p.Error = "Your password is not right."
+		p.Error = i18n.T(p.Lang, "auth.error.password")
 		h.render(w, r, "settings_security", p, http.StatusUnauthorized)
 
 		return
@@ -385,10 +387,10 @@ func (h *Handler) doDisableTwoFactor(w http.ResponseWriter, r *http.Request) {
 
 // showTeamSettings renders the team name and the two-factor policy.
 func (h *Handler) showTeamSettings(w http.ResponseWriter, r *http.Request) {
-	p := h.newPage(r, "Team", "settings")
+	p := h.newPage(r, tr(r, "auth.title.team"), "settings")
 
 	if r.URL.Query().Get("saved") == "1" {
-		p.Flash = "Your team settings have been saved."
+		p.Flash = i18n.T(p.Lang, "auth.flash.team_saved")
 	}
 
 	h.render(w, r, "settings_team", p, http.StatusOK)
@@ -445,18 +447,18 @@ func (h *Handler) doDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := h.newPage(r, "Account", "settings")
+	p := h.newPage(r, tr(r, "auth.title.account"), "settings")
 	p.Data["MinLength"] = MinPasswordLength
 
 	if strings.TrimSpace(strings.ToUpper(r.PostFormValue("confirm"))) != "DELETE" {
-		p.Error = "Type DELETE in the box to confirm."
+		p.Error = i18n.T(p.Lang, "auth.error.type_delete")
 		h.render(w, r, "settings_account", p, http.StatusBadRequest)
 
 		return
 	}
 
 	if user.PasswordHash != "" && !CheckPassword(user.PasswordHash, r.PostFormValue("password")) {
-		p.Error = "Your password is not right."
+		p.Error = i18n.T(p.Lang, "auth.error.password")
 		h.render(w, r, "settings_account", p, http.StatusUnauthorized)
 
 		return
@@ -477,8 +479,8 @@ func (h *Handler) doDeleteAccount(w http.ResponseWriter, r *http.Request) {
 
 	ClearSessionCookie(w, h.BaseURL)
 
-	p = h.newPage(r, "Account deleted", "")
-	p.Flash = "Your account, its database and every site in it have been deleted."
+	p = h.newPage(r, tr(r, "auth.title.account_deleted"), "")
+	p.Flash = i18n.T(p.Lang, "auth.flash.account_deleted")
 
 	h.render(w, r, "deleted", p, http.StatusOK)
 }
@@ -507,8 +509,8 @@ func (h *Handler) requireOwner(r *http.Request, teamID int64) bool {
 // not belong to the signed-in team, so a guessed id is indistinguishable from
 // one that does not exist.
 func (h *Handler) notFound(w http.ResponseWriter, r *http.Request) {
-	p := h.newPage(r, "Not found", "")
-	p.Error = "We could not find that."
+	p := h.newPage(r, tr(r, "auth.title.not_found"), "")
+	p.Error = i18n.T(p.Lang, "auth.error.not_found")
 
 	h.render(w, r, "error", p, http.StatusNotFound)
 }

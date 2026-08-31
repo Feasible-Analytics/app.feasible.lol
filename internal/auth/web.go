@@ -26,9 +26,12 @@ import (
 // from colliding with ours under the same name.
 type contextKey string
 
+// The values are prefixed with the product rather than the package so they
+// cannot be mistaken for message ids: everything named auth.* in this tree is a
+// string in the catalogue, and the completeness check reads that literally.
 const (
-	contextUser    contextKey = "auth.user"
-	contextSession contextKey = "auth.session"
+	contextUser    contextKey = "feasible.auth.user"
+	contextSession contextKey = "feasible.auth.session"
 )
 
 // Handler is the whole server-rendered application. Everything it needs is a

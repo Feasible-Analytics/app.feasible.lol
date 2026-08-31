@@ -7,6 +7,7 @@
 //
 
 import type { Filter, Metric } from "../api/types";
+import { t } from "./i18n";
 
 /**
  * A tab is one dimension, plus the wording that makes its numbers readable.
@@ -15,16 +16,21 @@ import type { Filter, Metric } from "../api/types";
  * two parallel lists. A drawer that could show a dimension the card cannot — or
  * label it differently — is the shape of every "these two screens disagree" bug
  * in a reporting product.
+ *
+ * Every human-readable field here is a message id rather than a string, and it
+ * is translated where it is rendered. Resolving it in this table instead would
+ * bake the language in at module scope, where a change of locale could only be
+ * picked up by reloading the page.
  */
 export interface Tab {
 	id: string;
 	/** The label on the tab itself. */
-	label: string;
+	labelId: string;
 	/** The heading over the label column, in both the card and the drawer. */
-	heading: string;
+	headingId: string;
 	dimension: string;
 	/** Rows whose label is the empty string mean this, rather than nothing. */
-	emptyLabel?: string;
+	emptyLabelId?: string;
 	/** Applied on every request for this tab. It is part of what the report
 	 *  means, not a user filter: "Campaigns" is traffic that carried a campaign
 	 *  tag, and the untagged 93% would otherwise be one row swamping the card. */
@@ -32,19 +38,19 @@ export interface Tab {
 	/** Sources get an icon; channels and pages do not. */
 	favicon?: boolean;
 	/** The group the tab sits under, for cards whose tabs are two rows deep. */
-	group?: string;
+	groupId?: string;
 	/** The word an empty state uses: "No sources in this period". */
-	noun: string;
+	nounId: string;
 }
 
 export interface CardDef {
 	id: string;
-	title: string;
+	titleId: string;
 	/** The CSS class carrying this card's bar tint. */
 	tint: string;
 	tabs: Tab[];
 	/** The footnote on a number that reliably looks like a bug and is not. */
-	caveat?: string;
+	caveatId?: string;
 }
 
 /** The metric every report row is ranked and sized by. Visitors is the default
@@ -55,12 +61,15 @@ export const PRIMARY: Metric = "visitors";
  *  width, which is most of the reason the details view is a drawer at all. */
 export const DRAWER_METRICS: Metric[] = ["visitors", "visits", "pageviews", "bounce_rate", "visit_duration"];
 
+/** The heading over each drawer column, as message ids. The keys are the wire
+ *  metric names, which are never translated — a translated metric name is a
+ *  query the engine refuses. */
 export const DRAWER_HEADINGS: Record<string, string> = {
-	visitors: "Visitors",
-	visits: "Visits",
-	pageviews: "Views",
-	bounce_rate: "Bounce",
-	visit_duration: "Avg. visit",
+	visitors: "dashboard.column.visitors",
+	visits: "dashboard.column.visits",
+	pageviews: "dashboard.column.pageviews",
+	bounce_rate: "dashboard.column.bounce_rate",
+	visit_duration: "dashboard.column.visit_duration",
 };
 
 /** Metrics where a rise is bad news. Colouring a change chip by sign alone gets
@@ -74,73 +83,84 @@ function tagged(dimension: string): Filter[] {
 
 export const SOURCES: CardDef = {
 	id: "sources",
-	title: "Top Sources",
+	titleId: "dashboard.report.sources.title",
 	tint: "tint-sources",
-	caveat:
-		"The visitors in these rows can add up to more than your total unique visitors. " +
-		"The same person can arrive from a search engine in the morning and type your address " +
-		"in the afternoon — one unique visitor, two source rows. Switch the column to Visits " +
-		"in the details view for a figure that does add up.",
+	caveatId: "dashboard.report.sources.caveat",
 	tabs: [
 		{
 			id: "channels",
-			label: "Channels",
-			heading: "Channel",
+			labelId: "dashboard.tab.channels",
+			headingId: "dashboard.dimension.channel",
 			dimension: "visit:channel",
-			emptyLabel: "Direct / None",
-			noun: "channels",
+			emptyLabelId: "dashboard.value.direct",
+			nounId: "dashboard.noun.channels",
 		},
 		{
 			id: "sources",
-			label: "Sources",
-			heading: "Source",
+			labelId: "dashboard.tab.sources",
+			headingId: "dashboard.dimension.source",
 			dimension: "visit:source",
-			emptyLabel: "Direct / None",
+			emptyLabelId: "dashboard.value.direct",
 			favicon: true,
-			noun: "sources",
+			nounId: "dashboard.noun.sources",
 		},
 		{
 			id: "utm_source",
-			label: "Source",
-			group: "Campaigns",
-			heading: "UTM source",
+			labelId: "dashboard.dimension.source",
+			groupId: "dashboard.group.campaigns",
+			headingId: "dashboard.dimension.utm_source",
 			dimension: "visit:utm_source",
 			filters: tagged("visit:utm_source"),
-			noun: "tagged campaigns",
+			nounId: "dashboard.noun.tagged_campaigns",
 		},
 		{
 			id: "utm_medium",
-			label: "Medium",
-			group: "Campaigns",
-			heading: "UTM medium",
+			labelId: "dashboard.tab.medium",
+			groupId: "dashboard.group.campaigns",
+			headingId: "dashboard.dimension.utm_medium",
 			dimension: "visit:utm_medium",
 			filters: tagged("visit:utm_medium"),
-			noun: "tagged campaigns",
+			nounId: "dashboard.noun.tagged_campaigns",
 		},
 		{
 			id: "utm_campaign",
-			label: "Campaign",
-			group: "Campaigns",
-			heading: "UTM campaign",
+			labelId: "dashboard.tab.campaign",
+			groupId: "dashboard.group.campaigns",
+			headingId: "dashboard.dimension.utm_campaign",
 			dimension: "visit:utm_campaign",
 			filters: tagged("visit:utm_campaign"),
-			noun: "tagged campaigns",
+			nounId: "dashboard.noun.tagged_campaigns",
 		},
 	],
 };
 
 export const PAGES: CardDef = {
 	id: "pages",
-	title: "Top Pages",
+	titleId: "dashboard.report.pages.title",
 	tint: "tint-pages",
-	caveat:
-		"Unique visitors can come out higher than pageviews on a site that fires custom events. " +
-		"A visitor who only triggers events and never loads a tracked page is counted once as a " +
-		"visitor and never as a view.",
+	caveatId: "dashboard.report.pages.caveat",
 	tabs: [
-		{ id: "pages", label: "Top Pages", heading: "Page", dimension: "event:page", noun: "pages" },
-		{ id: "entry", label: "Entry Pages", heading: "Entry page", dimension: "visit:entry_page", noun: "entry pages" },
-		{ id: "exit", label: "Exit Pages", heading: "Exit page", dimension: "visit:exit_page", noun: "exit pages" },
+		{
+			id: "pages",
+			labelId: "dashboard.report.pages.title",
+			headingId: "dashboard.dimension.page",
+			dimension: "event:page",
+			nounId: "dashboard.noun.pages",
+		},
+		{
+			id: "entry",
+			labelId: "dashboard.tab.entry_pages",
+			headingId: "dashboard.dimension.entry_page",
+			dimension: "visit:entry_page",
+			nounId: "dashboard.noun.entry_pages",
+		},
+		{
+			id: "exit",
+			labelId: "dashboard.tab.exit_pages",
+			headingId: "dashboard.dimension.exit_page",
+			dimension: "visit:exit_page",
+			nounId: "dashboard.noun.exit_pages",
+		},
 	],
 };
 
@@ -154,14 +174,14 @@ export const CARDS: CardDef[] = [SOURCES, PAGES];
  * dimension. The drawer is the only surface in the product with the width to
  * show the result, which is why it lives here and not on the card.
  */
-export const BREAKDOWNS: { id: string; label: string }[] = [
-	{ id: "", label: "No breakdown" },
-	{ id: "visit:country", label: "Country" },
-	{ id: "visit:device", label: "Device" },
-	{ id: "visit:browser", label: "Browser" },
-	{ id: "visit:os", label: "Operating system" },
-	{ id: "visit:channel", label: "Channel" },
-	{ id: "visit:source", label: "Source" },
+export const BREAKDOWNS: { id: string; labelId: string }[] = [
+	{ id: "", labelId: "dashboard.breakdown.none" },
+	{ id: "visit:country", labelId: "dashboard.dimension.country" },
+	{ id: "visit:device", labelId: "dashboard.dimension.device" },
+	{ id: "visit:browser", labelId: "dashboard.dimension.browser" },
+	{ id: "visit:os", labelId: "dashboard.dimension.os" },
+	{ id: "visit:channel", labelId: "dashboard.dimension.channel" },
+	{ id: "visit:source", labelId: "dashboard.dimension.source" },
 ];
 
 /** findCard resolves a card id from the URL, tolerating a stale link. */
@@ -177,16 +197,16 @@ export function findTab(card: CardDef, id: string): Tab {
 
 /** groupsOf lists a card's top tab row: the distinct groups, with ungrouped
  *  tabs standing for themselves. */
-export function groupsOf(card: CardDef): { key: string; label: string; tab: Tab }[] {
+export function groupsOf(card: CardDef): { key: string; labelId: string; tab: Tab }[] {
 	const seen = new Set<string>();
-	const groups: { key: string; label: string; tab: Tab }[] = [];
+	const groups: { key: string; labelId: string; tab: Tab }[] = [];
 
 	for (const tab of card.tabs) {
-		const key = tab.group ?? tab.id;
+		const key = tab.groupId ?? tab.id;
 		if (seen.has(key)) continue;
 
 		seen.add(key);
-		groups.push({ key, label: tab.group ?? tab.label, tab });
+		groups.push({ key, labelId: tab.groupId ?? tab.labelId, tab });
 	}
 
 	return groups;
@@ -195,16 +215,17 @@ export function groupsOf(card: CardDef): { key: string; label: string; tab: Tab 
 /** subTabsOf lists the second tab row for a grouped tab, or nothing when the
  *  active tab stands alone. */
 export function subTabsOf(card: CardDef, active: Tab): Tab[] {
-	if (!active.group) return [];
+	if (!active.groupId) return [];
 
-	return card.tabs.filter((tab) => tab.group === active.group);
+	return card.tabs.filter((tab) => tab.groupId === active.groupId);
 }
 
 /** labelOf renders one dimension value. The empty string is a real answer for
  *  several dimensions — it is what direct traffic looks like — so it gets the
- *  tab's own wording rather than a blank row. */
+ *  tab's own wording rather than a blank row. The value itself is the visitor's
+ *  own data and is never translated. */
 export function labelOf(tab: Tab, value: string): string {
 	if (value) return value;
 
-	return tab.emptyLabel ?? "(none)";
+	return t(tab.emptyLabelId ?? "dashboard.value.none");
 }

@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { bootstrap } from "../api/client";
 import type { Metric, StatsRequest } from "../api/types";
+import { t } from "../lib/i18n";
 import { usePref, useTheme } from "../lib/prefs";
 import type { CardDef, Tab } from "../lib/reports";
 import { CARDS, findCard, findTab } from "../lib/reports";
@@ -183,10 +184,8 @@ function NoSites() {
 	return (
 		<div className="flex min-h-screen items-center justify-center px-6">
 			<div className="max-w-md text-center">
-				<h1 className="text-lg font-semibold text-body">No sites yet</h1>
-				<p className="mt-2 text-sm text-muted">
-					Add a site and install the tracking snippet, and its traffic will appear here within a few seconds.
-				</p>
+				<h1 className="text-lg font-semibold text-body">{t("dashboard.no_sites.title")}</h1>
+				<p className="mt-2 text-sm text-muted">{t("dashboard.no_sites.body")}</p>
 			</div>
 		</div>
 	);

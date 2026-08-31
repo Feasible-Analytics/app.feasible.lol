@@ -18,6 +18,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 )
 
 // templateFS and assetFS hold the interface. Both are embedded because a
@@ -74,6 +76,13 @@ type page struct {
 	Title string
 	Nav   string
 
+	// Lang is the language this response is written in. It lives on the page
+	// rather than being resolved inside the template function because a
+	// template function has no request: the functions are bound once when the
+	// templates are parsed at start-up, long before anybody has asked for a
+	// language, so the only place the answer can come from is the render data.
+	Lang string
+
 	User *User
 	Team *Team
 
@@ -109,6 +118,7 @@ func (h *Handler) newPage(r *http.Request, title, nav string) *page {
 	p := &page{
 		Title:         title,
 		Nav:           nav,
+		Lang:          i18n.Negotiate(r),
 		User:          userFrom(r),
 		CSRF:          h.csrfToken(r),
 		GoogleEnabled: h.Google.Configured(),
@@ -124,6 +134,15 @@ func (h *Handler) newPage(r *http.Request, title, nav string) *page {
 	}
 
 	return p
+}
+
+// tr renders one catalogue string in the language a request asked for.
+//
+// It exists because a page title is an argument to newPage rather than a field
+// set afterwards, so the handler needs the locale before there is a page to
+// read it from. Everything set after the page is built uses p.Lang instead.
+func tr(r *http.Request, id string, args ...any) string {
+	return i18n.T(i18n.Negotiate(r), id, args...)
 }
 
 // render writes a page. It renders into a buffer first so that a template error
@@ -168,50 +187,115 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, p 
 // purpose: logic in a template is logic no test covers.
 func templateFuncs() template.FuncMap {
 	return template.FuncMap{
+		// t renders one catalogue string.
+		//
+		// The locale is the first argument rather than something the function
+		// closes over because these functions are bound once, when the
+		// templates are parsed at start-up. There is no request at that moment
+		// and there never will be one, so a closure would have to capture a
+		// language before anybody had asked for it — and every page would then
+		// render in whichever language the process happened to be built with.
+		"t": func(locale, id string, args ...any) string {
+			return i18n.T(locale, id, args...)
+		},
+
+		// n renders a string that changes with a count, and takes the locale
+		// first for the same reason t does: the plural rule belongs to the
+		// reader's language, which is only known once a request arrives.
+		"n": func(locale, id string, count int, args ...any) string {
+			return i18n.N(locale, id, count, args...)
+		},
+
+		// num narrows any stored integer to the int the plural helper takes.
+		//
+		// It exists because the template engine checks an argument's type
+		// without converting between integer widths, so a count held as an
+		// int64 — which is what a row count read out of SQLite is — cannot
+		// reach n at all without a step like this one.
+		"num": func(value any) int {
+			switch number := value.(type) {
+			case int:
+				return number
+			case int64:
+				return int(number)
+			case int32:
+				return int(number)
+			case float64:
+				return int(number)
+			default:
+				return 0
+			}
+		},
+
+		// rtl reports whether a language is written right to left, which is
+		// what the page shell turns into dir="rtl". It reads the flag off the
+		// catalogue's own locale list so a new right-to-left language is a
+		// catalogue change rather than an edit to the layout.
+		"rtl": func(locale string) bool {
+			for _, candidate := range i18n.Locales() {
+				if candidate.Tag == locale {
+					return candidate.RTL
+				}
+			}
+
+			return false
+		},
+
 		// ago turns a unix timestamp into "3 minutes ago". The sessions screen
 		// is a list of times, and absolute timestamps make "is one of these not
 		// me" a subtraction the reader has to do in their head.
-		"ago": func(unix int64) string {
+		//
+		// Every counted branch goes through the catalogue's plural forms, so a
+		// language whose singular differs gets its own wording rather than the
+		// English one with a number in front of it.
+		"ago": func(locale string, unix int64) string {
 			if unix <= 0 {
-				return "never"
+				return i18n.T(locale, "common.state.never")
 			}
 
 			d := time.Since(time.Unix(unix, 0))
 
 			switch {
 			case d < time.Minute:
-				return "just now"
+				return i18n.T(locale, "common.time.just_now")
 			case d < time.Hour:
-				return fmt.Sprintf("%d minutes ago", int(d.Minutes()))
+				return i18n.N(locale, "common.time.minutes_ago", int(d.Minutes()))
 			case d < 24*time.Hour:
-				return fmt.Sprintf("%d hours ago", int(d.Hours()))
+				return i18n.N(locale, "common.time.hours_ago", int(d.Hours()))
 			case d < 48*time.Hour:
-				return "yesterday"
+				return i18n.T(locale, "common.time.yesterday")
 			default:
-				return fmt.Sprintf("%d days ago", int(d.Hours()/24))
+				return i18n.N(locale, "common.time.days_ago", int(d.Hours()/24))
 			}
 		},
 
 		// until is the countdown the dual-write banner shows, so somebody can
 		// see how long the old domain keeps working.
-		"until": func(unix int64) string {
+		"until": func(locale string, unix int64) string {
 			d := time.Until(time.Unix(unix, 0))
 			if d <= 0 {
-				return "expired"
+				return i18n.T(locale, "common.state.expired")
 			}
 
 			if d < time.Hour {
-				return fmt.Sprintf("%d minutes", int(d.Minutes()))
+				return i18n.N(locale, "common.time.minutes_left", int(d.Minutes()))
 			}
 
-			return fmt.Sprintf("%d hours", int(d.Hours()))
+			return i18n.N(locale, "common.time.hours_left", int(d.Hours()))
 		},
 
 		// date formats a timestamp for the places a real date reads better than
 		// a relative one.
-		"date": func(unix int64) string {
+		//
+		// The pattern stays English-shaped. Go's time package carries no month
+		// names or field orders for any other language, so translating this
+		// means a month table and a date pattern per locale — catalogue data
+		// that belongs in the i18n package beside the plural rules, not in a
+		// template helper. The empty case still goes through the catalogue,
+		// because an em dash is not punctuation every script uses.
+		"date": func(locale string, unix int64) string {
 			if unix <= 0 {
-				return "—"
+				return i18n.T(locale, "common.state.dash")
 			}
 
 			return time.Unix(unix, 0).Format("2 Jan 2006")
