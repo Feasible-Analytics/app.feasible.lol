@@ -349,6 +349,23 @@ func TestPendingEmailsAreCancelledOnPayment(t *testing.T) {
 	}
 }
 
+// TestLapseNoticeLinksToSafeSelectedBillingPage keeps email prefetchers away
+// from the side-effecting portal action while retaining the intended account.
+func TestLapseNoticeLinksToSafeSelectedBillingPage(t *testing.T) {
+	h := newHarness(t)
+	account := Account{
+		TeamID:   1,
+		TeamName: "Example Co",
+		Email:    "owner@example.com",
+		State:    State{Trigger: TriggerLapse, StartedAt: day0},
+	}
+
+	notice := h.service.notice(account, Sequence[0], day0)
+	if notice.PortalURL != "https://feasible.lol/billing?team=1" {
+		t.Fatalf("lapse notice portal URL is %q", notice.PortalURL)
+	}
+}
+
 // TestEmailsAreIdempotentAcrossRepeatedSweeps is the guarantee that a retried
 // job cannot send twice. The sweep is run many times on the same day, which is
 // what an hourly sweeper does.
@@ -498,6 +515,109 @@ func TestCollectionGapIsRecorded(t *testing.T) {
 	}
 	if gaps[0].EndedAt.IsZero() {
 		t.Error("paying did not close the collection gap")
+	}
+}
+
+// TestSuccessfulPaymentRepairsFinalizationAfterACrash simulates a process that
+// committed Active and died before cancelling mail or closing the collection
+// gap. Replaying the same payment must finish both idempotent side effects.
+func TestSuccessfulPaymentRepairsFinalizationAfterACrash(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+
+	if _, err := h.service.Signal(ctx, 1, SignalPaymentFailed); err != nil {
+		t.Fatal(err)
+	}
+	started := h.service.now()
+	if _, err := h.control.Exec(`
+		INSERT INTO lifecycle_emails
+			(team_id, started_at, template, recipient, outcome, sent_at)
+		VALUES (1, ?, 'day_89', 'owner@example.com', '', ?)
+	`, started.Unix(), started.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.OpenGap(ctx, 1, started.Add(LockedDays*Day)); err != nil {
+		t.Fatal(err)
+	}
+
+	// This is the crash point: the lifecycle row reached Active, but the two
+	// cleanup calls in Service.Signal never ran.
+	if err := h.store.Save(ctx, 1, State{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.service.Signal(ctx, 1, SignalPaymentSucceeded); err != nil {
+		t.Fatal(err)
+	}
+
+	var pending int
+	if err := h.control.QueryRow(`SELECT COUNT(*) FROM lifecycle_emails WHERE team_id = 1 AND outcome = ''`).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 0 {
+		t.Fatalf("payment replay left %d pending lifecycle emails", pending)
+	}
+
+	gaps, err := h.store.Gaps(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gaps) != 1 || gaps[0].EndedAt.IsZero() {
+		t.Fatalf("payment replay did not close the gap: %+v", gaps)
+	}
+}
+
+// TestPaymentWinsAgainstAStaleDayNinetySnapshot proves the destructive race at
+// its exact boundary. The billing mirror commits before lifecycle finalization;
+// even in that crash window, a stale sweeper cannot claim the paid account.
+func TestPaymentWinsAgainstAStaleDayNinetySnapshot(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+
+	if _, err := h.service.Signal(ctx, 1, SignalPaymentFailed); err != nil {
+		t.Fatal(err)
+	}
+	h.travel(DeletionDays)
+
+	running, err := h.store.Running(ctx)
+	if err != nil || len(running) != 1 {
+		t.Fatalf("day-90 snapshot is %+v, error %v", running, err)
+	}
+	stale := running[0]
+
+	if _, err := h.control.Exec(`
+		INSERT INTO subscriptions
+			(team_id, status, payment_state, created_at, updated_at)
+		VALUES (1, 'active', 'paid', ?, ?)
+	`, h.service.now().Unix(), h.service.now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	// This is the precise crash window: payment is durable, but the webhook has
+	// not yet cleared the lifecycle clock that the sweeper already loaded.
+	if err := h.purger.Purge(ctx, stale, h.service.now()); err != nil {
+		t.Fatal(err)
+	}
+
+	var teams, deletions int
+	if err := h.control.QueryRow(`SELECT COUNT(*) FROM teams WHERE id = 1`).Scan(&teams); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.control.QueryRow(`SELECT COUNT(*) FROM account_deletions WHERE team_id = 1`).Scan(&deletions); err != nil {
+		t.Fatal(err)
+	}
+	if teams != 1 || deletions != 0 {
+		t.Fatalf("paid account was claimed from a stale snapshot: teams=%d deletions=%d", teams, deletions)
+	}
+
+	if _, err := h.service.SignalAt(ctx, 1, SignalPaymentSucceeded, h.service.now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	state, err := h.store.Load(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.At(h.service.now()) != PhaseActive {
+		t.Fatalf("stale purge left teams=%d deletions=%d state=%+v", teams, deletions, state)
 	}
 }
 

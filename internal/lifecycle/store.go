@@ -138,6 +138,61 @@ func (s *Store) Save(ctx context.Context, teamID int64, state State) error {
 	return nil
 }
 
+// SaveIfState applies a lifecycle transition only when the row still matches
+// the state the caller read. Payment and day-90 deletion therefore have one
+// database winner instead of both acting on stale snapshots.
+func (s *Store) SaveIfState(ctx context.Context, teamID int64, previous, next State) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("lifecycle: compare-and-swap %d: %w", teamID, err)
+	}
+	defer tx.Rollback() //nolint:errcheck // a rollback after a successful commit is a no-op
+
+	now := time.Now().UTC().Unix()
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO account_lifecycle (team_id, trigger, started_at, deleted_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT (team_id) DO UPDATE SET
+			trigger = excluded.trigger,
+			started_at = excluded.started_at,
+			deleted_at = excluded.deleted_at,
+			updated_at = excluded.updated_at
+		WHERE account_lifecycle.trigger = ?
+		  AND account_lifecycle.started_at IS ?
+		  AND account_lifecycle.deleted_at IS ?
+	`, teamID, string(next.Trigger), toUnix(next.StartedAt), toUnix(next.DeletedAt), now, now,
+		string(previous.Trigger), toUnix(previous.StartedAt), toUnix(previous.DeletedAt))
+	if err != nil {
+		return false, fmt.Errorf("lifecycle: compare-and-swap %d: %w", teamID, err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("lifecycle: compare-and-swap %d: affected rows: %w", teamID, err)
+	}
+	if rows != 1 {
+		return false, nil
+	}
+
+	var trialEnds, acceptUntil any
+	if next.Running() {
+		trialEnds = next.Boundary(PhaseLocked).Unix()
+		acceptUntil = next.Boundary(PhaseDormant).Unix()
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE teams SET trial_ends_at = ?, accept_traffic_until = ?, updated_at = ? WHERE id = ?
+	`, trialEnds, acceptUntil, now, teamID); err != nil {
+		return false, fmt.Errorf("lifecycle: compare-and-swap mirror %d: %w", teamID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("lifecycle: compare-and-swap %d: %w", teamID, err)
+	}
+
+	return true, nil
+}
+
 // Running lists every account whose clock is ticking. It is the only set the
 // sweeper walks: an account that is paying has nothing to advance and reading
 // it every hour would be pure cost.
@@ -154,7 +209,11 @@ func (s *Store) Running(ctx context.Context) ([]Account, error) {
 		FROM account_lifecycle l
 		JOIN teams t ON t.id = l.team_id
 		LEFT JOIN subscriptions s ON s.team_id = l.team_id
-		WHERE l.started_at IS NOT NULL AND l.deleted_at IS NULL
+		WHERE l.started_at IS NOT NULL
+		  AND (l.deleted_at IS NULL OR EXISTS (
+		      SELECT 1 FROM account_deletions d
+		      WHERE d.team_id = l.team_id AND d.completed_at IS NULL
+		  ))
 		ORDER BY l.team_id
 	`)
 	if err != nil {

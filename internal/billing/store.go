@@ -20,7 +20,9 @@ package billing
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -42,6 +44,11 @@ type Subscription struct {
 	CancelAtPeriodEnd bool
 	BillingEmail      string
 	PaymentState      string
+	PaymentFailedAt   time.Time
+	EvidenceSourceAt  int64
+	EvidenceEventAt   int64
+	EvidenceRank      int
+	ReconciledEventAt int64
 }
 
 // Store is every read and write this package makes against control.db.
@@ -66,6 +73,14 @@ const eventClaimLease = 5 * time.Minute
 // outcomeProcessing is the transient event-log state held by the one delivery
 // attempt allowed to execute a handler.
 const outcomeProcessing = "processing"
+
+// accountLeaseDuration is long enough for the bounded Stripe reads in one
+// reconciliation. A dead process can be replaced after it expires.
+const accountLeaseDuration = 5 * time.Minute
+
+// accountLeasePoll keeps a second process responsive without busy-spinning on
+// control.db while another process reconciles the same account.
+const accountLeasePoll = 20 * time.Millisecond
 
 // NewStore builds a store over the control database.
 func NewStore(db *sql.DB) *Store {
@@ -98,23 +113,91 @@ func (s *Store) LockAccount(teamID int64) func() {
 	return lock.Unlock
 }
 
+// AcquireAccountLease serialises billing work for one account across Store
+// instances and processes. The returned release only removes its own token, so
+// an expired worker cannot unlock a newer worker's lease.
+func (s *Store) AcquireAccountLease(ctx context.Context, teamID int64) (func(), error) {
+	localUnlock := s.LockAccount(teamID)
+	token, err := randomToken()
+	if err != nil {
+		localUnlock()
+		return nil, err
+	}
+
+	ticker := time.NewTicker(accountLeasePoll)
+	defer ticker.Stop()
+
+	for {
+		now := s.now().Unix()
+		expires := s.now().Add(accountLeaseDuration).Unix()
+
+		result, err := s.db.ExecContext(ctx, `
+			INSERT INTO billing_account_leases (team_id, token, expires_at, updated_at)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT (team_id) DO UPDATE SET
+				token = excluded.token,
+				expires_at = excluded.expires_at,
+				updated_at = excluded.updated_at
+			WHERE billing_account_leases.expires_at <= ?
+		`, teamID, token, expires, now, now)
+		if err != nil {
+			localUnlock()
+			return nil, fmt.Errorf("billing: acquire account %d lease: %w", teamID, err)
+		}
+
+		rows, err := result.RowsAffected()
+		if err != nil {
+			localUnlock()
+			return nil, fmt.Errorf("billing: acquire account %d lease: affected rows: %w", teamID, err)
+		}
+		if rows == 1 {
+			return func() {
+				_, _ = s.db.Exec(`DELETE FROM billing_account_leases WHERE team_id = ? AND token = ?`, teamID, token)
+				localUnlock()
+			}, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			localUnlock()
+			return nil, fmt.Errorf("billing: acquire account %d lease: %w", teamID, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+// randomToken returns an opaque claim value with enough entropy to make a
+// stale claimant matching a replacement impossible in practice.
+func randomToken() (string, error) {
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("billing: generate claim token: %w", err)
+	}
+
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
 // Load reads one account's mirrored billing state. A team with no row has never
 // been to checkout, which is the normal state of a trial and not an error.
 func (s *Store) Load(ctx context.Context, teamID int64) (Subscription, error) {
 	var (
-		out         Subscription
-		customer    sql.NullString
-		subID       sql.NullString
-		periodEnd   sql.NullInt64
-		cancelAtEnd int64
+		out             Subscription
+		customer        sql.NullString
+		subID           sql.NullString
+		periodEnd       sql.NullInt64
+		paymentFailedAt sql.NullInt64
+		cancelAtEnd     int64
 	)
 
 	err := s.db.QueryRowContext(ctx, `
 		SELECT stripe_customer_id, stripe_subscription_id, status, plan,
 		       stripe_price_id, current_period_end, cancel_at_period_end, billing_email,
-		       payment_state
+		       payment_state, payment_failed_at, evidence_source_created,
+		       evidence_event_created, evidence_rank, reconciled_event_created
 		FROM subscriptions WHERE team_id = ?
-	`, teamID).Scan(&customer, &subID, &out.Status, &out.Plan, &out.PriceID, &periodEnd, &cancelAtEnd, &out.BillingEmail, &out.PaymentState)
+	`, teamID).Scan(&customer, &subID, &out.Status, &out.Plan, &out.PriceID, &periodEnd,
+		&cancelAtEnd, &out.BillingEmail, &out.PaymentState, &paymentFailedAt,
+		&out.EvidenceSourceAt, &out.EvidenceEventAt, &out.EvidenceRank, &out.ReconciledEventAt)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return Subscription{TeamID: teamID, Status: "none"}, nil
@@ -131,6 +214,9 @@ func (s *Store) Load(ctx context.Context, teamID int64) (Subscription, error) {
 	if periodEnd.Valid {
 		out.CurrentPeriodEnd = time.Unix(periodEnd.Int64, 0).UTC()
 	}
+	if paymentFailedAt.Valid {
+		out.PaymentFailedAt = time.Unix(paymentFailedAt.Int64, 0).UTC()
+	}
 
 	return out, nil
 }
@@ -140,11 +226,30 @@ func (s *Store) Load(ctx context.Context, teamID int64) (Subscription, error) {
 // updating some columns from a fresh read and leaving others from an older one
 // is how a row ends up describing a state that never existed.
 func (s *Store) Save(ctx context.Context, sub Subscription) error {
+	_, err := s.save(ctx, sub, false)
+
+	return err
+}
+
+// SaveReconciled writes a provider snapshot only when its event watermark is
+// not older than the row already committed. The boolean is false when another
+// process won with newer Stripe evidence.
+func (s *Store) SaveReconciled(ctx context.Context, sub Subscription) (bool, error) {
+	return s.save(ctx, sub, true)
+}
+
+// save performs the shared subscription upsert and optionally applies the
+// durable event-timestamp compare-and-swap guard.
+func (s *Store) save(ctx context.Context, sub Subscription, ordered bool) (bool, error) {
 	now := s.now().Unix()
 
 	var periodEnd any
 	if !sub.CurrentPeriodEnd.IsZero() {
 		periodEnd = sub.CurrentPeriodEnd.UTC().Unix()
+	}
+	var paymentFailedAt any
+	if !sub.PaymentFailedAt.IsZero() {
+		paymentFailedAt = sub.PaymentFailedAt.UTC().Unix()
 	}
 
 	cancelAtEnd := 0
@@ -152,12 +257,26 @@ func (s *Store) Save(ctx context.Context, sub Subscription) error {
 		cancelAtEnd = 1
 	}
 
-	_, err := s.db.ExecContext(ctx, `
+	guard := ""
+	if ordered {
+		guard = `
+			WHERE excluded.reconciled_event_created > subscriptions.reconciled_event_created
+			   OR (excluded.reconciled_event_created = subscriptions.reconciled_event_created
+			       AND (excluded.evidence_source_created > subscriptions.evidence_source_created
+			            OR (excluded.evidence_source_created = subscriptions.evidence_source_created
+			                AND (excluded.evidence_event_created > subscriptions.evidence_event_created
+			                     OR (excluded.evidence_event_created = subscriptions.evidence_event_created
+			                         AND excluded.evidence_rank >= subscriptions.evidence_rank)))))`
+	}
+
+	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO subscriptions
 			(team_id, stripe_customer_id, stripe_subscription_id, status, plan,
 			 stripe_price_id, current_period_end, cancel_at_period_end, billing_email,
-			 payment_state, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 payment_state, payment_failed_at, evidence_source_created,
+			 evidence_event_created, evidence_rank, reconciled_event_created,
+			 created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (team_id) DO UPDATE SET
 			stripe_customer_id     = excluded.stripe_customer_id,
 			stripe_subscription_id = excluded.stripe_subscription_id,
@@ -170,11 +289,140 @@ func (s *Store) Save(ctx context.Context, sub Subscription) error {
 			                              THEN excluded.billing_email
 			                              ELSE subscriptions.billing_email END,
 			payment_state          = excluded.payment_state,
+			payment_failed_at      = excluded.payment_failed_at,
+			evidence_source_created = excluded.evidence_source_created,
+			evidence_event_created  = excluded.evidence_event_created,
+			evidence_rank           = excluded.evidence_rank,
+			reconciled_event_created = excluded.reconciled_event_created,
 			updated_at             = excluded.updated_at
-	`, sub.TeamID, nullIfEmpty(sub.CustomerID), nullIfEmpty(sub.SubscriptionID), sub.Status, sub.Plan,
-		sub.PriceID, periodEnd, cancelAtEnd, sub.BillingEmail, sub.PaymentState, now, now)
+	`+guard, sub.TeamID, nullIfEmpty(sub.CustomerID), nullIfEmpty(sub.SubscriptionID), sub.Status, sub.Plan,
+		sub.PriceID, periodEnd, cancelAtEnd, sub.BillingEmail, sub.PaymentState, paymentFailedAt,
+		sub.EvidenceSourceAt, sub.EvidenceEventAt, sub.EvidenceRank, sub.ReconciledEventAt, now, now)
 	if err != nil {
-		return fmt.Errorf("billing: save %d: %w", sub.TeamID, err)
+		return false, fmt.Errorf("billing: save %d: %w", sub.TeamID, err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("billing: save %d: affected rows: %w", sub.TeamID, err)
+	}
+
+	return rows == 1, nil
+}
+
+// CheckoutClaim is the durable intent written before a hosted checkout is
+// created. Its idempotency key remains stable across retries and restarts.
+type CheckoutClaim struct {
+	TeamID         int64
+	Plan           string
+	PriceID        string
+	IdempotencyKey string
+	SessionID      string
+	SessionURL     string
+	Status         string
+	ClaimToken     string
+}
+
+// CheckoutClaimForAccount loads an existing checkout intent, returning false
+// when the account has never started one.
+func (s *Store) CheckoutClaimForAccount(ctx context.Context, teamID int64) (CheckoutClaim, bool, error) {
+	var claim CheckoutClaim
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT team_id, plan, stripe_price_id, idempotency_key, session_id,
+		       session_url, status, claim_token
+		FROM billing_checkouts WHERE team_id = ?
+	`, teamID).Scan(&claim.TeamID, &claim.Plan, &claim.PriceID, &claim.IdempotencyKey,
+		&claim.SessionID, &claim.SessionURL, &claim.Status, &claim.ClaimToken)
+	if errors.Is(err, sql.ErrNoRows) {
+		return CheckoutClaim{}, false, nil
+	}
+	if err != nil {
+		return CheckoutClaim{}, false, fmt.Errorf("billing: load checkout claim %d: %w", teamID, err)
+	}
+
+	return claim, true, nil
+}
+
+// NewCheckoutClaim replaces an absent or expired checkout with a fresh intent.
+// Callers hold the account lease, so a plain upsert is sufficient here.
+func (s *Store) NewCheckoutClaim(ctx context.Context, teamID int64, plan, priceID string) (CheckoutClaim, error) {
+	token, err := randomToken()
+	if err != nil {
+		return CheckoutClaim{}, err
+	}
+
+	now := s.now().Unix()
+	claim := CheckoutClaim{
+		TeamID:         teamID,
+		Plan:           plan,
+		PriceID:        priceID,
+		IdempotencyKey: fmt.Sprintf("checkout-%d-%s", teamID, token),
+		Status:         "creating",
+		ClaimToken:     token,
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO billing_checkouts
+			(team_id, plan, stripe_price_id, idempotency_key, session_id,
+			 session_url, status, claim_token, claim_expires_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, '', '', 'creating', ?, ?, ?, ?)
+		ON CONFLICT (team_id) DO UPDATE SET
+			plan = excluded.plan,
+			stripe_price_id = excluded.stripe_price_id,
+			idempotency_key = excluded.idempotency_key,
+			session_id = '',
+			session_url = '',
+			status = 'creating',
+			claim_token = excluded.claim_token,
+			claim_expires_at = excluded.claim_expires_at,
+			created_at = excluded.created_at,
+			updated_at = excluded.updated_at
+		WHERE billing_checkouts.status = 'expired'
+	`, teamID, plan, priceID, claim.IdempotencyKey, token,
+		s.now().Add(accountLeaseDuration).Unix(), now, now)
+	if err != nil {
+		return CheckoutClaim{}, fmt.Errorf("billing: create checkout claim %d: %w", teamID, err)
+	}
+
+	return claim, nil
+}
+
+// SaveCheckoutSession attaches Stripe's response to the pre-existing claim.
+// Matching the token means a stale retry cannot overwrite a replacement claim.
+func (s *Store) SaveCheckoutSession(ctx context.Context, claim CheckoutClaim, sessionID, sessionURL, status string) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE billing_checkouts
+		SET session_id = ?, session_url = ?, status = ?, updated_at = ?
+		WHERE team_id = ? AND claim_token = ?
+	`, sessionID, sessionURL, status, s.now().Unix(), claim.TeamID, claim.ClaimToken)
+	if err != nil {
+		return fmt.Errorf("billing: save checkout session %d: %w", claim.TeamID, err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("billing: save checkout session %d: affected rows: %w", claim.TeamID, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("billing: save checkout session %d: claim was replaced", claim.TeamID)
+	}
+
+	return nil
+}
+
+// MarkCheckoutStatus advances a checkout intent without changing its stable
+// identity. Complete intents block every later attempt for the account.
+func (s *Store) MarkCheckoutStatus(ctx context.Context, teamID int64, status string) error {
+	if status != "open" && status != "complete" && status != "expired" {
+		return fmt.Errorf("billing: invalid checkout status %q", status)
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE billing_checkouts SET status = ?, updated_at = ? WHERE team_id = ?
+	`, status, s.now().Unix(), teamID)
+	if err != nil {
+		return fmt.Errorf("billing: mark checkout %d %s: %w", teamID, status, err)
 	}
 
 	return nil
@@ -319,7 +567,7 @@ func (s *Store) EventPayloads(ctx context.Context, teamID int64, eventTypes []st
 	query := `
 		SELECT payload
 		FROM stripe_events
-		WHERE team_id = ? AND type IN (` + strings.Join(placeholders, ",") + `)
+		WHERE team_id = ? AND outcome <> 'error' AND type IN (` + strings.Join(placeholders, ",") + `)
 		ORDER BY id DESC
 	`
 

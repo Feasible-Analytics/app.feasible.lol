@@ -53,9 +53,10 @@ func newHandler(t *testing.T) (*Handler, *sql.DB) {
 
 	handler := &Handler{
 		Billing: &billing.Service{
-			Store:   billing.NewStore(control),
-			Plans:   billing.Plans{Monthly: "price_monthly", Yearly: "price_yearly"},
-			BaseURL: "https://feasible.lol",
+			Store:         billing.NewStore(control),
+			Plans:         billing.Plans{Product: "prod_test", Monthly: "price_monthly", Yearly: "price_yearly"},
+			BaseURL:       "https://feasible.lol",
+			WebhookSecret: "whsec_test",
 		},
 		Lifecycle:  lifecycle.NewStore(control),
 		Usage:      usage.NewStore(control),
@@ -142,13 +143,45 @@ func TestSignedOutPricingStartsAuthentication(t *testing.T) {
 	handler, _ := newHandler(t)
 
 	body := render(t, handler, "/pricing").Body.String()
-	for _, want := range []string{"/register?next=%2Fpricing", "/login?next=%2Fpricing", "Create an account", "Sign in to upgrade"} {
+	for _, want := range []string{
+		"/register?next=%2Fpricing%3Fplan%3Dmonthly",
+		"/login?next=%2Fpricing%3Fplan%3Dmonthly",
+		"/register?next=%2Fpricing%3Fplan%3Dyearly",
+		"/login?next=%2Fpricing%3Fplan%3Dyearly",
+		"Create an account",
+		"Sign in to upgrade",
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("signed-out pricing is missing %q: %s", want, body)
 		}
 	}
 	if strings.Contains(body, `action="/billing/checkout"`) {
 		t.Error("signed-out pricing rendered a checkout form")
+	}
+}
+
+// TestPricingRestoresTheChosenPlanAfterAuthentication makes the safe GET
+// destination visibly retain intent while checkout itself remains POST-only.
+func TestPricingRestoresTheChosenPlanAfterAuthentication(t *testing.T) {
+	handler, _ := newHandler(t)
+
+	body := render(t, handler, "/pricing?plan=yearly&team=1").Body.String()
+	if !strings.Contains(body, "Continue yearly") || strings.Contains(body, "Continue monthly") {
+		t.Fatalf("yearly purchase intent was not restored on pricing: %s", body)
+	}
+}
+
+// TestPortalSessionCreationIsPostOnly prevents email links, prefetchers, and
+// cross-site navigation from creating provider sessions as a GET side effect.
+func TestPortalSessionCreationIsPostOnly(t *testing.T) {
+	handler, _ := newHandler(t)
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/billing/portal", nil))
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /billing/portal answered %d, want 405", response.Code)
 	}
 }
 

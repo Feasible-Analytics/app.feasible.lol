@@ -465,32 +465,42 @@ func (c *Client) ActiveSubscription(ctx context.Context, customerID string) (*Su
 	form := url.Values{}
 	form.Set("customer", customerID)
 	form.Set("status", "all")
-	form.Set("limit", "20")
+	form.Set("limit", "100")
 	form.Set("expand[]", "data.items.data.price")
-
-	var page list[Subscription]
-	if err := c.get(ctx, "/v1/subscriptions", form, &page); err != nil {
-		return nil, err
-	}
 
 	// A paying subscription wins outright. Otherwise the most recently ended
 	// one is returned so the caller can mirror its plan and status rather than
 	// showing a customer nothing at all.
 	var fallback *Subscription
 
-	for i := range page.Data {
-		candidate := &page.Data[i]
-
-		if candidate.Paying() {
-			return candidate, nil
+	for {
+		var page list[Subscription]
+		if err := c.get(ctx, "/v1/subscriptions", form, &page); err != nil {
+			return nil, err
 		}
 
-		if fallback == nil || candidate.CurrentPeriodEnd > fallback.CurrentPeriodEnd {
-			fallback = candidate
+		for i := range page.Data {
+			candidate := &page.Data[i]
+
+			if candidate.Paying() {
+				return candidate, nil
+			}
+
+			if fallback == nil || candidate.CurrentPeriodEnd > fallback.CurrentPeriodEnd {
+				copy := *candidate
+				fallback = &copy
+			}
 		}
+
+		if !page.HasMore {
+			return fallback, nil
+		}
+		if len(page.Data) == 0 {
+			return nil, fmt.Errorf("stripe: subscriptions page said has_more without any data")
+		}
+
+		form.Set("starting_after", page.Data[len(page.Data)-1].ID)
 	}
-
-	return fallback, nil
 }
 
 // DeleteCustomer removes a customer and everything Stripe holds against them,

@@ -40,6 +40,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	htmlstd "html"
 	"html/template"
 	"strings"
 	"time"
@@ -299,11 +300,11 @@ func (m *Mailer) render(name string, d data) (string, string, error) {
 // It is a crude tag strip rather than a real converter, which is honest for four
 // templates we write ourselves: a dependency that renders arbitrary HTML to text
 // would be a lot of code to make our own known markup slightly prettier.
-func textFromHTML(html string) string {
+func textFromHTML(source string) string {
 	var out strings.Builder
 	depth := 0
 
-	for _, r := range html {
+	for _, r := range source {
 		switch {
 		case r == '<':
 			depth++
@@ -336,7 +337,7 @@ func textFromHTML(html string) string {
 		kept = append(kept, line)
 	}
 
-	return strings.TrimSpace(strings.Join(kept, "\n"))
+	return htmlstd.UnescapeString(strings.TrimSpace(strings.Join(kept, "\n")))
 }
 
 // SendVerification emails the code and the one-click link that prove an

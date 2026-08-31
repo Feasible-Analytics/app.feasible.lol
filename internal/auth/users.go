@@ -349,6 +349,48 @@ func (s *Store) TeamForUser(ctx context.Context, userID int64) (*Team, error) {
 	return &t, nil
 }
 
+// BillingTeamForUser returns an account on which the user may view or change
+// billing. A requested id is honored only through the membership row; zero
+// selects the user's preferred owner, admin, or billing membership.
+func (s *Store) BillingTeamForUser(ctx context.Context, userID, requestedTeamID int64) (*Team, string, error) {
+	var (
+		t          Team
+		role       string
+		trialEnds  sql.NullInt64
+		acceptTill sql.NullInt64
+	)
+
+	query := `
+		SELECT teams.id, teams.name, teams.trial_ends_at, teams.accept_traffic_until,
+		       teams.require_2fa, teams.created_at, teams.updated_at, team_memberships.role
+		FROM teams
+		JOIN team_memberships ON team_memberships.team_id = teams.id
+		WHERE team_memberships.user_id = ?
+		  AND team_memberships.role IN ('owner', 'admin', 'billing')
+	`
+	args := []any{userID}
+	if requestedTeamID > 0 {
+		query += " AND teams.id = ?"
+		args = append(args, requestedTeamID)
+	}
+	query += " ORDER BY CASE team_memberships.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, teams.id LIMIT 1"
+
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(
+		&t.ID, &t.Name, &trialEnds, &acceptTill, &t.Require2FA, &t.CreatedAt, &t.UpdatedAt, &role,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, "", ErrNotFound
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("auth: read billing team: %w", err)
+	}
+
+	t.TrialEndsAt = nullInt64(trialEnds)
+	t.AcceptTrafficUntil = nullInt64(acceptTill)
+
+	return &t, role, nil
+}
+
 // SetRequire2FA flips the team-wide two-factor policy. Turning it on does not
 // enrol anybody: it makes the next page load of every member who has not
 // enrolled land on the enrolment screen, which is the only version of this that

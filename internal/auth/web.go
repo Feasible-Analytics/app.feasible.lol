@@ -179,8 +179,14 @@ func (h *Handler) OptionalAccount(next http.Handler) http.Handler {
 			return
 		}
 
-		team, err := h.Store.TeamForUser(r.Context(), user.ID)
-		if err == nil {
+		requested, err := billingTeamID(r)
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		team, _, err := h.Store.BillingTeamForUser(r.Context(), user.ID, requested)
+		if err == nil && (!team.Require2FA || user.TwoFactorEnabled()) {
 			r = r.WithContext(context.WithValue(r.Context(), contextTeam, team))
 		}
 
@@ -193,18 +199,48 @@ func (h *Handler) OptionalAccount(next http.Handler) http.Handler {
 // two-factor policy cannot drift between billing and the rest of the app.
 func (h *Handler) RequireAccount(next http.Handler) http.Handler {
 	return h.require(func(w http.ResponseWriter, r *http.Request) {
-		if teamFrom(r) == nil {
+		requested, err := billingTeamID(r)
+		if err != nil {
 			h.notFound(w, r)
 			return
 		}
 
+		team, _, err := h.Store.BillingTeamForUser(r.Context(), userFrom(r).ID, requested)
+		if err != nil {
+			h.notFound(w, r)
+			return
+		}
+		if team.Require2FA && !userFrom(r).TwoFactorEnabled() {
+			http.Redirect(w, r, "/settings/security?required=1", http.StatusFound)
+			return
+		}
+
+		r = r.WithContext(context.WithValue(r.Context(), contextTeam, team))
 		next.ServeHTTP(w, r)
 	})
 }
 
+// billingTeamID parses the optional account selector used by billing GETs and
+// POSTs. Authorization always happens after parsing through the membership
+// table, so naming another account never grants access to it.
+func billingTeamID(r *http.Request) (int64, error) {
+	raw := strings.TrimSpace(r.FormValue("team"))
+	if raw == "" {
+		return 0, nil
+	}
+
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id < 1 {
+		return 0, fmt.Errorf("auth: %q is not a billing account id", raw)
+	}
+
+	return id, nil
+}
+
 // CurrentAccount returns the account and checkout address established by the
-// authentication middleware. Request parameters are never consulted, so a
-// caller cannot choose another account or another customer's billing email.
+// authentication middleware. Any requested account has already been resolved
+// through membership and billing role, so raw request data never reaches the
+// billing service as authorization.
 func (h *Handler) CurrentAccount(r *http.Request) (int64, string, error) {
 	user := userFrom(r)
 	team := teamFrom(r)

@@ -215,3 +215,13 @@ func TestTextFromHTMLKeepsTheContent(t *testing.T) {
 		t.Errorf("blank lines should be collapsed:\n%q", text)
 	}
 }
+
+// TestTextFromHTMLUnescapesLinkQueries keeps multi-parameter links clickable in
+// plain-text mail clients instead of exposing the template's &amp; entity.
+func TestTextFromHTMLUnescapesLinkQueries(t *testing.T) {
+	text := textFromHTML(`<p><a href="https://example.test/path?a=1&amp;b=2">https://example.test/path?a=1&amp;b=2</a></p>`)
+
+	if text != "https://example.test/path?a=1&b=2" {
+		t.Fatalf("plain-text link is %q", text)
+	}
+}

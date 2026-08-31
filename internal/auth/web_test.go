@@ -302,9 +302,25 @@ func extractCode(t *testing.T, body string) string {
 	return ""
 }
 
-// TestAccountMiddlewareRequiresVerificationAndIgnoresForgedTeams exercises the
-// boundary injected into commerce routes with a real session and membership.
-func TestAccountMiddlewareRequiresVerificationAndIgnoresForgedTeams(t *testing.T) {
+// extractVerificationLink returns the one-tap URL from a captured plain-text
+// message so a test can open it in a different browser session.
+func extractVerificationLink(t *testing.T, body string) string {
+	t.Helper()
+
+	for _, field := range strings.Fields(body) {
+		candidate := strings.TrimSpace(field)
+		if strings.HasPrefix(candidate, "http") && strings.Contains(candidate, "/verify-email/confirm?") {
+			return candidate
+		}
+	}
+
+	t.Fatalf("no verification link in the email:\n%s", body)
+	return ""
+}
+
+// TestAccountMiddlewareRequiresVerificationRolesAndMembership exercises the
+// billing boundary with explicit team selection and real membership roles.
+func TestAccountMiddlewareRequiresVerificationRolesAndMembership(t *testing.T) {
 	app := newTestApp(t)
 	app.mux.Handle("GET /commerce-probe", app.RequireAccount(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		teamID, email, err := app.CurrentAccount(r)
@@ -342,9 +358,44 @@ func TestAccountMiddlewareRequiresVerificationAndIgnoresForgedTeams(t *testing.T
 	verified := c.post("/verify-email", url.Values{"code": {code}})
 	verified.Body.Close()
 
-	body := c.body("/commerce-probe?team=999")
+	forged := c.get("/commerce-probe?team=999")
+	forged.Body.Close()
+	if forged.StatusCode != http.StatusNotFound {
+		t.Fatalf("forged account selector answered %d, want 404", forged.StatusCode)
+	}
+
+	body := c.body("/commerce-probe")
 	if body != "1|billing-owner@example.com" {
 		t.Fatalf("commerce resolved %q, want the authenticated account and email", body)
+	}
+
+	now := app.store.Now().Unix()
+	if _, err := app.store.DB().Exec(`
+		INSERT INTO teams (id, name, created_at, updated_at) VALUES
+			(2, 'Billing team', ?, ?),
+			(3, 'Viewer team', ?, ?),
+			(4, 'Editor team', ?, ?),
+			(5, 'Admin team', ?, ?);
+		INSERT INTO team_memberships (team_id, user_id, role, created_at) VALUES
+			(2, 1, 'billing', ?),
+			(3, 1, 'viewer', ?),
+			(4, 1, 'editor', ?),
+			(5, 1, 'admin', ?);
+	`, now, now, now, now, now, now, now, now, now, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, allowed := range []string{"2", "5"} {
+		if got := c.body("/commerce-probe?team=" + allowed); got != allowed+"|billing-owner@example.com" {
+			t.Errorf("authorized team %s resolved %q", allowed, got)
+		}
+	}
+	for _, denied := range []string{"3", "4"} {
+		response := c.get("/commerce-probe?team=" + denied)
+		response.Body.Close()
+		if response.StatusCode != http.StatusNotFound {
+			t.Errorf("non-billing team %s answered %d, want 404", denied, response.StatusCode)
+		}
 	}
 }
 
@@ -397,6 +448,97 @@ func TestRegisterVerifyAndCreateASite(t *testing.T) {
 	if !strings.Contains(list, "Marketing site") {
 		t.Error("the sites list should show the display name")
 	}
+}
+
+// TestPurchaseIntentSurvivesAuthentication covers both email-proof routes and
+// ordinary login. Monthly/yearly choice remains a same-origin path throughout,
+// while an external next target is reduced to the normal sites destination.
+func TestPurchaseIntentSurvivesAuthentication(t *testing.T) {
+	t.Run("typed verification", func(t *testing.T) {
+		app := newTestApp(t)
+		c := newClient(t, app)
+		next := "/pricing?plan=monthly"
+
+		registered := c.post("/register", url.Values{
+			"email":    {"monthly@example.com"},
+			"password": {"a long enough password"},
+			"next":     {next},
+		})
+		registered.Body.Close()
+		if got := registered.Header.Get("Location"); got != "/verify-email?next=%2Fpricing%3Fplan%3Dmonthly" {
+			t.Fatalf("registration intent redirected to %q", got)
+		}
+
+		verified := c.post("/verify-email", url.Values{
+			"code": {extractCode(t, app.sent.last(t).Text)},
+			"next": {next},
+		})
+		verified.Body.Close()
+		if got := verified.Header.Get("Location"); got != next {
+			t.Fatalf("typed verification redirected to %q, want %q", got, next)
+		}
+	})
+
+	t.Run("one tap link in another browser", func(t *testing.T) {
+		app := newTestApp(t)
+		registering := newClient(t, app)
+		next := "/pricing?plan=yearly"
+
+		registered := registering.post("/register", url.Values{
+			"email":    {"yearly@example.com"},
+			"password": {"a long enough password"},
+			"next":     {next},
+		})
+		registered.Body.Close()
+
+		link, err := url.Parse(extractVerificationLink(t, app.sent.last(t).Text))
+		if err != nil {
+			t.Fatal(err)
+		}
+		verifying := newClient(t, app)
+		verified := verifying.get(link.RequestURI())
+		verified.Body.Close()
+		if got := verified.Header.Get("Location"); got != next {
+			t.Fatalf("one-tap verification redirected to %q, want %q", got, next)
+		}
+		if body := verifying.body("/sites"); strings.Contains(body, "Sign in") {
+			t.Fatal("one-tap verification did not sign in the second browser")
+		}
+	})
+
+	t.Run("login and open redirect defense", func(t *testing.T) {
+		app := newTestApp(t)
+		_ = registerAndVerify(t, app)
+		fresh := newClient(t, app)
+
+		loggedIn := fresh.post("/login", url.Values{
+			"email":    {"person@example.com"},
+			"password": {"a long enough password"},
+			"next":     {"/pricing?plan=monthly"},
+		})
+		loggedIn.Body.Close()
+		if got := loggedIn.Header.Get("Location"); got != "/pricing?plan=monthly" {
+			t.Fatalf("login redirected to %q", got)
+		}
+
+		for _, hostile := range []string{
+			"https://attacker.example/steal",
+			"//attacker.example/steal",
+			"/\\attacker.example/steal",
+			"/%5c%5cattacker.example/steal",
+		} {
+			another := newClient(t, app)
+			rejected := another.post("/login", url.Values{
+				"email":    {"person@example.com"},
+				"password": {"a long enough password"},
+				"next":     {hostile},
+			})
+			rejected.Body.Close()
+			if got := rejected.Header.Get("Location"); got != "/sites" {
+				t.Errorf("hostile next target %q redirected to %q", hostile, got)
+			}
+		}
+	})
 }
 
 // TestALockedAccountGetsTheSitesListWithoutItsNumbers is the last place a
@@ -725,6 +867,7 @@ func TestTwoFactorSetupAndChallenge(t *testing.T) {
 	resp = fresh.post("/login", url.Values{
 		"email":    {"person@example.com"},
 		"password": {"a long enough password"},
+		"next":     {"/pricing?plan=yearly"},
 	})
 	resp.Body.Close()
 
@@ -744,6 +887,9 @@ func TestTwoFactorSetupAndChallenge(t *testing.T) {
 
 	if resp.StatusCode != http.StatusFound {
 		t.Errorf("the right code should complete the sign-in, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Location"); got != "/pricing?plan=yearly" {
+		t.Errorf("two-factor sign-in lost purchase intent and redirected to %q", got)
 	}
 }
 

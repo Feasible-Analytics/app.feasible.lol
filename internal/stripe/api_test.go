@@ -99,3 +99,39 @@ func TestCreateCheckoutSessionUsesManagedPayments(t *testing.T) {
 		t.Errorf("decoded session is %+v", session)
 	}
 }
+
+// TestActiveSubscriptionPaginatesUntilAPayingRecord proves a customer with a
+// long subscription history cannot have an active subscription hidden beyond
+// the first Stripe page.
+func TestActiveSubscriptionPaginatesUntilAPayingRecord(t *testing.T) {
+	requests := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.URL.Query().Get("starting_after") {
+		case "":
+			_, _ = w.Write([]byte(`{"has_more":true,"data":[{"id":"sub_old","status":"canceled","current_period_end":10,"items":{"data":[]}}]}`))
+		case "sub_old":
+			_, _ = w.Write([]byte(`{"has_more":false,"data":[{"id":"sub_paying","status":"active","current_period_end":20,"items":{"data":[]}}]}`))
+		default:
+			http.Error(w, "unexpected cursor", http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := New("sk_test_fake")
+	client.BaseURL = server.URL
+
+	subscription, err := client.ActiveSubscription(context.Background(), "cus_many")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if subscription == nil || subscription.ID != "sub_paying" {
+		t.Fatalf("active subscription is %+v, want sub_paying", subscription)
+	}
+	if requests != 2 {
+		t.Fatalf("subscription lookup made %d requests, want 2", requests)
+	}
+}

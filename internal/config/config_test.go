@@ -243,6 +243,63 @@ func TestLoadFromRejectsBadValues(t *testing.T) {
 	}
 }
 
+// TestStripeRequiresACompleteFulfillmentConfiguration prevents checkout from
+// being exposed when charges can be created but signed webhooks cannot fulfill
+// them, and rejects every other partial catalogue combination as well.
+func TestStripeRequiresACompleteFulfillmentConfiguration(t *testing.T) {
+	complete := Stripe{
+		SecretKey:     "sk_test",
+		Product:       "prod_test",
+		PriceMonthly:  "price_monthly",
+		PriceYearly:   "price_yearly",
+		WebhookSecret: "whsec_test",
+	}
+
+	for name, clear := range map[string]func(*Stripe){
+		"secret":  func(s *Stripe) { s.SecretKey = "" },
+		"product": func(s *Stripe) { s.Product = "" },
+		"monthly": func(s *Stripe) { s.PriceMonthly = "" },
+		"yearly":  func(s *Stripe) { s.PriceYearly = "" },
+		"webhook": func(s *Stripe) { s.WebhookSecret = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			loader, err := NewLoader("", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadFrom(loader)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			cfg.App.Stripe = complete
+			clear(&cfg.App.Stripe)
+			if cfg.App.Stripe.Enabled() {
+				t.Fatal("partial Stripe configuration reported enabled")
+			}
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("partial Stripe configuration passed validation")
+			}
+		})
+	}
+
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(loader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.App.Stripe = complete
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("complete Stripe configuration failed validation: %v", err)
+	}
+	if !cfg.App.Stripe.Enabled() {
+		t.Fatal("complete Stripe configuration reported disabled")
+	}
+}
+
 // TestLoadIgnoresDotenvInProduction protects against a stray .env on a
 // production box quietly overriding the real deployment configuration.
 func TestLoadIgnoresDotenvInProduction(t *testing.T) {

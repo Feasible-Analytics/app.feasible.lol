@@ -109,20 +109,22 @@ func (p *provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // harness is a billing service wired to the fake provider and a real control
 // database, with a real lifecycle machine behind it.
 type harness struct {
-	t        *testing.T
-	control  *sql.DB
-	service  *Service
-	webhook  *Webhook
-	provider *provider
-	clock    time.Time
-	mu       sync.Mutex
+	t           *testing.T
+	control     *sql.DB
+	controlPath string
+	service     *Service
+	webhook     *Webhook
+	provider    *provider
+	clock       time.Time
+	mu          sync.Mutex
 }
 
 // newHarness builds the whole stack.
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 
-	control, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	controlPath := filepath.Join(t.TempDir(), "control.db")
+	control, err := store.Open(controlPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +150,7 @@ func newHarness(t *testing.T) *harness {
 	server := httptest.NewServer(fake)
 	t.Cleanup(server.Close)
 
-	h := &harness{t: t, control: control, provider: fake, clock: now}
+	h := &harness{t: t, control: control, controlPath: controlPath, provider: fake, clock: now}
 
 	client := stripe.New("sk_test_fake")
 	client.BaseURL = server.URL
@@ -167,7 +169,7 @@ func newHarness(t *testing.T) *harness {
 		Stripe:        client,
 		Store:         NewStore(control),
 		Lifecycle:     lifecycleService,
-		Plans:         Plans{Monthly: "price_monthly", Yearly: "price_yearly"},
+		Plans:         Plans{Product: "prod_test", Monthly: "price_monthly", Yearly: "price_yearly"},
 		WebhookSecret: webhookSecret,
 		BaseURL:       "https://feasible.lol",
 		Now:           func() time.Time { return h.now() },
@@ -202,6 +204,12 @@ func (h *harness) deliver(id, eventType, object string) *httptest.ResponseRecord
 // deliverCreated posts one signed event whose provider creation time can differ
 // from its delivery time, reproducing Stripe's documented out-of-order delivery.
 func (h *harness) deliverCreated(id, eventType, object string, created time.Time) *httptest.ResponseRecorder {
+	return h.deliverCreatedWith(h.webhook, id, eventType, object, created)
+}
+
+// deliverCreatedWith posts a signed event to a selected independently built
+// webhook, which is how cross-process ordering is exercised in one test.
+func (h *harness) deliverCreatedWith(webhook *Webhook, id, eventType, object string, created time.Time) *httptest.ResponseRecorder {
 	h.t.Helper()
 
 	body := fmt.Sprintf(`{"id":%q,"type":%q,"created":%d,"data":{"object":%s}}`, id, eventType, created.Unix(), object)
@@ -210,7 +218,7 @@ func (h *harness) deliverCreated(id, eventType, object string, created time.Time
 	request.Header.Set("Stripe-Signature", stripe.SignPayload([]byte(body), webhookSecret, h.now()))
 
 	recorder := httptest.NewRecorder()
-	h.webhook.ServeHTTP(recorder, request)
+	webhook.ServeHTTP(recorder, request)
 
 	return recorder
 }
@@ -507,13 +515,34 @@ func TestExactPaymentTimestampTieUsesSettlementSemantics(t *testing.T) {
 	}
 }
 
-// TestConcurrentPaymentTransitionsUseProviderOrder exercises the keyed account
-// lock with contradictory terminal events entering the handler at the same time.
+// TestConcurrentPaymentTransitionsUseProviderOrder exercises the durable
+// account lease through separate database handles while contradictory terminal
+// events enter independently constructed handlers at the same time.
 func TestConcurrentPaymentTransitionsUseProviderOrder(t *testing.T) {
 	for _, newerState := range []string{PaymentPaid, PaymentFailed} {
 		t.Run(newerState, func(t *testing.T) {
 			h := newHarness(t)
 			h.provider.set(stripe.StatusActive, false)
+
+			secondControl, err := store.Open(h.controlPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { secondControl.Close() })
+
+			secondLifecycleStore := lifecycle.NewStore(secondControl)
+			secondLifecycle := &lifecycle.Service{
+				Store:  secondLifecycleStore,
+				Notify: h.service.Lifecycle.Notify,
+				Purger: &lifecycle.Purger{Store: secondLifecycleStore, DataDir: t.TempDir()},
+				Links:  h.service.Lifecycle.Links,
+				Now:    func() time.Time { return h.now() },
+			}
+			secondService := *h.service
+			secondService.Store = NewStore(secondControl)
+			secondService.Store.Now = func() time.Time { return h.now() }
+			secondService.Lifecycle = secondLifecycle
+			secondWebhook := NewWebhook(&secondService, nil)
 
 			olderType := stripe.EventInvoicePaymentFailed
 			newerType := stripe.EventInvoicePaymentSucceed
@@ -538,7 +567,7 @@ func TestConcurrentPaymentTransitionsUseProviderOrder(t *testing.T) {
 			go func() {
 				defer workers.Done()
 				<-start
-				responses <- h.deliverCreated("evt_concurrent_newer", newerType,
+				responses <- h.deliverCreatedWith(secondWebhook, "evt_concurrent_newer", newerType,
 					invoiceObjectFor("in_concurrent_newer", "sub_test_1", newerAt), newerAt.Add(time.Minute))
 			}()
 
@@ -560,6 +589,298 @@ func TestConcurrentPaymentTransitionsUseProviderOrder(t *testing.T) {
 				t.Fatalf("concurrent payment state is %q, want newer %q", mirror.PaymentState, newerState)
 			}
 		})
+	}
+}
+
+// TestMalformedAuthenticatedEvidenceDoesNotPoisonLaterReconciliation records a
+// signed but structurally invalid invoice as failed, then proves a later valid
+// payment can reconcile without decoding that historical row again.
+func TestMalformedAuthenticatedEvidenceDoesNotPoisonLaterReconciliation(t *testing.T) {
+	h := newHarness(t)
+
+	malformed := fmt.Sprintf(`{"id":"in_bad","object":"invoice","created":"not-a-timestamp","customer":%q,"metadata":{"feasible_team_id":"1"}}`, customerID)
+	bad := h.deliver("evt_bad_history", stripe.EventInvoicePaymentFailed, malformed)
+	if bad.Code != http.StatusInternalServerError {
+		t.Fatalf("malformed authenticated event answered %d: %s", bad.Code, bad.Body.String())
+	}
+
+	var outcome string
+	if err := h.control.QueryRow(`SELECT outcome FROM stripe_events WHERE event_id = 'evt_bad_history'`).Scan(&outcome); err != nil {
+		t.Fatal(err)
+	}
+	if outcome != OutcomeError {
+		t.Fatalf("malformed event outcome is %q, want error", outcome)
+	}
+
+	good := h.deliver("evt_after_bad", stripe.EventInvoicePaymentSucceed, invoiceObject())
+	if good.Code != http.StatusOK || !strings.Contains(good.Body.String(), OutcomeApplied) {
+		t.Fatalf("valid event after malformed history answered %d: %s", good.Code, good.Body.String())
+	}
+
+	mirror, err := h.service.Store.Load(context.Background(), teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mirror.PaymentState != PaymentPaid {
+		t.Fatalf("valid event after malformed history left payment %q", mirror.PaymentState)
+	}
+}
+
+// TestDelayedFailureUsesStripeEventTimeForDayZero proves delayed and out-of-
+// order failures start the lifecycle at Stripe's first event in the lapse, not
+// local receipt or the newest failed attempt.
+func TestDelayedFailureUsesStripeEventTimeForDayZero(t *testing.T) {
+	h := newHarness(t)
+	h.provider.set(stripe.StatusPastDue, false)
+	failedAt := h.now().Add(-7 * 24 * time.Hour)
+	newerFailure := h.now().Add(-2 * 24 * time.Hour)
+
+	response := h.deliverCreated("evt_newer_failure_first", stripe.EventInvoicePaymentFailed,
+		invoiceObjectFor("in_newer", "sub_test_1", newerFailure), newerFailure)
+	if response.Code != http.StatusOK {
+		t.Fatalf("newer failure answered %d: %s", response.Code, response.Body.String())
+	}
+
+	response = h.deliverCreated("evt_delayed_failure", stripe.EventInvoicePaymentFailed,
+		invoiceObjectFor("in_delayed", "sub_test_1", failedAt), failedAt)
+	if response.Code != http.StatusOK {
+		t.Fatalf("delayed failure answered %d: %s", response.Code, response.Body.String())
+	}
+
+	if got := h.clockStart(); !got.Equal(failedAt) {
+		t.Fatalf("lifecycle day zero is %s, want Stripe event time %s", got, failedAt)
+	}
+}
+
+// TestDelayedOldFailureDoesNotCrossARecoveredPayment proves reconstructing day
+// zero stops at the latest settlement instead of reviving an earlier lapse.
+func TestDelayedOldFailureDoesNotCrossARecoveredPayment(t *testing.T) {
+	h := newHarness(t)
+	oldFailure := h.now().Add(-7 * 24 * time.Hour)
+	paidAt := h.now().Add(-5 * 24 * time.Hour)
+	currentFailure := h.now().Add(-2 * 24 * time.Hour)
+
+	h.provider.set(stripe.StatusActive, false)
+	response := h.deliverCreated("evt_recovered", stripe.EventInvoicePaymentSucceed,
+		invoiceObjectFor("in_recovered", "sub_test_1", paidAt), paidAt)
+	if response.Code != http.StatusOK {
+		t.Fatalf("recovery answered %d: %s", response.Code, response.Body.String())
+	}
+
+	h.provider.set(stripe.StatusPastDue, false)
+	response = h.deliverCreated("evt_current_failure", stripe.EventInvoicePaymentFailed,
+		invoiceObjectFor("in_current", "sub_test_1", currentFailure), currentFailure)
+	if response.Code != http.StatusOK {
+		t.Fatalf("current failure answered %d: %s", response.Code, response.Body.String())
+	}
+
+	response = h.deliverCreated("evt_old_failure_late", stripe.EventInvoicePaymentFailed,
+		invoiceObjectFor("in_old", "sub_test_1", oldFailure), oldFailure)
+	if response.Code != http.StatusOK {
+		t.Fatalf("old failure answered %d: %s", response.Code, response.Body.String())
+	}
+
+	if got := h.clockStart(); !got.Equal(currentFailure) {
+		t.Fatalf("old lapse moved day zero to %s, want %s", got, currentFailure)
+	}
+}
+
+// TestConcurrentCheckoutAcrossStoresCreatesOneStripeSession proves repeated
+// requests, plan changes, and a process restart all recover the durable claim
+// and provider idempotency key instead of creating a second subscription.
+func TestConcurrentCheckoutAcrossStoresCreatesOneStripeSession(t *testing.T) {
+	h := newHarness(t)
+	secondControl, err := store.Open(h.controlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { secondControl.Close() })
+
+	var providerMu sync.Mutex
+	creates := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions":
+			providerMu.Lock()
+			creates++
+			providerMu.Unlock()
+			time.Sleep(25 * time.Millisecond)
+			_, _ = w.Write([]byte(`{"id":"cs_single","status":"open","url":"https://checkout.example/single"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions/cs_single":
+			_, _ = w.Write([]byte(`{"id":"cs_single","status":"open","url":"https://checkout.example/single"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	first := *h.service
+	first.Stripe = stripe.New("sk_test_fake")
+	first.Stripe.BaseURL = server.URL
+	first.Store = NewStore(h.control)
+	first.Store.Now = func() time.Time { return h.now() }
+
+	second := first
+	second.Store = NewStore(secondControl)
+	second.Store.Now = func() time.Time { return h.now() }
+
+	start := make(chan struct{})
+	results := make(chan *stripe.CheckoutSession, 2)
+	errors := make(chan error, 2)
+	var workers sync.WaitGroup
+	for _, request := range []struct {
+		service *Service
+		plan    string
+	}{{&first, "monthly"}, {&second, "yearly"}} {
+		workers.Add(1)
+		go func(service *Service, plan string) {
+			defer workers.Done()
+			<-start
+			session, err := service.Checkout(context.Background(), teamID, plan, "owner@example.com")
+			results <- session
+			errors <- err
+		}(request.service, request.plan)
+	}
+
+	close(start)
+	workers.Wait()
+	close(results)
+	close(errors)
+
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for session := range results {
+		if session == nil || session.ID != "cs_single" {
+			t.Fatalf("concurrent checkout returned %+v", session)
+		}
+	}
+
+	// A fresh Store represents a restarted process and must still recover the
+	// same open session.
+	restarted := first
+	restarted.Store = NewStore(h.control)
+	restarted.Store.Now = func() time.Time { return h.now() }
+	session, err := restarted.Checkout(context.Background(), teamID, "yearly", "owner@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.ID != "cs_single" {
+		t.Fatalf("restarted checkout returned %q", session.ID)
+	}
+
+	providerMu.Lock()
+	defer providerMu.Unlock()
+	if creates != 1 {
+		t.Fatalf("concurrent and restarted checkout created %d Stripe sessions, want 1", creates)
+	}
+}
+
+// TestCheckoutRecoversAfterSessionPersistenceFailure simulates a crash after
+// Stripe creates a session but before its id is stored. A restarted process
+// must reuse the durable pre-provider idempotency key and recover that session.
+func TestCheckoutRecoversAfterSessionPersistenceFailure(t *testing.T) {
+	h := newHarness(t)
+
+	var providerMu sync.Mutex
+	requests := 0
+	keys := make(map[string]int)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/checkout/sessions" {
+			http.NotFound(w, r)
+			return
+		}
+
+		providerMu.Lock()
+		requests++
+		keys[r.Header.Get("Idempotency-Key")]++
+		providerMu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"cs_recovered","status":"open","url":"https://checkout.example/recovered"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	service := *h.service
+	service.Stripe = stripe.New("sk_test_fake")
+	service.Stripe.BaseURL = server.URL
+	service.Store = NewStore(h.control)
+	service.Store.Now = func() time.Time { return h.now() }
+
+	if _, err := h.control.Exec(`
+		CREATE TRIGGER fail_checkout_session_save
+		BEFORE UPDATE OF status ON billing_checkouts
+		WHEN NEW.status = 'open'
+		BEGIN
+			SELECT RAISE(FAIL, 'simulated checkout persistence failure');
+		END
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := service.Checkout(context.Background(), teamID, "monthly", "owner@example.com"); err == nil {
+		t.Fatal("checkout unexpectedly survived the simulated persistence failure")
+	}
+	if _, err := h.control.Exec(`DROP TRIGGER fail_checkout_session_save`); err != nil {
+		t.Fatal(err)
+	}
+
+	secondControl, err := store.Open(h.controlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { secondControl.Close() })
+
+	restarted := service
+	restarted.Store = NewStore(secondControl)
+	restarted.Store.Now = func() time.Time { return h.now() }
+	session, err := restarted.Checkout(context.Background(), teamID, "yearly", "owner@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.ID != "cs_recovered" {
+		t.Fatalf("restarted checkout returned %q", session.ID)
+	}
+
+	providerMu.Lock()
+	defer providerMu.Unlock()
+	if requests != 2 || len(keys) != 1 || keys[""] != 0 {
+		t.Fatalf("provider requests=%d idempotency keys=%v, want two requests with one non-empty key", requests, keys)
+	}
+}
+
+// TestCheckoutRefusesAnExistingChargeableSubscription ensures plan changes use
+// the portal and cannot create a second subscription beside the mirrored one.
+func TestCheckoutRefusesAnExistingChargeableSubscription(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	if err := h.service.Store.Save(ctx, Subscription{
+		TeamID:         teamID,
+		CustomerID:     customerID,
+		SubscriptionID: "sub_test_1",
+		Status:         stripe.StatusActive,
+		Plan:           "monthly",
+		PriceID:        "price_monthly",
+		PaymentState:   PaymentPaid,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.service.Checkout(ctx, teamID, "yearly", "owner@example.com"); err == nil || !strings.Contains(err.Error(), "billing portal") {
+		t.Fatalf("existing subscription checkout returned %v", err)
+	}
+
+	var claims int
+	if err := h.control.QueryRow(`SELECT COUNT(*) FROM billing_checkouts WHERE team_id = 1`).Scan(&claims); err != nil {
+		t.Fatal(err)
+	}
+	if claims != 0 {
+		t.Fatalf("blocked plan change wrote %d checkout claims", claims)
 	}
 }
 

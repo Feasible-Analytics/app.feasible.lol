@@ -72,8 +72,15 @@ type Purger struct {
 func (p *Purger) Purge(ctx context.Context, account Account, now time.Time) error {
 	db := p.Store.DB()
 
-	if err := p.record(ctx, account, now); err != nil {
+	claimed, err := p.claim(ctx, account, now)
+	if err != nil {
 		return err
+	}
+	if !claimed {
+		return nil
+	}
+	if account.State.DeletedAt.IsZero() {
+		account.State.DeletedAt = now.UTC()
 	}
 
 	// A rerun after a crash finds the team already gone. Everything below is
@@ -82,15 +89,6 @@ func (p *Purger) Purge(ctx context.Context, account Account, now time.Time) erro
 	live, err := p.teamExists(ctx, account.TeamID)
 	if err != nil {
 		return err
-	}
-
-	if live {
-		deleted := account.State
-		deleted.DeletedAt = now
-
-		if err := p.Store.Save(ctx, account.TeamID, deleted); err != nil {
-			return err
-		}
 	}
 
 	var steps []string
@@ -154,22 +152,76 @@ func (p *Purger) Purge(ctx context.Context, account Account, now time.Time) erro
 	return nil
 }
 
-// record writes the audit row before anything is destroyed. It has to be first:
-// after step five there is no row anywhere that says who this account belonged
-// to, and the confirmation email still has to go somewhere.
-func (p *Purger) record(ctx context.Context, account Account, now time.Time) error {
-	_, err := p.Store.DB().ExecContext(ctx, `
+// claim atomically revalidates the exact running clock and writes the durable
+// audit row before destruction starts. A concurrent payment either clears the
+// clock first and makes this a no-op, or observes deleted_at and cannot revive
+// an account whose deletion has begun.
+func (p *Purger) claim(ctx context.Context, account Account, now time.Time) (bool, error) {
+	db := p.Store.DB()
+
+	// A clock already marked deleted with an unfinished audit row is a crash
+	// recovery, not a new claim. The remaining idempotent steps must resume.
+	if account.State.Deleted() {
+		var pending int
+		err := db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM account_deletions
+			WHERE team_id = ? AND completed_at IS NULL
+		`, account.TeamID).Scan(&pending)
+		if err != nil {
+			return false, fmt.Errorf("lifecycle: inspect deletion %d: %w", account.TeamID, err)
+		}
+
+		return pending == 1, nil
+	}
+
+	if !account.State.DueForDeletion(now) {
+		return false, nil
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("lifecycle: claim deletion %d: %w", account.TeamID, err)
+	}
+	defer tx.Rollback() //nolint:errcheck // a rollback after a successful commit is a no-op
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE account_lifecycle
+		SET deleted_at = ?, updated_at = ?
+		WHERE team_id = ? AND trigger = ? AND started_at IS ? AND deleted_at IS NULL
+		  AND NOT EXISTS (
+		      SELECT 1 FROM subscriptions
+		      WHERE subscriptions.team_id = account_lifecycle.team_id
+		        AND subscriptions.payment_state = 'paid'
+		  )
+	`, now.UTC().Unix(), now.UTC().Unix(), account.TeamID,
+		string(account.State.Trigger), toUnix(account.State.StartedAt))
+	if err != nil {
+		return false, fmt.Errorf("lifecycle: claim deletion %d: %w", account.TeamID, err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("lifecycle: claim deletion %d: affected rows: %w", account.TeamID, err)
+	}
+	if rows != 1 {
+		return false, nil
+	}
+
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO account_deletions
 			(team_id, team_name, contact_email, stripe_customer_id, clock_started_at, started_at)
 		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT (team_id) DO NOTHING
 	`, account.TeamID, account.TeamName, account.Email, account.CustomerID,
-		account.State.StartedAt.UTC().Unix(), now.UTC().Unix())
-	if err != nil {
-		return fmt.Errorf("lifecycle: record deletion %d: %w", account.TeamID, err)
+		account.State.StartedAt.UTC().Unix(), now.UTC().Unix()); err != nil {
+		return false, fmt.Errorf("lifecycle: record deletion %d: %w", account.TeamID, err)
 	}
 
-	return nil
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("lifecycle: claim deletion %d: %w", account.TeamID, err)
+	}
+
+	return true, nil
 }
 
 // teamExists reports whether the account's control rows are still there. It is

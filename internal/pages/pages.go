@@ -90,8 +90,8 @@ type Handler struct {
 }
 
 // Account is the authenticated billing identity pages needs. The account id
-// selects data and the email pre-fills hosted checkout; neither comes from a
-// query string or form body in an integrated deployment.
+// selects data and the email pre-fills hosted checkout; the auth boundary has
+// already resolved any requested team through the user's membership.
 type Account struct {
 	ID    int64
 	Email string
@@ -115,7 +115,6 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /billing/upgrade", h.public(h.pricing))
 	mux.Handle("POST /billing/checkout", h.protected(h.checkout, true))
 	mux.Handle("POST /billing/portal", h.protected(h.portal, true))
-	mux.Handle("GET /billing/portal", h.protected(h.portal, false))
 	mux.Handle("GET /billing/done", h.protected(h.done, false))
 	mux.Handle("GET /billing/export", h.protected(h.export, false))
 	mux.HandleFunc("GET /billing/assets/pages.css", h.stylesheet)
@@ -208,6 +207,7 @@ func (h *Handler) stylesheet(w http.ResponseWriter, _ *http.Request) {
 // pricingData is the pricing and upgrade screen.
 type pricingData struct {
 	shell
+	SelectedPlan string
 }
 
 // pricing renders the plans. It is deliberately reachable without a session:
@@ -215,8 +215,15 @@ type pricingData struct {
 // and somebody whose dashboard is locked has to be able to reach it.
 func (h *Handler) pricing(w http.ResponseWriter, r *http.Request) {
 	account, _ := h.account(r)
+	selected := r.URL.Query().Get("plan")
+	if selected != "monthly" && selected != "yearly" {
+		selected = ""
+	}
 
-	h.render(w, pricingPage, pricingData{shell: h.newShell(w, r, "Pricing", "pricing", account)})
+	h.render(w, pricingPage, pricingData{
+		shell:        h.newShell(w, r, "Pricing", "pricing", account),
+		SelectedPlan: selected,
+	})
 }
 
 // billingData is everything the billing screen shows.

@@ -11,6 +11,7 @@ package billing
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
@@ -103,7 +104,8 @@ func (s *Service) now() time.Time {
 // has no payment provider, and every screen and endpoint here has to say so
 // plainly rather than failing.
 func (s *Service) Enabled() bool {
-	return s != nil && s.Stripe.Configured() && s.Plans.Monthly != "" && s.Plans.Yearly != ""
+	return s != nil && s.Stripe != nil && s.Stripe.Configured() && s.Plans.Product != "" &&
+		s.Plans.Monthly != "" && s.Plans.Yearly != "" && s.WebhookSecret != ""
 }
 
 // Reconcile brings one account into line with the payment provider's current
@@ -124,9 +126,15 @@ func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string
 		return false, fmt.Errorf("billing: cannot reconcile account %d without a customer id", teamID)
 	}
 
-	unlock := s.Store.LockAccount(teamID)
-	defer unlock()
+	release, err := s.Store.AcquireAccountLease(ctx, teamID)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+
 	trigger := update.Trigger
+	triggerEventCreated := update.EventCreated
+	triggerUpdate := update
 
 	existing, err := s.Store.Load(ctx, teamID)
 	if err != nil {
@@ -148,11 +156,16 @@ func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string
 	}
 
 	mirror := Subscription{
-		TeamID:       teamID,
-		CustomerID:   customerID,
-		Status:       "none",
-		BillingEmail: email,
-		PaymentState: existing.PaymentState,
+		TeamID:            teamID,
+		CustomerID:        customerID,
+		Status:            "none",
+		BillingEmail:      email,
+		PaymentState:      existing.PaymentState,
+		PaymentFailedAt:   existing.PaymentFailedAt,
+		EvidenceSourceAt:  existing.EvidenceSourceAt,
+		EvidenceEventAt:   existing.EvidenceEventAt,
+		EvidenceRank:      existing.EvidenceRank,
+		ReconciledEventAt: max(existing.ReconciledEventAt, triggerEventCreated),
 	}
 
 	if subscription != nil {
@@ -188,6 +201,9 @@ func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string
 			(existing.PaymentState == PaymentPaid || existing.PaymentState == PaymentFailed)
 		if updateApplies && !(update.State == PaymentPending && terminalPayment) {
 			mirror.PaymentState = update.State
+			mirror.EvidenceSourceAt = update.SourceCreated
+			mirror.EvidenceEventAt = update.EventCreated
+			mirror.EvidenceRank = paymentEvidenceRank(update.State)
 		}
 
 		// A paused subscription can still report `active`, which is the exact
@@ -211,8 +227,38 @@ func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string
 		mirror.PaymentState = PaymentFailed
 	}
 
-	if err := s.Store.Save(ctx, mirror); err != nil {
+	// The first failed Stripe event is day zero for the current lapse. A delayed
+	// older delivery may correct this backward, while payment clears it so a
+	// later lapse starts a new clock.
+	switch mirror.PaymentState {
+	case PaymentPaid:
+		mirror.PaymentFailedAt = time.Time{}
+	case PaymentFailed:
+		failedAt, err := s.firstFailureInCurrentLapse(ctx, teamID, mirror.SubscriptionID, triggerUpdate)
+		if err != nil {
+			return false, err
+		}
+		if failedAt.IsZero() {
+			failedAt = paymentFailureTime(triggerUpdate)
+		}
+		if mirror.PaymentFailedAt.IsZero() || (!failedAt.IsZero() && failedAt.Before(mirror.PaymentFailedAt)) {
+			mirror.PaymentFailedAt = failedAt
+		}
+	}
+
+	saved, err := s.Store.SaveReconciled(ctx, mirror)
+	if err != nil {
 		return false, err
+	}
+	if !saved {
+		return false, nil
+	}
+
+	if trigger == stripe.EventCheckoutCompleted || trigger == stripe.EventCheckoutAsyncPaymentSucceeded ||
+		trigger == stripe.EventCheckoutAsyncPaymentFailed {
+		if err := s.Store.MarkCheckoutStatus(ctx, teamID, "complete"); err != nil {
+			return false, err
+		}
 	}
 
 	// Pending means exactly that: preserve the trial or lapse clock as-is until
@@ -239,7 +285,12 @@ func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string
 		return true, nil
 	}
 
-	transition, err := s.Lifecycle.Signal(ctx, teamID, signal)
+	signalAt := s.now()
+	if signal == lifecycle.SignalPaymentFailed && !mirror.PaymentFailedAt.IsZero() {
+		signalAt = mirror.PaymentFailedAt
+	}
+
+	transition, err := s.Lifecycle.SignalAt(ctx, teamID, signal, signalAt)
 	if err != nil {
 		return false, err
 	}
@@ -252,6 +303,70 @@ func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string
 	}
 
 	return true, nil
+}
+
+// paymentFailureTime turns Stripe's immutable event creation timestamp into
+// the lifecycle clock. Local processing time is only a fallback for provider
+// state changes that carry no event timestamp.
+func paymentFailureTime(update PaymentUpdate) time.Time {
+	if update.EventCreated > 0 {
+		return time.Unix(update.EventCreated, 0).UTC()
+	}
+	if update.SourceCreated > 0 {
+		return time.Unix(update.SourceCreated, 0).UTC()
+	}
+
+	return time.Time{}
+}
+
+// firstFailureInCurrentLapse orders all durable settlement evidence and returns
+// the first failure after the most recent successful payment. Reconstructing
+// the run makes an older first failure delivered late correct day zero without
+// reaching backward across an intervening recovery.
+func (s *Service) firstFailureInCurrentLapse(ctx context.Context, teamID int64, subscriptionID string, current PaymentUpdate) (time.Time, error) {
+	payloads, err := s.Store.EventPayloads(ctx, teamID, paymentEvidenceEventTypes())
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	updates := make([]PaymentUpdate, 0, len(payloads)+1)
+	if current.SubscriptionID == subscriptionID &&
+		(current.State == PaymentPaid || current.State == PaymentFailed) {
+		updates = append(updates, current)
+	}
+
+	for _, payload := range payloads {
+		event, err := stripe.DecodeEvent(payload)
+		if err != nil {
+			continue
+		}
+
+		candidate, err := paymentUpdate(event)
+		if err != nil || candidate.SubscriptionID != subscriptionID ||
+			(candidate.State != PaymentPaid && candidate.State != PaymentFailed) {
+			continue
+		}
+		updates = append(updates, candidate)
+	}
+
+	sort.SliceStable(updates, func(i, j int) bool {
+		return paymentUpdateAfter(updates[j], updates[i])
+	})
+
+	failedAt := time.Time{}
+	for _, update := range updates {
+		switch update.State {
+		case PaymentPaid:
+			failedAt = time.Time{}
+		case PaymentFailed:
+			candidate := paymentFailureTime(update)
+			if failedAt.IsZero() || (!candidate.IsZero() && candidate.Before(failedAt)) {
+				failedAt = candidate
+			}
+		}
+	}
+
+	return failedAt, nil
 }
 
 // paymentUpdateApplies rejects evidence for a different subscription. A customer
@@ -286,12 +401,12 @@ func (s *Service) latestPaymentUpdate(ctx context.Context, teamID int64, subscri
 	for _, payload := range payloads {
 		event, err := stripe.DecodeEvent(payload)
 		if err != nil {
-			return PaymentUpdate{}, fmt.Errorf("billing: decode stored payment event: %w", err)
+			continue
 		}
 
 		candidate, err := paymentUpdate(event)
 		if err != nil {
-			return PaymentUpdate{}, fmt.Errorf("billing: decode stored payment evidence %s: %w", event.ID, err)
+			continue
 		}
 		if candidate.SubscriptionID != subscriptionID || candidate.State == "" {
 			continue
@@ -380,12 +495,10 @@ func (s *Service) StartTrial(ctx context.Context, teamID int64) (lifecycle.Trans
 	return s.Lifecycle.Signal(ctx, teamID, lifecycle.SignalTrialStarted)
 }
 
-// Checkout creates a hosted checkout session for one account and plan.
-//
-// The idempotency key is built from the account, the plan and the minute, so a
-// double-click or a retried request reuses the existing session rather than
-// creating a second one. It deliberately does not include a random value: a
-// fresh key on every attempt is the same as having none.
+// Checkout creates or resumes the one hosted checkout allowed for an account.
+// The database claim is committed before Stripe is called and carries a stable
+// idempotency key, so a crash or a second process can only recover the same
+// session rather than create another customer or subscription.
 func (s *Service) Checkout(ctx context.Context, teamID int64, planKey, email string) (*stripe.CheckoutSession, error) {
 	if !s.Enabled() {
 		return nil, fmt.Errorf("billing: no payment provider is configured on this install")
@@ -395,25 +508,111 @@ func (s *Service) Checkout(ctx context.Context, teamID int64, planKey, email str
 	if priceID == "" {
 		return nil, fmt.Errorf("billing: %q is not a plan", planKey)
 	}
+	if priceID == s.Plans.Monthly {
+		planKey = "monthly"
+	} else {
+		planKey = "yearly"
+	}
+
+	release, err := s.Store.AcquireAccountLease(ctx, teamID)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
 	existing, err := s.Store.Load(ctx, teamID)
 	if err != nil {
 		return nil, err
 	}
 
+	// The provider is authoritative when an account has a customer. Every status
+	// that can still charge or settle must go through the portal; only a fully
+	// ended subscription may start a replacement checkout.
+	if existing.CustomerID != "" {
+		subscription, err := s.Stripe.ActiveSubscription(ctx, existing.CustomerID)
+		if err != nil {
+			return nil, err
+		}
+		if subscriptionBlocksCheckout(subscription) {
+			return nil, fmt.Errorf("billing: account %d already has a subscription; manage its plan in the billing portal", teamID)
+		}
+	}
+
 	if existing.BillingEmail != "" && email == "" {
 		email = existing.BillingEmail
 	}
 
-	return s.Stripe.CreateCheckoutSession(ctx, stripe.CheckoutParams{
+	claim, found, err := s.Store.CheckoutClaimForAccount(ctx, teamID)
+	if err != nil {
+		return nil, err
+	}
+	if found && claim.SessionID != "" && claim.Status != "expired" {
+		session, err := s.Stripe.GetCheckoutSession(ctx, claim.SessionID)
+		if err != nil {
+			return nil, err
+		}
+
+		switch {
+		case session.Status == "open":
+			return session, nil
+		case session.Status == "complete" || session.Subscription != "":
+			if err := s.Store.MarkCheckoutStatus(ctx, teamID, "complete"); err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("billing: account %d already completed checkout; wait for billing confirmation or use the portal", teamID)
+		default:
+			if err := s.Store.MarkCheckoutStatus(ctx, teamID, "expired"); err != nil {
+				return nil, err
+			}
+			found = false
+		}
+	}
+	if found && claim.Status == "complete" {
+		if err := s.Store.MarkCheckoutStatus(ctx, teamID, "expired"); err != nil {
+			return nil, err
+		}
+		found = false
+	}
+	if !found || claim.Status == "expired" {
+		claim, err = s.Store.NewCheckoutClaim(ctx, teamID, planKey, priceID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	session, err := s.Stripe.CreateCheckoutSession(ctx, stripe.CheckoutParams{
 		TeamID:         teamID,
-		PriceID:        priceID,
+		PriceID:        claim.PriceID,
 		CustomerID:     existing.CustomerID,
 		Email:          email,
 		SuccessURL:     s.BaseURL + "/billing/done?session={CHECKOUT_SESSION_ID}",
-		CancelURL:      s.BaseURL + "/pricing",
-		IdempotencyKey: fmt.Sprintf("checkout-%d-%s-%s", teamID, planKey, s.now().Format("2006-01-02T15:04")),
+		CancelURL:      s.BaseURL + "/pricing?plan=" + claim.Plan,
+		IdempotencyKey: claim.IdempotencyKey,
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.Store.SaveCheckoutSession(ctx, claim, session.ID, session.URL, "open"); err != nil {
+		return nil, err
+	}
+
+	return session, nil
+}
+
+// subscriptionBlocksCheckout reports whether creating another subscription
+// could produce a second charge or an independently settling payment.
+func subscriptionBlocksCheckout(subscription *stripe.Subscription) bool {
+	if subscription == nil {
+		return false
+	}
+
+	switch subscription.Status {
+	case stripe.StatusCanceled, stripe.StatusIncompleteExpired:
+		return false
+	default:
+		return true
+	}
 }
 
 // Portal creates a Customer Portal link for an account that has one. Card

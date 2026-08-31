@@ -38,11 +38,11 @@ func (l Links) Upgrade() string {
 	return l.BaseURL + "/billing/upgrade"
 }
 
-// Portal is the payment provider's card-update page, reached through a
-// redirect that creates the session. It is only put in front of somebody on the
-// dunning path, where updating a card is the actual fix.
+// Portal is the safe billing page. The email link performs no provider-side
+// action; the signed-in person explicitly submits the CSRF-protected portal
+// form from there.
 func (l Links) Portal() string {
-	return l.BaseURL + "/billing/portal"
+	return l.BaseURL + "/billing"
 }
 
 // Export is the download-everything link, which works in every phase.
@@ -85,24 +85,60 @@ func (s *Service) now() time.Time {
 // the webhook handler, the signup path and the support commands all come
 // through here, so there is exactly one place where a phase can change.
 func (s *Service) Signal(ctx context.Context, teamID int64, signal Signal) (Transition, error) {
+	return s.SignalAt(ctx, teamID, signal, s.now())
+}
+
+// SignalAt applies an outside event at the instant it actually happened. Stripe
+// failure events use their signed creation time so delayed delivery cannot move
+// the contractual day-zero date to local processing time.
+func (s *Service) SignalAt(ctx context.Context, teamID int64, signal Signal, at time.Time) (Transition, error) {
 	state, err := s.Store.Load(ctx, teamID)
 	if err != nil {
 		return Transition{}, err
 	}
 
-	now := s.now()
+	at = at.UTC()
+	if at.IsZero() {
+		at = s.now()
+	}
 
-	transition, err := Apply(state, signal, now)
+	transition, err := Apply(state, signal, at)
 	if err != nil {
 		return transition, err
 	}
 
+	// Out-of-order delivery can reveal that the first failure happened before
+	// the failure that originally started the clock. Correct only within the
+	// same uninterrupted lapse; a successful payment clears the old clock.
+	if !transition.Changed && signal == SignalPaymentFailed && state.Trigger == TriggerLapse &&
+		state.DeletedAt.IsZero() && !state.StartedAt.IsZero() && at.Before(state.StartedAt) {
+		transition.State.StartedAt = at
+		transition.From = state.At(s.now())
+		transition.To = transition.State.At(s.now())
+		transition.Changed = true
+	}
+
 	if !transition.Changed {
+		if signal == SignalPaymentSucceeded && transition.To == PhaseActive {
+			if err := s.finalizeActive(ctx, teamID, s.now()); err != nil {
+				return transition, err
+			}
+		}
+
 		return transition, nil
 	}
 
-	if err := s.Store.Save(ctx, teamID, transition.State); err != nil {
+	saved, err := s.Store.SaveIfState(ctx, teamID, state, transition.State)
+	if err != nil {
 		return transition, err
+	}
+	if !saved {
+		latest, loadErr := s.Store.Load(ctx, teamID)
+		if loadErr != nil {
+			return transition, loadErr
+		}
+
+		return Transition{State: latest, From: latest.At(s.now()), To: latest.At(s.now())}, nil
 	}
 
 	// Returning to Active cancels every pending email in the same breath as the
@@ -110,18 +146,8 @@ func (s *Service) Signal(ctx context.Context, teamID int64, signal Signal) (Tran
 	// your account tomorrow", and the only way to be sure is to do it here
 	// rather than to check at send time.
 	if transition.CancelEmails {
-		cancelled, err := s.Store.CancelPending(ctx, teamID)
-		if err != nil {
+		if err := s.finalizeActive(ctx, teamID, s.now()); err != nil {
 			return transition, err
-		}
-
-		if err := s.Store.CloseGap(ctx, teamID, now); err != nil {
-			return transition, err
-		}
-
-		if s.Log != nil {
-			s.Log.Info("account returned to active",
-				"team", teamID, "from", string(transition.From), "cancelled_emails", cancelled)
 		}
 
 		return transition, nil
@@ -136,6 +162,26 @@ func (s *Service) Signal(ctx context.Context, teamID int64, signal Signal) (Tran
 	}
 
 	return transition, nil
+}
+
+// finalizeActive repairs every side effect owed by a successful payment even
+// when the lifecycle row is already active. That makes a crash after the state
+// commit recoverable by replaying the same signed event.
+func (s *Service) finalizeActive(ctx context.Context, teamID int64, at time.Time) error {
+	cancelled, err := s.Store.CancelPending(ctx, teamID)
+	if err != nil {
+		return err
+	}
+
+	if err := s.Store.CloseGap(ctx, teamID, at); err != nil {
+		return err
+	}
+
+	if s.Log != nil {
+		s.Log.Info("account returned to active", "team", teamID, "cancelled_emails", cancelled)
+	}
+
+	return nil
 }
 
 // Sweep advances every running clock once. It returns how many accounts it
@@ -179,6 +225,14 @@ func (s *Service) Sweep(ctx context.Context) (int, error) {
 // advance moves one account: open a collection gap the moment it goes dormant,
 // send every email that has come due, and destroy it if it has reached day 90.
 func (s *Service) advance(ctx context.Context, account Account, now time.Time) error {
+	if account.State.Deleted() {
+		if s.Purger == nil {
+			return fmt.Errorf("lifecycle: account %d has an unfinished deletion but no purger is configured", account.TeamID)
+		}
+
+		return s.Purger.Purge(ctx, account, now)
+	}
+
 	phase := account.State.At(now)
 
 	// The gap is recorded at the moment collection stops rather than when
@@ -294,7 +348,7 @@ func (s *Service) notice(account Account, entry Scheduled, now time.Time) Notice
 	// trial path there is no customer at the payment provider at all, so the
 	// link would lead to an error page.
 	if account.State.Trigger == TriggerLapse {
-		notice.PortalURL = s.Links.Portal()
+		notice.PortalURL = fmt.Sprintf("%s?team=%d", s.Links.Portal(), account.TeamID)
 	}
 
 	return notice

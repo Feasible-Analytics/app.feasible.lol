@@ -87,6 +87,84 @@ func TestControlMigratesAFreshDatabase(t *testing.T) {
 	}
 }
 
+// TestControlUpgradesPopulatedBillingFromFiveToSix proves the production shape
+// keeps existing customer, subscription, lifecycle, and event data while the
+// durable payment-ordering tables and defaults are added.
+func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
+	ctx := context.Background()
+	db := newDatabase(t)
+
+	throughFive := Set{Name: "control"}
+	for _, migration := range Control().Migrations {
+		if migration.Version <= 5 {
+			throughFive.Migrations = append(throughFive.Migrations, migration)
+		}
+	}
+	if _, err := Run(ctx, db, throughFive); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO users (id, email, created_at, updated_at)
+		VALUES (1, 'owner@example.com', 1, 1);
+		INSERT INTO teams (id, name, created_at, updated_at)
+		VALUES (1, 'Existing account', 1, 1);
+		INSERT INTO team_memberships (team_id, user_id, role, created_at)
+		VALUES (1, 1, 'owner', 1);
+		INSERT INTO subscriptions
+			(team_id, stripe_customer_id, stripe_subscription_id, status, plan,
+			 stripe_price_id, billing_email, created_at, updated_at)
+		VALUES (1, 'cus_existing', 'sub_existing', 'active', 'monthly',
+		        'price_monthly', 'billing@example.com', 1, 1);
+		INSERT INTO account_lifecycle
+			(team_id, trigger, started_at, created_at, updated_at)
+		VALUES (1, 'lapse', 10, 10, 10);
+		INSERT INTO stripe_events
+			(event_id, type, team_id, payload, received_at, handled_at, outcome)
+		VALUES ('evt_existing', 'invoice.payment_failed', 1, '{}', 10, 10, 'applied');
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Run(ctx, db, Control())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Applied) != 1 || result.Applied[0] != 6 {
+		t.Fatalf("upgrade applied %v, want only migration 6", result.Applied)
+	}
+
+	var customer, subscription, paymentState string
+	var failedAt sql.NullInt64
+	if err := db.QueryRowContext(ctx, `
+		SELECT stripe_customer_id, stripe_subscription_id, payment_state, payment_failed_at
+		FROM subscriptions WHERE team_id = 1
+	`).Scan(&customer, &subscription, &paymentState, &failedAt); err != nil {
+		t.Fatal(err)
+	}
+	if customer != "cus_existing" || subscription != "sub_existing" || paymentState != "" || failedAt.Valid {
+		t.Fatalf("populated subscription changed to customer=%q subscription=%q payment=%q failed_at=%v",
+			customer, subscription, paymentState, failedAt)
+	}
+
+	for _, table := range []string{"billing_account_leases", "billing_checkouts"} {
+		if !tableExists(t, db, table) {
+			t.Errorf("upgraded control schema is missing %s", table)
+		}
+	}
+
+	var events, clocks int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM stripe_events WHERE event_id = 'evt_existing'").Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM account_lifecycle WHERE team_id = 1").Scan(&clocks); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 || clocks != 1 {
+		t.Fatalf("upgrade retained events=%d clocks=%d, want one each", events, clocks)
+	}
+}
+
 // TestAccountMigratesAFreshDatabase covers the schema every event is written
 // into, including the two decisions that are cheap now and a rewrite later: the
 // interned dimension tables and the hot/cold split.

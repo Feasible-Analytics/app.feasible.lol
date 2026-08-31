@@ -346,7 +346,10 @@ func TestCommerceRoutesUseAuthAccountAndCSRF(t *testing.T) {
 	if pricing.Code != http.StatusOK {
 		t.Fatalf("public pricing answered %d", pricing.Code)
 	}
-	for _, want := range []string{"/register?next=%2Fpricing", "/login?next=%2Fpricing"} {
+	for _, want := range []string{
+		"/register?next=%2Fpricing%3Fplan%3Dmonthly",
+		"/login?next=%2Fpricing%3Fplan%3Dyearly",
+	} {
 		if !strings.Contains(pricing.Body.String(), want) {
 			t.Errorf("signed-out pricing is missing %q", want)
 		}
@@ -358,7 +361,12 @@ func TestCommerceRoutesUseAuthAccountAndCSRF(t *testing.T) {
 	}
 
 	headers := s.signedInForm()
-	signedIn := s.send(t, http.MethodGet, "/billing?team=999", "", headers)
+	forged := s.send(t, http.MethodGet, "/billing?team=999", "", headers)
+	if forged.Code != http.StatusNotFound {
+		t.Fatalf("forged billing account answered %d, want 404", forged.Code)
+	}
+
+	signedIn := s.send(t, http.MethodGet, "/billing", "", headers)
 	if signedIn.Code != http.StatusOK {
 		t.Fatalf("signed-in billing answered %d: %s", signedIn.Code, signedIn.Body.String())
 	}
@@ -368,7 +376,7 @@ func TestCommerceRoutesUseAuthAccountAndCSRF(t *testing.T) {
 
 	for name, token := range map[string]string{"missing": "", "mismatched": "not-the-token"} {
 		t.Run(name+" csrf", func(t *testing.T) {
-			body := "plan=monthly&team=999"
+			body := "plan=monthly&team=1"
 			if token != "" {
 				body += "&csrf_token=" + token
 			}
@@ -381,7 +389,7 @@ func TestCommerceRoutesUseAuthAccountAndCSRF(t *testing.T) {
 	}
 
 	valid := s.send(t, http.MethodPost, "/billing/checkout",
-		"plan=monthly&team=999&csrf_token="+s.csrfToken, headers)
+		"plan=monthly&team=1&csrf_token="+s.csrfToken, headers)
 	if valid.Code != http.StatusOK || !strings.Contains(valid.Body.String(), "cannot take payments") {
 		t.Fatalf("valid authenticated checkout answered %d: %s", valid.Code, valid.Body.String())
 	}
@@ -504,7 +512,7 @@ func TestALockedAccountCanStillReachEverythingItNeedsToPay(t *testing.T) {
 		{"the plans", http.MethodGet, "/pricing", ""},
 		{"the upgrade link on the locked page", http.MethodGet, "/billing/upgrade", ""},
 		{"starting a checkout", http.MethodPost, "/billing/checkout", ""},
-		{"the payment provider's portal", http.MethodGet, "/billing/portal", ""},
+		{"the payment provider's portal", http.MethodPost, "/billing/portal", ""},
 		{"coming back from checkout", http.MethodGet, "/billing/done", ""},
 		{"the data export", http.MethodGet, "/billing/export", ""},
 		{"the payment provider's callback", http.MethodPost, "/webhooks/stripe", "{}"},

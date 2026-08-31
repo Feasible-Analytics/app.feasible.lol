@@ -207,8 +207,8 @@ func (g GoogleOAuth) Configured() bool {
 // billing degrades to "not available here" instead of failing to boot.
 //
 // The secret key on its own is enough for the delete-account flow to remove a
-// customer record; taking money needs the prices too, which is what Enabled
-// reports.
+// customer record; taking money needs the complete catalogue and a verified
+// webhook path, which is what Enabled reports.
 type Stripe struct {
 	SecretKey      string
 	PublishableKey string
@@ -222,11 +222,12 @@ type Stripe struct {
 	WebhookSecret string
 }
 
-// Enabled reports whether this install can take money. Both prices are
-// required as well as the key, because a checkout against a missing price
-// fails at the provider in front of somebody who was trying to pay.
+// Enabled reports whether this install can safely take money. Checkout is not
+// offered unless its signed fulfillment path and complete catalogue are ready;
+// charging while webhooks are rejected would strand a paying account.
 func (s Stripe) Enabled() bool {
-	return s.SecretKey != "" && s.PriceMonthly != "" && s.PriceYearly != ""
+	return s.SecretKey != "" && s.Product != "" && s.PriceMonthly != "" &&
+		s.PriceYearly != "" && s.WebhookSecret != ""
 }
 
 // Ingest holds the values only the `ingest` process reads.
@@ -703,11 +704,24 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("FEASIBLE_APP_MAIL_TRANSPORT is smtp but FEASIBLE_SMTP_HOST is empty")
 	}
 
-	// Half-configured billing is worse than none: a secret key with no prices
-	// produces a checkout button that fails at the provider, in front of
-	// somebody who was trying to pay us.
-	if c.App.Stripe.SecretKey != "" && (c.App.Stripe.PriceMonthly == "" || c.App.Stripe.PriceYearly == "") {
-		return fmt.Errorf("FEASIBLE_STRIPE_SECRET_KEY is set but FEASIBLE_STRIPE_PRICE_MONTHLY or _PRICE_YEARLY is empty")
+	// Any billing value opts into hosted billing, and hosted billing is usable
+	// only as one complete unit. In particular, accepting checkout without the
+	// signing secret charges a customer while rejecting the fulfillment event.
+	stripeValues := []string{
+		c.App.Stripe.SecretKey,
+		c.App.Stripe.Product,
+		c.App.Stripe.PriceMonthly,
+		c.App.Stripe.PriceYearly,
+		c.App.Stripe.WebhookSecret,
+	}
+	stripeConfigured := false
+	stripeComplete := true
+	for _, value := range stripeValues {
+		stripeConfigured = stripeConfigured || value != ""
+		stripeComplete = stripeComplete && value != ""
+	}
+	if stripeConfigured && !stripeComplete {
+		return fmt.Errorf("Stripe billing requires FEASIBLE_STRIPE_SECRET_KEY, _PRODUCT, _PRICE_MONTHLY, _PRICE_YEARLY and _WEBHOOK_SECRET together")
 	}
 
 	if c.Shared.SaltKey != "" && len(c.Shared.SaltKey) != 64 {
