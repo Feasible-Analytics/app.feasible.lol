@@ -85,8 +85,19 @@ func TestSeedFreshRemovesTheOldDataset(t *testing.T) {
 		t.Fatalf("second run: exit code %d, stderr: %s", second, stderr)
 	}
 
-	if after := countEvents(t, dir); after != before {
-		t.Fatalf("a fresh run holds %d events where the first held %d", after, before)
+	// Not an equality check. The generated window ends at the current moment, so
+	// two runs seconds apart legitimately disagree by a handful of events in the
+	// partial final day — the same seed, a slightly different clock. What this
+	// test exists to catch is a --fresh that appends instead of replacing, and
+	// that shows up as roughly double, never as a couple of events.
+	after := countEvents(t, dir)
+
+	if after > before+before/2 {
+		t.Fatalf("a fresh run holds %d events where the first held %d, which looks appended rather than replaced", after, before)
+	}
+
+	if after < before/2 {
+		t.Fatalf("a fresh run holds %d events where the first held %d, so --fresh deleted more than it rebuilt", after, before)
 	}
 }
 
