@@ -7,19 +7,19 @@
 -->
 {{ define "content" }}
 <div class="mx-auto max-w-2xl">
-  <h1 class="text-2xl font-semibold text-slate-900">Two-factor authentication</h1>
-  <p class="mt-1 text-sm text-slate-500">
+  <h1 class="text-2xl font-semibold text-heading">Two-factor authentication</h1>
+  <p class="mt-1 text-sm text-muted">
     A six-digit code from your phone on top of your password. Your secret is encrypted before it
     touches disk.
   </p>
 
   {{ if .Data.Enabled }}
-    <section class="mt-8 rounded-2xl border border-emerald-200 bg-emerald-50 p-6">
+    <section class="mt-8 rounded-2xl border border-up/30 bg-up/10 p-6">
       <div class="flex items-center gap-3">
-        <span class="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-600 text-white">✓</span>
+        <span class="flex h-8 w-8 items-center justify-center rounded-full bg-up text-fill-fg">✓</span>
         <div>
-          <h2 class="text-sm font-semibold text-emerald-900">Two-factor is on</h2>
-          <p class="text-sm text-emerald-800">
+          <h2 class="text-sm font-semibold text-up-ink">Two-factor is on</h2>
+          <p class="text-sm text-up-ink">
             {{ .Data.RecoveryLeft }} recovery code{{ if ne .Data.RecoveryLeft 1 }}s{{ end }} left.
             {{ if lt .Data.RecoveryLeft 3 }}<strong>Generate a new set before you run out.</strong>{{ end }}
           </p>
@@ -27,9 +27,9 @@
       </div>
     </section>
 
-    <section class="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-      <h2 class="text-sm font-semibold text-slate-900">New recovery codes</h2>
-      <p class="mt-1 text-sm text-slate-500">Generating a new set immediately invalidates the old one.</p>
+    <section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+      <h2 class="text-sm font-semibold text-heading">New recovery codes</h2>
+      <p class="mt-1 text-sm text-muted">Generating a new set immediately invalidates the old one.</p>
 
       <form method="post" action="/settings/security/2fa/recovery" class="mt-4 flex flex-wrap items-end gap-3">
         <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
@@ -37,22 +37,22 @@
 
         {{ if .Data.HasPassword }}
           <div class="flex-1 min-w-[16rem]">
-            <label for="recovery_password" class="block text-sm font-medium text-slate-700">Your password</label>
+            <label for="recovery_password" class="block text-sm font-medium text-body">Your password</label>
             <input id="recovery_password" name="password" type="password" autocomplete="current-password" required
-                   class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm">
+                   class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm">
           </div>
         {{ end }}
 
         <button type="submit"
-                class="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">
           Generate new codes
         </button>
       </form>
     </section>
 
-    <section class="mt-6 rounded-2xl border border-rose-200 bg-white p-6 shadow-sm">
-      <h2 class="text-sm font-semibold text-rose-700">Turn two-factor off</h2>
-      <p class="mt-1 text-sm text-slate-600">
+    <section class="mt-6 rounded-2xl border border-down/30 bg-card p-6 shadow-sm">
+      <h2 class="text-sm font-semibold text-down-ink">Turn two-factor off</h2>
+      <p class="mt-1 text-sm text-muted">
         We ask for your password again, because a stolen session cookie must not be enough to remove
         the thing that protects you from a stolen session cookie.
       </p>
@@ -63,33 +63,33 @@
 
         {{ if .Data.HasPassword }}
           <div class="flex-1 min-w-[16rem]">
-            <label for="disable_password" class="block text-sm font-medium text-slate-700">Your password</label>
+            <label for="disable_password" class="block text-sm font-medium text-body">Your password</label>
             <input id="disable_password" name="password" type="password" autocomplete="current-password" required
-                   class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm">
+                   class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm">
           </div>
         {{ end }}
 
         <button type="submit"
-                class="rounded-xl border border-rose-300 px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50">
+                class="rounded-xl border border-down/50 px-4 py-2 text-sm font-semibold text-down-ink hover:bg-down/10">
           Turn off
         </button>
       </form>
     </section>
 
   {{ else if .Data.Enrolling }}
-    <section class="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-      <h2 class="text-sm font-semibold text-slate-900">Scan this with your authenticator app</h2>
+    <section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm">
+      <h2 class="text-sm font-semibold text-heading">Scan this with your authenticator app</h2>
 
       <div class="mt-5 flex flex-col gap-6 sm:flex-row sm:items-start">
         <img src="/settings/security/2fa/qr.png" alt="QR code for your authenticator app"
              width="240" height="240"
-             class="rounded-xl border border-slate-200 bg-white p-2">
+             class="rounded-xl border border-line bg-card p-2">
 
         <div class="flex-1">
-          <p class="text-sm text-slate-600">
+          <p class="text-sm text-muted">
             Cannot scan? Type this key into your app instead:
           </p>
-          <p class="mt-2 select-all break-all rounded-xl bg-slate-50 px-3 py-2 font-mono text-sm text-slate-800">
+          <p class="mt-2 select-all break-all rounded-xl bg-subtle px-3 py-2 font-mono text-sm text-body">
             {{ .Data.Secret }}
           </p>
 
@@ -97,14 +97,14 @@
             <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
 
             <div>
-              <label for="code" class="block text-sm font-medium text-slate-700">Code from the app</label>
+              <label for="code" class="block text-sm font-medium text-body">Code from the app</label>
               <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code"
                      required maxlength="6" pattern="[0-9]*" autofocus
-                     class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-center font-mono text-lg tracking-[0.3em]">
+                     class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-center font-mono text-lg tracking-[0.3em]">
             </div>
 
             <button type="submit"
-                    class="w-full rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500">
+                    class="w-full rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
               Turn on two-factor
             </button>
           </form>
@@ -113,9 +113,9 @@
     </section>
 
   {{ else }}
-    <section class="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-      <h2 class="text-sm font-semibold text-slate-900">Two-factor is off</h2>
-      <p class="mt-1 text-sm text-slate-500">
+    <section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm">
+      <h2 class="text-sm font-semibold text-heading">Two-factor is off</h2>
+      <p class="mt-1 text-sm text-muted">
         You will need an authenticator app — 1Password, Authy, Google Authenticator, or anything else
         that does TOTP.
       </p>
@@ -123,7 +123,7 @@
       <form method="post" action="/settings/security/2fa/start" class="mt-4">
         <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
         <button type="submit"
-                class="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500">
+                class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
           Set up two-factor
         </button>
       </form>

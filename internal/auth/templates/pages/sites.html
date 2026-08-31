@@ -13,14 +13,14 @@
 <div x-data="siteList()">
   <div class="flex flex-wrap items-center justify-between gap-3">
     <div>
-      <h1 class="text-2xl font-semibold text-slate-900">Sites</h1>
-      <p class="mt-1 text-sm text-slate-500">{{ .Data.Total }} site{{ if ne .Data.Total 1 }}s{{ end }} in this account.</p>
+      <h1 class="text-2xl font-semibold text-heading">Sites</h1>
+      <p class="mt-1 text-sm text-muted">{{ .Data.Total }} site{{ if ne .Data.Total 1 }}s{{ end }} in this account.</p>
     </div>
 
     <div class="flex items-center gap-2">
       <label for="sort" class="sr-only">Sort</label>
       <select id="sort" onchange="window.location = '/sites?sort=' + this.value"
-              class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
+              class="rounded-xl border border-field bg-card px-3 py-2 text-sm text-body">
         <option value="" {{ if eq .Data.Sort "" }}selected{{ end }}>Manual order</option>
         <option value="traffic" {{ if eq .Data.Sort "traffic" }}selected{{ end }}>Most traffic</option>
         <option value="name" {{ if eq .Data.Sort "name" }}selected{{ end }}>Name</option>
@@ -28,21 +28,21 @@
       </select>
 
       <a href="/sites/new"
-         class="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500">
+         class="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
         Add a site
       </a>
     </div>
   </div>
 
   {{ if and (not .Data.Sites) (not .Data.Folders) }}
-    <div class="mt-10 rounded-2xl border border-dashed border-slate-300 bg-white p-12 text-center">
-      <h2 class="text-lg font-medium text-slate-900">No sites yet</h2>
-      <p class="mx-auto mt-2 max-w-md text-sm text-slate-500">
+    <div class="mt-10 rounded-2xl border border-dashed border-field bg-card p-12 text-center">
+      <h2 class="text-lg font-medium text-heading">No sites yet</h2>
+      <p class="mx-auto mt-2 max-w-md text-sm text-muted">
         Add the first one and we will give you a snippet, tell you where to paste it, and wait
         with you for the first pageview.
       </p>
       <a href="/sites/new"
-         class="mt-6 inline-block rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500">
+         class="mt-6 inline-block rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
         Add your first site
       </a>
     </div>
@@ -51,29 +51,29 @@
     {{ if .Data.Folders }}
       <div class="mt-8 space-y-6" @dragover.prevent>
         {{ range .Data.Folders }}
-          <section class="rounded-2xl border border-slate-200 bg-white shadow-sm"
+          <section class="rounded-2xl border border-line bg-card shadow-sm"
                    draggable="true" data-folder="{{ .ID }}"
                    @dragstart="startFolderDrag($event, {{ .ID }})"
                    @drop="dropFolder($event, {{ .ID }})">
-            <header class="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-3">
+            <header class="flex items-center justify-between gap-3 border-b border-line px-5 py-3">
               <div class="flex items-center gap-2">
-                <span class="cursor-grab select-none text-slate-300" aria-hidden="true">⠿</span>
-                <h2 class="text-sm font-semibold text-slate-900">{{ .Name }}</h2>
-                <span class="text-xs text-slate-400">{{ len .Sites }}</span>
+                <span class="cursor-grab select-none text-faint" aria-hidden="true">⠿</span>
+                <h2 class="text-sm font-semibold text-heading">{{ .Name }}</h2>
+                <span class="text-xs text-faint">{{ len .Sites }}</span>
               </div>
 
               <form method="post" action="/folders/{{ .ID }}/delete"
                     onsubmit="return confirm('Delete this folder? The sites inside it move back to the top level.')">
                 <input type="hidden" name="csrf_token" value="{{ $.CSRF }}">
-                <button type="submit" class="text-xs text-slate-400 hover:text-rose-600">Delete folder</button>
+                <button type="submit" class="text-xs text-faint hover:text-down">Delete folder</button>
               </form>
             </header>
 
-            <ul class="divide-y divide-slate-100" data-folder-list="{{ .ID }}">
+            <ul class="divide-y divide-line" data-folder-list="{{ .ID }}">
               {{ range .Sites }}
                 {{ template "site_row.html" (dict "Site" . "CSRF" $.CSRF) }}
               {{ else }}
-                <li class="px-5 py-6 text-sm text-slate-400">Drag a site here.</li>
+                <li class="px-5 py-6 text-sm text-faint">Drag a site here.</li>
               {{ end }}
             </ul>
           </section>
@@ -82,14 +82,14 @@
     {{ end }}
 
     {{ if .Data.Sites }}
-      <div class="mt-8 rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div class="mt-8 rounded-2xl border border-line bg-card shadow-sm">
         {{ if .Data.Folders }}
-          <header class="border-b border-slate-100 px-5 py-3">
-            <h2 class="text-sm font-semibold text-slate-900">Not in a folder</h2>
+          <header class="border-b border-line px-5 py-3">
+            <h2 class="text-sm font-semibold text-heading">Not in a folder</h2>
           </header>
         {{ end }}
 
-        <ul class="divide-y divide-slate-100" data-folder-list="0">
+        <ul class="divide-y divide-line" data-folder-list="0">
           {{ range .Data.Sites }}
             {{ template "site_row.html" (dict "Site" . "CSRF" $.CSRF) }}
           {{ end }}
@@ -101,12 +101,12 @@
   <form method="post" action="/folders" class="mt-8 flex items-end gap-2">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <div>
-      <label for="folder-name" class="block text-xs font-medium text-slate-500">New folder</label>
+      <label for="folder-name" class="block text-xs font-medium text-muted">New folder</label>
       <input id="folder-name" name="name" type="text" placeholder="Client work" required
-             class="mt-1 rounded-xl border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100">
+             class="mt-1 rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
     </div>
     <button type="submit"
-            class="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+            class="rounded-xl border border-field px-4 py-2 text-sm font-medium text-body hover:bg-hover">
       Create
     </button>
   </form>

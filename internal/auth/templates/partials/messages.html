@@ -10,13 +10,13 @@
   the product never receive.
 -->
 {{ if .Flash }}
-  <div role="status" class="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+  <div role="status" class="mb-6 rounded-xl border border-up/30 bg-up/10 px-4 py-3 text-sm text-up-ink">
     {{ .Flash }}
   </div>
 {{ end }}
 
 {{ if .Error }}
-  <div role="alert" class="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+  <div role="alert" class="mb-6 rounded-xl border border-down/30 bg-down/10 px-4 py-3 text-sm text-down-ink">
     {{ .Error }}
   </div>
 {{ end }}
