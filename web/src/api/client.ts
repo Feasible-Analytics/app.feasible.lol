@@ -6,6 +6,7 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
+import { t } from "../lib/i18n";
 import type { Bootstrap, StatsRequest, StatsResponse } from "./types";
 
 /** QueryError carries the server's own sentence. The endpoint answers a caller
@@ -22,21 +23,28 @@ export class QueryError extends Error {
 	}
 }
 
-/** bootstrap reads the site list the server wrote into the page. A missing or
- *  unparseable blob is treated as an empty install rather than a crash: an
- *  account with no sites yet is a real state, and it should reach the empty
- *  screen rather than a white one. */
+/** bootstrap reads the site list and the message catalogue the server wrote
+ *  into the page. A missing or unparseable blob is treated as an empty install
+ *  rather than a crash: an account with no sites yet is a real state, and it
+ *  should reach the empty screen rather than a white one. An absent catalogue
+ *  is the same bargain — every label renders as its own id, which is visible
+ *  rather than blank. */
 export function bootstrap(): Bootstrap {
 	const node = document.getElementById("feasible-bootstrap");
 
-	if (!node?.textContent) return { sites: [] };
+	if (!node?.textContent) return { sites: [], locale: "", messages: {} };
 
 	try {
 		const parsed = JSON.parse(node.textContent) as Partial<Bootstrap>;
+		const messages = parsed.messages;
 
-		return { sites: Array.isArray(parsed.sites) ? parsed.sites : [] };
+		return {
+			sites: Array.isArray(parsed.sites) ? parsed.sites : [],
+			locale: typeof parsed.locale === "string" ? parsed.locale : "",
+			messages: messages && typeof messages === "object" && !Array.isArray(messages) ? messages : {},
+		};
 	} catch {
-		return { sites: [] };
+		return { sites: [], locale: "", messages: {} };
 	}
 }
 
@@ -84,7 +92,7 @@ export async function query(
 		// the message is read the same way for a 400 and a 500. A body that is
 		// not JSON at all means something in front of us answered — a proxy, a
 		// login redirect — and the status is then the only honest thing to say.
-		let message = `the query failed with status ${response.status}`;
+		let message = t("dashboard.error.query_status", { status: response.status });
 
 		try {
 			const failure = (await response.json()) as { error?: string };

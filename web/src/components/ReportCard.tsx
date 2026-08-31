@@ -10,6 +10,7 @@ import { useEffect } from "react";
 
 import type { DateRange, StatsRequest } from "../api/types";
 import { compact, exact, percent } from "../lib/format";
+import { t } from "../lib/i18n";
 import { usePref } from "../lib/prefs";
 import type { CardDef, Tab } from "../lib/reports";
 import { PRIMARY, findTab, groupsOf, labelOf, subTabsOf } from "../lib/reports";
@@ -83,8 +84,8 @@ export function ReportCard({ domain, card, range, total, onOpenDetails, drawerTa
 		>
 			<header className="flex h-10 shrink-0 items-center gap-2 px-5">
 				<h2 className="flex shrink-0 items-center gap-1.5 text-sm font-semibold text-body">
-					{card.title}
-					{card.caveat && <InfoDot text={card.caveat} />}
+					{t(card.titleId)}
+					{card.caveatId && <InfoDot text={t(card.caveatId)} />}
 				</h2>
 
 				<div className="scroll-thin ml-auto flex items-center gap-0.5 overflow-x-auto">
@@ -95,9 +96,9 @@ export function ReportCard({ domain, card, range, total, onOpenDetails, drawerTa
 					{groups.map((group) => (
 						<TabButton
 							key={group.key}
-							label={group.label}
+							label={t(group.labelId)}
 							small={subTabs.length > 0}
-							active={(active.group ?? active.id) === group.key}
+							active={(active.groupId ?? active.id) === group.key}
 							onClick={() => setTabId(group.tab.id)}
 						/>
 					))}
@@ -108,7 +109,7 @@ export function ReportCard({ domain, card, range, total, onOpenDetails, drawerTa
 							{subTabs.map((tab) => (
 								<TabButton
 									key={tab.id}
-									label={tab.label}
+									label={t(tab.labelId)}
 									small
 									active={active.id === tab.id}
 									onClick={() => setTabId(tab.id)}
@@ -123,14 +124,14 @@ export function ReportCard({ domain, card, range, total, onOpenDetails, drawerTa
 				{stats.error ? (
 					<Failure message={stats.error} onRetry={stats.reload} />
 				) : !stats.data ? (
-					<Spinner label={`Loading ${card.title}`} />
+					<Spinner label={t("dashboard.card.loading", { title: t(card.titleId) })} />
 				) : rows.length === 0 ? (
-					<Empty what={active.noun} />
+					<Empty what={t(active.nounId)} />
 				) : (
 					<>
 						<div className="flex h-6 items-center text-[11px] font-medium tracking-wide text-muted uppercase">
-							<span className="flex-1 truncate">{active.heading}</span>
-							<span className="w-32 pr-1 text-right">Visitors</span>
+							<span className="flex-1 truncate">{t(active.headingId)}</span>
+							<span className="w-32 pr-1 text-right">{t("dashboard.column.visitors")}</span>
 						</div>
 
 						<ul>
@@ -181,7 +182,7 @@ export function ReportCard({ domain, card, range, total, onOpenDetails, drawerTa
 					onClick={(event) => onOpenDetails(card, active, event.currentTarget)}
 					className="text-xs font-medium text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent disabled:cursor-default disabled:opacity-40"
 				>
-					Details →
+					{t("dashboard.card.details")}
 				</button>
 			</footer>
 		</section>

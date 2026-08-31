@@ -34,6 +34,8 @@ import (
 	"path"
 	"sort"
 	"strings"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 )
 
 // assets holds the compiled bundle. The build writes app.js, app.css and
@@ -228,6 +230,12 @@ func (h *Handler) serveAsset(w http.ResponseWriter, r *http.Request, name string
 
 // serveShell writes the HTML with this instance's site list in it.
 func (h *Handler) serveShell(w http.ResponseWriter, r *http.Request) {
+	// The language is resolved before anything is written, because resolving it
+	// can set the cookie that remembers an explicit ?lang= choice, and a
+	// Set-Cookie after the status line is a header nobody receives.
+	locale := i18n.Apply(w, r)
+	payload := h.bootstrap(locale)
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", shellCacheControl)
 
@@ -244,16 +252,24 @@ func (h *Handler) serveShell(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, _ = w.Write(h.shellHead)
-	_, _ = w.Write(h.bootstrap())
+	_, _ = w.Write(payload)
 	_, _ = w.Write(h.shellTail)
 }
 
-// bootstrap renders the site list the shell boots from.
+// bootstrap renders the site list and the message catalogue the shell boots
+// from.
 //
 // The list is sorted so that two loads of the same install produce the same
 // document, which is what makes the shell diffable and the site picker's order
 // stable rather than following whatever order a map iterated in.
-func (h *Handler) bootstrap() []byte {
+//
+// The strings travel with the page for the same reason the site list does: they
+// are needed before the first paint, and fetching them would put a frame of
+// untranslated interface in front of every load. They arrive already merged over
+// English, so the client needs no fallback logic of its own — which is what
+// stops the dashboard and the server-rendered screens from growing two
+// different answers to "what does this locale say".
+func (h *Handler) bootstrap(locale string) []byte {
 	domains := []string{}
 	if h.Sites != nil {
 		domains = h.Sites.Domains()
@@ -262,13 +278,16 @@ func (h *Handler) bootstrap() []byte {
 	sort.Strings(domains)
 
 	body, err := json.Marshal(struct {
-		Sites []string `json:"sites"`
-	}{Sites: domains})
+		Sites    []string          `json:"sites"`
+		Locale   string            `json:"locale"`
+		Messages map[string]string `json:"messages"`
+	}{Sites: domains, Locale: locale, Messages: i18n.Messages(locale)})
 	if err != nil {
-		// The only value being encoded is a slice of strings, so this cannot
-		// fail; answering with an empty list rather than a 500 means a
-		// hypothetical failure costs the site picker, not the page.
-		return []byte(`{"sites":[]}`)
+		// The values being encoded are strings and a map of strings, so this
+		// cannot fail; answering with an empty payload rather than a 500 means a
+		// hypothetical failure costs the site picker and the translations, not
+		// the page.
+		return []byte(`{"sites":[],"locale":"` + i18n.DefaultLocale + `","messages":{}}`)
 	}
 
 	return body

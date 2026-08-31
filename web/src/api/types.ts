@@ -128,4 +128,10 @@ export interface StatsResponse {
 /** What the server writes into the page before the bundle runs. */
 export interface Bootstrap {
 	sites: string[];
+	/** The locale the server negotiated, for Intl and for the plural rules. */
+	locale: string;
+	/** Every string the dashboard can ask for, already merged over English by
+	 *  the server. It arrives resolved rather than as a locale to look up so the
+	 *  browser needs no catalogue and no fallback rule of its own. */
+	messages: Record<string, string>;
 }

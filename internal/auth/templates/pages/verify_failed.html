@@ -7,14 +7,14 @@
 -->
 {{ define "content" }}
 <div class="rounded-2xl border border-line bg-card p-8 text-center shadow-sm">
-  <h1 class="text-xl font-semibold text-heading">That link no longer works</h1>
+  <h1 class="text-xl font-semibold text-heading">{{ t $.Lang "auth.verify_failed.title" }}</h1>
   <p class="mt-2 text-sm text-muted">
-    Verification links last 30 minutes and can only be used once. Sign in and we will send you a new one.
+    {{ t $.Lang "auth.verify_failed.body" }}
   </p>
 
   <a href="/login"
      class="mt-6 inline-block rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
-    Go to sign in
+    {{ t $.Lang "auth.verify_failed.action" }}
   </a>
 </div>
 {{ end }}

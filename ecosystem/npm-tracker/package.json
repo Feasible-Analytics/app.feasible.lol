@@ -1,0 +1,47 @@
+{
+  "name": "@feasible/tracker",
+  "version": "1.0.0",
+  "description": "Typed browser loader for the feasible.lol analytics script. Server-side rendering safe, no build step, and it does not bundle the script.",
+  "license": "MIT",
+  "author": "Cloudmanic Labs, LLC",
+  "homepage": "https://app.feasible.lol",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Feasible-Analytics/feasible-tracker.git"
+  },
+  "keywords": [
+    "analytics",
+    "privacy",
+    "feasible",
+    "tracker",
+    "pageview",
+    "ssr"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist/index.mjs",
+    "dist/index.cjs",
+    "dist/index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test"
+  }
+}

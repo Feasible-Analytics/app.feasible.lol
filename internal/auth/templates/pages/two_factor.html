@@ -11,27 +11,27 @@
 -->
 {{ define "content" }}
 <div class="rounded-2xl border border-line bg-card p-8 shadow-sm">
-  <h1 class="text-xl font-semibold text-heading">Two-factor code</h1>
-  <p class="mt-1 text-sm text-muted">Open your authenticator app and enter the current code.</p>
+  <h1 class="text-xl font-semibold text-heading">{{ t $.Lang "auth.two_factor.title" }}</h1>
+  <p class="mt-1 text-sm text-muted">{{ t $.Lang "auth.two_factor.subtitle" }}</p>
 
   <form method="post" action="/login/2fa" class="mt-6 space-y-4">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
 
     <div>
-      <label for="code" class="block text-sm font-medium text-body">Code</label>
+      <label for="code" class="block text-sm font-medium text-body">{{ t $.Lang "auth.two_factor.code_label" }}</label>
       <input id="code" name="code" type="text" inputmode="text" autocomplete="one-time-code" required autofocus
              class="mt-1 block w-full rounded-xl border border-field px-3 py-3 text-center font-mono text-xl tracking-[0.3em] focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
-      <p class="mt-2 text-xs text-muted">Lost your phone? Type one of your recovery codes here instead.</p>
+      <p class="mt-2 text-xs text-muted">{{ t $.Lang "auth.two_factor.recovery_help" }}</p>
     </div>
 
     <button type="submit"
             class="w-full rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
-      Verify
+      {{ t $.Lang "auth.two_factor.submit" }}
     </button>
   </form>
 
   <p class="mt-6 text-center text-sm">
-    <a href="/login" class="text-muted hover:text-body">Start over</a>
+    <a href="/login" class="text-muted hover:text-body">{{ t $.Lang "auth.two_factor.start_over" }}</a>
   </p>
 </div>
 {{ end }}

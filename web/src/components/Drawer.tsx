@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { DateRange, Filter, StatsRequest } from "../api/types";
 import { exact, metricValue } from "../lib/format";
+import { formatterLocale, t } from "../lib/i18n";
 import type { CardDef } from "../lib/reports";
 import { BREAKDOWNS, DRAWER_HEADINGS, DRAWER_METRICS, findTab, groupsOf, labelOf, subTabsOf } from "../lib/reports";
 import type { DrawerState } from "../lib/url";
@@ -120,7 +121,7 @@ export function Drawer({ domain, card, state, range, onChange, onClose, opener }
 			    would throw away the only reason this is a drawer. */}
 			<button
 				type="button"
-				aria-label="Close details"
+				aria-label={t("dashboard.drawer.close")}
 				onClick={onClose}
 				className="drawer-scrim absolute inset-0 bg-[var(--fs-scrim)]"
 			/>
@@ -129,7 +130,7 @@ export function Drawer({ domain, card, state, range, onChange, onClose, opener }
 				ref={panel}
 				role="dialog"
 				aria-modal="true"
-				aria-label={`${card.title} — ${tab.label}`}
+				aria-label={t("dashboard.drawer.title", { card: t(card.titleId), tab: t(tab.labelId) })}
 				className="drawer-panel absolute inset-y-0 right-0 flex w-full flex-col border-l border-line bg-card shadow-2xl min-[900px]:w-[max(560px,min(50vw,900px))]"
 			>
 				<div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line px-4 py-2.5">
@@ -137,13 +138,15 @@ export function Drawer({ domain, card, state, range, onChange, onClose, opener }
 						type="search"
 						value={typed}
 						onChange={(event) => setTyped(event.target.value)}
-						placeholder={`Search ${tab.heading.toLowerCase()}…`}
-						aria-label={`Search ${tab.heading}`}
+						placeholder={t("dashboard.drawer.search_placeholder", {
+							heading: t(tab.headingId).toLocaleLowerCase(formatterLocale()),
+						})}
+						aria-label={t("dashboard.drawer.search_label", { heading: t(tab.headingId) })}
 						className="h-control min-w-0 flex-1 rounded-md border border-line bg-page px-2.5 text-sm text-body placeholder:text-muted"
 					/>
 
 					<label className="flex items-center">
-						<span className="sr-only">Break down by</span>
+						<span className="sr-only">{t("dashboard.drawer.breakdown")}</span>
 						<select
 							value={state.breakdown}
 							onChange={(event) => onChange({ ...state, breakdown: event.target.value, page: 1 })}
@@ -151,14 +154,16 @@ export function Drawer({ domain, card, state, range, onChange, onClose, opener }
 						>
 							{BREAKDOWNS.map((entry) => (
 								<option key={entry.id || "none"} value={entry.id}>
-									{entry.label}
+									{t(entry.labelId)}
 								</option>
 							))}
 						</select>
 					</label>
 
 					<span className="tnum ml-auto text-xs text-muted">
-						{totalRows === 0 ? "0" : `${first}–${last} of ${exact(totalRows)}`}
+						{totalRows === 0
+							? "0"
+							: t("dashboard.drawer.showing", { first, last, total: exact(totalRows) })}
 					</span>
 
 					<Pager
@@ -170,7 +175,7 @@ export function Drawer({ domain, card, state, range, onChange, onClose, opener }
 					<button
 						type="button"
 						onClick={onClose}
-						aria-label="Close details"
+						aria-label={t("dashboard.drawer.close")}
 						className="flex size-control items-center justify-center rounded-md border border-line text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
 					>
 						✕
@@ -183,8 +188,8 @@ export function Drawer({ domain, card, state, range, onChange, onClose, opener }
 					{groups.map((group) => (
 						<DrawerTab
 							key={group.key}
-							label={group.label}
-							active={(tab.group ?? tab.id) === group.key}
+							label={t(group.labelId)}
+							active={(tab.groupId ?? tab.id) === group.key}
 							onClick={() => onChange({ ...state, tab: group.tab.id, page: 1, search: "" })}
 						/>
 					))}
@@ -195,7 +200,7 @@ export function Drawer({ domain, card, state, range, onChange, onClose, opener }
 							{subTabs.map((entry) => (
 								<DrawerTab
 									key={entry.id}
-									label={entry.label}
+									label={t(entry.labelId)}
 									active={tab.id === entry.id}
 									onClick={() => onChange({ ...state, tab: entry.id, page: 1, search: "" })}
 								/>
@@ -211,29 +216,35 @@ export function Drawer({ domain, card, state, range, onChange, onClose, opener }
 						</div>
 					) : !stats.data ? (
 						<div className="h-64">
-							<Spinner label="Loading details" />
+							<Spinner label={t("dashboard.drawer.loading")} />
 						</div>
 					) : rows.length === 0 ? (
 						<div className="h-64">
-							<Empty what={state.search ? `${tab.noun} matching “${state.search}”` : tab.noun} />
+							<Empty
+								what={
+									state.search
+										? t("dashboard.drawer.empty_search", { noun: t(tab.nounId), search: state.search })
+										: t(tab.nounId)
+								}
+							/>
 						</div>
 					) : (
 						<table className="w-full border-collapse text-sm">
 							<thead className="sticky top-0 z-10 bg-card">
 								<tr className="border-b border-line">
 									<Th
-										label={tab.heading}
+										label={t(tab.headingId)}
 										sorted={state.sort === tab.dimension}
 										descending={state.descending}
 										onSort={() => sort(tab.dimension)}
 										align="left"
 										grow
 									/>
-									{breakdown?.id && <Th label={breakdown.label} align="left" grow />}
+									{breakdown?.id && <Th label={t(breakdown.labelId)} align="left" grow />}
 									{DRAWER_METRICS.map((metric) => (
 										<Th
 											key={metric}
-											label={DRAWER_HEADINGS[metric] ?? metric}
+											label={t(DRAWER_HEADINGS[metric] ?? metric)}
 											sorted={state.sort === metric}
 											descending={state.descending}
 											onSort={() => sort(metric)}
@@ -263,8 +274,11 @@ export function Drawer({ domain, card, state, range, onChange, onClose, opener }
 
 											{breakdown?.id && (
 												<td className="w-full max-w-0 px-3">
-													<span className="block truncate text-muted" title={row.dimensions[1] || "Unknown"}>
-														{row.dimensions[1] || "Unknown"}
+													<span
+														className="block truncate text-muted"
+														title={row.dimensions[1] || t("dashboard.value.unknown")}
+													>
+														{row.dimensions[1] || t("dashboard.value.unknown")}
 													</span>
 												</td>
 											)}
@@ -286,7 +300,7 @@ export function Drawer({ domain, card, state, range, onChange, onClose, opener }
 					<footer className="shrink-0 border-t border-line px-4 py-2">
 						{Object.entries(warnings).map(([metric, warning]) => (
 							<p key={metric} className="text-[11px] leading-relaxed text-muted">
-								<span className="font-medium text-body">{DRAWER_HEADINGS[metric] ?? metric}:</span>{" "}
+								<span className="font-medium text-body">{t(DRAWER_HEADINGS[metric] ?? metric)}:</span>{" "}
 								{warning.warning}
 							</p>
 						))}
@@ -305,7 +319,7 @@ function Pager({ page, lastPage, onGo }: { page: number; lastPage: number; onGo:
 		<span className="flex items-center gap-1">
 			<button
 				type="button"
-				aria-label="Previous page"
+				aria-label={t("dashboard.drawer.previous_page")}
 				disabled={page <= 1}
 				onClick={() => onGo(page - 1)}
 				className="flex size-control items-center justify-center rounded-md border border-line text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover disabled:opacity-30"
@@ -314,7 +328,7 @@ function Pager({ page, lastPage, onGo }: { page: number; lastPage: number; onGo:
 			</button>
 			<button
 				type="button"
-				aria-label="Next page"
+				aria-label={t("dashboard.drawer.next_page")}
 				disabled={page >= lastPage}
 				onClick={() => onGo(page + 1)}
 				className="flex size-control items-center justify-center rounded-md border border-line text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover disabled:opacity-30"

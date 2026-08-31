@@ -20,7 +20,7 @@ import (
 // use to them than a 404.
 func (h *Handler) startGoogle(w http.ResponseWriter, r *http.Request) {
 	if !h.Google.Configured() {
-		p := h.newPage(r, "Google sign-in is not set up", "")
+		p := h.newPage(r, tr(r, "auth.title.google_disabled"), "")
 		p.Error = h.Google.DisabledReason() + "."
 
 		h.render(w, r, "error", p, http.StatusNotFound)
@@ -57,7 +57,7 @@ func (h *Handler) finishGoogle(w http.ResponseWriter, r *http.Request) {
 
 	if r.URL.Query().Get("state") != state {
 		h.Log.Warn("google callback state did not match", "path", r.URL.Path)
-		h.googleError(w, r, "The sign-in could not be verified. Start again from the sign-in page.")
+		h.googleError(w, r, tr(r, "auth.error.google_state"))
 
 		return
 	}
@@ -71,21 +71,21 @@ func (h *Handler) finishGoogle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		h.googleError(w, r, "Google refused the sign-in: "+reason+".")
+		h.googleError(w, r, tr(r, "auth.error.google_refused", "reason", reason))
 
 		return
 	}
 
 	code := r.URL.Query().Get("code")
 	if code == "" {
-		h.googleError(w, r, "Google did not return a sign-in code. Start again from the sign-in page.")
+		h.googleError(w, r, tr(r, "auth.error.google_no_code"))
 		return
 	}
 
 	profile, err := h.Google.Exchange(r.Context(), code, verifier)
 	if err != nil {
 		h.Log.Warn("google token exchange failed", "error", err)
-		h.googleError(w, r, "We could not complete the Google sign-in. Start again from the sign-in page.")
+		h.googleError(w, r, tr(r, "auth.error.google_exchange"))
 
 		return
 	}
@@ -117,7 +117,7 @@ func (h *Handler) finishGoogle(w http.ResponseWriter, r *http.Request) {
 
 // googleError renders a failed federated sign-in with a way back.
 func (h *Handler) googleError(w http.ResponseWriter, r *http.Request, message string) {
-	p := h.newPage(r, "Google sign-in", "")
+	p := h.newPage(r, tr(r, "auth.title.google"), "")
 	p.Error = message
 
 	h.render(w, r, "error", p, http.StatusBadRequest)

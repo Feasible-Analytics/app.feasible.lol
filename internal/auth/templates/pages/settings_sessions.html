@@ -10,9 +10,9 @@
 -->
 {{ define "content" }}
 <div class="mx-auto max-w-2xl">
-  <h1 class="text-2xl font-semibold text-heading">Signed-in devices</h1>
+  <h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "auth.settings_sessions.title" }}</h1>
   <p class="mt-1 text-sm text-muted">
-    Every browser signed in to your account. A session ends by itself after 14 days without use.
+    {{ t $.Lang "auth.settings_sessions.subtitle" }}
   </p>
 
   <div class="mt-8 overflow-hidden rounded-2xl border border-line bg-card shadow-sm">
@@ -23,11 +23,11 @@
             <p class="text-sm font-medium text-heading">
               {{ .DeviceLabel }}
               {{ if eq .ID $.Data.CurrentID }}
-                <span class="ml-2 rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-accent-ink">This browser</span>
+                <span class="ml-2 rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-accent-ink">{{ t $.Lang "auth.settings_sessions.current" }}</span>
               {{ end }}
             </p>
             <p class="mt-0.5 text-xs text-muted">
-              Last used {{ ago .LastSeenAt }} · signed in {{ ago .CreatedAt }} · expires {{ date .ExpiresAt }}
+              {{ t $.Lang "auth.settings_sessions.meta" "used" (ago $.Lang .LastSeenAt) "created" (ago $.Lang .CreatedAt) "expires" (date $.Lang .ExpiresAt) }}
             </p>
           </div>
 
@@ -35,7 +35,7 @@
             <input type="hidden" name="csrf_token" value="{{ $.CSRF }}">
             <input type="hidden" name="session_id" value="{{ .ID }}">
             <button type="submit" class="text-sm font-medium text-down hover:text-down">
-              {{ if eq .ID $.Data.CurrentID }}Sign out{{ else }}Revoke{{ end }}
+              {{ if eq .ID $.Data.CurrentID }}{{ t $.Lang "auth.settings_sessions.sign_out" }}{{ else }}{{ t $.Lang "auth.settings_sessions.revoke" }}{{ end }}
             </button>
           </form>
         </li>
@@ -48,7 +48,7 @@
     <input type="hidden" name="all" value="1">
     <button type="submit"
             class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">
-      Sign out everywhere else
+      {{ t $.Lang "auth.settings_sessions.revoke_all" }}
     </button>
   </form>
 </div>

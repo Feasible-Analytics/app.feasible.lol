@@ -16,14 +16,14 @@
 <div class="mx-auto max-w-3xl" x-data="onboarding({{ $site.ID }}, {{ .Data.PollMillis }})" x-init="poll()">
   <div class="flex items-start justify-between gap-4">
     <div>
-      <h1 class="text-2xl font-semibold text-heading">Install {{ $site.Label }}</h1>
+      <h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "auth.onboarding.title" "site" $site.Label }}</h1>
       <p class="mt-1 text-sm text-muted">{{ $site.Domain }}</p>
     </div>
 
     <form method="post" action="/onboarding/{{ $site.ID }}/skip">
       <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
       <button type="submit" class="text-sm font-medium text-muted hover:text-body">
-        Skip for now
+        {{ t $.Lang "auth.onboarding.skip" }}
       </button>
     </form>
   </div>
@@ -32,7 +32,7 @@
   <section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm" x-data="{ copied: false, legacy: false }">
     <div class="flex items-center gap-3">
       <span class="flex h-6 w-6 items-center justify-center rounded-full bg-accent text-xs font-bold text-fill-fg">1</span>
-      <h2 class="text-sm font-semibold text-heading">Paste this into your site's &lt;head&gt;</h2>
+      <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.onboarding.step1" }}</h2>
     </div>
 
     <pre class="mt-4 overflow-x-auto rounded-xl bg-code p-4 text-xs text-code-fg"><code x-ref="snippet" x-show="!legacy">{{ .Data.Snippet }}</code><code x-ref="legacySnippet" x-show="legacy" x-cloak>{{ .Data.SnippetLegacy }}</code></pre>
@@ -41,12 +41,12 @@
       <button type="button"
               @click="navigator.clipboard.writeText((legacy ? $refs.legacySnippet : $refs.snippet).textContent); copied = true; setTimeout(() => copied = false, 2000)"
               class="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
-        <span x-text="copied ? 'Copied' : 'Copy snippet'"></span>
+        <span x-text="copied ? '{{ t $.Lang "common.action.copied" }}' : '{{ t $.Lang "auth.onboarding.copy_snippet" }}'"></span>
       </button>
 
       <button type="button" @click="legacy = !legacy"
               class="text-xs font-medium text-muted hover:text-body"
-              x-text="legacy ? 'Use the per-site snippet' : 'Need the data-domain form? (tag managers)'"></button>
+              x-text="legacy ? '{{ t $.Lang "auth.onboarding.use_per_site" }}' : '{{ t $.Lang "auth.onboarding.need_data_domain" }}'"></button>
     </div>
   </section>
 
@@ -55,7 +55,7 @@
            x-data="{ platform: 'html' }">
     <div class="flex items-center gap-3">
       <span class="flex h-6 w-6 items-center justify-center rounded-full bg-accent text-xs font-bold text-fill-fg">2</span>
-      <h2 class="text-sm font-semibold text-heading">Where it goes</h2>
+      <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.onboarding.step2" }}</h2>
     </div>
 
     <div class="mt-4 flex flex-wrap gap-2">
@@ -73,7 +73,7 @@
         </ol>
 
         <p class="mt-3 rounded-xl border border-line bg-subtle px-3 py-2 text-xs text-muted">
-          <strong class="text-body">Watch out:</strong> {{ .Note }}
+          <strong class="text-body">{{ t $.Lang "auth.onboarding.watch_out" }}</strong> {{ .Note }}
         </p>
       </div>
     {{ end }}
@@ -85,7 +85,7 @@
     <div class="flex items-center gap-3">
       <span class="flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold text-fill-fg"
             :class="received ? 'bg-up' : 'bg-accent'">3</span>
-      <h2 class="text-sm font-semibold text-heading">First pageview</h2>
+      <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.onboarding.step3" }}</h2>
     </div>
 
     <div x-show="!received" class="mt-5 flex items-start gap-4">
@@ -93,11 +93,9 @@
             aria-hidden="true"></span>
 
       <div>
-        <p class="text-sm font-medium text-heading" aria-live="polite">Waiting for your first pageview…</p>
+        <p class="text-sm font-medium text-heading" aria-live="polite">{{ t $.Lang "auth.onboarding.waiting" }}</p>
         <p class="mt-1 text-sm text-muted">
-          Deploy the snippet and open your site in another tab. A brand-new domain can take up to
-          {{ .Data.RoutingDelay }} seconds to start collecting while our ingest tier picks it up, so
-          a moment of nothing here is normal. This panel updates on its own — you do not need to reload.
+          {{ n $.Lang "auth.onboarding.waiting_help" .Data.RoutingDelay }}
         </p>
       </div>
     </div>
@@ -107,14 +105,14 @@
             aria-hidden="true">✓</span>
 
       <div>
-        <p class="text-sm font-semibold text-up-ink" aria-live="polite">We've got it.</p>
+        <p class="text-sm font-semibold text-up-ink" aria-live="polite">{{ t $.Lang "auth.onboarding.received_title" }}</p>
         <p class="mt-1 text-sm text-up-ink">
-          Your first pageview has arrived. {{ $site.Label }} is collecting.
+          {{ t $.Lang "auth.onboarding.received_body" "site" $site.Label }}
         </p>
 
         <a href="/sites"
            class="mt-4 inline-block rounded-xl bg-up px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-up/85">
-          Go to your sites
+          {{ t $.Lang "auth.onboarding.received_action" }}
         </a>
       </div>
     </div>
@@ -124,23 +122,22 @@
   <section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
     <div class="flex items-center gap-3">
       <span class="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-xs font-bold text-fill-fg">4</span>
-      <h2 class="text-sm font-semibold text-heading">Not working? Let us look</h2>
+      <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.onboarding.step4" }}</h2>
     </div>
 
     <p class="mt-2 text-sm text-muted">
-      We will fetch <span class="font-mono text-body">https://{{ $site.Domain }}/</span> and tell you
-      exactly what we found — the snippet, the wrong domain, or a policy blocking it.
+      {{ t $.Lang "auth.onboarding.check_help" "url" (printf "https://%s/" $site.Domain) }}
     </p>
 
     {{ with .Data.Verify }}
       <div class="mt-4 rounded-xl border px-4 py-3 text-sm
                   {{ if .OK }}border-up/30 bg-up/10 text-up-ink{{ else }}border-down/30 bg-down/10 text-down-ink{{ end }}">
         <p class="font-medium">
-          {{ if eq .Outcome "found" }}Snippet found and loading{{ end }}
-          {{ if eq .Outcome "missing" }}No snippet on the page{{ end }}
-          {{ if eq .Outcome "wrong_domain" }}The snippet names a different site{{ end }}
-          {{ if eq .Outcome "blocked_by_csp" }}Blocked by your Content-Security-Policy{{ end }}
-          {{ if eq .Outcome "unreachable" }}We could not load the page{{ end }}
+          {{ if eq .Outcome "found" }}{{ t $.Lang "auth.onboarding.verify_found" }}{{ end }}
+          {{ if eq .Outcome "missing" }}{{ t $.Lang "auth.onboarding.verify_missing" }}{{ end }}
+          {{ if eq .Outcome "wrong_domain" }}{{ t $.Lang "auth.onboarding.verify_wrong_domain" }}{{ end }}
+          {{ if eq .Outcome "blocked_by_csp" }}{{ t $.Lang "auth.onboarding.verify_blocked" }}{{ end }}
+          {{ if eq .Outcome "unreachable" }}{{ t $.Lang "auth.onboarding.verify_unreachable" }}{{ end }}
         </p>
         <p class="mt-1">{{ .Message }}</p>
 
@@ -154,7 +151,7 @@
       <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
       <button type="submit"
               class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">
-        Check my installation
+        {{ t $.Lang "auth.onboarding.check_submit" }}
       </button>
     </form>
   </section>

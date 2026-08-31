@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { QueryError, query } from "../api/client";
 import type { StatsRequest, StatsResponse } from "../api/types";
+import { t } from "./i18n";
 
 export interface Stats {
 	data: StatsResponse | null;
@@ -71,7 +72,7 @@ export function useStats(domain: string, body: StatsRequest | null, enabled = tr
 				// date-range change.
 				if (!live || (err instanceof DOMException && err.name === "AbortError")) return;
 
-				setError(err instanceof QueryError || err instanceof Error ? err.message : "the query failed");
+				setError(err instanceof QueryError || err instanceof Error ? err.message : t("dashboard.error.query_failed"));
 				setLoading(false);
 			});
 

@@ -1,0 +1,46 @@
+{
+  "name": "@feasible/node",
+  "version": "1.0.0",
+  "description": "Server-side analytics client for feasible.lol. No dependencies, no build step, and it will not let you forget the visitor's IP and User-Agent.",
+  "license": "MIT",
+  "author": "Cloudmanic Labs, LLC",
+  "homepage": "https://app.feasible.lol",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Feasible-Analytics/feasible-node.git"
+  },
+  "keywords": [
+    "analytics",
+    "privacy",
+    "feasible",
+    "pageview",
+    "events",
+    "server-side"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./src/index.js",
+      "require": "./src/index.cjs",
+      "default": "./src/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./src/index.cjs",
+  "module": "./src/index.js",
+  "types": "./index.d.ts",
+  "files": [
+    "src",
+    "index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -7,8 +7,31 @@
 //
 
 import type { Interval, Metric } from "../api/types";
+import { formatterLocale, n, t } from "./i18n";
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** The month names, built once per locale. They come from Intl rather than from
+ *  a table of English abbreviations, because the axis of a translated dashboard
+ *  saying "Jan" is the sort of half-finished detail that makes the rest of the
+ *  translation look untrustworthy. */
+let months: { locale: string; names: string[] } | null = null;
+
+/** monthName is the short form of a one-based month number. The month is
+ *  formatted in UTC from a fixed year so nothing here can slide a bucket into
+ *  the neighbouring month on a reader whose clock is behind the date. */
+function monthName(month: number): string {
+	const locale = formatterLocale();
+
+	if (!months || months.locale !== locale) {
+		const format = new Intl.DateTimeFormat(locale, { month: "short", timeZone: "UTC" });
+
+		months = {
+			locale,
+			names: Array.from({ length: 12 }, (_, index) => format.format(new Date(Date.UTC(2000, index, 1)))),
+		};
+	}
+
+	return months.names[month - 1] ?? t("dashboard.format.unknown_month");
+}
 
 /**
  * compact renders a count the way a dashboard tile has room for: 1.2k, 4.5M.
@@ -24,12 +47,12 @@ export function compact(value: number): string {
 
 	if (abs < 1_000_000) {
 		const scaled = value / 1000;
-		return `${trim(scaled)}k`;
+		return t("dashboard.format.compact.thousand", { value: trim(scaled) });
 	}
 
-	if (abs < 1_000_000_000) return `${trim(value / 1_000_000)}M`;
+	if (abs < 1_000_000_000) return t("dashboard.format.compact.million", { value: trim(value / 1_000_000) });
 
-	return `${trim(value / 1_000_000_000)}B`;
+	return t("dashboard.format.compact.billion", { value: trim(value / 1_000_000_000) });
 }
 
 /** trim drops a trailing ".0" so 1.0k reads as 1k. */
@@ -40,9 +63,11 @@ function trim(value: number): string {
 }
 
 /** exact renders the full number with thousands separators, for the tooltip
- *  behind every abbreviated figure. */
+ *  behind every abbreviated figure. The separator follows the catalogue's
+ *  locale rather than the browser's, so the words and the numbers on one screen
+ *  cannot come from two different languages. */
 export function exact(value: number): string {
-	return Math.round(value).toLocaleString();
+	return Math.round(value).toLocaleString(formatterLocale());
 }
 
 /**
@@ -57,10 +82,10 @@ export function duration(seconds: number): string {
 	const minutes = Math.floor((total % 3600) / 60);
 	const secs = total % 60;
 
-	if (hours > 0) return `${hours}h ${pad(minutes)}m`;
-	if (minutes > 0) return `${minutes}m ${pad(secs)}s`;
+	if (hours > 0) return t("dashboard.format.duration.hours", { hours, minutes: pad(minutes) });
+	if (minutes > 0) return t("dashboard.format.duration.minutes", { minutes, seconds: pad(secs) });
 
-	return `${secs}s`;
+	return t("dashboard.format.duration.seconds", { seconds: secs });
 }
 
 function pad(value: number): string {
@@ -101,7 +126,7 @@ export function metricTitle(metric: Metric, value: number): string {
 
 		case "visit_duration":
 		case "time_on_page":
-			return `${Math.round(value).toLocaleString()} seconds`;
+			return n("dashboard.format.seconds", Math.round(value), { value: exact(value) });
 
 		case "views_per_visit":
 			return value.toFixed(2);
@@ -117,7 +142,7 @@ export function percent(part: number, total: number): string {
 
 	const share = (100 * part) / total;
 
-	if (share > 0 && share < 1) return "<1%";
+	if (share > 0 && share < 1) return t("dashboard.format.percent_tiny");
 
 	return `${Math.round(share)}%`;
 }
@@ -145,13 +170,13 @@ export function bucketShort(label: string, interval: Interval): string {
 
 	switch (interval) {
 		case "minute":
-			return `${at.h}:${pad(at.min)}`;
+			return t("dashboard.format.time", { hour: at.h, minute: pad(at.min) });
 		case "hour":
-			return `${at.h}:00`;
+			return t("dashboard.format.hour", { hour: at.h });
 		case "month":
-			return `${MONTHS[at.m - 1] ?? "?"} ${String(at.y).slice(2)}`;
+			return t("dashboard.format.month_short", { month: monthName(at.m), year: String(at.y).slice(2) });
 		default:
-			return `${at.d} ${MONTHS[at.m - 1] ?? "?"}`;
+			return t("dashboard.format.day_short", { day: at.d, month: monthName(at.m) });
 	}
 }
 
@@ -159,17 +184,17 @@ export function bucketShort(label: string, interval: Interval): string {
  *  somebody reads when the short form left them guessing. */
 export function bucketLong(label: string, interval: Interval): string {
 	const at = bucketDate(label);
-	const day = `${MONTHS[at.m - 1] ?? "?"} ${at.d}, ${at.y}`;
+	const day = t("dashboard.format.date_long", { month: monthName(at.m), day: at.d, year: at.y });
 
 	switch (interval) {
 		case "minute":
-			return `${day}, ${at.h}:${pad(at.min)}`;
+			return t("dashboard.format.date_time", { date: day, hour: at.h, minute: pad(at.min) });
 		case "hour":
-			return `${day}, ${at.h}:00`;
+			return t("dashboard.format.date_hour", { date: day, hour: at.h });
 		case "week":
-			return `Week of ${day}`;
+			return t("dashboard.format.week_of", { date: day });
 		case "month":
-			return `${MONTHS[at.m - 1] ?? "?"} ${at.y}`;
+			return t("dashboard.format.month_long", { month: monthName(at.m), year: at.y });
 		default:
 			return day;
 	}
@@ -188,11 +213,11 @@ export function rangeLabel(bounds: string[] | undefined): string {
 	if (!start || !end) return "";
 	if (start === end) return prettyDate(start);
 
-	return `${prettyDate(start)} – ${prettyDate(end)}`;
+	return t("dashboard.format.range", { from: prettyDate(start), to: prettyDate(end) });
 }
 
 function prettyDate(iso: string): string {
 	const [y = "", m = "", d = ""] = iso.split("-");
 
-	return `${MONTHS[Number(m) - 1] ?? "?"} ${Number(d)}, ${y}`;
+	return t("dashboard.format.date_long", { month: monthName(Number(m)), day: Number(d), year: y });
 }

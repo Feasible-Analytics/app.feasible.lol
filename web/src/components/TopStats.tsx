@@ -8,6 +8,7 @@
 
 import type { Metric, StatsResponse } from "../api/types";
 import { metricTitle, metricValue } from "../lib/format";
+import { formatterLocale, t } from "../lib/i18n";
 import { INVERTED } from "../lib/reports";
 import { ChangeChip, Failure } from "./atoms";
 
@@ -23,14 +24,31 @@ export const TILE_METRICS: Metric[] = [
 	"visit_duration",
 ];
 
+/** The message id behind each tile's label. The keys are the wire metric names,
+ *  which the engine reads and which are never translated. */
 export const TILE_LABELS: Record<string, string> = {
-	visitors: "Unique visitors",
-	visits: "Total visits",
-	pageviews: "Total pageviews",
-	views_per_visit: "Views per visit",
-	bounce_rate: "Bounce rate",
-	visit_duration: "Visit duration",
+	visitors: "dashboard.metric.visitors",
+	visits: "dashboard.metric.visits",
+	pageviews: "dashboard.metric.pageviews",
+	views_per_visit: "dashboard.metric.views_per_visit",
+	bounce_rate: "dashboard.metric.bounce_rate",
+	visit_duration: "dashboard.metric.visit_duration",
 };
+
+/** tileLabel names one metric for a reader. It resolves the string where it is
+ *  rendered rather than in the table above, so the labels follow a change of
+ *  locale without the page being reloaded. A metric with no id falls back to its
+ *  wire name, which is at least something to search for. */
+export function tileLabel(metric: string): string {
+	return t(TILE_LABELS[metric] ?? metric);
+}
+
+/** tileLabelLower is the same label mid-sentence. The lowercasing is done in the
+ *  reader's own language because the rule is not the same in all of them —
+ *  Turkish turns a dotted capital I into a dotted lowercase one. */
+export function tileLabelLower(metric: string): string {
+	return tileLabel(metric).toLocaleLowerCase(formatterLocale());
+}
 
 /** Metrics the graph can draw. A ratio over a whole visit has no honest value
  *  per hour, so the three session ratios are read on a tile and not plotted. */
@@ -76,9 +94,9 @@ export function TopStats({ stats, selected, onSelect, comparing }: Props) {
 				TILE_METRICS.map((metric) => (
 					<Tile key={metric} metric={metric} active={metric === selected}>
 						<span className="spinner-grace tnum text-2xl leading-none font-semibold text-muted/50" aria-hidden="true">
-							—
+							{t("common.state.dash")}
 						</span>
-						<span className="sr-only">Loading {TILE_LABELS[metric]}</span>
+						<span className="sr-only">{t("dashboard.tile.loading", { metric: tileLabel(metric) })}</span>
 					</Tile>
 				))}
 
@@ -98,8 +116,8 @@ export function TopStats({ stats, selected, onSelect, comparing }: Props) {
 							onClick={() => graphable && onSelect(metric)}
 							title={
 								graphable
-									? `Draw ${TILE_LABELS[metric]?.toLowerCase()} on the graph`
-									: `${TILE_LABELS[metric]} describes a whole visit, so it is not plotted over time`
+									? t("dashboard.tile.draw", { metric: tileLabelLower(metric) })
+									: t("dashboard.tile.not_plotted", { metric: tileLabel(metric) })
 							}
 							className={[
 								"group relative flex flex-col items-start gap-1 border-line px-5 py-4 text-left",
@@ -118,7 +136,7 @@ export function TopStats({ stats, selected, onSelect, comparing }: Props) {
 							<span
 								className={`text-[11px] font-medium tracking-wide uppercase ${active ? "text-accent" : "text-muted"}`}
 							>
-								{TILE_LABELS[metric]}
+								{tileLabel(metric)}
 							</span>
 
 							<span className="flex items-baseline gap-2">
@@ -160,7 +178,7 @@ function Tile({ metric, active, children }: { metric: Metric; active: boolean; c
 			{active && <span aria-hidden="true" className="absolute inset-x-0 bottom-0 h-0.5 bg-accent" />}
 
 			<span className={`text-[11px] font-medium tracking-wide uppercase ${active ? "text-accent" : "text-muted"}`}>
-				{TILE_LABELS[metric]}
+				{tileLabel(metric)}
 			</span>
 
 			<span className="flex items-baseline gap-2">{children}</span>

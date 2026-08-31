@@ -11,7 +11,7 @@
   between them.
 -->
 <!doctype html>
-<html lang="en" class="h-full">
+<html lang="{{ .Lang }}"{{ if rtl .Lang }} dir="rtl"{{ end }} class="h-full">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -71,7 +71,7 @@
         </a>
         <button type="button" @click="mobileNav = !mobileNav"
                 class="rounded-lg border border-line px-3 py-1.5 text-sm font-medium text-body">
-          Menu
+          {{ t $.Lang "common.action.menu" }}
         </button>
       </header>
 
@@ -93,7 +93,7 @@
       {{ template "content" . }}
     </div>
 
-    <p class="mt-8 text-xs text-faint">Privacy-first analytics. No cookies, no persistent identifiers.</p>
+    <p class="mt-8 text-xs text-faint">{{ t $.Lang "auth.layout.tagline" }}</p>
   </div>
 {{ end }}
 

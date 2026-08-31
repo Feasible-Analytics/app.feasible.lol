@@ -11,6 +11,7 @@ package auth
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestEveryPageParses checks the whole template tree at once. A broken template
@@ -74,28 +75,56 @@ func TestSparklineNormalisesToItsOwnMaximum(t *testing.T) {
 	}
 }
 
-// TestTemplateHelpers checks the four functions the templates are allowed to
-// call, since a wrong one shows up as wrong text on a page rather than a
-// failure anywhere.
+// TestTemplateHelpers checks the functions the templates are allowed to call,
+// since a wrong one shows up as wrong text on a page rather than a failure
+// anywhere.
+//
+// Every one of them takes the locale first, because the templates are parsed
+// once at start-up and a helper that closed over a language would answer in
+// whichever one the process happened to be built with.
 func TestTemplateHelpers(t *testing.T) {
 	funcs := templateFuncs()
 
-	ago, ok := funcs["ago"].(func(int64) string)
+	ago, ok := funcs["ago"].(func(string, int64) string)
 	if !ok {
 		t.Fatal("ago is missing")
 	}
 
-	if got := ago(0); got != "never" {
+	if got := ago("en", 0); got != "never" {
 		t.Errorf("ago(0) = %q, want %q", got, "never")
 	}
 
-	date, ok := funcs["date"].(func(int64) string)
+	// The counted branches go through the catalogue's plural forms, which is
+	// why they moved: the hand-written version said "1 minutes ago".
+	if got := ago("en", time.Now().Add(-90*time.Second).Unix()); got != "1 minute ago" {
+		t.Errorf("ago(90 seconds) = %q, want %q", got, "1 minute ago")
+	}
+
+	date, ok := funcs["date"].(func(string, int64) string)
 	if !ok {
 		t.Fatal("date is missing")
 	}
 
-	if got := date(0); got != "—" {
+	if got := date("en", 0); got != "—" {
 		t.Errorf("date(0) = %q, want an em dash", got)
+	}
+
+	translate, ok := funcs["t"].(func(string, string, ...any) string)
+	if !ok {
+		t.Fatal("t is missing")
+	}
+
+	if got := translate("en", "auth.login.title"); got != "Sign in" {
+		t.Errorf("t(auth.login.title) = %q", got)
+	}
+
+	count, ok := funcs["n"].(func(string, string, int, ...any) string)
+	if !ok {
+		t.Fatal("n is missing")
+	}
+
+	if got := count("en", "auth.sites.count", 1); got != "1 site in this account." {
+		t.Errorf("n(auth.sites.count, 1) = %q", got)
 	}
 
 	dict, ok := funcs["dict"].(func(...any) map[string]any)

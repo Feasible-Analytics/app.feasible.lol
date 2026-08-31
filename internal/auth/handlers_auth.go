@@ -15,6 +15,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 )
 
 // pendingTwoFactorCookie carries the half-finished sign-in between the password
@@ -30,7 +32,7 @@ func (h *Handler) showRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.render(w, r, "register", h.newPage(r, "Create your account", ""), http.StatusOK)
+	h.render(w, r, "register", h.newPage(r, tr(r, "auth.title.register"), ""), http.StatusOK)
 }
 
 // doRegister creates an account and sends the verification email.
@@ -48,7 +50,7 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.PostFormValue("name"))
 	password := r.PostFormValue("password")
 
-	p := h.newPage(r, "Create your account", "")
+	p := h.newPage(r, tr(r, "auth.title.register"), "")
 	p.Data["Email"] = email
 	p.Data["Name"] = name
 
@@ -58,7 +60,7 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !LooksLikeEmail(email) {
-		fail("That does not look like an email address.")
+		fail(i18n.T(p.Lang, "auth.error.email_invalid"))
 		return
 	}
 
@@ -71,7 +73,7 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 	// accounts as fast as bcrypt runs and every one of them sends an email from
 	// our domain to an address the script chose.
 	if !h.Limiter.Allow(ClientKey(r, "register"), LoginAttempts, LoginWindow) {
-		fail("Too many accounts created from here. Wait a few minutes and try again.")
+		fail(i18n.T(p.Lang, "auth.error.too_many_registrations"))
 		return
 	}
 
@@ -83,7 +85,7 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 
 	user, team, err := h.Store.CreateUser(r.Context(), email, name, hash, "")
 	if errors.Is(err, ErrEmailTaken) {
-		fail("An account already uses that email address. Sign in instead, or reset your password.")
+		fail(i18n.T(p.Lang, "auth.error.email_taken"))
 		return
 	}
 	if err != nil {
@@ -158,11 +160,11 @@ func (h *Handler) showLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := h.newPage(r, "Sign in", "")
+	p := h.newPage(r, tr(r, "auth.title.login"), "")
 	p.Data["Next"] = safeNext(r.URL.Query().Get("next"))
 
 	if r.URL.Query().Get("reset") == "1" {
-		p.Flash = "Your password has been changed. Sign in with the new one."
+		p.Flash = i18n.T(p.Lang, "auth.flash.password_reset")
 	}
 
 	h.render(w, r, "login", p, http.StatusOK)
@@ -184,7 +186,7 @@ func (h *Handler) doLogin(w http.ResponseWriter, r *http.Request) {
 	password := r.PostFormValue("password")
 	next := safeNext(r.PostFormValue("next"))
 
-	p := h.newPage(r, "Sign in", "")
+	p := h.newPage(r, tr(r, "auth.title.login"), "")
 	p.Data["Email"] = email
 	p.Data["Next"] = next
 
@@ -197,7 +199,7 @@ func (h *Handler) doLogin(w http.ResponseWriter, r *http.Request) {
 	if !sourceOK || !subjectOK {
 		h.Log.Warn("login rate limit reached", "email_hash", HashToken(email)[:12])
 
-		p.Error = "Too many sign-in attempts. Wait a few minutes and try again."
+		p.Error = i18n.T(p.Lang, "auth.error.too_many_logins")
 		h.render(w, r, "login", p, http.StatusTooManyRequests)
 
 		return
@@ -215,17 +217,17 @@ func (h *Handler) doLogin(w http.ResponseWriter, r *http.Request) {
 	if user == nil {
 		CheckPassword("", password)
 
-		p.Error = "That email address and password do not match an account."
+		p.Error = i18n.T(p.Lang, "auth.error.bad_credentials")
 		h.render(w, r, "login", p, http.StatusUnauthorized)
 
 		return
 	}
 
 	if !CheckPassword(user.PasswordHash, password) {
-		p.Error = "That email address and password do not match an account."
+		p.Error = i18n.T(p.Lang, "auth.error.bad_credentials")
 
 		if user.PasswordHash == "" {
-			p.Error = "That account signs in with Google. Use the Google button above."
+			p.Error = i18n.T(p.Lang, "auth.error.google_account")
 		}
 
 		h.render(w, r, "login", p, http.StatusUnauthorized)
@@ -283,11 +285,11 @@ func (h *Handler) showVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := h.newPage(r, "Confirm your email", "")
+	p := h.newPage(r, tr(r, "auth.title.verify"), "")
 	p.Data["Digits"] = VerificationCodeDigits
 
 	if r.URL.Query().Get("sent") == "1" {
-		p.Flash = "We sent a new code to " + user.Email + "."
+		p.Flash = i18n.T(p.Lang, "auth.flash.code_sent", "email", user.Email)
 	}
 
 	h.render(w, r, "verify", p, http.StatusOK)
@@ -308,9 +310,9 @@ func (h *Handler) doVerify(w http.ResponseWriter, r *http.Request) {
 	// The code is short enough to type, which is exactly why the attempt limit
 	// matters: it is what makes eight digits sufficient.
 	if !h.Limiter.Allow(SubjectKey(fmt.Sprint(user.ID), "verify"), TwoFactorAttempts, TwoFactorWindow) {
-		p := h.newPage(r, "Confirm your email", "")
+		p := h.newPage(r, tr(r, "auth.title.verify"), "")
 		p.Data["Digits"] = VerificationCodeDigits
-		p.Error = "Too many attempts. Wait a minute and try again."
+		p.Error = i18n.T(p.Lang, "auth.error.too_many_attempts")
 
 		h.render(w, r, "verify", p, http.StatusTooManyRequests)
 
@@ -327,18 +329,18 @@ func (h *Handler) doVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := h.newPage(r, "Confirm your email", "")
+	p := h.newPage(r, tr(r, "auth.title.verify"), "")
 	p.Data["Digits"] = VerificationCodeDigits
 
 	switch {
 	case errors.Is(err, ErrTokenExpired):
-		p.Error = "That code has expired. Ask for a new one."
+		p.Error = i18n.T(p.Lang, "auth.error.code_expired")
 	case errors.Is(err, ErrRateLimited):
-		p.Error = "Too many wrong codes — that one has been cancelled. Ask for a new one."
+		p.Error = i18n.T(p.Lang, "auth.error.code_cancelled")
 	case errors.Is(err, ErrNotFound):
-		p.Error = "There is no code outstanding. Ask for a new one."
+		p.Error = i18n.T(p.Lang, "auth.error.no_code")
 	case errors.Is(err, ErrBadCredentials):
-		p.Error = "That code is not right."
+		p.Error = i18n.T(p.Lang, "auth.error.code_wrong")
 	default:
 		h.fail(w, r, err)
 		return
@@ -380,8 +382,8 @@ func (h *Handler) doVerifyLink(w http.ResponseWriter, r *http.Request) {
 
 	userID, err := h.Store.UserIDForVerificationLink(r.Context(), token)
 	if err != nil {
-		p := h.newPage(r, "Confirm your email", "")
-		p.Error = "That link has expired or has already been used. Sign in and ask for a new code."
+		p := h.newPage(r, tr(r, "auth.title.verify"), "")
+		p.Error = i18n.T(p.Lang, "auth.error.verify_link")
 
 		h.render(w, r, "verify_failed", p, http.StatusBadRequest)
 
@@ -389,8 +391,8 @@ func (h *Handler) doVerifyLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.Store.ConsumeVerification(r.Context(), userID, "", token); err != nil {
-		p := h.newPage(r, "Confirm your email", "")
-		p.Error = "That link has expired or has already been used. Sign in and ask for a new code."
+		p := h.newPage(r, tr(r, "auth.title.verify"), "")
+		p.Error = i18n.T(p.Lang, "auth.error.verify_link")
 
 		h.render(w, r, "verify_failed", p, http.StatusBadRequest)
 
@@ -415,7 +417,7 @@ func (h *Handler) doVerifyLink(w http.ResponseWriter, r *http.Request) {
 
 // showForgot renders the password reset request form.
 func (h *Handler) showForgot(w http.ResponseWriter, r *http.Request) {
-	h.render(w, r, "forgot", h.newPage(r, "Reset your password", ""), http.StatusOK)
+	h.render(w, r, "forgot", h.newPage(r, tr(r, "auth.title.forgot"), ""), http.StatusOK)
 }
 
 // doForgot emails a reset link.
@@ -430,8 +432,8 @@ func (h *Handler) doForgot(w http.ResponseWriter, r *http.Request) {
 
 	email := NormaliseEmail(r.PostFormValue("email"))
 
-	p := h.newPage(r, "Reset your password", "")
-	p.Flash = "If an account uses " + email + ", a reset link is on its way. It expires in an hour."
+	p := h.newPage(r, tr(r, "auth.title.forgot"), "")
+	p.Flash = i18n.T(p.Lang, "auth.flash.reset_sent", "email", email)
 
 	sourceOK := h.Limiter.Allow(ClientKey(r, "reset"), ResetAttempts, ResetWindowLimit)
 	subjectOK := h.Limiter.Allow(SubjectKey(email, "reset"), ResetAttempts, ResetWindowLimit)
@@ -470,12 +472,12 @@ func (h *Handler) doForgot(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) showReset(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
 
-	p := h.newPage(r, "Choose a new password", "")
+	p := h.newPage(r, tr(r, "auth.title.reset"), "")
 	p.Data["Token"] = token
 	p.Data["MinLength"] = MinPasswordLength
 
 	if _, err := h.Store.ResetUserID(r.Context(), token); err != nil {
-		p.Error = resetErrorMessage(err)
+		p.Error = resetErrorMessage(p.Lang, err)
 		p.Data["Invalid"] = true
 
 		h.render(w, r, "reset", p, http.StatusBadRequest)
@@ -495,7 +497,7 @@ func (h *Handler) doReset(w http.ResponseWriter, r *http.Request) {
 	token := r.PostFormValue("token")
 	password := r.PostFormValue("password")
 
-	p := h.newPage(r, "Choose a new password", "")
+	p := h.newPage(r, tr(r, "auth.title.reset"), "")
 	p.Data["Token"] = token
 	p.Data["MinLength"] = MinPasswordLength
 
@@ -508,7 +510,7 @@ func (h *Handler) doReset(w http.ResponseWriter, r *http.Request) {
 
 	userID, err := h.Store.ConsumeReset(r.Context(), token)
 	if err != nil {
-		p.Error = resetErrorMessage(err)
+		p.Error = resetErrorMessage(p.Lang, err)
 		p.Data["Invalid"] = true
 
 		h.render(w, r, "reset", p, http.StatusBadRequest)
@@ -537,14 +539,18 @@ func (h *Handler) doReset(w http.ResponseWriter, r *http.Request) {
 }
 
 // resetErrorMessage turns a token failure into something a person can act on.
-func resetErrorMessage(err error) string {
+//
+// The locale is an argument rather than read from the request because the only
+// thing this needs from a request is the language, and passing the whole thing
+// would make the three sentences below untestable without one.
+func resetErrorMessage(locale string, err error) string {
 	switch {
 	case errors.Is(err, ErrTokenExpired):
-		return "That reset link has expired. Ask for a new one."
+		return i18n.T(locale, "auth.error.reset_expired")
 	case errors.Is(err, ErrTokenUsed):
-		return "That reset link has already been used. Ask for a new one."
+		return i18n.T(locale, "auth.error.reset_used")
 	default:
-		return "That reset link is not valid. Ask for a new one."
+		return i18n.T(locale, "auth.error.reset_invalid")
 	}
 }
 
@@ -613,7 +619,7 @@ func (h *Handler) showTwoFactorChallenge(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	h.render(w, r, "two_factor", h.newPage(r, "Two-factor code", ""), http.StatusOK)
+	h.render(w, r, "two_factor", h.newPage(r, tr(r, "auth.title.two_factor"), ""), http.StatusOK)
 }
 
 // doTwoFactorChallenge accepts either an authenticator code or a recovery code.
@@ -632,12 +638,12 @@ func (h *Handler) doTwoFactorChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := h.newPage(r, "Two-factor code", "")
+	p := h.newPage(r, tr(r, "auth.title.two_factor"), "")
 
 	if !h.Limiter.Allow(SubjectKey(fmt.Sprint(userID), "2fa"), TwoFactorAttempts, TwoFactorWindow) {
 		h.Log.Warn("two-factor rate limit reached", "user", userID)
 
-		p.Error = "Too many attempts. Wait a minute and try again."
+		p.Error = i18n.T(p.Lang, "auth.error.too_many_attempts")
 		h.render(w, r, "two_factor", p, http.StatusTooManyRequests)
 
 		return
@@ -665,7 +671,7 @@ func (h *Handler) doTwoFactorChallenge(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if !used {
-			p.Error = "That code is not right. Check your authenticator app, or use a recovery code."
+			p.Error = i18n.T(p.Lang, "auth.error.two_factor_code")
 			h.render(w, r, "two_factor", p, http.StatusUnauthorized)
 
 			return
@@ -702,8 +708,8 @@ func safeNext(next string) string {
 func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	h.Log.Error("request failed", "path", r.URL.Path, "error", err)
 
-	p := h.newPage(r, "Something went wrong", "")
-	p.Error = "Something went wrong on our side. Try again, and tell us if it keeps happening."
+	p := h.newPage(r, tr(r, "auth.title.error"), "")
+	p.Error = i18n.T(p.Lang, "auth.error.internal")
 
 	h.render(w, r, "error", p, http.StatusInternalServerError)
 }

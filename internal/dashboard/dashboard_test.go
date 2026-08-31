@@ -13,6 +13,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 )
 
 // fakeSites is a routing map with a fixed answer.
@@ -63,7 +65,7 @@ func TestShellCarriesTheSiteList(t *testing.T) {
 	body := get(t, h, "/dashboard/one.example").Body.String()
 
 	// Sorted, so that two loads of the same install produce the same document.
-	if !strings.Contains(body, `{"sites":["one.example","two.example"]}`) {
+	if !strings.Contains(body, `{"sites":["one.example","two.example"]`) {
 		t.Fatalf("the shell does not carry a sorted site list: %s", body)
 	}
 
@@ -77,9 +79,47 @@ func TestShellCarriesTheSiteList(t *testing.T) {
 func TestShellHandlesNoSites(t *testing.T) {
 	body := get(t, New(nil), "/dashboard/").Body.String()
 
-	if !strings.Contains(body, `{"sites":[]}`) {
+	if !strings.Contains(body, `{"sites":[]`) {
 		t.Fatalf("an install with no sites did not render an empty list: %s", body)
 	}
+}
+
+// TestShellCarriesTheCatalogue checks that the strings travel with the page.
+//
+// The dashboard has no catalogue of its own and no fallback logic: every id it
+// can ask for has to be in the map the server wrote, already merged over
+// English. A shell that shipped without it would render an interface of raw
+// message ids, with a 200 and nothing in any log.
+func TestShellCarriesTheCatalogue(t *testing.T) {
+	body := get(t, New(nil), "/dashboard/").Body.String()
+
+	if !strings.Contains(body, `"locale":"`+i18n.DefaultLocale+`"`) {
+		t.Fatalf("the shell does not name the locale it was rendered in: %s", body)
+	}
+
+	// One id that exists in the shared catalogue is enough: the question is
+	// whether the map was written at all, not whether it is complete, which the
+	// i18n package's own tests answer.
+	if !strings.Contains(body, `"common.action.save":`) {
+		t.Fatalf("the shell does not carry the message catalogue: %s", body)
+	}
+}
+
+// TestShellRemembersAnExplicitLanguage covers the ?lang= override.
+//
+// A language switcher that works once and then reverts on the next page is the
+// commonest way this feature ships broken: the parameter is gone from the URL
+// and nothing wrote down what it said.
+func TestShellRemembersAnExplicitLanguage(t *testing.T) {
+	response := get(t, New(nil), "/dashboard/?lang=en")
+
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == i18n.CookieName && cookie.Value == "en" {
+			return
+		}
+	}
+
+	t.Fatalf("an explicit ?lang= did not set the %s cookie: %v", i18n.CookieName, response.Result().Cookies())
 }
 
 // TestShellReferencesHashedAssets is what makes the immutable cache lifetime

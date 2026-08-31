@@ -21,7 +21,7 @@ func (h *Handler) showOnboarding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := h.newPage(r, "Install "+site.Label(), "sites")
+	p := h.newPage(r, tr(r, "auth.title.onboarding", "site", site.Label()), "sites")
 	p.Data["Site"] = site
 	p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
 	p.Data["SnippetLegacy"] = SnippetLegacy(h.BaseURL, site)
@@ -107,7 +107,7 @@ func (h *Handler) doVerifyInstall(w http.ResponseWriter, r *http.Request) {
 	h.Log.Info("installation checked", "site", site.ID, "domain", site.Domain,
 		"outcome", string(result.Outcome), "status", result.StatusCode)
 
-	p := h.newPage(r, "Install "+site.Label(), "sites")
+	p := h.newPage(r, tr(r, "auth.title.onboarding", "site", site.Label()), "sites")
 	p.Data["Site"] = site
 	p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
 	p.Data["SnippetLegacy"] = SnippetLegacy(h.BaseURL, site)

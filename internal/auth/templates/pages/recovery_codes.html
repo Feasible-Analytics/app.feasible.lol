@@ -10,14 +10,13 @@
 -->
 {{ define "content" }}
 <div class="mx-auto max-w-2xl">
-  <h1 class="text-2xl font-semibold text-heading">Save your recovery codes</h1>
+  <h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "auth.recovery_codes.title" }}</h1>
   <p class="mt-2 text-sm text-muted">
-    Each code works once. They are the only way into your account if you lose your phone —
-    and this is the only time we can show them to you, because we store only their hashes.
+    {{ t $.Lang "auth.recovery_codes.body" }}
   </p>
 
   <div class="mt-6 rounded-2xl border border-warn/30 bg-warn/10 p-4 text-sm text-warn-ink">
-    Print them, or put them in your password manager. Not in the same place as your password.
+    {{ t $.Lang "auth.recovery_codes.warning" }}
   </div>
 
   <div class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
@@ -31,11 +30,11 @@
   <div class="mt-6 flex gap-3">
     <a href="/settings/security"
        class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
-      I have saved them
+      {{ t $.Lang "auth.recovery_codes.saved" }}
     </a>
     <button type="button" onclick="window.print()"
             class="rounded-xl border border-field px-5 py-2.5 text-sm font-semibold text-body hover:bg-hover">
-      Print
+      {{ t $.Lang "auth.recovery_codes.print" }}
     </button>
   </div>
 </div>

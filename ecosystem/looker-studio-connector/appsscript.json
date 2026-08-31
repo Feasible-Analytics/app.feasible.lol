@@ -1,0 +1,29 @@
+{
+  "timeZone": "Etc/UTC",
+  "exceptionLogging": "STACKDRIVER",
+  "runtimeVersion": "V8",
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/script.external_request"
+  ],
+  "dataStudio": {
+    "name": "Feasible Analytics",
+    "company": "Cloudmanic Labs, LLC",
+    "companyUrl": "https://feasible.lol",
+    "logoUrl": "https://feasible.lol/img/looker-studio-connector.png",
+    "addonUrl": "https://feasible.lol/integrations/looker-studio",
+    "supportUrl": "https://feasible.lol/support",
+    "privacyPolicyUrl": "https://feasible.lol/privacy",
+    "termsOfServiceUrl": "https://feasible.lol/terms",
+    "description": "Report on your feasible.lol web analytics in Looker Studio. Visitors, visits, pageviews, events, revenue and engagement, broken down by page, source, campaign, location, device and browser.",
+    "shortDescription": "Privacy-first web analytics from feasible.lol.",
+    "authType": [
+      "KEY"
+    ],
+    "feeType": [
+      "FREE"
+    ],
+    "sources": [
+      "feasible"
+    ]
+  }
+}

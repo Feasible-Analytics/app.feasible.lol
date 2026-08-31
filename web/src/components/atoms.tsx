@@ -8,6 +8,8 @@
 
 import { useId, useState } from "react";
 
+import { t } from "../lib/i18n";
+
 /**
  * Spinner is the only loading affordance in the product.
  *
@@ -16,7 +18,7 @@ import { useId, useState } from "react";
  * under a tenth of a second, and a spinner that flashes for 80ms reads as the
  * page glitching rather than as work happening.
  */
-export function Spinner({ label = "Loading" }: { label?: string }) {
+export function Spinner({ label = t("common.state.loading") }: { label?: string }) {
 	return (
 		<div className="spinner-grace flex h-full w-full items-center justify-center" role="status" aria-live="polite">
 			<span className="spinner-ring block size-6 rounded-full border-2 border-line border-t-accent" />
@@ -35,7 +37,11 @@ export function Spinner({ label = "Loading" }: { label?: string }) {
  */
 export function ChangeChip({ change, invert = false }: { change: number | null | undefined; invert?: boolean }) {
 	if (change === null || change === undefined) {
-		return <span className="text-xs text-muted" title="No traffic in the earlier period to compare against">—</span>;
+		return (
+			<span className="text-xs text-muted" title={t("dashboard.change.no_baseline")}>
+				{t("common.state.dash")}
+			</span>
+		);
 	}
 
 	const rounded = Math.round(change);
@@ -70,7 +76,7 @@ export function InfoDot({ text }: { text: string }) {
 		<span className="relative inline-flex">
 			<button
 				type="button"
-				aria-label="Why this number looks wrong"
+				aria-label={t("dashboard.infodot.label")}
 				aria-describedby={open ? id : undefined}
 				className="flex size-4 items-center justify-center rounded-full border border-line text-[9px] leading-none font-semibold text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:border-accent hover:text-accent"
 				onMouseEnter={() => setOpen(true)}
@@ -107,8 +113,8 @@ export function InfoDot({ text }: { text: string }) {
 export function Empty({ what }: { what: string }) {
 	return (
 		<div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
-			<p className="text-sm text-body">No {what} in this period</p>
-			<p className="text-xs text-muted">Try a wider date range.</p>
+			<p className="text-sm text-body">{t("dashboard.empty.no_data", { what })}</p>
+			<p className="text-xs text-muted">{t("dashboard.empty.hint")}</p>
 		</div>
 	);
 }
@@ -129,7 +135,7 @@ export function Failure({ message, onRetry }: { message: string; onRetry: () => 
 				onClick={onRetry}
 				className="h-control rounded-md border border-line px-3 text-xs font-medium text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
 			>
-				Try again
+				{t("common.action.retry")}
 			</button>
 		</div>
 	);

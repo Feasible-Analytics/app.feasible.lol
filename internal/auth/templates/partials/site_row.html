@@ -20,13 +20,13 @@
       </a>
 
       {{ if .Site.Pinned }}
-        <span class="rounded-md bg-warn/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-warn-ink">Pinned</span>
+        <span class="rounded-md bg-warn/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-warn-ink">{{ t $.Lang "auth.site_row.pinned" }}</span>
       {{ end }}
 
       {{ if eq .Site.OnboardedAt 0 }}
         <a href="/onboarding/{{ .Site.ID }}"
            class="rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-ink">
-          Finish setup
+          {{ t $.Lang "auth.site_row.finish_setup" }}
         </a>
       {{ end }}
     </div>
@@ -42,19 +42,19 @@
       <polyline fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"
                 points="{{ sparkline .Site.Sparkline }}" />
     </svg>
-    <p class="mt-0.5 text-right text-[10px] text-faint">{{ .Site.Visitors }} visits · 30d</p>
+    <p class="mt-0.5 text-right text-[10px] text-faint">{{ n $.Lang "auth.site_row.visits" (num .Site.Visitors) }}</p>
   </div>
 
   <form method="post" action="/sites/{{ .Site.ID }}/pin" class="shrink-0">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <button type="submit"
-            title="{{ if .Site.Pinned }}Unpin this site{{ else }}Pin this site to the top{{ end }}"
+            title="{{ if .Site.Pinned }}{{ t $.Lang "auth.site_row.unpin_title" }}{{ else }}{{ t $.Lang "auth.site_row.pin_title" }}{{ end }}"
             class="rounded-lg px-2 py-1 text-sm {{ if .Site.Pinned }}text-warn{{ else }}text-faint hover:text-muted{{ end }}">
-      ★<span class="sr-only">{{ if .Site.Pinned }}Unpin{{ else }}Pin{{ end }} {{ .Site.Label }}</span>
+      ★<span class="sr-only">{{ if .Site.Pinned }}{{ t $.Lang "auth.site_row.unpin_label" "site" .Site.Label }}{{ else }}{{ t $.Lang "auth.site_row.pin_label" "site" .Site.Label }}{{ end }}</span>
     </button>
   </form>
 
   <a href="/sites/{{ .Site.ID }}/settings" class="shrink-0 text-xs font-medium text-muted hover:text-heading">
-    Settings
+    {{ t $.Lang "auth.site_row.settings" }}
   </a>
 </li>

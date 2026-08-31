@@ -16,26 +16,26 @@
     <nav class="flex flex-col gap-1 text-sm">
       <a href="/sites"
          class="rounded-lg px-3 py-2 font-medium {{ if eq .Nav "sites" }}bg-accent/10 text-accent-ink{{ else }}text-muted hover:bg-hover{{ end }}">
-        Sites
+        {{ t $.Lang "auth.sidebar.sites" }}
       </a>
       <a href="/settings"
          class="rounded-lg px-3 py-2 font-medium {{ if eq .Nav "settings" }}bg-accent/10 text-accent-ink{{ else }}text-muted hover:bg-hover{{ end }}">
-        Settings
+        {{ t $.Lang "auth.sidebar.settings" }}
       </a>
     </nav>
 
     {{ if eq .Nav "settings" }}
       <div class="mt-2 flex flex-col gap-1 border-l border-line pl-3 text-sm">
-        <a href="/settings" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">Account</a>
-        <a href="/settings/security" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">Two-factor</a>
-        <a href="/settings/sessions" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">Devices</a>
-        <a href="/settings/team" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">Team</a>
+        <a href="/settings" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">{{ t $.Lang "auth.sidebar.account" }}</a>
+        <a href="/settings/security" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">{{ t $.Lang "auth.sidebar.two_factor" }}</a>
+        <a href="/settings/sessions" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">{{ t $.Lang "auth.sidebar.devices" }}</a>
+        <a href="/settings/team" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">{{ t $.Lang "auth.sidebar.team" }}</a>
       </div>
     {{ end }}
 
     <div class="mt-auto pt-6">
       {{ if .Team }}
-        <p class="px-3 text-xs font-medium uppercase tracking-wide text-faint">Team</p>
+        <p class="px-3 text-xs font-medium uppercase tracking-wide text-faint">{{ t $.Lang "auth.sidebar.team_label" }}</p>
         <p class="truncate px-3 pb-3 text-sm text-body">{{ .Team.Name }}</p>
       {{ end }}
 
@@ -45,7 +45,7 @@
 
         <form method="post" action="/logout" class="mt-3">
           <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
-          <button type="submit" class="text-sm font-medium text-muted hover:text-heading">Sign out</button>
+          <button type="submit" class="text-sm font-medium text-muted hover:text-heading">{{ t $.Lang "auth.sidebar.sign_out" }}</button>
         </form>
       </div>
     </div>

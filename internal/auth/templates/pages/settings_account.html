@@ -7,56 +7,56 @@
 -->
 {{ define "content" }}
 <div class="mx-auto max-w-2xl">
-  <h1 class="text-2xl font-semibold text-heading">Account</h1>
+  <h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "auth.settings_account.title" }}</h1>
 
   <section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm">
-    <h2 class="text-sm font-semibold text-heading">Profile</h2>
+    <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.settings_account.profile" }}</h2>
 
     <form method="post" action="/settings/profile" class="mt-4 space-y-5">
       <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
 
       <div>
-        <label class="block text-sm font-medium text-body">Email</label>
+        <label class="block text-sm font-medium text-body">{{ t $.Lang "auth.settings_account.email" }}</label>
         <p class="mt-1 rounded-xl border border-line bg-subtle px-3 py-2 text-sm text-muted">
           {{ .User.Email }}
           {{ if .User.Verified }}
-            <span class="ml-2 rounded-md bg-up/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-up-ink">Verified</span>
+            <span class="ml-2 rounded-md bg-up/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-up-ink">{{ t $.Lang "auth.settings_account.verified" }}</span>
           {{ end }}
         </p>
       </div>
 
       <div>
-        <label for="name" class="block text-sm font-medium text-body">Name</label>
+        <label for="name" class="block text-sm font-medium text-body">{{ t $.Lang "auth.settings_account.name" }}</label>
         <input id="name" name="name" type="text" value="{{ .User.Name }}"
                class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
       </div>
 
       <div>
-        <label for="theme" class="block text-sm font-medium text-body">Theme</label>
+        <label for="theme" class="block text-sm font-medium text-body">{{ t $.Lang "auth.settings_account.theme" }}</label>
         <select id="theme" name="theme"
                 class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
-          <option value="system" {{ if eq .User.Theme "system" }}selected{{ end }}>Match my system</option>
-          <option value="light" {{ if eq .User.Theme "light" }}selected{{ end }}>Light</option>
-          <option value="dark" {{ if eq .User.Theme "dark" }}selected{{ end }}>Dark</option>
+          <option value="system" {{ if eq .User.Theme "system" }}selected{{ end }}>{{ t $.Lang "auth.settings_account.theme_system" }}</option>
+          <option value="light" {{ if eq .User.Theme "light" }}selected{{ end }}>{{ t $.Lang "auth.settings_account.theme_light" }}</option>
+          <option value="dark" {{ if eq .User.Theme "dark" }}selected{{ end }}>{{ t $.Lang "auth.settings_account.theme_dark" }}</option>
         </select>
       </div>
 
       <button type="submit"
               class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
-        Save
+        {{ t $.Lang "common.action.save" }}
       </button>
     </form>
   </section>
 
   <section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
     <h2 class="text-sm font-semibold text-heading">
-      {{ if eq .User.PasswordHash "" }}Set a password{{ else }}Change your password{{ end }}
+      {{ if eq .User.PasswordHash "" }}{{ t $.Lang "auth.settings_account.set_password_heading" }}{{ else }}{{ t $.Lang "auth.settings_account.change_password_heading" }}{{ end }}
     </h2>
     <p class="mt-1 text-sm text-muted">
       {{ if eq .User.PasswordHash "" }}
-        You sign in with Google. Adding a password gives you a second way in.
+        {{ t $.Lang "auth.settings_account.set_password_help" }}
       {{ else }}
-        Every other signed-in browser is signed out when you change it.
+        {{ t $.Lang "auth.settings_account.change_password_help" }}
       {{ end }}
     </p>
 
@@ -70,43 +70,41 @@
 
       {{ if ne .User.PasswordHash "" }}
         <div>
-          <label for="current_password" class="block text-sm font-medium text-body">Current password</label>
+          <label for="current_password" class="block text-sm font-medium text-body">{{ t $.Lang "auth.settings_account.current_password" }}</label>
           <input id="current_password" name="current_password" type="password" autocomplete="current-password" required
                  class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
         </div>
       {{ end }}
 
       <div>
-        <label for="new_password" class="block text-sm font-medium text-body">New password</label>
+        <label for="new_password" class="block text-sm font-medium text-body">{{ t $.Lang "auth.settings_account.new_password" }}</label>
         <input id="new_password" name="new_password" type="password" autocomplete="new-password"
                required minlength="{{ .Data.MinLength }}"
                class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
-        <p class="mt-1 text-xs text-muted">At least {{ .Data.MinLength }} characters.</p>
+        <p class="mt-1 text-xs text-muted">{{ n $.Lang "auth.settings_account.password_help" .Data.MinLength }}</p>
       </div>
 
       <button type="submit"
               class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
-        {{ if eq .User.PasswordHash "" }}Set password{{ else }}Change password{{ end }}
+        {{ if eq .User.PasswordHash "" }}{{ t $.Lang "auth.settings_account.set_password_submit" }}{{ else }}{{ t $.Lang "auth.settings_account.change_password_submit" }}{{ end }}
       </button>
     </form>
   </section>
 
   <section class="mt-6 rounded-2xl border border-down/30 bg-card p-6 shadow-sm">
-    <h2 class="text-sm font-semibold text-down-ink">Delete your account</h2>
+    <h2 class="text-sm font-semibold text-down-ink">{{ t $.Lang "auth.settings_account.delete_heading" }}</h2>
     <p class="mt-1 text-sm text-muted">
-      This deletes your team, every site in it, the database file that holds all of your traffic, and
-      your billing record with the payment provider. There is no undo and no backup we can restore
-      from — we do not keep one.
+      {{ t $.Lang "auth.settings_account.delete_body" }}
     </p>
 
     <form method="post" action="/settings/delete" class="mt-4 space-y-4"
-          onsubmit="return confirm('Delete your account and every site in it? This cannot be undone.')">
+          onsubmit="return confirm('{{ t $.Lang "auth.settings_account.delete_confirm" }}')">
       <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
       <input type="text" name="username" value="{{ .User.Email }}" autocomplete="username" hidden readonly>
 
       {{ if ne .User.PasswordHash "" }}
         <div>
-          <label for="delete_password" class="block text-sm font-medium text-body">Your password</label>
+          <label for="delete_password" class="block text-sm font-medium text-body">{{ t $.Lang "auth.settings_account.password" }}</label>
           <input id="delete_password" name="password" type="password" autocomplete="current-password" required
                  class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm">
         </div>
@@ -114,7 +112,7 @@
 
       <div>
         <label for="delete_confirm" class="block text-sm font-medium text-body">
-          Type <span class="font-mono">DELETE</span> to confirm
+          {{ t $.Lang "auth.settings_account.type_to_confirm" "word" "DELETE" }}
         </label>
         <input id="delete_confirm" name="confirm" type="text" required
                class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm">
@@ -122,7 +120,7 @@
 
       <button type="submit"
               class="rounded-xl bg-down px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-down/85">
-        Delete my account
+        {{ t $.Lang "auth.settings_account.delete_submit" }}
       </button>
     </form>
   </section>

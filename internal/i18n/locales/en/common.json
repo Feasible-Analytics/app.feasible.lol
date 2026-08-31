@@ -1,0 +1,26 @@
+{
+  "common.action.save": "Save",
+  "common.action.cancel": "Cancel",
+  "common.action.confirm": "Confirm",
+  "common.action.copied": "Copied",
+  "common.action.retry": "Try again",
+  "common.action.menu": "Menu",
+
+  "common.state.loading": "Loading…",
+  "common.state.never": "never",
+  "common.state.expired": "expired",
+  "common.state.dash": "—",
+
+  "common.time.just_now": "just now",
+  "common.time.yesterday": "yesterday",
+  "common.time.minutes_ago_one": "{count} minute ago",
+  "common.time.minutes_ago_other": "{count} minutes ago",
+  "common.time.hours_ago_one": "{count} hour ago",
+  "common.time.hours_ago_other": "{count} hours ago",
+  "common.time.days_ago_one": "{count} day ago",
+  "common.time.days_ago_other": "{count} days ago",
+  "common.time.minutes_left_one": "{count} minute",
+  "common.time.minutes_left_other": "{count} minutes",
+  "common.time.hours_left_one": "{count} hour",
+  "common.time.hours_left_other": "{count} hours"
+}

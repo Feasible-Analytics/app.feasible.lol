@@ -13,9 +13,18 @@ data/
 
 # JavaScript dependencies. tracker/dist/ is deliberately NOT ignored: the built
 # bundle is committed so `go build` embeds it without a JavaScript toolchain.
-node_modules/
+node_modules
 tracker/test-results/
 tracker/playwright-report/
+
+# Dependency directories the ecosystem packages create when somebody actually
+# installs them. Every package here vendors nothing and depends on nothing, so
+# these only ever appear on a contributor's machine.
+ecosystem/**/vendor/
+ecosystem/**/__pycache__/
+ecosystem/**/*.egg-info/
+ecosystem/**/.pytest_cache/
+ecosystem/**/*.gem
 
 # Browser automation scratch (see global CLAUDE.md)
 .playwright/

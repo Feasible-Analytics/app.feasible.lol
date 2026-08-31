@@ -1,0 +1,28 @@
+{
+    "name": "feasible/feasible-php",
+    "description": "Server-side event tracking for feasible.lol. The visitor's IP address and User-Agent are required arguments, because forgetting either is what makes server-side analytics silently wrong.",
+    "type": "library",
+    "keywords": ["analytics", "privacy", "tracking", "feasible", "events"],
+    "homepage": "https://feasible.lol",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Cloudmanic Labs, LLC",
+            "homepage": "https://cloudmanic.com"
+        }
+    ],
+    "require": {
+        "php": ">=8.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "Feasible\\": "src/"
+        }
+    },
+    "scripts": {
+        "test": "php tests/run.php"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
