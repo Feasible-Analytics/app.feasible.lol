@@ -33,6 +33,8 @@ const (
 	DefaultAppBaseURL        = "http://localhost:19300"
 	DefaultAppTransport      = TransportDirect
 	DefaultAppMailTransport  = MailTransportLog
+	DefaultAppMailFrom       = "feasible.lol <no-reply@feasible.lol>"
+	DefaultSMTPPort          = "587"
 	DefaultIngestListen      = "127.0.0.1:19302"
 	DefaultIngestShards      = "http://127.0.0.1:19401"
 	DefaultIngestBufferPath  = "./data/ingest/buffer.db"
@@ -101,6 +103,50 @@ type App struct {
 	BaseURL        string
 	Transport      string
 	MailTransport  string
+
+	// MailFrom is the From address on every transactional message. It is here
+	// rather than beside the SMTP settings because the log transport needs it
+	// too, and a message with no sender is a message that cannot be replied to.
+	MailFrom string
+
+	// SecretKey encrypts the two-factor secrets and signs the short-lived
+	// cookies, as 32 hex-encoded bytes. Empty means one is generated under the
+	// data directory on first run, so encryption at rest is true by default
+	// rather than only when somebody remembered to set a variable.
+	SecretKey string
+
+	SMTP   SMTP
+	Google GoogleOAuth
+
+	// StripeSecretKey lets the delete-account flow remove the payment
+	// provider's customer record. Empty means billing is not configured, which
+	// is the normal state of a self-hosted install.
+	StripeSecretKey string
+}
+
+// SMTP is the mail server the smtp transport talks to. It is a nested struct so
+// that "which of these five strings belongs to mail" is answered by the type
+// rather than by a naming convention.
+type SMTP struct {
+	Host     string
+	Port     string
+	Username string
+	Password string
+}
+
+// GoogleOAuth is the client for Google sign-in.
+//
+// Both values being empty is a supported state, not an error: the credentials
+// are issued out of band, and a binary that refused to boot without them would
+// make the whole product wait on a Google console form.
+type GoogleOAuth struct {
+	ClientID     string
+	ClientSecret string
+}
+
+// Configured reports whether Google sign-in can be offered.
+func (g GoogleOAuth) Configured() bool {
+	return g.ClientID != "" && g.ClientSecret != ""
 }
 
 // Ingest holds the values only the `ingest` process reads.
@@ -331,6 +377,19 @@ func LoadFrom(l *Loader) (*Config, error) {
 			BaseURL:        strings.TrimRight(l.String("FEASIBLE_APP_BASE_URL", DefaultAppBaseURL), "/"),
 			Transport:      strings.ToLower(l.String("FEASIBLE_APP_TRANSPORT", DefaultAppTransport)),
 			MailTransport:  strings.ToLower(l.String("FEASIBLE_APP_MAIL_TRANSPORT", DefaultAppMailTransport)),
+			MailFrom:       l.String("FEASIBLE_APP_MAIL_FROM", DefaultAppMailFrom),
+			SecretKey:      strings.TrimSpace(l.String("FEASIBLE_APP_SECRET_KEY", "")),
+			SMTP: SMTP{
+				Host:     strings.TrimSpace(l.String("FEASIBLE_SMTP_HOST", "")),
+				Port:     strings.TrimSpace(l.String("FEASIBLE_SMTP_PORT", DefaultSMTPPort)),
+				Username: l.String("FEASIBLE_SMTP_USERNAME", ""),
+				Password: l.String("FEASIBLE_SMTP_PASSWORD", ""),
+			},
+			Google: GoogleOAuth{
+				ClientID:     strings.TrimSpace(l.String("FEASIBLE_GOOGLE_CLIENT_ID", "")),
+				ClientSecret: strings.TrimSpace(l.String("FEASIBLE_GOOGLE_CLIENT_SECRET", "")),
+			},
+			StripeSecretKey: strings.TrimSpace(l.String("FEASIBLE_STRIPE_SECRET_KEY", "")),
 		},
 		Ingest: Ingest{
 			Listen:         l.String("FEASIBLE_INGEST_LISTEN", DefaultIngestListen),
@@ -451,6 +510,20 @@ func (c *Config) Validate() error {
 
 	if c.Shared.SaltKey != "" && len(c.Shared.SaltKey) != 64 {
 		return fmt.Errorf("FEASIBLE_SALT_KEY: expected 64 hex characters, got %d", len(c.Shared.SaltKey))
+	}
+
+	if c.App.SecretKey != "" && len(c.App.SecretKey) != 64 {
+		return fmt.Errorf("FEASIBLE_APP_SECRET_KEY: expected 64 hex characters, got %d", len(c.App.SecretKey))
+	}
+
+	// A half-configured OAuth client produces a button that starts a flow it
+	// cannot finish, which is worse than no button at all.
+	if (c.App.Google.ClientID == "") != (c.App.Google.ClientSecret == "") {
+		return fmt.Errorf("FEASIBLE_GOOGLE_CLIENT_ID and FEASIBLE_GOOGLE_CLIENT_SECRET must be set together or not at all")
+	}
+
+	if c.App.MailTransport == MailTransportSMTP && c.App.SMTP.Host == "" {
+		return fmt.Errorf("FEASIBLE_SMTP_HOST is required when FEASIBLE_APP_MAIL_TRANSPORT is smtp")
 	}
 
 	base, err := url.Parse(c.App.BaseURL)

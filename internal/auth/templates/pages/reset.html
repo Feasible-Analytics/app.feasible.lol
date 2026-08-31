@@ -1,0 +1,43 @@
+<!--
+  reset.html
+  Choosing a new password from a reset link.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+{{ define "content" }}
+<div class="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
+  <h1 class="text-xl font-semibold text-slate-900">Choose a new password</h1>
+
+  {{ if .Data.Invalid }}
+    <p class="mt-2 text-sm text-slate-500">Reset links last an hour and can only be used once.</p>
+
+    <a href="/forgot-password"
+       class="mt-6 inline-block rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500">
+      Ask for a new link
+    </a>
+  {{ else }}
+    <p class="mt-1 text-sm text-slate-500">
+      Every device signed in to this account will be signed out.
+    </p>
+
+    <form method="post" action="/reset-password" class="mt-6 space-y-4">
+      <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+      <input type="hidden" name="token" value="{{ .Data.Token }}">
+
+      <div>
+        <label for="password" class="block text-sm font-medium text-slate-700">New password</label>
+        <input id="password" name="password" type="password" autocomplete="new-password"
+               required minlength="{{ .Data.MinLength }}" autofocus
+               class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100">
+        <p class="mt-1 text-xs text-slate-500">At least {{ .Data.MinLength }} characters.</p>
+      </div>
+
+      <button type="submit"
+              class="w-full rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500">
+        Set the new password
+      </button>
+    </form>
+  {{ end }}
+</div>
+{{ end }}

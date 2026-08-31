@@ -79,7 +79,8 @@ func New(db *sql.DB) *Cache {
 func (c *Cache) Refresh(ctx context.Context) error {
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT sites.id, sites.account_id, sites.domain, sites.timezone,
-		       COALESCE(teams.accept_traffic_until, 0)
+		       COALESCE(teams.accept_traffic_until, 0),
+		       sites.previous_domain, COALESCE(sites.previous_domain_until, 0)
 		FROM sites
 		JOIN teams ON teams.id = sites.account_id
 	`)
@@ -89,15 +90,33 @@ func (c *Cache) Refresh(ctx context.Context) error {
 	defer rows.Close()
 
 	byDomain := map[string]Site{}
+	now := time.Now().Unix()
 
 	for rows.Next() {
-		var site Site
+		var (
+			site           Site
+			previousDomain string
+			previousUntil  int64
+		)
 
-		if err := rows.Scan(&site.ID, &site.AccountID, &site.Domain, &site.Timezone, &site.AcceptTrafficUntil); err != nil {
+		if err := rows.Scan(&site.ID, &site.AccountID, &site.Domain, &site.Timezone,
+			&site.AcceptTrafficUntil, &previousDomain, &previousUntil); err != nil {
 			return fmt.Errorf("sites: refresh: %w", err)
 		}
 
 		byDomain[Normalise(site.Domain)] = site
+
+		// The dual-write window. A site that has just changed domain answers to
+		// both names for 72 hours, so a snippet nobody has redeployed yet keeps
+		// collecting instead of silently dropping every pageview from the
+		// moment the setting was saved. Events arriving on the old name are
+		// stored against the same site id, so no history is split.
+		if previousDomain != "" && previousUntil > now {
+			old := site
+			old.Domain = previousDomain
+
+			byDomain[Normalise(previousDomain)] = old
+		}
 	}
 
 	if err := rows.Err(); err != nil {

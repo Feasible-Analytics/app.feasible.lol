@@ -10,15 +10,18 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"path/filepath"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/auth"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dashboard"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/statsapi"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
 )
@@ -83,16 +86,90 @@ func runServe(e *env, args []string) int {
 		return ExitError
 	}
 
-	server := httpserver.New("app", e.cfg.App.Listen, serveRoutes(e, service, manager, secret, e.cfg.App.DataDir))
+	// The signed-in application. It is built before the listener binds so that a
+	// broken template or an unreadable key is a start-up failure with a message,
+	// rather than a 500 on somebody's sign-in page.
+	app, err := buildApp(e, control, manager, service, secret)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return ExitError
+	}
 
-	return serveUntilSignal(e, server, service, manager.CloseAll, control.Close)
+	// Google credentials are not available yet, and the product has to work
+	// without them. One line at start-up says which variable is missing, so
+	// "where is the Google button" is answered by the log rather than by a
+	// support ticket.
+	if reason := app.Google.DisabledReason(); reason != "" {
+		e.log.Info(reason)
+	}
+
+	server := httpserver.New("app", e.cfg.App.Listen, serveRoutes(e, service, manager, secret, e.cfg.App.DataDir, app))
+
+	pruneCtx, stopPrune := context.WithCancel(context.Background())
+	go app.RunPrune(pruneCtx)
+
+	return serveUntilSignal(e, server, service, func() error { stopPrune(); return nil }, manager.CloseAll, control.Close)
+}
+
+// buildApp assembles the server-rendered application.
+//
+// Every dependency is resolved here rather than inside the package, so that a
+// missing key or an unparseable template stops the process with a message that
+// names the file — and so a test can build the same handler over a temporary
+// database.
+func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *ingest.Service, secret []byte) (*auth.Handler, error) {
+	key, err := auth.LoadKey(e.cfg.App.DataDir, e.cfg.App.SecretKey)
+	if err != nil {
+		return nil, err
+	}
+
+	sealer, err := auth.NewSealer(key)
+	if err != nil {
+		return nil, err
+	}
+
+	mailer, err := mail.New(mail.Options{
+		Transport: e.cfg.App.MailTransport,
+		From:      e.cfg.App.MailFrom,
+		BaseURL:   e.cfg.App.BaseURL,
+		SMTPHost:  e.cfg.App.SMTP.Host,
+		SMTPPort:  e.cfg.App.SMTP.Port,
+		SMTPUser:  e.cfg.App.SMTP.Username,
+		SMTPPass:  e.cfg.App.SMTP.Password,
+		Log:       e.log,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	store := auth.NewStore(control)
+	stripe := auth.NewStripe(e.cfg.App.StripeSecretKey, e.log)
+
+	return auth.NewHandler(auth.Options{
+		Store:     store,
+		Traffic:   auth.NewTraffic(manager),
+		Mailer:    mailer,
+		Sealer:    sealer,
+		Google:    auth.NewGoogle(e.cfg.App.Google.ClientID, e.cfg.App.Google.ClientSecret, e.cfg.App.BaseURL),
+		Deleter:   auth.NewDeleter(store, manager, e.cfg.App.DataDir, stripe, e.log),
+		Keyer:     tracker.NewKeyer(secret, service.Sites),
+		SiteCache: service.Sites,
+		BaseURL:   e.cfg.App.BaseURL,
+		Log:       e.log,
+	})
 }
 
 // serveRoutes is the app process's public surface: the tracker script, the
-// stats API the dashboard runs on, and — with the direct transport — the ingest
-// endpoint, which this process serves rather than a separate tier.
-func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, secret []byte, dataDir string) http.Handler {
+// stats API the dashboard runs on, the server-rendered application, and — with
+// the direct transport — the ingest endpoint, which this process serves rather
+// than a separate tier.
+func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, secret []byte, dataDir string, app http.Handler) http.Handler {
 	mux := http.NewServeMux()
+
+	// The signed-in application is mounted at the root, so it owns every path
+	// the more specific patterns below do not claim. Go's mux picks the most
+	// specific pattern, so /api/event and /js/ still reach their own handlers.
+	mux.Handle("/", app)
 
 	// Every report in the product is this one endpoint with different metrics
 	// and dimensions. It reads the same in-memory site snapshot the ingest path

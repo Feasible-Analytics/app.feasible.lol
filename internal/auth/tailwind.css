@@ -1,0 +1,25 @@
+/*
+ * tailwind.css
+ * The Tailwind source for the server-rendered screens.
+ *
+ * Created: 2026-08-30
+ * Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+ *
+ * The compiled result is committed at assets/app.css and embedded in the
+ * binary, which is what lets `go build` work on a machine with no JavaScript
+ * toolchain. Rebuild it with `make ui-css` after changing a template.
+ */
+
+@import "tailwindcss";
+
+/* Only these templates are scanned. Pointing Tailwind at the repository root
+   would pull class names out of the React dashboard and the tracker tests,
+   which do not share this stylesheet. */
+@source "./templates";
+
+/* x-cloak hides an element until Alpine has initialised it. Without it every
+   x-show="false" branch is visible for the moment between the HTML parsing and
+   the script running, which reads as a page that flashes its own internals. */
+[x-cloak] {
+  display: none !important;
+}

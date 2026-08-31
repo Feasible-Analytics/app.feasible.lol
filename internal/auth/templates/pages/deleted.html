@@ -1,0 +1,21 @@
+<!--
+  deleted.html
+  The confirmation after an account has been deleted.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+{{ define "content" }}
+<div class="rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+  <h1 class="text-xl font-semibold text-slate-900">Your account is gone</h1>
+  <p class="mt-2 text-sm text-slate-500">
+    The database file, every site and every recorded pageview have been deleted, and so has the
+    billing record. There is nothing left to restore.
+  </p>
+
+  <a href="/register"
+     class="mt-6 inline-block rounded-xl border border-slate-300 px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+    Start again
+  </a>
+</div>
+{{ end }}

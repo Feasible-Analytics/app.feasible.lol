@@ -1,0 +1,101 @@
+<!--
+  site_new.html
+  Adding a site.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  The timezone is filled in from the browser rather than presented as a list to
+  hunt through. Almost nobody tracks a site in a zone other than their own, and
+  the browser already knows which one that is.
+-->
+{{ define "content" }}
+<div class="mx-auto max-w-xl" x-data="siteForm()" x-init="detectTimezone()">
+  <h1 class="text-2xl font-semibold text-slate-900">Add a site</h1>
+  <p class="mt-1 text-sm text-slate-500">One snippet, and you are collecting.</p>
+
+  <form method="post" action="/sites/new" class="mt-8 space-y-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+    <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+
+    <div>
+      <label for="domain" class="block text-sm font-medium text-slate-700">Domain</label>
+      <input id="domain" name="domain" type="text" required autofocus placeholder="example.com"
+             value="{{ .Data.Domain }}"
+             class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100">
+      <p class="mt-1 text-xs text-slate-500">Paste a full URL if that is easier — we will take the hostname out of it.</p>
+    </div>
+
+    <div>
+      <label for="display_name" class="block text-sm font-medium text-slate-700">
+        Display name <span class="text-slate-400">(optional)</span>
+      </label>
+      <input id="display_name" name="display_name" type="text" placeholder="Acme — marketing site"
+             value="{{ .Data.DisplayName }}"
+             class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100">
+      <p class="mt-1 text-xs text-slate-500">
+        What you want to see in the list. Useful when the domain is
+        <code class="rounded bg-slate-100 px-1">acme-staging-2.vercel.app</code>.
+      </p>
+    </div>
+
+    <div>
+      <div class="flex items-baseline justify-between">
+        <label for="timezone" class="block text-sm font-medium text-slate-700">Reporting timezone</label>
+        <button type="button" @click="override = !override"
+                class="text-xs font-medium text-indigo-600 hover:text-indigo-500"
+                x-text="override ? 'Use my browser timezone' : 'Change'"></button>
+      </div>
+
+      <p x-show="!override" class="mt-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+        <span x-text="timezone"></span>
+        <span class="text-slate-400">— detected from your browser</span>
+      </p>
+
+      <input type="hidden" name="timezone" :value="timezone">
+
+      <select x-show="override" x-model="timezone"
+              class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100">
+        <template x-for="zone in zones" :key="zone">
+          <option :value="zone" x-text="zone"></option>
+        </template>
+      </select>
+
+      <p class="mt-1 text-xs text-slate-500">This is what "today" means on every chart for this site.</p>
+    </div>
+
+    <div class="flex items-center gap-3">
+      <button type="submit"
+              class="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500">
+        Add site
+      </button>
+      <a href="/sites" class="text-sm font-medium text-slate-500 hover:text-slate-700">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<script>
+  function siteForm() {
+    return {
+      override: false,
+      timezone: 'Etc/UTC',
+      zones: {{ .Data.Timezones }},
+
+      // The browser knows the visitor's zone, and asking it is one line. A
+      // dropdown of six hundred IANA names is a worse answer to a question the
+      // machine has already answered.
+      detectTimezone() {
+        try {
+          const detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          if (detected) {
+            this.timezone = detected;
+            if (!this.zones.includes(detected)) this.zones.unshift(detected);
+          }
+        } catch (e) {
+          // A browser with no Intl support keeps the UTC default, which is a
+          // sane report timezone and is changeable in settings afterwards.
+        }
+      }
+    };
+  }
+</script>
+{{ end }}

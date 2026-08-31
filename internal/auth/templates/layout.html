@@ -1,0 +1,69 @@
+<!--
+  layout.html
+  The page shell every server-rendered screen is drawn inside.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  There are two shapes here rather than two layouts. Signed-out pages are a
+  centred card and signed-in pages get the sidebar, and keeping them in one file
+  is what stops the header, the fonts and the theme handling drifting apart
+  between them.
+-->
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ .Title }} · feasible.lol</title>
+
+  <!-- Both assets come out of the binary. A CDN would be one more thing to be
+       blocked, one more thing to be offline, and one more thing to copy. -->
+  <link rel="stylesheet" href="/app/assets/app.css">
+  <script defer src="/app/assets/alpine.js"></script>
+
+  <!-- These screens are behind a login and carry no analytics of their own. -->
+  <meta name="robots" content="noindex, nofollow">
+</head>
+<body class="h-full bg-slate-50 text-slate-900 antialiased">
+
+{{ if .Nav }}
+  <div class="min-h-full lg:flex" x-data="{ mobileNav: false }">
+    {{ template "sidebar.html" . }}
+
+    <div class="flex-1 min-w-0">
+      <header class="lg:hidden flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3">
+        <a href="/sites" class="flex items-center gap-2 font-semibold text-slate-900">
+          <span class="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600 text-white text-sm font-bold">f</span>
+          feasible.lol
+        </a>
+        <button type="button" @click="mobileNav = !mobileNav"
+                class="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700">
+          Menu
+        </button>
+      </header>
+
+      <main class="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 lg:px-10">
+        {{ template "messages.html" . }}
+        {{ template "content" . }}
+      </main>
+    </div>
+  </div>
+{{ else }}
+  <div class="flex min-h-full flex-col items-center justify-center px-4 py-10">
+    <a href="/" class="mb-8 flex items-center gap-2 text-lg font-semibold text-slate-900">
+      <span class="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-600 text-white font-bold">f</span>
+      feasible.lol
+    </a>
+
+    <div class="w-full max-w-md">
+      {{ template "messages.html" . }}
+      {{ template "content" . }}
+    </div>
+
+    <p class="mt-8 text-xs text-slate-400">Privacy-first analytics. No cookies, no persistent identifiers.</p>
+  </div>
+{{ end }}
+
+</body>
+</html>
