@@ -25,7 +25,7 @@
 						<td class="py-2 pr-3"><input type="text" name="pattern" value="{{ $rule.Pattern }}" class="block w-full rounded-xl border border-field px-3 py-2 font-mono text-xs focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"></td>
 						<td class="py-2 pr-3"><input type="text" name="replacement" value="{{ $rule.Replacement }}" class="block w-full rounded-xl border border-field px-3 py-2 font-mono text-xs focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"></td>
 						<td class="py-2 pr-3"><input type="text" name="label" value="{{ $rule.Label }}" class="block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"></td>
-						<td class="py-2 align-middle"><input type="checkbox" name="enabled-{{ $i }}" {{ if $rule.Enabled }}checked{{ end }} class="rounded border-field text-accent-ink focus:ring-accent"></td>
+						<td class="py-2 align-middle"><input type="checkbox" name="enabled-{{ $i }}" {{ if $rule.Enabled }}checked{{ end }} class="size-4 rounded border-field accent-accent focus:ring-accent"></td>
 					</tr>
 					{{ end }}
 					<tr>
@@ -33,7 +33,7 @@
 						<td class="py-2 pr-3"><input type="text" name="pattern" placeholder="^/users/[0-9a-f-]{36}" class="block w-full rounded-xl border border-field px-3 py-2 font-mono text-xs focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"></td>
 						<td class="py-2 pr-3"><input type="text" name="replacement" placeholder="/users/:id" class="block w-full rounded-xl border border-field px-3 py-2 font-mono text-xs focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"></td>
 						<td class="py-2 pr-3"><input type="text" name="label" placeholder="{{ t $.Lang "auth.paths.new_label_placeholder" }}" class="block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"></td>
-						<td class="py-2 align-middle"><input type="checkbox" name="enabled-{{ len .Rules }}" checked class="rounded border-field text-accent-ink focus:ring-accent"></td>
+						<td class="py-2 align-middle"><input type="checkbox" name="enabled-{{ len .Rules }}" checked class="size-4 rounded border-field accent-accent focus:ring-accent"></td>
 					</tr>
 				</tbody>
 			</table>
