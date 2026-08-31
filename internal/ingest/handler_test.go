@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -403,16 +404,18 @@ func TestSizeTriggeredFlushSurvivesTheRequestEnding(t *testing.T) {
 
 	// A production-shaped buffer: small enough that the size trigger fires,
 	// with an interval long enough that only the size trigger can run.
-	var flushErr error
+	// The error is recorded atomically because the callback runs on the flush's
+	// own goroutine while the test is still reading.
+	var flushErr atomic.Pointer[error]
 
 	h.service.Buffer = NewBuffer(NewDirect(h.service.Writer), 2, time.Hour)
-	h.service.Buffer.OnError = func(err error) { flushErr = err }
+	h.service.Buffer.OnError = func(err error) { flushErr.CompareAndSwap(nil, &err) }
 	h.service.Handler.Buffer = h.service.Buffer
 
 	server := httptest.NewServer(h.service.Handler)
 	defer server.Close()
 
-	h.clock = fixtureStart
+	h.setClock(fixtureStart)
 
 	for i := 0; i < 2; i++ {
 		body := fmt.Sprintf(`{"n":"pageview","u":"https://example.com/p%d","d":"example.com"}`, i)
@@ -440,8 +443,13 @@ func TestSizeTriggeredFlushSurvivesTheRequestEnding(t *testing.T) {
 	}
 
 	if got := h.eventCount(t); got != 2 {
+		reported := error(nil)
+		if err := flushErr.Load(); err != nil {
+			reported = *err
+		}
+
 		t.Fatalf("the size-triggered flush wrote %d of 2 events (buffer holds %d, error: %v)",
-			got, h.service.Buffer.Len(), flushErr)
+			got, h.service.Buffer.Len(), reported)
 	}
 }
 

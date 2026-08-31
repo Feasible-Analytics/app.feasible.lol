@@ -20,9 +20,11 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/auth"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dashboard"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/metrics"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/rollup"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/statsapi"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
@@ -156,12 +158,28 @@ func runServe(e *env, args []string) int {
 		"sales_email", e.cfg.App.SalesEmail,
 	)
 
+	checks := &health.Set{}
+	ingestHealth(checks, control, service, e.cfg.App.DataDir)
+
+	// The routing map is checked for having been built, not for holding
+	// anything. An install with no sites yet is a fresh install, and a process
+	// that refused traffic until somebody added a site would refuse them the
+	// page they add it on.
+	checks.Require("routing_map", health.Condition(
+		func() bool { return !service.Sites.BuiltAt().IsZero() },
+		"the routing map has not been built yet"))
+
+	watchProcess(service, manager, e.cfg.App.DataDir, jobCounts(control))
+
 	server := httpserver.New("app", e.cfg.App.Listen, serveRoutes(e, service, manager, secret, e.cfg.App.DataDir, app, public, com))
+	server.Health = checks
+
+	internal := internalServer("app-internal", e.cfg.App.InternalListen, checks)
 
 	pruneCtx, stopPrune := context.WithCancel(context.Background())
 	go app.RunPrune(pruneCtx)
 
-	return serveUntilSignalWith(e, server, service, worker, com.Start,
+	return serveUntilSignalWith(e, server, internal, service, worker, com.Start,
 		func() error { stopPrune(); stopWorker(); return nil }, manager.CloseAll, control.Close)
 }
 
@@ -207,10 +225,15 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, secret []byte, dataDir string, app http.Handler, public *publicStack, com *commerce) http.Handler {
 	mux := http.NewServeMux()
 
+	// Every mount is wrapped with the name it is counted under. The name is
+	// given here rather than derived from the URL because a label taken from a
+	// path would carry a customer's domain and a visitor's page, and would
+	// grow a new series for every URL a crawler invents.
+	//
 	// The signed-in application is mounted at the root, so it owns every path
 	// the more specific patterns below do not claim. Go's mux picks the most
 	// specific pattern, so /api/event and /js/ still reach their own handlers.
-	mux.Handle("/", app)
+	mux.Handle("/", metrics.Instrument(metrics.HandlerApp, app))
 
 	// Every report in the product is this one endpoint with different metrics
 	// and dimensions. It reads the same in-memory site snapshot the ingest path
@@ -219,12 +242,14 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	// The access gate wraps it as well as the dashboard, and that is the point:
 	// the numbers come from here, so a lock that only covered the HTML would be
 	// no lock at all.
-	mux.Handle(statsapi.Pattern, com.Gate.Protect(statsapi.New(service.Sites, manager, e.log)))
+	mux.Handle(statsapi.Pattern, metrics.Instrument(metrics.HandlerStats,
+		com.Gate.Protect(statsapi.New(service.Sites, manager, e.log))))
 
 	// The compiled React dashboard, served out of the binary. It reads the site
 	// snapshot only to render the site picker; every number on it comes from
 	// the stats endpoint above.
-	mux.Handle(dashboard.PathPrefix, com.Gate.Protect(dashboard.New(service.Sites)))
+	mux.Handle(dashboard.PathPrefix, metrics.Instrument(metrics.HandlerDashboard,
+		com.Gate.Protect(dashboard.New(service.Sites))))
 
 	// Pricing, billing, docs and the legal pages, plus the payment provider's
 	// webhook. They are deliberately outside the gate: somebody whose dashboard
@@ -252,14 +277,14 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	// a cacheable static asset with a database lookup behind it, and putting
 	// that on the front door would make the busiest process in the system do
 	// the one thing it is built to avoid.
-	mux.Handle(tracker.PathPrefix, tracker.New(secret, service.Sites))
+	mux.Handle(tracker.PathPrefix, metrics.Instrument(metrics.HandlerTracker, tracker.New(secret, service.Sites)))
 
 	// With the http transport a separate ingest tier owns /api/event, and
 	// answering it here too would mean two processes deriving the same event
 	// with two different site caches.
 	if e.cfg.App.Transport == config.TransportDirect {
-		mux.Handle("/api/event", service.Handler)
-		mux.Handle(tracker.PixelPath, &tracker.Pixel{Events: service.Handler})
+		mux.Handle("/api/event", metrics.Instrument(metrics.HandlerEvent, service.Handler))
+		mux.Handle(tracker.PixelPath, metrics.Instrument(metrics.HandlerEvent, &tracker.Pixel{Events: service.Handler}))
 	}
 
 	return mux

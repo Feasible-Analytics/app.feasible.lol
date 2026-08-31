@@ -11,6 +11,8 @@ package ingest
 import (
 	"sort"
 	"sync"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/metrics"
 )
 
 // The complete set of reasons an event can be dropped or classified. It is a
@@ -126,19 +128,37 @@ func NewCounters() *Counters {
 }
 
 // Accepted records one event that made it through.
+//
+// The per-site count here is the customer's own health panel; the process-wide
+// counter beside it is ours. Both are incremented in the same call so that the
+// two can never disagree about whether an event happened, and neither can be
+// added to without the other.
 func (c *Counters) Accepted(siteID int64) {
 	c.mu.Lock()
 	c.accepted[siteID]++
 	c.mu.Unlock()
+
+	metrics.EventsAccepted.Inc()
 }
 
 // Dropped records one event that did not, under a reason from the closed set.
 // A site id of zero means we never got as far as identifying the site, which is
 // itself worth counting: it is what an unknown domain looks like.
+//
+// The site id stays out of the process-wide metric. A per-site series would be
+// a customer's traffic on an operations endpoint, and one series per site per
+// reason grows without any bound we control.
 func (c *Counters) Dropped(siteID int64, reason string) {
 	c.mu.Lock()
 	c.dropped[counterKey{siteID: siteID, reason: reason}]++
 	c.mu.Unlock()
+
+	if IsClassification(reason) {
+		metrics.EventsClassified.WithLabelValues(reason).Inc()
+		return
+	}
+
+	metrics.EventsDropped.WithLabelValues(reason).Inc()
 }
 
 // Truncated records what an event carried that we could not keep. It takes the
@@ -152,23 +172,31 @@ func (c *Counters) Truncated(siteID int64, truncation Truncation) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// The process-wide counter is bumped from the same place as the per-site
+	// one, so a field that is counted for the customer is always also counted
+	// for us.
+	record := func(field string, count int) {
+		c.truncs[counterKey{siteID, field}] += int64(count)
+		metrics.FieldsTruncated.WithLabelValues(field).Add(float64(count))
+	}
+
 	if truncation.PropsDropped > 0 {
-		c.truncs[counterKey{siteID, TruncationProps}] += int64(truncation.PropsDropped)
+		record(TruncationProps, truncation.PropsDropped)
 	}
 	if truncation.PropNamesTruncated > 0 {
-		c.truncs[counterKey{siteID, TruncationPropName}] += int64(truncation.PropNamesTruncated)
+		record(TruncationPropName, truncation.PropNamesTruncated)
 	}
 	if truncation.PropValuesTruncated > 0 {
-		c.truncs[counterKey{siteID, TruncationPropValue}] += int64(truncation.PropValuesTruncated)
+		record(TruncationPropValue, truncation.PropValuesTruncated)
 	}
 	if truncation.PropsUnsupported > 0 {
-		c.truncs[counterKey{siteID, TruncationPropUnsupported}] += int64(truncation.PropsUnsupported)
+		record(TruncationPropUnsupported, truncation.PropsUnsupported)
 	}
 	if truncation.URLTruncated {
-		c.truncs[counterKey{siteID, TruncationURL}]++
+		record(TruncationURL, 1)
 	}
 	if truncation.EngagementClamped {
-		c.truncs[counterKey{siteID, TruncationEngagement}]++
+		record(TruncationEngagement, 1)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
 )
 
@@ -31,6 +32,7 @@ Flags:
 func runIngest(e *env, args []string) int {
 	fs := newFlagSet("ingest", e, ingestHelp)
 	listen := fs.String("listen", e.cfg.Ingest.Listen, "listen address (host:port)")
+	internalListen := fs.String("internal-listen", e.cfg.Ingest.InternalListen, "private listen address for /metrics (host:port)")
 	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding control.db and the account databases")
 	check := fs.Bool("check", false, "resolve and print the configuration, then exit without listening")
 
@@ -39,12 +41,14 @@ func runIngest(e *env, args []string) int {
 	}
 
 	e.cfg.Ingest.Listen = *listen
+	e.cfg.Ingest.InternalListen = *internalListen
 
 	// An ingestor with the wrong shard list silently drops every event it
 	// receives, so the list is reported before anything else happens — and
 	// `ingest -check` prints it without needing a database to exist.
 	e.log.Info("ingest configuration",
 		"listen", e.cfg.Ingest.Listen,
+		"internal_listen", e.cfg.Ingest.InternalListen,
 		"shards", e.cfg.Ingest.Shards,
 		"buffer_path", e.cfg.Ingest.BufferPath,
 		"internal_keys", len(e.cfg.Shared.InternalKeys),
@@ -63,13 +67,26 @@ func runIngest(e *env, args []string) int {
 		return ExitError
 	}
 
-	server := httpserver.New("ingest", e.cfg.Ingest.Listen, ingestRoutes(service))
+	checks := &health.Set{}
+	ingestHealth(checks, control, service, *dataDir)
 
-	// An ingestor with an empty routing map would answer 202 to everything and
-	// drop it all, so readiness waits for the site cache to hold something.
-	server.Ready = func() bool { return service.Sites.Len() > 0 }
+	// An ingestor with an empty routing map answers 202 to everything and drops
+	// it all, so it is not ready until the map holds something. This is where
+	// the two process shapes genuinely differ: an app with no sites is a fresh
+	// install waiting for somebody to add one, and refusing it traffic would
+	// mean nobody could ever reach the page that adds one.
+	checks.Require("routing_map", health.Condition(
+		func() bool { return service.Sites.Len() > 0 },
+		"the routing map is empty — every event would be dropped as an unknown site"))
+
+	watchProcess(service, manager, *dataDir, nil)
+
+	server := httpserver.New("ingest", e.cfg.Ingest.Listen, ingestRoutes(service))
+	server.Health = checks
+
+	internal := internalServer("ingest-internal", e.cfg.Ingest.InternalListen, checks)
 
 	// No roll-up worker: the ingest tier answers no reports, and summarising
 	// from here would put a second process on the account's write lock.
-	return serveUntilSignal(e, server, service, nil, manager.CloseAll, control.Close)
+	return serveUntilSignal(e, server, internal, service, nil, manager.CloseAll, control.Close)
 }

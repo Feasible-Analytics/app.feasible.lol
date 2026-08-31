@@ -15,7 +15,8 @@ PORT_CADDY        ?= 19300
 PORT_APP          ?= 19301
 PORT_INGEST       ?= 19302
 PORT_SITE         ?= 19303
-PORT_APP_INTERNAL ?= 19401
+PORT_APP_INTERNAL    ?= 19401
+PORT_INGEST_INTERNAL ?= 19402
 
 # ── Addresses ─────────────────────────────────────────────────────────────────
 # BIND_HOST is what the processes listen on; PUBLIC_HOST is what ends up in URLs.
@@ -29,10 +30,12 @@ PUBLIC_HOST ?= localhost
 BASE_URL      = http://$(PUBLIC_HOST):$(PORT_CADDY)
 SOLO_BASE_URL = http://$(PUBLIC_HOST):$(PORT_APP)
 
-# The internal listener never moves off loopback, in any mode. /internal/salts
+# The internal listeners never move off loopback, in any mode. /internal/salts
 # hands out the secret that turns a visitor hash back into an IP address, and
-# putting that on the tailnet would expose it to every device on it.
-INTERNAL_LISTEN = 127.0.0.1:$(PORT_APP_INTERNAL)
+# putting that on the tailnet would expose it to every device on it. /metrics
+# sits beside it and stays there for the same reason.
+INTERNAL_LISTEN        = 127.0.0.1:$(PORT_APP_INTERNAL)
+INGEST_INTERNAL_LISTEN = 127.0.0.1:$(PORT_INGEST_INTERNAL)
 
 # ── Tailscale ─────────────────────────────────────────────────────────────────
 # The App Store build does not put the CLI on PATH, hence the fallback path.
@@ -68,7 +71,8 @@ APP_ENV = FEASIBLE_APP_LISTEN=$(BIND_HOST):$(PORT_APP) \
 	FEASIBLE_APP_INTERNAL_LISTEN=$(INTERNAL_LISTEN) \
 	FEASIBLE_APP_BASE_URL=$(BASE_URL)
 
-INGEST_ENV = FEASIBLE_INGEST_LISTEN=$(BIND_HOST):$(PORT_INGEST)
+INGEST_ENV = FEASIBLE_INGEST_LISTEN=$(BIND_HOST):$(PORT_INGEST) \
+	FEASIBLE_INGEST_INTERNAL_LISTEN=$(INGEST_INTERNAL_LISTEN)
 
 CADDY_ENV = FEASIBLE_CADDY_BIND=$(BIND_HOST) \
 	FEASIBLE_CADDY_PORT=$(PORT_CADDY) \
@@ -95,8 +99,8 @@ FRESH ?= --fresh
 
 .DEFAULT_GOAL := help
 
-.PHONY: help assets tracker ui-css build test test-web test-tracker test-integration test-ecosystem \
-	lint check-env \
+.PHONY: help assets tracker ui-css build test test-race test-web test-tracker test-integration test-ecosystem \
+	bench lint check-env \
 	migrate migrate-fresh seed seed-big seed-http caddy app ingest testsite dev dev-solo \
 	caddy-ts app-ts ingest-ts testsite-ts dev-ts dev-solo-ts require-tailscale
 
@@ -127,6 +131,7 @@ help:
 	@echo "    make test-tracker       the tracker's end-to-end suite in a real browser"
 	@echo "    make test-integration   end-to-end tests through Caddy"
 	@echo "    make test-ecosystem     the SDKs and the plugin, in whichever toolchains you have"
+	@echo "    make bench      the write and read benchmarks (minutes, seeds its own data)"
 	@echo "    make lint       go vet and golangci-lint"
 	@echo "    make test-race  the same tests under the race detector"
 	@echo "    make check-env  every environment variable is in .env.sample"
@@ -226,6 +231,19 @@ test-race:
 # loading a real page from a real origin.
 test-tracker: tracker
 	@npm --prefix tracker test
+
+## bench: the write and read benchmarks behind every capacity claim
+# Not part of `make test`: a run seeds its own data and takes minutes, and a
+# number measured on a machine that is also running a test suite is not a
+# number. Point the read half at a database you have already seeded with
+#
+#   make bench BENCH_DATA_DIR=./data
+#
+# and it measures that instead of generating its own. internal/bench/RESULTS.md
+# records what the numbers were when they were last taken.
+bench:
+	@go test ./internal/bench/ -run '^$$' -bench . -benchtime 1x -timeout 60m \
+		$(if $(BENCH_DATA_DIR),-bench.data-dir $(BENCH_DATA_DIR),)
 
 ## test-integration: start everything, send an event, assert it landed
 # Tagged so `make test` stays fast and hermetic. The tests themselves arrive with

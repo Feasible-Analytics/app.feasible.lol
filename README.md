@@ -50,14 +50,14 @@ stays readable:
 ```bash
 make caddy             # :19300 — the only port you open in a browser
 make app               # :19301, plus :19401 internal, loopback only
-make ingest            # :19302
+make ingest            # :19302, plus :19402 internal, loopback only
 make testsite          # :19303 — a real page with the snippet installed
 ```
 
 `make dev` runs all three at once. Every runnable target has a `-ts` twin
 (`make app-ts`, `make dev-ts`) that binds to the Tailscale address and moves
 `FEASIBLE_APP_BASE_URL` with it, so the app is reachable from another machine.
-The internal listener stays on `127.0.0.1` in every mode.
+The internal listeners stay on `127.0.0.1` in every mode.
 
 `make` on its own lists everything.
 
@@ -72,6 +72,60 @@ The internal listener stays on `127.0.0.1` in every mode.
   ```bash
   stripe listen --forward-to localhost:19301/webhooks/stripe
   ```
+
+## What it needs to run
+
+One binary, one directory, no Docker and no database server. These are measured
+numbers rather than guesses — see `internal/bench/RESULTS.md` for how, and for
+the machine they were taken on.
+
+| | Minimum | Comfortable |
+|---|---|---|
+| CPU | 1 core | 2 cores |
+| Memory | 512 MB | 2 GB |
+| Disk | 1 GB plus your data | SSD, and see below |
+| OS | Linux, macOS or BSD, x86-64 or arm64 | |
+| Anything else | nothing | |
+
+**Disk is the number that grows.** A million pageviews is about 300 MB once it
+is indexed and summarised — roughly 210 bytes an event, measured rather than
+guessed. Raw rows age out and roll-ups do not, so a site sending a million a
+month settles well below twelve times that a year. Leave the write-ahead logs
+headroom: they are checkpointed automatically, but a full disk is not a state
+SQLite can write its way out of.
+
+**Throughput.** One process sustains around six thousand events a second through
+the whole accept path, which is far more than a site sending a million pageviews
+a month generates — that is under half an event a second on average. Accepting
+an event costs about thirteen microseconds and never waits on the disk. Reports
+read from summary tables in under a tenth of a second over a year of data; the
+same report from raw rows takes seconds, which is why the roll-up worker exists.
+
+**Building** needs Node as well, because the dashboard and the stylesheet are
+compiled before Go embeds them. Running never does.
+
+## Watching it run
+
+Every process serves two probes and, on its loopback listener, a metrics
+endpoint:
+
+```bash
+curl localhost:19301/health/live     # is the process up
+curl localhost:19301/health/ready    # can it serve, component by component
+curl localhost:19401/metrics         # Prometheus text format (app)
+curl localhost:19402/metrics         # the ingest tier's own
+```
+
+`/health/live` checks nothing on purpose: a liveness probe that failed on a slow
+database would turn one slow database into a restart loop everywhere at once.
+`/health/ready` returns 503 with a JSON body naming every dependency and what
+was wrong with it, so a failure is a diagnosis rather than a word.
+
+The metrics endpoint is loopback-only and carries no customer data — no site,
+domain, path or country appears as a label, and no IP address exists anywhere in
+this system to leak. Drop counts by reason, write-buffer depth, roll-up freshness
+and report latency are all there; per-site numbers belong to the customer and
+live on their own ingestion-health panel.
 
 ### Before you push
 

@@ -169,6 +169,21 @@ func (l *Logger) SlowQuery(query string, took time.Duration, rowsExamined int64)
 	)
 }
 
+// SlowReport records a report that took too long, with enough of the request to
+// reproduce it. A metrics histogram says how many reports were slow; this says
+// which one, and on a per-account SQLite file the answer is nearly always the
+// range and the source it was answered from.
+func (l *Logger) SlowReport(domain, source string, took time.Duration, metrics, dimensions []string, dateRange string) {
+	l.Warn("slow report",
+		"domain", domain,
+		"source", source,
+		"duration", took,
+		"metrics", strings.Join(metrics, ","),
+		"dimensions", strings.Join(dimensions, ","),
+		"date_range", dateRange,
+	)
+}
+
 // AuthFailure records a rejected internal request with the real reason and the
 // observed clock skew. A signature that fails only because two machines drifted
 // apart looks exactly like an attack until the skew is on the line, and that

@@ -23,6 +23,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/metrics"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 )
@@ -35,6 +36,12 @@ const Pattern = "POST /api/stats/{domain}/query"
 // approaching this is either a mistake or an attempt to make the JSON decoder
 // the most expensive thing on the box.
 const MaxBodyBytes = 1 << 20
+
+// SlowReport is when an answered report is worth a log line of its own. A
+// second is well past what a dashboard reading summaries costs and well short
+// of what an unsummarised twelve-month range costs, so it catches the reports
+// that are slow for a reason somebody could fix.
+const SlowReport = time.Second
 
 // Handler answers stats queries for one shard.
 type Handler struct {
@@ -169,17 +176,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		engine.Now = h.Now
 	}
 
+	started := time.Now()
+
 	result, err := engine.Run(r.Context(), parsed.toQuery(site))
+
+	took := time.Since(started)
+
 	if err != nil {
 		var callerError *query.Error
 		if errors.As(err, &callerError) {
+			metrics.QueryFailures.WithLabelValues("caller").Inc()
 			h.fail(w, http.StatusBadRequest, callerError.Message)
 			return
 		}
 
+		metrics.QueryFailures.WithLabelValues("internal").Inc()
 		h.internal(w, "run query", err)
 		return
 	}
+
+	h.record(domain, result, took)
 
 	encoded, err := json.Marshal(result)
 	if err != nil {
@@ -192,6 +208,38 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeBody(w, http.StatusOK, encoded)
+}
+
+// record times one answered report and says so out loud when it was slow.
+//
+// The source is the label because it is the one thing that explains the number:
+// the same report is single-digit milliseconds from a summary and seconds from
+// a raw twelve-month scan, and a histogram that mixed them would describe
+// neither. It is a closed set of two words, so it costs three series rather
+// than one per site.
+func (h *Handler) record(domain string, result *query.Result, took time.Duration) {
+	source := sourceLabel(result.Meta.Sources)
+
+	metrics.QueryDuration.WithLabelValues(source).Observe(took.Seconds())
+
+	if took >= SlowReport && h.Log != nil {
+		h.Log.SlowReport(domain, source, took,
+			result.Query.Metrics, result.Query.Dimensions, strings.Join(result.Query.DateRange, ".."))
+	}
+}
+
+// sourceLabel reduces where a report was answered from to one of three words.
+// Mixed is its own answer rather than being counted as either half: a range
+// that is part summary and part raw costs what the raw part costs.
+func sourceLabel(sources []string) string {
+	switch len(sources) {
+	case 0:
+		return "none"
+	case 1:
+		return sources[0]
+	default:
+		return "mixed"
+	}
 }
 
 // stillRunning reports whether a report's period has not finished, which is the

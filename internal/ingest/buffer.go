@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/metrics"
 )
 
 // DefaultBufferSize is how many events accumulate before a flush is forced. A
@@ -133,6 +135,15 @@ func (b *Buffer) flush(ctx context.Context) error {
 		return nil
 	}
 
+	// A flush is the one place where "we said 202" becomes "it is on disk", so
+	// it is timed and counted here rather than inside a transport that only one
+	// deployment shape uses.
+	started := time.Now()
+
+	metrics.FlushBatchSize.Observe(float64(len(batch)))
+
+	defer func() { metrics.FlushDuration.Observe(time.Since(started).Seconds()) }()
+
 	byShard := map[int][]Event{}
 	for _, event := range batch {
 		byShard[event.Shard] = append(byShard[event.Shard], event)
@@ -143,8 +154,16 @@ func (b *Buffer) flush(ctx context.Context) error {
 	for shard, events := range byShard {
 		committed, err := b.transport.Send(ctx, shard, events)
 		if err == nil {
+			metrics.Flushes.WithLabelValues(metrics.OutcomeOK).Inc()
+			metrics.EventsWritten.Add(float64(len(events)))
 			continue
 		}
+
+		// Whatever did commit still counts as written: a partial failure that
+		// reported nothing would make accepted-minus-written look like data
+		// loss when it is a retry in progress.
+		metrics.Flushes.WithLabelValues(metrics.OutcomeError).Inc()
+		metrics.EventsWritten.Add(float64(len(committed)))
 
 		if firstErr == nil {
 			firstErr = err

@@ -154,6 +154,65 @@ func TestWriteIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestDedupeLookupSurvivesABatchPastTheBindLimit is the backed-up buffer.
+//
+// A batch is a few hundred events while everything is healthy, but the buffer
+// keeps accepting while a flush runs slow, so the batch that arrives after a
+// stall is tens of thousands. The lookup used to bind one parameter per id, and
+// SQLite refuses a statement with more than about thirty-two thousand: the
+// write failed, the batch was requeued unchanged, and it then failed
+// identically forever — a buffer that could never drain, on the one batch that
+// most needed to be written.
+//
+// It calls the lookup directly rather than writing the events, because the
+// statement is the thing under test and folding forty thousand events would
+// make a slow test out of a fast one.
+func TestDedupeLookupSurvivesABatchPastTheBindLimit(t *testing.T) {
+	ctx := context.Background()
+	_, manager := newWriter(t)
+
+	account, err := manager.Open(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Past SQLite's bind limit, which is where the unchunked statement failed.
+	const events = 40_000
+
+	batch := make([]Event, 0, events)
+	for i := 0; i < events; i++ {
+		batch = append(batch, writerEvent(1, EventPageview, fixtureStart.Unix()+int64(i), "/"))
+	}
+
+	seen, err := knownEventIDs(ctx, account.Reader(), batch)
+	if err != nil {
+		t.Fatalf("looking up %d ids: %v", events, err)
+	}
+	if len(seen) != 0 {
+		t.Fatalf("found %d ids in an empty dedupe table", len(seen))
+	}
+
+	// One id from the far end of the batch, to prove the chunking still finds
+	// what it is looking for rather than only asking about the first chunk.
+	last := batch[len(batch)-1].UUID
+
+	if _, err := account.Writer().ExecContext(ctx,
+		"INSERT INTO recent_event_ids (event_uuid, received_at) VALUES (?, ?)",
+		last[:], fixtureStart.Unix(),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	seen, err = knownEventIDs(ctx, account.Reader(), batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, found := seen[last]; !found || len(seen) != 1 {
+		t.Fatalf("the lookup found %d ids and missed the one that was there", len(seen))
+	}
+}
+
 // TestDuplicateWithinOneBatch covers a sender that retried into the middle of a
 // live batch, which produces the same id twice in one call.
 func TestDuplicateWithinOneBatch(t *testing.T) {

@@ -248,6 +248,28 @@ func TestUnknownSiteIsNotFound(t *testing.T) {
 	}
 }
 
+// TestSourceLabelIsAClosedSet checks the one label the query timings carry. It
+// has to stay three or four fixed words: a label taken from the request would
+// put a customer's site on an operations endpoint and grow a new series for
+// every value that ever arrives.
+func TestSourceLabelIsAClosedSet(t *testing.T) {
+	cases := []struct {
+		sources []string
+		want    string
+	}{
+		{nil, "none"},
+		{[]string{"raw"}, "raw"},
+		{[]string{"rollup"}, "rollup"},
+		{[]string{"rollup", "raw"}, "mixed"},
+	}
+
+	for _, c := range cases {
+		if got := sourceLabel(c.sources); got != c.want {
+			t.Errorf("sourceLabel(%v) = %q, want %q", c.sources, got, c.want)
+		}
+	}
+}
+
 // TestOnlyPostIsAccepted checks the method guard.
 func TestOnlyPostIsAccepted(t *testing.T) {
 	server := newServer(t)

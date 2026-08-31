@@ -375,15 +375,43 @@ func (w *Writer) partition(ctx context.Context, db *sql.DB, state *accountLock, 
 	return fresh, duplicates, nil
 }
 
+// DedupeLookupChunk is how many ids one dedupe query asks about.
+//
+// It exists because SQLite refuses a statement with more bound parameters than
+// its compile-time limit, and a batch is only "a few hundred events" while
+// everything is healthy. The moment a flush runs slow the buffer keeps
+// accepting, so the next batch can be tens of thousands — and an unchunked
+// lookup then fails on the one batch that most needs to be written, requeues it
+// unchanged, and fails on it identically forever. A buffer that can never drain
+// is worse than a slow one.
+//
+// Five hundred is far below any build's limit and still one round trip per five
+// hundred ids, so the batching this exists to protect is intact.
+const DedupeLookupChunk = 500
+
 // knownEventIDs asks the dedupe table which of these ids it already holds. It is
-// one query with a bound parameter per id rather than one query per event,
-// because a batch is up to a few hundred events and a round trip each would
-// undo the point of batching.
+// one query per chunk of ids rather than one query per event, because a round
+// trip each would undo the point of batching.
 func knownEventIDs(ctx context.Context, db *sql.DB, events []Event) (map[uuid.UUID]struct{}, error) {
 	if len(events) == 0 {
 		return nil, nil
 	}
 
+	seen := map[uuid.UUID]struct{}{}
+
+	for start := 0; start < len(events); start += DedupeLookupChunk {
+		end := min(start+DedupeLookupChunk, len(events))
+
+		if err := lookupEventIDs(ctx, db, events[start:end], seen); err != nil {
+			return nil, err
+		}
+	}
+
+	return seen, nil
+}
+
+// lookupEventIDs runs one chunk's query and adds whatever it found to seen.
+func lookupEventIDs(ctx context.Context, db *sql.DB, events []Event, seen map[uuid.UUID]struct{}) error {
 	query := "SELECT event_uuid FROM recent_event_ids WHERE event_uuid IN (?"
 	args := make([]any, 0, len(events))
 	args = append(args, events[0].UUID[:])
@@ -396,16 +424,14 @@ func knownEventIDs(ctx context.Context, db *sql.DB, events []Event) (map[uuid.UU
 
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("dedupe lookup: %w", err)
+		return fmt.Errorf("dedupe lookup: %w", err)
 	}
 	defer rows.Close()
-
-	seen := map[uuid.UUID]struct{}{}
 
 	for rows.Next() {
 		var raw []byte
 		if err := rows.Scan(&raw); err != nil {
-			return nil, fmt.Errorf("dedupe lookup: %w", err)
+			return fmt.Errorf("dedupe lookup: %w", err)
 		}
 
 		id, err := uuid.FromBytes(raw)
@@ -416,10 +442,10 @@ func knownEventIDs(ctx context.Context, db *sql.DB, events []Event) (map[uuid.UU
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("dedupe lookup: %w", err)
+		return fmt.Errorf("dedupe lookup: %w", err)
 	}
 
-	return seen, nil
+	return nil
 }
 
 // commit writes everything for one account in a single transaction. Either the

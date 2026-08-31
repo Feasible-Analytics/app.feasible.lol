@@ -14,12 +14,15 @@ package httpserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"sync/atomic"
 	"time"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 )
 
 // Timeouts. They exist because Go's zero value for all of them is "no timeout",
@@ -71,10 +74,11 @@ type Server struct {
 	// every replica behind one lock.
 	ready atomic.Bool
 
-	// Ready is an extra condition the process supplies — the site cache being
-	// loaded, for example. Returning false keeps traffic away without the
-	// process appearing dead.
-	Ready func() bool
+	// Health is what this process depends on. Each process registers its own,
+	// because the two shapes do different jobs: an ingestor cannot serve
+	// without a routing map, and a shard cannot serve without its databases.
+	// Nil means the process reports only whether it is draining.
+	Health *health.Set
 
 	listener net.Listener
 }
@@ -180,17 +184,41 @@ func (s *Server) handleLive(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok\n"))
 }
 
-// handleReady answers the readiness probe, including whatever extra condition
-// the process supplied.
-func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/plain")
+// handleReady answers the readiness probe with a component-by-component body.
+//
+// The body is the point. A load balancer only reads the status code, but the
+// person it wakes up reads this, and "not ready" on its own is twenty minutes
+// of guessing which dependency it meant.
+//
+// A draining process is unready before it is anything else: shutdown has begun,
+// and probing its dependencies would only report on a process that is going
+// away regardless.
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	report := health.Report{Status: health.StatusReady, Components: []health.Component{}}
 
-	if !s.ready.Load() || (s.Ready != nil && !s.Ready()) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte("draining\n"))
+	switch {
+	case !s.ready.Load():
+		report.Status = health.StatusDraining
+
+	case s.Health != nil:
+		report = s.Health.Run(r.Context())
+	}
+
+	status := http.StatusOK
+	if !report.Ready() {
+		status = http.StatusServiceUnavailable
+	}
+
+	body, err := json.Marshal(report)
+	if err != nil {
+		// Encoding cannot realistically fail, but a probe that answered 200
+		// because it could not describe its own failure would be the worst
+		// possible outcome of it happening.
+		http.Error(w, `{"status":"not_ready"}`, http.StatusServiceUnavailable)
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ready\n"))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(append(body, '\n'))
 }
