@@ -97,6 +97,13 @@ type Meta struct {
 	// raw and roll-up once summaries exist.
 	Sources []string `json:"sources"`
 
+	// ImportGaps names what imported history could not answer, and how much of
+	// it is therefore outside the numbers above. A dimension an import does not
+	// carry is reported here rather than contributing zero, which is the
+	// difference between a reader who can trust a filtered total and one whose
+	// imported traffic silently vanished the moment they clicked a filter.
+	ImportGaps []ImportGap `json:"import_gaps,omitempty"`
+
 	// ComparisonDateRange is the resolved comparison window, when one was
 	// asked for. It is resolved server-side and echoed for the same reason the
 	// main range is.

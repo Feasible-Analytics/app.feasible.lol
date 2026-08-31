@@ -57,6 +57,10 @@ type executor struct {
 	rollupRead    rollupRead
 	rollupUsable  bool
 	rollupPlanned bool
+
+	// gaps collects what imported history could not answer, keyed by the
+	// dimension that could not be answered.
+	gaps map[string]ImportGap
 }
 
 // dimMode selects which session column an event-scoped page dimension maps to.
@@ -243,7 +247,7 @@ func (x *executor) dimensions(t table, mode dimMode) ([]compiledDim, []string, [
 			if d.EventColumn != "" {
 				compiled = append(compiled, compiledDim{
 					dim: d, alias: fmt.Sprintf("d%d", i),
-					sql: expr{SQL: alias + "." + d.EventColumn},
+					sql: expr{SQL: x.compile.pathColumn(alias, d.EventColumn, d)},
 				})
 				break
 			}
@@ -255,7 +259,7 @@ func (x *executor) dimensions(t table, mode dimMode) ([]compiledDim, []string, [
 			addJoin("JOIN sessions sj ON sj.id = " + alias + ".session_id")
 			compiled = append(compiled, compiledDim{
 				dim: d, alias: fmt.Sprintf("d%d", i),
-				sql: expr{SQL: "sj." + d.SessionColumn},
+				sql: expr{SQL: x.compile.pathColumn("sj", d.SessionColumn, d)},
 			})
 
 		default:
@@ -266,7 +270,7 @@ func (x *executor) dimensions(t table, mode dimMode) ([]compiledDim, []string, [
 
 			compiled = append(compiled, compiledDim{
 				dim: d, alias: fmt.Sprintf("d%d", i),
-				sql: expr{SQL: alias + "." + column},
+				sql: expr{SQL: x.compile.pathColumn(alias, column, d)},
 			})
 		}
 	}
@@ -428,8 +432,11 @@ func (x *executor) execute(ctx context.Context, restrict map[int][]any) (*groupS
 
 	// A split range is merged in memory, so the database cannot be the thing
 	// that ordered and paginated it. Neither can a gap-filled time series,
-	// whose empty buckets do not exist in any table.
-	x.pushDown = x.canPushDown() && len(segments) == 1 && !timeOnly(x.query) && !x.comparison
+	// whose empty buckets do not exist in any table, nor a query that includes
+	// imported roll-ups: those are merged in memory after the fact tables have
+	// been read, exactly like a split range.
+	x.pushDown = x.canPushDown() && len(segments) == 1 && !timeOnly(x.query) &&
+		!x.comparison && !x.query.Include.Imports
 	x.segments = segments
 
 	groups := newGroupSet()
@@ -502,6 +509,16 @@ func (x *executor) execute(ctx context.Context, restrict map[int][]any) (*groupS
 		if err := x.seamPass(ctx, segments[len(segments)-1].Range, groups); err != nil {
 			return nil, err
 		}
+	}
+
+	// Imported history is read over the executor's own range rather than per
+	// segment: the segments exist to split raw days from rolled-up ones, and an
+	// imported row is already a rolled-up day. Running it here also means the
+	// comparison executor runs it too, which is what stops a comparison
+	// measuring native-only against a headline that included imports — the
+	// mistake behind an incumbent reporting +450% where the truth was -34%.
+	if err := x.importedPass(ctx, x.resolved, groups, restrict); err != nil {
+		return nil, err
 	}
 
 	return groups, nil

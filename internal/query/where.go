@@ -180,16 +180,16 @@ func (b *whereBuilder) column(d dimension) (string, func(expr) expr, error) {
 
 	if b.table == tableEvents {
 		if d.EventColumn != "" {
-			return b.alias + "." + d.EventColumn, identity, nil
+			return b.ctx.pathColumn(b.alias, d.EventColumn, d), identity, nil
 		}
 
 		// Entry and exit page exist only on sessions, so an event query asking
 		// about them selects the sessions first and matches events to them.
-		return "s2." + d.SessionColumn, b.throughSessions, nil
+		return b.ctx.pathColumn("s2", d.SessionColumn, d), b.throughSessions, nil
 	}
 
 	if d.SessionColumn != "" {
-		return b.alias + "." + d.SessionColumn, identity, nil
+		return b.ctx.pathColumn(b.alias, d.SessionColumn, d), identity, nil
 	}
 
 	// An event-scoped dimension being asked at session grain. A page has an
@@ -199,12 +199,12 @@ func (b *whereBuilder) column(d dimension) (string, func(expr) expr, error) {
 	if d.EntryColumn != "" {
 		b.entryScoped = true
 
-		return b.alias + "." + d.EntryColumn, identity, nil
+		return b.ctx.pathColumn(b.alias, d.EntryColumn, d), identity, nil
 	}
 
 	b.semiJoined = true
 
-	return "e2." + d.EventColumn, b.throughEvents, nil
+	return b.ctx.pathColumn("e2", d.EventColumn, d), b.throughEvents, nil
 }
 
 // throughSessions lifts a predicate written against `sessions` into a query on

@@ -57,6 +57,22 @@ type Writer struct {
 	// prune cutoff rather than depending on when the suite runs.
 	Now func() time.Time
 
+	// Shield holds the country, page and hostname rules. It is evaluated here
+	// rather than in the ingest tier because this is where the rule list is the
+	// live table: a rule saved in the dashboard applies to the next batch,
+	// without a snapshot having to cross a network first.
+	Shield ShardShield
+
+	// Counters is where a shielded event is recorded. A drop nobody can see is
+	// indistinguishable from traffic that never arrived, and "my numbers went
+	// down after I added a rule" has to be answerable.
+	Counters *Counters
+
+	// Paths applies the site's path cleaning rules before anything is interned,
+	// which is what stops dim_pathname growing by a row per request on a site
+	// with identifiers in its URLs.
+	Paths PathCleaner
+
 	// mu guards the per-account state below. Writes to one account are
 	// serialised anyway — SQLite allows one writer — so a per-account lock
 	// costs nothing and makes the read-then-fold sequence atomic.
@@ -198,9 +214,25 @@ func (w *Writer) writeAccount(ctx context.Context, accountID int64, events []Eve
 		return nil, err
 	}
 
+	// Shielded events are dropped before the fold. Folding one first would put
+	// it in a session's pageview count and its exit page, so the visit would
+	// carry traffic the customer asked us not to count even though no row for
+	// it was ever written.
+	fresh, shielded := w.applyShield(fresh)
+
+	// Cleaning happens before the fold, so the session's entry and exit pages
+	// are the cleaned paths too. Cleaning afterwards would leave a session
+	// pointing at a raw path that no report groups by any more.
+	w.cleanPaths(fresh)
+
+	// A shielded event is acknowledged, not rejected. The sender has done
+	// nothing wrong, and telling it otherwise makes it retry an event we will
+	// throw away again every time.
+	committed := make([]uuid.UUID, 0, len(events))
+	committed = append(committed, shielded...)
+
 	// A duplicate is committed as far as the sender is concerned. Telling it
 	// otherwise would make a lost acknowledgement retry forever.
-	committed := make([]uuid.UUID, 0, len(events))
 	committed = append(committed, duplicates...)
 
 	// Rows carried over from a failed commit go first: they are the oldest
@@ -332,6 +364,50 @@ func (w *Writer) recordUsage(accountID int64, rows []eventRow) {
 	}
 
 	w.Usage.Record(accountID, pageviews, customEvents)
+}
+
+// applyShield splits a batch into the events that may be written and the ids of
+// the ones a shield rule blocked. It returns ids rather than events because a
+// blocked event is acknowledged and then forgotten: nothing downstream has any
+// use for it, and keeping it would only invite somebody to count it.
+func (w *Writer) applyShield(events []Event) ([]Event, []uuid.UUID) {
+	if w.Shield == nil {
+		return events, nil
+	}
+
+	kept := make([]Event, 0, len(events))
+	var blocked []uuid.UUID
+
+	for i := range events {
+		event := &events[i]
+
+		allowed, reason := w.Shield.Allowed(event.SiteID, event.Hostname, event.Pathname, event.Country)
+		if allowed {
+			kept = append(kept, *event)
+			continue
+		}
+
+		blocked = append(blocked, event.UUID)
+
+		if w.Counters != nil {
+			w.Counters.Dropped(event.SiteID, reason)
+		}
+	}
+
+	return kept, blocked
+}
+
+// cleanPaths rewrites a batch's paths in place. It is a no-op for a site with
+// no rules, which is the overwhelming majority, and the check is one map read
+// inside the cleaner rather than a database call here.
+func (w *Writer) cleanPaths(events []Event) {
+	if w.Paths == nil {
+		return
+	}
+
+	for i := range events {
+		events[i].Pathname = w.Paths.Clean(events[i].SiteID, events[i].Pathname)
+	}
 }
 
 // eventRow pairs a derived event with the session it was folded into.

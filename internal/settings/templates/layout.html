@@ -1,0 +1,59 @@
+{{define "layout"}}<!doctype html>
+<html lang="{{ .Lang }}" class="h-full">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ t .Lang .TitleID }} — {{ .Domain }} — feasible.lol</title>
+
+<!-- The one compiled stylesheet the server-rendered screens share. These pages
+     have no palette of their own: every colour below is a semantic role from
+     ui/tokens.css, so light and dark fall out of one declaration. -->
+<link rel="stylesheet" href="/app/assets/app.css">
+
+<!-- The theme is decided before the first paint, from the same key the
+     dashboard and the sign-in screens write. Deciding it after the paint is a
+     white flash on every navigation for anybody who chose dark. -->
+<script>
+	(function () {
+		try {
+			var saved = localStorage.getItem("feasible.theme");
+			var dark = saved === "dark" ||
+				(saved !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+
+			if (dark) document.documentElement.classList.add("dark");
+		} catch (e) {}
+	})();
+</script>
+</head>
+
+<body class="min-h-full bg-page text-body">
+
+<header class="border-b border-line bg-card">
+	<div class="mx-auto flex max-w-4xl items-baseline gap-3 px-6 py-4">
+		<a href="/sites" class="text-sm font-semibold text-heading">feasible.lol</a>
+		<span class="text-sm text-muted">{{ .Domain }}</span>
+	</div>
+</header>
+
+<nav class="border-b border-line bg-card" aria-label="{{ t .Lang "auth.settings_nav.label" }}">
+	<div class="mx-auto flex max-w-4xl gap-1 px-6">
+		<a href="/settings/{{ .Domain }}/shields" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "shields" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "auth.shields.title" }}</a>
+		<a href="/settings/{{ .Domain }}/paths" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "paths" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "auth.paths.title" }}</a>
+		<a href="/settings/{{ .Domain }}/imports" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "imports" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "auth.imports.title" }}</a>
+	</div>
+</nav>
+
+<main class="mx-auto max-w-4xl px-6 pb-20 pt-8">
+	{{ if .Error }}
+	<div class="mb-6 rounded-xl border border-down/30 bg-down/10 px-4 py-3 text-sm text-down-ink" role="alert">{{ .Error }}</div>
+	{{ end }}
+
+	{{ if .Message }}
+	<div class="mb-6 rounded-xl border border-up/30 bg-up/10 px-4 py-3 text-sm text-up-ink" role="status">{{ .Message }}</div>
+	{{ end }}
+
+	{{ template "body" . }}
+</main>
+
+</body>
+</html>{{end}}

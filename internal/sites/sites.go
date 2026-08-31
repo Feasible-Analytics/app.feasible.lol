@@ -21,6 +21,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -166,6 +167,23 @@ func (c *Cache) Domains() []string {
 	}
 
 	return domains
+}
+
+// All returns every site in the snapshot. It exists for the things that have to
+// walk the whole estate rather than answer one domain — refreshing the shield
+// rules, listing sites in the settings pages — and it copies so a caller cannot
+// mutate the map every event reads.
+func (c *Cache) All() []Site {
+	current := c.snap.Load()
+
+	all := make([]Site, 0, len(current.byDomain))
+	for _, site := range current.byDomain {
+		all = append(all, site)
+	}
+
+	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
+
+	return all
 }
 
 // Len reports how many sites the snapshot holds. A routing map that suddenly

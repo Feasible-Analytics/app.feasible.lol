@@ -183,22 +183,24 @@ func internalServer(name, addr string, checks *health.Set) *httpserver.Server {
 	return server
 }
 
-// serveUntilSignal runs the listeners until SIGINT or SIGTERM, then shuts
+// serveUntilSignalWith runs the listeners until SIGINT or SIGTERM, then shuts
 // everything down in order. Returning an exit code rather than calling os.Exit
 // is what lets the whole command be driven from a test.
 //
 // The roll-up worker is optional so that the ingest-only process, which has no
 // reports to make fast, does not summarise anything. The internal listener is
 // optional for the same reason a test does not want a second port bound.
-func serveUntilSignal(e *env, server, internal *httpserver.Server, service *ingest.Service, worker *rollup.Worker, closers ...func() error) int {
-	return serveUntilSignalWith(e, server, internal, service, worker, nil, closers...)
-}
-
-// serveUntilSignalWith is serveUntilSignal plus the process's own background
-// loops — the billing sweeps, the usage flush and the access gate.
 //
-// They are started here rather than by their own package so that shutdown waits
-// for them. The usage recorder flushes its last interval on the way out, and a
+// The background hook is where the process's own loops go — the billing
+// sweeps, the usage flush, the access gate, the rule refresh and the import
+// runner. They are started here rather than as bare goroutines so that
+// shutdown waits for them: every one holds state somebody can see, and a
+// process that exited without waiting would lose it on every deploy.
+//
+// The background hook carries the process's own loops — the billing sweeps, the
+// usage flush, the access gate, the rule refreshes and the job runner. They are
+// started here rather than by their own packages so that shutdown waits for
+// them. The usage recorder flushes its last interval on the way out, and a
 // process that exited without waiting would lose the events an account was
 // billed for, every single deploy.
 func serveUntilSignalWith(e *env, server, internal *httpserver.Server, service *ingest.Service, worker *rollup.Worker, background func(context.Context, func(func())), closers ...func() error) int {

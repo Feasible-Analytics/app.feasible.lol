@@ -70,6 +70,16 @@ func runIngest(e *env, args []string) int {
 	checks := &health.Set{}
 	ingestHealth(checks, control, service, *dataDir)
 
+	// The blocked-address rules have to be loaded here as well as in the app
+	// process. This tier is the only place the raw IP still exists, so an
+	// ingestor running without them would forward traffic the customer has
+	// explicitly asked us not to count, and no later stage could tell.
+	rules, err := buildSiteRules(context.Background(), e, service, manager)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return ExitError
+	}
+
 	// An ingestor with an empty routing map answers 202 to everything and drops
 	// it all, so it is not ready until the map holds something. This is where
 	// the two process shapes genuinely differ: an app with no sites is a fresh
@@ -87,6 +97,8 @@ func runIngest(e *env, args []string) int {
 	internal := internalServer("ingest-internal", e.cfg.Ingest.InternalListen, checks)
 
 	// No roll-up worker: the ingest tier answers no reports, and summarising
-	// from here would put a second process on the account's write lock.
-	return serveUntilSignal(e, server, internal, service, nil, manager.CloseAll, control.Close)
+	// from here would put a second process on the account's write lock. The rule
+	// refresh loops go through the shared background hook so that shutdown waits
+	// for them rather than cancelling a refresh mid-read.
+	return serveUntilSignalWith(e, server, internal, service, nil, rules.background(e), manager.CloseAll, control.Close)
 }

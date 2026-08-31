@@ -1,0 +1,97 @@
+{{define "body"}}
+<h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "auth.paths.title" }}</h1>
+<p class="mt-1 max-w-2xl text-sm text-muted">{{ t $.Lang "auth.paths.lede" }}</p>
+
+<section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm">
+	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.paths.rules" }}</h2>
+	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang "auth.paths.rules_help" }}</p>
+
+	<form method="post" action="/settings/{{ .Domain }}/paths/save">
+		<div class="mt-4 overflow-x-auto">
+			<table class="w-full text-sm">
+				<thead>
+					<tr class="border-b border-line text-left text-xs font-semibold uppercase tracking-wide text-muted">
+						<th class="w-10 pb-2 pr-3 font-semibold">#</th>
+						<th class="w-1/3 pb-2 pr-3 font-semibold">{{ t $.Lang "auth.paths.column_pattern" }}</th>
+						<th class="w-1/4 pb-2 pr-3 font-semibold">{{ t $.Lang "auth.paths.column_replacement" }}</th>
+						<th class="pb-2 pr-3 font-semibold">{{ t $.Lang "auth.paths.column_label" }}</th>
+						<th class="w-16 pb-2 font-semibold">{{ t $.Lang "auth.paths.column_on" }}</th>
+					</tr>
+				</thead>
+				<tbody class="divide-y divide-line">
+					{{ range $i, $rule := .Rules }}
+					<tr>
+						<td class="py-2 pr-3 align-middle text-muted">{{ $rule.Position }}</td>
+						<td class="py-2 pr-3"><input type="text" name="pattern" value="{{ $rule.Pattern }}" class="block w-full rounded-xl border border-field px-3 py-2 font-mono text-xs focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"></td>
+						<td class="py-2 pr-3"><input type="text" name="replacement" value="{{ $rule.Replacement }}" class="block w-full rounded-xl border border-field px-3 py-2 font-mono text-xs focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"></td>
+						<td class="py-2 pr-3"><input type="text" name="label" value="{{ $rule.Label }}" class="block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"></td>
+						<td class="py-2 align-middle"><input type="checkbox" name="enabled-{{ $i }}" {{ if $rule.Enabled }}checked{{ end }} class="size-4 rounded border-field accent-accent focus:ring-accent"></td>
+					</tr>
+					{{ end }}
+					<tr>
+						<td class="py-2 pr-3 align-middle text-muted">{{ len .Rules }}</td>
+						<td class="py-2 pr-3"><input type="text" name="pattern" placeholder="^/users/[0-9a-f-]{36}" class="block w-full rounded-xl border border-field px-3 py-2 font-mono text-xs focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"></td>
+						<td class="py-2 pr-3"><input type="text" name="replacement" placeholder="/users/:id" class="block w-full rounded-xl border border-field px-3 py-2 font-mono text-xs focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"></td>
+						<td class="py-2 pr-3"><input type="text" name="label" placeholder="{{ t $.Lang "auth.paths.new_label_placeholder" }}" class="block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"></td>
+						<td class="py-2 align-middle"><input type="checkbox" name="enabled-{{ len .Rules }}" checked class="size-4 rounded border-field accent-accent focus:ring-accent"></td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
+
+		<div class="mt-5 flex items-center gap-3 border-t border-line pt-5">
+			<button type="submit" name="action" value="save" class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "auth.paths.save" }}</button>
+			<button type="submit" name="action" value="preview" class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">{{ t $.Lang "auth.paths.preview" }}</button>
+		</div>
+	</form>
+</section>
+
+<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.paths.trailing_slash" }}</h2>
+	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang "auth.paths.trailing_slash_help" }}</p>
+
+	<form method="post" action="/settings/{{ .Domain }}/paths/trailing-slash" class="mt-4">
+		<button type="submit" class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">
+			{{ if .TrailingSlashOn }}{{ t $.Lang "auth.paths.stop_merging_slashes" }}{{ else }}{{ t $.Lang "auth.paths.merge_slashes" }}{{ end }}
+		</button>
+	</form>
+</section>
+
+{{ if .Previewed }}
+<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+	<h2 class="text-sm font-semibold text-heading">{{ n $.Lang "auth.paths.preview_heading" (len .Merges) }}</h2>
+	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang "auth.paths.preview_help" }}</p>
+
+	{{ if .Merges }}
+	<div class="mt-4 overflow-x-auto">
+		<table class="w-full text-sm">
+			<thead>
+				<tr class="border-b border-line text-left text-xs font-semibold uppercase tracking-wide text-muted">
+					<th class="w-2/5 pb-2 pr-3 font-semibold">{{ t $.Lang "auth.paths.column_becomes" }}</th>
+					<th class="pb-2 pr-3 font-semibold">{{ t $.Lang "auth.paths.column_merged_from" }}</th>
+					<th class="w-24 pb-2 text-right font-semibold">{{ t $.Lang "auth.paths.column_rows" }}</th>
+				</tr>
+			</thead>
+			<tbody class="divide-y divide-line">
+				{{ range .Merges }}
+				<tr>
+					<td class="py-2 pr-3 align-top"><code class="rounded bg-subtle px-1 font-mono text-xs text-body">{{ .Target }}</code></td>
+					<td class="py-2 pr-3 align-top">
+						<span class="text-xs text-muted">{{ n $.Lang "auth.paths.path_count" .Paths }}</span>
+						<ul class="mt-1 list-inside list-disc font-mono text-xs text-muted">
+							{{ range .Sources }}<li>{{ .Path }} <span class="text-faint">({{ .Rows }})</span></li>{{ end }}
+							{{ if .Hidden }}<li class="list-none text-faint">{{ n $.Lang "auth.paths.and_more" .Hidden }}</li>{{ end }}
+						</ul>
+					</td>
+					<td class="py-2 text-right align-top tabular-nums">{{ .Rows }}</td>
+				</tr>
+				{{ end }}
+			</tbody>
+		</table>
+	</div>
+	{{ else }}
+	<p class="mt-4 text-sm text-faint">{{ t $.Lang "auth.paths.preview_empty" }}</p>
+	{{ end }}
+</section>
+{{ end }}
+{{end}}
