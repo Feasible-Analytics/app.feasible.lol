@@ -1,0 +1,130 @@
+<!--
+  settings_account.html
+  Profile, password, and deleting the account.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+{{ define "content" }}
+<div class="mx-auto max-w-2xl">
+  <h1 class="text-2xl font-semibold text-slate-900">Account</h1>
+
+  <section class="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+    <h2 class="text-sm font-semibold text-slate-900">Profile</h2>
+
+    <form method="post" action="/settings/profile" class="mt-4 space-y-5">
+      <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+
+      <div>
+        <label class="block text-sm font-medium text-slate-700">Email</label>
+        <p class="mt-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+          {{ .User.Email }}
+          {{ if .User.Verified }}
+            <span class="ml-2 rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-emerald-800">Verified</span>
+          {{ end }}
+        </p>
+      </div>
+
+      <div>
+        <label for="name" class="block text-sm font-medium text-slate-700">Name</label>
+        <input id="name" name="name" type="text" value="{{ .User.Name }}"
+               class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100">
+      </div>
+
+      <div>
+        <label for="theme" class="block text-sm font-medium text-slate-700">Theme</label>
+        <select id="theme" name="theme"
+                class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100">
+          <option value="system" {{ if eq .User.Theme "system" }}selected{{ end }}>Match my system</option>
+          <option value="light" {{ if eq .User.Theme "light" }}selected{{ end }}>Light</option>
+          <option value="dark" {{ if eq .User.Theme "dark" }}selected{{ end }}>Dark</option>
+        </select>
+      </div>
+
+      <button type="submit"
+              class="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500">
+        Save
+      </button>
+    </form>
+  </section>
+
+  <section class="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+    <h2 class="text-sm font-semibold text-slate-900">
+      {{ if eq .User.PasswordHash "" }}Set a password{{ else }}Change your password{{ end }}
+    </h2>
+    <p class="mt-1 text-sm text-slate-500">
+      {{ if eq .User.PasswordHash "" }}
+        You sign in with Google. Adding a password gives you a second way in.
+      {{ else }}
+        Every other signed-in browser is signed out when you change it.
+      {{ end }}
+    </p>
+
+    <form method="post" action="/settings/password" class="mt-4 space-y-5">
+      <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+
+      <!-- A password manager needs a username beside a password field to know
+           which credential is being changed. Without it, saving the new
+           password creates a second, unlabelled entry. -->
+      <input type="text" name="username" value="{{ .User.Email }}" autocomplete="username" hidden readonly>
+
+      {{ if ne .User.PasswordHash "" }}
+        <div>
+          <label for="current_password" class="block text-sm font-medium text-slate-700">Current password</label>
+          <input id="current_password" name="current_password" type="password" autocomplete="current-password" required
+                 class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100">
+        </div>
+      {{ end }}
+
+      <div>
+        <label for="new_password" class="block text-sm font-medium text-slate-700">New password</label>
+        <input id="new_password" name="new_password" type="password" autocomplete="new-password"
+               required minlength="{{ .Data.MinLength }}"
+               class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100">
+        <p class="mt-1 text-xs text-slate-500">At least {{ .Data.MinLength }} characters.</p>
+      </div>
+
+      <button type="submit"
+              class="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500">
+        {{ if eq .User.PasswordHash "" }}Set password{{ else }}Change password{{ end }}
+      </button>
+    </form>
+  </section>
+
+  <section class="mt-6 rounded-2xl border border-rose-200 bg-white p-6 shadow-sm">
+    <h2 class="text-sm font-semibold text-rose-700">Delete your account</h2>
+    <p class="mt-1 text-sm text-slate-600">
+      This deletes your team, every site in it, the database file that holds all of your traffic, and
+      your billing record with the payment provider. There is no undo and no backup we can restore
+      from — we do not keep one.
+    </p>
+
+    <form method="post" action="/settings/delete" class="mt-4 space-y-4"
+          onsubmit="return confirm('Delete your account and every site in it? This cannot be undone.')">
+      <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+      <input type="text" name="username" value="{{ .User.Email }}" autocomplete="username" hidden readonly>
+
+      {{ if ne .User.PasswordHash "" }}
+        <div>
+          <label for="delete_password" class="block text-sm font-medium text-slate-700">Your password</label>
+          <input id="delete_password" name="password" type="password" autocomplete="current-password" required
+                 class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm">
+        </div>
+      {{ end }}
+
+      <div>
+        <label for="delete_confirm" class="block text-sm font-medium text-slate-700">
+          Type <span class="font-mono">DELETE</span> to confirm
+        </label>
+        <input id="delete_confirm" name="confirm" type="text" required
+               class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm">
+      </div>
+
+      <button type="submit"
+              class="rounded-xl bg-rose-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-rose-500">
+        Delete my account
+      </button>
+    </form>
+  </section>
+</div>
+{{ end }}

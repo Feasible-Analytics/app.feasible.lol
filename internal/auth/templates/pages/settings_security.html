@@ -1,0 +1,133 @@
+<!--
+  settings_security.html
+  Two-factor enrolment, recovery codes and turning it off.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+{{ define "content" }}
+<div class="mx-auto max-w-2xl">
+  <h1 class="text-2xl font-semibold text-slate-900">Two-factor authentication</h1>
+  <p class="mt-1 text-sm text-slate-500">
+    A six-digit code from your phone on top of your password. Your secret is encrypted before it
+    touches disk.
+  </p>
+
+  {{ if .Data.Enabled }}
+    <section class="mt-8 rounded-2xl border border-emerald-200 bg-emerald-50 p-6">
+      <div class="flex items-center gap-3">
+        <span class="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-600 text-white">✓</span>
+        <div>
+          <h2 class="text-sm font-semibold text-emerald-900">Two-factor is on</h2>
+          <p class="text-sm text-emerald-800">
+            {{ .Data.RecoveryLeft }} recovery code{{ if ne .Data.RecoveryLeft 1 }}s{{ end }} left.
+            {{ if lt .Data.RecoveryLeft 3 }}<strong>Generate a new set before you run out.</strong>{{ end }}
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      <h2 class="text-sm font-semibold text-slate-900">New recovery codes</h2>
+      <p class="mt-1 text-sm text-slate-500">Generating a new set immediately invalidates the old one.</p>
+
+      <form method="post" action="/settings/security/2fa/recovery" class="mt-4 flex flex-wrap items-end gap-3">
+        <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+        <input type="text" name="username" value="{{ .User.Email }}" autocomplete="username" hidden readonly>
+
+        {{ if .Data.HasPassword }}
+          <div class="flex-1 min-w-[16rem]">
+            <label for="recovery_password" class="block text-sm font-medium text-slate-700">Your password</label>
+            <input id="recovery_password" name="password" type="password" autocomplete="current-password" required
+                   class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm">
+          </div>
+        {{ end }}
+
+        <button type="submit"
+                class="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+          Generate new codes
+        </button>
+      </form>
+    </section>
+
+    <section class="mt-6 rounded-2xl border border-rose-200 bg-white p-6 shadow-sm">
+      <h2 class="text-sm font-semibold text-rose-700">Turn two-factor off</h2>
+      <p class="mt-1 text-sm text-slate-600">
+        We ask for your password again, because a stolen session cookie must not be enough to remove
+        the thing that protects you from a stolen session cookie.
+      </p>
+
+      <form method="post" action="/settings/security/2fa/disable" class="mt-4 flex flex-wrap items-end gap-3">
+        <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+        <input type="text" name="username" value="{{ .User.Email }}" autocomplete="username" hidden readonly>
+
+        {{ if .Data.HasPassword }}
+          <div class="flex-1 min-w-[16rem]">
+            <label for="disable_password" class="block text-sm font-medium text-slate-700">Your password</label>
+            <input id="disable_password" name="password" type="password" autocomplete="current-password" required
+                   class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm">
+          </div>
+        {{ end }}
+
+        <button type="submit"
+                class="rounded-xl border border-rose-300 px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50">
+          Turn off
+        </button>
+      </form>
+    </section>
+
+  {{ else if .Data.Enrolling }}
+    <section class="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      <h2 class="text-sm font-semibold text-slate-900">Scan this with your authenticator app</h2>
+
+      <div class="mt-5 flex flex-col gap-6 sm:flex-row sm:items-start">
+        <img src="/settings/security/2fa/qr.png" alt="QR code for your authenticator app"
+             width="240" height="240"
+             class="rounded-xl border border-slate-200 bg-white p-2">
+
+        <div class="flex-1">
+          <p class="text-sm text-slate-600">
+            Cannot scan? Type this key into your app instead:
+          </p>
+          <p class="mt-2 select-all break-all rounded-xl bg-slate-50 px-3 py-2 font-mono text-sm text-slate-800">
+            {{ .Data.Secret }}
+          </p>
+
+          <form method="post" action="/settings/security/2fa/enable" class="mt-6 space-y-4">
+            <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+
+            <div>
+              <label for="code" class="block text-sm font-medium text-slate-700">Code from the app</label>
+              <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code"
+                     required maxlength="6" pattern="[0-9]*" autofocus
+                     class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-center font-mono text-lg tracking-[0.3em]">
+            </div>
+
+            <button type="submit"
+                    class="w-full rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500">
+              Turn on two-factor
+            </button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+  {{ else }}
+    <section class="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      <h2 class="text-sm font-semibold text-slate-900">Two-factor is off</h2>
+      <p class="mt-1 text-sm text-slate-500">
+        You will need an authenticator app — 1Password, Authy, Google Authenticator, or anything else
+        that does TOTP.
+      </p>
+
+      <form method="post" action="/settings/security/2fa/start" class="mt-4">
+        <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+        <button type="submit"
+                class="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500">
+          Set up two-factor
+        </button>
+      </form>
+    </section>
+  {{ end }}
+</div>
+{{ end }}

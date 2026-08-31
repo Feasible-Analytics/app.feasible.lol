@@ -95,7 +95,7 @@ FRESH ?= --fresh
 
 .DEFAULT_GOAL := help
 
-.PHONY: help assets tracker build test test-tracker test-integration lint check-env \
+.PHONY: help assets tracker ui-css build test test-tracker test-integration lint check-env \
 	migrate migrate-fresh seed seed-big seed-http caddy app ingest testsite dev dev-solo \
 	caddy-ts app-ts ingest-ts testsite-ts dev-ts dev-solo-ts require-tailscale
 
@@ -161,12 +161,25 @@ tracker:
 # rather than by hand. It keeps `go build` and `go install` working for anyone
 # without a JavaScript toolchain, which is the whole promise of a single binary;
 # the JavaScript sources stay the source of truth.
-assets: tracker
+assets: tracker ui-css
 	@if [ -f web/package.json ]; then \
 		echo "building front-end assets"; \
 		npm --prefix web ci && npm --prefix web run build; \
 	else \
 		echo "no web/ directory yet — nothing to build"; \
+	fi
+
+## ui-css: rebuild the stylesheet the server-rendered screens embed
+# The output is committed, like every other compiled asset, so `go build` works
+# on a machine with no JavaScript toolchain. A missing Tailwind binary is a note
+# rather than a failure for the same reason: the committed file is still there.
+ui-css:
+	@if command -v tailwindcss >/dev/null 2>&1; then \
+		tailwindcss -i internal/auth/tailwind.css -o internal/auth/assets/app.css --minify; \
+	elif command -v npx >/dev/null 2>&1; then \
+		npx --yes @tailwindcss/cli@4 -i internal/auth/tailwind.css -o internal/auth/assets/app.css --minify; \
+	else \
+		echo "tailwindcss is not installed — keeping the committed internal/auth/assets/app.css"; \
 	fi
 
 ## build: compile the single binary

@@ -1,0 +1,194 @@
+<!--
+  sites.html
+  The sites list: sparklines, sorting, pinning and drag-to-reorder folders.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  Reordering uses the browser's native drag events rather than a drag-and-drop
+  library. The whole interaction is "pick a row up, drop it somewhere else", and
+  a dependency for that would be larger than the rest of this page.
+-->
+{{ define "content" }}
+<div x-data="siteList()">
+  <div class="flex flex-wrap items-center justify-between gap-3">
+    <div>
+      <h1 class="text-2xl font-semibold text-slate-900">Sites</h1>
+      <p class="mt-1 text-sm text-slate-500">{{ .Data.Total }} site{{ if ne .Data.Total 1 }}s{{ end }} in this account.</p>
+    </div>
+
+    <div class="flex items-center gap-2">
+      <label for="sort" class="sr-only">Sort</label>
+      <select id="sort" onchange="window.location = '/sites?sort=' + this.value"
+              class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
+        <option value="" {{ if eq .Data.Sort "" }}selected{{ end }}>Manual order</option>
+        <option value="traffic" {{ if eq .Data.Sort "traffic" }}selected{{ end }}>Most traffic</option>
+        <option value="name" {{ if eq .Data.Sort "name" }}selected{{ end }}>Name</option>
+        <option value="created" {{ if eq .Data.Sort "created" }}selected{{ end }}>Newest</option>
+      </select>
+
+      <a href="/sites/new"
+         class="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500">
+        Add a site
+      </a>
+    </div>
+  </div>
+
+  {{ if and (not .Data.Sites) (not .Data.Folders) }}
+    <div class="mt-10 rounded-2xl border border-dashed border-slate-300 bg-white p-12 text-center">
+      <h2 class="text-lg font-medium text-slate-900">No sites yet</h2>
+      <p class="mx-auto mt-2 max-w-md text-sm text-slate-500">
+        Add the first one and we will give you a snippet, tell you where to paste it, and wait
+        with you for the first pageview.
+      </p>
+      <a href="/sites/new"
+         class="mt-6 inline-block rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500">
+        Add your first site
+      </a>
+    </div>
+  {{ else }}
+
+    {{ if .Data.Folders }}
+      <div class="mt-8 space-y-6" @dragover.prevent>
+        {{ range .Data.Folders }}
+          <section class="rounded-2xl border border-slate-200 bg-white shadow-sm"
+                   draggable="true" data-folder="{{ .ID }}"
+                   @dragstart="startFolderDrag($event, {{ .ID }})"
+                   @drop="dropFolder($event, {{ .ID }})">
+            <header class="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-3">
+              <div class="flex items-center gap-2">
+                <span class="cursor-grab select-none text-slate-300" aria-hidden="true">⠿</span>
+                <h2 class="text-sm font-semibold text-slate-900">{{ .Name }}</h2>
+                <span class="text-xs text-slate-400">{{ len .Sites }}</span>
+              </div>
+
+              <form method="post" action="/folders/{{ .ID }}/delete"
+                    onsubmit="return confirm('Delete this folder? The sites inside it move back to the top level.')">
+                <input type="hidden" name="csrf_token" value="{{ $.CSRF }}">
+                <button type="submit" class="text-xs text-slate-400 hover:text-rose-600">Delete folder</button>
+              </form>
+            </header>
+
+            <ul class="divide-y divide-slate-100" data-folder-list="{{ .ID }}">
+              {{ range .Sites }}
+                {{ template "site_row.html" (dict "Site" . "CSRF" $.CSRF) }}
+              {{ else }}
+                <li class="px-5 py-6 text-sm text-slate-400">Drag a site here.</li>
+              {{ end }}
+            </ul>
+          </section>
+        {{ end }}
+      </div>
+    {{ end }}
+
+    {{ if .Data.Sites }}
+      <div class="mt-8 rounded-2xl border border-slate-200 bg-white shadow-sm">
+        {{ if .Data.Folders }}
+          <header class="border-b border-slate-100 px-5 py-3">
+            <h2 class="text-sm font-semibold text-slate-900">Not in a folder</h2>
+          </header>
+        {{ end }}
+
+        <ul class="divide-y divide-slate-100" data-folder-list="0">
+          {{ range .Data.Sites }}
+            {{ template "site_row.html" (dict "Site" . "CSRF" $.CSRF) }}
+          {{ end }}
+        </ul>
+      </div>
+    {{ end }}
+  {{ end }}
+
+  <form method="post" action="/folders" class="mt-8 flex items-end gap-2">
+    <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+    <div>
+      <label for="folder-name" class="block text-xs font-medium text-slate-500">New folder</label>
+      <input id="folder-name" name="name" type="text" placeholder="Client work" required
+             class="mt-1 rounded-xl border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100">
+    </div>
+    <button type="submit"
+            class="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+      Create
+    </button>
+  </form>
+</div>
+
+<script>
+  // The same token the forms carry. The reorder request posts JSON, which has
+  // no form field to put it in, so it travels in a header instead.
+  const CSRF_TOKEN = {{ .CSRF }};
+
+  // The drag handlers post the new order back and then leave the DOM exactly as
+  // the browser left it. Re-rendering the list after a successful save would
+  // undo the movement the user just watched happen.
+  function siteList() {
+    return {
+      draggedSite: null,
+      draggedFolder: null,
+
+      startSiteDrag(event, id) {
+        this.draggedSite = id;
+        this.draggedFolder = null;
+        event.dataTransfer.effectAllowed = 'move';
+      },
+
+      startFolderDrag(event, id) {
+        this.draggedFolder = id;
+        this.draggedSite = null;
+        event.dataTransfer.effectAllowed = 'move';
+      },
+
+      dropSite(event, targetID) {
+        if (this.draggedSite === null || this.draggedSite === targetID) return;
+
+        const dragged = document.querySelector('[data-site="' + this.draggedSite + '"]');
+        const target = document.querySelector('[data-site="' + targetID + '"]');
+        if (!dragged || !target) return;
+
+        target.parentNode.insertBefore(dragged, target);
+        this.draggedSite = null;
+        this.save();
+      },
+
+      dropFolder(event, targetID) {
+        if (this.draggedSite !== null) {
+          // A site dropped on a folder header joins that folder, which is the
+          // only way to move a site into an empty folder.
+          const dragged = document.querySelector('[data-site="' + this.draggedSite + '"]');
+          const list = document.querySelector('[data-folder-list="' + targetID + '"]');
+          if (dragged && list) list.appendChild(dragged);
+          this.draggedSite = null;
+          this.save();
+          return;
+        }
+
+        if (this.draggedFolder === null || this.draggedFolder === targetID) return;
+
+        const dragged = document.querySelector('[data-folder="' + this.draggedFolder + '"]');
+        const target = document.querySelector('[data-folder="' + targetID + '"]');
+        if (!dragged || !target) return;
+
+        target.parentNode.insertBefore(dragged, target);
+        this.draggedFolder = null;
+        this.save();
+      },
+
+      save() {
+        const folders = Array.from(document.querySelectorAll('[data-folder]'))
+          .map(el => parseInt(el.dataset.folder, 10));
+
+        const sites = {};
+        document.querySelectorAll('[data-folder-list]').forEach(list => {
+          sites[list.dataset.folderList] = Array.from(list.querySelectorAll('[data-site]'))
+            .map(el => parseInt(el.dataset.site, 10));
+        });
+
+        fetch('/folders/reorder', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+          body: JSON.stringify({ folders: folders, sites: sites })
+        }).catch(() => {});
+      }
+    };
+  }
+</script>
+{{ end }}

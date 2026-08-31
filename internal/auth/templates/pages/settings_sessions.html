@@ -1,0 +1,55 @@
+<!--
+  settings_sessions.html
+  The login-management screen.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  Relative times, not timestamps. This screen exists to answer "is one of these
+  not me", and "4 minutes ago" answers it without the reader doing arithmetic.
+-->
+{{ define "content" }}
+<div class="mx-auto max-w-2xl">
+  <h1 class="text-2xl font-semibold text-slate-900">Signed-in devices</h1>
+  <p class="mt-1 text-sm text-slate-500">
+    Every browser signed in to your account. A session ends by itself after 14 days without use.
+  </p>
+
+  <div class="mt-8 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+    <ul class="divide-y divide-slate-100">
+      {{ range .Data.Sessions }}
+        <li class="flex items-center gap-4 px-5 py-4">
+          <div class="min-w-0 flex-1">
+            <p class="text-sm font-medium text-slate-900">
+              {{ .DeviceLabel }}
+              {{ if eq .ID $.Data.CurrentID }}
+                <span class="ml-2 rounded-md bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-indigo-700">This browser</span>
+              {{ end }}
+            </p>
+            <p class="mt-0.5 text-xs text-slate-500">
+              Last used {{ ago .LastSeenAt }} · signed in {{ ago .CreatedAt }} · expires {{ date .ExpiresAt }}
+            </p>
+          </div>
+
+          <form method="post" action="/settings/sessions/revoke">
+            <input type="hidden" name="csrf_token" value="{{ $.CSRF }}">
+            <input type="hidden" name="session_id" value="{{ .ID }}">
+            <button type="submit" class="text-sm font-medium text-rose-600 hover:text-rose-500">
+              {{ if eq .ID $.Data.CurrentID }}Sign out{{ else }}Revoke{{ end }}
+            </button>
+          </form>
+        </li>
+      {{ end }}
+    </ul>
+  </div>
+
+  <form method="post" action="/settings/sessions/revoke" class="mt-6">
+    <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+    <input type="hidden" name="all" value="1">
+    <button type="submit"
+            class="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+      Sign out everywhere else
+    </button>
+  </form>
+</div>
+{{ end }}

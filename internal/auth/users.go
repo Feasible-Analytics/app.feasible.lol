@@ -1,0 +1,445 @@
+//
+// users.go
+// People, their teams, and the whole of deleting an account.
+//
+// Created: 2026-08-30
+// Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+//
+
+package auth
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// TrialDays is how long a new team has before it needs a subscription. No card
+// is taken up front, so this pair of columns is the entire trial — there is no
+// provider record to ask about a trial that never became a subscription.
+const TrialDays = 30
+
+// User is one person who can sign in. The password hash and the Google subject
+// are both optional and either one alone is a complete identity: somebody who
+// only ever clicks "sign in with Google" has no password to forget, and
+// somebody who never links Google has no third party in their login path.
+type User struct {
+	ID              int64
+	Email           string
+	Name            string
+	PasswordHash    string
+	GoogleSub       string
+	EmailVerifiedAt int64
+	Theme           string
+	TOTPSecret      string
+	TOTPRecovery    string
+	TOTPEnabledAt   int64
+	CreatedAt       int64
+	UpdatedAt       int64
+	LastSeenAt      int64
+}
+
+// Verified reports whether this address has been proven. Google linking and
+// team invitations both key off it, and treating an unverified address as
+// proven is how an account gets taken over by whoever registered the address
+// first without ever reading the mailbox.
+func (u *User) Verified() bool {
+	return u.EmailVerifiedAt > 0
+}
+
+// TwoFactorEnabled reports whether TOTP is switched on. It is the enabled
+// timestamp rather than the presence of a secret, because a half-finished
+// enrolment stores a secret that must not yet be demanded at sign-in.
+func (u *User) TwoFactorEnabled() bool {
+	return u.TOTPEnabledAt > 0
+}
+
+// DisplayName is what the interface calls someone. Falling back to the local
+// part of the address means a header never reads "Welcome, " with nothing after
+// it for the majority of users who never fill in a name.
+func (u *User) DisplayName() string {
+	if u.Name != "" {
+		return u.Name
+	}
+
+	if at := strings.Index(u.Email, "@"); at > 0 {
+		return u.Email[:at]
+	}
+
+	return u.Email
+}
+
+// Team is an account. teams.id is the account id and names the per-account
+// analytics database, so creating a team is what creates a customer.
+type Team struct {
+	ID                 int64
+	Name               string
+	TrialEndsAt        int64
+	AcceptTrafficUntil int64
+	Require2FA         bool
+	CreatedAt          int64
+	UpdatedAt          int64
+}
+
+// NormaliseEmail puts an address into the one form the unique index and every
+// lookup agree on. The column is COLLATE NOCASE so the database would catch a
+// case difference, but the address is also hashed into rate-limit keys and
+// compared against the Google claim, and those have no collation to save them.
+func NormaliseEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
+// CreateUser inserts a person and the team they own, in one transaction.
+//
+// A user without a team cannot do anything at all — there is no site to create,
+// no database to create it in, and no subscription to bill — so the two rows
+// are made together. Splitting them would leave a failure window whose only
+// possible outcome is an account that looks signed up and then 500s on every
+// page.
+func (s *Store) CreateUser(ctx context.Context, email, name, passwordHash, googleSub string) (*User, *Team, error) {
+	email = NormaliseEmail(email)
+	if email == "" {
+		return nil, nil, fmt.Errorf("auth: an email address is required")
+	}
+
+	now := s.now()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("auth: create user: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // a rollback after commit is a no-op
+
+	// A NULL google_sub rather than an empty string: the column is UNIQUE, and
+	// SQLite treats every NULL as distinct while it would reject a second
+	// account that also stored "".
+	var sub any
+	if googleSub != "" {
+		sub = googleSub
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO users (email, name, password_hash, google_sub, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, email, name, passwordHash, sub, now.Unix(), now.Unix())
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, nil, ErrEmailTaken
+		}
+		return nil, nil, fmt.Errorf("auth: create user: %w", err)
+	}
+
+	userID, err := result.LastInsertId()
+	if err != nil {
+		return nil, nil, fmt.Errorf("auth: create user: %w", err)
+	}
+
+	teamName := name
+	if teamName == "" {
+		teamName = email
+	}
+
+	trialEnds := now.AddDate(0, 0, TrialDays)
+
+	teamResult, err := tx.ExecContext(ctx, `
+		INSERT INTO teams (name, trial_ends_at, accept_traffic_until, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, teamName, trialEnds.Unix(), trialEnds.AddDate(0, 0, 30).Unix(), now.Unix(), now.Unix())
+	if err != nil {
+		return nil, nil, fmt.Errorf("auth: create team: %w", err)
+	}
+
+	teamID, err := teamResult.LastInsertId()
+	if err != nil {
+		return nil, nil, fmt.Errorf("auth: create team: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO team_memberships (team_id, user_id, role, created_at)
+		VALUES (?, ?, 'owner', ?)
+	`, teamID, userID, now.Unix()); err != nil {
+		return nil, nil, fmt.Errorf("auth: create membership: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("auth: create user: %w", err)
+	}
+
+	user := &User{
+		ID:           userID,
+		Email:        email,
+		Name:         name,
+		PasswordHash: passwordHash,
+		GoogleSub:    googleSub,
+		Theme:        "system",
+		CreatedAt:    now.Unix(),
+		UpdatedAt:    now.Unix(),
+	}
+
+	team := &Team{
+		ID:                 teamID,
+		Name:               teamName,
+		TrialEndsAt:        trialEnds.Unix(),
+		AcceptTrafficUntil: trialEnds.AddDate(0, 0, 30).Unix(),
+		CreatedAt:          now.Unix(),
+		UpdatedAt:          now.Unix(),
+	}
+
+	return user, team, nil
+}
+
+// userColumns is the select list every user read shares, so a column added to
+// the struct is added in one place rather than in six queries that will
+// otherwise drift.
+const userColumns = `id, email, name, password_hash, COALESCE(google_sub, ''),
+	email_verified_at, theme, totp_secret, totp_recovery_codes, totp_enabled_at,
+	created_at, updated_at, last_seen_at`
+
+// scanUser reads one row in the shape userColumns produces.
+func scanUser(row interface{ Scan(...any) error }) (*User, error) {
+	var (
+		u          User
+		verifiedAt sql.NullInt64
+		totpAt     sql.NullInt64
+		lastSeen   sql.NullInt64
+	)
+
+	err := row.Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.GoogleSub,
+		&verifiedAt, &u.Theme, &u.TOTPSecret, &u.TOTPRecovery, &totpAt,
+		&u.CreatedAt, &u.UpdatedAt, &lastSeen)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("auth: read user: %w", err)
+	}
+
+	u.EmailVerifiedAt = nullInt64(verifiedAt)
+	u.TOTPEnabledAt = nullInt64(totpAt)
+	u.LastSeenAt = nullInt64(lastSeen)
+
+	return &u, nil
+}
+
+// UserByEmail finds someone by address.
+func (s *Store) UserByEmail(ctx context.Context, email string) (*User, error) {
+	return scanUser(s.db.QueryRowContext(ctx,
+		"SELECT "+userColumns+" FROM users WHERE email = ?", NormaliseEmail(email)))
+}
+
+// UserByID finds someone by id, which is what every request does once per page
+// load to turn a session cookie into a person.
+func (s *Store) UserByID(ctx context.Context, id int64) (*User, error) {
+	return scanUser(s.db.QueryRowContext(ctx,
+		"SELECT "+userColumns+" FROM users WHERE id = ?", id))
+}
+
+// UserByGoogleSub finds someone by their Google subject id.
+//
+// The subject is what is stored and matched, never the email. Google's own
+// documentation is explicit that an address can be reassigned and that `sub` is
+// the only stable identifier; matching on email means a returning user whose
+// address changed silently becomes a stranger, and a reassigned address
+// silently becomes the previous owner.
+func (s *Store) UserByGoogleSub(ctx context.Context, sub string) (*User, error) {
+	return scanUser(s.db.QueryRowContext(ctx,
+		"SELECT "+userColumns+" FROM users WHERE google_sub = ?", sub))
+}
+
+// UpdateProfile changes the display name and the theme preference.
+func (s *Store) UpdateProfile(ctx context.Context, userID int64, name, theme string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE users SET name = ?, theme = ?, updated_at = ? WHERE id = ?
+	`, name, theme, s.now().Unix(), userID)
+	if err != nil {
+		return fmt.Errorf("auth: update profile: %w", err)
+	}
+
+	return nil
+}
+
+// LinkGoogle attaches a Google subject id to an existing account. It is only
+// ever called after the address on the Google profile has been confirmed as
+// verified, both by Google and by us — an unverified claim would let anyone who
+// can create a Google account with a matching address take over a password
+// account.
+func (s *Store) LinkGoogle(ctx context.Context, userID int64, sub string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE users SET google_sub = ?, updated_at = ? WHERE id = ?
+	`, sub, s.now().Unix(), userID)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("auth: that Google account is already linked to another user")
+		}
+		return fmt.Errorf("auth: link google: %w", err)
+	}
+
+	return nil
+}
+
+// UnlinkGoogle detaches the Google identity. It refuses when there is no
+// password, because the alternative is an account with no way at all to sign
+// in — a lockout that no support process can undo.
+func (s *Store) UnlinkGoogle(ctx context.Context, userID int64) error {
+	user, err := s.UserByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+
+	if user.PasswordHash == "" {
+		return fmt.Errorf("auth: set a password before unlinking Google, or you will not be able to sign in")
+	}
+
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE users SET google_sub = NULL, updated_at = ? WHERE id = ?
+	`, s.now().Unix(), userID); err != nil {
+		return fmt.Errorf("auth: unlink google: %w", err)
+	}
+
+	return nil
+}
+
+// TouchUser records that somebody was active. It is written on session refresh
+// rather than on every request so that reading a dashboard does not put a write
+// on the shared control database once per XHR.
+func (s *Store) TouchUser(ctx context.Context, userID int64, at time.Time) error {
+	if _, err := s.db.ExecContext(ctx,
+		"UPDATE users SET last_seen_at = ? WHERE id = ?", at.Unix(), userID); err != nil {
+		return fmt.Errorf("auth: touch user: %w", err)
+	}
+
+	return nil
+}
+
+// TeamForUser returns the team a person owns or belongs to.
+//
+// Ownership is preferred over any other membership because everything this
+// package does — create a site, change billing, delete the account — is a thing
+// you do to your own team, and a guest membership in someone else's must never
+// become the team a "create site" form writes into.
+func (s *Store) TeamForUser(ctx context.Context, userID int64) (*Team, error) {
+	var (
+		t          Team
+		trialEnds  sql.NullInt64
+		acceptTill sql.NullInt64
+	)
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT teams.id, teams.name, teams.trial_ends_at, teams.accept_traffic_until,
+		       teams.require_2fa, teams.created_at, teams.updated_at
+		FROM teams
+		JOIN team_memberships ON team_memberships.team_id = teams.id
+		WHERE team_memberships.user_id = ?
+		ORDER BY CASE team_memberships.role WHEN 'owner' THEN 0 ELSE 1 END, teams.id
+		LIMIT 1
+	`, userID).Scan(&t.ID, &t.Name, &trialEnds, &acceptTill, &t.Require2FA, &t.CreatedAt, &t.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("auth: read team: %w", err)
+	}
+
+	t.TrialEndsAt = nullInt64(trialEnds)
+	t.AcceptTrafficUntil = nullInt64(acceptTill)
+
+	return &t, nil
+}
+
+// SetRequire2FA flips the team-wide two-factor policy. Turning it on does not
+// enrol anybody: it makes the next page load of every member who has not
+// enrolled land on the enrolment screen, which is the only version of this that
+// does not lock a team out of its own account.
+func (s *Store) SetRequire2FA(ctx context.Context, teamID int64, required bool) error {
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE teams SET require_2fa = ?, updated_at = ? WHERE id = ?
+	`, required, s.now().Unix(), teamID); err != nil {
+		return fmt.Errorf("auth: set two-factor policy: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateTeamName renames an account.
+func (s *Store) UpdateTeamName(ctx context.Context, teamID int64, name string) error {
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE teams SET name = ?, updated_at = ? WHERE id = ?
+	`, name, s.now().Unix(), teamID); err != nil {
+		return fmt.Errorf("auth: rename team: %w", err)
+	}
+
+	return nil
+}
+
+// StripeCustomerID reads the billing mirror for a team. It returns an empty
+// string when there is no subscription row rather than an error, because most
+// teams on a trial have never touched the payment provider at all.
+func (s *Store) StripeCustomerID(ctx context.Context, teamID int64) (string, error) {
+	var id sql.NullString
+
+	err := s.db.QueryRowContext(ctx,
+		"SELECT stripe_customer_id FROM subscriptions WHERE team_id = ?", teamID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("auth: read subscription: %w", err)
+	}
+
+	return id.String, nil
+}
+
+// DeleteTeamRows removes a team and everything that cascades from it, plus the
+// user if this was the only team they belonged to.
+//
+// It deletes rather than flagging. A privacy product that answers "delete my
+// account" with a hidden row has no answer at all when somebody asks what it
+// still holds, and the account database file is deleted by the caller for the
+// same reason.
+func (s *Store) DeleteTeamRows(ctx context.Context, teamID, userID int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("auth: delete account: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // a rollback after commit is a no-op
+
+	// Foreign keys are on for every connection this project opens, so sites,
+	// folders, memberships, invitations, api keys, shared links, usage counters
+	// and the subscription all go with the team.
+	if _, err := tx.ExecContext(ctx, "DELETE FROM teams WHERE id = ?", teamID); err != nil {
+		return fmt.Errorf("auth: delete team: %w", err)
+	}
+
+	// The user is only removed once they belong to nothing. Someone who was
+	// also a guest on a client's site still has an account to sign in to.
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM users
+		WHERE id = ?
+		  AND NOT EXISTS (SELECT 1 FROM team_memberships WHERE user_id = users.id)
+		  AND NOT EXISTS (SELECT 1 FROM guest_memberships WHERE user_id = users.id)
+	`, userID); err != nil {
+		return fmt.Errorf("auth: delete user: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("auth: delete account: %w", err)
+	}
+
+	return nil
+}
+
+// isUniqueViolation recognises SQLite's uniqueness error. The driver returns it
+// as a string rather than a typed error, and matching on the text is the only
+// option — so it is done once here rather than at every insert.
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	msg := strings.ToLower(err.Error())
+
+	return strings.Contains(msg, "unique constraint failed") || strings.Contains(msg, "constraint failed: unique")
+}

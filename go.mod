@@ -5,6 +5,12 @@ go 1.23.0
 require modernc.org/sqlite v1.39.0
 
 require (
+	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
+	github.com/pquerna/otp v1.5.0 // indirect
+	golang.org/x/crypto v0.39.0 // indirect
+)
+
+require (
 	github.com/dchest/siphash v1.2.3
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0

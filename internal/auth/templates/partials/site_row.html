@@ -1,0 +1,60 @@
+<!--
+  site_row.html
+  One site in the list: name, domain, sparkline, pin.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+<li class="flex items-center gap-4 px-5 py-4 hover:bg-slate-50"
+    draggable="true" data-site="{{ .Site.ID }}"
+    @dragstart="startSiteDrag($event, {{ .Site.ID }})"
+    @dragover.prevent
+    @drop="dropSite($event, {{ .Site.ID }})">
+
+  <span class="cursor-grab select-none text-slate-300" aria-hidden="true">⠿</span>
+
+  <div class="min-w-0 flex-1">
+    <div class="flex items-center gap-2">
+      <a href="/sites/{{ .Site.ID }}/settings" class="truncate text-sm font-semibold text-slate-900 hover:text-indigo-600">
+        {{ .Site.Label }}
+      </a>
+
+      {{ if .Site.Pinned }}
+        <span class="rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">Pinned</span>
+      {{ end }}
+
+      {{ if eq .Site.OnboardedAt 0 }}
+        <a href="/onboarding/{{ .Site.ID }}"
+           class="rounded-md bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-700">
+          Finish setup
+        </a>
+      {{ end }}
+    </div>
+
+    <p class="truncate text-xs text-slate-500">
+      {{ .Site.Domain }}
+      {{ if ne .Site.DisplayName "" }}<span class="text-slate-300">·</span> {{ .Site.Timezone }}{{ end }}
+    </p>
+  </div>
+
+  <div class="hidden w-32 shrink-0 sm:block">
+    <svg viewBox="0 0 120 28" class="h-7 w-full text-indigo-500" preserveAspectRatio="none" aria-hidden="true">
+      <polyline fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"
+                points="{{ sparkline .Site.Sparkline }}" />
+    </svg>
+    <p class="mt-0.5 text-right text-[10px] text-slate-400">{{ .Site.Visitors }} visits · 30d</p>
+  </div>
+
+  <form method="post" action="/sites/{{ .Site.ID }}/pin" class="shrink-0">
+    <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+    <button type="submit"
+            title="{{ if .Site.Pinned }}Unpin this site{{ else }}Pin this site to the top{{ end }}"
+            class="rounded-lg px-2 py-1 text-sm {{ if .Site.Pinned }}text-amber-500{{ else }}text-slate-300 hover:text-slate-500{{ end }}">
+      ★<span class="sr-only">{{ if .Site.Pinned }}Unpin{{ else }}Pin{{ end }} {{ .Site.Label }}</span>
+    </button>
+  </form>
+
+  <a href="/sites/{{ .Site.ID }}/settings" class="shrink-0 text-xs font-medium text-slate-500 hover:text-slate-900">
+    Settings
+  </a>
+</li>

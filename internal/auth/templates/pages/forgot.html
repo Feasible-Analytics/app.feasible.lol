@@ -1,0 +1,32 @@
+<!--
+  forgot.html
+  Asking for a password reset link.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+{{ define "content" }}
+<div class="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
+  <h1 class="text-xl font-semibold text-slate-900">Reset your password</h1>
+  <p class="mt-1 text-sm text-slate-500">Tell us your email address and we will send a link that works once.</p>
+
+  <form method="post" action="/forgot-password" class="mt-6 space-y-4">
+    <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+
+    <div>
+      <label for="email" class="block text-sm font-medium text-slate-700">Email</label>
+      <input id="email" name="email" type="email" autocomplete="username" required autofocus
+             class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100">
+    </div>
+
+    <button type="submit"
+            class="w-full rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500">
+      Send the link
+    </button>
+  </form>
+
+  <p class="mt-6 text-center text-sm text-slate-500">
+    <a href="/login" class="font-medium text-indigo-600 hover:text-indigo-500">Back to sign in</a>
+  </p>
+</div>
+{{ end }}

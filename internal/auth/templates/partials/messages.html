@@ -1,0 +1,22 @@
+<!--
+  messages.html
+  The success and failure banners.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  role="status" and role="alert" are what make these reach a screen reader. A
+  message that only exists as a coloured box is a message half the people using
+  the product never receive.
+-->
+{{ if .Flash }}
+  <div role="status" class="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+    {{ .Flash }}
+  </div>
+{{ end }}
+
+{{ if .Error }}
+  <div role="alert" class="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+    {{ .Error }}
+  </div>
+{{ end }}
