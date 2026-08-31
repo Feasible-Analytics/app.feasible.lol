@@ -1,0 +1,789 @@
+//
+// service_test.go
+// The correctness harness: replay in order, then shuffled and duplicated, and compare.
+//
+// Created: 2026-08-30
+// Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+//
+
+package ingest
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"math"
+	"math/rand"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/salts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
+)
+
+// fixtureDomain is the one site the harness sends to. It is fixed because the
+// site domain is a fingerprint input, and changing it between the two runs
+// would make the visitor ids differ for a reason that has nothing to do with
+// ordering.
+const fixtureDomain = "example.com"
+
+// fixtureSaltKey pins the salt encryption key, so both replays read the same
+// salt out of the same control database and therefore compute the same
+// fingerprints.
+const fixtureSaltKey = "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
+
+// fixtureStart is noon UTC, far enough from midnight that the whole stream sits
+// inside one salt day.
+var fixtureStart = time.Date(2026, time.August, 30, 12, 0, 0, 0, time.UTC)
+
+// visitor is one distinct person: an address and a user agent, which together
+// with the site and root domains are the four fingerprint inputs.
+type visitor struct {
+	ip        string
+	userAgent string
+}
+
+// visitors are the people in the fixture. Their exact values do not matter, but
+// they must be distinct, because the number of distinct visitors is one of the
+// six metrics being asserted.
+var visitors = []visitor{
+	{"203.0.113.10", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+	{"203.0.113.11", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"},
+	{"203.0.113.12", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"},
+	{"198.51.100.20", "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0"},
+	{"198.51.100.21", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15"},
+}
+
+// visitSpec describes one visit in the fixture. The expected metrics are
+// computed from these specs by direct arithmetic rather than by running the
+// fold, so the harness checks the implementation against the intent rather than
+// against itself.
+type visitSpec struct {
+	visitor int
+
+	// offset is when the visit starts, in seconds from fixtureStart. Visits by
+	// the same visitor are hours apart so none of them can bridge.
+	offset int64
+
+	// pages are the pageviews, forty-five seconds apart.
+	pages []string
+
+	// custom is how many interactive non-pageview events the visit contains.
+	// One is enough to end a bounce.
+	custom int
+
+	// pings is how many engagement events the visit contains. They refresh the
+	// end of the visit and are counted in neither pageviews nor events.
+	pings int
+
+	// referrer and query are the acquisition inputs for the visit's first
+	// event, so the harness exercises the referrer and channel derivation too.
+	referrer string
+	query    string
+}
+
+// fixture is the stream. It is written out rather than generated so that the
+// expected numbers can be read off the page.
+//
+// Every offset stays inside one UTC day. Crossing midnight would rotate the salt
+// mid-stream and give the later visits a new pseudonym for the same person,
+// which is correct behaviour and would make the visitor count untellable by
+// hand. The midnight case has its own test.
+var fixture = []visitSpec{
+	{visitor: 0, offset: 0, pages: []string{"/", "/pricing", "/signup"}, custom: 1, pings: 2, referrer: "https://www.google.com/", query: ""},
+	{visitor: 0, offset: 7000, pages: []string{"/blog"}, pings: 1, referrer: "", query: ""},
+	{visitor: 1, offset: 120, pages: []string{"/"}, referrer: "https://news.ycombinator.com/item?id=1", query: ""},
+	{visitor: 1, offset: 11000, pages: []string{"/", "/docs"}, pings: 3, referrer: "", query: "?utm_source=newsletter&utm_medium=email&utm_campaign=launch"},
+	{visitor: 2, offset: 300, pages: []string{"/"}, custom: 2, referrer: "", query: "?utm_source=facebook&utm_medium=cpc&gclid=SHOULD_NOT_BE_STORED"},
+	{visitor: 2, offset: 14000, pages: []string{"/", "/pricing", "/pricing/enterprise", "/signup"}, pings: 4, referrer: "https://chatgpt.com/", query: ""},
+	{visitor: 3, offset: 900, pages: []string{"/features"}, pings: 1, referrer: "https://twitter.com/someone/status/1", query: ""},
+	{visitor: 3, offset: 18000, pages: []string{"/", "/features"}, custom: 1, referrer: "", query: "?ref=partner-site"},
+	{visitor: 4, offset: 1500, pages: []string{"/", "/about"}, referrer: "", query: ""},
+	{visitor: 4, offset: 22000, pages: []string{"/pricing"}, custom: 3, pings: 2, referrer: "https://duckduckgo.com/", query: ""},
+	{visitor: 4, offset: 26000, pages: []string{"/"}, referrer: "", query: ""},
+}
+
+// request is one HTTP call the harness will make, carrying its own timestamp so
+// that shuffling changes arrival order without changing when the event
+// happened.
+type request struct {
+	visitor   int
+	timestamp int64
+	name      string
+	url       string
+	referrer  string
+	props     map[string]string
+}
+
+// metrics are the six core numbers. They are the contract the dashboard is
+// built on, and the whole point of the harness is that they do not move when
+// the delivery order does.
+type metrics struct {
+	Visitors      int64
+	Visits        int64
+	Pageviews     int64
+	BounceRate    float64
+	VisitDuration float64
+	ViewsPerVisit float64
+}
+
+// expected computes the six metrics from the fixture specs by direct
+// arithmetic. Nothing here folds an event: the counts come from the shape of
+// each visit, so a bug in the fold cannot make the expectation agree with it.
+func expected() metrics {
+	seen := map[int]struct{}{}
+
+	var (
+		visits         int64
+		pageviews      int64
+		bounces        int64
+		totalDuration  int64
+		totalPageviews int64
+	)
+
+	for _, spec := range fixture {
+		seen[spec.visitor] = struct{}{}
+		visits++
+
+		pageviews += int64(len(spec.pages))
+		totalPageviews += int64(len(spec.pages))
+
+		// A visit bounces when it never got past its first page and nobody
+		// interacted. Engagement pings are the tracker talking, not a person.
+		if len(spec.pages) < 2 && spec.custom == 0 {
+			bounces++
+		}
+
+		first, last := spec.span()
+		totalDuration += last - first
+	}
+
+	return metrics{
+		Visitors:      int64(len(seen)),
+		Visits:        visits,
+		Pageviews:     pageviews,
+		BounceRate:    100.0 * float64(bounces) / float64(visits),
+		VisitDuration: float64(totalDuration) / float64(visits),
+		ViewsPerVisit: float64(totalPageviews) / float64(visits),
+	}
+}
+
+// span returns the first and last event timestamps of a visit, as offsets. The
+// duration is the distance between them, and an engagement ping can be the last
+// event — which is exactly why time-on-page has to survive a reordered stream.
+func (s visitSpec) span() (int64, int64) {
+	requests := s.requests()
+
+	first, last := requests[0].timestamp, requests[0].timestamp
+	for _, r := range requests {
+		if r.timestamp < first {
+			first = r.timestamp
+		}
+		if r.timestamp > last {
+			last = r.timestamp
+		}
+	}
+
+	return first, last
+}
+
+// requests expands one visit into the calls that make it up, always in
+// chronological order. Shuffling happens to the assembled stream, not here.
+func (s visitSpec) requests() []request {
+	base := fixtureStart.Unix() + s.offset
+
+	var out []request
+
+	for i, page := range s.pages {
+		at := base + int64(i)*45
+
+		url := "https://" + fixtureDomain + page
+		referrer := ""
+
+		// Acquisition is frozen at session start, so the referrer and the
+		// campaign tags only ever go on the first event of the visit.
+		if i == 0 {
+			url += s.query
+			referrer = s.referrer
+		}
+
+		out = append(out, request{
+			visitor:   s.visitor,
+			timestamp: at,
+			name:      EventPageview,
+			url:       url,
+			referrer:  referrer,
+		})
+
+		if i < s.pings {
+			out = append(out, request{
+				visitor:   s.visitor,
+				timestamp: at + 20,
+				name:      EventEngagement,
+				url:       "https://" + fixtureDomain + page,
+			})
+		}
+	}
+
+	for i := 0; i < s.custom; i++ {
+		out = append(out, request{
+			visitor:   s.visitor,
+			timestamp: base + 5 + int64(i),
+			name:      "signup",
+			url:       "https://" + fixtureDomain + s.pages[0],
+			props:     map[string]string{"plan": "pro", "seats": "3"},
+		})
+	}
+
+	sort.SliceStable(out, func(i, j int) bool { return out[i].timestamp < out[j].timestamp })
+
+	return out
+}
+
+// stream assembles the whole fixture in chronological order.
+func stream() []request {
+	var out []request
+	for _, spec := range fixture {
+		out = append(out, spec.requests()...)
+	}
+
+	sort.SliceStable(out, func(i, j int) bool { return out[i].timestamp < out[j].timestamp })
+
+	return out
+}
+
+// harness is one wired-up ingest service over its own account database, sharing
+// a control database with its twin so both runs see the same salt and the same
+// site.
+type harness struct {
+	service *Service
+	manager *accounts.Manager
+	clock   time.Time
+}
+
+// newControl builds the shared control database with one team and one site. It
+// is shared between the two runs on purpose: the salt is a fingerprint input,
+// so two independently generated salts would make the visitor ids differ for a
+// reason that has nothing to do with ordering.
+func newControl(t testing.TB, dir string) *sql.DB {
+	t.Helper()
+
+	db, err := store.Open(filepath.Join(dir, "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+		t.Fatal(err)
+	}
+
+	now := fixtureStart.Unix()
+
+	if _, err := db.Exec("INSERT INTO teams (id, name, created_at, updated_at) VALUES (1, 'Fixture', ?, ?)", now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(
+		"INSERT INTO sites (id, account_id, domain, created_at, updated_at) VALUES (1, 1, ?, ?, ?)",
+		fixtureDomain, now, now,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	return db
+}
+
+// newHarness wires a service whose clock the test drives. Both the pipeline and
+// the salt store read the same clock, so the whole replay sits inside one salt
+// day however the events are ordered.
+func newHarness(t testing.TB, control *sql.DB, dataDir string, wrap func(Transport) Transport) *harness {
+	t.Helper()
+
+	manager := accounts.NewManager(dataDir)
+	t.Cleanup(func() { manager.CloseAll() })
+
+	h := &harness{manager: manager, clock: fixtureStart}
+
+	service, err := NewService(context.Background(), control, manager, Options{
+		DataDir: dataDir,
+		SaltKey: fixtureSaltKey,
+		Now:     func() time.Time { return h.clock },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.service = service
+
+	// A buffer far larger than the stream, so flushes happen only where the
+	// test asks for them and the comparison is not racing a timer.
+	var transport Transport = NewDirect(service.Writer)
+	if wrap != nil {
+		transport = wrap(transport)
+	}
+
+	service.Buffer = NewBuffer(transport, 1<<20, time.Hour)
+	service.Handler.Buffer = service.Buffer
+
+	return h
+}
+
+// send posts one event, with the clock set to the moment it happened. Arrival
+// order is the order send is called; the event's own timestamp is what every
+// accumulation rule keys off.
+func (h *harness) send(t testing.TB, r request) *httptest.ResponseRecorder {
+	t.Helper()
+
+	h.clock = time.Unix(r.timestamp, 0).UTC()
+
+	payload := map[string]any{
+		"n": r.name,
+		"u": r.url,
+		"d": fixtureDomain,
+		"r": r.referrer,
+	}
+	if len(r.props) > 0 {
+		payload["p"] = r.props
+	}
+	if r.name == EventEngagement {
+		payload["e"] = 12000
+		payload["sd"] = 65
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// text/plain, because that is what the real trackers send: it avoids a CORS
+	// preflight, and an endpoint that rejected it would break every existing
+	// integration.
+	req := httptest.NewRequest(http.MethodPost, "/api/event", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("User-Agent", visitors[r.visitor].userAgent)
+	req.Header.Set("X-Forwarded-For", visitors[r.visitor].ip)
+
+	recorder := httptest.NewRecorder()
+	h.service.Handler.ServeHTTP(recorder, req)
+
+	return recorder
+}
+
+// replay sends a whole stream, flushing periodically so the batching path is
+// exercised rather than bypassed.
+func (h *harness) replay(t testing.TB, requests []request) {
+	t.Helper()
+
+	ctx := context.Background()
+
+	for i, r := range requests {
+		if recorder := h.send(t, r); recorder.Code != http.StatusAccepted {
+			t.Fatalf("request %d: status %d, want 202: %s", i, recorder.Code, recorder.Body.String())
+		}
+
+		// Flushing every few events means the stream crosses many batches, so
+		// the fold has to carry session state from one transaction to the next
+		// rather than seeing a whole visit at once.
+		if (i+1)%7 == 0 {
+			if err := h.service.Buffer.Flush(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	if err := h.service.Buffer.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// metrics reads the six core numbers back out of the account database, using
+// the definitions the dashboard will use. They are stated here in SQL rather
+// than derived in Go on purpose: these are the queries that have to be right.
+func (h *harness) metrics(t testing.TB) metrics {
+	t.Helper()
+
+	account, err := h.manager.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	db := account.Reader()
+
+	var m metrics
+
+	scan := func(query string, into any) {
+		if err := db.QueryRow(query).Scan(into); err != nil {
+			t.Fatalf("%s: %v", query, err)
+		}
+	}
+
+	scan("SELECT COUNT(DISTINCT user_id) FROM sessions", &m.Visitors)
+	scan("SELECT COUNT(*) FROM sessions", &m.Visits)
+	scan("SELECT COUNT(*) FROM events WHERE name_id = (SELECT id FROM dim_event_name WHERE value = 'pageview')", &m.Pageviews)
+
+	// Bounces are counted as a share of sessions, and visit_duration includes
+	// bounced sessions as zero rather than excluding them — excluding them is
+	// why the incumbent's time-on-page numbers run high.
+	scan("SELECT 100.0 * SUM(is_bounce) / COUNT(*) FROM sessions", &m.BounceRate)
+	scan("SELECT AVG(duration) FROM sessions", &m.VisitDuration)
+	scan("SELECT 1.0 * SUM(pageviews) / COUNT(*) FROM sessions", &m.ViewsPerVisit)
+
+	return m
+}
+
+// sessionRow is one stored visit, with the columns whose values must not depend
+// on delivery order. The row id and the visitor hash are excluded because both
+// are allocation artefacts: ids are handed out in arrival order, and comparing
+// them would fail for a reason that says nothing about correctness.
+type sessionRow struct {
+	StartedAt  int64
+	LastSeenAt int64
+	Duration   int64
+	IsBounce   int64
+	Pageviews  int64
+	Events     int64
+	EntryPage  string
+	ExitPage   string
+	Source     string
+	Channel    string
+	UTMSource  string
+	UTMMedium  string
+	Country    string
+	Browser    string
+}
+
+// sessionRows reads every session back in a stable order, so two runs can be
+// compared directly.
+func (h *harness) sessionRows(t testing.TB) []sessionRow {
+	t.Helper()
+
+	account, err := h.manager.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := account.Reader().Query(`
+		SELECT s.started_at, s.last_seen_at, s.duration, s.is_bounce, s.pageviews, s.events,
+		       entry.value, exit.value, source.value, channel.value,
+		       utm_source.value, utm_medium.value, country.value, browser.value
+		FROM sessions s
+		JOIN dim_pathname   entry      ON entry.id      = s.entry_page_id
+		JOIN dim_pathname   exit       ON exit.id       = s.exit_page_id
+		JOIN dim_source     source     ON source.id     = s.source_id
+		JOIN dim_channel    channel    ON channel.id    = s.channel_id
+		JOIN dim_utm_source utm_source ON utm_source.id = s.utm_source_id
+		JOIN dim_utm_medium utm_medium ON utm_medium.id = s.utm_medium_id
+		JOIN dim_country    country    ON country.id    = s.country_id
+		JOIN dim_browser    browser    ON browser.id    = s.browser_id
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	var out []sessionRow
+
+	for rows.Next() {
+		var row sessionRow
+		if err := rows.Scan(
+			&row.StartedAt, &row.LastSeenAt, &row.Duration, &row.IsBounce, &row.Pageviews, &row.Events,
+			&row.EntryPage, &row.ExitPage, &row.Source, &row.Channel,
+			&row.UTMSource, &row.UTMMedium, &row.Country, &row.Browser,
+		); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, row)
+	}
+
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].StartedAt != out[j].StartedAt {
+			return out[i].StartedAt < out[j].StartedAt
+		}
+		if out[i].EntryPage != out[j].EntryPage {
+			return out[i].EntryPage < out[j].EntryPage
+		}
+		return out[i].Browser < out[j].Browser
+	})
+
+	return out
+}
+
+// eventCount reports how many rows the events table holds, which is the number
+// a duplicated replay must not change.
+func (h *harness) eventCount(t testing.TB) int64 {
+	t.Helper()
+
+	account, err := h.manager.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var count int64
+	if err := account.Reader().QueryRow("SELECT COUNT(*) FROM events").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+
+	return count
+}
+
+// duplicating re-sends a share of every batch, which is what a lost
+// acknowledgement looks like from the shard's side: the write committed, the
+// sender never heard, and it tried again.
+type duplicating struct {
+	inner Transport
+	rate  float64
+	rand  *rand.Rand
+
+	// sent counts the redeliveries, so the test can prove it actually exercised
+	// the dedupe path rather than passing because nothing was duplicated.
+	sent int
+}
+
+// Send delivers the batch, then delivers a sample of it a second time. The
+// second delivery must change nothing, because every event carries a uuid the
+// shard has already seen.
+func (d *duplicating) Send(ctx context.Context, shard int, batch []Event) ([]uuid.UUID, error) {
+	committed, err := d.inner.Send(ctx, shard, batch)
+	if err != nil {
+		return committed, err
+	}
+
+	var again []Event
+	for _, event := range batch {
+		if d.rand.Float64() < d.rate {
+			again = append(again, event)
+		}
+	}
+
+	if len(again) == 0 {
+		return committed, nil
+	}
+
+	d.sent += len(again)
+
+	if _, err := d.inner.Send(ctx, shard, again); err != nil {
+		return committed, err
+	}
+
+	return committed, nil
+}
+
+// TestReplayInOrder is run one: the stream delivered chronologically, with the
+// six core metrics asserted against values computed from the fixture rather
+// than from the code under test.
+func TestReplayInOrder(t *testing.T) {
+	dir := t.TempDir()
+	control := newControl(t, dir)
+
+	h := newHarness(t, control, filepath.Join(dir, "run-a"), nil)
+	h.replay(t, stream())
+
+	want := expected()
+	got := h.metrics(t)
+
+	assertMetrics(t, got, want)
+}
+
+// TestReplayShuffledWithDuplicatesMatches is run two, and the single
+// highest-value test in the project. The same stream arrives in a random order
+// with five per cent of every batch redelivered, and every number and every
+// stored session row has to come out identical.
+//
+// Run two is what proves order-independence and idempotency together: the first
+// property makes the delivery buffer invisible to the metrics, and the second
+// makes a retry harmless. Without both, exit_page is quietly wrong on any site
+// with retries and a duplicated pageview is a wrong number with no cause.
+func TestReplayShuffledWithDuplicatesMatches(t *testing.T) {
+	dir := t.TempDir()
+	control := newControl(t, dir)
+
+	ordered := newHarness(t, control, filepath.Join(dir, "run-a"), nil)
+	ordered.replay(t, stream())
+
+	wantMetrics := ordered.metrics(t)
+	wantRows := ordered.sessionRows(t)
+	wantEvents := ordered.eventCount(t)
+
+	// Several shuffles rather than one. A single ordering can miss a bug that
+	// only appears when two particular events swap, and this test is the last
+	// line of defence for both unrecoverable decisions.
+	for seed := int64(1); seed <= 12; seed++ {
+		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
+			random := rand.New(rand.NewSource(seed))
+
+			shuffled := append([]request(nil), stream()...)
+			random.Shuffle(len(shuffled), func(i, j int) {
+				shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+			})
+
+			var duplicator *duplicating
+
+			replayed := newHarness(t, control, filepath.Join(dir, fmt.Sprintf("run-%d", seed)), func(inner Transport) Transport {
+				duplicator = &duplicating{inner: inner, rate: 0.25, rand: rand.New(rand.NewSource(seed * 977))}
+				return duplicator
+			})
+			replayed.replay(t, shuffled)
+
+			if duplicator.sent == 0 {
+				t.Fatal("no events were redelivered, so the dedupe path was never exercised")
+			}
+
+			assertMetrics(t, replayed.metrics(t), wantMetrics)
+
+			if got := replayed.eventCount(t); got != wantEvents {
+				t.Fatalf("events written = %d, want %d after %d redeliveries — a duplicate was counted",
+					got, wantEvents, duplicator.sent)
+			}
+
+			if gotRows := replayed.sessionRows(t); !reflect.DeepEqual(gotRows, wantRows) {
+				t.Fatalf("session rows differ after shuffling\n got: %s\nwant: %s", render(gotRows), render(wantRows))
+			}
+		})
+	}
+}
+
+// TestSessionSurvivesSaltRotation is the midnight case, end to end. A visitor
+// mid-visit at 00:00 UTC gets a new fingerprint, and without the previous-salt
+// fallback they would get a new session too and be counted as two people.
+func TestSessionSurvivesSaltRotation(t *testing.T) {
+	dir := t.TempDir()
+	control := newControl(t, dir)
+
+	h := newHarness(t, control, filepath.Join(dir, "midnight"), nil)
+
+	// The salt for the day before has to exist, or there is no previous salt to
+	// fall back to — which is the whole mechanism under test.
+	h.clock = time.Date(2026, time.August, 30, 23, 0, 0, 0, time.UTC)
+	if _, err := h.service.Salts.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	before := time.Date(2026, time.August, 30, 23, 55, 0, 0, time.UTC)
+	after := time.Date(2026, time.August, 31, 0, 5, 0, 0, time.UTC)
+
+	h.replay(t, []request{
+		{visitor: 0, timestamp: before.Unix(), name: EventPageview, url: "https://" + fixtureDomain + "/"},
+		{visitor: 0, timestamp: after.Unix(), name: EventPageview, url: "https://" + fixtureDomain + "/pricing"},
+	})
+
+	// Both salts must be live, or the test would pass for the wrong reason.
+	pair, err := h.service.Salts.Pair(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pair.Previous) != salts.Size {
+		t.Fatal("there is no previous salt, so the fallback was never exercised")
+	}
+
+	m := h.metrics(t)
+
+	if m.Visits != 1 {
+		t.Fatalf("visits = %d, want 1 — the salt rotation split the session", m.Visits)
+	}
+	if m.Visitors != 1 {
+		t.Fatalf("visitors = %d, want 1 — the salt rotation split the visitor", m.Visitors)
+	}
+	if m.Pageviews != 2 {
+		t.Fatalf("pageviews = %d, want 2", m.Pageviews)
+	}
+
+	rows := h.sessionRows(t)
+	if len(rows) != 1 {
+		t.Fatalf("stored %d sessions, want 1", len(rows))
+	}
+	if rows[0].EntryPage != "/" || rows[0].ExitPage != "/pricing" {
+		t.Fatalf("entry/exit = %q/%q, want / and /pricing", rows[0].EntryPage, rows[0].ExitPage)
+	}
+	if rows[0].Duration != int64(after.Sub(before)/time.Second) {
+		t.Fatalf("duration = %d, want %d", rows[0].Duration, int64(after.Sub(before)/time.Second))
+	}
+}
+
+// TestClickIDValueIsNeverStored checks the acquisition parser keeps the
+// parameter's name and throws its value away. A click id is a unique
+// per-click identifier and is not ours to keep without consent.
+func TestClickIDValueIsNeverStored(t *testing.T) {
+	dir := t.TempDir()
+	control := newControl(t, dir)
+
+	h := newHarness(t, control, filepath.Join(dir, "clickid"), nil)
+	h.replay(t, stream())
+
+	account, err := h.manager.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The fixture sends gclid=SHOULD_NOT_BE_STORED. It must not survive into
+	// any dimension table or any detail column.
+	for _, table := range []string{"dim_pathname", "dim_source", "dim_utm_source", "dim_utm_campaign", "dim_referrer"} {
+		var count int64
+		query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE value LIKE '%%SHOULD_NOT_BE_STORED%%'", table)
+		if err := account.Reader().QueryRow(query).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("%s holds the click id value", table)
+		}
+	}
+
+	var details int64
+	if err := account.Reader().QueryRow(
+		"SELECT COUNT(*) FROM event_details WHERE COALESCE(full_url,'') LIKE '%SHOULD_NOT_BE_STORED%'",
+	).Scan(&details); err != nil {
+		t.Fatal(err)
+	}
+	if details != 0 {
+		t.Fatal("the click id value reached event_details")
+	}
+}
+
+// assertMetrics compares the six numbers, allowing for float noise on the three
+// that are ratios.
+func assertMetrics(t testing.TB, got, want metrics) {
+	t.Helper()
+
+	if got.Visitors != want.Visitors {
+		t.Errorf("visitors = %d, want %d", got.Visitors, want.Visitors)
+	}
+	if got.Visits != want.Visits {
+		t.Errorf("visits = %d, want %d", got.Visits, want.Visits)
+	}
+	if got.Pageviews != want.Pageviews {
+		t.Errorf("pageviews = %d, want %d", got.Pageviews, want.Pageviews)
+	}
+	if math.Abs(got.BounceRate-want.BounceRate) > 1e-9 {
+		t.Errorf("bounce_rate = %v, want %v", got.BounceRate, want.BounceRate)
+	}
+	if math.Abs(got.VisitDuration-want.VisitDuration) > 1e-9 {
+		t.Errorf("visit_duration = %v, want %v", got.VisitDuration, want.VisitDuration)
+	}
+	if math.Abs(got.ViewsPerVisit-want.ViewsPerVisit) > 1e-9 {
+		t.Errorf("views_per_visit = %v, want %v", got.ViewsPerVisit, want.ViewsPerVisit)
+	}
+}
+
+// render formats session rows one per line, so a failure shows which visit
+// differs rather than one unreadable line.
+func render(rows []sessionRow) string {
+	var out strings.Builder
+	for _, row := range rows {
+		fmt.Fprintf(&out, "\n  %+v", row)
+	}
+
+	return out.String()
+}

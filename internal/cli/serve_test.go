@@ -20,7 +20,7 @@ func TestServeReportsResolvedConfig(t *testing.T) {
 	t.Setenv("FEASIBLE_APP_BASE_URL", "http://rager.example.ts.net:19300")
 	t.Setenv("FEASIBLE_APP_TRANSPORT", "http")
 
-	code, stdout, stderr := run(t, "serve")
+	code, stdout, stderr := run(t, "serve", "-check")
 
 	if code != ExitOK {
 		t.Fatalf("exit code %d, stderr: %s", code, stderr)
@@ -42,7 +42,7 @@ func TestServeReportsResolvedConfig(t *testing.T) {
 func TestServeListenFlagOverrides(t *testing.T) {
 	t.Setenv("FEASIBLE_APP_LISTEN", "127.0.0.1:19301")
 
-	code, stdout, _ := run(t, "serve", "-listen", "127.0.0.1:29301")
+	code, stdout, _ := run(t, "serve", "-check", "-listen", "127.0.0.1:29301")
 
 	if code != ExitOK {
 		t.Fatalf("exit code %d", code)
@@ -56,7 +56,7 @@ func TestServeListenFlagOverrides(t *testing.T) {
 // flag has to reach the configuration the subcommand runs with, or turning it on
 // would appear to do nothing.
 func TestServeTraceEventsFlag(t *testing.T) {
-	code, stdout, _ := run(t, "--trace-events", "serve")
+	code, stdout, _ := run(t, "--trace-events", "serve", "-check")
 
 	if code != ExitOK {
 		t.Fatalf("exit code %d", code)
@@ -72,7 +72,7 @@ func TestServeTraceEventsFlag(t *testing.T) {
 func TestServeConfigErrorExitsOne(t *testing.T) {
 	t.Setenv("FEASIBLE_APP_TRANSPORT", "carrier-pigeon")
 
-	code, _, stderr := run(t, "serve")
+	code, _, stderr := run(t, "serve", "-check")
 
 	if code != ExitError {
 		t.Fatalf("exit code %d, want %d", code, ExitError)

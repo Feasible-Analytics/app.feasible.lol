@@ -85,6 +85,12 @@ type Shared struct {
 	LogFormat    string
 	InternalKeys []InternalKey
 	TraceEvents  bool
+
+	// SaltKey encrypts the fingerprint salts at rest, as 32 hex-encoded bytes.
+	// Empty means one is generated under the data directory on first run, so
+	// encryption at rest is true by default rather than only when somebody
+	// remembered to set a variable.
+	SaltKey string
 }
 
 // App holds the values only the `serve` process reads.
@@ -102,6 +108,11 @@ type Ingest struct {
 	Listen     string
 	Shards     []string
 	BufferPath string
+
+	// TrustedProxies may set X-Feasible-IP. Empty means nobody: on a
+	// directly-exposed instance an unconditionally trusted override lets
+	// anyone forge their own geolocation and split their own fingerprint.
+	TrustedProxies []string
 }
 
 // Config is the whole configuration for the binary. Both sections are always
@@ -311,6 +322,7 @@ func LoadFrom(l *Loader) (*Config, error) {
 			LogLevel:    strings.ToLower(l.String("FEASIBLE_LOG_LEVEL", defaultLevel)),
 			LogFormat:   strings.ToLower(l.String("FEASIBLE_LOG_FORMAT", defaultFormat)),
 			TraceEvents: l.Bool("FEASIBLE_TRACE_EVENTS", false),
+			SaltKey:     strings.TrimSpace(l.String("FEASIBLE_SALT_KEY", "")),
 		},
 		App: App{
 			Listen:         l.String("FEASIBLE_APP_LISTEN", DefaultAppListen),
@@ -321,8 +333,9 @@ func LoadFrom(l *Loader) (*Config, error) {
 			MailTransport:  strings.ToLower(l.String("FEASIBLE_APP_MAIL_TRANSPORT", DefaultAppMailTransport)),
 		},
 		Ingest: Ingest{
-			Listen:     l.String("FEASIBLE_INGEST_LISTEN", DefaultIngestListen),
-			BufferPath: l.String("FEASIBLE_INGEST_BUFFER_PATH", DefaultIngestBufferPath),
+			Listen:         l.String("FEASIBLE_INGEST_LISTEN", DefaultIngestListen),
+			BufferPath:     l.String("FEASIBLE_INGEST_BUFFER_PATH", DefaultIngestBufferPath),
+			TrustedProxies: parseList(l.String("FEASIBLE_INGEST_TRUSTED_PROXIES", "")),
 		},
 	}
 
@@ -392,6 +405,22 @@ func parseShards(raw string) ([]string, error) {
 	return out, nil
 }
 
+// parseList splits a comma-separated variable into its entries, dropping the
+// blanks. It exists because an operator writing a list by hand leaves trailing
+// commas and spaces, and a stray empty entry in the trusted-proxy list would be
+// an allow-list entry that matches nothing and looks like it matches something.
+func parseList(raw string) []string {
+	var out []string
+
+	for _, part := range strings.Split(raw, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+
+	return out
+}
+
 // Validate rejects values that would otherwise fail much later and much less
 // clearly — a misspelled transport that silently drops every event, or a base
 // URL without a scheme that produces links nobody can click.
@@ -418,6 +447,10 @@ func (c *Config) Validate() error {
 	case MailTransportLog, MailTransportSMTP:
 	default:
 		return fmt.Errorf("FEASIBLE_APP_MAIL_TRANSPORT: %q is not log or smtp", c.App.MailTransport)
+	}
+
+	if c.Shared.SaltKey != "" && len(c.Shared.SaltKey) != 64 {
+		return fmt.Errorf("FEASIBLE_SALT_KEY: expected 64 hex characters, got %d", len(c.Shared.SaltKey))
 	}
 
 	base, err := url.Parse(c.App.BaseURL)

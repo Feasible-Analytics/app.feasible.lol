@@ -19,7 +19,7 @@ import (
 func TestIngestReportsShards(t *testing.T) {
 	t.Setenv("FEASIBLE_INGEST_SHARDS", "http://127.0.0.1:19401, http://127.0.0.1:19402")
 
-	code, stdout, stderr := run(t, "ingest")
+	code, stdout, stderr := run(t, "ingest", "-check")
 
 	if code != ExitOK {
 		t.Fatalf("exit code %d, stderr: %s", code, stderr)
@@ -32,7 +32,7 @@ func TestIngestReportsShards(t *testing.T) {
 // TestIngestListenFlagOverrides covers the same override the app has, since
 // running two ingestors side by side is the normal way to test forwarding.
 func TestIngestListenFlagOverrides(t *testing.T) {
-	code, stdout, _ := run(t, "ingest", "-listen", "127.0.0.1:29302")
+	code, stdout, _ := run(t, "ingest", "-check", "-listen", "127.0.0.1:29302")
 
 	if code != ExitOK {
 		t.Fatalf("exit code %d", code)
