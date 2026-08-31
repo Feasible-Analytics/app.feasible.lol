@@ -40,6 +40,13 @@ type executor struct {
 	// the numbers came from without asking the router a second time.
 	segments []Segment
 
+	// The money metrics share one pass and one set of exchange rates. They are
+	// held here rather than recomputed per metric so that three metrics over
+	// the same events can never be converted at two different rates.
+	revenueDone map[int64]bool
+	rates       map[string]float64
+	currency    string
+
 	// comparison marks the executor that answers the earlier period. It never
 	// paginates: its rows are looked up by key, not read off a page.
 	comparison bool
@@ -195,9 +202,27 @@ func (x *executor) dimensions(t table, mode dimMode) ([]compiledDim, []string, [
 				sql: bucketExpr(column, x.resolved.Interval, x.zoneSpans()),
 			})
 
+		case d.sessionScoped(x.plan.Scopes):
+			// A property declared session-scoped describes the whole visit, so
+			// it is read once per visit and every event of that visit carries
+			// the visit's value. Reading each event's own property instead
+			// would put an event that did not repeat the property into its own
+			// group, and the denominator of anything measured against it would
+			// count only the events that happened to mention it.
+			value := sessionPropExpr(d, t.propCorrelation())
+
+			compiled = append(compiled, compiledDim{
+				dim: d, alias: fmt.Sprintf("d%d", i), sql: value,
+			})
+
+			conditions = append(conditions, expr{
+				SQL: value.SQL + " IS NOT NULL", Args: value.Args,
+			})
+
 		case d.isProp():
 			if t != tableEvents {
-				return nil, nil, nil, invalid("%q can only be grouped at event grain", d.Name)
+				return nil, nil, nil, invalid("%q can only be grouped at event grain — "+
+					"register it as a session-scoped property if it describes the whole visit", d.Name)
 			}
 
 			// Properties live in the cold table, so a breakdown by one is the
@@ -247,6 +272,29 @@ func (x *executor) dimensions(t table, mode dimMode) ([]compiledDim, []string, [
 	}
 
 	return compiled, joins, conditions, nil
+}
+
+// sessionPropExpr reads a session-scoped property at visit grain: the first
+// value any event of the visit carried.
+//
+// First rather than last because a session-scoped property is declared to have
+// one value per visit, so any event carrying it carries the same one — and
+// where a site breaks that promise, the first value is the one that was true
+// when the visit started, which is what every other visit-grain attribute on
+// the row already is.
+//
+// It is a correlated subquery, so it costs one index probe per row rather than
+// reading a column. That is the price of a property the customer declared to
+// be about the visit, and it is only paid by the queries that name one.
+func sessionPropExpr(d dimension, correlation string) expr {
+	path := d.jsonPath()
+
+	return expr{
+		SQL: "(SELECT json_extract(ped.props, ?) FROM events pe JOIN event_details ped ON ped.event_id = pe.id" +
+			" WHERE pe.session_id = " + correlation + " AND json_extract(ped.props, ?) IS NOT NULL" +
+			" ORDER BY pe.timestamp, pe.id LIMIT 1)",
+		Args: []any{path, path},
+	}
 }
 
 // sessionColumn picks the sessions column that answers a dimension. An
@@ -325,7 +373,7 @@ func (x *executor) componentsFor(names []string, t table) ([]expr, []target, map
 // compiled filters. It also records how an event-scoped filter had to be
 // re-scoped, which is what becomes a metric warning.
 func (x *executor) conditionsFor(t table, r Resolved) ([]expr, error) {
-	where := newWhereBuilder(t, x.compile, x.query.SiteIDs, r)
+	where := newWhereBuilder(t, x.compile, x.plan.Scopes, x.query.SiteIDs, r)
 
 	conditions := where.base(x.query)
 
@@ -811,7 +859,7 @@ func (x *executor) metricValues(row *groupRow) []float64 {
 			value /= x.query.SampleRate
 		}
 
-		values = append(values, round(clamp(value, definition.Percentage)))
+		values = append(values, round(clamp(value, definition.Percentage, definition.Signed)))
 	}
 
 	return values

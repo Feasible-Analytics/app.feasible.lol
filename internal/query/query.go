@@ -93,6 +93,13 @@ type Query struct {
 	Pagination Pagination `json:"pagination,omitempty"`
 	Include    Include    `json:"include,omitempty"`
 
+	// Currency is the ISO 4217 code the money metrics are reported in.
+	// Everything is converted into it at the stored exchange rate. Empty means
+	// "the currency the data is already in", which is resolved from the range
+	// and refused when the range holds more than one — adding two currencies
+	// together is a number nobody could ever reconcile.
+	Currency string `json:"currency,omitempty"`
+
 	// SampleRate is the fraction of visitors to read, between 0 and 1. One
 	// means no sampling and is the default. Sampling picks visitors rather
 	// than rows so that a sampled session is whole: sampling rows would break
@@ -215,6 +222,8 @@ func (q *Query) Normalise() {
 		q.SampleRate = 1
 	}
 
+	q.Currency = strings.ToUpper(strings.TrimSpace(q.Currency))
+
 	if q.DateRange.Preset == "" && q.DateRange.Start.IsZero() {
 		q.DateRange.Preset = RangeLast28Days
 	}
@@ -312,6 +321,10 @@ func (q *Query) Validate() error {
 		}
 	}
 
+	if err := validateCurrency(q.Currency); err != nil {
+		return err
+	}
+
 	if q.SampleRate <= 0 || q.SampleRate > 1 {
 		return invalid("sample_rate must be greater than 0 and at most 1, not %g", q.SampleRate)
 	}
@@ -319,6 +332,28 @@ func (q *Query) Validate() error {
 	if q.Include.Comparisons != nil {
 		if err := q.Include.Comparisons.validate(); err != nil {
 			return err
+		}
+	}
+
+	return nil
+}
+
+// validateCurrency refuses anything that is not an ISO 4217 alphabetic code.
+// Empty is allowed and means the compiler resolves it from the data; a typo is
+// not, because a typo would match no stored rate and report every revenue
+// figure as zero.
+func validateCurrency(code string) error {
+	if code == "" {
+		return nil
+	}
+
+	if len(code) != 3 {
+		return invalid("currency must be a three-letter code such as USD, not %q", code)
+	}
+
+	for i := 0; i < len(code); i++ {
+		if code[i] < 'A' || code[i] > 'Z' {
+			return invalid("currency must be three uppercase letters such as USD, not %q", code)
 		}
 	}
 

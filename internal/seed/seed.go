@@ -443,6 +443,16 @@ func (g *generator) plan(ctx context.Context) error {
 			traffic = append(traffic, site.Fixture)
 		}
 
+		// Goals are created before a single event is generated, and stamped
+		// with the first day of the history. Goals do not backfill, so one
+		// created at the end of the run would count nothing at all and the
+		// goals report would look broken rather than empty.
+		for _, site := range run.sites {
+			if err := g.ensureGoals(ctx, run, site, g.start); err != nil {
+				return err
+			}
+		}
+
 		g.accounts = append(g.accounts, run)
 	}
 

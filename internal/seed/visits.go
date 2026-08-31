@@ -50,13 +50,22 @@ func (g *generator) emitDay(ctx context.Context, site *siteRun, day int, dayStar
 	}
 
 	for budget > 0 {
+		// A checkout walk decides its own length, because a funnel step that
+		// fell off the end of a one-pageview visit would be a drop-off the
+		// generator invented rather than one the visitor made.
+		walk := g.checkoutWalk(site)
+
 		length := g.sessionLength(site)
+		if len(walk) > length {
+			length = len(walk)
+		}
+
 		if int64(length) > budget {
 			length = int(budget)
 		}
 		budget -= int64(length)
 
-		if err := g.emitSession(ctx, site, day, dayStart, dayEnd, length); err != nil {
+		if err := g.emitSession(ctx, site, day, dayStart, dayEnd, length, walk); err != nil {
 			return err
 		}
 
@@ -85,7 +94,7 @@ func (g *generator) sessionLength(site *siteRun) int {
 
 // emitSession generates one visit: where it came from, who it was, and the
 // pages, engagement pings and custom events it produced.
-func (g *generator) emitSession(ctx context.Context, site *siteRun, day int, dayStart, dayEnd time.Time, pageviews int) error {
+func (g *generator) emitSession(ctx context.Context, site *siteRun, day int, dayStart, dayEnd time.Time, pageviews int, walk []string) error {
 	hour := site.hourChooser.pick(g.rng.Float64())
 	start := dayStart.Add(time.Duration(hour)*time.Hour +
 		time.Duration(g.rng.IntN(3600))*time.Second)
@@ -112,6 +121,13 @@ func (g *generator) emitSession(ctx context.Context, site *siteRun, day int, day
 
 	entry := site.pages[site.entryChooser.pick(g.rng.Float64())]
 
+	// A checkout visit starts where a checkout starts. Everything after the
+	// walk is ordinary browsing, so a visit that abandoned at payment still
+	// looks like somebody who carried on reading rather than one who vanished.
+	if len(walk) > 0 {
+		entry = walk[0]
+	}
+
 	// The page that has exactly one pageview in the whole dataset. It is what
 	// breaks a report that divides by a previous period, and no amount of
 	// sampling reliably produces one.
@@ -129,6 +145,10 @@ func (g *generator) emitSession(ctx context.Context, site *siteRun, day int, day
 		path := entry
 		if i > 0 {
 			path = site.pages[site.pageChooser.pick(g.rng.Float64())]
+		}
+
+		if i < len(walk) {
+			path = walk[i]
 		}
 
 		host := site.domain
@@ -209,7 +229,18 @@ func (g *generator) emitSession(ctx context.Context, site *siteRun, day int, day
 func (g *generator) emitCustom(ctx context.Context, site *siteRun, person visitor, pageURL, from string, at int64, dayEnd time.Time) error {
 	event := customEvents[g.events.pick(g.rng.Float64())]
 
-	props := event.Props
+	// The catalogue's map is copied rather than written to: it is shared by
+	// every event of that name in the whole run, and adding a key to it would
+	// put the last visitor's variant on every event already generated.
+	props := make(map[string]string, len(event.Props)+1)
+	for name, value := range event.Props {
+		props[name] = value
+	}
+
+	// The visitor's A/B group goes on every event of the visit, which is what
+	// a session-scoped property looks like on the wire: one value, repeated,
+	// for as long as the visit lasts.
+	props["ab_test_group"] = person.Variant
 
 	// One event in the run carries exactly thirty properties, which is the cap.
 	// Nothing below it exercises the boundary, and the boundary is where the

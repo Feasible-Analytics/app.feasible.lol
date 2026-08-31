@@ -30,7 +30,11 @@ func (x *executor) specialPass(ctx context.Context, name string, r Resolved, gro
 	case "exit_rate":
 		return x.exitRate(ctx, r, groups, keys)
 	case "conversion_rate":
-		return x.conversionRate(ctx, r, groups, keys)
+		return x.conversionRate(ctx, r, groups, keys, name, true)
+	case "group_conversion_rate":
+		return x.conversionRate(ctx, r, groups, keys, name, false)
+	case "total_revenue", "average_revenue", "revenue_per_visitor":
+		return x.revenue(ctx, r, groups, keys)
 	}
 
 	return nil
@@ -159,7 +163,13 @@ func (x *executor) exitRate(ctx context.Context, r Resolved, groups *groupSet, k
 // against its own numerator is always 100%. Stripping and re-running is what
 // makes "signups per source" mean signups divided by everybody from that
 // source, which is the only reading of the number that is any use.
-func (x *executor) conversionRate(ctx context.Context, r Resolved, groups *groupSet, keys map[int][]any) error {
+//
+// The global flag chooses between the two rates, and it is the entire
+// difference between them: global divides by every visitor in the period,
+// grouped divides inside each row's own group. Both are correct answers, to
+// different questions, and a report that reaches for the wrong one shows a
+// number that looks perfectly reasonable and answers something nobody asked.
+func (x *executor) conversionRate(ctx context.Context, r Resolved, groups *groupSet, keys map[int][]any, name string, global bool) error {
 	dims, joins, extra, err := x.dimensions(tableEvents, dimEntry)
 	if err != nil {
 		return err
@@ -177,55 +187,62 @@ func (x *executor) conversionRate(ctx context.Context, r Resolved, groups *group
 		dims: dims, columns: []expr{{SQL: "COUNT(DISTINCT e.user_id)"}}, conditions: conditions,
 	}
 
-	if _, err := x.merge(ctx, converted, groups, []target{{metric: "conversion_rate", slot: 0, column: 0}}); err != nil {
+	if _, err := x.merge(ctx, converted, groups, []target{{metric: name, slot: 0, column: 0}}); err != nil {
 		return err
 	}
 
-	return x.conversionDenominator(ctx, r, groups)
+	return x.visitorDenominator(ctx, r, groups, name, 1, global)
 }
 
-// conversionDenominator counts everybody who could have converted, grouped only
-// by the dimensions that survive the goal being stripped out.
-func (x *executor) conversionDenominator(ctx context.Context, r Resolved, groups *groupSet) error {
+// visitorDenominator counts everybody who could have converted and writes the
+// count into one slot of a metric.
+//
+// Grouped, it keeps the dimensions that survive the goal being stripped out, so
+// each row divides by its own group. Global, it keeps none of them, and every
+// row divides by the same number: the visitors in the period.
+func (x *executor) visitorDenominator(ctx context.Context, r Resolved, groups *groupSet, name string, slot int, global bool) error {
 	kept := make([]int, 0, len(x.plan.Dimensions))
 	var keptDims []dimension
 
-	for i, d := range x.plan.Dimensions {
-		if isGoalDimension(d) {
-			continue
-		}
+	if !global {
+		for i, d := range x.plan.Dimensions {
+			if isGoalDimension(d, x.plan.Scopes) {
+				continue
+			}
 
-		kept = append(kept, i)
-		keptDims = append(keptDims, d)
+			kept = append(kept, i)
+			keptDims = append(keptDims, d)
+		}
 	}
 
-	stripped := *x.query
-	stripped.Filters = nil
+	base := *x.query
+	base.Filters = nil
 	for _, filter := range x.query.Filters {
-		if isGoalFilter(filter) {
+		if isGoalFilter(filter, x.plan.Scopes) {
 			continue
 		}
-		stripped.Filters = append(stripped.Filters, filter)
+		base.Filters = append(base.Filters, filter)
 	}
 
-	// A second executor over the stripped query, so the dimension compiler and
-	// the filter compiler behave exactly as they do for the real one.
-	base := &executor{
+	// A second executor over the query with its goal removed, so the dimension
+	// compiler and the filter compiler behave exactly as they do for the real
+	// one.
+	without := &executor{
 		engine:   x.engine,
-		query:    &stripped,
-		plan:     &plan{Primary: tableEvents, MetricTable: x.plan.MetricTable, Dimensions: keptDims},
+		query:    &base,
+		plan:     &plan{Primary: tableEvents, MetricTable: x.plan.MetricTable, Dimensions: keptDims, Scopes: x.plan.Scopes},
 		resolved: r,
 		compile:  x.compile,
 		warnings: x.warnings,
 		spans:    x.spans,
 	}
 
-	dims, joins, extra, err := base.dimensions(tableEvents, dimEntry)
+	dims, joins, extra, err := without.dimensions(tableEvents, dimEntry)
 	if err != nil {
 		return err
 	}
 
-	conditions, err := base.conditionsFor(tableEvents, r)
+	conditions, err := without.conditionsFor(tableEvents, r)
 	if err != nil {
 		return err
 	}
@@ -270,11 +287,14 @@ func (x *executor) conversionDenominator(ctx context.Context, r Resolved, groups
 	for _, row := range groups.list() {
 		key := subKey(row.raw, kept)
 
-		for len(row.components["conversion_rate"]) < 2 {
-			row.components["conversion_rate"] = append(row.components["conversion_rate"], 0)
+		for len(row.components[name]) <= slot {
+			row.components[name] = append(row.components[name], 0)
 		}
 
-		row.components["conversion_rate"][1] = totals[key]
+		// Assigned rather than added: a denominator counts the same set however
+		// many metrics ask for it, and adding would double the divisor the
+		// moment two of them share one.
+		row.components[name][slot] = totals[key]
 	}
 
 	return nil
@@ -352,7 +372,7 @@ func subKey(raw []any, indices []int) string {
 
 // isGoalFilter reports whether a filter selects a conversion rather than
 // narrowing the audience.
-func isGoalFilter(f Filter) bool {
+func isGoalFilter(f Filter, scopes map[string]string) bool {
 	if f.Operator == OpHasDone {
 		return true
 	}
@@ -362,26 +382,39 @@ func isGoalFilter(f Filter) bool {
 		return false
 	}
 
-	return isGoalDimension(resolved)
+	return isGoalDimension(resolved, scopes)
 }
 
 // isGoalDimension reports whether a dimension describes what somebody did
 // rather than who they are.
-func isGoalDimension(d dimension) bool {
-	return d.isProp() || d.Name == "event:name"
+//
+// This is where a declared property scope earns its place. An event-scoped
+// property is part of the conversion — "Purchase, plan growth" — so it is
+// stripped from the denominator and the rate divides by everybody. A
+// session-scoped one describes the visitor, the A/B variant they were put in,
+// so it stays and the rate divides by the visitors who were in that variant.
+// With no declaration every property took the first reading, which makes a
+// variant's conversion rate a share of the whole audience rather than of the
+// variant — the one wrong number an A/B test cannot survive.
+func isGoalDimension(d dimension, scopes map[string]string) bool {
+	if d.isProp() {
+		return d.scopeOf(scopes) == propScopeEvent
+	}
+
+	return d.Name == "event:name"
 }
 
 // hasGoal reports whether a query names a conversion at all.
-func hasGoal(q *Query) bool {
+func hasGoal(q *Query, scopes map[string]string) bool {
 	for _, filter := range q.Filters {
-		if isGoalFilter(filter) {
+		if isGoalFilter(filter, scopes) {
 			return true
 		}
 	}
 
 	for _, name := range q.Dimensions {
 		resolved, err := resolveDimension(name)
-		if err == nil && isGoalDimension(resolved) {
+		if err == nil && isGoalDimension(resolved, scopes) {
 			return true
 		}
 	}
