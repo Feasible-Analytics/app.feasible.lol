@@ -234,3 +234,88 @@ func TestPathPreviewDoesNotSave(t *testing.T) {
 		t.Fatalf("the preview stored %d rules — nothing should be saved until Save is pressed", len(rules))
 	}
 }
+
+// TestPatternsDoNotShadowTheAccountScreens is why these routes are enumerated
+// rather than mounted as one "/settings/" prefix.
+//
+// The account screens own /settings/sessions, /settings/security and
+// /settings/team, and they are reached through the root handler. A prefix
+// registration would win against "/" for all three and Go's mux would report no
+// conflict whatsoever — the account screens would simply stop answering, with
+// nothing anywhere to say why. This is the check that would notice.
+func TestPatternsDoNotShadowTheAccountScreens(t *testing.T) {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("account")) //nolint:errcheck // a recorder cannot fail
+	})
+
+	for _, pattern := range Patterns() {
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("site")) //nolint:errcheck // a recorder cannot fail
+		})
+	}
+
+	for _, tc := range []struct{ path, want string }{
+		{"/settings", "account"},
+		{"/settings/profile", "account"},
+		{"/settings/sessions", "account"},
+		{"/settings/sessions/revoke", "account"},
+		{"/settings/security", "account"},
+		{"/settings/security/2fa/start", "account"},
+		{"/settings/security/2fa/qr.png", "account"},
+		{"/settings/team", "account"},
+		{"/sites/1/settings", "account"},
+
+		{"/settings/example.com/shields", "site"},
+		{"/settings/example.com/shields/add", "site"},
+		{"/settings/example.com/shields/delete", "site"},
+		{"/settings/example.com/paths", "site"},
+		{"/settings/example.com/paths/save", "site"},
+		{"/settings/example.com/paths/trailing-slash", "site"},
+		{"/settings/example.com/imports", "site"},
+		{"/settings/example.com/imports/upload", "site"},
+		{"/settings/example.com/imports/delete", "site"},
+		{"/settings/example.com/exports/create", "site"},
+		{"/settings/example.com/exports/download/a-token", "site"},
+		{"/settings/example.com/google/connect", "site"},
+		{"/settings/example.com/google/disconnect", "site"},
+		{"/settings/google/callback", "site"},
+	} {
+		recorder := httptest.NewRecorder()
+		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, tc.path, nil))
+
+		if got := recorder.Body.String(); got != tc.want {
+			t.Errorf("%s reached the %s screens, want %s", tc.path, got, tc.want)
+		}
+	}
+}
+
+// TestDomainOfNamesTheSiteEveryRouteExcept covers the one route that carries no
+// site in its path. The authorisation wrapper lets an empty domain through on
+// sign-in alone, so a route that should name a site and does not would silently
+// skip the ownership check.
+func TestDomainOfNamesTheSiteEveryRouteExcept(t *testing.T) {
+	mux := http.NewServeMux()
+
+	seen := map[string]string{}
+
+	for _, pattern := range Patterns() {
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+			seen[r.URL.Path] = DomainOf(r)
+		})
+	}
+
+	for path, want := range map[string]string{
+		"/settings/example.com/shields":             "example.com",
+		"/settings/example.com/imports/upload":      "example.com",
+		"/settings/example.com/exports/download/xy": "example.com",
+		"/settings/google/callback":                 "",
+	} {
+		mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
+
+		if got := seen[path]; got != want {
+			t.Errorf("%s resolved to domain %q, want %q", path, got, want)
+		}
+	}
+}
