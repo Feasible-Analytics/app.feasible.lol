@@ -170,19 +170,22 @@ func newStack(t *testing.T) *stack {
 
 	public := buildPublic(e, control, service.Sites, manager, com.Gate)
 
+	// The site configuration screens are mounted the way serve mounts them,
+	// because what they are wrapped in is the thing under test here.
+	site, err := buildSiteRules(ctx, e, service, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := buildData(e, control, manager, service, site, false)
+
 	_, key, err := public.Keys.Create(ctx, lockedTeam, 1, "test", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	return &stack{
-		// The site configuration screens are deliberately absent from this
-		// fixture. They sit behind sign-in and site ownership rather than the
-		// access gate, because none of them reads a number: shields and path
-		// cleaning change what a still-collecting account counts, and export
-		// is the one thing a locked customer must always be able to do — the
-		// refusal page itself offers it alongside paying.
-		routes:  serveRoutes(e, service, manager, secret, dir, app, public, com, nil),
+		routes:  serveRoutes(e, service, manager, secret, dir, app, public, com, data.settings),
 		gate:    com.Gate,
 		key:     key,
 		dataDir: dir,
@@ -426,6 +429,16 @@ func TestALockedAccountCanStillReachEverythingItNeedsToPay(t *testing.T) {
 		{"the tracker script", http.MethodGet, tracker.PathLegacy, ""},
 		{"the pixel fallback", http.MethodGet, tracker.PixelPath + "?n=pageview&u=https://example.com/&d=example.com", ""},
 		{"the docs", http.MethodGet, "/docs", ""},
+
+		// The site configuration screens hold the other way out: the export
+		// that gets somebody's data off this install. They answer a redirect to
+		// sign-in here rather than a page, which is enough for both things this
+		// test asks — that the route exists, and that the payment gate is not
+		// what is standing in front of it.
+		{"the shield rules", http.MethodGet, "/settings/example.com/shields", ""},
+		{"the path cleaning rules", http.MethodGet, "/settings/example.com/paths", ""},
+		{"the import and export screen", http.MethodGet, "/settings/example.com/imports", ""},
+		{"preparing a site export", http.MethodPost, "/settings/example.com/exports/create", ""},
 	}
 
 	for _, tc := range cases {
