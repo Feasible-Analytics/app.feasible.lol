@@ -11,11 +11,16 @@ package ingest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/salts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
 // newHandlerHarness builds a fully wired service for the endpoint tests. It is
@@ -385,6 +390,192 @@ func TestMalformedBodyIsRefused(t *testing.T) {
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status %d, want 400", recorder.Code)
+	}
+}
+
+// TestSizeTriggeredFlushSurvivesTheRequestEnding drives the production flush
+// path over a real server, where the request context is cancelled the instant
+// the 202 is written. The buffer's write must not be tied to it: if it is, only
+// the ticker ever writes and every size-triggered batch fails and requeues.
+func TestSizeTriggeredFlushSurvivesTheRequestEnding(t *testing.T) {
+	dir := t.TempDir()
+	h := newHarness(t, newControl(t, dir), filepath.Join(dir, "shard"), nil)
+
+	// A production-shaped buffer: small enough that the size trigger fires,
+	// with an interval long enough that only the size trigger can run.
+	var flushErr error
+
+	h.service.Buffer = NewBuffer(NewDirect(h.service.Writer), 2, time.Hour)
+	h.service.Buffer.OnError = func(err error) { flushErr = err }
+	h.service.Handler.Buffer = h.service.Buffer
+
+	server := httptest.NewServer(h.service.Handler)
+	defer server.Close()
+
+	h.clock = fixtureStart
+
+	for i := 0; i < 2; i++ {
+		body := fmt.Sprintf(`{"n":"pageview","u":"https://example.com/p%d","d":"example.com"}`, i)
+
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/api/event", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "text/plain")
+		req.Header.Set("User-Agent", visitors[0].userAgent)
+		req.Header.Set("X-Forwarded-For", visitors[0].ip)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+
+	// The flush is detached from the request by design, so the test waits for
+	// it rather than for a tick that will not come for an hour.
+	deadline := time.Now().Add(5 * time.Second)
+	for h.eventCount(t) < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if got := h.eventCount(t); got != 2 {
+		t.Fatalf("the size-triggered flush wrote %d of 2 events (buffer holds %d, error: %v)",
+			got, h.service.Buffer.Len(), flushErr)
+	}
+}
+
+// TestInternalFailureIsStillA202 checks our own outage does not become the
+// sender's error. A salt store that will not open makes the fingerprint
+// impossible, and a 4xx would have every tracker retrying a request that cannot
+// succeed.
+func TestInternalFailureIsStillA202(t *testing.T) {
+	h := newHandlerHarness(t)
+
+	key, err := salts.LoadKey(t.TempDir(), fixtureSaltKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A store over a database that is already closed is the cheapest honest
+	// version of "the salts are unavailable".
+	closed, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	broken, err := salts.NewStore(closed, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.service.Pipeline.Salts = broken
+
+	recorder := post(t, h, "text/plain", validBody, nil)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status %d, want 202 — our failure must never reach the tracker as a 4xx", recorder.Code)
+	}
+	if got := recorder.Header().Get(HeaderDropped); got != ReasonInternalError {
+		t.Fatalf("dropped header = %q, want %q", got, ReasonInternalError)
+	}
+
+	var counted int64
+	for _, count := range h.service.Counters.Snapshot().Dropped {
+		if count.Reason == ReasonInternalError {
+			counted = count.Count
+		}
+	}
+	if counted != 1 {
+		t.Fatalf("counted %d internal failures, want 1 — an outage nobody counts is an outage nobody fixes", counted)
+	}
+}
+
+// TestUnreadablePropsAreDroppedWithAReason checks a props object we cannot read
+// is a counted drop rather than a 400. The sender is a beacon: a status code it
+// cannot act on produces a retry that fails in exactly the same way.
+func TestUnreadablePropsAreDroppedWithAReason(t *testing.T) {
+	h := newHandlerHarness(t)
+
+	body := `{"n":"pageview","u":"https://example.com/","d":"example.com","p":"{not json"}`
+	recorder := post(t, h, "text/plain", body, nil)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status %d, want 202", recorder.Code)
+	}
+	if got := recorder.Header().Get(HeaderDropped); got != ReasonInvalidPayload {
+		t.Fatalf("dropped header = %q, want %q", got, ReasonInvalidPayload)
+	}
+
+	var counted int64
+	for _, count := range h.service.Counters.Snapshot().Dropped {
+		if count.Reason == ReasonInvalidPayload {
+			counted = count.Count
+		}
+	}
+	if counted != 1 {
+		t.Fatalf("counted %d invalid payloads, want 1", counted)
+	}
+}
+
+// TestDebugAnswersADroppedEvent is the one curl a customer runs, and they run
+// it precisely because their event did not count. Answering it with the reason
+// and nothing else answers the easy half of the question.
+func TestDebugAnswersADroppedEvent(t *testing.T) {
+	h := newHandlerHarness(t)
+	h.service.Pipeline.Shield = blockEverything{}
+
+	body := `{"n":"pageview","u":"https://example.com/pricing?utm_source=newsletter&utm_medium=email","d":"example.com","r":"https://www.google.com/"}`
+	recorder := post(t, h, "text/plain", body, map[string]string{HeaderDebug: "true"})
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var debug Debug
+	if err := json.NewDecoder(recorder.Body).Decode(&debug); err != nil {
+		t.Fatal(err)
+	}
+
+	if debug.DropReason != ReasonShieldIP {
+		t.Fatalf("drop_reason = %q, want %q", debug.DropReason, ReasonShieldIP)
+	}
+
+	// Everything derived up to the drop has to be there, or the answer is "it
+	// was dropped" and the customer is no further forward.
+	if debug.UserID == 0 {
+		t.Error("the fingerprint is missing from a dropped event's debug view")
+	}
+	if debug.Pathname != "/pricing" {
+		t.Errorf("pathname = %q, want /pricing", debug.Pathname)
+	}
+	if debug.Channel != "Email" {
+		t.Errorf("channel = %q, want Email", debug.Channel)
+	}
+	if debug.Browser != "Chrome" {
+		t.Errorf("browser = %q, want Chrome", debug.Browser)
+	}
+
+	// An unknown domain never reaches a site id, and the debug view still has
+	// to describe what we saw.
+	unknown := post(t, h, "text/plain", `{"n":"pageview","u":"https://nobody.example/x","d":"nobody.example"}`,
+		map[string]string{HeaderDebug: "true"})
+
+	var missing Debug
+	if err := json.NewDecoder(unknown.Body).Decode(&missing); err != nil {
+		t.Fatal(err)
+	}
+
+	if missing.DropReason != ReasonUnknownSite {
+		t.Fatalf("drop_reason = %q, want %q", missing.DropReason, ReasonUnknownSite)
+	}
+	if missing.Hostname != "nobody.example" || missing.Pathname != "/x" {
+		t.Fatalf("hostname/pathname = %q/%q, want nobody.example and /x", missing.Hostname, missing.Pathname)
+	}
+	if missing.UserID == 0 {
+		t.Error("the fingerprint is missing from an unknown site's debug view")
 	}
 }
 

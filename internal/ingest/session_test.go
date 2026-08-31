@@ -12,6 +12,7 @@ import (
 	"math/rand"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -552,6 +553,234 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	}
 	if session.EntryPage != "/" {
 		t.Fatalf("entry_page after restore = %q, want /", session.EntryPage)
+	}
+}
+
+// TestPreviousSaltAdoptsFromItsOwnShard is the midnight case for parked pings.
+// A ping parked under yesterday's fingerprint lives in that key's own bucket,
+// which is a different shard sixty-three times in sixty-four — so adopting it
+// from the current key's bucket silently drops every engagement ping in flight
+// across 00:00 UTC.
+func TestPreviousSaltAdoptsFromItsOwnShard(t *testing.T) {
+	cache := NewSessionCache()
+
+	// A rotated fingerprint that lands in a different bucket, which is what
+	// makes the bug visible rather than a coincidence.
+	rotated := testUser + 1
+	for cache.bucket(sessionKey{testSite, rotated}) == cache.bucket(sessionKey{testSite, testUser}) {
+		rotated++
+	}
+
+	// A ping too early for any session parks under yesterday's key.
+	ping := event(EventEngagement, 2000, "/")
+	if _, ok, _ := cache.Apply(&ping); ok {
+		t.Fatal("an engagement ping with no session created one")
+	}
+
+	// A visit under the same key, far enough away that the ping stays parked.
+	opening := event(EventPageview, 5000, "/")
+	if _, ok, revived := cache.Apply(&opening); !ok || len(revived) != 0 {
+		t.Fatalf("the ping was adopted too early: ok=%v revived=%d", ok, len(revived))
+	}
+
+	// After rotation the same visitor arrives under a new fingerprint, with an
+	// earlier timestamp that widens the session back over the parked ping.
+	after := event(EventPageview, 3300, "/pricing")
+	after.UserID = rotated
+	after.PreviousUserID = testUser
+
+	session, ok, revived := cache.Apply(&after)
+	if !ok {
+		t.Fatal("the event was dropped")
+	}
+	if len(revived) != 1 {
+		t.Fatalf("revived %d parked pings, want 1 — the ping is parked in the previous key's bucket", len(revived))
+	}
+	if session.StartedAt != 2000 {
+		t.Fatalf("session started at %d, want 2000 — the adopted ping did not reach the fold", session.StartedAt)
+	}
+}
+
+// TestExpiredOrphanIsReported checks the one drop nobody can be told about at
+// request time is still told about. By the time a ping's visit is known never to
+// have arrived the response was sent half an hour ago, so the counter is the
+// only place the customer ever hears about it.
+func TestExpiredOrphanIsReported(t *testing.T) {
+	cache := NewSessionCache()
+
+	var expired []*Event
+	cache.OnOrphanExpired = func(event *Event) { expired = append(expired, event) }
+
+	ping := event(EventEngagement, 1000, "/")
+	cache.Apply(&ping)
+
+	// Still inside the window: the visit could yet arrive.
+	cache.Sweep(1000 + sessionTimeoutSeconds)
+	if len(expired) != 0 {
+		t.Fatalf("reported %d drops for a ping that can still be adopted", len(expired))
+	}
+
+	cache.Sweep(1000 + sessionTimeoutSeconds + 1)
+
+	if len(expired) != 1 {
+		t.Fatalf("reported %d expired pings, want 1", len(expired))
+	}
+	if expired[0].SiteID != testSite {
+		t.Fatalf("the drop was reported against site %d, want %d — a count nobody can attribute is not visibility",
+			expired[0].SiteID, testSite)
+	}
+}
+
+// TestAbandonedDirtySessionIsEvicted checks a wedged writer costs a session
+// rather than the process. A dirty session is held past the timeout because its
+// last events have not been written, but holding it forever turns one stuck
+// shard into a cache that grows until the box runs out of memory.
+func TestAbandonedDirtySessionIsEvicted(t *testing.T) {
+	cache := NewSessionCache()
+
+	var abandoned []*Session
+	cache.OnSessionAbandoned = func(session *Session) { abandoned = append(abandoned, session) }
+
+	first := event(EventPageview, 1000, "/")
+	cache.Apply(&first)
+
+	// Inside the grace period the session stays: the write may still land.
+	if removed := cache.Sweep(1000 + sessionTimeoutSeconds + 60); removed != 0 {
+		t.Fatalf("swept %d dirty sessions inside the grace period, want 0", removed)
+	}
+
+	past := int64(1000) + sessionTimeoutSeconds + int64(DirtyGrace/time.Second) + 1
+	if removed := cache.Sweep(past); removed != 1 {
+		t.Fatalf("swept %d sessions past the grace period, want 1", removed)
+	}
+	if cache.Len() != 0 {
+		t.Fatalf("cache holds %d sessions, want 0 — a wedged writer would grow it without bound", cache.Len())
+	}
+	if len(abandoned) != 1 {
+		t.Fatalf("reported %d abandoned sessions, want 1 — losing rows silently is the thing we do not do", len(abandoned))
+	}
+}
+
+// TestRedirtyStaysWithinItsAccount checks a failed write for one customer does
+// not rewrite another's rows. Session ids are allocated per account, so id 7
+// exists in every account database and matching on the id alone dirties
+// unrelated accounts on every rollback.
+func TestRedirtyStaysWithinItsAccount(t *testing.T) {
+	cache := NewSessionCache()
+
+	mine := event(EventPageview, 1000, "/")
+	mine.AccountID = 1
+	mineSession, _, _ := cache.Apply(&mine)
+
+	theirs := event(EventPageview, 1000, "/")
+	theirs.AccountID = 2
+	theirs.SiteID = testSite + 1
+	theirs.UserID = testUser + 1
+	theirsSession, _, _ := cache.Apply(&theirs)
+
+	// Both are written and clean, and both happen to hold the same id — which
+	// is the normal state of two accounts, not a contrived one.
+	cache.TakeDirty(1)
+	cache.TakeDirty(2)
+	theirsSession.ID = mineSession.ID
+
+	cache.Redirty(1, []*Session{{ID: mineSession.ID, AccountID: 1}})
+
+	if len(cache.TakeDirty(1)) != 1 {
+		t.Fatal("the failed account's session was not put back in its dirty set")
+	}
+	if got := len(cache.TakeDirty(2)); got != 0 {
+		t.Fatalf("dirtied %d sessions in an unrelated account, want 0", got)
+	}
+}
+
+// TestFoldIsOrderIndependentUnderMerges permutes every arrival order of streams
+// whose gaps force the out-of-order merge path. Retries reorder events against
+// fresh traffic, so a stream folded in any order has to produce the same row —
+// and the merge path is where that is hardest and least exercised.
+func TestFoldIsOrderIndependentUnderMerges(t *testing.T) {
+	type arrival struct {
+		timestamp   int64
+		name        string
+		path        string
+		interactive bool
+	}
+
+	streams := [][]arrival{
+		{{0, EventPageview, "/a", true}, {1800, EventPageview, "/b", true}, {3600, EventPageview, "/c", true}},
+		{{0, EventPageview, "/a", true}, {1800, EventEngagement, "", false}, {3600, EventPageview, "/c", true}},
+		{{0, EventPageview, "/a", true}, {1799, "signup", "", true}, {3598, EventPageview, "/c", true}},
+		{{0, EventPageview, "/a", true}, {1800, EventPageview, "/b", true}, {3600, EventEngagement, "", false}, {5400, EventPageview, "/d", true}},
+		{{0, EventPageview, "/a", true}, {900, EventPageview, "/b", true}, {2600, EventPageview, "/c", true}, {4300, EventPageview, "/d", true}},
+	}
+
+	// folded is the part of the cache a stored row is built from, flattened so
+	// two orderings can be compared as one value.
+	type folded struct {
+		started, lastSeen, pageviews, events int64
+		bounce                               bool
+		entry, exit, source                  string
+		sessions                             int
+	}
+
+	for n, arrivals := range streams {
+		var want folded
+		first := true
+
+		order := make([]int, len(arrivals))
+		for i := range order {
+			order[i] = i
+		}
+
+		var permute func(k int)
+		permute = func(k int) {
+			if k == len(order) {
+				cache := NewSessionCache()
+
+				for _, i := range order {
+					a := arrivals[i]
+					cache.Apply(&Event{
+						UUID:      uuid.NewSHA1(uuid.NameSpaceURL, []byte(itoa(int64(i)))),
+						AccountID: 1, SiteID: testSite, UserID: testUser,
+						Timestamp: a.timestamp, Name: a.name, Pathname: a.path,
+						Interactive: a.interactive, Source: a.path,
+					})
+				}
+
+				got := folded{}
+				for _, session := range cache.Snapshot() {
+					got.sessions++
+					if got.started == 0 || session.StartedAt < got.started {
+						got.started = session.StartedAt
+					}
+					if session.LastSeenAt > got.lastSeen {
+						got.lastSeen = session.LastSeenAt
+					}
+					got.pageviews += session.Pageviews
+					got.events += session.Events
+					got.bounce = got.bounce || session.IsBounce()
+					got.entry, got.exit, got.source = session.EntryPage, session.ExitPage, session.Source
+				}
+
+				if first {
+					want, first = got, false
+					return
+				}
+				if got != want {
+					t.Fatalf("stream %d: order %v folded to %+v, want %+v", n, order, got, want)
+				}
+
+				return
+			}
+
+			for i := k; i < len(order); i++ {
+				order[k], order[i] = order[i], order[k]
+				permute(k + 1)
+				order[k], order[i] = order[i], order[k]
+			}
+		}
+
+		permute(0)
 	}
 }
 

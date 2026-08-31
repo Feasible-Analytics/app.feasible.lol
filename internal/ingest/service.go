@@ -135,6 +135,28 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 	counters := NewCounters()
 	sessionCache := NewSessionCache()
 
+	// An engagement ping whose pageview never arrived is a real dropped event,
+	// and the sweep is the only place that fact is ever established — by the
+	// time it expires the response was sent half an hour ago, so the counter is
+	// the only way the customer hears about it at all.
+	sessionCache.OnOrphanExpired = func(event *Event) {
+		counters.Dropped(event.SiteID, ReasonNoSessionForEngage)
+
+		if opts.Log != nil {
+			opts.Log.EventReceived("", itoa(event.SiteID), "", ReasonNoSessionForEngage)
+		}
+	}
+
+	// A dirty session evicted long after its last event means a write never
+	// landed. That is data loss rather than housekeeping, so it is logged as an
+	// error even though nothing can be done about it here.
+	sessionCache.OnSessionAbandoned = func(session *Session) {
+		if opts.Log != nil {
+			opts.Log.Error("a session was evicted before its rows were written",
+				"site", session.SiteID, "session", session.ID, "events", session.Events)
+		}
+	}
+
 	writer := NewWriter(manager, sessionCache)
 	writer.Now = now
 

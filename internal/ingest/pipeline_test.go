@@ -14,8 +14,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/referrer"
 )
 
 // derive runs the pipeline over one payload and returns the debug view, which
@@ -328,6 +332,110 @@ type blockEverything struct{}
 
 // Blocked always blocks.
 func (blockEverything) Blocked(int64, netip.Addr) bool { return true }
+
+// TestSiteDomainCasingDoesNotSplitTheVisitor is the unrecoverable one. Routing
+// normalises the domain, so "Example.com", "www.example.com" and "example.com."
+// are all the same site — and the fingerprint has to hash that same normalised
+// string. Hashing the raw "d" field gives one visitor four identities on a site
+// whose pages disagree about their own spelling, forever, with no way to
+// recompute it from what was stored.
+func TestSiteDomainCasingDoesNotSplitTheVisitor(t *testing.T) {
+	h := newHandlerHarness(t)
+
+	userID := func(domain string) int64 {
+		t.Helper()
+
+		debug := derive(t, h, `{"n":"pageview","u":"https://example.com/","d":"`+domain+`"}`, nil)
+		if debug.SiteID != 1 {
+			t.Fatalf("domain %q resolved to site %d, want the fixture site", domain, debug.SiteID)
+		}
+
+		return debug.UserID
+	}
+
+	base := userID("example.com")
+
+	for _, spelling := range []string{"Example.com", "www.example.com", "EXAMPLE.COM", "example.com."} {
+		if got := userID(spelling); got != base {
+			t.Errorf("d=%q gives user_id %d and d=\"example.com\" gives %d — one site, one visitor, two identities",
+				spelling, got, base)
+		}
+	}
+}
+
+// TestOverlongPathIsNotCutMidEscape checks the truncation lands on a boundary.
+// Cutting "%C3%BC" in half leaves a path ending in "%C" that nothing can decode
+// and that groups as a page of its own on every report.
+func TestOverlongPathIsNotCutMidEscape(t *testing.T) {
+	// The escape is positioned so that the byte limit falls inside it.
+	for offset := 1; offset <= 3; offset++ {
+		path := "/" + strings.Repeat("a", MaxURLLength-offset) + "ü" + strings.Repeat("b", 50)
+
+		_, _, pathname, _, truncated := parseEventURL("https://example.com" + path)
+
+		if !truncated {
+			t.Fatalf("offset %d: a path over the limit was not reported as truncated", offset)
+		}
+		if len(pathname) > MaxURLLength {
+			t.Fatalf("offset %d: kept %d bytes, want at most %d", offset, len(pathname), MaxURLLength)
+		}
+
+		// Whatever survived has to be a path a decoder can still read.
+		if _, err := url.PathUnescape(pathname); err != nil {
+			t.Fatalf("offset %d: truncated path %q is no longer decodable: %v", offset, pathname[len(pathname)-8:], err)
+		}
+		if !utf8.ValidString(pathname) {
+			t.Fatalf("offset %d: truncated path is not valid UTF-8", offset)
+		}
+	}
+}
+
+// TestOnlyAcquisitionParametersAreKept checks the closed list is real rather
+// than a comment. A site that puts a session token or an email address in its
+// query string must not have it reach anything downstream, and the way to
+// guarantee that is for the parameter not to survive parsing at all.
+func TestOnlyAcquisitionParametersAreKept(t *testing.T) {
+	_, _, _, params, _ := parseEventURL(
+		"https://example.com/?utm_source=newsletter&ref=partner&gclid=abc&session_token=secret&email=nobody@example.com")
+
+	if got := params.Get("utm_source"); got != "newsletter" {
+		t.Errorf("utm_source = %q, want newsletter", got)
+	}
+	if got := params.Get("ref"); got != "partner" {
+		t.Errorf("ref = %q, want partner", got)
+	}
+
+	// The click id survives so the channel rules can see one was present. Its
+	// value is never stored — TestClickIDKeepsOnlyTheParameterName covers that.
+	if got := params.Get(referrer.ClickIDGoogle); got == "" {
+		t.Error("the click id parameter was dropped, so paid clicks stop being recognised")
+	}
+
+	for _, name := range []string{"session_token", "email"} {
+		if _, ok := params[name]; ok {
+			t.Errorf("%q survived parsing — nothing downstream should be able to read it", name)
+		}
+	}
+}
+
+// TestScreenSizeReachesTheEvent checks the viewport width the tracker reports
+// becomes the bucket the schema has a column for. The column exists and the
+// fold carries it, so a width that never arrives is a dimension that is always
+// empty and a report that cannot be built.
+func TestScreenSizeReachesTheEvent(t *testing.T) {
+	h := newHandlerHarness(t)
+
+	debug := derive(t, h, `{"n":"pageview","u":"https://example.com/","d":"example.com","w":390}`, nil)
+
+	if debug.ScreenSize != ScreenMobile {
+		t.Fatalf("screen_size = %q, want %q", debug.ScreenSize, ScreenMobile)
+	}
+
+	// An event with no width reported has no bucket rather than a made-up one.
+	if got := derive(t, h, pageview("https://example.com/"), nil).ScreenSize; got != "" {
+		t.Fatalf("screen_size = %q with no width reported, want empty", got)
+	}
+}
 
 // TestDeriveNeedsNoGeoDatabase checks the whole pipeline runs with geolocation
 // absent, which is what every fresh install looks like before the country

@@ -53,6 +53,21 @@ const (
 	EventEngagement = "engagement"
 )
 
+// The screen-size buckets. They are stored as text because that is what a
+// dimension row is, and naming them here keeps the tracker, the pipeline and
+// the dashboard from each inventing their own spelling of "Mobile".
+const (
+	ScreenMobile  = "Mobile"
+	ScreenTablet  = "Tablet"
+	ScreenLaptop  = "Laptop"
+	ScreenDesktop = "Desktop"
+
+	// MaxScreenWidth is the largest width worth believing. Anything past it is
+	// a broken client rather than a display, and letting it through would put
+	// a bucket on the dashboard that no visitor has.
+	MaxScreenWidth = 20000
+)
+
 // ScrollDepthUnset is the stored value for "never reported". It sits outside
 // the 0-100 range a real measurement can take, so an average of real scroll
 // depths never has to exclude a NULL.
@@ -74,6 +89,7 @@ type Payload struct {
 	Revenue  json.RawMessage `json:"$"`  // revenue object
 	Scroll   *json.Number    `json:"sd"` // scroll depth, 0-100
 	Engage   *json.Number    `json:"e"`  // engagement time, milliseconds
+	Width    *json.Number    `json:"w"`  // viewport width in CSS pixels — our addition
 
 	// Interactive defaults to true when absent, which is what an ordinary
 	// pageview is. It is a pointer so "absent" and "explicitly false" stay
@@ -113,6 +129,12 @@ type Truncation struct {
 	PropNamesTruncated  int
 	PropValuesTruncated int
 
+	// PropsUnsupported counts properties whose value was an object, an array
+	// or null. Nothing is stored for them, so they are counted for the same
+	// reason the thirty-first property is: a value that vanishes without a
+	// number beside it is a support ticket nobody can answer.
+	PropsUnsupported int
+
 	// URLTruncated reports that the path was longer than the limit.
 	URLTruncated bool
 
@@ -125,7 +147,7 @@ type Truncation struct {
 // bookkeeping in the overwhelmingly common case where nothing was.
 func (t Truncation) Any() bool {
 	return t.PropsDropped > 0 || t.PropNamesTruncated > 0 || t.PropValuesTruncated > 0 ||
-		t.URLTruncated || t.EngagementClamped
+		t.PropsUnsupported > 0 || t.URLTruncated || t.EngagementClamped
 }
 
 // ParsePayload decodes a request body. It accepts anything that is valid JSON
@@ -185,6 +207,36 @@ func (p *Payload) ScrollDepth() int {
 	}
 
 	return int(value)
+}
+
+// ScreenSize returns the viewport bucket for the reported width, or the empty
+// string when nothing usable was sent. It is bucketed here rather than stored
+// as pixels because a dimension table keyed on raw widths grows a row per
+// device and answers no question anybody asks: what a report is for is "how
+// does this page do on a phone".
+//
+// The boundaries are the breakpoints layouts are already written against, so
+// the buckets line up with the CSS the customer wrote.
+func (p *Payload) ScreenSize() string {
+	if p.Width == nil {
+		return ""
+	}
+
+	value, err := p.Width.Float64()
+	if err != nil || math.IsNaN(value) || value <= 0 || value > MaxScreenWidth {
+		return ""
+	}
+
+	switch width := int(value); {
+	case width < 576:
+		return ScreenMobile
+	case width < 992:
+		return ScreenTablet
+	case width < 1440:
+		return ScreenLaptop
+	default:
+		return ScreenDesktop
+	}
 }
 
 // EngagementTime returns the engagement time in milliseconds, and whether it
@@ -280,6 +332,10 @@ func ParseProps(raw json.RawMessage) (map[string]string, Truncation, error) {
 
 		value, ok := propValue(decoded[name])
 		if !ok {
+			// The property was sent and nothing is stored for it. Counting it
+			// is the difference between a customer seeing "we could not keep
+			// this" and a filter value that simply never appears.
+			truncation.PropsUnsupported++
 			continue
 		}
 

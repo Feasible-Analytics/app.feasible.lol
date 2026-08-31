@@ -67,6 +67,13 @@ type accountLock struct {
 	// everything else.
 	pending map[uuid.UUID]int64
 
+	// deferred holds rows for engagement pings that were adopted out of the
+	// orphan map by a batch whose transaction then failed. Adoption is not
+	// undoable — the pings are gone from the cache and were never in the
+	// batch — so the rows are carried here until a transaction commits them.
+	// Without it their events rows are never written at all.
+	deferred []eventRow
+
 	lastPruned time.Time
 }
 
@@ -183,11 +190,13 @@ func (w *Writer) writeAccount(ctx context.Context, accountID int64, events []Eve
 	committed := make([]uuid.UUID, 0, len(events))
 	committed = append(committed, duplicates...)
 
-	if len(fresh) == 0 {
-		return committed, nil
-	}
+	// Rows carried over from a failed commit go first: they are the oldest
+	// events in the batch and nothing else will ever bring them back.
+	carried := state.deferred
+	rows := make([]eventRow, 0, len(fresh)+len(carried))
+	rows = append(rows, carried...)
 
-	rows := make([]eventRow, 0, len(fresh))
+	var adopted []eventRow
 
 	for i := range fresh {
 		event := &fresh[i]
@@ -214,12 +223,20 @@ func (w *Writer) writeAccount(ctx context.Context, accountID int64, events []Eve
 		// a retry delivered the batch in.
 		for _, ping := range revived {
 			state.pending[ping.UUID] = session.ID
-			rows = append(rows, eventRow{event: ping, sessionID: session.ID})
+			row := eventRow{event: ping, sessionID: session.ID}
+			rows = append(rows, row)
+			adopted = append(adopted, row)
 		}
 	}
 
 	dirty := w.sessions.TakeDirty(accountID)
 	merges := w.sessions.TakeMerges(accountID)
+
+	// Nothing to do is the common shape of a retried batch the shard has
+	// already seen, and it must not cost a transaction.
+	if len(rows) == 0 && len(dirty) == 0 && len(merges) == 0 {
+		return committed, nil
+	}
 
 	// Interning may insert a dimension row, so it has to finish before the
 	// transaction takes the single write connection.
@@ -232,9 +249,18 @@ func (w *Writer) writeAccount(ctx context.Context, accountID int64, events []Eve
 		// The fold already happened in memory. Putting the sessions back in the
 		// dirty set and keeping the pending ids is what makes the retry write
 		// the same rows rather than folding them a second time.
-		w.sessions.Redirty(dirty)
+		w.sessions.Redirty(accountID, dirty)
+
+		// The pings adopted by this attempt are no longer in the orphan map and
+		// are not in the batch the sender will retry, so this is the only place
+		// they still exist. Holding them is what makes adoption survive a
+		// rollback instead of losing their rows for good.
+		state.deferred = append(carried, adopted...)
+
 		return committed, err
 	}
+
+	state.deferred = nil
 
 	for i := range rows {
 		delete(state.pending, rows[i].event.UUID)
