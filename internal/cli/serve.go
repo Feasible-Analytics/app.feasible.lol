@@ -103,12 +103,24 @@ func runServe(e *env, args []string) int {
 		e.log.Info(reason)
 	}
 
-	server := httpserver.New("app", e.cfg.App.Listen, serveRoutes(e, service, manager, secret, e.cfg.App.DataDir, app))
+	// The public API, the MCP server and the webhook worker are built here and
+	// in every build. There is no plan check and no build tag in front of any
+	// of them, which is the difference between this and the product it competes
+	// with: their self-hosted build inherited a subscription check and showed
+	// people a paywall on their own instance.
+	public := buildPublic(e, control, service.Sites, manager)
+
+	// The worker's lifetime is tied to the process rather than to a request, so
+	// it gets a context of its own that shutdown cancels.
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	public.startWorker(workerCtx, e)
+
+	server := httpserver.New("app", e.cfg.App.Listen, serveRoutes(e, service, manager, secret, e.cfg.App.DataDir, app, public))
 
 	pruneCtx, stopPrune := context.WithCancel(context.Background())
 	go app.RunPrune(pruneCtx)
 
-	return serveUntilSignal(e, server, service, func() error { stopPrune(); return nil }, manager.CloseAll, control.Close)
+	return serveUntilSignal(e, server, service, func() error { stopPrune(); stopWorker(); return nil }, manager.CloseAll, control.Close)
 }
 
 // buildApp assembles the server-rendered application.
@@ -163,7 +175,7 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 // stats API the dashboard runs on, the server-rendered application, and — with
 // the direct transport — the ingest endpoint, which this process serves rather
 // than a separate tier.
-func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, secret []byte, dataDir string, app http.Handler) http.Handler {
+func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, secret []byte, dataDir string, app http.Handler, public *publicStack) http.Handler {
 	mux := http.NewServeMux()
 
 	// The signed-in application is mounted at the root, so it owns every path
@@ -193,7 +205,10 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, dashboard.PathPrefix, http.StatusFound)
 	})
-
+	// /api/v1/*, /api/v2/*, /mcp and the OAuth endpoints. They are mounted on
+	// their own prefixes rather than at the root because /api/event and the
+	// tracker script must not sit behind a bearer-token check.
+	public.mount(mux)
 	// The script is served by the app rather than the ingest tier because it is
 	// a cacheable static asset with a database lookup behind it, and putting
 	// that on the front door would make the busiest process in the system do

@@ -209,6 +209,29 @@ func resolveDimension(name string) (dimension, error) {
 	return found, nil
 }
 
+// ValidDimension reports whether a name is something a query may group by or
+// filter on, returning the engine's own caller-facing message when it is not.
+//
+// It exists so the public API can refuse a mistyped dimension while it is still
+// a query-string parameter, with the same wording the engine would have used
+// three layers down. Validating once, in the engine, would still be correct —
+// but it would mean the API cannot answer "which of these parameters is wrong"
+// until after it has built a query it already knows will fail.
+func ValidDimension(name string) error {
+	_, err := resolveDimension(name)
+
+	return err
+}
+
+// ValidMetric is the same check for a metric name.
+func ValidMetric(name string) error {
+	if _, ok := metricByName(name); !ok {
+		return invalid("unknown metric %q — known metrics are %s", name, strings.Join(MetricNames(), ", "))
+	}
+
+	return nil
+}
+
 // DimensionNames lists every fixed dimension, sorted. It is what the error
 // message for an unknown one prints, because "unknown dimension" without the
 // list means a round trip to the documentation for a typo.

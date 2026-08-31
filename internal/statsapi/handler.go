@@ -83,10 +83,12 @@ type errorBody struct {
 
 // ServeHTTP answers one query.
 //
-// TODO(M7): this endpoint is open. Authentication and the site-level
-// authorisation check belong in front of it — the same handler becomes the
-// public /api/v2/query with an API key in front — and until that milestone
-// lands, anybody who can reach the port can read any site's stats.
+// This handler carries no authentication of its own. The public API mounts this
+// exact instance behind an API key as POST /api/v2/query, resolving the site and
+// checking the key's team before delegating — which is why the public endpoint
+// can never disagree with the dashboard about a number. On its own path it is
+// still open, so anybody who can reach the port can read any site's stats: the
+// dashboard's session check belongs in front of it.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		h.fail(w, http.StatusMethodNotAllowed, "POST a query to this endpoint")
