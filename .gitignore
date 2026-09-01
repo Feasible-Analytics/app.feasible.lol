@@ -32,6 +32,7 @@ ecosystem/**/*.gem
 # Browser automation scratch (see global CLAUDE.md)
 .playwright/
 .playwright-cli/
+.playwright-mcp/
 
 # macOS
 .DS_Store
