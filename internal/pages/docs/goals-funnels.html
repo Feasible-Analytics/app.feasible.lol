@@ -1,38 +1,111 @@
-<h3>Goals</h3>
-<p>A goal is one of two things: a page somebody reached, or a custom event they sent.</p>
+<p><strong>Availability.</strong> The counting engine described here is built and its behaviour is
+final, and the API routes exist with their final shapes. What is not wired up yet is the screen you
+would manage goals from, and the handlers behind
+<code>/api/v1/sites/goals</code> and the funnel tools — they answer <code>501</code> today, naming
+the feature rather than pretending the URL is wrong. This page describes how they count, so that when
+they arrive nothing about the numbers is a surprise. Everything else in these docs describes something
+you can use now.</p>
 
-<p>A <strong>pageview goal</strong> matches a path, optionally with wildcards —
-<code>/checkout/thank-you</code>, or <code>/blog/**</code>. It costs nothing towards your monthly
-volume, because the pageview it matches has already been counted.</p>
+<h3>Goals</h3>
+<p>A goal is one of exactly two things: a page somebody reached, or a custom event they sent. There is
+no third kind and there is not going to be one.</p>
+
+<p>A <strong>pageview goal</strong> matches a path, optionally with wildcards:
+<code>/checkout/thank-you</code>, or <code>/blog/**</code>. <code>*</code> stays inside one path
+segment and <code>**</code> crosses them, so <code>/blog/*</code> is the posts directly under
+<code>/blog</code> and <code>/blog/**</code> is everything beneath it. The pattern is anchored at both
+ends, so <code>/pricing</code> does not match <code>/enterprise-pricing-guide</code>. It costs nothing
+towards your monthly volume, because the pageview it matches was already counted.</p>
 
 <p>A <strong>custom event goal</strong> matches an event you send by name:</p>
-<pre><code>window.feasible('Signup')
-window.feasible('Purchase', { revenue: { amount: 49.00, currency: 'USD' } })</code></pre>
-<p>Custom events do count towards your monthly volume, because each one is an event we
-received and stored.</p>
+<pre><code>feasible('Signup')
+feasible('Purchase', { revenue: { amount: 49.00, currency: 'USD' } })</code></pre>
+<p>Custom events do count towards your monthly volume, because each one is an event we received and
+stored.</p>
+
+<p>Either kind can be narrowed by up to <strong>three property constraints</strong>, and those are
+plain equality — <code>plan = yearly</code>, not <code>plan contains y</code>. If you find yourself
+wanting an operator there, the thing you want is a filter on the report, not a different goal.</p>
+
+<h3>Every site gets four goals for free</h3>
+<p>Because the tracker can already see these without you writing any code:</p>
+<ul>
+  <li><code>404</code> — <strong>404 pages</strong></li>
+  <li><code>Outbound Link: Click</code> — <strong>Outbound link clicks</strong></li>
+  <li><code>File Download</code> — <strong>File downloads</strong></li>
+  <li><code>Form: Submit</code> — <strong>Form submissions</strong></li>
+</ul>
+<p>They are created with the site rather than when the first matching event arrives, because a goal
+that springs into being with the traffic would start counting after the thing you were trying to
+measure. They stay hidden from the report until they have at least one conversion, so a site that
+never sends a 404 event does not carry an empty row forever.</p>
 
 <h3>Goals start when you create them</h3>
-<p>This is the single most common surprise, so it has its own paragraph. A goal is evaluated
-as events arrive, not retroactively over your history. Creating a goal today gives you a
-number that starts at zero today. If you need it for a campaign, create it before the
-campaign starts.</p>
+<p>This is the single most common surprise, so it gets its own heading. A goal is evaluated as events
+arrive, not retroactively over your history — the historic events were never tested against a rule
+that did not exist. Creating a goal today gives you a number that starts at zero today.</p>
+<p>A report over a range that begins before the goal did says so, and gives you the date it actually
+starts from, rather than quietly showing a smaller number. There is a
+<a href="/docs/metrics">worked example</a> on the metrics page.</p>
+<p>Creating the same goal twice is a no-op that hands you back the one you already had — including its
+original creation date. You cannot restart a goal's history by recreating it, and renaming one never
+moves it.</p>
 
-<h3>Funnels</h3>
-<p>A funnel is an ordered list of goals, and it counts visitors who completed each step in
-order within one visit. Two rules follow from that and both matter:</p>
+<h3>What a goal report shows</h3>
 <ul>
-  <li>A visitor who completes step three without step two is not in the funnel at step three.
-      Skipping a step means leaving the funnel.</li>
-  <li>A funnel is scoped to a visit. Somebody who signs up on Monday and buys on Thursday is
-      two visits, and does not complete a funnel that contains both. Measure that with a goal
-      pair rather than a funnel.</li>
+  <li><strong>Unique conversions</strong> — once per visit, however many times it happened.</li>
+  <li><strong>Total conversions</strong> — every matching event.</li>
+  <li><strong>Converted visitors</strong>, and the <strong>conversion rate</strong>: converted
+      visitors over all visitors in the period.</li>
+  <li><strong>Revenue</strong>, <strong>average revenue</strong> and <strong>revenue per
+      visitor</strong>, when the goal carries money.</li>
 </ul>
 
-<p>Funnel steps are evaluated by the same event stream everything else reads, so a funnel
-built today over goals created last month is complete from the day each goal was created —
-never from before it.</p>
+<h3>Funnels</h3>
+<p>A funnel is an ordered list of goals — at least <strong>two</strong> steps and at most
+<strong>eight</strong> — and it counts visitors by how far they got.</p>
+<p>Three rules follow from how it is walked, and all three matter:</p>
+<ul>
+  <li><strong>A funnel is scoped to one visit.</strong> Somebody who signs up on Monday and buys on
+      Thursday is two visits and completes nothing. Measure that with a pair of goals rather than a
+      funnel.</li>
+  <li><strong>Order is a setting, not a law.</strong> With strict order on, the steps have to happen
+      in sequence and skipping one means leaving the funnel. With it off, a visit counts if it did all
+      of them in any order. Pick deliberately: a checkout is strict, a "did they do all three of these
+      things" is not.</li>
+  <li><strong>One event advances at most one step.</strong> A wildcard goal and the exact page beneath
+      it cannot both be satisfied by the same pageview, which is what stops a funnel completing itself
+      on a single load.</li>
+</ul>
+<p>Each step reports visitors, visits, drop-off against the step before it, and conversion rate
+against the first step. A funnel's measured window starts at the creation date of its
+<em>newest</em> goal, and it says so — otherwise adding a step to an old funnel would render as a
+cliff that never happened.</p>
+
+<h3>Journeys</h3>
+<p>For one page, a journey report answers "what happens either side of this". It lists the pages and
+the events that immediately preceded and immediately followed it within the same visit, up to twenty
+each way, with the page's own views and visitors alongside so every percentage has its denominator in
+the same answer.</p>
+<p>Two things are deliberate. Visits that started or ended on the page appear as rows called
+<code>(entry)</code> and <code>(exit)</code> rather than being left out, because "most people leave
+here" is the most useful thing such a report can tell you. And trailing slashes are not normalised:
+<code>/about/</code> and <code>/about</code> stay two rows, matching what Top Pages shows you.</p>
 
 <h3>Revenue</h3>
-<p>Revenue is attached to a custom event with an amount and a currency. It is stored exactly
-as sent and never converted at write time, so a change in exchange rates can never rewrite a
-past quarter. Conversion, if you want it, happens at read time and shows the rate it used.</p>
+<p>Revenue rides on a custom event, as an amount and an ISO 4217 currency:</p>
+<pre><code>feasible('Purchase', { revenue: { amount: 49.00, currency: 'USD' } })</code></pre>
+<p>It is stored in minor units — cents, pence — and never converted when it is written, so a change in
+exchange rates cannot rewrite a past quarter. Conversion happens at read time.</p>
+<p>Three consequences worth knowing:</p>
+<ul>
+  <li>If a range holds more than one currency and you have not said which one to total in, the query
+      is <strong>refused</strong> with a message naming the currencies it found. Adding numbers in
+      different currencies and calling it a total is worse than an error.</li>
+  <li>Money we could not convert for want of a rate is reported as a warning naming how much was left
+      out, rather than being silently dropped from the total.</li>
+  <li>Rounding happens once, on the total — not on every event and then again on the sum.</li>
+</ul>
+<p><strong>Revenue is credited to the source that started the visit</strong>, not to the last page
+before payment. Your payment provider therefore never appears in your sources report, even though
+visitors come back through it.</p>

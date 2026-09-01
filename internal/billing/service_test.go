@@ -10,20 +10,20 @@ package billing
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/stripe"
 )
 
-// TestDeleteCustomerDoesNotCallMissingConfigurationSuccess ensures a durable
-// provider identity remains pending when credentials are unavailable. An empty
-// identity is the only configuration-independent no-op.
-func TestDeleteCustomerDoesNotCallMissingConfigurationSuccess(t *testing.T) {
+// TestDeleteCustomerRequiresConfiguredCredentials proves self-hosting without
+// Stripe is valid only when the account has no retained provider identity.
+func TestDeleteCustomerRequiresConfiguredCredentials(t *testing.T) {
 	service := &Service{Stripe: stripe.New("")}
-	if err := service.DeleteCustomer(context.Background(), "cus_still_live"); err == nil {
-		t.Fatal("an unconfigured provider reported a nonempty customer deletion as successful")
-	}
 	if err := service.DeleteCustomer(context.Background(), ""); err != nil {
-		t.Fatalf("an empty provider identity was not a no-op: %v", err)
+		t.Fatalf("empty provider identity should need no external cleanup: %v", err)
+	}
+	if err := service.DeleteCustomer(context.Background(), "cus_retry"); err == nil || !strings.Contains(err.Error(), "without Stripe credentials") {
+		t.Fatalf("unconfigured provider identity error = %v", err)
 	}
 }

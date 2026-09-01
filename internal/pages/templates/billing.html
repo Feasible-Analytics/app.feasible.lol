@@ -2,8 +2,8 @@
 <div class="wrap">
 
   <div class="hero">
-    <h1>Billing</h1>
-    <p>{{ .Account.Name }} — what you are using, what you are paying, and what happens next.</p>
+    <h1>{{ t .Lang "pages.nav.billing" }}</h1>
+    <p>{{ t .Lang "pages.billing.subtitle" "account" .Account.Name }}</p>
   </div>
 
   {{ with .Status }}
@@ -15,30 +15,31 @@
 
   <section>
     <div class="panel">
-      <h2 style="margin-top:0">Usage this month</h2>
+      <h2 style="margin-top:0">{{ t .Lang "pages.billing.usage.heading" }}</h2>
       <div class="meter {{ .Usage.Tone }}"><span style="width:{{ .Usage.BarWidth }}%"></span></div>
       <div class="numbers">
-        <div><div class="k">Billable</div><div class="v">{{ .Usage.Billable }}</div></div>
-        <div><div class="k">Included</div><div class="v">{{ .Usage.Limit }}</div></div>
-        <div><div class="k">Used</div><div class="v">{{ .Usage.Percent }}%</div></div>
+        <div><div class="k">{{ t .Lang "pages.billing.usage.billable" }}</div><div class="v">{{ .Usage.Billable }}</div></div>
+        <div><div class="k">{{ t .Lang "pages.billing.usage.included" }}</div><div class="v">{{ .Usage.Limit }}</div></div>
+        <div><div class="k">{{ t .Lang "pages.billing.usage.used" }}</div><div class="v">{{ .Usage.Percent }}%</div></div>
         {{ if .Usage.Projected }}
-        <div><div class="k">Month-end estimate</div><div class="v">{{ .Usage.Projected }}</div></div>
+        <div><div class="k">{{ t .Lang "pages.billing.usage.projected" }}</div><div class="v">{{ .Usage.Projected }}</div></div>
         {{ end }}
       </div>
-      <p style="color:var(--muted);margin-top:14px">
-        Billable means pageviews plus custom events, across every site on this account, for
-        the calendar month in UTC. Engagement pings and pageview goals are not counted —
-        they would be charging you twice for something you already sent.
-      </p>
+      <p style="color:var(--muted);margin-top:14px">{{ t .Lang "pages.billing.usage.note" }}</p>
     </div>
   </section>
 
   {{ if .History }}
   <section>
-    <h2>The last few months</h2>
+    <h2>{{ t .Lang "pages.billing.history.heading" }}</h2>
     <div class="panel scroll">
       <table>
-        <thead><tr><th>Month</th><th class="num">Pageviews</th><th class="num">Custom events</th><th class="num">Billable</th></tr></thead>
+        <thead><tr>
+          <th>{{ t $.Lang "pages.billing.history.month" }}</th>
+          <th class="num">{{ t $.Lang "pages.billing.history.pageviews" }}</th>
+          <th class="num">{{ t $.Lang "pages.billing.history.custom_events" }}</th>
+          <th class="num">{{ t $.Lang "pages.billing.history.billable" }}</th>
+        </tr></thead>
         <tbody>
         {{ range .History }}
           <tr>
@@ -55,52 +56,51 @@
   {{ end }}
 
   <section>
-    <h2>Your plan</h2>
+    <h2>{{ t .Lang "pages.billing.plan.heading" }}</h2>
     <div class="grid two">
       <div class="panel">
         <div class="numbers">
-          <div><div class="k">Plan</div><div class="v">{{ .Plan.Label }}</div></div>
-          <div><div class="k">Status</div><div class="v">{{ .Plan.Status }}</div></div>
-          {{ if .Plan.PaymentState }}<div><div class="k">Payment</div><div class="v">{{ .Plan.PaymentState }}</div></div>{{ end }}
+		  <div><div class="k">{{ t .Lang "pages.billing.plan.plan" }}</div><div class="v">{{ .Plan.Label }}</div></div>
+		  <div><div class="k">{{ t .Lang "pages.billing.plan.status" }}</div><div class="v">{{ .Plan.Status }}</div></div>
+		  {{ if .Plan.PaymentState }}<div><div class="k">Payment</div><div class="v">{{ .Plan.PaymentState }}</div></div>{{ end }}
         </div>
         {{ if .Plan.RenewsOn }}
         <p style="margin-top:14px;color:var(--muted)">
-          {{ if .Plan.CancelAtPeriodEnd }}Ends on {{ .Plan.RenewsOn }}.{{ else }}Renews on {{ .Plan.RenewsOn }}.{{ end }}
+          {{ if .Plan.CancelAtPeriodEnd }}{{ t .Lang "pages.billing.plan.ends" "date" .Plan.RenewsOn }}{{ else }}{{ t .Lang "pages.billing.plan.renews" "date" .Plan.RenewsOn }}{{ end }}
         </p>
         {{ end }}
         {{ if .Plan.HasCustomer }}
         <form method="POST" action="/billing/portal" style="margin-top:14px">
-          <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
-          <input type="hidden" name="team" value="{{ .TeamID }}">
-          <button class="btn inline" type="submit">Manage card, invoices and plan</button>
+		  <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+		  <input type="hidden" name="team" value="{{ .TeamID }}">
+		  <button class="btn inline" type="submit">{{ t .Lang "pages.billing.plan.portal" }}</button>
         </form>
         {{ else }}
-        <p style="margin-top:14px;color:var(--muted)">No card on file. Nothing has been charged and no
-           customer record exists with our payment provider.</p>
+        <p style="margin-top:14px;color:var(--muted)">{{ t .Lang "pages.billing.plan.no_card" }}</p>
         {{ end }}
       </div>
 
       <div class="panel plan">
-        <div class="per">Upgrade</div>
-        <div class="price">$9.99<span class="per"> / month</span></div>
-        <div class="per">or $100 a year <span class="save">2 months free</span></div>
+        <div class="per">{{ t .Lang "pages.billing.upgrade.label" }}</div>
+        <div class="price">$9.99<span class="per"> {{ t .Lang "pages.billing.upgrade.per_month" }}</span></div>
+        <div class="per">{{ t .Lang "pages.billing.upgrade.or_yearly" }} <span class="save">{{ t .Lang "pages.pricing.yearly.saving" }}</span></div>
         <ul>
-          <li>1,000,000 pageviews + custom events</li>
-          <li>Unlimited sites, members and retention</li>
-          <li>Every feature, no add-ons</li>
+          <li>{{ t .Lang "pages.plan.volume" "limit" .Usage.Limit }}</li>
+          <li>{{ t .Lang "pages.billing.upgrade.unlimited" }}</li>
+          <li>{{ t .Lang "pages.billing.upgrade.features" }}</li>
         </ul>
         <div style="display:flex;gap:10px">
           <form method="POST" action="/billing/checkout" style="flex:1">
             <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
             <input type="hidden" name="team" value="{{ .TeamID }}">
             <input type="hidden" name="plan" value="monthly">
-            <button class="btn" type="submit" {{ if not .Enabled }}disabled{{ end }}>Monthly</button>
+			<button class="btn" type="submit" {{ if not .Enabled }}disabled{{ end }}>{{ t .Lang "pages.billing.upgrade.monthly" }}</button>
           </form>
           <form method="POST" action="/billing/checkout" style="flex:1">
             <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
             <input type="hidden" name="team" value="{{ .TeamID }}">
             <input type="hidden" name="plan" value="yearly">
-            <button class="btn alt" type="submit" {{ if not .Enabled }}disabled{{ end }}>Yearly</button>
+			<button class="btn alt" type="submit" {{ if not .Enabled }}disabled{{ end }}>{{ t .Lang "pages.billing.upgrade.yearly" }}</button>
           </form>
         </div>
       </div>
@@ -109,7 +109,7 @@
 
   {{ if .Timeline }}
   <section>
-    <h2>What happens next</h2>
+    <h2>{{ t .Lang "pages.billing.next.heading" }}</h2>
     <div class="panel">
       <ul class="timeline">
         {{ range .Timeline }}
@@ -121,21 +121,19 @@
   {{ end }}
 
   <section>
-    <h2>Your data</h2>
+    <h2>{{ t .Lang "pages.billing.data.heading" }}</h2>
     <div class="panel">
-      <p>Export works in every phase of an account's life, including the day before deletion.
-         It is your data and portability is not conditional on payment.</p>
-      <a class="btn alt inline" href="/billing/export?team={{ .TeamID }}">Download everything</a>
+	  <p>{{ t .Lang "pages.billing.data.body" }}</p>
+	  <a class="btn alt inline" href="/billing/export?team={{ .TeamID }}">{{ t .Lang "pages.billing.data.cta" }}</a>
     </div>
   </section>
 
   {{ if .Growing }}
   <section>
-    <h2>Growing past a million</h2>
+    <h2>{{ t .Lang "pages.billing.growing.heading" }}</h2>
     <div class="panel">
-      <p>You are close to, or past, the volume included in the plan. Nothing breaks and
-         nothing is deleted — but there is usually a better arrangement at this size.</p>
-      <a class="btn inline" href="mailto:{{ .SalesEmail }}?subject=Enterprise%20volume%20for%20{{ .Account.Name }}">Email {{ .SalesEmail }}</a>
+      <p>{{ t .Lang "pages.billing.growing.body" }}</p>
+      <a class="btn inline" href="mailto:{{ .SalesEmail }}?subject={{ t .Lang "pages.billing.growing.subject" "account" .Account.Name }}">{{ t .Lang "pages.pricing.volume.cta" "email" .SalesEmail }}</a>
     </div>
   </section>
   {{ end }}

@@ -1212,6 +1212,66 @@ func TestPurchaseIntentSurvivesAuthentication(t *testing.T) {
 	})
 }
 
+// TestLanguageSurvivesAuthFormsRedirectsAndValidation drives explicit German
+// state through signed-out links, a validation response, an auth detour, and a
+// successful login while proving an unsafe next target is discarded.
+func TestLanguageSurvivesAuthFormsRedirectsAndValidation(t *testing.T) {
+	app := newTestApp(t)
+	c := newClient(t, app)
+
+	body := c.body("/login?lang=de&next=%2Fsettings")
+	for _, want := range []string{`action="/login?lang=de"`, `href="/forgot-password?lang=de"`, "Willkommen zurück"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("German login page is missing %q", want)
+		}
+	}
+
+	response := c.post("/login?lang=de", url.Values{
+		"email": {"nobody@example.com"}, "password": {"wrong password"},
+	})
+	invalidBody, _ := io.ReadAll(response.Body)
+	closeResponseBody(t, response)
+	if response.StatusCode != http.StatusUnauthorized || !strings.Contains(string(invalidBody), `action="/login?lang=de"`) || !strings.Contains(string(invalidBody), "passen zu keinem Konto") {
+		t.Fatalf("validation response lost German state: status=%d body=%s", response.StatusCode, invalidBody)
+	}
+
+	response = c.get("/settings?lang=de")
+	closeResponseBody(t, response)
+	if location := response.Header.Get("Location"); location != "/login?lang=de&next=%2Fsettings%3Flang%3Dde" {
+		t.Fatalf("auth detour location = %q", location)
+	}
+
+	verified := registerAndVerify(t, app)
+	response = verified.post("/logout?lang=de", url.Values{})
+	closeResponseBody(t, response)
+	response = verified.post("/login?lang=de", url.Values{
+		"email": {"person@example.com"}, "password": {"a long enough password"}, "next": {"//evil.example/path"},
+	})
+	closeResponseBody(t, response)
+	if location := response.Header.Get("Location"); location != "/sites?lang=de" {
+		t.Fatalf("unsafe next produced location %q, want local German sites route", location)
+	}
+}
+
+// TestSafeNextRejectsHostLikePaths covers raw and percent-encoded browser
+// normalisations while preserving an ordinary same-origin path and query.
+func TestSafeNextRejectsHostLikePaths(t *testing.T) {
+	tests := map[string]string{
+		"https://evil.example/path": "/sites",
+		"//evil.example/path":       "/sites",
+		`/\evil.example/path`:       "/sites",
+		"/%5c%5cevil.example/path":  "/sites",
+		"/%2f%2fevil.example/path":  "/sites",
+		"/settings?tab=security":    "/settings?tab=security",
+	}
+
+	for input, want := range tests {
+		if got := safeNext(input); got != want {
+			t.Errorf("safeNext(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 // TestALockedAccountGetsTheSitesListWithoutItsNumbers is the last place a
 // locked account could still read its own traffic.
 //

@@ -1,0 +1,131 @@
+<!--
+dashboard.html
+The dashboard documentation body.
+
+Created: 2026-08-31
+Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+<p>One screen, no report picker, no menu of saved views to get lost in. Everything is on it and
+everything is filterable by clicking.</p>
+
+<h3>The numbers along the top</h3>
+<p>Six figures: <strong>Unique visitors</strong>, <strong>Total visits</strong>, <strong>Total
+pageviews</strong>, <strong>Views per visit</strong>, <strong>Bounce rate</strong> and <strong>Visit
+duration</strong>. The first three are clickable and become the line on the graph. The other three are
+not, because they describe a whole visit rather than a moment, and a line chart of them would be a
+picture of nothing.</p>
+<p>Each one carries its change against the comparison period. Rising is not always good: for bounce
+rate and exit rate the colours are inverted, so an increase is red.</p>
+
+<h3>The five reports</h3>
+<ul>
+  <li><strong>Top Sources</strong> — Channels, Sources, and Campaigns broken down by source, medium or
+      campaign. The campaign tabs exclude untagged traffic, so the numbers there are about campaigns
+      rather than mostly about Direct.</li>
+  <li><strong>Top Pages</strong> — Top Pages, Entry Pages, Exit Pages.</li>
+  <li><strong>Locations</strong> — a world map, then Countries, Regions and Cities.</li>
+  <li><strong>Devices</strong> — Browsers and Systems, each with a version tab, and Devices by type or
+      screen size.</li>
+  <li><strong>Languages</strong> — the browser's primary language.</li>
+</ul>
+<p>Each card shows nine rows. <strong>Details</strong> opens a drawer with a hundred rows a page, a
+search box, five sortable columns — Visitors, Visits, Views, Bounce, Avg. visit — and a
+<strong>Break down by</strong> selector that splits any row by country, city, device, screen size,
+browser, operating system, language, channel or source.</p>
+
+<h3>The map</h3>
+<p>It is drawn from country outlines compiled into the page — no mapping library, no tiles fetched
+from anybody, nothing that could report your visitors to a third party. Shading is on a logarithmic
+scale in five steps, because country traffic is never uniform and a linear ramp paints the whole world
+one pale colour.</p>
+<p>A country with no visitors is drawn in a distinctly different shade from a country with one: an
+empty map and a quiet map have to be different pictures. Click a country to filter by it. Tab order
+follows traffic, so the busiest country is the first one you reach. The legend says how many countries
+are on the map and, when it applies, how many had traffic but are too small to draw at that scale —
+the Countries tab lists every one.</p>
+
+<h3>Filtering, and the URL</h3>
+<p>Click any row to filter by it, click it again to remove it, or use <strong>+ Filter</strong> for
+one of six operators: is, is not, contains, does not contain, matches regex, does not match regex.
+Clicking a second row of the same dimension replaces the filter rather than stacking an impossible
+one.</p>
+<p><strong>The whole state of the screen is in the URL</strong> — filters, period, comparison, which
+drawer is open, its page, its sort and its search. So a link you paste into a chat opens the same
+screen for the person who reads it, and the back button does what the back button should:</p>
+<pre><code>/dashboard/example.com?period=7d&amp;f=is,country,DE&amp;f=is,device,Mobile&amp;details=sources:sources</code></pre>
+<p>Each <code>f=</code> is <code>operator,dimension,value…</code>. Repeated <code>f=</code> parameters
+AND together; several values inside one OR together, so <code>f=is,country,DE,FR,GB</code> is "any of
+those three". A comma inside a value is escaped with a backslash. Up to 32 filters.</p>
+
+<h3>Comparison</h3>
+<p>Off, <strong>Previous period</strong>, or <strong>Year over year</strong>. Previous period is the
+default, and it is on unless you turn it off.</p>
+<p>The earlier period is drawn on the same graph as a thin dashed line, matched bucket for bucket, and
+the legend names the exact window it resolved to. A period still running is compared against the same
+elapsed time — at four in the afternoon, "vs yesterday" is sixteen hours against sixteen hours.</p>
+<p>Where the earlier value was zero the change shows an em dash rather than a percentage, because
+there is no percentage increase from nothing.</p>
+
+<h3>Realtime</h3>
+<p>Pick <strong>Realtime</strong>, press <kbd>R</kbd>, or click the live pill in the top bar. It
+replaces the tiles and the graph with four figures — current visitors in the last five minutes, and
+visitors, views and events over the last thirty — plus pageviews per minute. The five report cards
+stay, reading the same thirty-minute window.</p>
+<p>It refreshes every 30 seconds, and stops refreshing while the tab is in the background rather than
+burning your battery on a screen nobody is looking at.</p>
+<p>"Current visitors" leaves out engagement measurements, so a single reader with a tab open does not
+register as continuous activity.</p>
+
+<h3>Keyboard shortcuts</h3>
+<p>Press <kbd>?</kbd> for the list. Periods first:</p>
+<table>
+  <tbody>
+    <tr><td><kbd>D</kbd></td><td>Today</td><td><kbd>E</kbd></td><td>Yesterday</td></tr>
+    <tr><td><kbd>R</kbd></td><td>Realtime</td><td><kbd>H</kbd></td><td>Last 24 hours</td></tr>
+    <tr><td><kbd>W</kbd></td><td>Last 7 days</td><td><kbd>F</kbd></td><td>Last 28 days</td></tr>
+    <tr><td><kbd>N</kbd></td><td>Last 91 days</td><td><kbd>M</kbd></td><td>Month to date</td></tr>
+    <tr><td><kbd>P</kbd></td><td>Last month</td><td><kbd>Y</kbd></td><td>Year to date</td></tr>
+    <tr><td><kbd>L</kbd></td><td>Last 12 months</td><td><kbd>A</kbd></td><td>All time</td></tr>
+    <tr><td><kbd>C</kbd></td><td>Custom range</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<p>And everything else:</p>
+<table>
+  <tbody>
+    <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>Previous or next period</td></tr>
+    <tr><td><kbd>X</kbd></td><td>Turn the comparison on or off</td></tr>
+    <tr><td><kbd>I</kbd></td><td>Cycle the graph's bucket width — auto, hour, day, week, month</td></tr>
+    <tr><td><kbd>/</kbd></td><td>Jump to the nearest search box</td></tr>
+    <tr><td><kbd>0</kbd></td><td>Switch site</td></tr>
+    <tr><td><kbd>?</kbd></td><td>This list</td></tr>
+    <tr><td><kbd>Esc</kbd></td><td>Close what is open, or clear every filter</td></tr>
+  </tbody>
+</table>
+<p>Shortcuts are off while you are typing in a field — <kbd>Esc</kbd> then gets you out of the field —
+and a key held with ⌘, Ctrl or Alt belongs to the browser rather than to us.</p>
+<p>The arrows step the window by one of its own length, so from "Last 7 days" you walk back a week at
+a time. Realtime, the last 24 hours and All time cannot be stepped, because there is no previous one.</p>
+
+<h3>Language</h3>
+<p>The interface is translated, and the language is chosen in this order: a <code>?lang=</code> on the
+URL, then the <code>feasible_lang</code> cookie, then your browser's <code>Accept-Language</code>
+header, then English. Adding <code>?lang=de</code> to any URL sets the cookie, so the choice sticks. A
+deliberate choice beats a browser default; that is why the cookie outranks the header.</p>
+<p><strong>English is complete. German is partial</strong> — it covers the shared strings and every
+sign-in, account, settings and site-management screen, and it does not yet cover this dashboard, so a
+German reader gets German account screens and an English stats screen. Fallback is per string rather
+than per language, which is what makes a half-finished translation worth shipping instead of hiding.
+German has also not been reviewed by a native speaker.</p>
+<p>There is no language picker on a screen yet. Numbers, dates, country names and language names all
+follow the chosen language once it is set.</p>
+
+<h3>Settings that change what you see here</h3>
+<p>Under <em>Settings → &lt;your site&gt;</em> there are three tabs that decide what the reports above
+contain: <a href="/docs/shields">shields</a> stop traffic being counted,
+<a href="/docs/shields">path cleaning</a> merges URLs that are really one page — retroactively — and
+<a href="/docs/import-export">import and export</a> brings history in and takes everything out.</p>
+
+<h3>What is not here yet</h3>
+<p>Goals, funnels, custom-property reports, journeys and revenue have working engines and no screen —
+see <a href="/docs/goals-funnels">goals and funnels</a>. A custom property can still be filtered on by
+writing the URL by hand, and everything is available through <a href="/docs/api">the query API</a>.</p>

@@ -1,6 +1,6 @@
 //
 // cache.go
-// The compiled rule snapshot the write path applies per event.
+// The compiled rule snapshot used to map raw paths as events are stored.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -60,14 +60,18 @@ func (c *Cache) Refresh(ctx context.Context) error {
 	bySite := map[int64]*Ruleset{}
 
 	for accountID := range accountIDs {
-		account, err := c.accounts.Open(ctx, accountID)
+		lease, err := c.accounts.Acquire(ctx, accountID)
 		if err != nil {
 			return fmt.Errorf("pathclean: refresh account %d: %w", accountID, err)
 		}
 
-		byID, err := allRules(ctx, account.Reader())
+		byID, err := allRules(ctx, lease.Account.Reader())
 		if err != nil {
+			_ = lease.Release()
 			return err
+		}
+		if err := lease.Release(); err != nil {
+			return fmt.Errorf("pathclean: release account %d: %w", accountID, err)
 		}
 
 		for siteID, rules := range byID {
@@ -137,8 +141,8 @@ func (c *Cache) Set(siteID int64, set *Ruleset) {
 }
 
 // Clean applies one site's rules to a path. It implements the ingest tier's
-// PathCleaner, which is how the rules reach the write path without that package
-// learning to read an account database.
+// PathCleaner, which lets the writer store a query mapping beside the raw path
+// without learning to read an account database.
 func (c *Cache) Clean(siteID int64, path string) string {
 	return c.snap.Load().bySite[siteID].Clean(path)
 }

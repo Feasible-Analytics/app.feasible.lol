@@ -11,7 +11,7 @@ licensed under AGPL-3.0-or-later, and nothing here restricts what that licence g
 <h3>1. The service</h3>
 <p>We provide web analytics. Every account gets every feature — there is no tier that
 withholds one — and the plan includes 1,000,000 pageviews and custom events per calendar
-month, unlimited sites, unlimited team members and unlimited retention.</p>
+month, unlimited sites, unlimited team members and unlimited retention while the account exists.</p>
 
 <h3>2. Your account</h3>
 <p>You are responsible for what happens under your account and for keeping your credentials
@@ -54,17 +54,24 @@ settings and exports stay open.</p>
 <h3>6. What happens if payment stops</h3>
 <p>The timetable is fixed, published on the <a href="/pricing">pricing page</a>, and identical
 whether a trial ended or a card failed. Day 0 is the first failed charge. The dashboard locks
-at day 30. Collection stops at day 60. The account and all of its data are permanently
-deleted at day 90. You are emailed at nine points along the way, each naming the exact date
-of the next step. Paying at any point before day 90 restores everything.</p>
+at day 30. Collection stops at day 60. At day 90 the hourly lifecycle sweep immediately
+removes the account and its analytics from live systems. You are emailed nine times before that happens and once to confirm it,
+each message naming the exact date of the next step. Paying at any point before day 90
+restores everything.</p>
 
-<p>Deletion at day 90 is irreversible. We keep no backup from which you can be restored,
-deliberately.</p>
+<p>At day 90 we remove the live account database and account records in that hourly sweep and stop replicating that
+database within the replication watch interval, currently at most 60 seconds. Encrypted
+disaster-recovery replica objects become eligible for provider removal within 72 hours of being
+written. The final object can be written during that stop interval, so it is eligible within 72
+hours and 60 seconds of live deletion. Physical removal is asynchronous with no published maximum, and replicas may remain
+restorable to authorised operators while it is pending; they are not used to reactivate a deleted account. If deletion of
+the payment-provider customer fails, we retain only its provider identifier and retry on every
+hourly lifecycle sweep until it succeeds. The confirmation is sent after that external deletion succeeds.</p>
 
 <h3>7. Export</h3>
 <p>Your data is yours and export works in every account state, including a locked or dormant
-one and including the day before a scheduled deletion. We will not withhold your data to
-collect a debt.</p>
+one and including the day before a scheduled deletion. It includes every raw event, not a
+summary. We will not withhold your data to collect a debt.</p>
 
 <h3>8. Availability</h3>
 <p>We work hard to keep the service up and we do not promise a specific uptime percentage on

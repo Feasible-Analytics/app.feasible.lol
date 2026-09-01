@@ -290,6 +290,16 @@ type harness struct {
 	mu          sync.Mutex
 }
 
+// applyWebhookControlSchema applies the complete merged control schema so
+// webhook fixtures exercise M9 report state and M8 payload ownership together.
+func applyWebhookControlSchema(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // newHarness builds the whole stack.
 func newHarness(t *testing.T) *harness {
 	t.Helper()
@@ -301,9 +311,7 @@ func newHarness(t *testing.T) *harness {
 	}
 	t.Cleanup(func() { control.Close() })
 
-	if _, err := migrate.Run(context.Background(), control, migrate.Control()); err != nil {
-		t.Fatal(err)
-	}
+	applyWebhookControlSchema(t, control)
 
 	stamp := now.Unix()
 

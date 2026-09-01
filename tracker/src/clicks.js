@@ -93,14 +93,14 @@ export function custom(name, options) {
 	const callback = opts.callback;
 
 	if (excluded(cfg)) {
-		if (callback) callback({ status: null });
+		callback?.({ status: null });
 		return;
 	}
 
 	const event = {
 		n: name,
-		u: opts.u ? new URL(opts.u, loc.href).href : page.url || loc.href,
-		d: page.domain,
+		u: opts.u ? new URL(opts.u, loc.href).href : page.u || loc.href,
+		d: page.d,
 	};
 
 	if (opts.props) event.p = opts.props;

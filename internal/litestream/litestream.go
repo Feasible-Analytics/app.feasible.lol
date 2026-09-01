@@ -43,22 +43,15 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 )
 
-// Defaults for the three intervals.
+// Defaults for replication intervals.
 //
 // A one-second sync is the recovery point this project promises: at most a
-// second of committed database state is unreplicated. Public acknowledgement
-// means the local account transaction committed; replica upload follows that
-// independent durability boundary.
-//
-// The snapshot interval and retention are a pair, not two independent numbers.
-// A restore replays write-ahead log segments on top of the newest snapshot that
-// is still within retention, so retention shorter than the snapshot interval
-// deletes the snapshot the segments depend on and leaves a replica that cannot
-// be restored at all.
+// second of committed database state is unreplicated, and the events written in
+// that second are still in the ingest outbox because a row there is deleted
+// only after the shard acknowledges the commit.
 const (
 	DefaultSyncInterval     = time.Second
 	DefaultSnapshotInterval = 6 * time.Hour
-	DefaultRetention        = 72 * time.Hour
 )
 
 // ControlName is the control database's name inside the replica URL.
@@ -79,7 +72,6 @@ type Options struct {
 
 	SyncInterval     time.Duration
 	SnapshotInterval time.Duration
-	Retention        time.Duration
 }
 
 // withDefaults fills the intervals a caller left at zero, so that a partly
@@ -91,9 +83,6 @@ func (o Options) withDefaults() Options {
 	}
 	if o.SnapshotInterval <= 0 {
 		o.SnapshotInterval = DefaultSnapshotInterval
-	}
-	if o.Retention <= 0 {
-		o.Retention = DefaultRetention
 	}
 
 	o.ReplicaURL = strings.TrimRight(strings.TrimSpace(o.ReplicaURL), "/")
@@ -113,13 +102,6 @@ func (o Options) Validate() error {
 
 	if !strings.Contains(o.ReplicaURL, "://") {
 		return fmt.Errorf("replica URL %q has no scheme — it should look like s3://bucket/prefix", o.ReplicaURL)
-	}
-
-	// Retention deletes snapshots and log segments together. Shorter than the
-	// snapshot interval means the newest snapshot can be deleted before the
-	// next one is taken, leaving segments with nothing to replay onto.
-	if o.Retention <= o.SnapshotInterval {
-		return fmt.Errorf("retention %s is not longer than the snapshot interval %s — the snapshot a restore replays onto would be deleted before its replacement exists", o.Retention, o.SnapshotInterval)
 	}
 
 	return nil
@@ -214,6 +196,10 @@ func Render(plan []Database, opts Options) []byte {
 	b.WriteString("# LITESTREAM_ACCESS_KEY_ID and LITESTREAM_SECRET_ACCESS_KEY from its own\n")
 	b.WriteString("# environment, so a file that is rewritten whenever somebody signs up never\n")
 	b.WriteString("# carries a secret.\n")
+	b.WriteString("# Provider lifecycle is the authoritative remote-retention control. Litestream\n")
+	b.WriteString("# v0.5.8+ must not issue DeleteObject with the least-privilege replicator role.\n")
+	b.WriteString("retention:\n")
+	b.WriteString("  enabled: false\n")
 	b.WriteString("dbs:\n")
 
 	for _, db := range plan {
@@ -222,7 +208,6 @@ func Render(plan []Database, opts Options) []byte {
 		fmt.Fprintf(&b, "      - url: %s\n", db.ReplicaURL)
 		fmt.Fprintf(&b, "        sync-interval: %s\n", duration(opts.SyncInterval))
 		fmt.Fprintf(&b, "        snapshot-interval: %s\n", duration(opts.SnapshotInterval))
-		fmt.Fprintf(&b, "        retention: %s\n", duration(opts.Retention))
 	}
 
 	return []byte(b.String())

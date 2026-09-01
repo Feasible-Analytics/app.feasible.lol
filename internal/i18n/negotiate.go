@@ -10,6 +10,7 @@ package i18n
 
 import (
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -213,9 +214,33 @@ func Negotiate(r *http.Request) string { return Default.Negotiate(r) }
 func Apply(w http.ResponseWriter, r *http.Request) string {
 	tag := Default.Negotiate(r)
 
-	if requested := strings.TrimSpace(r.URL.Query().Get(QueryParam)); requested != "" && Default.Supported(tag) {
-		http.SetCookie(w, RememberCookie(tag, r.TLS != nil))
+	if requested := strings.TrimSpace(r.URL.Query().Get(QueryParam)); requested != "" {
+		if matched, ok := Default.match(requested); ok {
+			http.SetCookie(w, RememberCookie(matched, r.TLS != nil))
+		}
 	}
 
 	return tag
+}
+
+// LocalURL carries a supported locale onto a same-origin absolute path. Unsafe
+// or external targets are returned unchanged, so callers can use it around a
+// redirect without turning language preservation into an open redirect.
+func LocalURL(target, locale string) string {
+	matched, ok := Default.match(locale)
+	if !ok || matched == DefaultLocale || !strings.HasPrefix(target, "/") || strings.HasPrefix(target, "//") || strings.Contains(target, "\\") {
+		return target
+	}
+
+	parsed, err := url.Parse(target)
+	if err != nil || parsed.IsAbs() || parsed.Host != "" || parsed.Path == "" ||
+		!strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") || strings.Contains(parsed.Path, "\\") {
+		return target
+	}
+
+	query := parsed.Query()
+	query.Set(QueryParam, matched)
+	parsed.RawQuery = query.Encode()
+
+	return parsed.String()
 }

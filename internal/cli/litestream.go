@@ -1,6 +1,6 @@
 //
 // litestream.go
-// The `litestream config` and `litestream check` subcommands.
+// Litestream configuration, coverage, and replica-lifecycle commands.
 //
 // Created: 2026-08-31
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -11,12 +11,14 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/litestream"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/replica"
 )
 
 const litestreamHelp = `feasible litestream — the replication configuration.
@@ -29,6 +31,8 @@ generated and the daemon restarted when a new account appears.
 Commands:
   config   Write the configuration for every database on this box.
   check    Report databases on disk that the configuration does not cover.
+  policy   Render the versioned S3-compatible replica lifecycle policy.
+  lifecycle-check  Validate actual lifecycle, versioning and Object Lock exports.
 `
 
 const litestreamConfigHelp = `feasible litestream config — write the replication configuration.
@@ -54,6 +58,24 @@ a document.
 Flags:
 `
 
+const litestreamPolicyHelp = `feasible litestream policy — render the replica lifecycle policy.
+
+Writes the versioned S3-compatible policy for the configured bucket and shard
+prefix to stdout. Applying it is an explicit bucket-owner operation; this
+command performs no cloud mutation.
+
+Flags:
+`
+
+const litestreamLifecycleCheckHelp = `feasible litestream lifecycle-check — validate provider retention controls.
+
+Reads one atomically published provider attestation. It fails unless the fresh
+bundle is bound to the exact bucket and shard prefix, an enabled policy covers
+that prefix, and no provider feature can retain historical versions beyond it.
+
+Flags:
+`
+
 // runLitestream dispatches the two-word replication commands, so that
 // `feasible litestream` on its own lists what it offers rather than printing
 // the whole program's help.
@@ -68,6 +90,10 @@ func runLitestream(e *env, args []string) int {
 		return runLitestreamConfig(e, args[1:])
 	case "check":
 		return runLitestreamCheck(e, args[1:])
+	case "policy":
+		return runLitestreamPolicy(e, args[1:])
+	case "lifecycle-check":
+		return runLitestreamLifecycleCheck(e, args[1:])
 	default:
 		fmt.Fprintf(e.stderr, "unknown litestream command %q\n\n", args[0])
 		fmt.Fprint(e.stderr, litestreamHelp)
@@ -101,12 +127,17 @@ func runLitestreamConfig(e *env, args []string) int {
 		ReplicaURL:       *replica,
 		SyncInterval:     e.cfg.Litestream.SyncInterval,
 		SnapshotInterval: e.cfg.Litestream.SnapshotInterval,
-		Retention:        e.cfg.Litestream.Retention,
 	}
 
 	if err := opts.Validate(); err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError
+	}
+	if e.cfg.IsProduction() {
+		if err := validateReplicaLifecycle(e, *replica); err != nil {
+			fmt.Fprintf(e.stderr, "%v\n", err)
+			return ExitError
+		}
 	}
 
 	// Printing resolves the same plan and writes nothing, so that "what would
@@ -266,7 +297,12 @@ func runLitestreamCheck(e *env, args []string) int {
 		ReplicaURL:       *replica,
 		SyncInterval:     e.cfg.Litestream.SyncInterval,
 		SnapshotInterval: e.cfg.Litestream.SnapshotInterval,
-		Retention:        e.cfg.Litestream.Retention,
+	}
+	if e.cfg.IsProduction() {
+		if err := validateReplicaLifecycle(e, *replica); err != nil {
+			fmt.Fprintf(e.stderr, "%v\n", err)
+			return ExitError
+		}
 	}
 
 	plan, err := litestream.Plan(opts)
@@ -295,4 +331,70 @@ func runLitestreamCheck(e *env, args []string) int {
 	}
 
 	return ExitError
+}
+
+// runLitestreamPolicy renders the canonical policy without applying it. Cloud
+// mutation stays with the bucket owner so a local command cannot silently
+// replace unrelated lifecycle rules in a shared provider configuration.
+func runLitestreamPolicy(e *env, args []string) int {
+	fs := newFlagSet("litestream policy", e, litestreamPolicyHelp)
+	replicaURL := fs.String("replica-url", e.cfg.Litestream.ReplicaURL, "replica prefix, such as s3://bucket/shard-01")
+
+	if code, ok := parseFlags(fs, args); !ok {
+		return code
+	}
+
+	body, err := replica.Render(*replicaURL)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return ExitError
+	}
+	if _, err := e.stdout.Write(body); err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return ExitError
+	}
+
+	return ExitOK
+}
+
+// runLitestreamLifecycleCheck validates fresh provider exports. It is suitable
+// for deployment gates and monitoring and deliberately performs no provider
+// mutation.
+func runLitestreamLifecycleCheck(e *env, args []string) int {
+	fs := newFlagSet("litestream lifecycle-check", e, litestreamLifecycleCheckHelp)
+	replicaURL := fs.String("replica-url", e.cfg.Litestream.ReplicaURL, "replica prefix, such as s3://bucket/shard-01")
+	attestationPath := fs.String("attestation", e.cfg.Litestream.AttestationPath, "atomic provider attestation JSON")
+
+	if code, ok := parseFlags(fs, args); !ok {
+		return code
+	}
+
+	if err := checkReplicaLifecycle(*replicaURL, *attestationPath); err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return ExitError
+	}
+
+	fmt.Fprintf(e.stdout, "ok — %s is covered by %s within the replica eligibility bound\n", *replicaURL, replica.PolicyID)
+	return ExitOK
+}
+
+// validateReplicaLifecycle enforces the production configuration contract. A
+// production watcher or coverage check without fresh atomic provider evidence
+// fails closed rather than treating an unchecked bucket as compliant.
+func validateReplicaLifecycle(e *env, replicaURL string) error {
+	return checkReplicaLifecycle(replicaURL, e.cfg.Litestream.AttestationPath)
+}
+
+// checkReplicaLifecycle reads one file once and validates its complete evidence
+// at one time, preventing stale provider responses from different fetches from
+// being mixed together.
+func checkReplicaLifecycle(replicaURL, attestationPath string) error {
+	if attestationPath == "" {
+		return fmt.Errorf("replica lifecycle: FEASIBLE_LITESTREAM_ATTESTATION is required")
+	}
+	body, err := os.ReadFile(attestationPath)
+	if err != nil {
+		return fmt.Errorf("replica lifecycle: read %s: %w", attestationPath, err)
+	}
+	return replica.ValidateAttestation(replicaURL, body, time.Now().UTC())
 }

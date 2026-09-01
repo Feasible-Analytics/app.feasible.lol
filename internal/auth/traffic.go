@@ -48,10 +48,12 @@ func (t *Traffic) Sparklines(ctx context.Context, accountID int64, list []*Site,
 		return nil
 	}
 
-	account, err := t.manager.Open(ctx, accountID)
+	lease, err := t.manager.Acquire(ctx, accountID)
 	if err != nil {
 		return fmt.Errorf("auth: sparklines: %w", err)
 	}
+	defer lease.Release() //nolint:errcheck // the query result is more useful than an unlock error
+	account := lease.Account
 
 	// The oldest instant any site could need. Sites in different timezones have
 	// different local midnights, so the scan starts a day early and each site
@@ -169,10 +171,12 @@ func SortByTraffic(list []*Site) {
 // than counting events because a session row exists from the first pageview and
 // there is exactly one per visit, so the query touches one index and stops.
 func (t *Traffic) FirstEventAt(ctx context.Context, accountID, siteID int64) (int64, error) {
-	account, err := t.manager.Open(ctx, accountID)
+	lease, err := t.manager.Acquire(ctx, accountID)
 	if err != nil {
 		return 0, fmt.Errorf("auth: first event: %w", err)
 	}
+	defer lease.Release() //nolint:errcheck // the query result is more useful than an unlock error
+	account := lease.Account
 
 	var at sql.NullInt64
 
@@ -193,10 +197,12 @@ func (t *Traffic) FirstEventAt(ctx context.Context, accountID, siteID int64) (in
 // than the site id would take the customer's other sites with it — and there is
 // no undo.
 func (t *Traffic) ResetStats(ctx context.Context, accountID, siteID int64) error {
-	account, err := t.manager.Open(ctx, accountID)
+	lease, err := t.manager.Acquire(ctx, accountID)
 	if err != nil {
 		return fmt.Errorf("auth: reset stats: %w", err)
 	}
+	defer lease.Release() //nolint:errcheck // the transaction result is more useful than an unlock error
+	account := lease.Account
 
 	tx, err := account.Writer().BeginTx(ctx, nil)
 	if err != nil {

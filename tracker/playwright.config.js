@@ -12,6 +12,10 @@ import { defineConfig, devices } from "@playwright/test";
 // that a running development instance and a test run never collide.
 const PORT = 19311;
 
+// Serverless layout checks inject complete rendered documents directly into
+// Chromium and must not open the tracker fixture port.
+const serverless = process.env.FEASIBLE_PLAYWRIGHT_SERVERLESS === "1";
+
 export default defineConfig({
 	testDir: "./tests",
 	fullyParallel: true,
@@ -28,7 +32,7 @@ export default defineConfig({
 
 	// Playwright owns the fixture server's lifetime, which is the only way a
 	// test run reliably leaves nothing listening behind it.
-	webServer: {
+	webServer: serverless ? undefined : {
 		command: "node tests/server.js",
 		url: `http://127.0.0.1:${PORT}/basic.html`,
 		reuseExistingServer: !process.env.CI,

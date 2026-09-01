@@ -10,7 +10,7 @@
   <h1 class="text-xl font-semibold text-heading">{{ t $.Lang "auth.forgot.title" }}</h1>
   <p class="mt-1 text-sm text-muted">{{ t $.Lang "auth.forgot.subtitle" }}</p>
 
-  <form method="post" action="/forgot-password" class="mt-6 space-y-4">
+  <form method="post" action="{{ url $.Lang "/forgot-password" }}" class="mt-6 space-y-4">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
 
     <div>
@@ -26,7 +26,7 @@
   </form>
 
   <p class="mt-6 text-center text-sm text-muted">
-    <a href="/login" class="font-medium text-accent-ink hover:text-accent">{{ t $.Lang "auth.forgot.back" }}</a>
+    <a href="{{ url $.Lang "/login" }}" class="font-medium text-accent-ink hover:text-accent">{{ t $.Lang "auth.forgot.back" }}</a>
   </p>
 </div>
 {{ end }}

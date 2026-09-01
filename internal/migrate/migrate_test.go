@@ -51,6 +51,12 @@ func tableExists(t *testing.T, db *sql.DB, name string) bool {
 	return count > 0
 }
 
+// controlBase returns the real M9 prefix immediately before M8's 0010. Keeping
+// the boundary explicit lets migration tests exercise the final transition.
+func controlBase() Set {
+	return UpTo(Control(), 9)
+}
+
 // assertTrialEnrollment verifies the lifecycle source and both hot-path team
 // mirrors use the same signup instant and the state machine's exact boundaries.
 func assertTrialEnrollment(t *testing.T, db *sql.DB, teamID, startedAt int64) {
@@ -93,19 +99,20 @@ func assertTrialEnrollment(t *testing.T, db *sql.DB, teamID, startedAt int64) {
 	}
 }
 
-// TestControlMigratesAFreshDatabase is the first command a new install runs. If
-// this does not produce a complete control schema, nobody can even sign up.
-func TestControlMigratesAFreshDatabase(t *testing.T) {
+// TestControlBaseMigratesAFreshDatabase proves the contiguous control prefix
+// still produces the complete pre-branch schema for fixtures and upgrades.
+func TestControlBaseMigratesAFreshDatabase(t *testing.T) {
 	ctx := context.Background()
 	db := newDatabase(t)
+	base := controlBase()
 
-	result, err := Run(ctx, db, Control())
+	result, err := Run(ctx, db, base)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if result.From != 0 || result.To != Control().Version() {
-		t.Fatalf("migrated from %d to %d, want 0 to %d", result.From, result.To, Control().Version())
+	if result.From != 0 || result.To != base.Version() {
+		t.Fatalf("migrated from %d to %d, want 0 to %d", result.From, result.To, base.Version())
 	}
 	if !result.Changed() {
 		t.Fatal("a fresh database reported no changes")
@@ -130,8 +137,8 @@ func TestControlMigratesAFreshDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != Control().Version() {
-		t.Fatalf("schema version is %d, want %d", version, Control().Version())
+	if version != base.Version() {
+		t.Fatalf("schema version is %d, want %d", version, base.Version())
 	}
 }
 
@@ -190,7 +197,7 @@ func TestRandomSaltAuthorityMigrationInvalidatesDeterministicRows(t *testing.T) 
 func TestControlDeletionCustomerAuditSurvivesTeamCascade(t *testing.T) {
 	ctx := context.Background()
 	db := newDatabase(t)
-	if _, err := Run(ctx, db, Control()); err != nil {
+	if _, err := Run(ctx, db, controlBase()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -265,7 +272,7 @@ func TestControlEnrollsEveryNewTeamAtomically(t *testing.T) {
 	for _, path := range []string{"password registration", "Google registration", "general team insert"} {
 		t.Run(path, func(t *testing.T) {
 			db := newDatabase(t)
-			if _, err := Run(ctx, db, Control()); err != nil {
+			if _, err := Run(ctx, db, controlBase()); err != nil {
 				t.Fatal(err)
 			}
 
@@ -362,7 +369,7 @@ func TestControlEnrollsEveryNewTeamAtomically(t *testing.T) {
 func TestControlRollsBackTeamCreationWhenEnrollmentFails(t *testing.T) {
 	ctx := context.Background()
 	db := newDatabase(t)
-	if _, err := Run(ctx, db, Control()); err != nil {
+	if _, err := Run(ctx, db, controlBase()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -440,7 +447,7 @@ func TestControlBackfillsMissingLifecycleAtUpgradeTime(t *testing.T) {
 	}
 
 	before := time.Now().UTC().Unix()
-	result, err := Run(ctx, db, Control())
+	result, err := Run(ctx, db, controlBase())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -501,7 +508,7 @@ func TestControlBackfillsMissingLifecycleAtUpgradeTime(t *testing.T) {
 			lapseTrigger, gotLapseStarted, gotLapseTrial, gotLapseAccept, lapseCreated, lapseUpdated)
 	}
 
-	second, err := Run(ctx, db, Control())
+	second, err := Run(ctx, db, controlBase())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -589,7 +596,7 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := Run(ctx, db, Control())
+	result, err := Run(ctx, db, controlBase())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -768,12 +775,7 @@ func TestAccountV7ToCurrentKeepsPopulatedSessionOwnership(t *testing.T) {
 	ctx := context.Background()
 	db := newDatabase(t)
 
-	throughSeven := Set{Name: "account"}
-	for _, migration := range Account().Migrations {
-		if migration.Version <= 7 {
-			throughSeven.Migrations = append(throughSeven.Migrations, migration)
-		}
-	}
+	throughSeven := UpTo(Account(), 7)
 	if _, err := Run(ctx, db, throughSeven); err != nil {
 		t.Fatal(err)
 	}
@@ -838,7 +840,7 @@ func TestCoordinatedMigrationNumbers(t *testing.T) {
 		want []int
 	}{
 		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10}},
-		"control": {set: Control(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9}},
+		"control": {set: Control(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := make([]int, 0, len(test.set.Migrations))
@@ -933,6 +935,96 @@ func TestRunningTwiceChangesNothing(t *testing.T) {
 	}
 }
 
+// TestRunRequiresTheContiguousPendingSequence covers fresh, ordinary upgrade,
+// missing-gap, and already-applied cases. Most importantly, validation happens
+// before migration SQL so a later branch cannot stamp past absent versions.
+func TestRunRequiresTheContiguousPendingSequence(t *testing.T) {
+	ctx := context.Background()
+	contiguous := Set{Name: "test", Migrations: []Migration{
+		{Version: 1, Name: "one", SQL: `CREATE TABLE one (id INTEGER);`},
+		{Version: 2, Name: "two", SQL: `CREATE TABLE two (id INTEGER);`},
+	}}
+
+	t.Run("fresh", func(t *testing.T) {
+		db := newDatabase(t)
+		result, err := Run(ctx, db, contiguous)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.From != 0 || result.To != 2 || !tableExists(t, db, "one") || !tableExists(t, db, "two") {
+			t.Fatalf("fresh result = %+v, one=%v two=%v", result, tableExists(t, db, "one"), tableExists(t, db, "two"))
+		}
+	})
+
+	t.Run("upgrade", func(t *testing.T) {
+		db := newDatabase(t)
+		if _, err := Run(ctx, db, UpTo(contiguous, 1)); err != nil {
+			t.Fatal(err)
+		}
+		result, err := Run(ctx, db, contiguous)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.From != 1 || result.To != 2 || len(result.Applied) != 1 || result.Applied[0] != 2 {
+			t.Fatalf("upgrade result = %+v", result)
+		}
+	})
+
+	t.Run("missing gap", func(t *testing.T) {
+		db := newDatabase(t)
+		gapped := Set{Name: "test", Migrations: []Migration{
+			{Version: 1, Name: "one", SQL: `CREATE TABLE should_not_exist (id INTEGER);`},
+			{Version: 3, Name: "three", SQL: `SELECT 1;`},
+		}}
+		result, err := Run(ctx, db, gapped)
+		if err == nil {
+			t.Fatal("gapped migration sequence was accepted")
+		}
+		if result.From != 0 || result.To != 0 || tableExists(t, db, "should_not_exist") {
+			t.Fatalf("gap wrote before validation: result=%+v table=%v", result, tableExists(t, db, "should_not_exist"))
+		}
+		if got := err.Error(); got != "test schema is at version 0: migration 0002 is missing before 0003_three; merge the reserved lower migration before upgrading" {
+			t.Fatalf("gap error = %q", got)
+		}
+	})
+
+	t.Run("already applied", func(t *testing.T) {
+		db := newDatabase(t)
+		if err := store.SetSchemaVersion(ctx, db, 3); err != nil {
+			t.Fatal(err)
+		}
+		gapped := Set{Name: "test", Migrations: []Migration{
+			{Version: 1, Name: "one", SQL: `SELECT 1;`},
+			{Version: 3, Name: "three", SQL: `SELECT 1;`},
+		}}
+		result, err := Run(ctx, db, gapped)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Changed() || result.From != 3 || result.To != 3 {
+			t.Fatalf("already-applied result = %+v", result)
+		}
+	})
+}
+
+// TestControlFinalChainAppliesM8AfterM9 proves the merged chain advances from
+// the real M9 schema through M8's cleanup without a placeholder or version gap.
+func TestControlFinalChainAppliesM8AfterM9(t *testing.T) {
+	ctx := context.Background()
+	db := newDatabase(t)
+
+	if _, err := Run(ctx, db, controlBase()); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Run(ctx, db, Control())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.From != 9 || result.To != 10 || fmt.Sprint(result.Applied) != "[10]" {
+		t.Fatalf("control M8 upgrade = %+v, want 9 through [10]", result)
+	}
+}
+
 // TestRunRefusesADatabaseFromANewerBuild covers a rolled-back deploy. Running
 // queries against a schema this binary does not know about would fail somewhere
 // far away from the cause, so it is refused up front.
@@ -956,7 +1048,8 @@ func TestFreshEmptiesAndRebuilds(t *testing.T) {
 	ctx := context.Background()
 	db := newDatabase(t)
 
-	if _, err := Run(ctx, db, Control()); err != nil {
+	base := controlBase()
+	if _, err := Run(ctx, db, base); err != nil {
 		t.Fatal(err)
 	}
 
@@ -985,7 +1078,7 @@ func TestFreshEmptiesAndRebuilds(t *testing.T) {
 		t.Fatalf("fresh left the version at %d", version)
 	}
 
-	result, err := Run(ctx, db, Control())
+	result, err := Run(ctx, db, base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1010,13 +1103,14 @@ func TestForeignKeysSurviveFresh(t *testing.T) {
 	ctx := context.Background()
 	db := newDatabase(t)
 
-	if _, err := Run(ctx, db, Control()); err != nil {
+	base := controlBase()
+	if _, err := Run(ctx, db, base); err != nil {
 		t.Fatal(err)
 	}
 	if err := Fresh(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Run(ctx, db, Control()); err != nil {
+	if _, err := Run(ctx, db, base); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1115,7 +1209,7 @@ func TestPublicAPIMigrationKeepsExistingKeys(t *testing.T) {
 		}
 	}
 
-	if _, err := Run(ctx, db, Control()); err != nil {
+	if _, err := Run(ctx, db, UpTo(Control(), 5)); err != nil {
 		t.Fatalf("the 0004 migration failed on a database with data in it: %v", err)
 	}
 
@@ -1174,6 +1268,91 @@ func TestPublicAPIMigrationKeepsExistingKeys(t *testing.T) {
 
 		if count != 1 {
 			t.Errorf("table %s was not created", table)
+		}
+	}
+}
+
+// TestAccountDeletionCleanupMigration0010 starts from M9's complete schema and
+// verifies both the ordered upgrade and M8's deletion-audit data rewrite.
+func TestAccountDeletionCleanupMigration0010(t *testing.T) {
+	ctx := context.Background()
+	db := newDatabase(t)
+
+	result, err := Run(ctx, db, controlBase())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.To != 9 {
+		t.Fatalf("initial migration stopped at %d, want 9", result.To)
+	}
+
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO account_deletions
+			(team_id, team_name, contact_email, stripe_customer_id, clock_started_at,
+			 started_at, completed_at, notified_at, notes)
+		VALUES
+			(101, 'Finished Team', 'finished@example.test', 'cus_finished', 1, 2, 3, 4,
+			 'account directory /private/101 removed; payment customer cus_finished removed'),
+			(102, 'Retry Team', 'retry@example.test', 'cus_retry', 1, 2, 3, NULL,
+			 'account directory /private/102 removed; payment customer NOT removed: private provider error'),
+			(103, 'Confirm Team', 'confirm@example.test', 'cus_confirm', 1, 2, 3, NULL,
+			 'account directory /private/103 removed; payment customer cus_confirm removed')
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err = Run(ctx, db, Control())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.From != 9 || result.To != 10 || fmt.Sprint(result.Applied) != "[10]" {
+		t.Fatalf("deletion cleanup upgrade = %+v, want 9 through [10]", result)
+	}
+
+	tests := []struct {
+		teamID         int
+		teamName       string
+		email          string
+		customerID     string
+		notes          string
+		completed      bool
+		controlRemoved bool
+		localRemoved   bool
+		artifactsKnown bool
+		globalRemoved  bool
+	}{
+		{101, "", "", "", "live account data removed; deletion confirmation sent", false, false, true, false, false},
+		{102, "Retry Team", "retry@example.test", "cus_retry", "live account data removed; payment customer removal pending", false, false, true, false, false},
+		{103, "Confirm Team", "confirm@example.test", "", "live account data removed", false, false, true, false, false},
+	}
+
+	for _, test := range tests {
+		var teamName, email, customerID, notes string
+		var completed, controlRemoved, localRemoved, artifactsKnown, globalRemoved sql.NullInt64
+		err := db.QueryRowContext(ctx, `
+			SELECT team_name, contact_email, stripe_customer_id, notes,
+			       completed_at, control_removed_at, local_removed_at,
+			       artifacts_indexed_at, global_removed_at
+			FROM account_deletions
+			WHERE team_id = ?
+		`, test.teamID).Scan(&teamName, &email, &customerID, &notes,
+			&completed, &controlRemoved, &localRemoved, &artifactsKnown, &globalRemoved)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if teamName != test.teamName || email != test.email || customerID != test.customerID || notes != test.notes {
+			t.Errorf("team %d cleanup = %q/%q/%q/%q, want %q/%q/%q/%q",
+				test.teamID, teamName, email, customerID, notes,
+				test.teamName, test.email, test.customerID, test.notes)
+		}
+		if completed.Valid != test.completed || controlRemoved.Valid != test.controlRemoved ||
+			localRemoved.Valid != test.localRemoved || artifactsKnown.Valid != test.artifactsKnown ||
+			globalRemoved.Valid != test.globalRemoved {
+			t.Errorf("team %d checkpoints completed/control/local/artifacts/global = %v/%v/%v/%v/%v, want %v/%v/%v/%v/%v",
+				test.teamID, completed.Valid, controlRemoved.Valid, localRemoved.Valid, artifactsKnown.Valid, globalRemoved.Valid,
+				test.completed, test.controlRemoved, test.localRemoved, test.artifactsKnown, test.globalRemoved)
 		}
 	}
 }

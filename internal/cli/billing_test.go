@@ -9,14 +9,12 @@
 package cli
 
 import (
-	"context"
 	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
@@ -33,9 +31,7 @@ func billingDataDir(t *testing.T) string {
 	}
 	defer control.Close()
 
-	if _, err := migrate.Run(context.Background(), control, migrate.Control()); err != nil {
-		t.Fatal(err)
-	}
+	applyControlMigrations(t, control)
 
 	now := time.Now().UTC().Unix()
 

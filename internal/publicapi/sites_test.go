@@ -194,7 +194,9 @@ func TestTrackerConfigRoundTrips(t *testing.T) {
 
 	for _, expected := range []string{
 		`data-domain="example.com"`,
-		`data-hash`,
+		// The value matters as much as the name: the tracker ignores a flag
+		// attribute that carries no value.
+		`data-hash="true"`,
 		`data-exclude="/admin/**"`,
 		`data-api="https://stats.example.com/api/event"`,
 	} {

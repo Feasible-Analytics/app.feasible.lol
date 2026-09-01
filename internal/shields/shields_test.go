@@ -205,15 +205,14 @@ func TestNormaliseRejectsRulesThatCannotMatch(t *testing.T) {
 
 // TestViewerWarnsAboutLANAddress covers the self-hosting trap. Behind a reverse
 // proxy that does not forward X-Forwarded-For, every visitor resolves to the
-// proxy — so the settings page would show the customer their router's LAN
-// address and happily let them build a rule on it that blocks nothing.
+// proxy, so manually blocking the displayed address would block every visitor.
 func TestViewerWarnsAboutLANAddress(t *testing.T) {
 	trusted, err := ingest.ParseTrustedProxies(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	request := httptest.NewRequest(http.MethodGet, "/settings/example.com/shields", nil)
+	request := httptest.NewRequest(http.MethodGet, "/settings/sites/example.com/shields", nil)
 	request.RemoteAddr = "192.168.178.1:52344"
 
 	viewer := ResolveViewer(request, trusted)
@@ -223,11 +222,15 @@ func TestViewerWarnsAboutLANAddress(t *testing.T) {
 	}
 
 	if viewer.Warning == "" {
-		t.Fatal("the LAN case produced no warning, so the customer would build a rule that blocks nothing")
+		t.Fatal("the LAN case produced no warning about blocking every visitor")
 	}
 
 	// A real forwarded address is reported as usable, and named by the header
 	// it came from so a customer debugging a proxy can see what we believed.
+	trusted, err = ingest.ParseTrustedProxies([]string{"192.168.178.1", "10.0.0.7"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	request.Header.Set(ingest.HeaderForwardedFor, "203.0.113.14, 10.0.0.7")
 
 	viewer = ResolveViewer(request, trusted)
@@ -237,7 +240,7 @@ func TestViewerWarnsAboutLANAddress(t *testing.T) {
 	}
 
 	if viewer.Address != "203.0.113.14" {
-		t.Fatalf("resolved address = %q, want the first entry of the forwarded chain", viewer.Address)
+		t.Fatalf("resolved address = %q, want the nearest untrusted entry in the forwarded chain", viewer.Address)
 	}
 
 	if viewer.Source != ingest.SourceForwardedFor {

@@ -1,30 +1,95 @@
-<p>One script tag, on every page you want counted. Nothing else is required — no cookie
-banner, no consent gate, no build step.</p>
+<p>One script tag, on every page you want counted. Nothing else is required — no cookie banner, no
+consent gate, no build step.</p>
 
-<pre><code>&lt;script defer data-domain="example.com" src="https://feasible.lol/js/f.js"&gt;&lt;/script&gt;</code></pre>
+<pre><code>&lt;script defer data-domain="example.com" src="https://feasible.lol/js/script.js"&gt;&lt;/script&gt;</code></pre>
 
-<p><code>data-domain</code> must match the site exactly as you registered it. It is how an event
-is routed to your account, and an event for a domain we do not hold is dropped with a
-reason you can see on the ingestion health panel — never silently.</p>
+<p><code>data-domain</code> must match the site exactly as you registered it. It is how an event is
+routed to your account, and an event for a domain we do not hold is dropped with the reason
+<code>unknown_site</code>.</p>
+
+<h3>The per-site script path</h3>
+<p>Every site also gets its own script URL, which is what the setup screen gives you:</p>
+
+<pre><code>&lt;script defer src="https://feasible.lol/js/fs-a1b2c3d4e5f6g7h8.js"&gt;&lt;/script&gt;</code></pre>
+
+<p>It carries your domain inside the file, so there is no attribute to get wrong, and the filename is
+different for every site. That last part matters: blocklists name files one at a time, so a shared
+filename that gets listed costs everybody their traffic, while a per-site one costs one site.</p>
+
+<p>Both forms behave identically. Use the attribute form if you are migrating an existing install and
+would rather change one hostname than every tag, or if a tag manager is going to mangle an opaque
+path.</p>
 
 <h3>Where to put it</h3>
-<p>Anywhere in <code>&lt;head&gt;</code> or <code>&lt;body&gt;</code>. It is deferred, so it never blocks rendering
-and never appears in your Core Web Vitals. If your site is a single-page application the
-script picks up route changes on its own; you do not need to call anything on navigation.</p>
+<p>Anywhere in <code>&lt;head&gt;</code> or <code>&lt;body&gt;</code>. It is deferred, so it never blocks
+rendering. If your site is a single-page application the script picks up route changes on its own —
+<code>pushState</code>, <code>replaceState</code>, back and forward, and hash changes — so do not
+also fire a pageview on navigation, or every route change is counted twice.</p>
+
+<h3>A new site takes a few seconds to start collecting</h3>
+<p>Ingestion learns which domains exist by polling, so a site you registered a moment ago can take up
+to about fifteen seconds before its first event is accepted. If you paste the snippet, reload
+immediately and see nothing, wait a quarter of a minute before concluding anything is wrong. The
+setup screen waits for you and says when the first event lands.</p>
+
+<h3>Checking it works</h3>
+<p>The setup screen has an install check that fetches one of your pages and tells you which of the
+four real failures you have: the snippet is not there, it names a different site, it is there but
+your content security policy will not let the browser load it, or the page did not load at all.</p>
+
+<p>To check by hand, send one event and read the response:</p>
+
+<pre><code>curl -si https://feasible.lol/api/event \
+  -H 'Content-Type: application/json' \
+  -d '{"n":"pageview","d":"example.com","u":"https://example.com/"}' \
+  | grep -i x-feasible-dropped</code></pre>
+
+<p>The endpoint always answers <code>202</code> — a beacon cannot act on an error code, so a rejection
+would only produce a retry that fails the same way. The reason an event was not counted travels in
+the <code>x-feasible-dropped</code> response header instead, and nothing is ever dropped without
+one.</p>
+
+<p>For the whole picture, add <code>X-Debug-Request: true</code> and the response is the fully derived
+event instead: which address we resolved and where from, the visitor identifier, the geolocation, the
+channel and every field we would have stored. Nothing is written, so it is safe against production.
+See <a href="/docs/api">the APIs</a>.</p>
 
 <h3>Multiple domains</h3>
 <p>Give each site its own snippet with its own <code>data-domain</code>. A staging copy pointed at
-your production domain will mix staging traffic into your real numbers, and there is no way
-to unpick it afterwards — use a separate site, or exclude the hostname.</p>
+your production domain mixes staging traffic into your real numbers and there is no way to unpick it
+afterwards — register a separate site, or exclude the hostname.</p>
 
-<h3>Checking it works</h3>
-<p>Load a page and watch the ingestion health panel. Every event we accept, classify or drop
-is counted there with a reason. If nothing arrives at all, the three usual causes are a
-<code>data-domain</code> that does not match, an ad blocker (see <a href="/docs/proxying">proxying</a>),
-and a content security policy that does not allow the script host.</p>
+<p>Subdomains are a different case: <code>app.example.com</code> and <code>example.com</code> share a
+visitor identifier by design, so a person moving between them is one visitor rather than two.</p>
+
+<h3>Visitors with JavaScript disabled</h3>
+<p>A no-script pixel goes through the identical pipeline — the same derivation, the same session
+rules, the same storage:</p>
+
+<pre><code>&lt;noscript&gt;
+  &lt;img src="https://feasible.lol/api/event/pixel.gif?d=example.com" alt="" width="1" height="1"&gt;
+&lt;/noscript&gt;</code></pre>
+
+<p>It takes the page URL from the browser's own <code>Referer</code> header, which is what makes it a
+one-liner you can paste into a template. The consequence is that the real referrer is unknowable — a
+no-script visitor is Direct unless you add <code>&amp;r=…</code> yourself. It also cannot measure time
+on page or scroll depth, because nothing is running to measure them.</p>
 
 <h3>Server-side events</h3>
-<p>Anything that happens away from a browser — a webhook, a background job, an offline
-conversion — can be posted straight to the events endpoint. See
-<a href="/docs/api">the APIs</a> for the payload, including how to state the attribution for an
-event that has no referrer of its own.</p>
+<p>Anything that happens away from a browser — a webhook, a background job, an offline conversion —
+can be posted straight to the events endpoint, or sent with one of the
+<a href="/docs/sdks">server-side SDKs</a>. See <a href="/docs/api">the APIs</a> for the payload,
+including how to state the attribution for an event that has no referrer of its own.</p>
+
+<h3>If nothing arrives at all</h3>
+<ul>
+  <li>A <code>data-domain</code> that does not match a registered site.</li>
+  <li>An ad blocker — see <a href="/docs/proxying">proxying</a>.</li>
+  <li>A content security policy that allows our origin in <code>script-src</code> but not in
+      <code>connect-src</code>. The script loads and then silently sends nothing, which is the
+      hardest version of this to spot.</li>
+  <li>You are on <code>localhost</code>. That is deliberate; see
+      <a href="/docs/script-options">script options</a>.</li>
+  <li>A <a href="/docs/shields">shield</a> of your own is excluding the traffic — your address, your
+      country, that page, or a hostname allow-list that does not include this one.</li>
+</ul>

@@ -132,13 +132,12 @@ func NewVisitor(ip, userAgent string) Visitor {
 	return Visitor{IP: ip, UserAgent: userAgent}
 }
 
-// FromRequest lifts the visitor out of an inbound request, using the same
-// precedence the ingest server itself uses: CF-Connecting-IP, then the FIRST
-// entry of X-Forwarded-For, then the socket address.
+// FromRequest lifts the visitor out of an inbound request: CF-Connecting-IP,
+// then the first entry of X-Forwarded-For, then the socket address.
 //
-// The first entry matters. Every proxy appends itself to X-Forwarded-For, so
-// taking the last entry — which several frameworks do — reports your own load
-// balancer as the visitor and collapses every visit into one.
+// This SDK has no trusted-proxy configuration. The helper is safe only behind
+// an application edge that strips client-supplied forwarding headers and writes
+// its own; a directly exposed app must pass the socket address explicitly.
 func FromRequest(r *http.Request) Visitor {
 	if r == nil {
 		return Visitor{}

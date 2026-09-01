@@ -1,27 +1,63 @@
-<p>The short version: no cookies, no persistent identifier, no cross-site tracking, no data
-sold or shared, and no IP address ever written to disk. The longer version below includes the
-part most products in this category leave out.</p>
+<p>The short version: no cookies, no persistent identifier, no cross-site tracking, no data sold or
+used for advertising, and no IP address ever written to disk. Encrypted visitor analytics are
+processed by the infrastructure subprocessors named by category in the DPA. The longer version
+below includes the details.</p>
 
 <h3>The visitor identifier is pseudonymous, not anonymous</h3>
-<p>We identify a returning visitor within a day by hashing their IP address, their user agent
-and the site's domain together with a secret salt. The salt is rotated every 24 hours and the
-old one is deleted, so the same person on the same device is a different identifier tomorrow,
-and the same person on two different sites is never the same identifier at all.</p>
 
-<p>That is a genuinely strong design, and it is still <em>pseudonymous</em> under the GDPR
-rather than anonymous. While a salt exists, somebody holding both the salt and the stored
-hashes could brute-force the inputs back out — the space of IP addresses and user agents is
-small enough to search. Deleting the salt after 24 hours is what closes that door, and it is
-the entire basis of the claim, which is why we treat the salt table as being as sensitive as
-raw address logs and why it is encrypted at rest.</p>
+<p>To tell a returning visitor from a new one within a single day, we compute one number:</p>
 
-<p>We say this plainly because the distinction is real and because a product that calls it
-"fully anonymous" is overstating what the maths gives you.</p>
+<pre><code>visitor = SipHash-2-4(
+    key = today's secret salt,
+    message = user agent + IP address + site domain + registrable domain
+)</code></pre>
+
+<p>There is no cookie, nothing in local storage, and nothing written into the page. The number is
+derived fresh on our side from what every HTTP request already carries.</p>
+
+<p>Three consequences are worth stating outright:</p>
+<ul>
+  <li><strong>The salt changes every day at 00:00 UTC.</strong> The same person on the same device
+      is a different number tomorrow, so nothing can be joined across days.</li>
+  <li><strong>The site's domain is in the message.</strong> The same person on two of your sites is
+      two unrelated numbers, and there is nothing to join across customers. The registrable domain is
+      in there too, which is why <code>app.example.com</code> and <code>example.com</code> are the
+      same visitor — subdomains share a visitor by design.</li>
+  <li><strong>Two salts exist at once and only one of them hashes.</strong> Today's salt computes
+      identifiers; yesterday's is kept solely so that a visit which began before midnight can still
+      be matched to its own session. Salt rows are deleted after 48 hours.</li>
+</ul>
+
+<h4>Why we call it pseudonymous</h4>
+
+<p>That design is a genuinely strong one, and it is still <em>pseudonymous</em> under the GDPR rather
+than anonymous. The identifier is derived from personal data — an IP address is personal data, and a
+user agent is close enough that arguing about it is not worth your time.</p>
+
+<p>While a salt exists, somebody holding both that salt and the stored hashes could brute-force the
+inputs back out. There are only about four billion IPv4 addresses and a few thousand common user
+agent strings, so the search space is small enough to walk. That is not a flaw in the hash; it is
+what happens when you hash a value drawn from a small set.</p>
+
+<p>Deleting a salt from the live database after 48 hours closes that door in the live system. Every
+row is encrypted at rest with AES-256-GCM under a key held outside the database, and expired live
+rows are deleted outright rather than soft-deleted.</p>
+
+<p>The control database is continuously replicated. The bucket lifecycle makes each encrypted control
+replica object eligible for provider removal within 72 hours of being written. The decryption key is
+never stored with those replicas, but an authorised
+restoration using the separately backed-up key and the corresponding analytics database could
+re-identify a fingerprint while a snapshot remains. Provider removal after eligibility is
+asynchronous and has no published maximum completion time, so 72 hours is an eligibility bound, not
+a physical-erasure guarantee. A control restore is performed with the service stopped and expired salts
+are pruned before traffic resumes. Once the live salt and every retained replica containing it
+have actually been removed, the stored visitor number cannot be reversed by us. We say this plainly
+because "fully anonymous after 48 hours" would claim more than the storage and the maths allow.</p>
 
 <h3>What we store</h3>
 <ul>
   <li>The page path, with every query parameter except seven acquisition ones stripped.</li>
-  <li>The referrer's host, the source and the channel.</li>
+  <li>The referrer's host, the source, the campaign tags and the channel.</li>
   <li>Country, and region or city where the data allows.</li>
   <li>Device type, browser, operating system and their versions.</li>
   <li>Screen size bucket, and the browser's primary language.</li>
@@ -31,41 +67,65 @@ raw address logs and why it is encrypted at rest.</p>
 
 <h3>What we never store</h3>
 <ul>
-  <li><strong>The IP address.</strong> It is used for geolocation and the identifier and then
+  <li><strong>The IP address.</strong> It is used for geolocation and for the visitor number and then
       discarded, in the ingestion tier, before anything is written or forwarded. The type that
       crosses that boundary has nowhere to put one.</li>
-  <li>The raw user agent string.</li>
-  <li>Click identifiers. We record that one was present — which is how a paid click is told
-      from an organic one — and never its value, because a click id is a unique per-click
-      identifier.</li>
+  <li><strong>The raw user agent string.</strong> It is parsed into a browser, an operating system
+      and a device type, and the string itself is dropped.</li>
+  <li><strong>Click identifiers.</strong> We record that <code>gclid</code> or <code>msclkid</code>
+      was present — which is how a paid click is told from an organic one when somebody forgot their
+      campaign tags — and never its value, because a click id identifies one click by one person.</li>
   <li>Anything in a query string other than the seven acquisition parameters.</li>
 </ul>
 
 <h3>Cookies</h3>
-<p>The tracking script sets none and reads none. It uses no local storage for identification.
-Most legal advice concludes that no consent banner is required for this design, but we are
-not your lawyers and your regulator is not ours — the facts above are what you need to give
-to somebody who is.</p>
+<p>The tracking script sets none and reads none, and uses no local storage for identification. Most
+legal advice concludes that no consent banner is required for this design, but we are not your
+lawyers and your regulator is not ours — the facts above are what you need to hand to somebody who
+is.</p>
+
+<h3>Bot traffic is labelled, not deleted</h3>
+<p>When we decide a request is a bot, a datacentre address or a known spam referrer, the event is
+still stored, with the reason attached, and excluded from your reports by default. You can turn it
+back on. Deleting suspected bot traffic before storing it is the more common choice in this market,
+and it means a wrongly-classified human visitor is gone with no way to get them back.</p>
 
 <h3>Who processes your data</h3>
-<p>For the hosted service, Cloudmanic Labs, LLC is the processor and you are the controller.
-Our sub-processors are listed in the <a href="/legal/dpa">data processing addendum</a>. We do
-not sell, rent or share visitor data, and there is no advertising business anywhere near
-this product.</p>
+<p>For the hosted service, Cloudmanic Labs, LLC is the processor and you are the controller. Our
+infrastructure sub-processors receive or store encrypted visitor analytics for compute, live storage
+and disaster recovery; their categories and responsibilities are listed in the
+<a href="/legal/dpa">data processing addendum</a>. We do not sell or rent visitor data, disclose it
+to billing or email providers, or use it for advertising.</p>
 
 <h3>Requests from a data subject</h3>
-<p>Because nothing we store identifies a person, an access or erasure request usually has
-nothing to match against — there is no row that says "this is Maria". If a custom property
-you sent does identify somebody, that property is yours and you can delete it. Write to us
-and we will help.</p>
+<p>The standard analytics fields carry no direct account identity, but arbitrary custom properties
+and page URLs can identify a person if your site sends names, email addresses, user ids, tokens or
+similar values. Sending those values is prohibited. If it happens, stop the sender and use the site's
+reset control or account deletion to erase the affected analytics data; write to the operator for help
+with an access or erasure request. A pseudonymous fingerprint alone usually provides no reliable way
+to match a named requester to one stored row.</p>
 
 <h3>Deleting an account</h3>
-<p>Deletion removes the analytics database, the account records and the customer record with
-our payment provider. There is no soft delete and no recycle bin: keeping one would mean the
-deletion we spent ninety days warning you about was not real. See the timetable on the
+<p>At day 90 the hourly lifecycle sweep immediately removes the live analytics database and account records. The replication
+watcher stops the deleted database's active replication within at most 60 seconds. A provider-side
+lifecycle rule covering the whole shard prefix makes encrypted disaster-recovery replicas eligible
+for removal within 72 hours of each replica object's creation, including prefixes no longer in the
+Litestream configuration. The final object can be written during that 60-second stop interval, so it
+is eligible within 72 hours and 60 seconds of live deletion. Physical removal is asynchronous with no published maximum, and replicas
+may remain operationally restorable while it is pending; they are not used to reactivate the deleted
+account.</p>
+<p>We also ask the payment provider to remove its customer record. If that external request fails,
+we retain only the provider identifier needed to retry it on every hourly lifecycle sweep until it
+succeeds, and send the deletion confirmation after it succeeds. Once the mail relay's acceptance is
+recorded, the destination email and team name are erased from the deletion record. A process crash
+after relay acceptance but before that record is committed can cause a retry with the same stable
+Message-ID; SMTP cannot guarantee exactly-once delivery. A minimal tombstone of internal id, timestamps and generic state,
+plus invoices retained for tax obligations, remains. See the timetable on the
 <a href="/pricing">pricing page</a>.</p>
 
 <h3>Where the data lives</h3>
-<p>On our own servers, in one SQLite database per account. There is no third-party data
-warehouse, no analytics-on-our-analytics, and no copy of your data anywhere we have not told
-you about.</p>
+<p>For the hosted service, in one SQLite database per account on encrypted volumes supplied by our
+compute host, with encrypted disaster-recovery replicas in object storage. Those infrastructure
+providers are subprocessors and are named with their data and region on the
+<a href="/legal/subprocessors">current subprocessor list</a>. There is no third-party data warehouse
+or analytics-on-our-analytics.</p>

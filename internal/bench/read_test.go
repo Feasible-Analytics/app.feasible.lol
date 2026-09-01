@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/seed"
 )
 
@@ -72,11 +73,12 @@ func dataset(tb testing.TB) Dataset {
 			// One site, so the whole of the generated history lands in one
 			// database — which is the shape the estimates were written about.
 			if _, seededErr = seed.Run(context.Background(), seed.Options{
-				DataDir:   dir,
-				Pageviews: *pageviews,
-				Days:      *days,
-				Sites:     1,
-				Seed:      seed.DefaultSeed,
+				DataDir:           dir,
+				Pageviews:         *pageviews,
+				Days:              *days,
+				Sites:             1,
+				Seed:              seed.DefaultSeed,
+				ControlMigrations: migrate.Control(),
 			}); seededErr != nil {
 				return
 			}

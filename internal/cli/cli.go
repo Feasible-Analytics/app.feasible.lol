@@ -21,6 +21,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/build"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 )
 
 // Exit codes. Two is the conventional "you typed it wrong" code and is kept
@@ -68,19 +69,21 @@ Configuration is read from $CONFIG_DIR/<NAME> first, then the environment, then
 // and the streams to write to. Passing one struct keeps subcommand signatures
 // stable as the foundation grows.
 type env struct {
-	cfg    *config.Config
-	log    *logger.Logger
-	stdout io.Writer
-	stderr io.Writer
+	cfg               *config.Config
+	log               *logger.Logger
+	stdout            io.Writer
+	stderr            io.Writer
+	controlMigrations migrate.Set
 }
 
 // Options are the inputs to Run. Tests supply their own streams and arguments;
 // main supplies the real ones. Making these explicit is what keeps the command
 // testable without a subprocess.
 type Options struct {
-	Args   []string
-	Stdout io.Writer
-	Stderr io.Writer
+	Args              []string
+	Stdout            io.Writer
+	Stderr            io.Writer
+	ControlMigrations migrate.Set
 }
 
 // Main is the entry point package main calls. It exists so main.go stays three
@@ -99,6 +102,9 @@ func Run(opts Options) int {
 	}
 	if stderr == nil {
 		stderr = os.Stderr
+	}
+	if opts.ControlMigrations.Name == "" {
+		opts.ControlMigrations = migrate.Control()
 	}
 
 	root := flag.NewFlagSet("feasible", flag.ContinueOnError)
@@ -161,8 +167,9 @@ func Run(opts Options) int {
 			TraceEvents: cfg.Shared.TraceEvents,
 			Output:      stdout,
 		}),
-		stdout: stdout,
-		stderr: stderr,
+		stdout:            stdout,
+		stderr:            stderr,
+		controlMigrations: opts.ControlMigrations,
 	}
 
 	switch args[0] {

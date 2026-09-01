@@ -9,7 +9,7 @@
 		<span class="font-mono">{{ range $i, $n := .SheetNames }}{{ if $i }}, {{ end }}{{ $n }}{{ end }}</span>
 	</p>
 
-	<form method="post" action="/settings/sites/{{ .Domain }}/imports/upload" enctype="multipart/form-data" class="mt-4 flex flex-wrap items-end gap-3">
+	<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/imports/upload" .Domain) }}" enctype="multipart/form-data" class="mt-4 flex flex-wrap items-end gap-3">
 		<input type="hidden" name="csrf_token" value="{{.CSRF}}">
 		<div class="min-w-[16rem] flex-1">
 			<label class="block text-xs font-medium text-muted" for="import-file">{{ t $.Lang "auth.imports.file_label" }}</label>
@@ -65,7 +65,7 @@
 						{{ else }}<span class="text-faint">—</span>{{ end }}
 					</td>
 					<td class="py-2 align-top">
-						<form method="post" action="/settings/sites/{{ $.Domain }}/imports/delete">
+						<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/imports/delete" $.Domain) }}">
 							<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
 							<input type="hidden" name="id" value="{{ .ID }}">
 							<button type="submit" class="text-sm font-medium text-down hover:text-down-ink">{{ t $.Lang "auth.imports.delete" }}</button>
@@ -85,7 +85,7 @@
 	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.exports.title" }}</h2>
 	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang "auth.exports.help" }}</p>
 
-	<form method="post" action="/settings/sites/{{ .Domain }}/exports/create" class="mt-4">
+	<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/exports/create" .Domain) }}" class="mt-4">
 		<input type="hidden" name="csrf_token" value="{{.CSRF}}">
 		<button type="submit" class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "auth.exports.prepare" }}</button>
 	</form>
@@ -148,14 +148,14 @@
 				<p class="mt-2 text-xs text-muted">{{ t $.Lang "auth.google.connected_property" "email" .GA4.GoogleEmail "property" .GA4.Property }}</p>
 				{{ end }}
 
-				<form method="post" action="/settings/sites/{{ $.Domain }}/google/disconnect" class="mt-3">
+				<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/google/disconnect" $.Domain) }}" class="mt-3">
 					<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
 					<input type="hidden" name="provider" value="ga4">
 					<button type="submit" class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">{{ t $.Lang "auth.google.disconnect" }}</button>
 				</form>
 			{{ else }}
 				<p class="mt-2 text-xs text-muted">{{ t $.Lang "auth.google.not_connected" }}</p>
-				<a href="/settings/sites/{{ $.Domain }}/google/connect?provider=ga4" class="mt-3 inline-block rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">{{ t $.Lang "auth.google.connect_analytics" }}</a>
+				<a href="{{ url $.Lang (printf "/settings/sites/%s/google/connect?provider=ga4" $.Domain) }}" class="mt-3 inline-block rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">{{ t $.Lang "auth.google.connect_analytics" }}</a>
 			{{ end }}
 		</div>
 
@@ -169,14 +169,14 @@
 				<p class="mt-2 text-xs text-muted">{{ t $.Lang "auth.google.connected_property" "email" .SearchConsole.GoogleEmail "property" .SearchConsole.Property }}</p>
 				{{ end }}
 
-				<form method="post" action="/settings/sites/{{ $.Domain }}/google/disconnect" class="mt-3">
+				<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/google/disconnect" $.Domain) }}" class="mt-3">
 					<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
 					<input type="hidden" name="provider" value="search_console">
 					<button type="submit" class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">{{ t $.Lang "auth.google.disconnect" }}</button>
 				</form>
 			{{ else }}
 				<p class="mt-2 text-xs text-muted">{{ t $.Lang "auth.google.not_connected" }}</p>
-				<a href="/settings/sites/{{ $.Domain }}/google/connect?provider=search_console" class="mt-3 inline-block rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">{{ t $.Lang "auth.google.connect_search_console" }}</a>
+				<a href="{{ url $.Lang (printf "/settings/sites/%s/google/connect?provider=search_console" $.Domain) }}" class="mt-3 inline-block rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">{{ t $.Lang "auth.google.connect_search_console" }}</a>
 			{{ end }}
 		</div>
 	</div>

@@ -1,0 +1,105 @@
+<!--
+webhooks.html
+The outbound webhook documentation body.
+
+Created: 2026-08-31
+Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+<p>A webhook is us calling you when something happens, so you do not have to poll for it. They are
+managed under <code>/api/v1/webhooks</code> with a key carrying the <code>webhooks:write</code>
+scope.</p>
+
+<pre><code>POST /api/v1/webhooks
+Authorization: Bearer feas_…
+
+{
+  "url": "https://example.com/hooks/feasible",
+  "event_types": ["site.created", "traffic.spike"]
+}</code></pre>
+
+<p>The response carries the signing secret — <code>whsec_</code> followed by 43 characters — and it is
+the only time you will see it. Listing or fetching a webhook never returns it. An empty
+<code>event_types</code> means every type.</p>
+
+<p>The URL must be <code>https</code>. Plain <code>http</code> is allowed only for
+<code>localhost</code>, so you can develop against it.</p>
+
+<h3>The event types</h3>
+<ul>
+  <li><code>site.created</code></li>
+  <li><code>goal.converted</code></li>
+  <li><code>traffic.spike</code></li>
+  <li><code>traffic.drop</code></li>
+  <li><code>usage.over_limit</code></li>
+  <li><code>import.completed</code></li>
+  <li><code>import.failed</code></li>
+</ul>
+<p><strong>Of these, only <code>site.created</code> actually fires in this build.</strong> The others
+are subscribable and their shapes are settled, but nothing publishes them yet. We would rather tell
+you that than let you wire up an alert that stays quiet for a reason you cannot see.</p>
+
+<h3>What we send</h3>
+<pre><code>POST /your/endpoint
+Content-Type: application/json
+User-Agent: feasible-webhooks/1
+Feasible-Signature: t=1772236800,v1=9f86d081…
+Feasible-Event: site.created
+Feasible-Event-Id: 6f1b…            &lt;- stable across retries
+Feasible-Delivery: 1842             &lt;- decimal int64, stable across automatic retries
+
+{
+  "id": "6f1b…",
+  "type": "site.created",
+  "created_at": 1772236800,
+  "site_id": 42,
+  "data": { "domain": "example.com", "timezone": "Etc/UTC", "…": "…" }
+}</code></pre>
+
+<p><code>Feasible-Delivery</code> is the delivery row's positive decimal signed 64-bit integer id. It
+is stable for every automatic retry of one queued delivery, so it is
+the idempotency key when a manual replay should be processed as a new attempt. Pressing manual
+redeliver creates a new delivery row and a new delivery id. <code>Feasible-Event-Id</code> remains the
+same across both automatic retries and manual redeliveries; use it instead when even an intentional
+manual replay must be collapsed.</p>
+
+<h3>Verifying the signature</h3>
+<p><code>Feasible-Signature</code> is <code>t=&lt;unix seconds&gt;,v1=&lt;hex&gt;</code>. The MAC is
+HMAC-SHA256 over the byte string <code>&lt;timestamp&gt; + "." + &lt;raw body&gt;</code>, keyed with
+your secret. The timestamp is inside the MAC, so a captured delivery cannot be given a fresh one.</p>
+
+<pre><code>import hashlib, hmac, time
+
+def verify(secret, header, body, tolerance=300):
+    parts = dict(p.split("=", 1) for p in header.split(","))
+    if abs(time.time() - int(parts["t"])) > tolerance:
+        return False
+    expected = hmac.new(secret.encode(), f'{parts["t"]}.'.encode() + body,
+                        hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, parts["v1"])</code></pre>
+
+<p>Verify against the <strong>raw</strong> body, before any JSON parsing — re-serialising changes the
+bytes and the MAC with them. Reject anything more than five minutes old. Compare in constant time.</p>
+
+<p>Rotating a secret keeps the old one valid for an hour, so you have a window to deploy the new one
+without dropping a delivery. The rotate response tells you exactly how long is left.</p>
+
+<h3>Retries</h3>
+<p>Anything in the 2xx range is success. Anything else is retried up to <strong>12 times</strong>,
+backing off from 30 seconds by a factor of three to a ceiling of six hours — more than a day of
+attempts in total. Each attempt has ten seconds to answer and reuses the same
+<code>Feasible-Delivery</code> value.</p>
+<p>Redirects are refused rather than followed: a 302 would send a payload signed for you to somewhere
+you did not register.</p>
+<p>After <strong>5</strong> consecutive failures we tell you the endpoint looks broken. After
+<strong>15</strong> we stop sending to it, and re-enabling it clears the count. That is not a
+punishment — an endpoint that has failed fifteen times in a row is a queue that will never drain.</p>
+<p>Every attempt is logged with its status and the first 2 KB of your response, readable at
+<code>GET /api/v1/webhooks/{id}/deliveries</code>, and you can force one with
+<code>POST /api/v1/webhooks/deliveries/{delivery_id}/redeliver</code>.</p>
+
+<h3>Two deliberate limits</h3>
+<p><strong>Delivery never happens on a request path.</strong> Publishing writes a row and returns; a
+worker does the calling. An endpoint of yours that takes thirty seconds costs a worker thirty seconds
+and costs event collection nothing.</p>
+<p><strong>A locked account's webhooks are withheld</strong> rather than queued. When the account is
+back, new events flow again; the ones from the locked period are not replayed.</p>

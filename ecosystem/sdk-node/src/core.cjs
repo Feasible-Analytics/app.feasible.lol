@@ -136,10 +136,9 @@ function pickForwarded(value) {
 	return hostOnly(text(header).split(",")[0]);
 }
 
-// visitorFromNodeRequest lifts the visitor out of a Node IncomingMessage, using
-// the same precedence the ingest server uses: CF-Connecting-IP, then the first
-// entry of X-Forwarded-For, then the socket address. Express, Fastify, Koa and
-// a bare `http.createServer` all hand you one of these.
+// visitorFromNodeRequest lifts the visitor out of a Node IncomingMessage. It
+// assumes the application edge has stripped client-supplied forwarding headers;
+// unlike the ingest service, this helper has no trusted-proxy configuration.
 function visitorFromNodeRequest(request) {
 	if (!request || !request.headers) return { clientIp: "", userAgent: "" };
 

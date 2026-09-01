@@ -13,7 +13,7 @@
     {{ t $.Lang "auth.verify.link_too" }}
   </p>
 
-  <form method="post" action="/verify-email" class="mt-6 space-y-4">
+  <form method="post" action="{{ url $.Lang "/verify-email" }}" class="mt-6 space-y-4">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <input type="hidden" name="next" value="{{ .Data.Next }}">
 
@@ -30,13 +30,13 @@
     </button>
   </form>
 
-  <form method="post" action="/verify-email/resend" class="mt-4 text-center">
+  <form method="post" action="{{ url $.Lang "/verify-email/resend" }}" class="mt-4 text-center">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <input type="hidden" name="next" value="{{ .Data.Next }}">
     <button type="submit" class="text-sm font-medium text-accent-ink hover:text-accent">{{ t $.Lang "auth.verify.resend" }}</button>
   </form>
 
-  <form method="post" action="/logout" class="mt-6 border-t border-line pt-4 text-center">
+  <form method="post" action="{{ url $.Lang "/logout" }}" class="mt-6 border-t border-line pt-4 text-center">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <button type="submit" class="text-xs text-faint hover:text-muted">{{ t $.Lang "auth.verify.sign_out" }}</button>
   </form>

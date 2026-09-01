@@ -65,7 +65,7 @@
 
     <div class="flex-1 min-w-0">
       <header class="lg:hidden flex items-center justify-between border-b border-line bg-card px-4 py-3">
-        <a href="/sites" class="flex items-center gap-2 font-semibold text-heading">
+        <a href="{{ url $.Lang "/sites" }}" class="flex items-center gap-2 font-semibold text-heading">
           <span class="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-fill-fg text-sm font-bold">f</span>
           feasible.lol
         </a>
@@ -83,7 +83,7 @@
   </div>
 {{ else }}
   <div class="flex min-h-full flex-col items-center justify-center px-4 py-10">
-    <a href="/" class="mb-8 flex items-center gap-2 text-lg font-semibold text-heading">
+    <a href="{{ url $.Lang "/" }}" class="mb-8 flex items-center gap-2 text-lg font-semibold text-heading">
       <span class="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-accent text-fill-fg font-bold">f</span>
       feasible.lol
     </a>

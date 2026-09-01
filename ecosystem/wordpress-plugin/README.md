@@ -47,9 +47,10 @@ than no script.
 `X-Forwarded-For` and the visitor's real `User-Agent`. Without those two the analytics server sees
 your web host, and every visitor to your site becomes one person sitting in a datacentre — a failure
 that produces no error anywhere and is usually noticed weeks later, if at all. The address is
-resolved the same way the server resolves it: `CF-Connecting-IP`, then the **first** entry of
-`X-Forwarded-For`, then `REMOTE_ADDR`. The first entry is the visitor; every proxy appends itself,
-so taking the last one reports your own load balancer.
+resolved as `CF-Connecting-IP`, then the **first** entry of `X-Forwarded-For`, then `REMOTE_ADDR`.
+This helper has no trusted-proxy configuration, so the WordPress edge must strip client-supplied
+forwarding headers and write its own. A directly exposed installation should use `REMOTE_ADDR`
+instead so a client cannot choose its fingerprint or geolocation.
 
 The upstream status code and the `x-feasible-dropped` header come back to the browser unchanged, so
 a classified event is still visible to whoever is debugging it. `X-Debug-Request: true` passes

@@ -1,5 +1,5 @@
 {{ define "layout" }}<!DOCTYPE html>
-<html lang="en">
+<html lang="{{ .Lang }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -29,10 +29,10 @@
   <div class="wrap">
     <a class="brand" href="/">feasible.lol</a>
     <nav>
-      <a href="/pricing{{ if .TeamID }}?team={{ .TeamID }}{{ end }}" {{ if eq .Nav "pricing" }}class="on"{{ end }}>Pricing</a>
-      <a href="/billing{{ if .TeamID }}?team={{ .TeamID }}{{ end }}" {{ if eq .Nav "billing" }}class="on"{{ end }}>Billing</a>
-      <a href="/docs" {{ if eq .Nav "docs" }}class="on"{{ end }}>Docs</a>
-      <a href="/dashboard/">Dashboard</a>
+	  <a href="/pricing{{ if .TeamID }}?team={{ .TeamID }}{{ end }}" {{ if eq .Nav "pricing" }}class="on"{{ end }}>{{ t .Lang "pages.nav.pricing" }}</a>
+	  <a href="/billing{{ if .TeamID }}?team={{ .TeamID }}{{ end }}" {{ if eq .Nav "billing" }}class="on"{{ end }}>{{ t .Lang "pages.nav.billing" }}</a>
+	  <a href="/docs" {{ if eq .Nav "docs" }}class="on"{{ end }}>{{ t .Lang "pages.nav.docs" }}</a>
+	  <a href="/dashboard/">{{ t .Lang "pages.nav.dashboard" }}</a>
     </nav>
   </div>
 </header>
@@ -42,18 +42,25 @@
 <footer class="bottom">
   <div class="wrap">
     <nav>
-      <a href="/pricing{{ if .TeamID }}?team={{ .TeamID }}{{ end }}">Pricing</a>
-      <a href="/docs">Documentation</a>
-      <a href="/legal/privacy">Privacy &amp; data policy</a>
-      <a href="/legal/terms">Terms</a>
-      <a href="/legal/dpa">Data processing addendum</a>
-      <a href="mailto:{{ .SalesEmail }}">Talk to us</a>
+	  <a href="/pricing{{ if .TeamID }}?team={{ .TeamID }}{{ end }}">{{ t .Lang "pages.footer.pricing" }}</a>
+	  <a href="/docs">{{ t .Lang "pages.footer.docs" }}</a>
+      <a href="/legal/privacy">{{ t .Lang "pages.footer.privacy" }}</a>
+      <a href="/legal/terms">{{ t .Lang "pages.footer.terms" }}</a>
+      <a href="/legal/dpa">{{ t .Lang "pages.footer.dpa" }}</a>
+	  <a href="/legal/subprocessors">Subprocessors</a>
+	  <a href="mailto:{{ .SalesEmail }}">{{ t .Lang "pages.footer.contact" }}</a>
     </nav>
     <address>
+      {{ if .Hosted }}
       Cloudmanic Labs, LLC<br>
       901 Brutscher Street, D112<br>
       Newberg, OR 97132<br>
       United States
+      {{ else }}
+      {{ .OperatorName }}<br>
+      {{ range .OperatorAddress }}{{ . }}<br>{{ end }}
+      <a href="mailto:{{ .OperatorEmail }}">{{ .OperatorEmail }}</a>
+      {{ end }}
     </address>
   </div>
 </footer>

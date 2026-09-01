@@ -44,7 +44,7 @@ func mustTrust(t testing.TB, entries ...string) *TrustedProxies {
 // has cost somebody a day and none of them raise an error anywhere, which is
 // why the order is asserted rather than assumed.
 func TestClientIPPrecedence(t *testing.T) {
-	trusted := mustTrust(t, "10.0.0.7")
+	trusted := mustTrust(t, "10.0.0.7", "10.0.0.8")
 
 	cases := []struct {
 		name       string
@@ -65,21 +65,19 @@ func TestClientIPPrecedence(t *testing.T) {
 			wantSource: SourceFeasibleIP,
 		},
 		{
-			// The incumbent trusts this header unconditionally. On a
-			// directly-exposed instance that lets anyone forge their own
-			// geolocation and split their own fingerprint at will.
-			name: "the override is ignored from anyone else",
+			name: "all forwarded headers are ignored from anyone else",
 			peer: "203.0.113.99:41000",
 			headers: map[string]string{
-				HeaderFeasibleIP:   "203.0.113.5",
-				HeaderForwardedFor: "192.0.2.5",
+				HeaderFeasibleIP:     "203.0.113.5",
+				HeaderCFConnectingIP: "198.51.100.5",
+				HeaderForwardedFor:   "192.0.2.5",
 			},
-			wantIP:     "192.0.2.5",
-			wantSource: SourceForwardedFor,
+			wantIP:     "203.0.113.99",
+			wantSource: SourceSocket,
 		},
 		{
 			name: "Cloudflare beats the forwarded chain",
-			peer: "203.0.113.99:41000",
+			peer: "10.0.0.7:41000",
 			headers: map[string]string{
 				HeaderCFConnectingIP: "198.51.100.5",
 				HeaderForwardedFor:   "192.0.2.5",
@@ -88,11 +86,9 @@ func TestClientIPPrecedence(t *testing.T) {
 			wantSource: SourceCloudflare,
 		},
 		{
-			// Taking the last entry — which several frameworks do — reports the
-			// nearest proxy as the visitor and collapses everyone into one.
-			name:       "the first forwarded entry is the client",
-			peer:       "203.0.113.99:41000",
-			headers:    map[string]string{HeaderForwardedFor: "192.0.2.5, 10.0.0.7, 10.0.0.8"},
+			name:       "the chain is walked from right to left",
+			peer:       "10.0.0.7:41000",
+			headers:    map[string]string{HeaderForwardedFor: "198.51.100.250, 192.0.2.5, 10.0.0.8"},
 			wantIP:     "192.0.2.5",
 			wantSource: SourceForwardedFor,
 		},
@@ -167,6 +163,35 @@ func TestTrustedProxyCIDR(t *testing.T) {
 	}
 }
 
+// TestAppendingProxyRejectsASpoofedLeftmostAddress proves a direct client
+// cannot choose the value returned by an appending proxy. The proxy-observed
+// client address is nearest to the trusted hops and therefore wins.
+func TestAppendingProxyRejectsASpoofedLeftmostAddress(t *testing.T) {
+	trusted := mustTrust(t, "10.0.0.0/8")
+	req := newIPRequest("10.0.0.7:41000", map[string]string{
+		HeaderForwardedFor: "203.0.113.66, 198.51.100.42, 10.0.0.8",
+	})
+
+	got := ResolveClientIP(req, trusted)
+	if got.String() != "198.51.100.42" {
+		t.Fatalf("address = %q, want the proxy-observed client", got.String())
+	}
+}
+
+// TestMalformedForwardingChainFailsClosed prevents a bad nearest hop from
+// unlocking an attacker-controlled value farther left in the chain.
+func TestMalformedForwardingChainFailsClosed(t *testing.T) {
+	trusted := mustTrust(t, "10.0.0.0/8")
+	req := newIPRequest("10.0.0.7:41000", map[string]string{
+		HeaderForwardedFor: "203.0.113.66, not-an-address, 10.0.0.8",
+	})
+
+	got := ResolveClientIP(req, trusted)
+	if got.String() != "10.0.0.7" || got.Source != SourceSocket {
+		t.Fatalf("malformed chain resolved %q from %q, want the socket peer", got.String(), got.Source)
+	}
+}
+
 // TestPortsAndBracketsAreStripped covers both address families. A port left on
 // the end makes the address unparseable, which silently falls through to the
 // next header and reports the wrong visitor.
@@ -200,7 +225,7 @@ func TestPortsAndBracketsAreStripped(t *testing.T) {
 func TestZoneIdentifierIsStripped(t *testing.T) {
 	got := ResolveClientIP(newIPRequest("203.0.113.99:41000", map[string]string{
 		HeaderForwardedFor: "fe80::1%eth0",
-	}), mustTrust(t))
+	}), mustTrust(t, "203.0.113.99"))
 
 	if got.String() != "fe80::1" {
 		t.Fatalf("address = %q, want fe80::1", got.String())

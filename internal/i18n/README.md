@@ -8,21 +8,22 @@
 
 # Translations
 
-Every user-facing string in the product lives here, in one catalogue, read by both front ends.
+Every user-facing string in the product lives here, in one catalogue, read by every front end.
 
 ```
 locales/
   en/            the source language — always complete
-    common.json  strings shared by every screen
-    auth.json    the server-rendered screens
+    common.json    strings shared by every screen
+    auth.json      sign-in, account, settings and site management
+    pages.json     pricing, billing, checkout and the documentation shell
     dashboard.json the React dashboard
-  de/ fr/ es/    the same files, translated
+  de/            the same files, translated
 ```
 
 ## Why one catalogue and not two
 
-The product has two rendering surfaces: Go templates for everything outside the stats screen, and
-React for the stats screen itself. They read the same files.
+The product has three rendering surfaces: Go templates for the account screens, Go templates for the
+pricing, billing and documentation screens, and React for the stats screen. They read the same files.
 
 The server negotiates the language, merges the chosen locale's strings over English, and hands the
 result to whichever surface is answering — a template function for the Go screens, and the
@@ -92,9 +93,11 @@ English.
 
 **German** is a working second locale rather than a finished one. It covers the shared strings and
 every account, sign-in, settings and site-management screen — the ones somebody hits before they
-have decided whether to stay — and not yet the stats dashboard. `Coverage("de")` is the honest
-number, and it is around three quarters. Anything it has not translated renders in English on the
-same screen, which is what makes a partial locale worth shipping at all.
+have decided whether to stay — and neither the stats dashboard nor the pricing and billing screens.
+`Coverage("de")` is the honest number, and it is a little under a half: `common.json` and
+`auth.json` are complete, `dashboard.json` and `pages.json` are not started. Anything it has not
+translated renders in English on the same screen, which is what makes a partial locale worth shipping
+at all.
 
 It has **not been reviewed by a native speaker**, and it should be before German is advertised
 anywhere.
@@ -122,8 +125,8 @@ and it belongs in whichever screen ends up owning account preferences.
 ## What the tests enforce
 
 - **Every id in use has a string.** The test scans the templates, the Go handlers and the TypeScript
-  sources for call sites and fails on any id with nothing behind it. A missing string renders as the
-  raw id on a customer's screen, with a 200 and nothing in any log.
+  sources on all three surfaces for call sites and fails on any id with nothing behind it. A missing
+  string renders as the raw id on a customer's screen, with a 200 and nothing in any log.
 - **Every string is used.** The other direction matters too: a string nobody renders is a string a
   translator is paid to translate for a screen that does not exist.
 - **A missing id is recorded**, not swallowed, so the gap is countable as well as visible.

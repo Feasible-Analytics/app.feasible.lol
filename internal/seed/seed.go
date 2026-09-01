@@ -98,6 +98,11 @@ type Options struct {
 	// Out receives the progress and the summary. Nil means no output.
 	Out io.Writer
 
+	// ControlMigrations lets tests select an actual embedded schema prefix when
+	// the scenario does not exercise later control tables. Zero uses the
+	// production control migration set and retains its gap validation.
+	ControlMigrations migrate.Set
+
 	Log *logger.Logger
 }
 
@@ -126,6 +131,9 @@ func (o *Options) withDefaults() {
 	if o.Out == nil {
 		o.Out = io.Discard
 	}
+	if o.ControlMigrations.Name == "" {
+		o.ControlMigrations = migrate.Control()
+	}
 }
 
 // Result is what a run produced. It is returned rather than only printed so a
@@ -153,6 +161,7 @@ type Result struct {
 // accountRun is one open account database and the sites that write into it.
 type accountRun struct {
 	account *accounts.Account
+	lease   *accounts.Lease
 	seeded  *seededAccount
 	writer  *batchWriter
 	sites   []*siteRun
@@ -319,7 +328,7 @@ func (g *generator) open(ctx context.Context) error {
 	// A seed run migrates on its own. It is a development command against a
 	// development database, and making somebody run two commands to get one
 	// dataset is how they end up with neither.
-	if _, err := migrate.Run(ctx, control, migrate.Control()); err != nil {
+	if _, err := migrate.Run(ctx, control, g.opts.ControlMigrations); err != nil {
 		return fmt.Errorf("seed: %w", err)
 	}
 
@@ -381,6 +390,9 @@ func (g *generator) open(ctx context.Context) error {
 // moving on, and opening and closing a file per day would be the slowest thing
 // in the run.
 func (g *generator) close() {
+	for _, run := range g.accounts {
+		_ = run.lease.Release()
+	}
 	if g.manager != nil {
 		_ = g.manager.CloseAll()
 	}
@@ -418,12 +430,13 @@ func (g *generator) plan(ctx context.Context) error {
 	var traffic []siteFixture
 
 	for _, account := range seeded {
-		opened, err := g.manager.Open(ctx, account.ID)
+		lease, err := g.manager.Acquire(ctx, account.ID)
 		if err != nil {
 			return err
 		}
 
-		run := &accountRun{account: opened, seeded: account, writer: newBatchWriter(opened, g.sessions)}
+		run := &accountRun{account: lease.Account, lease: lease, seeded: account, writer: newBatchWriter(lease.Account, g.sessions)}
+		g.accounts = append(g.accounts, run)
 
 		// Seeding on top of a database that already holds data has to carry on
 		// from its high water marks rather than collide with them.
@@ -431,7 +444,7 @@ func (g *generator) plan(ctx context.Context) error {
 			return err
 		}
 
-		suspended, err := suspendIndexes(ctx, opened.Writer())
+		suspended, err := suspendIndexes(ctx, lease.Account.Writer())
 		if err != nil {
 			return err
 		}
@@ -453,7 +466,6 @@ func (g *generator) plan(ctx context.Context) error {
 			}
 		}
 
-		g.accounts = append(g.accounts, run)
 	}
 
 	if len(traffic) == 0 {

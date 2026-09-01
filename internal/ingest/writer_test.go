@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -20,6 +21,183 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 )
+
+// TestWriterDropsAStaleRouteAfterCrossProcessDeletion proves an already-open
+// shard handle cannot write or recreate an account after another manager has
+// established the durable tombstone.
+func TestWriterDropsAStaleRouteAfterCrossProcessDeletion(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	manager := accounts.NewManager(dataDir)
+	deleter := accounts.NewManager(dataDir)
+	t.Cleanup(func() { checkClose(t, "writer account manager", manager.CloseAll) })
+	t.Cleanup(func() { checkClose(t, "deletion account manager", deleter.CloseAll) })
+
+	writer := NewWriter(manager, NewSessionCache())
+	first := writerEvent(1, EventPageview, fixtureStart.Unix(), "/before")
+	if _, err := writer.Write(ctx, []Event{first}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deleter.Block(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(accounts.Dir(dataDir, 1)); err != nil {
+		t.Fatal(err)
+	}
+
+	stale := writerEvent(1, EventPageview, fixtureStart.Add(time.Minute).Unix(), "/after")
+	committed, err := writer.Write(ctx, []Event{stale})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(committed) != 1 || committed[0] != stale.UUID {
+		t.Fatalf("stale event acknowledgement = %v", committed)
+	}
+	if _, err := os.Stat(accounts.Dir(dataDir, 1)); !os.IsNotExist(err) {
+		t.Fatalf("stale route recreated the deleted directory: %v", err)
+	}
+}
+
+// TestWriterWriteAndBeginDeletionShareOneAccountFence stops an accepted write
+// at its final rollback boundary, starts deletion after the durable tombstone
+// is visible, and proves deletion cannot close the handle until that write has
+// committed and released its lease. A later queued event is then acknowledged
+// as an intentional tombstone drop without recreating the removed shard.
+func TestWriterWriteAndBeginDeletionShareOneAccountFence(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	manager := accounts.NewManager(dataDir)
+	t.Cleanup(func() { checkClose(t, "overlap account manager", manager.CloseAll) })
+
+	writer := NewWriter(manager, NewSessionCache())
+	entered := make(chan struct{})
+	resume := make(chan struct{})
+	defer func() {
+		select {
+		case <-resume:
+		default:
+			close(resume)
+		}
+	}()
+	var once sync.Once
+	writer.Failpoint = func(stage string) error {
+		if stage == WriterStageBeforeCommit {
+			once.Do(func() { close(entered) })
+			<-resume
+		}
+		return nil
+	}
+
+	event := writerEvent(1, EventPageview, fixtureStart.Unix(), "/ordered-before-deletion")
+	type writeResult struct {
+		ids []uuid.UUID
+		err error
+	}
+	written := make(chan writeResult, 1)
+	go func() {
+		ids, err := writer.Write(ctx, []Event{event})
+		written <- writeResult{ids: ids, err: err}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("accepted writer never reached the pre-commit boundary")
+	}
+
+	deleted := make(chan *accounts.DeletionGuard, 1)
+	deleteErrors := make(chan error, 1)
+	go func() {
+		guard, err := manager.BeginDeletion(1)
+		if err != nil {
+			deleteErrors <- err
+			return
+		}
+		deleted <- guard
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(accounts.TombstonePath(dataDir, 1)); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("deletion never published its tombstone")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case guard := <-deleted:
+		_ = guard.Release()
+		t.Fatal("deletion acquired its exclusive fence before the accepted write committed")
+	case err := <-deleteErrors:
+		t.Fatal(err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(resume)
+	var result writeResult
+	select {
+	case result = <-written:
+	case <-time.After(10 * time.Second):
+		t.Fatal("accepted writer did not finish after its commit boundary was released")
+	}
+	if result.err != nil {
+		t.Fatalf("accepted writer crossed deletion with error: %v", result.err)
+	}
+	if len(result.ids) != 1 || result.ids[0] != event.UUID {
+		t.Fatalf("accepted writer settled %v, want %s", result.ids, event.UUID)
+	}
+
+	var guard *accounts.DeletionGuard
+	select {
+	case guard = <-deleted:
+	case err := <-deleteErrors:
+		t.Fatal(err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("deletion did not acquire its fence after the accepted write released")
+	}
+	account, err := guard.OpenAccount(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account == nil {
+		t.Fatal("deletion could not inspect the shard committed immediately before its fence")
+	}
+	for table, query := range map[string]string{
+		"event":   "SELECT COUNT(*) FROM events",
+		"receipt": "SELECT COUNT(*) FROM recent_event_ids",
+	} {
+		var count int
+		if err := account.Reader().QueryRow(query).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Errorf("committed %s count = %d, want 1", table, count)
+		}
+	}
+	if err := guard.CloseAccount(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(accounts.Dir(dataDir, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := guard.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	after := writerEvent(1, EventPageview, fixtureStart.Add(time.Minute).Unix(), "/rejected-after-deletion")
+	settled, err := writer.Write(ctx, []Event{after})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(settled) != 1 || settled[0] != after.UUID {
+		t.Fatalf("post-deletion event acknowledgement = %v, want %s", settled, after.UUID)
+	}
+	if _, err := os.Stat(accounts.Dir(dataDir, 1)); !os.IsNotExist(err) {
+		t.Fatalf("post-deletion write recreated the account directory: %v", err)
+	}
+}
 
 // rejectHostnameShield rejects every event as a hostname policy failure.
 type rejectHostnameShield struct{}

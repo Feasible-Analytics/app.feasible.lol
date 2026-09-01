@@ -44,11 +44,11 @@ $visitor = Visitor::fromRequest();   // reads $_SERVER; pass your own array to t
 $client->pageview(...$visitor->args(), url: 'https://example.com/pricing');
 ```
 
-`Visitor::fromRequest()` resolves the address exactly the way the ingest server does:
-`CF-Connecting-IP`, then the **first** entry of `X-Forwarded-For`, then `REMOTE_ADDR`. The first
-entry is the one that matters — every proxy appends itself to that header, so taking the **last**
-entry, which several frameworks do, reports your own load balancer as the visitor and collapses all
-of your traffic into a single visit.
+`Visitor::fromRequest()` takes `CF-Connecting-IP`, then the **first** entry of
+`X-Forwarded-For`, then `REMOTE_ADDR`. It has no trusted-proxy configuration. Use it only behind an
+application edge that strips client-supplied forwarding headers and writes its own. On a directly
+exposed app, pass `REMOTE_ADDR` explicitly so a client cannot choose its fingerprint or
+geolocation.
 
 ## Install
 

@@ -10,7 +10,9 @@ package accounts
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -39,6 +41,123 @@ func checkClose(t testing.TB, name string, close func() error) {
 	t.Helper()
 	if err := close(); err != nil {
 		t.Errorf("close %s: %v", name, err)
+	}
+}
+
+// TestAccountLeaseHelper is the subprocess half of the stale-handle test. It
+// holds a shared lease across a real write until the parent permits release.
+func TestAccountLeaseHelper(t *testing.T) {
+	if os.Getenv("FEASIBLE_ACCOUNT_LEASE_HELPER") != "1" {
+		t.Skip("subprocess helper")
+	}
+	dir := os.Getenv("FEASIBLE_ACCOUNT_LEASE_DIR")
+	ready := os.Getenv("FEASIBLE_ACCOUNT_LEASE_READY")
+	release := os.Getenv("FEASIBLE_ACCOUNT_LEASE_RELEASE")
+	manager := NewManager(dir)
+	lease, err := manager.Acquire(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release() //nolint:errcheck // helper is exiting
+	if err := os.WriteFile(ready, []byte("ready"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(release); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("parent never released helper")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := lease.Account.Writer().Exec(`CREATE TABLE IF NOT EXISTS lease_probe (value TEXT); INSERT INTO lease_probe VALUES ('written')`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDeletionFenceDrainsACrossProcessStaleHandle proves an exclusive deletion
+// waits for the full operation lifetime in another process, then removes the
+// shard only after that process's final write and handle release.
+func TestDeletionFenceDrainsACrossProcessStaleHandle(t *testing.T) {
+	dir := t.TempDir()
+	manager := NewManager(dir)
+	if _, err := manager.Open(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.CloseAll(); err != nil {
+		t.Fatal(err)
+	}
+
+	ready := filepath.Join(t.TempDir(), "ready")
+	release := filepath.Join(t.TempDir(), "release")
+	command := exec.Command(os.Args[0], "-test.run=^TestAccountLeaseHelper$")
+	command.Env = append(os.Environ(),
+		"FEASIBLE_ACCOUNT_LEASE_HELPER=1",
+		"FEASIBLE_ACCOUNT_LEASE_DIR="+dir,
+		"FEASIBLE_ACCOUNT_LEASE_READY="+ready,
+		"FEASIBLE_ACCOUNT_LEASE_RELEASE="+release,
+	)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = command.Process.Kill()
+			t.Fatal("subprocess never acquired its lease")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	acquired := make(chan *DeletionGuard, 1)
+	errors := make(chan error, 1)
+	go func() {
+		guard, err := manager.BeginDeletion(1)
+		if err != nil {
+			errors <- err
+			return
+		}
+		acquired <- guard
+	}()
+	select {
+	case guard := <-acquired:
+		_ = guard.Release()
+		t.Fatal("deletion acquired its fence while another process still held a lease")
+	case err := <-errors:
+		t.Fatal(err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	if err := os.WriteFile(release, []byte("release"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var guard *DeletionGuard
+	select {
+	case guard = <-acquired:
+	case err := <-errors:
+		t.Fatal(err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("deletion did not acquire after the subprocess released")
+	}
+	if err := command.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if err := guard.CloseAccount(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(Dir(dir, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := guard.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(Dir(dir, 1)); !os.IsNotExist(err) {
+		t.Fatalf("account directory survived deletion: %v", err)
 	}
 }
 
@@ -215,6 +334,71 @@ func TestOpenCachesTheHandle(t *testing.T) {
 	}
 	if manager.OpenCount() != 1 {
 		t.Fatalf("%d handles are open, want 1", manager.OpenCount())
+	}
+}
+
+// TestDeletionTombstoneSurvivesManagersAndRestart proves the guard is durable
+// state, not a process-local cache that a split ingest process can miss.
+func TestDeletionTombstoneSurvivesManagersAndRestart(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	first := NewManager(dataDir)
+	second := NewManager(dataDir)
+	t.Cleanup(func() { _ = first.CloseAll(); _ = second.CloseAll() })
+
+	if _, err := first.Open(ctx, 9); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Block(9); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, manager := range map[string]*Manager{
+		"already open manager": first,
+		"deleting manager":     second,
+		"restarted manager":    NewManager(dataDir),
+	} {
+		if _, err := manager.Open(ctx, 9); !errors.Is(err, ErrDeleted) {
+			t.Errorf("%s open error = %v, want ErrDeleted", name, err)
+		}
+	}
+	if _, err := os.Stat(TombstonePath(dataDir, 9)); err != nil {
+		t.Fatalf("durable tombstone is absent: %v", err)
+	}
+}
+
+// TestBlockWaitsForAnIndependentManagerWriter proves the advisory lock drains
+// an in-flight writer before deletion proceeds, including across managers that
+// model separate app and ingest processes.
+func TestBlockWaitsForAnIndependentManagerWriter(t *testing.T) {
+	dataDir := t.TempDir()
+	writerManager := NewManager(dataDir)
+	deletionManager := NewManager(dataDir)
+
+	guard, err := writerManager.BeginWrite(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- deletionManager.Block(4) }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("deletion passed an active writer guard: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := guard.Release(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("deletion did not resume after the writer guard released")
 	}
 }
 

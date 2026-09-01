@@ -12,7 +12,7 @@
     {{ t $.Lang "auth.verify_failed.body" }}
   </p>
 
-  <a href="/login"
+  <a href="{{ url $.Lang "/login" }}"
      class="mt-6 inline-block rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
     {{ t $.Lang "auth.verify_failed.action" }}
   </a>

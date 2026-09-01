@@ -36,9 +36,9 @@ class Feasible_Client_IP {
 	 * resolve returns the visitor's address, or an empty string.
 	 *
 	 * The precedence is CF-Connecting-IP, then the first entry of
-	 * X-Forwarded-For, then the socket peer — the same order the ingest server
-	 * uses, because two different answers to "who was this" would put a
-	 * visitor in one country on the dashboard and another in a debug response.
+	 * X-Forwarded-For, then the socket peer. This assumes the WordPress edge
+	 * stripped client-supplied forwarding headers; unlike the ingest service,
+	 * this helper has no proxy allow-list.
 	 *
 	 * The server array is passed in rather than read from the superglobal so
 	 * that this decision can be tested without a web server in front of it.

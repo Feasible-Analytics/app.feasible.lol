@@ -31,7 +31,7 @@
             </p>
           </div>
 
-          <form method="post" action="/settings/sessions/revoke">
+          <form method="post" action="{{ url $.Lang "/settings/sessions/revoke" }}">
             <input type="hidden" name="csrf_token" value="{{ $.CSRF }}">
             <input type="hidden" name="session_id" value="{{ .ID }}">
             <button type="submit" class="text-sm font-medium text-down hover:text-down">
@@ -43,7 +43,7 @@
     </ul>
   </div>
 
-  <form method="post" action="/settings/sessions/revoke" class="mt-6">
+  <form method="post" action="{{ url $.Lang "/settings/sessions/revoke" }}" class="mt-6">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <input type="hidden" name="all" value="1">
     <button type="submit"

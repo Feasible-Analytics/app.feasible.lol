@@ -31,8 +31,8 @@ type Options struct {
 	// Session fold ownership is stored in each account database.
 	DataDir string
 
-	// TrustedProxies may set X-Feasible-IP. Empty means nobody, which is the
-	// safe default for an instance exposed straight to the internet.
+	// TrustedProxies may supply X-Feasible-IP, CF-Connecting-IP and
+	// X-Forwarded-For. Empty means all forwarded headers are ignored.
 	TrustedProxies []string
 
 	// SaltKey is the hex-encoded key that encrypts the salts table. Empty means

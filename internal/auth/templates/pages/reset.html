@@ -12,7 +12,7 @@
   {{ if .Data.Invalid }}
     <p class="mt-2 text-sm text-muted">{{ t $.Lang "auth.reset.invalid" }}</p>
 
-    <a href="/forgot-password"
+    <a href="{{ url $.Lang "/forgot-password" }}"
        class="mt-6 inline-block rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
       {{ t $.Lang "auth.reset.ask_again" }}
     </a>
@@ -21,7 +21,7 @@
       {{ t $.Lang "auth.reset.subtitle" }}
     </p>
 
-    <form method="post" action="/reset-password" class="mt-6 space-y-4">
+    <form method="post" action="{{ url $.Lang "/reset-password" }}" class="mt-6 space-y-4">
       <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
       <input type="hidden" name="token" value="{{ .Data.Token }}">
 

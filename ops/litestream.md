@@ -14,7 +14,9 @@ database state. A 202 proves the local account commit, not replica upload, so a
 volume lost before its latest WAL reaches object storage can lose that sync
 window; browser retries reduce but do not erase that recovery-point bound.
 
-Written against **Litestream 0.3.x**.
+Written against **Litestream 0.5.8 or newer**. Older releases do not support
+disabling remote retention and are incompatible with the no-`DeleteObject`
+replicator role below.
 
 ## What is replicated
 
@@ -123,29 +125,96 @@ happens to keep the replication fan-out in a range nothing struggles with.
 |---|---|---|
 | `FEASIBLE_LITESTREAM_SYNC_SECONDS` | 1 | The recovery point |
 | `FEASIBLE_LITESTREAM_SNAPSHOT_HOURS` | 6 | How much log a restore replays |
-| `FEASIBLE_LITESTREAM_RETENTION_HOURS` | 72 | How far back a restore can go |
 
-**Retention must stay longer than the snapshot interval.** A restore replays log
-segments on top of the newest snapshot still within retention; retention shorter
-than the snapshot interval deletes that snapshot before its replacement exists
-and leaves a replica nobody can restore from. `feasible litestream config`
-refuses to write a configuration that does this, naming both numbers.
+Generated configuration requires Litestream v0.5.8 or newer and sets
+`retention.enabled: false`. Provider lifecycle is the authoritative remote
+retention mechanism, and the replicator therefore has no `DeleteObject`
+permission. Litestream still performs its local cleanup behavior.
+
+### Account deletion and replicas
+
+Deleting an account removes its local directory. On the next watcher pass, at
+most 60 seconds later with the default interval, the generated configuration no
+longer names that database and the daemon is restarted without it. This stops
+new replication; it does not synchronously erase existing object-store data and
+Litestream can no longer clean a prefix after its database leaves the file.
+
+The durable removal control is the bucket lifecycle rule
+`feasible-replica-expiration-v1`, not Litestream's configuration. It filters the
+entire shard prefix, so it continues to cover a deleted `account-*` prefix and
+old `control` snapshots containing expired salts after either database stops
+changing. Render the exact provider JSON with:
+
+```bash
+FEASIBLE_ENV=development feasible litestream policy \
+  -replica-url s3://BUCKET/SHARD_PREFIX > /tmp/replica-lifecycle.json
+```
+
+The bucket owner applies that file with its S3-compatible lifecycle API. The
+rule uses **2 days**, because Amazon S3 adds the configured days to object age
+and rounds up to the next midnight UTC: eligibility is therefore 48 to 72 hours
+after creation or supersession. It covers current objects, noncurrent versions
+and incomplete multipart uploads. Production requires a bucket that has never
+had versioning enabled and has no Object Lock; versioning or retention locks can
+leave a recoverable historical version outside this bound and the check refuses
+both states.
+
+**Seventy-two hours is the eligibility bound, not a physical-removal bound.** S3
+lifecycle queues eligible objects for asynchronous removal and publishes no
+maximum completion time. Customer and legal copy says exactly that and notes a
+replica may remain operationally restorable while provider removal is pending.
+
+The replication credential needs `s3:ListBucket` limited to the shard prefix,
+`s3:GetBucketLocation` on the bucket, and `s3:GetObject`/`s3:PutObject` on
+objects below it. It needs no `s3:DeleteObject`,
+`s3:DeleteObjectVersion` or lifecycle permission. The read-only checker needs
+only `s3:GetLifecycleConfiguration`, `s3:GetBucketVersioning`, `s3:GetBucketLocation` and
+`s3:GetBucketObjectLockConfiguration` on the bucket. The bucket-owner action that
+installs or updates the policy needs `s3:PutLifecycleConfiguration`; it needs no
+object-delete permission because the provider lifecycle service performs expiry.
+The reviewable role split is versioned in
+`ops/s3/replica-access-v1.jsonc`; keep those roles separate in production.
+
+Fetch and validate actual provider state before starting production replication:
+
+```bash
+export FEASIBLE_LITESTREAM_ATTESTATION=/etc/feasible/replica-attestation.json
+scripts/check-replica-lifecycle.sh
+```
+
+The script performs read-only provider calls, binds all responses to the exact
+bucket and shard prefix, validates freshness, and publishes one evidence bundle
+with one atomic rename. Every production process, including
+`feasible litestream config` and `feasible litestream check`, fails closed if
+that bundle is absent, stale, mismatched, or invalid.
+Run the script in the deployment gate and from
+scheduled monitoring; an old local export is not evidence that nobody changed
+the bucket afterwards.
 
 ## What must never reach the bucket
 
 **`salt.key`.** It sits at `$FEASIBLE_APP_DATA_DIR/salt.key` and it decrypts the
-fingerprint salts in `control.db`. The salts are what turn a visitor's IP and
-user agent into a stored hash, and after 48 hours they are deleted so that the
-hash cannot be reconstructed by anyone, us included. Litestream only replicates
-the SQLite files the configuration names, so the key is not in the bucket by
-default — **and it must never be put there.** The salts in the replicated
-`control.db` are sealed; the key beside them in the same bucket would unseal
-every historical copy at once.
+fingerprint salts in `control.db`. The live database deletes salts after 48
+hours, but an encrypted control snapshot can retain the deleted row until the
+provider removes it. The lifecycle rule makes each replica object eligible
+within 72 hours of being written; asynchronous removal has no published maximum.
+Litestream only replicates the SQLite
+files the configuration names, so the key is not in the bucket by default —
+**and it must never be put there.** Separate key storage reduces exposure, but
+it does not erase the replica re-identification capability: an authorised
+operator restoring both the control replica and its separately backed-up key,
+together with matching analytics data, could test a fingerprint while a
+provider-retained snapshot remains.
 
 Back the key up separately, to somewhere the replica credentials cannot reach. A
 restored `control.db` without its key is a shard that cannot read any salt, which
 is a fixable outage. A restored `control.db` with the key stored next to it is
-not fixable, because the property it breaks is one we told customers about.
+not fixable, because it collapses the separation that limits replica exposure.
+
+Restore `control.db` only while the service is stopped. Before any app or ingest
+process starts, prune expired salts older than 48 hours from the restored database;
+otherwise the restore extends their live availability beyond the published
+window. Then start the service and verify the normal two-row salt state.
 
 **Raw addresses.** There are none to leak: the IP is discarded at the event
 endpoint before anything is written, so no replicated file has ever held one.
@@ -155,9 +224,8 @@ logs and "just log the header for a minute" are all the wrong answer.
 **Credentials.** The generated file carries none. Litestream reads
 `LITESTREAM_ACCESS_KEY_ID` and `LITESTREAM_SECRET_ACCESS_KEY` from its own
 environment, so a file that is rewritten every time somebody signs up never
-contains a secret. Give the credentials write and list permission on the prefix
-and nothing else — replication needs no delete, and a key that cannot delete is a
-key that cannot be used to destroy the backups.
+contains a secret. Keep the replication, checker and bucket-owner policy roles
+separate with the minimum permissions listed above.
 
 ## Installing it
 
@@ -187,7 +255,9 @@ After=network.target
 
 [Service]
 Restart=always
+EnvironmentFile=/etc/feasible/replica-check.env
 EnvironmentFile=/etc/feasible/app.env
+ExecStartPre=/usr/local/bin/check-replica-lifecycle.sh
 ExecStart=/usr/local/bin/feasible litestream config -watch
 
 [Install]
@@ -200,6 +270,9 @@ on-change command. Give it exactly that.
 ## Verifying it, before you need it
 
 ```bash
+# Actual bucket retention, versioning and Object Lock still match policy.
+scripts/check-replica-lifecycle.sh
+
 # Everything on disk is in the configuration.
 feasible litestream check
 

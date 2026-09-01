@@ -1,45 +1,153 @@
-<p>Every option is a <code>data-</code> attribute on the script tag. There are no build flags and
-no separate script variants to choose between: one file, and the attributes decide what it
-does.</p>
+<p>Every option is a <code>data-</code> attribute on the script tag. There is one script file and one
+bundle — no build flags, no feature variants to choose between, and nothing you can forget to turn
+on.</p>
 
-<h3>data-domain <em>(required)</em></h3>
-<p>The site this page belongs to, exactly as registered. It is the routing key for the whole
-system. A page whose <code>data-domain</code> does not match a registered site is dropped with the
-reason <code>unknown_site</code>, which you can see on the ingestion health panel.</p>
+<h3>A value is required, not just the attribute</h3>
+<p>This trips people up, so it is first. A bare attribute does nothing:</p>
+<pre><code>&lt;script defer data-domain="example.com" data-hash src="…"&gt;&lt;/script&gt;   &lt;!-- ignored --&gt;
+&lt;script defer data-domain="example.com" data-hash="true" src="…"&gt;&lt;/script&gt;   &lt;!-- on --&gt;</code></pre>
+<p>Any non-empty value switches a flag on, including the string <code>"false"</code>. To turn
+something off, leave the attribute out.</p>
 
-<h3>data-api</h3>
-<p>Send events somewhere other than the default endpoint. This is what you set when you
-proxy the requests through your own domain — see <a href="/docs/proxying">proxying</a>.</p>
+<h3>The attributes</h3>
 
-<h3>data-exclude</h3>
-<p>A comma-separated list of path patterns that are never counted. <code>*</code> matches within a
-path segment and <code>**</code> matches across segments, so <code>/admin/**</code> excludes an entire
-subtree. Excluded pages send nothing at all, rather than sending and being filtered later.</p>
+<h4>data-domain <em>(required)</em></h4>
+<p>The site this page belongs to, exactly as registered. It is the routing key for the whole system.
+A page whose <code>data-domain</code> does not match a registered site is dropped with the reason
+<code>unknown_site</code>, which comes back on the response — see
+<a href="/docs/api">checking what happened to an event</a>.</p>
+<p>With no <code>data-domain</code> at all the script installs a working but inert
+<code>window.feasible</code> and logs <code>feasible: not tracking — no data-domain</code>.</p>
 
-<h3>data-include</h3>
-<p>The inverse, for a site where most pages should not be counted. If both are present,
-<code>data-exclude</code> is applied after <code>data-include</code>.</p>
+<h4>data-api</h4>
+<p>Where events are sent. Set it when you <a href="/docs/proxying">proxy</a> through your own domain.
+The value is used exactly as given — nothing is appended — and a relative path works.</p>
+<p>The default is the <em>origin</em> of the script's own <code>src</code> plus
+<code>/api/event</code>. Note that it is the origin and not the directory: a script served from
+<code>/stats/js/script.js</code> still posts to <code>/api/event</code> by default, which is why a
+path-based proxy has to set this.</p>
 
-<h3>data-hash</h3>
-<p>Treat the URL fragment as part of the page. Set it only if your routing genuinely uses
-hashes; on a normal site it turns every in-page anchor into a separate pageview.</p>
+<h4>data-exclude</h4>
+<p>A comma-separated list of paths that are never counted. Matched against
+<code>pathname + hash</code>, anchored at both ends.</p>
+<ul>
+  <li><code>*</code> matches within one path segment.</li>
+  <li><code>**</code> matches across segments, so <code>/admin/**</code> excludes a whole subtree.</li>
+  <li>Everything else is a literal, including <code>?</code> and <code>.</code>.</li>
+</ul>
+<p>An excluded page sends nothing at all — no pageview, no custom event, no outbound click. There is
+no <code>data-include</code>: write the exclusion.</p>
 
-<h3>data-manual</h3>
-<p>Stop automatic pageviews entirely and send them yourself with
-<code>window.feasible('pageview')</code>. It exists for applications whose idea of a "page" does
-not match the URL. Use it sparingly: a manual pageview that is missed is data nothing can
-recover.</p>
+<h4>Consent and Do Not Track</h4>
+<p>Set <code>window.__feasible = { consent: false }</code> before loading the script when your
+consent manager denies analytics. The tracker also honours a browser Do Not Track value of
+<code>1</code>. In either case it sends no pageview or custom event, installs the callable API, and
+answers a supplied callback immediately with <code>{ status: null }</code>.</p>
 
-<h3>data-outbound, data-file-downloads</h3>
-<p>Automatically record clicks on links that leave your site, and on links to files. Both
-arrive as custom events, so both count towards your monthly volume.</p>
+<h4>data-file-types</h4>
+<p>The file extensions that count as a download. Comma-separated, <strong>no spaces</strong>, with or
+without a leading dot, case-insensitive. Setting it <em>replaces</em> the built-in list rather than
+adding to it.</p>
+<p>The built-in list is: <code>7z avi csv dmg docx exe gz key midi mov mp3 mp4 mpeg pdf pkg pps ppt
+pptx rar rtf txt wav wma wmv xlsx zip</code>.</p>
 
-<h3>data-revenue</h3>
-<p>Allow revenue amounts on custom events. Amounts are stored with their currency and are
-never converted at write time, so a change to exchange rates cannot rewrite last quarter.</p>
+<h4>data-hash</h4>
+<p>Treat the URL fragment as part of the page, for a router that genuinely uses hashes. Off, a
+fragment change is not a new pageview; on, it is. Set it only if your routing needs it — on an
+ordinary page it turns every in-page anchor into a pageview.</p>
 
-<h3>Local development</h3>
-<p>The script does nothing on <code>localhost</code> and on private addresses by default, so your
-development traffic never reaches your production numbers. Set
-<code>localStorage.feasible_local = "true"</code> in your browser console to opt one machine in
-while you are testing an install.</p>
+<h4>data-manual</h4>
+<p>Stop automatic pageviews and send them yourself with <code>feasible('pageview')</code>. It
+suppresses the first pageview and the history listeners, and nothing else: engagement measurement,
+outbound clicks, downloads and form submissions all keep working. Use it sparingly — a manual
+pageview that is never called is data nothing can recover.</p>
+
+<h4>data-alias</h4>
+<p>Expose the same function under a second name on <code>window</code>, for a site that already has
+its own <code>feasible</code> global or a house convention to follow.</p>
+
+<h4>data-capture-on-localhost</h4>
+<p>Count traffic on a local address. Off by default, so development traffic never reaches your real
+numbers.</p>
+<p>The older squashed spelling <code>data-captureOnLocalhost</code> is still accepted, and so is the
+squashed form of every other hyphenated attribute — <code>data-filetypes</code> works exactly like
+<code>data-file-types</code>. New snippets should use the hyphenated names.</p>
+<p>What counts as local is narrower than people expect: the hostnames <code>localhost</code>,
+<code>127.0.0.1</code>, <code>0.0.0.0</code>, <code>::1</code>, an empty hostname, and any
+<code>file:</code> page. <strong>Private LAN addresses are not excluded</strong> — a site opened at
+<code>192.168.1.20</code> or <code>10.0.0.5</code> is counted normally, which is worth knowing before
+you demo a staging build to a room.</p>
+
+<h3>Opting one browser out</h3>
+<p>To stop your own visits counting on a machine, in that browser's console:</p>
+<pre><code>localStorage.setItem("feasible_ignore", "true")</code></pre>
+<p>The value must be exactly <code>"true"</code>. Remove the key to start counting again. This is a
+per-browser setting and needs no attribute on the tag.</p>
+
+<h3>What the script does without being asked</h3>
+<p>These are not options and cannot be switched off, because a build flag for each is a build flag
+somebody forgets:</p>
+<ul>
+  <li><strong>Client-side route changes.</strong> <code>pushState</code>,
+      <code>replaceState</code>, <code>popstate</code> and <code>hashchange</code> are all handled.
+      Consecutive changes in one tick collapse into a single pageview at the final URL.</li>
+  <li><strong>Outbound link clicks</strong> — event name <code>Outbound Link: Click</code>, with the
+      destination in a <code>url</code> property. Middle-clicks count; right-clicks do not; nothing is
+      ever <code>preventDefault</code>-ed, so modifier-clicks behave normally.</li>
+  <li><strong>File downloads</strong> — event name <code>File Download</code>, also with a
+      <code>url</code> property. A link counts if it has the <code>download</code> attribute, the
+      <code>data-fs-download</code> attribute, or an extension on the list above.</li>
+  <li><strong>Form submissions</strong> — event name <code>Form: Submit</code> unless you name it.</li>
+  <li><strong>Revenue</strong> on any custom event. There is nothing to enable.</li>
+  <li><strong>Engagement</strong> — time on page and scroll depth. There is no polling timer: a
+      measurement is flushed when the tab is hidden, blurred or navigated away from, and only if it
+      got deeper or accrued at least three more seconds. Time accrues only while the tab is both
+      visible and focused, so a page left open behind another window does not bank hours.</li>
+</ul>
+<p>Outbound clicks, downloads and form submissions are custom events, so they count towards your
+monthly volume. Engagement pings never do.</p>
+
+<h3>Tagging an element without writing JavaScript</h3>
+<p>Put a class on the element. The script looks at the clicked element and up to three ancestors:</p>
+<pre><code>&lt;a class="feasible-event-name=Signup feasible-event-plan=pro" href="/signup"&gt;Sign up&lt;/a&gt;</code></pre>
+<p><code>feasible-event-name=…</code> sets the event name and any other
+<code>feasible-event-&lt;key&gt;=&lt;value&gt;</code> becomes a property. A class attribute cannot
+hold a space, so <code>+</code> is decoded as one: <code>feasible-event-name=Article+Saved</code>
+sends <code>Article Saved</code>.</p>
+
+<h3>Calling it yourself</h3>
+<pre><code>feasible('Signup', { props: { plan: 'yearly' } })
+feasible('Purchase', { revenue: { amount: 49.00, currency: 'USD' } })
+feasible('Heartbeat', { interactive: false })
+feasible('pageview', { u: '/checkout/step-2' })</code></pre>
+<p>Two details that cost people an afternoon:</p>
+<ul>
+  <li>A <strong>custom event</strong> takes <code>props</code>. A <strong>pageview</strong> takes
+      <code>p</code>. <code>feasible('pageview', { props: … })</code> silently sends no properties.</li>
+  <li>A <code>callback</code> is best-effort. A response produces
+      <code>{ status: 202, dropped: null }</code>, or an inline drop such as an unknown site or IP
+      shield produces <code>{ status: 202, dropped: "shield_ip" }</code>. A <code>202</code> means the
+      ingest process accepted the request; country, page and hostname shields run later at the shard
+      and cannot be observed by the browser callback. Consent denial, Do Not Track, bot detection,
+      a missing domain, or a client-side path exclusion produces <code>{ status: null }</code> for
+      pageviews and custom events. The callback does <strong>not</strong> fire when the request failed
+      or an ad blocker ate it, so gate forms with your own timeout.</li>
+</ul>
+
+<h3>If you load the script asynchronously</h3>
+<p>Install the queue stub before the tag, and calls made before the script arrives are replayed
+rather than throwing:</p>
+<pre><code>window.feasible = window.feasible || function () {
+  (window.feasible.q = window.feasible.q || []).push(arguments);
+};</code></pre>
+
+<h3>Content security policy</h3>
+<p>A strict CSP needs the analytics origin in <strong>two</strong> directives:
+<code>script-src</code> to load the file, and <code>connect-src</code> for the request that carries
+the events. Allowing only <code>script-src</code> gives you a script that loads and then sends
+nothing, which looks exactly like a broken install.</p>
+
+<h3>Failed requests are retried</h3>
+<p>An event that could not be delivered is kept in local storage — at most the ten most recent — and
+replayed on the next pageview. A replay that fails again is dropped rather than kept forever, so an
+ad blocker cannot grow that queue without bound.</p>

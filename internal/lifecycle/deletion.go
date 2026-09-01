@@ -11,13 +11,21 @@ package lifecycle
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/dataio"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 )
 
@@ -97,7 +105,9 @@ var ErrAccountOwnerRequired = errors.New("lifecycle: account deletion requires t
 //     authoritative before any invoice, session, or customer is destroyed.
 //  3. Finalize provider opportunities. A crash now resumes deletion instead of
 //     recovering an account whose provider state has been irreversibly changed.
-//  4. Delete the team row, whose cascade prevents new authorized account work.
+//  4. Delete team-owned control records and the team row. This reruns for a
+//     legacy audit whose team already cascaded so newly indexed jobs and raw
+//     payment payloads cannot survive an older build's completion marker.
 //  5. Tombstone and remove the analytics directory, its WAL, and everything
 //     beside it, waiting until cross-process handles are fenced.
 //  6. Remove every payment-provider customer. An outage leaves the immutable
@@ -271,32 +281,55 @@ func (p *Purger) purge(ctx context.Context, account Account, now time.Time, user
 		}
 	}
 
-	// A rerun after a crash can find the team already gone. Everything below is
-	// idempotent, but the clock row cascaded away with the team, so writing it
-	// again would fail on a foreign key and stop the resume dead.
-	live, err = p.teamExists(ctx, account.TeamID)
-	if err != nil {
-		return err
-	}
-
-	if live {
-		if err := p.removeControl(ctx, account.TeamID, now); err != nil {
-			return err
-		}
-	} else if err := p.markDeletionStep(ctx, account.TeamID, "control_removed_at", now, "control rows removed"); err != nil {
-		return err
-	}
-
 	manager := p.Accounts
 	if manager == nil {
 		manager = accounts.NewManager(p.DataDir)
 	}
-	if err := manager.Delete(account.TeamID); err != nil {
+	deletionGuard, err := manager.BeginDeletion(account.TeamID)
+	if err != nil {
+		return fmt.Errorf("lifecycle: fence account database %d: %w", account.TeamID, err)
+	}
+	defer deletionGuard.Release() //nolint:errcheck // an earlier deletion error is more useful
+
+	manifest, indexed, globalRemoved, err := p.artifactState(ctx, account.TeamID)
+	if err != nil {
+		return err
+	}
+	if !indexed {
+		manifest, err = p.discoverArtifacts(ctx, account.TeamID, deletionGuard)
+		if err != nil {
+			return err
+		}
+		if err := p.markArtifactsIndexed(ctx, account.TeamID, manifest, now); err != nil {
+			return err
+		}
+	}
+
+	// A rerun after a legacy build can find the team already gone while raw
+	// payment payloads and queued import/export work still survive without a
+	// foreign key. The control transaction is idempotent for an absent team and
+	// deliberately retains M9's writer reservation and topology validation.
+	if err := p.removeControl(ctx, account.TeamID, now); err != nil {
+		return err
+	}
+
+	if err := deletionGuard.CloseAccount(); err != nil {
+		return fmt.Errorf("lifecycle: close account database %d: %w", account.TeamID, err)
+	}
+	if err := os.RemoveAll(accounts.Dir(p.DataDir, account.TeamID)); err != nil {
 		return fmt.Errorf("lifecycle: delete account database %d: %w", account.TeamID, err)
 	}
 	if err := p.markDeletionStep(ctx, account.TeamID, "local_removed_at", now,
 		"database directory "+accounts.Dir(p.DataDir, account.TeamID)+" removed"); err != nil {
 		return err
+	}
+	if !globalRemoved {
+		if err := p.removeGlobalArtifacts(manifest, account.TeamID, os.RemoveAll); err != nil {
+			return err
+		}
+		if err := p.markGlobalRemoved(ctx, account.TeamID, now); err != nil {
+			return err
+		}
 	}
 
 	// Customer removal runs only after authoritative provider finalization and
@@ -484,6 +517,392 @@ func (p *Purger) deletionStatus(ctx context.Context, teamID int64) (bool, bool, 
 	return !completed.Valid, completed.Valid, time.Unix(started, 0).UTC(), ownerRequested != 0, authoritative.Valid, nil
 }
 
+// artifactState returns the durable global-file manifest and its two cleanup
+// checkpoints. Once indexed, retries never depend on a shard that may already
+// have been removed by an earlier process.
+func (p *Purger) artifactState(ctx context.Context, teamID int64) (string, bool, bool, error) {
+	var manifest string
+	var indexed, removed sql.NullInt64
+	if err := p.Store.DB().QueryRowContext(ctx, `
+		SELECT artifact_manifest, artifacts_indexed_at, global_removed_at
+		FROM account_deletions WHERE team_id = ?
+	`, teamID).Scan(&manifest, &indexed, &removed); err != nil {
+		return "", false, false, fmt.Errorf("lifecycle: read account %d artifact state: %w", teamID, err)
+	}
+
+	return manifest, indexed.Valid, removed.Valid, nil
+}
+
+// discoverArtifacts snapshots every global path owned by account-shard rows
+// while the exclusive deletion fence is held. Account-scoped directories are
+// always included, covering files created after a row was last updated. A v9
+// account whose shard is already gone falls back to the durable control jobs
+// that identify its old flat artifact names.
+func (p *Purger) discoverArtifacts(ctx context.Context, teamID int64, guard *accounts.DeletionGuard) (string, error) {
+	paths := []string{
+		dataio.AccountArtifactDir(p.DataDir, dataio.UploadDir, teamID),
+		dataio.AccountArtifactDir(p.DataDir, dataio.ExportDir, teamID),
+	}
+
+	account, err := guard.OpenAccount(ctx)
+	if err != nil {
+		return "", fmt.Errorf("lifecycle: open account %d to index artifacts: %w", teamID, err)
+	}
+	if account != nil {
+		for _, query := range []string{
+			"SELECT upload_path FROM imports WHERE upload_path <> ''",
+			"SELECT path FROM exports WHERE path <> ''",
+		} {
+			rows, err := account.Reader().QueryContext(ctx, query)
+			if err != nil {
+				return "", fmt.Errorf("lifecycle: index account %d artifacts: %w", teamID, err)
+			}
+			for rows.Next() {
+				var path string
+				if err := rows.Scan(&path); err != nil {
+					_ = rows.Close()
+					return "", fmt.Errorf("lifecycle: index account %d artifacts: %w", teamID, err)
+				}
+				paths = append(paths, path)
+			}
+			if err := rows.Err(); err != nil {
+				_ = rows.Close()
+				return "", fmt.Errorf("lifecycle: index account %d artifacts: %w", teamID, err)
+			}
+			if err := rows.Close(); err != nil {
+				return "", fmt.Errorf("lifecycle: close account %d artifact rows: %w", teamID, err)
+			}
+		}
+	} else {
+		legacy, err := p.discoverLegacyArtifacts(ctx, teamID)
+		if err != nil {
+			return "", err
+		}
+		paths = append(paths, legacy...)
+	}
+
+	unique := make([]string, 0, len(paths))
+	seen := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		safe, err := p.safeArtifactPath(path)
+		if err != nil {
+			return "", err
+		}
+		if !seen[safe] {
+			seen[safe] = true
+			unique = append(unique, safe)
+		}
+	}
+	sort.Strings(unique)
+
+	encoded, err := json.Marshal(unique)
+	if err != nil {
+		return "", fmt.Errorf("lifecycle: encode account %d artifact manifest: %w", teamID, err)
+	}
+	return string(encoded), nil
+}
+
+// legacyArtifactIdentity is unique only within one v9 account shard. The old
+// flat paths omitted the account id, so the ownership pass must detect another
+// team's claim to the same kind and id before selecting a path for deletion.
+type legacyArtifactIdentity struct {
+	kind string
+	id   int64
+}
+
+// discoverLegacyArtifacts derives v9 flat paths only after every relevant job
+// has complete, mutually consistent ownership evidence. One invalid or
+// conflicting row makes every account-local artifact id potentially ambiguous,
+// so it fails the deletion before the manifest checkpoint is written.
+func (p *Purger) discoverLegacyArtifacts(ctx context.Context, teamID int64) ([]string, error) {
+	rows, err := p.Store.DB().QueryContext(ctx, `
+		SELECT id, owner_team_id, kind, args
+		FROM jobs
+		WHERE kind IN (?, ?)
+		ORDER BY id
+	`, jobs.KindCSVImport, jobs.KindSiteExport)
+	if err != nil {
+		return nil, fmt.Errorf("lifecycle: inspect account %d legacy artifact jobs: %w", teamID, err)
+	}
+	defer rows.Close() //nolint:errcheck // the explicit successful close below reports its error
+
+	claims := make(map[legacyArtifactIdentity]map[int64]bool)
+	for rows.Next() {
+		var jobID int64
+		var ownerTeamID sql.NullInt64
+		var kind string
+		var encoded string
+		if err := rows.Scan(&jobID, &ownerTeamID, &kind, &encoded); err != nil {
+			return nil, fmt.Errorf("lifecycle: read account %d legacy artifact job: %w", teamID, err)
+		}
+		if !ownerTeamID.Valid || ownerTeamID.Int64 < 1 {
+			return nil, fmt.Errorf("lifecycle: legacy artifact job %d has no positive structural owner", jobID)
+		}
+
+		identity, accountID, err := decodeLegacyArtifactIdentity(kind, encoded)
+		if err != nil {
+			return nil, fmt.Errorf("lifecycle: legacy artifact job %d has invalid arguments: %w", jobID, err)
+		}
+		if accountID != ownerTeamID.Int64 {
+			return nil, fmt.Errorf("lifecycle: legacy artifact job %d has conflicting structural and JSON owners", jobID)
+		}
+		if claims[identity] == nil {
+			claims[identity] = make(map[int64]bool)
+		}
+		if len(claims[identity]) > 0 && !claims[identity][ownerTeamID.Int64] {
+			return nil, fmt.Errorf("lifecycle: legacy %s artifact %d has conflicting account owners", identity.kind, identity.id)
+		}
+		claims[identity][ownerTeamID.Int64] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("lifecycle: inspect account %d legacy artifact jobs: %w", teamID, err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("lifecycle: close account %d legacy artifact jobs: %w", teamID, err)
+	}
+
+	var paths []string
+	for identity, owners := range claims {
+		if len(owners) != 1 {
+			return nil, fmt.Errorf("lifecycle: account %d legacy %s artifact %d has conflicting ownership", teamID, identity.kind, identity.id)
+		}
+		if !owners[teamID] {
+			continue
+		}
+
+		var owned []string
+		switch identity.kind {
+		case jobs.KindCSVImport:
+			owned, err = p.legacyImportPaths(identity.id)
+		case jobs.KindSiteExport:
+			owned, err = p.legacyExportPaths(identity.id)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("lifecycle: discover account %d legacy artifact: %w", teamID, err)
+		}
+		paths = append(paths, owned...)
+	}
+
+	return paths, nil
+}
+
+// decodeLegacyArtifactIdentity requires the exact v9 argument names and JSON
+// integer types for its ownership and artifact fields. Unexpected fields are
+// rejected because a misspelled identity cannot safely be distinguished from
+// a second claim.
+func decodeLegacyArtifactIdentity(kind, encoded string) (legacyArtifactIdentity, int64, error) {
+	fields, err := decodeLegacyArtifactFields(encoded)
+	if err != nil {
+		return legacyArtifactIdentity{}, 0, err
+	}
+
+	artifactName := "import_id"
+	allowed := map[string]bool{"account_id": true, "site_id": true, artifactName: true}
+	if kind == jobs.KindSiteExport {
+		artifactName = "export_id"
+		allowed = map[string]bool{"account_id": true, "site_id": true, artifactName: true}
+	}
+	for name := range fields {
+		if !allowed[name] {
+			return legacyArtifactIdentity{}, 0, fmt.Errorf("unexpected argument %q", name)
+		}
+	}
+
+	accountID, err := decodePositiveLegacyInteger(fields, "account_id")
+	if err != nil {
+		return legacyArtifactIdentity{}, 0, err
+	}
+	artifactID, err := decodePositiveLegacyInteger(fields, artifactName)
+	if err != nil {
+		return legacyArtifactIdentity{}, 0, err
+	}
+	return legacyArtifactIdentity{kind: kind, id: artifactID}, accountID, nil
+}
+
+// decodeLegacyArtifactFields reads one JSON object while rejecting duplicate
+// keys and trailing values. Standard map decoding keeps only the last duplicate,
+// which could hide contradictory account ownership in an otherwise valid row.
+func decodeLegacyArtifactFields(encoded string) (map[string]json.RawMessage, error) {
+	decoder := json.NewDecoder(strings.NewReader(encoded))
+	opening, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if delimiter, ok := opening.(json.Delim); !ok || delimiter != '{' {
+		return nil, errors.New("arguments are not a JSON object")
+	}
+
+	fields := make(map[string]json.RawMessage)
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		name, ok := key.(string)
+		if !ok {
+			return nil, errors.New("argument name is not a string")
+		}
+		if _, exists := fields[name]; exists {
+			return nil, fmt.Errorf("duplicate argument %q", name)
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+		fields[name] = value
+	}
+	closing, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if delimiter, ok := closing.(json.Delim); !ok || delimiter != '}' {
+		return nil, errors.New("arguments have no closing object delimiter")
+	}
+
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return nil, err
+		}
+		return nil, errors.New("arguments contain more than one JSON value")
+	}
+	return fields, nil
+}
+
+// decodePositiveLegacyInteger reads one required ownership field without JSON
+// coercion. Strings, fractions, nulls, missing names, and non-positive values
+// are all ambiguous in the flat v9 namespace and therefore invalid.
+func decodePositiveLegacyInteger(fields map[string]json.RawMessage, name string) (int64, error) {
+	raw, ok := fields[name]
+	if !ok {
+		return 0, fmt.Errorf("missing %s", name)
+	}
+	var value int64
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", name, err)
+	}
+	if value < 1 {
+		return 0, fmt.Errorf("invalid %s: must be positive", name)
+	}
+	return value, nil
+}
+
+// legacyImportPaths returns every regular v9 upload with the exact import-id
+// prefix. A non-regular match is rejected so a crafted directory or symlink
+// cannot broaden deletion beyond the legacy single-file contract.
+func (p *Purger) legacyImportPaths(importID int64) ([]string, error) {
+	root := filepath.Join(p.DataDir, dataio.UploadDir)
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	prefix := fmt.Sprintf("%06d-", importID)
+	var paths []string
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("legacy import %s is not a regular file", entry.Name())
+		}
+		paths = append(paths, filepath.Join(root, entry.Name()))
+	}
+	return paths, nil
+}
+
+// legacyExportPaths returns the exact regular archive named by a v9 export
+// job. Missing files are already clean; non-regular matches fail closed.
+func (p *Purger) legacyExportPaths(exportID int64) ([]string, error) {
+	path := filepath.Join(p.DataDir, dataio.ExportDir, fmt.Sprintf("export-%06d.zip", exportID))
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("legacy export %s is not a regular file", filepath.Base(path))
+	}
+	return []string{path}, nil
+}
+
+// safeArtifactPath canonicalizes a path and rejects anything outside the two
+// global artifact roots. A corrupt shard row must fail closed instead of
+// turning account deletion into an arbitrary filesystem removal primitive.
+func (p *Purger) safeArtifactPath(path string) (string, error) {
+	abs, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", fmt.Errorf("lifecycle: resolve artifact path: %w", err)
+	}
+
+	for _, kind := range []string{dataio.UploadDir, dataio.ExportDir} {
+		root, err := filepath.Abs(filepath.Join(p.DataDir, kind))
+		if err != nil {
+			return "", fmt.Errorf("lifecycle: resolve artifact root: %w", err)
+		}
+		rel, err := filepath.Rel(root, abs)
+		if err == nil && rel != "." && rel != "" && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return abs, nil
+		}
+	}
+
+	return "", fmt.Errorf("lifecycle: refuse artifact path outside import/export roots: %s", path)
+}
+
+// markArtifactsIndexed persists the ownership manifest before either the shard
+// or its control rows can be removed.
+func (p *Purger) markArtifactsIndexed(ctx context.Context, teamID int64, manifest string, now time.Time) error {
+	if _, err := p.Store.DB().ExecContext(ctx, `
+		UPDATE account_deletions
+		SET artifact_manifest = ?, artifacts_indexed_at = COALESCE(artifacts_indexed_at, ?)
+		WHERE team_id = ?
+	`, manifest, now.UTC().Unix(), teamID); err != nil {
+		return fmt.Errorf("lifecycle: checkpoint account %d artifacts: %w", teamID, err)
+	}
+	return nil
+}
+
+// removeGlobalArtifacts deletes only canonical paths from the durable manifest.
+// Missing paths are success, making every restart and repeated attempt safe.
+func (p *Purger) removeGlobalArtifacts(manifest string, teamID int64, removeAll func(string) error) error {
+	var paths []string
+	if err := json.Unmarshal([]byte(manifest), &paths); err != nil {
+		return fmt.Errorf("lifecycle: decode account %d artifact manifest: %w", teamID, err)
+	}
+	for _, path := range paths {
+		safe, err := p.safeArtifactPath(path)
+		if err != nil {
+			return err
+		}
+		if err := removeAll(safe); err != nil {
+			return fmt.Errorf("lifecycle: remove account %d artifact %s: %w", teamID, safe, err)
+		}
+	}
+	return nil
+}
+
+// markGlobalRemoved records that uploaded imports and prepared archives have
+// been removed from their global filesystem roots.
+func (p *Purger) markGlobalRemoved(ctx context.Context, teamID int64, now time.Time) error {
+	if _, err := p.Store.DB().ExecContext(ctx, `
+		UPDATE account_deletions
+		SET global_removed_at = COALESCE(global_removed_at, ?)
+		WHERE team_id = ?
+	`, now.UTC().Unix(), teamID); err != nil {
+		return fmt.Errorf("lifecycle: checkpoint global removal %d: %w", teamID, err)
+	}
+	return nil
+}
+
 // removeControl atomically removes the live account rows and checkpoints that
 // phase on the immutable audit. A crash on either side is discoverable.
 func (p *Purger) removeControl(ctx context.Context, teamID int64, now time.Time) error {
@@ -504,6 +923,13 @@ func (p *Purger) removeControl(ctx context.Context, teamID int64, now time.Time)
 	}
 	if err := validateTransferTopologyTx(ctx, tx, teamID); err != nil {
 		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM stripe_events WHERE team_id = ?`, teamID); err != nil {
+		return fmt.Errorf("lifecycle: delete payment payloads for team %d: %w", teamID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE owner_team_id = ?`, teamID); err != nil {
+		return fmt.Errorf("lifecycle: delete jobs for team %d: %w", teamID, err)
 	}
 
 	// Remove identities whose only remaining membership is this account. Users
@@ -658,7 +1084,7 @@ func (p *Purger) recordPaymentCustomerFailure(ctx context.Context, teamID int64,
 		return fmt.Errorf("lifecycle: failed payment customer %s was not pending for deletion %d", customerID, teamID)
 	}
 
-	note := "payment customer " + customerID + " NOT removed: " + providerErr.Error()
+	note := "payment customer removal pending"
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE account_deletions
 		SET notes = CASE WHEN notes = '' THEN ? ELSE notes || '; ' || ? END
@@ -705,9 +1131,12 @@ func (p *Purger) finishControl(ctx context.Context, teamID int64, now time.Time)
 
 	result, err := tx.ExecContext(ctx, `
 		UPDATE account_deletions
-		SET completed_at = COALESCE(completed_at, ?)
+		SET completed_at = COALESCE(completed_at, ?),
+		    stripe_customer_id = '',
+		    notes = 'live account data removed; deletion confirmation pending'
 		WHERE team_id = ? AND control_removed_at IS NOT NULL
-		  AND local_removed_at IS NOT NULL AND provider_removed_at IS NOT NULL
+		  AND local_removed_at IS NOT NULL AND artifacts_indexed_at IS NOT NULL
+		  AND global_removed_at IS NOT NULL AND provider_removed_at IS NOT NULL
 	`, now.UTC().Unix(), teamID)
 	if err != nil {
 		return fmt.Errorf("lifecycle: finish deletion record %d: %w", teamID, err)
@@ -718,6 +1147,9 @@ func (p *Purger) finishControl(ctx context.Context, teamID int64, now time.Time)
 	}
 	if rows != 1 {
 		return fmt.Errorf("lifecycle: deletion %d has unfinished cleanup steps", teamID)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM account_deletion_customers WHERE team_id = ?`, teamID); err != nil {
+		return fmt.Errorf("lifecycle: minimise payment customer audit %d: %w", teamID, err)
 	}
 
 	if err := tx.Commit(); err != nil {

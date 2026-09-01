@@ -14,6 +14,23 @@ contains previous, current, and next-day rows while only previous and current
 are usable for fingerprinting. Rows at the 48-hour boundary are deleted and the
 WAL is truncated. A process that cannot complete that erasure fails closed.
 
+The salt is the key a visitor's IP and user agent are hashed with. Two claims
+rest on it, and both break here:
+
+- **Visitor counts are right.** The same person on the same site on the same day
+  is one visitor, because the same salt produced the same hash.
+- **After 48 hours the live system cannot reconstruct a fingerprint.** The salt
+  that produced the hash has been deleted from the live control database.
+  Each encrypted replica object becomes eligible for provider removal within
+  72 hours of being written, as described below. Provider removal is
+  asynchronous with no published maximum, and an authorised restore with the
+  separately stored key can re-identify while a snapshot remains.
+
+Three rules make those true. Rotation is at **00:00 UTC**, never a local
+midnight. Today's salt hashes, yesterday's is a session-lookup fallback, and
+tomorrow's is pre-provisioned but not yet used. **Rows older than 48 hours are
+deleted, not archived.** Everything below is one of those rules having failed.
+
 ## Symptom
 
 - `/health/ready` names `salts` as failed.
@@ -63,9 +80,37 @@ State that impact explicitly.
 
 ## Backups
 
-Litestream snapshots can retain encrypted historical salt rows longer than the
-live 48-hour window. Never store `salt.key` with credentials that can read those
-snapshots. The encrypted rows and their decryption key must remain separate.
+The live system deletes salts after 48 hours. **Replication does not** —
+snapshots of `control.db` can contain salt rows the live database has already
+deleted. Generated Litestream configuration disables remote retention deletion,
+and the mandatory provider lifecycle is the sole remote removal authority. The
+mandatory bucket lifecycle makes each snapshot eligible for provider removal no
+later than 72 hours after creation; physical removal is asynchronous with no
+published maximum.
+
+That means the 48-hour guarantee applies to the live system, not every retained
+copy. The salt rows in the replica are sealed and the key that unseals them is
+not in the bucket. That separation reduces the chance of disclosure, but an
+authorised restore using the separately backed-up key and matching analytics
+data can re-identify a fingerprint while the provider still retains a snapshot;
+re-identification remains possible for that whole interval.
+The 72-hour statement is an eligibility bound, not a physical-erasure bound.
+
+So:
+
+- **Never put `salt.key` in the replica bucket**, and never back it up with
+  credentials that can read the replica. The two halves in one place unseal every
+  historical snapshot at once, and that is a promise broken retroactively for
+  every visitor in the window.
+- **Restore `control.db` only while the service is stopped.** Before either app
+  or ingest starts, prune expired salts by running `DELETE FROM salts WHERE created_at <
+  strftime('%s','now') - 172800;` against the restored file. Starting first
+  resurrects salts that live retention deleted on purpose. A control restore
+  also rolls back sites, users and API keys created since, none of which is
+  recoverable from an account database.
+- Changing the replica window means versioning and revalidating the provider
+  lifecycle policy and every public retention statement. Do not add
+  `DeleteObject` to the replicator as an undocumented second authority.
 
 ## What makes it worse
 

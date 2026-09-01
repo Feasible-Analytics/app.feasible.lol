@@ -46,19 +46,31 @@ postal address, as US law requires. Unsubscribing from marketing never stops the
 that tell you your data is about to be deleted.</p>
 
 <h3>Sub-processors</h3>
-<p>Listed in the <a href="/legal/dpa">DPA</a>, with what each one is for. We give notice before
+<p>Named on the <a href="/legal/subprocessors">current subprocessor list</a>, with what each one is for,
+what data it processes and where. We give notice before
 adding one.</p>
 
 <h3>How long we keep things</h3>
 <ul>
   <li><strong>Analytics data</strong> — for as long as your account exists. We do not age it
       out, and retention is not a paid upgrade.</li>
-  <li><strong>The rotating salt</strong> — 48 hours, and then it is deleted. This is what makes
-      the visitor identifier irreversible after the fact.</li>
-  <li><strong>Account records</strong> — until you delete the account, and then they are gone,
-      irreversibly, on the schedule set out on the <a href="/pricing">pricing page</a>.</li>
-  <li><strong>Transaction and accounting records</strong> — as long as the law requires,
-      which is longer than we would otherwise keep anything.</li>
+  <li><strong>The rotating salt</strong> — deleted from the live control database after 48 hours.
+      The provider lifecycle makes each encrypted control-database replica object eligible for
+      removal within 72 hours of being written. The key is stored separately, and a control
+      restore must prune expired salts before service. Physical removal is asynchronous with no
+      published maximum, so re-identification remains possible during any provider-removal delay.</li>
+  <li><strong>Account records</strong> — until you delete the account. At scheduled day 90 the
+      hourly lifecycle sweep immediately removes them from the live service. Encrypted
+      disaster-recovery replica objects become eligible for provider removal within 72 hours of
+      being written. Replication stops within 60 seconds, so the final object is eligible within 72
+      hours and 60 seconds of live deletion. Physical removal is asynchronous with no published maximum. Payment-provider
+      deletion is attempted in that sweep and retried on every hourly sweep until it succeeds.</li>
+  <li><strong>Deletion records</strong> — the team name and contact email are kept only long enough
+      to send the confirmation, then erased. A payment-provider customer identifier is kept only
+      while external erasure is retrying. A minimal tombstone of internal team id, deletion and
+      notification timestamps, and generic completion state remains.</li>
+  <li><strong>Invoices</strong> — as long as tax law requires, which is longer than we would
+      otherwise keep anything.</li>
 </ul>
 
 <h3>Your rights</h3>
@@ -68,8 +80,9 @@ inside the product at any time and in any account state. For anything else, writ
 If you are in the EEA or the UK you may also complain to your supervisory authority.</p>
 
 <h3>International transfers</h3>
-<p>We are a US company and our servers are in the United States. Transfers from the EEA or
-the UK rely on the Standard Contractual Clauses, which are incorporated into the
+<p>We are a US company; each hosting subprocessor's processing region is stated on the
+<a href="/legal/subprocessors">current list</a>. Transfers from the EEA or the UK rely on the Standard
+Contractual Clauses, which are incorporated into the
 <a href="/legal/dpa">DPA</a>.</p>
 
 <h3>Children</h3>

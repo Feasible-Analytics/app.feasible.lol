@@ -37,6 +37,16 @@ type fixture struct {
 	clock   time.Time
 }
 
+// applyAccessControlSchema applies the complete merged control schema used by
+// access fixtures, including M9 sharing topology and M8 cleanup ownership.
+func applyAccessControlSchema(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // newFixture builds the database and the gate.
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
@@ -47,9 +57,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	t.Cleanup(func() { control.Close() })
 
-	if _, err := migrate.Run(context.Background(), control, migrate.Control()); err != nil {
-		t.Fatal(err)
-	}
+	applyAccessControlSchema(t, control)
 
 	stamp := gateNow.Unix()
 

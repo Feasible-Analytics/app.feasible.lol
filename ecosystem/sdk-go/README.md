@@ -37,10 +37,11 @@ The easy way to get one right is to take it from the request you are already hol
 visitor := feasible.FromRequest(r)
 ```
 
-`FromRequest` uses the same precedence the ingest server uses — `CF-Connecting-IP`, then
-the **first** entry of `X-Forwarded-For`, then the socket address. The first entry
-matters: every proxy appends itself to that header, so taking the last one reports your
-own load balancer as the visitor and collapses every visit into one.
+`FromRequest` takes `CF-Connecting-IP`, then the **first** entry of
+`X-Forwarded-For`, then the socket address. Unlike the ingest service, this helper has no
+trusted-proxy configuration. Use it only when your application edge strips client-supplied
+forwarding headers and writes its own. On a directly exposed app, construct `Visitor` from
+the socket address so a client cannot choose its fingerprint or geolocation.
 
 ## Install
 

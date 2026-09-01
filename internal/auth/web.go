@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/destructive"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
@@ -150,7 +151,26 @@ func NewHandler(opts Options) (*Handler, error) {
 
 // ServeHTTP dispatches to the route table.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	h.mux.ServeHTTP(w, r)
+	i18n.Apply(w, r)
+	h.mux.ServeHTTP(&languageResponseWriter{ResponseWriter: w, request: r}, r)
+}
+
+// languageResponseWriter adds the negotiated locale to same-origin redirects.
+// External OAuth destinations pass through LocalURL unchanged.
+type languageResponseWriter struct {
+	http.ResponseWriter
+	request *http.Request
+}
+
+// WriteHeader preserves locale state immediately before a redirect is written.
+func (w *languageResponseWriter) WriteHeader(status int) {
+	if status >= 300 && status < 400 {
+		location := w.Header().Get("Location")
+		if location != "" {
+			w.Header().Set("Location", i18n.LocalURL(location, i18n.Negotiate(w.request)))
+		}
+	}
+	w.ResponseWriter.WriteHeader(status)
 }
 
 // GuardSite wraps a handler owned by another package in this package's sign-in

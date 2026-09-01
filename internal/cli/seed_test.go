@@ -55,6 +55,7 @@ func TestSeedGeneratesADataset(t *testing.T) {
 // deletes what is already there.
 func TestSeedRefusesProduction(t *testing.T) {
 	t.Setenv("FEASIBLE_ENV", "production")
+	setProductionOperator(t)
 
 	code, _, stderr := run(t, "seed", "--data-dir", t.TempDir(), "--pageviews", "10")
 

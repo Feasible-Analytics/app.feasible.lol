@@ -19,7 +19,7 @@
 
     <div class="flex items-center gap-2">
       <label for="sort" class="sr-only">{{ t $.Lang "auth.sites.sort_label" }}</label>
-      <select id="sort" onchange="window.location = '/sites?team_id={{ .Data.TeamID }}&sort=' + this.value"
+      <select id="sort" onchange="window.location = '{{ url $.Lang (printf "/sites?team_id=%d" .Data.TeamID) }}&sort=' + this.value"
               class="rounded-xl border border-field bg-card px-3 py-2 text-sm text-body">
         <option value="" {{ if eq .Data.Sort "" }}selected{{ end }}>{{ t $.Lang "auth.sites.sort_manual" }}</option>
         <option value="traffic" {{ if eq .Data.Sort "traffic" }}selected{{ end }}>{{ t $.Lang "auth.sites.sort_traffic" }}</option>
@@ -28,7 +28,7 @@
       </select>
 
       {{ if .Data.CanManage }}
-      <a href="/sites/new?team_id={{ .Data.TeamID }}"
+      <a href="{{ url $.Lang (printf "/sites/new?team_id=%d" .Data.TeamID) }}"
          class="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
         {{ t $.Lang "auth.sites.add" }}
       </a>
@@ -43,7 +43,7 @@
         {{ t $.Lang "auth.sites.empty_body" }}
       </p>
       {{ if .Data.CanManage }}
-      <a href="/sites/new?team_id={{ .Data.TeamID }}"
+      <a href="{{ url $.Lang (printf "/sites/new?team_id=%d" .Data.TeamID) }}"
          class="mt-6 inline-block rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
         {{ t $.Lang "auth.sites.empty_action" }}
       </a>
@@ -65,7 +65,7 @@
                 <span class="text-xs text-faint">{{ len .Sites }}</span>
               </div>
 
-              <form method="post" action="/folders/{{ .ID }}/delete"
+              <form method="post" action="{{ url $.Lang (printf "/folders/%d/delete" .ID) }}"
                     onsubmit="return confirm('{{ t $.Lang "auth.sites.folder_delete_confirm" }}')">
                 <input type="hidden" name="csrf_token" value="{{ $.CSRF }}">
                 <input type="hidden" name="team_id" value="{{ $.Data.TeamID }}">
@@ -105,7 +105,7 @@
   {{ end }}
 
   {{ if .Data.CanManage }}
-  <form method="post" action="/folders" class="mt-8 flex items-end gap-2">
+  <form method="post" action="{{ url $.Lang "/folders" }}" class="mt-8 flex items-end gap-2">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <input type="hidden" name="team_id" value="{{ .Data.TeamID }}">
     <div>
@@ -191,7 +191,7 @@
             .map(el => parseInt(el.dataset.site, 10));
         });
 
-        fetch('/folders/reorder?team_id={{ .Data.TeamID }}', {
+        fetch('{{ url $.Lang (printf "/folders/reorder?team_id=%d" .Data.TeamID) }}', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
           body: JSON.stringify({ folders: folders, sites: sites })

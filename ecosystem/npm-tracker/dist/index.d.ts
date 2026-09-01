@@ -17,8 +17,8 @@ export interface TrackOptions {
 	props?: Record<string, string | number | boolean>;
 	/** Revenue attached to this event. */
 	revenue?: Revenue;
-	/** Called with the server's answer. Best effort — it may never fire. */
-	callback?: (response: { status: number | null }) => void;
+	/** Called with the server's answer and any inline drop reason. Best effort; it may never fire. */
+	callback?: (response: { status: number | null; dropped?: string | null }) => void;
 	/** Pass false for something the visitor did not do, so it cannot end a bounce. */
 	interactive?: boolean;
 	/** Override the URL this event is recorded against. */
@@ -29,6 +29,7 @@ export interface TrackOptions {
 export interface TrackResult {
 	sent: boolean;
 	status: number | null;
+	dropped: string | null;
 }
 
 export interface InitOptions {

@@ -34,10 +34,11 @@ visitorFromNodeRequest(req);      // Express, Fastify, Koa, node:http
 visitorFromWebRequest(request);   // Next.js route handlers, Remix, workers
 ```
 
-Both return `{ clientIp, userAgent }` and use the same precedence the ingest server uses:
-`CF-Connecting-IP`, then the **first** entry of `X-Forwarded-For`, then the socket address.
-The first entry matters: every proxy appends itself to that header, so taking the last one
-reports your own load balancer as the visitor and collapses every visit into one.
+Both return `{ clientIp, userAgent }` and take `CF-Connecting-IP`, then the **first** entry
+of `X-Forwarded-For`, then the socket address. These helpers have no trusted-proxy
+configuration. Use them only behind an application edge that strips client-supplied forwarding
+headers and writes its own. On a directly exposed app, pass the socket address explicitly so a
+client cannot choose its fingerprint or geolocation.
 
 ## Install
 

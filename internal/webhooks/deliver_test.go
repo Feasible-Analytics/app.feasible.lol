@@ -154,9 +154,13 @@ func TestFailingEndpointBacksOffAndIsDisabledWithWarningFirst(t *testing.T) {
 	db := testControl(t)
 
 	var attempts atomic.Int64
+	var deliveryHeaders []string
 
-	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	// The receiver records every retry header before refusing the delivery so
+	// the test can prove automatic attempts retain one idempotency key.
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts.Add(1)
+		deliveryHeaders = append(deliveryHeaders, r.Header.Get(DeliveryHeader))
 		http.Error(w, "the database is on fire", http.StatusInternalServerError)
 	}))
 	defer receiver.Close()
@@ -209,6 +213,14 @@ func TestFailingEndpointBacksOffAndIsDisabledWithWarningFirst(t *testing.T) {
 
 	if deliveries[0].Error == "" {
 		t.Error("a failed delivery must record why")
+	}
+	if len(deliveryHeaders) < 2 || deliveryHeaders[0] == "" {
+		t.Fatalf("delivery headers = %v, want one stable id across retries", deliveryHeaders)
+	}
+	for attempt, header := range deliveryHeaders[1:] {
+		if header != deliveryHeaders[0] {
+			t.Errorf("automatic retry %d changed delivery id from %q to %q", attempt+2, deliveryHeaders[0], header)
+		}
 	}
 
 	// The gaps have to grow. A fixed retry interval against a receiver that is
@@ -612,8 +624,8 @@ func TestRedeliveryLeavesTheOriginalInTheLog(t *testing.T) {
 		t.Fatal("redelivery reused the original row")
 	}
 
-	// The event id is stable across the redelivery, so a receiver keying its own
-	// idempotency on it recognises the second arrival as the same event.
+	// The event id is stable across the redelivery, so a receiver can choose to
+	// collapse even an intentional manual replay when that is its desired rule.
 	if again.EventID != "evt_original" {
 		t.Errorf("event id = %q, want it stable across a redelivery", again.EventID)
 	}

@@ -23,6 +23,18 @@ function warnings(page) {
 	return messages;
 }
 
+// droppedPageview calls the public pageview API and fails with a visible
+// sentinel if a known client-side drop does not answer promptly.
+async function droppedPageview(page) {
+	return page.evaluate(
+		() =>
+			new Promise((resolve) => {
+				window.feasible("pageview", { callback: resolve });
+				setTimeout(() => resolve("timed out"), 2000);
+			}),
+	);
+}
+
 test("an excluded path sends no pageview", async ({ page }) => {
 	const state = await collect(page);
 
@@ -70,6 +82,7 @@ test("an excluded page answers the callback rather than leaving it hanging", asy
 	);
 
 	expect(result).toEqual({ status: null });
+	expect(await droppedPageview(page)).toEqual({ status: null });
 });
 
 // hash x exclusions. Matching the pathname alone is why `/#/patients/**` never
@@ -139,6 +152,46 @@ test("an automated browser is not counted, and says so", async ({ page }) => {
 
 	expect(state.events).toHaveLength(0);
 	expect(messages.join(" ")).toContain("automated");
+	expect(await droppedPageview(page)).toEqual({ status: null });
+});
+
+test("denied consent drops pageviews and answers their callbacks", async ({ page }) => {
+	const state = await collect(page);
+	const messages = warnings(page);
+
+	await page.addInitScript(() => {
+		window.__feasible = { consent: false };
+	});
+	await page.goto("/basic.html");
+
+	expect(await droppedPageview(page)).toEqual({ status: null });
+	expect(state.events).toHaveLength(0);
+	expect(messages.join(" ")).toContain("excluded");
+});
+
+test("Do Not Track drops pageviews and answers their callbacks", async ({ page }) => {
+	const state = await collect(page);
+	const messages = warnings(page);
+
+	await page.addInitScript(() => {
+		Object.defineProperty(navigator, "doNotTrack", { configurable: true, value: "1" });
+	});
+	await page.goto("/basic.html");
+
+	expect(await droppedPageview(page)).toEqual({ status: null });
+	expect(state.events).toHaveLength(0);
+	expect(messages.join(" ")).toContain("excluded");
+});
+
+test("a missing domain drops pageviews and answers their callbacks", async ({ page }) => {
+	const state = await collect(page);
+	const messages = warnings(page);
+
+	await page.goto("/missing-domain.html");
+
+	expect(await droppedPageview(page)).toEqual({ status: null });
+	expect(state.events).toHaveLength(0);
+	expect(messages.join(" ")).toContain("no data-domain");
 });
 
 // A widely installed crypto wallet extension injects `window.phantom` into

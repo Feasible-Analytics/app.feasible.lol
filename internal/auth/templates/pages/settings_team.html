@@ -9,7 +9,7 @@
 <div class="mx-auto max-w-2xl">
   <h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "auth.settings_team.title" }}</h1>
 
-  <form method="post" action="/settings/team" class="mt-8 space-y-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+  <form method="post" action="{{ url $.Lang "/settings/team" }}" class="mt-8 space-y-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <input type="hidden" name="team_id" value="{{ .Data.TeamID }}">
 

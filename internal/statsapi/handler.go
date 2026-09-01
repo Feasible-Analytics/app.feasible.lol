@@ -226,13 +226,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	account, err := h.Accounts.Open(r.Context(), site.AccountID)
+	lease, err := h.Accounts.Acquire(r.Context(), site.AccountID)
 	if err != nil {
 		h.internal(w, "open account", err)
 		return
 	}
+	defer lease.Release() //nolint:errcheck // query errors are more useful than an unlock error
 
-	engine := query.New(account.Reader())
+	engine := query.New(lease.Account.Reader())
 	if h.Now != nil {
 		engine.Now = h.Now
 	}

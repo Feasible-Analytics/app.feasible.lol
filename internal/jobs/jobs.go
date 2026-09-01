@@ -79,6 +79,7 @@ const StaleClaim = 15 * time.Minute
 // Job is one row of the queue.
 type Job struct {
 	ID          int64
+	OwnerTeamID int64
 	Queue       string
 	Kind        string
 	Args        json.RawMessage
@@ -155,6 +156,13 @@ func (c *Client) now() time.Time {
 // check can tell which half was the duplicate, so the caller passes a key and
 // the partial index in the schema enforces it.
 func (c *Client) Enqueue(ctx context.Context, queue, kind string, args any, uniqueKey string) (int64, error) {
+	return c.EnqueueOwned(ctx, 0, queue, kind, args, uniqueKey)
+}
+
+// EnqueueOwned adds an account-owned job with an indexed team id. Deletion
+// removes these rows without parsing mutable JSON and can do so after the
+// account shard containing the import or export record has disappeared.
+func (c *Client) EnqueueOwned(ctx context.Context, ownerTeamID int64, queue, kind string, args any, uniqueKey string) (int64, error) {
 	encoded, err := json.Marshal(args)
 	if err != nil {
 		return 0, fmt.Errorf("jobs: encode %s arguments: %w", kind, err)
@@ -166,9 +174,9 @@ func (c *Client) Enqueue(ctx context.Context, queue, kind string, args any, uniq
 	}
 
 	result, err := c.db.ExecContext(ctx, `
-		INSERT INTO jobs (queue, kind, args, site_id, state, max_attempts, scheduled_at, unique_key)
-		VALUES (?, ?, ?, ?, 'available', ?, ?, ?)`,
-		queue, kind, string(encoded), siteIDFromArgs(encoded), DefaultMaxAttempts, c.now().Unix(), key)
+		INSERT INTO jobs (owner_team_id, queue, kind, args, site_id, state, max_attempts, scheduled_at, unique_key)
+		VALUES (NULLIF(?, 0), ?, ?, ?, ?, 'available', ?, ?, ?)`,
+		ownerTeamID, queue, kind, string(encoded), siteIDFromArgs(encoded), DefaultMaxAttempts, c.now().Unix(), key)
 	if err != nil {
 		return 0, fmt.Errorf("jobs: enqueue %s: %w", kind, err)
 	}
@@ -310,12 +318,12 @@ func (c *Client) Claim(ctx context.Context, queue string) (*Job, bool, error) {
 	var lastError sql.NullString
 
 	err := c.db.QueryRowContext(ctx, `
-		SELECT id, queue, kind, args, state, attempt, max_attempts, scheduled_at, last_error
+		SELECT id, COALESCE(owner_team_id, 0), queue, kind, args, state, attempt, max_attempts, scheduled_at, last_error
 		FROM jobs
 		WHERE state = 'available' AND queue = ? AND scheduled_at <= ?
 		ORDER BY scheduled_at, id
 		LIMIT 1`, queue, now).
-		Scan(&job.ID, &job.Queue, &job.Kind, &args, &job.State, &job.Attempt,
+		Scan(&job.ID, &job.OwnerTeamID, &job.Queue, &job.Kind, &args, &job.State, &job.Attempt,
 			&job.MaxAttempts, &job.ScheduledAt, &lastError)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil

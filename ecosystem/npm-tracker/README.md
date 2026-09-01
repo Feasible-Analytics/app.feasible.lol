@@ -83,7 +83,7 @@ module scope.** Every access is inside a function, behind a `typeof window === "
 guard. On a server:
 
 - `init()` is a documented no-op and returns a stub with the same shape as the browser API.
-- `track()` and `pageview()` resolve immediately with `{ sent: false, status: null }`.
+- `track()` and `pageview()` resolve immediately with `{ sent: false, status: null, dropped: null }`.
 - `enable()`, `disable()` and `isEnabled()` return `false` and write nothing.
 
 So this is safe, on both sides of a render:
@@ -112,9 +112,14 @@ held in that queue and replayed when the script arrives, rather than being a
 `ReferenceError` or an event that silently vanishes.
 
 `track()` returns a promise that resolves with the server's answer, or with
-`{ sent: true, status: null }` after three seconds if the callback never fires. It always
+`{ sent: true, status: null, dropped: null }` after three seconds if the callback never fires. It always
 settles: the usual reason a callback never arrives is an ad blocker, and a form waiting
 forever on a promise that cannot settle is a page this package made worse.
+
+A completed request also includes `dropped`. It is `null` for an accepted event and carries an
+inline reason such as `shield_ip` when the ingest response exposes one. Country, page and hostname
+shields run later at the data shard, so they cannot appear in the browser result even though the
+request returned `202`.
 
 ## API
 

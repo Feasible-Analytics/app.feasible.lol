@@ -11,11 +11,14 @@ package ingest
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 )
 
 // recording is a Transport that remembers what it was handed and can be made to
@@ -112,6 +115,37 @@ func TestFlushGroupsByShard(t *testing.T) {
 	}
 	if total != 5 {
 		t.Fatalf("delivered %d events, want 5", total)
+	}
+}
+
+// TestBufferedStaleRouteDrainsAfterDeletion covers the split-ingest case where
+// an accepted event was buffered before the account disappeared from routing.
+func TestBufferedStaleRouteDrainsAfterDeletion(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	manager := accounts.NewManager(dataDir)
+	writer := NewWriter(manager, NewSessionCache())
+	buffer := NewBuffer(NewDirect(writer), 100, time.Hour)
+
+	if _, err := manager.Open(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	buffer.Add(bufferEvent(0))
+	if err := accounts.NewManager(dataDir).Block(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(accounts.Dir(dataDir, 1)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := buffer.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if buffer.Len() != 0 {
+		t.Fatalf("deleted account left %d events retrying", buffer.Len())
+	}
+	if _, err := os.Stat(accounts.Dir(dataDir, 1)); !os.IsNotExist(err) {
+		t.Fatalf("buffered event recreated the deleted directory: %v", err)
 	}
 }
 

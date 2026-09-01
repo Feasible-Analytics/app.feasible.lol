@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -97,6 +98,42 @@ func TestCreateCheckoutSessionUsesManagedPayments(t *testing.T) {
 
 	if session.ID != "cs_test_managed" || session.URL != "https://checkout.stripe.test/managed" {
 		t.Errorf("decoded session is %+v", session)
+	}
+}
+
+// TestDeleteCustomerDistinguishesAbsentFromRejected proves retries may treat a
+// provider-side 404 as the desired erased state while rotated or invalid
+// credentials remain a hard failure.
+func TestDeleteCustomerDistinguishesAbsentFromRejected(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		status  int
+		wantErr string
+	}{
+		{name: "already absent", status: http.StatusNotFound},
+		{name: "rotated credentials", status: http.StatusUnauthorized, wantErr: "401"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodDelete || r.URL.Path != "/v1/customers/cus_delete" {
+					t.Fatalf("provider request = %s %s", r.Method, r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte(`{"error":{"message":"credential rejected"}}`))
+			}))
+			defer server.Close()
+
+			client := New("sk_test")
+			client.BaseURL = server.URL
+			err := client.DeleteCustomer(context.Background(), "cus_delete")
+			if test.wantErr == "" && err != nil {
+				t.Fatalf("already absent customer deletion: %v", err)
+			}
+			if test.wantErr != "" && (err == nil || !strings.Contains(err.Error(), test.wantErr)) {
+				t.Fatalf("rejected customer deletion error = %v, want %q", err, test.wantErr)
+			}
+		})
 	}
 }
 

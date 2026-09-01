@@ -22,7 +22,7 @@
 		</p>
 
 		{{range .Subscriptions}}
-			<form method="post" action="/settings/sites/{{$.Domain}}/reports/subscription" class="mt-3 border-t border-line pt-3">
+			<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/reports/subscription" $.Domain) }}" class="mt-3 border-t border-line pt-3">
 				<input type="hidden" name="csrf_token" value="{{$.CSRF}}" />
 				<input type="hidden" name="kind" value="{{.Kind}}" />
 				<div class="mb-2 flex flex-wrap items-center gap-2">
@@ -55,7 +55,7 @@
 		</p>
 
 		{{range .Alerts}}
-			<form method="post" action="/settings/sites/{{$.Domain}}/reports/alert" class="mt-3 border-t border-line pt-3">
+			<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/reports/alert" $.Domain) }}" class="mt-3 border-t border-line pt-3">
 				<input type="hidden" name="csrf_token" value="{{$.CSRF}}" />
 				<input type="hidden" name="kind" value="{{.Kind}}" />
 				<div class="mb-2 flex flex-wrap items-center gap-2">

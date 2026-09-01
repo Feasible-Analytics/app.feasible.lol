@@ -7,21 +7,13 @@
 //
 
 // Package pathclean merges high-cardinality URLs into the routes a person
-// actually thinks in — /users/3f2a…/settings becomes /users/:id/settings — and
-// it does it in the two places that each fix a different problem.
-//
-// At ingest, so the dimension table stops growing. A site with an identifier in
-// its URLs otherwise interns a new dim_pathname row per request, and that table
-// is warmed into memory for every account on the box.
-//
-// At query time, so the fix is retroactive. This is the half the incumbent does
-// not have at all: their answer to /about and /about/ being two permanent rows
-// is that it is the customer's server's problem. Rewriting stored rows would be
-// the easy implementation and the wrong one — it destroys the original path, so
-// a rule written badly could never be taken back. Instead the rules are
-// materialised into a map from one interned id to another, and the query layer
-// groups through it. Change a rule and every historical report changes with it;
-// delete every rule and the original paths are still there.
+// actually thinks in: /users/3f2a/settings becomes /users/:id/settings. New
+// events and sessions retain their original path ids. The writer records the
+// current source-to-target mapping for new paths, and rule saves rebuild the
+// same map for all existing path ids. Reports group through that map, so rule
+// changes are reversible for retained originals. Historical rows rewritten by
+// versions predating original preservation have no recoverable source value;
+// this package does not pretend one can be reconstructed.
 package pathclean
 
 import (

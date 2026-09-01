@@ -9,11 +9,9 @@
 package cli
 
 import (
-	"context"
 	"strings"
 	"testing"
 
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
@@ -31,9 +29,7 @@ func migratedDataDir(t *testing.T) string {
 	}
 	defer db.Close()
 
-	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
-		t.Fatal(err)
-	}
+	applyControlMigrations(t, db)
 
 	return dir
 }

@@ -44,9 +44,10 @@ CREATE TABLE account_lifecycle (
 CREATE INDEX account_lifecycle_running ON account_lifecycle(started_at)
     WHERE started_at IS NOT NULL AND deleted_at IS NULL;
 
--- One row per lifecycle email that has been sent. This table IS the idempotency
--- guarantee: the unique constraint below is what makes sending twice impossible
--- even when a job retries after the message has left but before the row landed.
+-- One row per logical lifecycle email. The unique constraint prevents two
+-- workers from claiming the same current lifecycle revision concurrently. It
+-- cannot promise exactly-once SMTP delivery across a crash after relay
+-- acceptance; 0010 adds stable message ids for that uncertainty window.
 --
 -- The row is keyed by the clock it belongs to, not just the account, so that an
 -- account that lapses, pays, and lapses again a year later gets the full set of
@@ -87,8 +88,8 @@ CREATE TABLE account_deletions (
     started_at         INTEGER NOT NULL,
     completed_at       INTEGER,
 
-    -- When the confirmation was sent. It is what makes that final email
-    -- idempotent once every other row for the account has gone.
+    -- When relay acceptance was durably recorded. 0010 adds an outbox lease and
+    -- stable message id; this timestamp alone is not an exactly-once guarantee.
     notified_at        INTEGER,
 
     -- What actually happened, step by step, so a support person can answer

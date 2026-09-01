@@ -238,6 +238,69 @@ func TestDifferentAddressIsADifferentVisitor(t *testing.T) {
 	}
 }
 
+// TestDirectClientCannotSpoofAddressDerivedBehavior exercises the security
+// boundary through the whole pipeline. A direct request's forged headers must
+// affect neither its fingerprint nor geolocation, and must not let it evade a
+// shield on the socket address.
+func TestDirectClientCannotSpoofAddressDerivedBehavior(t *testing.T) {
+	h := newHandlerHarness(t)
+	socketIP := "198.51.100.42"
+	spoofedIP := "203.0.113.66"
+	h.service.Pipeline.Geo = fixedGeo{
+		socketIP:  {Country: "US"},
+		spoofedIP: {Country: "GB"},
+	}
+	h.service.Pipeline.Shield = blockedAddress{address: netip.MustParseAddr(socketIP)}
+
+	// request sends one debug event with optional forged headers and returns all
+	// address-derived decisions made by the real pipeline.
+	request := func(headers map[string]string) Debug {
+		t.Helper()
+
+		req := httptest.NewRequest(http.MethodPost, "/api/event", strings.NewReader(pageview("https://example.com/")))
+		req.RemoteAddr = socketIP + ":41000"
+		req.Header.Set("Content-Type", "text/plain")
+		req.Header.Set("User-Agent", visitors[0].userAgent)
+		req.Header.Set(HeaderDebug, "true")
+		for name, value := range headers {
+			req.Header.Set(name, value)
+		}
+
+		recorder := httptest.NewRecorder()
+		h.service.Handler.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("debug request returned %d: %s", recorder.Code, recorder.Body.String())
+		}
+
+		var debug Debug
+		if err := json.NewDecoder(recorder.Body).Decode(&debug); err != nil {
+			t.Fatal(err)
+		}
+
+		return debug
+	}
+
+	plain := request(nil)
+	spoofed := request(map[string]string{
+		HeaderFeasibleIP:     spoofedIP,
+		HeaderCFConnectingIP: spoofedIP,
+		HeaderForwardedFor:   spoofedIP,
+	})
+
+	if spoofed.ClientIP != socketIP || spoofed.ClientIPSource != SourceSocket {
+		t.Fatalf("spoofed request resolved %q from %q, want socket %q", spoofed.ClientIP, spoofed.ClientIPSource, socketIP)
+	}
+	if spoofed.UserID != plain.UserID {
+		t.Fatal("forged forwarded headers changed the visitor fingerprint")
+	}
+	if spoofed.Country != "US" {
+		t.Fatalf("forged forwarded headers changed country to %q, want US", spoofed.Country)
+	}
+	if spoofed.DropReason != ReasonShieldIP {
+		t.Fatalf("forged forwarded headers evaded the socket IP shield: drop reason %q", spoofed.DropReason)
+	}
+}
+
 // TestLanguageComesFromTheHeader checks the first tag of the browser's
 // preference order is taken and the rest is discarded.
 func TestLanguageComesFromTheHeader(t *testing.T) {
@@ -332,6 +395,16 @@ type blockEverything struct{}
 
 // Blocked always blocks.
 func (blockEverything) Blocked(int64, netip.Addr) bool { return true }
+
+// blockedAddress is an IPShield that refuses one exact address.
+type blockedAddress struct {
+	address netip.Addr
+}
+
+// Blocked reports whether the pipeline supplied the configured address.
+func (b blockedAddress) Blocked(_ int64, address netip.Addr) bool {
+	return address == b.address
+}
 
 // TestSiteDomainCasingDoesNotSplitTheVisitor is the unrecoverable one. Routing
 // normalises the domain, so "Example.com", "www.example.com" and "example.com."

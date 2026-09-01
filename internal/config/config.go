@@ -18,9 +18,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/replica"
 )
 
 // Defaults are the values used when a variable is absent. They are deliberately
@@ -68,11 +71,6 @@ const (
 
 	// DefaultLitestreamSnapshot is how often a full copy is taken, in hours.
 	DefaultLitestreamSnapshot = 6
-
-	// DefaultLitestreamRetention is how long snapshots and log segments are
-	// kept, in hours. It must stay longer than the snapshot interval or a
-	// restore has no snapshot to replay onto.
-	DefaultLitestreamRetention = 72
 
 	// DefaultLitestreamWatch is how often the watcher re-reads the account
 	// directory, in seconds. It is the window in which a brand-new account's
@@ -143,6 +141,7 @@ type App struct {
 	BaseURL        string
 	Transport      string
 	MailTransport  string
+	Hosted         bool
 
 	// MailFrom is the envelope sender on every message the product sends. A
 	// relay rejects a From it does not own, and that rejection is the most
@@ -153,6 +152,12 @@ type App struct {
 	// SalesEmail is where the volume ladder points a growing customer. It is
 	// configurable because a self-hoster's "talk to us" address is not ours.
 	SalesEmail string
+
+	// Operator identifies the legal entity responsible for a self-hosted
+	// deployment. Hosted pages continue to identify Cloudmanic explicitly.
+	OperatorName    string
+	OperatorAddress string
+	OperatorEmail   string
 
 	// SecretKey encrypts the two-factor secrets and signs the short-lived
 	// cookies, as 32 hex-encoded bytes. Empty means one is generated under the
@@ -170,6 +175,21 @@ type App struct {
 	SMTP   SMTP
 	Google GoogleOAuth
 	Stripe Stripe
+
+	// Subprocessors is the deployment's public legal inventory. Source code
+	// cannot know which infrastructure a hosted operator chose, so production
+	// hosted mode requires these facts explicitly instead of publishing category
+	// placeholders as though they were legal entities.
+	Subprocessors []Subprocessor
+}
+
+// Subprocessor is one legal entity that can process hosted-service data.
+type Subprocessor struct {
+	Role        string `json:"role"`
+	LegalEntity string `json:"legal_entity"`
+	Service     string `json:"service"`
+	Data        string `json:"data"`
+	Region      string `json:"region"`
 }
 
 // SMTP is the relay the smtp mail transport uses. It is a nested struct so that
@@ -252,9 +272,9 @@ type Ingest struct {
 	Shards     []string
 	BufferPath string
 
-	// TrustedProxies may set X-Feasible-IP. Empty means nobody: on a
-	// directly-exposed instance an unconditionally trusted override lets
-	// anyone forge their own geolocation and split their own fingerprint.
+	// TrustedProxies may supply client-address headers. Empty means all
+	// forwarded headers are ignored so a direct client cannot forge its
+	// fingerprint, geolocation or shield address.
 	TrustedProxies []string
 }
 
@@ -297,7 +317,6 @@ type Litestream struct {
 
 	SyncInterval     time.Duration
 	SnapshotInterval time.Duration
-	Retention        time.Duration
 
 	// WatchInterval is how often `litestream config -watch` re-reads the
 	// account directory.
@@ -309,6 +328,11 @@ type Litestream struct {
 	// supervised, and guessing would produce a watcher that silently reloads
 	// nothing.
 	OnChange string
+
+	// AttestationPath is one atomically published provider-evidence bundle.
+	// Production validates its freshness and exact bucket/prefix binding before
+	// writing replication configuration.
+	AttestationPath string
 }
 
 // Config is the whole configuration for the binary. Both sections are always
@@ -455,21 +479,21 @@ func (l *Loader) String(name, fallback string) string {
 	return fallback
 }
 
-// Bool reads a boolean variable using Go's own truthiness rules, so 1/true/TRUE
-// all work. An unparseable value is treated as the fallback rather than an
-// error, because a typo in a debug flag should never stop a process booting.
-func (l *Loader) Bool(name string, fallback bool) bool {
+// Bool reads a boolean variable using Go's truthiness rules. A malformed value
+// fails startup: silently turning a mistyped hosted or TLS flag into its
+// fallback changes security and legal behavior while the process looks healthy.
+func (l *Loader) Bool(name string, fallback bool) (bool, error) {
 	value, ok := l.lookup(name)
 	if !ok || value == "" {
-		return fallback
+		return fallback, nil
 	}
 
 	parsed, err := strconv.ParseBool(value)
 	if err != nil {
-		return fallback
+		return false, fmt.Errorf("%s: %q is not a boolean", name, value)
 	}
 
-	return parsed
+	return parsed, nil
 }
 
 // Int reads a whole-number variable.
@@ -507,6 +531,9 @@ func Load() (*Config, error) {
 	}
 
 	env := bootstrap.String("FEASIBLE_ENV", DefaultEnv)
+	if env != EnvDevelopment && env != EnvProduction {
+		return nil, fmt.Errorf("FEASIBLE_ENV: %q is not development or production", env)
+	}
 
 	dotenvPath := ".env"
 	if env == EnvProduction {
@@ -526,6 +553,22 @@ func Load() (*Config, error) {
 // and validation code with a temporary secrets directory.
 func LoadFrom(l *Loader) (*Config, error) {
 	env := l.String("FEASIBLE_ENV", DefaultEnv)
+	traceEvents, err := l.Bool("FEASIBLE_TRACE_EVENTS", false)
+	if err != nil {
+		return nil, err
+	}
+	hosted, err := l.Bool("FEASIBLE_APP_HOSTED", false)
+	if err != nil {
+		return nil, err
+	}
+	worker, err := l.Bool("FEASIBLE_APP_WORKER", true)
+	if err != nil {
+		return nil, err
+	}
+	startTLS, err := l.Bool("FEASIBLE_SMTP_STARTTLS", true)
+	if err != nil {
+		return nil, err
+	}
 
 	// Production wants machine-readable logs at info; a laptop wants readable
 	// logs at debug. Deriving both from the environment means a developer never
@@ -540,26 +583,30 @@ func LoadFrom(l *Loader) (*Config, error) {
 			Env:         env,
 			LogLevel:    strings.ToLower(l.String("FEASIBLE_LOG_LEVEL", defaultLevel)),
 			LogFormat:   strings.ToLower(l.String("FEASIBLE_LOG_FORMAT", defaultFormat)),
-			TraceEvents: l.Bool("FEASIBLE_TRACE_EVENTS", false),
+			TraceEvents: traceEvents,
 			SaltKey:     strings.TrimSpace(l.String("FEASIBLE_SALT_KEY", "")),
 		},
 		App: App{
-			Listen:         l.String("FEASIBLE_APP_LISTEN", DefaultAppListen),
-			InternalListen: l.String("FEASIBLE_APP_INTERNAL_LISTEN", DefaultAppInternalListen),
-			DataDir:        l.String("FEASIBLE_APP_DATA_DIR", DefaultAppDataDir),
-			BaseURL:        strings.TrimRight(l.String("FEASIBLE_APP_BASE_URL", DefaultAppBaseURL), "/"),
-			Transport:      strings.ToLower(l.String("FEASIBLE_APP_TRANSPORT", DefaultAppTransport)),
-			MailTransport:  strings.ToLower(l.String("FEASIBLE_APP_MAIL_TRANSPORT", DefaultAppMailTransport)),
-			MailFrom:       l.String("FEASIBLE_APP_MAIL_FROM", DefaultAppMailFrom),
-			SalesEmail:     l.String("FEASIBLE_APP_SALES_EMAIL", DefaultAppSalesEmail),
-			SecretKey:      strings.TrimSpace(l.String("FEASIBLE_APP_SECRET_KEY", "")),
-			Worker:         l.Bool("FEASIBLE_APP_WORKER", true),
+			Listen:          l.String("FEASIBLE_APP_LISTEN", DefaultAppListen),
+			InternalListen:  l.String("FEASIBLE_APP_INTERNAL_LISTEN", DefaultAppInternalListen),
+			DataDir:         l.String("FEASIBLE_APP_DATA_DIR", DefaultAppDataDir),
+			BaseURL:         strings.TrimRight(l.String("FEASIBLE_APP_BASE_URL", DefaultAppBaseURL), "/"),
+			Transport:       strings.ToLower(l.String("FEASIBLE_APP_TRANSPORT", DefaultAppTransport)),
+			MailTransport:   strings.ToLower(l.String("FEASIBLE_APP_MAIL_TRANSPORT", DefaultAppMailTransport)),
+			Hosted:          hosted,
+			MailFrom:        l.String("FEASIBLE_APP_MAIL_FROM", DefaultAppMailFrom),
+			SalesEmail:      l.String("FEASIBLE_APP_SALES_EMAIL", DefaultAppSalesEmail),
+			OperatorName:    strings.TrimSpace(l.String("FEASIBLE_OPERATOR_NAME", "")),
+			OperatorAddress: strings.TrimSpace(l.String("FEASIBLE_OPERATOR_ADDRESS", "")),
+			OperatorEmail:   strings.TrimSpace(l.String("FEASIBLE_OPERATOR_EMAIL", "")),
+			SecretKey:       strings.TrimSpace(l.String("FEASIBLE_APP_SECRET_KEY", "")),
+			Worker:          worker,
 			SMTP: SMTP{
 				Host:     strings.TrimSpace(l.String("FEASIBLE_SMTP_HOST", "")),
 				Port:     l.Int("FEASIBLE_SMTP_PORT", DefaultSMTPPort),
 				Username: l.String("FEASIBLE_SMTP_USERNAME", ""),
 				Password: l.String("FEASIBLE_SMTP_PASSWORD", ""),
-				StartTLS: l.Bool("FEASIBLE_SMTP_STARTTLS", true),
+				StartTLS: startTLS,
 			},
 			Google: GoogleOAuth{
 				ClientID:     strings.TrimSpace(l.String("FEASIBLE_GOOGLE_CLIENT_ID", "")),
@@ -585,9 +632,9 @@ func LoadFrom(l *Loader) (*Config, error) {
 			ReplicaURL:       strings.TrimSpace(l.String("FEASIBLE_LITESTREAM_REPLICA_URL", "")),
 			SyncInterval:     time.Duration(l.Int("FEASIBLE_LITESTREAM_SYNC_SECONDS", DefaultLitestreamSync)) * time.Second,
 			SnapshotInterval: time.Duration(l.Int("FEASIBLE_LITESTREAM_SNAPSHOT_HOURS", DefaultLitestreamSnapshot)) * time.Hour,
-			Retention:        time.Duration(l.Int("FEASIBLE_LITESTREAM_RETENTION_HOURS", DefaultLitestreamRetention)) * time.Hour,
 			WatchInterval:    time.Duration(l.Int("FEASIBLE_LITESTREAM_WATCH_SECONDS", DefaultLitestreamWatch)) * time.Second,
 			OnChange:         strings.TrimSpace(l.String("FEASIBLE_LITESTREAM_ON_CHANGE", "")),
+			AttestationPath:  strings.TrimSpace(l.String("FEASIBLE_LITESTREAM_ATTESTATION", "")),
 		},
 		Ingest: Ingest{
 			Listen:         l.String("FEASIBLE_INGEST_LISTEN", DefaultIngestListen),
@@ -603,11 +650,28 @@ func LoadFrom(l *Loader) (*Config, error) {
 	}
 	cfg.Shared.InternalKeys = keys
 
+	subprocessors, err := parseSubprocessors(l.String("FEASIBLE_HOSTED_SUBPROCESSORS_JSON", ""))
+	if err != nil {
+		return nil, err
+	}
+	cfg.App.Subprocessors = subprocessors
+
 	shards, err := parseShards(l.String("FEASIBLE_INGEST_SHARDS", DefaultIngestShards))
 	if err != nil {
 		return nil, err
 	}
 	cfg.Ingest.Shards = shards
+	if !cfg.App.Hosted && cfg.Shared.Env == EnvDevelopment {
+		if cfg.App.OperatorName == "" {
+			cfg.App.OperatorName = "Operator of " + cfg.App.BaseURL
+		}
+		if cfg.App.OperatorAddress == "" {
+			cfg.App.OperatorAddress = cfg.App.BaseURL
+		}
+		if cfg.App.OperatorEmail == "" {
+			cfg.App.OperatorEmail = cfg.App.SalesEmail
+		}
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -638,6 +702,29 @@ func parseInternalKeys(raw string) ([]InternalKey, error) {
 	}
 
 	return keys, nil
+}
+
+// parseSubprocessors decodes the public hosted-provider inventory. JSON keeps
+// the five fields in each legal disclosure together and avoids a parallel set
+// of numbered environment variables that can drift across deployments.
+func parseSubprocessors(raw string) ([]Subprocessor, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+
+	var subprocessors []Subprocessor
+	if err := json.Unmarshal([]byte(raw), &subprocessors); err != nil {
+		return nil, fmt.Errorf("FEASIBLE_HOSTED_SUBPROCESSORS_JSON: not valid JSON: %w", err)
+	}
+
+	for i, entry := range subprocessors {
+		if strings.TrimSpace(entry.Role) == "" || strings.TrimSpace(entry.LegalEntity) == "" ||
+			strings.TrimSpace(entry.Service) == "" || strings.TrimSpace(entry.Data) == "" || strings.TrimSpace(entry.Region) == "" {
+			return nil, fmt.Errorf("FEASIBLE_HOSTED_SUBPROCESSORS_JSON: entry %d needs role, legal_entity, service, data and region", i)
+		}
+	}
+
+	return subprocessors, nil
 }
 
 // parseShards validates the retired compatibility list so an existing deploy
@@ -682,6 +769,12 @@ func parseList(raw string) []string {
 // clearly — a misspelled transport that silently drops every event, or a base
 // URL without a scheme that produces links nobody can click.
 func (c *Config) Validate() error {
+	switch c.Shared.Env {
+	case EnvDevelopment, EnvProduction:
+	default:
+		return fmt.Errorf("FEASIBLE_ENV: %q is not development or production", c.Shared.Env)
+	}
+
 	switch c.Shared.LogFormat {
 	case "text", "json":
 	default:
@@ -729,7 +822,73 @@ func (c *Config) Validate() error {
 		stripeComplete = stripeComplete && value != ""
 	}
 	if stripeConfigured && !stripeComplete {
-		return fmt.Errorf("Stripe billing requires FEASIBLE_STRIPE_SECRET_KEY, _PRODUCT, _PRICE_MONTHLY, _PRICE_YEARLY and _WEBHOOK_SECRET together")
+		return fmt.Errorf("Stripe billing requires FEASIBLE_STRIPE_SECRET_KEY, FEASIBLE_STRIPE_PRODUCT, FEASIBLE_STRIPE_PRICE_MONTHLY, FEASIBLE_STRIPE_PRICE_YEARLY and FEASIBLE_STRIPE_WEBHOOK_SECRET together")
+	}
+
+	if c.IsProduction() && c.App.Hosted {
+		if c.App.MailTransport == MailTransportLog {
+			return fmt.Errorf("FEASIBLE_APP_MAIL_TRANSPORT: hosted production cannot use log-only mail")
+		}
+		required := []string{"compute", "object_storage", "email"}
+		if c.App.Stripe.Enabled() {
+			required = append(required, "billing")
+		}
+		present := make(map[string]bool, len(required))
+
+		for _, entry := range c.App.Subprocessors {
+			role := strings.ToLower(strings.TrimSpace(entry.Role))
+			for _, requiredRole := range required {
+				if role == requiredRole {
+					present[role] = true
+				}
+			}
+
+			text := strings.ToLower(entry.LegalEntity + " " + entry.Service + " " + entry.Data + " " + entry.Region)
+			if strings.Contains(text, "placeholder") || strings.Contains(text, "non-production") || strings.Contains(text, "example.invalid") {
+				return fmt.Errorf("FEASIBLE_HOSTED_SUBPROCESSORS_JSON: production entry %q is still a sample placeholder", entry.Role)
+			}
+		}
+
+		for _, role := range required {
+			if !present[role] {
+				return fmt.Errorf("FEASIBLE_HOSTED_SUBPROCESSORS_JSON: hosted production requires a %s entry", role)
+			}
+		}
+
+		if c.Litestream.ReplicaURL == "" {
+			return fmt.Errorf("FEASIBLE_LITESTREAM_REPLICA_URL: hosted production requires encrypted database replicas")
+		}
+		if c.Litestream.WatchInterval > time.Minute {
+			return fmt.Errorf("FEASIBLE_LITESTREAM_WATCH_SECONDS: hosted production must stop deleted-account replication within 60 seconds")
+		}
+		if c.Litestream.OnChange == "" {
+			return fmt.Errorf("FEASIBLE_LITESTREAM_ON_CHANGE: hosted production requires a Litestream reload command")
+		}
+	}
+	if c.IsProduction() && !c.App.Hosted {
+		operatorFields := map[string]string{
+			"FEASIBLE_OPERATOR_NAME":    c.App.OperatorName,
+			"FEASIBLE_OPERATOR_ADDRESS": c.App.OperatorAddress,
+			"FEASIBLE_OPERATOR_EMAIL":   c.App.OperatorEmail,
+		}
+		var missing []string
+		for name, value := range operatorFields {
+			if strings.TrimSpace(value) == "" {
+				missing = append(missing, name)
+			}
+		}
+		if len(missing) > 0 {
+			sort.Strings(missing)
+			return fmt.Errorf("self-hosted production operator identity is incomplete; missing %s", strings.Join(missing, ", "))
+		}
+	}
+	// Any production deployment that configures replicas must prove the complete
+	// provider control bundle at startup. This makes stale, unreadable, or noncompliant
+	// exports a deployment failure, not merely a monitoring warning.
+	if c.IsProduction() && c.Litestream.ReplicaURL != "" {
+		if err := validateReplicaProviderState(c.Litestream); err != nil {
+			return err
+		}
 	}
 
 	if c.Shared.SaltKey != "" && len(c.Shared.SaltKey) != 64 {
@@ -753,6 +912,23 @@ func (c *Config) Validate() error {
 	base, err := url.Parse(c.App.BaseURL)
 	if err != nil || base.Scheme == "" || base.Host == "" {
 		return fmt.Errorf("FEASIBLE_APP_BASE_URL: %q is not an absolute URL", c.App.BaseURL)
+	}
+
+	return nil
+}
+
+// validateReplicaProviderState reads one atomic, fresh provider evidence bundle
+// and applies the same contract used by the deployment checker.
+func validateReplicaProviderState(cfg Litestream) error {
+	if cfg.AttestationPath == "" {
+		return fmt.Errorf("FEASIBLE_LITESTREAM_ATTESTATION: production replication requires fresh provider evidence")
+	}
+	body, err := os.ReadFile(cfg.AttestationPath)
+	if err != nil {
+		return fmt.Errorf("FEASIBLE_LITESTREAM_ATTESTATION: read provider evidence: %w", err)
+	}
+	if err := replica.ValidateAttestation(cfg.ReplicaURL, body, time.Now().UTC()); err != nil {
+		return fmt.Errorf("production replica attestation: %w", err)
 	}
 
 	return nil

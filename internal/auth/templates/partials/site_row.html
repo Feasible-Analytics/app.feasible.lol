@@ -15,7 +15,7 @@
 
   <div class="min-w-0 flex-1">
     <div class="flex items-center gap-2">
-      <a href="{{ if .CanConfigure }}/sites/{{ .Site.ID }}/settings{{ else }}/dashboard/{{ .Site.Domain }}{{ end }}" class="truncate text-sm font-semibold text-heading hover:text-accent-ink">
+      <a href="{{ if .CanConfigure }}{{ url $.Lang (printf "/sites/%d/settings" .Site.ID) }}{{ else }}{{ url $.Lang (printf "/dashboard/%s" .Site.Domain) }}{{ end }}" class="truncate text-sm font-semibold text-heading hover:text-accent-ink">
         {{ .Site.Label }}
       </a>
 
@@ -24,7 +24,7 @@
       {{ end }}
 
       {{ if and .CanConfigure (eq .Site.OnboardedAt 0) }}
-        <a href="/onboarding/{{ .Site.ID }}"
+        <a href="{{ url $.Lang (printf "/onboarding/%d" .Site.ID) }}"
            class="rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-ink">
           {{ t $.Lang "auth.site_row.finish_setup" }}
         </a>
@@ -53,7 +53,7 @@
   {{ end }}
 
   {{ if .CanConfigure }}
-  <form method="post" action="/sites/{{ .Site.ID }}/pin" class="shrink-0">
+  <form method="post" action="{{ url $.Lang (printf "/sites/%d/pin" .Site.ID) }}" class="shrink-0">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <button type="submit"
             title="{{ if .Site.Pinned }}{{ t $.Lang "auth.site_row.unpin_title" }}{{ else }}{{ t $.Lang "auth.site_row.pin_title" }}{{ end }}"
@@ -62,7 +62,7 @@
     </button>
   </form>
 
-  <a href="/sites/{{ .Site.ID }}/settings" class="shrink-0 text-xs font-medium text-muted hover:text-heading">
+  <a href="{{ url $.Lang (printf "/sites/%d/settings" .Site.ID) }}" class="shrink-0 text-xs font-medium text-muted hover:text-heading">
     {{ t $.Lang "auth.site_row.settings" }}
   </a>
   {{ end }}

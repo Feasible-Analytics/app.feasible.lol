@@ -25,7 +25,6 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
@@ -239,9 +238,7 @@ func seedLapsedAccount(t *testing.T, dir string) {
 	}
 	defer control.Close()
 
-	if _, err := migrate.Run(context.Background(), control, migrate.Control()); err != nil {
-		t.Fatal(err)
-	}
+	applyControlMigrations(t, control)
 
 	now := time.Now().UTC().Unix()
 
