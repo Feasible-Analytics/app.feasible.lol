@@ -133,7 +133,7 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, fil
 						aria-label={t("dashboard.navigation.site_settings")}
 						className="flex size-control items-center justify-center rounded-md border border-line bg-card text-sm text-muted transition-colors hover:bg-hover hover:text-body"
 					>
-						⚙
+						<SettingsIcon />
 					</a>
 				)}
 
@@ -213,6 +213,17 @@ function AccountMenu({ navigation }: { navigation: Navigation }) {
 /** NavItem is one consistent destination in the account menu. */
 function NavItem({ href, label }: { href: string; label: string }) {
 	return <a role="menuitem" href={href} className="block rounded-sm px-2.5 py-2 text-sm text-body hover:bg-hover">{label}</a>;
+}
+
+/** SettingsIcon is an SVG rather than a text glyph so its weight, alignment,
+ * and appearance stay consistent across browsers and operating systems. */
+function SettingsIcon() {
+	return (
+		<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className="size-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+			<circle cx="12" cy="12" r="3" />
+			<path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.6v-.1A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4.1 15a1.7 1.7 0 0 0-1.5-1H2v-4h.6a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06L6.56 4.2l.06.06A1.7 1.7 0 0 0 8.5 4.6a1.7 1.7 0 0 0 1-1.5V3h4v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 18.9 9a1.7 1.7 0 0 0 1.5 1h.6v4h-.6a1.7 1.7 0 0 0-1 .99Z" />
+		</svg>
+	);
 }
 
 /** periodLabel names the current range for the button face. A custom range is
