@@ -181,9 +181,9 @@ CREATE INDEX exports_expiry ON exports(expires_at);
 -- a CHECK constraint cannot count sibling rows and a trigger that could would
 -- fail with a message nobody can act on.
 --
--- IP rules are evaluated in the ingest tier, which is the only place the raw
--- address still exists. Country, page and hostname rules are evaluated at the
--- shard, where this table is live.
+-- IP rules are evaluated during request derivation, the only place the raw
+-- address still exists. Country, page and hostname rules are evaluated by the
+-- authoritative account writer, where this table is live.
 CREATE TABLE shield_rules (
     id         INTEGER PRIMARY KEY,
     site_id    INTEGER NOT NULL,

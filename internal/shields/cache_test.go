@@ -131,6 +131,43 @@ func TestShardShieldStopsAnEventReachingDisk(t *testing.T) {
 	}
 }
 
+// TestDefaultHostnamePolicyStopsCopycatWithoutConfiguredRules proves the site
+// domain itself is always the base allow-list in the live cache.
+func TestDefaultHostnamePolicyStopsCopycatWithoutConfiguredRules(t *testing.T) {
+	ctx := context.Background()
+	manager := accounts.NewManager(t.TempDir())
+	t.Cleanup(func() { _ = manager.CloseAll() })
+	account, err := manager.Open(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cache := New(newRouting(t), manager)
+	if err := cache.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer := ingest.NewWriter(manager, ingest.NewSessionCache())
+	writer.Now = func() time.Time { return time.Unix(1_800_000_000, 0) }
+	writer.Shield = cache
+
+	event := shieldEvent("/pricing", writer.Now())
+	event.Hostname = "copycat.test"
+	if _, err := writer.Write(ctx, []ingest.Event{event}); err != nil {
+		t.Fatal(err)
+	}
+
+	var facts, rejections int64
+	if err := account.Reader().QueryRowContext(ctx, "SELECT COUNT(*) FROM events").Scan(&facts); err != nil {
+		t.Fatal(err)
+	}
+	if err := account.Reader().QueryRowContext(ctx, "SELECT SUM(events) FROM hostname_rejections").Scan(&rejections); err != nil {
+		t.Fatal(err)
+	}
+	if facts != 0 || rejections != 1 {
+		t.Fatalf("copycat produced %d facts and %d rejections, want 0 and 1", facts, rejections)
+	}
+}
+
 // TestIPShieldIsAnsweredFromTheSnapshot covers the other evaluator: the ingest
 // tier's, which runs where the raw address still exists.
 func TestIPShieldIsAnsweredFromTheSnapshot(t *testing.T) {

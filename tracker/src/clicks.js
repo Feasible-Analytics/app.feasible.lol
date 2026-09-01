@@ -177,7 +177,7 @@ function onClick(event) {
 // a `form` property is a form control, and a control with no explicit type
 // defaults to submit.
 function submits(el) {
-	return el.tagName === "FORM" || (!!el.form && (el.type || "submit") === "submit");
+	return el.tagName === "FORM" || (el.form && (el.type || "submit") === "submit");
 }
 
 // onSubmit records a form submission.

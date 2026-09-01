@@ -7,7 +7,7 @@
 //
 
 // Package litestream generates the configuration that replicates every SQLite
-// database on a shard to object storage.
+// database in one storage group to object storage.
 //
 // It is generated rather than written by hand because the set of databases is
 // not known when anything starts. An account database is created by that
@@ -46,9 +46,9 @@ import (
 // Defaults for the three intervals.
 //
 // A one-second sync is the recovery point this project promises: at most a
-// second of committed database state is unreplicated, and the events written in
-// that second are still in the ingest outbox because a row there is deleted
-// only after the shard acknowledges the commit.
+// second of committed database state is unreplicated. Public acknowledgement
+// means the local account transaction committed; replica upload follows that
+// independent durability boundary.
 //
 // The snapshot interval and retention are a pair, not two independent numbers.
 // A restore replays write-ahead log segments on top of the newest snapshot that
@@ -61,9 +61,7 @@ const (
 	DefaultRetention        = 72 * time.Hour
 )
 
-// ControlName is the control database's name inside the replica URL. It is a
-// name rather than a path because every shard's control database is at the same
-// path and they must not collide in one bucket.
+// ControlName is the control database's name inside the replica URL.
 const ControlName = "control"
 
 // Options are everything the generated configuration depends on.
@@ -75,8 +73,8 @@ type Options struct {
 	DataDir string
 
 	// ReplicaURL is the prefix every database is replicated under, such as
-	// s3://feasible-backups/shard-01. Each database gets one path segment below
-	// it, so one bucket can hold every shard without a collision.
+	// s3://feasible-backups/production-primary. Each database gets one path
+	// segment below it.
 	ReplicaURL string
 
 	SyncInterval     time.Duration
@@ -160,10 +158,9 @@ func Plan(opts Options) ([]Database, error) {
 		return nil, fmt.Errorf("resolve %s: %w", opts.DataDir, err)
 	}
 
-	// The control database is listed whether or not it exists yet. A shard
-	// being replicated from the moment it is built is the only way the first
-	// hour of its life is covered, and Litestream treats a missing file as one
-	// that has not been created yet rather than as an error.
+	// The control database is listed whether or not it exists yet. Covering a
+	// storage group from the moment it is built protects its first hour, and
+	// Litestream treats a missing file as not yet created rather than an error.
 	plan := []Database{{
 		Path:       filepath.Join(dataDir, config.ControlDatabaseName),
 		Name:       ControlName,

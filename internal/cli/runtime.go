@@ -113,11 +113,11 @@ func ingestHealth(checks *health.Set, control *sql.DB, service *ingest.Service, 
 	// accept traffic and then fail to store it.
 	checks.Require("account_directory", health.Directory(filepath.Join(dataDir, config.AccountDatabaseDir)))
 
-	// Without a salt there is no visitor id and therefore no event: every
-	// request would be accepted, counted as our own internal error, and
-	// thrown away.
+	// Without a salt there is no visitor id and therefore no event. Readiness
+	// fails and requests receive a retryable 503 without changing counters.
 	checks.Require("salts", func(ctx context.Context) error {
-		_, err := service.Salts.Pair(ctx)
+		pair, err := service.Salts.Pair(ctx)
+		pair.Erase()
 		return err
 	})
 
@@ -137,7 +137,6 @@ func ingestHealth(checks *health.Set, control *sql.DB, service *ingest.Service, 
 func watchProcess(service *ingest.Service, manager *accounts.Manager, dataDir string, jobs func(context.Context) (metrics.JobCounts, error)) {
 	metrics.Watch(metrics.Sources{
 		BufferDepth:  func() int { return service.Buffer.Len() },
-		Sessions:     func() int { return service.Writer.Sessions().Len() },
 		Sites:        service.Sites.Len,
 		OpenAccounts: manager.OpenCount,
 		Jobs:         jobs,
@@ -277,8 +276,8 @@ func serveUntilSignalWith(e *env, server, internal *httpserver.Server, service *
 	}
 
 	// The order matters and is the difference between a clean stop and losing
-	// half a second of every deploy: stop taking traffic, then flush what is
-	// buffered, then persist the session cache, then close the databases.
+	// half a second of every deploy: stop taking traffic, flush any buffered
+	// direct writes, then close the databases. Session state is already durable.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), httpserver.ShutdownGrace+drainDelay)
 	defer cancel()
 

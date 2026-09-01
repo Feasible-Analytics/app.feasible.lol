@@ -184,13 +184,13 @@ TAB=$(herdr tab create --workspace "$WS" --label "Server" --no-focus \
 Do not re-open these without a reason. Full reasoning is in the build plan.
 
 - **Storage** — one `control.db`, plus one SQLite database per *account* (not per site).
-- **Ingest** — store-and-forward. A stateless ingest tier writes derived events to a local SQLite
-  outbox, answers `202`, then forwards to the shard that owns the account and deletes on ack. No
-  hosted queue.
-- **Routing** — shards are the source of truth. Ingestors poll each shard for its domain list. In the
-  map means forward, not in the map means drop.
+- **Ingest** — direct durable writes. Every serving process resolves sites from the shared
+  `control.db`, writes the owning account database, and answers `202` only after the account
+  transaction commits. There is no network outbox or internal delivery protocol.
+- **Routing** — the site snapshot maps a claimed domain directly to an account database. A domain
+  in the snapshot is eligible for collection; a domain outside it is a named drop.
 - **The IP address never reaches disk.** Geolocation and fingerprinting happen in the ingest tier, and
-  the IP is discarded before anything is written or forwarded.
+  the IP is discarded before anything is written.
 - **Front end** — React + TypeScript for the stats dashboard only; server-rendered Go templates
   everywhere else.
 - **Two things must be byte-exact** or every number drifts and it is unrecoverable later: the visitor

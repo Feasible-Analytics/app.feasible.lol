@@ -19,12 +19,8 @@
 }
 
 {$FEASIBLE_CADDY_BIND:127.0.0.1}:{$FEASIBLE_CADDY_PORT:19300} {
-	# /internal/* is denied outright. The routing rule everywhere else is "events
-	# to ingest, everything else to the app", and "everything else" cheerfully
-	# includes /internal/salts — the endpoint that hands out the secret which
-	# turns a visitor hash back into an IP address. This is one of two
-	# independent controls; the other is that the internal routes listen on a
-	# separate loopback-only port and are not routable from here at all.
+	# /internal/* is denied outright. Operational health and metrics live on the
+	# separate loopback listener and are not routed through the public proxy.
 	handle /internal/* {
 		respond "404 page not found" 404
 	}

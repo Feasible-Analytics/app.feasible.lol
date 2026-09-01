@@ -84,7 +84,7 @@ export function pageview(opts) {
 	// diagnosis and a support conversation is whether the page said which rule
 	// fired.
 	if (excluded(cfg)) {
-		warn("excluded path");
+		warn("not tracking — excluded path");
 		return;
 	}
 

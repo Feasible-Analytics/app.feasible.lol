@@ -8,7 +8,9 @@
 
 package ingest
 
-// newSession builds the initial state for a visit.
+// newSession builds the initial state for a visit under an identity allocated
+// by the caller. Production writers reserve the id atomically in SQLite;
+// direct cache users provide the cache's local deterministic allocator.
 //
 //	is_bounce   true unless the first event is a non-pageview interactive one
 //	pageviews   1 for a pageview, 0 otherwise
@@ -22,9 +24,9 @@ package ingest
 // against. Splitting it that way is what keeps one copy of each rule: an
 // initial state written out separately would be a second implementation of the
 // same table, free to drift.
-func (c *SessionCache) newSession(event *Event) *Session {
+func (c *SessionCache) newSession(event *Event, id int64) *Session {
 	return &Session{
-		ID:        c.allocateID(event.AccountID),
+		ID:        id,
 		AccountID: event.AccountID,
 		SiteID:    event.SiteID,
 		UserID:    event.UserID,

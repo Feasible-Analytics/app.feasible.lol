@@ -363,9 +363,9 @@ func (g *generator) emit(ctx context.Context, site *siteRun, payload *ingest.Pay
 	}
 
 	if result.DropReason != "" || result.Event == nil {
-		// A dropped event is not a failure. The dormant account's traffic is
-		// meant to be dropped, and counting it is how the run reports that it
-		// happened rather than that the events went missing.
+		// A dropped event is not a failure. Deliberate policy fixtures, such as
+		// dormant-account traffic and unvalidated hostnames, are meant to be
+		// dropped; counting them proves they did not disappear silently.
 		g.stats.Dropped++
 		return nil
 	}

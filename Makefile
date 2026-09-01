@@ -30,10 +30,8 @@ PUBLIC_HOST ?= localhost
 BASE_URL      = http://$(PUBLIC_HOST):$(PORT_CADDY)
 SOLO_BASE_URL = http://$(PUBLIC_HOST):$(PORT_APP)
 
-# The internal listeners never move off loopback, in any mode. /internal/salts
-# hands out the secret that turns a visitor hash back into an IP address, and
-# putting that on the tailnet would expose it to every device on it. /metrics
-# sits beside it and stays there for the same reason.
+# The health and metrics listeners never move off loopback, in any mode. Current
+# main has no internal event-delivery or salt-distribution API.
 INTERNAL_LISTEN        = 127.0.0.1:$(PORT_APP_INTERNAL)
 INGEST_INTERNAL_LISTEN = 127.0.0.1:$(PORT_INGEST_INTERNAL)
 

@@ -7,16 +7,16 @@
 //
 
 import { win, VERSION } from "./state.js";
+import { warn } from "./exclude.js";
 
 // The outbox key. A request whose connection died was never seen by any server,
 // so no amount of durability behind the endpoint can recover it — the only
 // place that event still exists is this browser.
 const OUTBOX_KEY = "feasible_outbox";
 
-// How many failed events we are willing to hold. Ten is enough to survive a
-// tunnel or a dropped Wi-Fi handover and small enough that an ad blocker, which
-// makes every single request fail, cannot grow the entry without bound.
-const OUTBOX_MAX = 10;
+// A storage failure cannot be made durable by JavaScript. A defined array is
+// both the in-page queue and the sentinel that keeps its warning one-time.
+let volatileOutbox;
 
 // KEEPALIVE is whether `fetch` will finish a request after the page has gone.
 // It is the reason this tracker never has to delay a navigation: the event is
@@ -28,7 +28,7 @@ const OUTBOX_MAX = 10;
 // otherwise unreachable in a modern browser and would go untested.
 export const KEEPALIVE = (() => {
 	try {
-		return !(win.__feasible || "").nk && "keepalive" in new Request("");
+		return !win.__feasible?.nk && "keepalive" in new Request("");
 	} catch {
 		return false;
 	}
@@ -49,35 +49,37 @@ export function setEndpoint(url) {
 // unavailable and an unguarded read here would take the whole script down.
 function readOutbox() {
 	try {
-		return JSON.parse(localStorage.getItem(OUTBOX_KEY)) || [];
+		return volatileOutbox || JSON.parse(localStorage[OUTBOX_KEY] || "[]");
 	} catch {
-		return [];
+		warn("memory-only");
+		return (volatileOutbox = []);
 	}
 }
 
-// writeOutbox replaces the stash, keeping only the newest entries. Storage
-// being unavailable costs us the retry, not the page.
+// writeOutbox replaces the complete stash. There is deliberately no event-count
+// eviction: the 101st failure is no less real than the first, and browser quota
+// failure is handled explicitly by the memory fallback below.
 function writeOutbox(items) {
 	try {
-		localStorage.setItem(OUTBOX_KEY, JSON.stringify(items.slice(-OUTBOX_MAX)));
-	} catch {}
+		if (!volatileOutbox) localStorage[OUTBOX_KEY] = JSON.stringify(items);
+	} catch {
+		warn("memory-only");
+		volatileOutbox = [];
+	}
+	if (volatileOutbox) volatileOutbox = items;
 }
 
 // drain replays whatever failed last time. It runs on a pageview rather than on
 // a timer because a pageview is the one moment we know the network is being
 // used anyway and the visitor is present.
 //
-// A replayed event that fails again is dropped rather than stashed a second
-// time. Re-stashing would turn an ad blocker — which fails every request
-// forever — into a permanent write to localStorage on every page load, for
-// events that are never going to arrive.
+// A replay remains durable while its request is in flight. Success removes that
+// exact body; failure changes nothing, and UUID dedupe makes overlap harmless.
 export function drain() {
 	const items = readOutbox();
 	if (!items.length) return;
 
-	writeOutbox([]);
-
-	for (const body of items) post(body, null, true);
+	for (const body of items) post(body, 0);
 }
 
 // post sends one already-serialised event.
@@ -98,12 +100,10 @@ export function drain() {
 //     network failure or an excluded page means it is never called, so any
 //     caller that gates a form submission on it must race it against its own
 //     timeout.
-export function post(body, callback, isRetry) {
-	// A failed event is kept for the next pageview. A replayed one that fails
-	// again is not kept a second time.
-	const fail = () => {
-		if (!isRetry) writeOutbox(readOutbox().concat(body));
-	};
+export function post(body, callback) {
+	// Persistence happens before fetch so cancellation cannot destroy the only
+	// copy. A zero callback marks a replay that is already in the durable queue.
+	if (callback !== 0) writeOutbox(readOutbox().concat(body));
 
 	try {
 		fetch(endpoint, {
@@ -111,27 +111,28 @@ export function post(body, callback, isRetry) {
 			headers: { "Content-Type": "text/plain" },
 			keepalive: KEEPALIVE,
 			body,
-		}).then((res) => {
+		}).then(
 			// The server answers 202 for everything it understood, including
-			// events it decided to drop, and puts the reason in a header. A 4xx
-			// is a real failure and worth retrying; a drop is not.
-			if (res.status >= 400) {
-				fail();
-				return;
-			}
-
-			if (callback) callback({ status: res.status });
-		}, fail);
-	} catch {
-		fail();
-	}
+			// events it decided to drop. A 4xx is a real retryable failure.
+			(res) => {
+				if (res.ok) {
+					writeOutbox(readOutbox().filter((item) => item !== body));
+					if (callback) callback({ status: res.status });
+				}
+			},
+			() => 0,
+		);
+	} catch {}
 }
 
 // send serialises one event and posts it. The key names are the wire contract
-// and are not ours to rename: `n` `u` `d` `r` `p` `i` `sd` `e` `v` `t` and `$`.
+// and are not ours to rename: `k` `n` `u` `d` `r` `p` `i` `sd` `e` `v` `t` and `$`.
 // Absent keys are left out entirely rather than sent as null, which keeps a
 // pageview under two hundred bytes.
 export function send(event, callback) {
+	// The existing browser floor includes crypto.randomUUID. Creating the key
+	// before post means a lost 202, cancellation and later replay stay one event.
+	event.k = crypto.randomUUID();
 	event.v = VERSION;
 
 	post(JSON.stringify(event), callback);

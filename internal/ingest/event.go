@@ -1,6 +1,6 @@
 //
 // event.go
-// The derived event: everything the shard needs, and nothing that identifies anyone.
+// The derived event: everything the account writer needs, without raw identity.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -12,23 +12,22 @@ import (
 	"github.com/google/uuid"
 )
 
-// Event is one fully derived event, on its way from an ingestor to the shard
-// that owns it. It is the boundary type of the whole pipeline: everything above
-// it deals in HTTP and raw headers, everything below it deals in rows.
+// Event is one fully derived event on its way to the owning account database.
+// It is the boundary type of the pipeline: everything above it deals in HTTP
+// and raw headers, while everything below it deals in rows.
 //
 // What is *not* in this struct is the point of it. There is no IP address and
 // no raw user agent — the address is used for geolocation and the fingerprint
-// and then discarded, before anything is written or forwarded. The IP address
-// never reaches disk, and the only way to keep that promise is for the type
-// that crosses the wire to have nowhere to put one.
+// and then discarded before anything is written. The IP address never reaches
+// disk, and the only way to keep that promise is for the durable boundary type
+// to have nowhere to put one.
 type Event struct {
 	// UUID is stamped when the event is derived and never changes. It is what
-	// makes a redelivery harmless: the shard has seen this id or it has not.
+	// makes a redelivery harmless: the account receipt exists or it does not.
 	UUID uuid.UUID
 
-	// Shard is where this event belongs. Every event carries one even when
-	// there is exactly one shard, because the seam is what is expensive to
-	// retrofit — the shard count is just configuration.
+	// Shard is the local buffer partition. The consolidated runtime always uses
+	// zero, and the field remains to keep the batching seam stable.
 	Shard int
 
 	// AccountID names the database this is written to; SiteID is the site
@@ -98,6 +97,11 @@ type Event struct {
 	// filtering happens at query time behind a customer toggle, because
 	// deleting it means a wrongly-classified visitor is gone forever.
 	BotReason string
+
+	// RejectReason carries the public tier's advisory claim-versus-page result.
+	// It never authorizes a drop: the writer's live hostname rules are
+	// authoritative and may have changed between derivation and commit.
+	RejectReason string `json:",omitempty"`
 
 	// Interactive drives the bounce rule for non-pageview events.
 	Interactive bool

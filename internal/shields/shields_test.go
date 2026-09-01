@@ -118,6 +118,24 @@ func TestEachKindBlocks(t *testing.T) {
 	}
 }
 
+// TestRegisteredDomainIsTheDefaultHostnameAllowList proves hostname protection
+// is active without customer configuration while explicit rules remain
+// additive for preview or checkout hosts.
+func TestRegisteredDomainIsTheDefaultHostnameAllowList(t *testing.T) {
+	set := CompileFor("example.com", []Rule{{Kind: KindHostname, Value: "checkout.example.net"}})
+
+	for _, allowed := range []string{"example.com", "www.example.com", "docs.example.com", "checkout.example.net"} {
+		if !set.HostnameAllowed(allowed) {
+			t.Errorf("default hostname policy rejected %q", allowed)
+		}
+	}
+	for _, rejected := range []string{"example.net", "badexample.com", "com", "", ingest.NoneHostname} {
+		if set.HostnameAllowed(rejected) {
+			t.Errorf("default hostname policy allowed %q", rejected)
+		}
+	}
+}
+
 // TestRuleCap holds the thirty-per-kind limit. The cap is counted in code
 // because a CHECK constraint cannot count sibling rows, so the only thing
 // keeping it true is this path — and the error has to be a sentence the

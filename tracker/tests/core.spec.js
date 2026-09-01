@@ -27,7 +27,8 @@ test("a pageview carries exactly the documented keys", async ({ page }) => {
 
 	// Absent keys are left out rather than sent as null, which is what keeps a
 	// pageview under two hundred bytes.
-	expect(Object.keys(pageview).sort()).toEqual(["d", "n", "t", "u", "v"]);
+	expect(pageview.k).toMatch(/^[0-9a-f-]{36}$/);
+	expect(Object.keys(pageview).sort()).toEqual(["d", "k", "n", "t", "u", "v"]);
 });
 
 // text/plain is not a nicety: application/json is not a simple content type, so
@@ -144,4 +145,92 @@ test("a failed event is kept and retried on the next pageview", async ({ page })
 	);
 
 	expect(await page.evaluate(() => localStorage.getItem("feasible_outbox"))).toBe("[]");
+});
+
+// The hardest retry boundary is a request the server durably accepted whose
+// 202 never reached the browser. Both attempts must carry one client identity.
+test("a lost 202 retries with the same client idempotency key", async ({ page }) => {
+	const state = await collect(page);
+	state.disconnect = 1;
+
+	await page.goto("/basic.html");
+	await expect
+		.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("feasible_outbox") || "[]").length))
+		.toBe(1);
+
+	await page.goto("/spa.html");
+	await waitFor(
+		state,
+		(events) =>
+			events.filter((event) => event.n === "pageview" && event.u && event.u.includes("basic.html")).length >= 2,
+		"lost-202 replay",
+	);
+
+	const attempts = state.events.filter(
+		(event) => event.n === "pageview" && event.u && event.u.includes("basic.html"),
+	);
+	expect(attempts[0].k).toBe(attempts[1].k);
+});
+
+// A browser can cancel a request as the document goes away before fetch has a
+// chance to reject. The body must already be durable for the next page.
+test("a cancelled request was queued before fetch and retries with the same key", async ({ page }) => {
+	const state = await collect(page);
+	state.cancel = 1;
+
+	await page.goto("/basic.html");
+	await expect
+		.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("feasible_outbox") || "[]").length))
+		.toBe(1);
+
+	await page.goto("/spa.html");
+	await waitFor(
+		state,
+		(events) =>
+			events.filter((event) => event.n === "pageview" && event.u && event.u.includes("basic.html")).length >= 2,
+		"cancelled request replay",
+	);
+
+	const attempts = state.events.filter(
+		(event) => event.n === "pageview" && event.u && event.u.includes("basic.html"),
+	);
+	expect(attempts[0].k).toBe(attempts[1].k);
+});
+
+// A fixed event-count cap silently deleted the oldest body on failure 101.
+// Browser quota is now the explicit storage boundary.
+test("the retry queue does not evict event 101", async ({ page }) => {
+	const state = await collect(page, { status: 503 });
+	await page.goto("/basic.html");
+
+	await page.evaluate(() => {
+		for (let i = 0; i < 101; i++) window.feasible(`Queued ${i}`);
+	});
+
+	await expect
+		.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("feasible_outbox") || "[]").length))
+		.toBe(102);
+});
+
+// localStorage can throw in private modes and at quota. The tracker keeps an
+// in-page queue and explicitly reports that it is memory-only.
+test("storage failure is explicit and keeps the tracker running", async ({ page }) => {
+	await page.addInitScript(() => {
+		Object.defineProperty(window, "localStorage", {
+			configurable: true,
+			get() {
+				throw new DOMException("quota", "QuotaExceededError");
+			},
+		});
+	});
+	const warnings = [];
+	page.on("console", (message) => warnings.push(message.text()));
+	const state = await collect(page, { status: 503 });
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+	await expect.poll(() => warnings.some((message) => message.includes("memory-only"))).toBeTruthy();
+
+	await page.click("#custom");
+	await settledCount(state, "Custom Event", 1);
 });

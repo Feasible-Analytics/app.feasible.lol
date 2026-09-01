@@ -155,9 +155,9 @@ func TestSaltStaysStableWithinADay(t *testing.T) {
 	}
 }
 
-// TestOnlyTwoSaltsAreLive checks the window never widens. Hashing with anything
-// older than today's salt would keep a visitor identifiable for more than a day.
-func TestOnlyTwoSaltsAreLive(t *testing.T) {
+// TestOnlyCurrentAndPreviousAreUsable checks the hashing window never widens;
+// the third stored generation is tomorrow's unused rollover material.
+func TestOnlyCurrentAndPreviousAreUsable(t *testing.T) {
 	ctx := context.Background()
 	db := newControlDB(t)
 
@@ -181,6 +181,9 @@ func TestOnlyTwoSaltsAreLive(t *testing.T) {
 	}
 	if bytes.Equal(pair.Current, pair.Previous) {
 		t.Fatal("the two live salts are the same value")
+	}
+	if len(pair.Next) != Size {
+		t.Fatal("the next UTC day was not pre-provisioned")
 	}
 }
 
@@ -224,8 +227,8 @@ func TestRowsPastRetentionAreDeleted(t *testing.T) {
 }
 
 // TestOneSaltPerDayUnderConcurrency covers the midnight race. Every process
-// refreshes independently, so they all try to create the day's salt at the same
-// instant; the unique day index is what makes exactly one of them win.
+// offers random current and next-day material, while SQLite makes one authority
+// value win for each day.
 func TestOneSaltPerDayUnderConcurrency(t *testing.T) {
 	ctx := context.Background()
 	db := newControlDB(t)
@@ -255,8 +258,94 @@ func TestOneSaltPerDayUnderConcurrency(t *testing.T) {
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM salts").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("salts table holds %d rows for one day, want 1", count)
+	if count != 2 {
+		t.Fatalf("salts table holds %d rows, want current and pre-provisioned next", count)
+	}
+}
+
+// TestPermanentKeyCannotRegenerateDailySalt proves salt rows are random
+// authority material, not values reproducible from the at-rest encryption key.
+func TestPermanentKeyCannotRegenerateDailySalt(t *testing.T) {
+	ctx := context.Background()
+	now := at(2026, time.August, 31, 12, 0)
+	first := newStore(t, newControlDB(t), &now)
+	second := newStore(t, newControlDB(t), &now)
+
+	firstPair, err := first.Pair(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer firstPair.Erase()
+	secondPair, err := second.Pair(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondPair.Erase()
+
+	if bytes.Equal(firstPair.Current, secondPair.Current) || bytes.Equal(firstPair.Next, secondPair.Next) {
+		t.Fatal("independent authorities regenerated matching random salt material")
+	}
+}
+
+// TestPruneFailureErasesTheUsableCache drives the privacy failure boundary.
+// Once SQLite refuses deletion, the same-day fast path must stay unavailable.
+func TestPruneFailureErasesTheUsableCache(t *testing.T) {
+	ctx := context.Background()
+	db := newControlDB(t)
+	now := at(2026, time.August, 28, 0, 0)
+	store := newStore(t, db, &now)
+
+	initial, err := store.Pair(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial.Erase()
+	retiredCurrent := store.cached.Current
+	if _, err := db.ExecContext(ctx, `
+		CREATE TRIGGER refuse_expired_salt_delete
+		BEFORE DELETE ON salts
+		BEGIN
+			SELECT RAISE(FAIL, 'fixture refuses salt erasure');
+		END`); err != nil {
+		t.Fatal(err)
+	}
+
+	now = at(2026, time.August, 30, 0, 0)
+	if _, err := store.Refresh(ctx); err == nil {
+		t.Fatal("refresh succeeded after SQLite refused expired salt erasure")
+	}
+	if !bytes.Equal(retiredCurrent, make([]byte, Size)) {
+		t.Fatal("prune failure released usable cache bytes without overwriting them")
+	}
+	if _, err := store.Pair(ctx); err == nil {
+		t.Fatal("same-day fast path remained usable after prune failure")
+	}
+}
+
+// TestRefreshOverwritesRetiredCacheSlices observes the backing arrays that held
+// yesterday's pair and verifies rollover erases them before release.
+func TestRefreshOverwritesRetiredCacheSlices(t *testing.T) {
+	ctx := context.Background()
+	db := newControlDB(t)
+	now := at(2026, time.August, 30, 12, 0)
+	store := newStore(t, db, &now)
+	pair, err := store.Refresh(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair.Erase()
+
+	oldCurrent := store.cached.Current
+	oldNext := store.cached.Next
+	now = at(2026, time.August, 31, 0, 0)
+	nextPair, err := store.Refresh(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextPair.Erase()
+
+	if !bytes.Equal(oldCurrent, make([]byte, Size)) || !bytes.Equal(oldNext, make([]byte, Size)) {
+		t.Fatal("retired cache backing arrays were released without being overwritten")
 	}
 }
 

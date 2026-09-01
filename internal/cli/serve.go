@@ -318,10 +318,9 @@ type siteRules struct {
 // buildSiteRules loads the shield and path cleaning rules and attaches them to
 // the running pipeline.
 //
-// The two halves land in different places on purpose. An IP rule goes on the
-// pipeline, which runs in the ingest tier and is the only place the raw address
-// still exists. Country, page and hostname rules go on the writer, which runs
-// at the shard where the rule table is live rather than forwarded.
+// The two halves land in different stages on purpose. An IP rule runs while the
+// raw address still exists. Country, page, and hostname rules run in the writer
+// against the live account rule snapshot.
 func buildSiteRules(ctx context.Context, e *env, service *ingest.Service, manager *accounts.Manager) (*siteRules, error) {
 	trusted, err := ingest.ParseTrustedProxies(e.cfg.Ingest.TrustedProxies)
 	if err != nil {
@@ -329,6 +328,7 @@ func buildSiteRules(ctx context.Context, e *env, service *ingest.Service, manage
 	}
 
 	shieldCache := shields.New(service.Sites, manager)
+	shieldCache.Rejections = shields.NewRejections(manager)
 	if err := shieldCache.Refresh(ctx); err != nil {
 		return nil, err
 	}
@@ -339,6 +339,7 @@ func buildSiteRules(ctx context.Context, e *env, service *ingest.Service, manage
 	}
 
 	service.Pipeline.Shield = shieldCache
+	service.Pipeline.Hostnames = shieldCache
 	service.Writer.Shield = shieldCache
 	service.Writer.Counters = service.Counters
 	service.Writer.Paths = pathCache

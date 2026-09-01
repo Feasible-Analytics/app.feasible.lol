@@ -35,13 +35,9 @@ const verifyMaxBytes = 1 << 20
 // that a tab left open overnight is not a load problem.
 const FirstEventPollInterval = 3 * time.Second
 
-// RoutingDelay is the worst case between creating a site and it collecting.
-//
-// Shard-pull routing means an ingestor only learns about a new domain when it
-// next polls its shard, so a brand-new site genuinely does not collect for up
-// to one poll cycle. This number is what the waiting screen tells the user, and
-// it is the whole reason that screen exists: without it people paste the
-// snippet, reload, see nothing, and conclude the product is broken.
+// RoutingDelay is the worst case between creating a site and every serving
+// process learning about it from the shared control database. This number is
+// what the waiting screen tells the user while remote snapshots refresh.
 const RoutingDelay = 15 * time.Second
 
 // Snippet renders the script tag for one site.

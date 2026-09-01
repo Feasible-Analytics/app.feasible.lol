@@ -1,6 +1,6 @@
 //
 // handler.go
-// POST /api/event: always 202, never silent, and debuggable in one curl.
+// POST /api/event: durable 202s, retryable storage failures, and one-curl debug.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -10,6 +10,7 @@ package ingest
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -42,11 +43,19 @@ type Handler struct {
 	Buffer   *Buffer
 	Counters *Counters
 	Log      *logger.Logger
+
+	// Limiter caps how fast one source address may send without ever persisting
+	// that address outside process memory.
+	Limiter *RateLimiter
+
+	// Durable makes a successful response wait for the account transaction. A
+	// 202 is a durability acknowledgement, not merely a parsing acknowledgement.
+	Durable bool
 }
 
-// ServeHTTP accepts one event. It answers 202 for everything it understood,
-// including events it decided to drop, because the sender is a beacon that
-// cannot do anything useful with a failure and would only retry.
+// ServeHTTP accepts one event. Policy drops answer 202 because retrying cannot
+// change them; dependency and storage failures answer 503 so the browser keeps
+// its durable copy for a later attempt.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The tracker is a cross-origin request from every site we serve, so the
 	// endpoint is open by definition. `connect-src` in the site's own CSP is
@@ -80,6 +89,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Apply the per-source ceiling before parsing and derivation. It remains a
+	// named 202 drop because a browser beacon cannot act usefully on a 429.
+	if h.Limiter != nil && !h.Limiter.Allow(ResolveClientIP(r, h.Pipeline.Trusted).Addr) {
+		h.drop(w, 0, "", ReasonRateLimited)
+		return
+	}
+
 	payload, err := ParsePayload(body)
 	if err != nil {
 		// A malformed body is a programming error in whatever sent it, and the
@@ -105,6 +121,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.Log.Error("event could not be derived", "domain", payload.Domain, "error", err)
 	}
 
+	if errors.Is(err, ErrSaltUnavailable) {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "ingest identity service is temporarily unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
 	// The debug view is answered before anything is written, so running it
 	// against production is free of side effects and safe to hand to a customer.
 	// It is answered even when the event was dropped or failed to derive: the
@@ -124,7 +146,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.Counters.Truncated(result.Debug.SiteID, result.Truncation)
 	}
 
-	if result.DropReason != "" || result.Event == nil {
+	hostnameSuspect := result.DropReason == ReasonHostnameNotAllowed && result.Event != nil
+
+	if (result.DropReason != "" && !hostnameSuspect) || result.Event == nil {
 		// A derive that produced no event and no reason is a bug on our side
 		// rather than anything the sender did, and it still answers 202: a
 		// beacon given a 4xx retries, and the retry would fail the same way.
@@ -139,15 +163,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	event := result.Event
 
+	if h.Durable {
+		if err := h.Buffer.AddAndWait(r.Context(), *event); err != nil {
+			if h.Log != nil {
+				h.Log.Error("event could not be persisted before the response", "domain", payload.Domain, "error", err)
+			}
+
+			http.Error(w, "event could not be persisted", http.StatusServiceUnavailable)
+			return
+		}
+	} else {
+		h.Buffer.Add(*event)
+	}
+
 	// A classified event is still written, with its reason attached, so a
-	// customer can toggle it back on. What the sender is told is the same
-	// either way: here is what we thought this was.
+	// customer can toggle it back on. Count and report the classification only
+	// after the same durability boundary as every other accepted event.
 	if event.BotReason != "" {
 		w.Header().Set(HeaderDropped, event.BotReason)
 		h.Counters.Dropped(event.SiteID, event.BotReason)
 	}
-
-	h.Buffer.Add(*event)
 	h.Counters.Accepted(event.SiteID)
 
 	if h.Log != nil {

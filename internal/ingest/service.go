@@ -27,8 +27,8 @@ import (
 // get wrong in a way that is invisible until it has cost a day, which is why
 // each one is named rather than defaulted silently inside the constructor.
 type Options struct {
-	// DataDir is where the geolocation databases, the refreshed bot lists and
-	// the session snapshot live.
+	// DataDir is where the geolocation databases and refreshed bot lists live.
+	// Session fold ownership is stored in each account database.
 	DataDir string
 
 	// TrustedProxies may set X-Feasible-IP. Empty means nobody, which is the
@@ -59,7 +59,7 @@ type Options struct {
 }
 
 // Service is the whole ingest path assembled: the site cache, the salts, the
-// derive pipeline, the write buffer, the transport and the shard writer. It
+// derive pipeline, the write buffer, the direct transport and account writer. It
 // exists so that both `feasible serve` in direct mode and `feasible ingest`
 // build the same thing from the same code rather than two wirings that drift.
 type Service struct {
@@ -73,10 +73,9 @@ type Service struct {
 	Writer   *Writer
 	Buffer   *Buffer
 	Handler  *Handler
+	Limiter  *RateLimiter
 
-	dataDir string
-	log     *logger.Logger
-	now     func() time.Time
+	log *logger.Logger
 
 	// started guards the background goroutines so a double Start or a Stop
 	// before Start cannot panic on a closed channel.
@@ -112,7 +111,9 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 	}
 	saltStore.SetClock(now)
 
-	if _, err := saltStore.Refresh(ctx); err != nil {
+	initialPair, err := saltStore.Refresh(ctx)
+	initialPair.Erase()
+	if err != nil {
 		return nil, err
 	}
 
@@ -140,34 +141,11 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 	counters := NewCounters()
 	sessionCache := NewSessionCache()
 
-	// An engagement ping whose pageview never arrived is a real dropped event,
-	// and the sweep is the only place that fact is ever established — by the
-	// time it expires the response was sent half an hour ago, so the counter is
-	// the only way the customer hears about it at all.
-	sessionCache.OnOrphanExpired = func(event *Event) {
-		counters.Dropped(event.SiteID, ReasonNoSessionForEngage)
-
-		if opts.Log != nil {
-			opts.Log.EventReceived("", itoa(event.SiteID), "", ReasonNoSessionForEngage)
-		}
-	}
-
-	// A dirty session evicted long after its last event means a write never
-	// landed. That is data loss rather than housekeeping, so it is logged as an
-	// error even though nothing can be done about it here.
-	sessionCache.OnSessionAbandoned = func(session *Session) {
-		if opts.Log != nil {
-			opts.Log.Error("a session was evicted before its rows were written",
-				"site", session.SiteID, "session", session.ID, "events", session.Events)
-		}
-	}
-
 	writer := NewWriter(manager, sessionCache)
 	writer.Now = now
 	writer.Usage = opts.Usage
 
 	service := &Service{
-		now:      now,
 		Sites:    siteCache,
 		Salts:    saltStore,
 		Geo:      locator,
@@ -175,26 +153,26 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 		Bots:     bots,
 		Counters: counters,
 		Writer:   writer,
-		dataDir:  opts.DataDir,
 		log:      opts.Log,
+		Limiter:  NewRateLimiter(DefaultEventRate, DefaultEventBurst),
 	}
 
 	service.Pipeline = &Pipeline{
-		Sites:    siteCache,
-		Salts:    saltStore,
-		Geo:      locator,
-		Agents:   service.Agents,
-		Bots:     bots,
-		Trusted:  trusted,
-		Shards:   DirectShard{},
-		Shield:   NoShield{},
-		Counters: counters,
-		Now:      now,
+		Sites:     siteCache,
+		Salts:     saltStore,
+		Geo:       locator,
+		Agents:    service.Agents,
+		Bots:      bots,
+		Trusted:   trusted,
+		Shards:    DirectShard{},
+		Shield:    NoShield{},
+		Hostnames: NoHostnamePolicy{},
+		Counters:  counters,
+		Now:       now,
 	}
 
-	// Every event flows accept → derive → buffer → forward → write, even when
-	// "forward" is a function call in the same process. Exercising the seam
-	// from day one is the entire point of having it.
+	// Every event flows accept → derive → buffer → direct account write. Keeping
+	// the transport seam makes batching testable without implying a network hop.
 	service.Buffer = NewBuffer(NewDirect(writer), opts.BufferSize, opts.FlushInterval)
 	service.Buffer.OnError = func(err error) {
 		if opts.Log != nil {
@@ -206,26 +184,17 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 		Pipeline: service.Pipeline,
 		Buffer:   service.Buffer,
 		Counters: counters,
+		Limiter:  service.Limiter,
+		Durable:  true,
 		Log:      opts.Log,
-	}
-
-	// Reloading the session cache is what stops a restart splitting every
-	// in-flight session in two.
-	restored, err := RestoreSessions(sessionCache, SessionFilePath(opts.DataDir), now().Unix())
-	if err != nil && opts.Log != nil {
-		opts.Log.Warn("session cache could not be restored", "error", err)
-	}
-	if restored > 0 && opts.Log != nil {
-		opts.Log.Info("session cache restored", "sessions", restored)
 	}
 
 	return service, nil
 }
 
-// Start launches the background loops: the buffer flush, the salt refresh, the
-// site-cache refresh and the session sweep. Each one runs independently,
-// because a process that stopped refreshing its salts would fragment sessions
-// with nothing reporting an error.
+// Start launches the buffer, salt, site, and source-address limiter loops. Live
+// session ownership is transactional account state, so there is no process-
+// local session sweep to coordinate across serving processes.
 func (s *Service) Start(ctx context.Context) {
 	s.startOnce.Do(func() {
 		runCtx, cancel := context.WithCancel(ctx)
@@ -234,7 +203,7 @@ func (s *Service) Start(ctx context.Context) {
 		s.run(func() { s.Buffer.Run(runCtx) })
 		s.run(func() { s.Salts.Run(runCtx, s.logError("salt refresh failed")) })
 		s.run(func() { s.Sites.Run(runCtx, s.logError("site cache refresh failed")) })
-		s.run(func() { s.sweep(runCtx) })
+		s.run(func() { s.Limiter.Run(runCtx) })
 	})
 }
 
@@ -257,26 +226,9 @@ func (s *Service) logError(message string) func(error) {
 	}
 }
 
-// sweep drops expired sessions on a ticker. An abandoned session is never
-// touched again by definition, so nothing else in the system would ever notice
-// it and the cache would grow for the life of the process.
-func (s *Service) sweep(ctx context.Context) {
-	ticker := time.NewTicker(SweepInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			s.Writer.Sessions().Sweep(s.now().Unix())
-		}
-	}
-}
-
 // Stop drains everything in the order that loses nothing: flush the write
-// buffer first so every accepted event reaches a database, then persist the
-// live session cache so a restart does not split visits in two.
+// buffer so every accepted event reaches an account database. Session fold
+// state commits with each fact transaction and needs no shutdown snapshot.
 func (s *Service) Stop(ctx context.Context) error {
 	var err error
 
@@ -291,10 +243,6 @@ func (s *Service) Stop(ctx context.Context) error {
 
 		if flushErr := s.Buffer.Flush(ctx); flushErr != nil {
 			err = flushErr
-		}
-
-		if persistErr := PersistSessions(s.Writer.Sessions(), SessionFilePath(s.dataDir)); persistErr != nil && err == nil {
-			err = persistErr
 		}
 
 		if s.Geo != nil {

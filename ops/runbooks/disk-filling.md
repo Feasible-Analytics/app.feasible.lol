@@ -17,7 +17,7 @@ Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 | `feasible_database_wal_bytes{database="accounts"}` | Growing and never falling — the abnormal one |
 | `feasible_database_wal_bytes_max` | One account far above the rest |
 | `feasible_ingest_buffer_events` | Climbing, once writes start failing |
-| `feasible_ingest_events_dropped_total{reason="internal_error"}` | Increasing |
+| Event endpoint 5xx | Increasing because failed commits are retryable |
 | `feasible_database_directory_readable` | Drops to 0 if the directory itself becomes unusable |
 
 `/health/ready` fails on `account_directory` once the disk is genuinely full:
@@ -43,11 +43,9 @@ ordered by how safe it is to remove.
 | `geoip/dbip-city-lite.mmdb` | City geolocation, ~60 MB | **Yes** — countries still work, cities go unknown |
 | `geoip/dbip-country-lite.mmdb` | Country geolocation | Yes, but it degrades every event's country |
 | `lists/` | Refreshed bot and spam lists | Yes — an embedded baseline is compiled in |
-| `ingest/sessions.json` | The session cache, written on shutdown | Only while the process is stopped, and it splits every open visit in two |
 | `salt.key`, `app.key`, `script.key` | Encryption keys | **Never** |
 | `control.db`, `control.db-wal` | Sites, users, keys, salts, jobs | **Never** |
 | `accounts/*/analytics.db`, `-wal` | Customer data | **Never** |
-| `ingest/buffer.db` | The store-and-forward outbox | **Never** — these are events |
 
 **Never delete a `-wal` file.** It is not a log in the "old and disposable"
 sense; it holds committed transactions that are not yet in the database file.
@@ -122,10 +120,9 @@ year is lower than multiplying by twelve suggests.
 it corrupts the file; on a closed one it silently loses whatever had not been
 checkpointed.
 
-**Deleting `ingest/buffer.db` to free space on an ingestor.** Those are events
-that already have a 202 against them. Nothing resends them, and nothing reports
-the loss. If an ingestor's volume is filling, the shard is down —
-[shard-down.md](shard-down.md).
+**Looking for an ingest outbox to delete.** Current main writes account SQLite
+directly and acknowledges only after commit. There is no outbox file; use the
+inventory above rather than deleting an unfamiliar database.
 
 **Deleting an account database that "looks stale".** There is no such thing here:
 a quiet account is a customer with a quiet website.

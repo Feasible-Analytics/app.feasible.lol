@@ -8,9 +8,8 @@ Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 
 # The load balancer
 
-A managed load balancer sits in front of both tiers. Not a reverse proxy on one
-box: that box is then the single point of failure the whole shard design exists
-to avoid, and it is the one machine nobody thinks to make redundant.
+A managed load balancer sits in front of both public process groups. Not a
+reverse proxy on one box: that box would become the single point of failure.
 
 ## Routing
 
@@ -19,16 +18,13 @@ laptop is the routing bug production would have had.
 
 | Path | Target group | Why |
 |---|---|---|
-| `/internal/*` | **none — return 404** | The internal routes are the ones that can reverse a visitor fingerprint |
+| `/internal/*` | **none — return 404** | Health and metrics belong on the loopback listener |
 | `/api/event*` | ingest tier | The front door scales without dragging the dashboard along |
 | everything else | app tier | Dashboard, API, tracker script, static assets |
 
-Two independent controls guard `/internal/*`. It is **denied outright at the
-edge**, and the internal routes live on a **second listener bound to `127.0.0.1`**
-that nothing in front can reach. Neither is the only thing keeping them private,
-because what they protect — the salt that turns a visitor hash back into an IP
-address — is the one secret in this system whose exposure cannot be undone
-afterwards.
+The edge denies `/internal/*`, and operational routes live on a second listener
+bound to `127.0.0.1`. Current main exposes health and metrics there; it has no
+internal delivery, routing, or salt-distribution endpoint.
 
 This holds in Tailscale mode too. `FEASIBLE_APP_INTERNAL_LISTEN` and
 `FEASIBLE_INGEST_INTERNAL_LISTEN` stay on loopback there, so the internal
@@ -169,26 +165,21 @@ scripts/drain.sh http://127.0.0.1:19402/metrics
 ```
 
 `scripts/drain.sh` polls `feasible_ingest_buffer_events` until it reaches zero
-and **exits non-zero if it does not**, rather than reporting success on a
-timeout. A buffer that will not drain means the shard it forwards to is down, and
-terminating that instance loses whatever it is holding — see
-[runbooks/shard-down.md](runbooks/shard-down.md). A metrics endpoint it cannot
-read is also a failure, not an empty buffer: the alternative is a deploy that
-treats an unreachable box as a drained one.
+and **exits non-zero if it does not**. A buffer that will not drain means direct
+account storage is slow or unavailable; see
+[runbooks/write-buffer-growing.md](runbooks/write-buffer-growing.md). A metrics
+endpoint it cannot read is also a failure, not an empty buffer.
 
 Only unplanned hardware failure should ever be exposed to this. Everything else
 is a deregistration, a drain, and then a termination.
 
-## Ingestors need network-attached volumes, never instance storage
+## Event-serving processes share authoritative storage
 
-The outbox holds events that have already been answered with a 202 — nobody will
-resend them. On ephemeral instance storage, a terminated instance takes them with
-it and nothing anywhere reports the loss.
-
-On a network-attached volume the events survive the instance, and the volume can
-be reattached and drained. That is only a mitigation if the procedure for doing
-it is written down and rehearsed, which is
-[runbooks/orphaned-ingestor-volume.md](runbooks/orphaned-ingestor-volume.md).
+Every process that can receive `/api/event` must see the same `control.db`,
+account directories, and salt key. A 202 follows the account commit, so there is
+no per-instance outbox volume to recover. Pointing replicas at separate local
+directories creates divergent routing, receipts, sessions, and salts and is not
+a supported high-availability shape.
 
 ## Two things to verify after any load-balancer change
 

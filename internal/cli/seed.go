@@ -121,9 +121,9 @@ func runSeed(e *env, args []string) int {
 	)
 
 	if result.Dropped > 0 {
-		// Dropped events are deliberate here — the dormant account's traffic is
-		// meant to be refused — so they are reported rather than hidden.
-		fmt.Fprintf(e.stdout, "%d events were dropped by the pipeline, which is what the dormant account is for\n", result.Dropped)
+		// Dropped events are deliberate policy fixtures — dormant-account traffic
+		// and invalid hostnames — so they are reported rather than hidden.
+		fmt.Fprintf(e.stdout, "%d events were deliberately rejected by ingest policy\n", result.Dropped)
 	}
 
 	// A seed that quietly produced the wrong shape is worse than one that
@@ -199,10 +199,9 @@ func runSeedHTTP(ctx context.Context, e *env, dataDir, url string, events int, r
 		return ExitError
 	}
 
-	// A 202 is not evidence that anything was written. The failure this check
-	// exists to catch is an event that was accepted, said nothing and landed
-	// nowhere, so the last word belongs to the database rather than the
-	// response.
+	// A 202 now proves the local account transaction committed. Reading the
+	// database back still independently verifies the seeded domain and report
+	// path rather than trusting only the response contract.
 	written, err := seed.CountSince(ctx, dataDir, domain, now.Add(-time.Minute))
 	if err != nil {
 		fmt.Fprintf(e.stdout, "  stored    could not be counted here: %v\n", err)
@@ -249,8 +248,8 @@ func startSeedServer(ctx context.Context, e *env, dataDir string) (string, func(
 			grace, cancel := context.WithTimeout(context.Background(), httpserver.ShutdownGrace)
 			defer cancel()
 
-			// The order is what loses nothing: stop taking traffic, flush the
-			// buffer and persist the sessions, then close the databases.
+			// The order is what loses nothing: stop taking traffic, flush direct
+			// account writes, then close the databases. Session state is durable.
 			_ = server.Shutdown(grace, 0)
 			_ = service.Stop(grace)
 			_ = manager.CloseAll()

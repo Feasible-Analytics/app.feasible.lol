@@ -50,8 +50,8 @@ const ListsDirName = "lists"
 //
 // Build bots are mostly absent on purpose. Netlify declined to identify its
 // crawler and Vercel's is not reliably distinguishable, so hostname validation
-// at the shard catches that traffic instead; chasing it here would be effort
-// spent on a problem that is solved somewhere else.
+// at the account writer catches that traffic instead; chasing it here would be
+// effort spent on a problem that is solved somewhere else.
 var baselineBotTokens = []string{
 	"bot", "crawler", "spider", "crawl", "slurp",
 	"headlesschrome", "phantomjs", "puppeteer", "playwright", "selenium",

@@ -36,9 +36,10 @@ const DriverName = "sqlite"
 // connection happened to serve that call and to no other.
 //
 //	journal_mode      WAL, so a dashboard read never blocks an ingest write
-//	synchronous       NORMAL, fsync at checkpoint only — the right trade for
-//	                  analytics, where losing the last few seconds of events in
-//	                  a power cut costs far less than an fsync per commit
+//	synchronous       FULL, fsync each commit before it is acknowledged;
+//	                  otherwise a successful 202 can outrun its fact rows
+//	secure_delete     overwrite deleted secret material rather than leaving it
+//	                  recoverable in free database pages
 //	busy_timeout      5s of waiting instead of an immediate "database is locked"
 //	foreign_keys      on, because SQLite defaults it off and silently keeps
 //	                  orphans otherwise
@@ -48,7 +49,8 @@ const DriverName = "sqlite"
 //	temp_store        MEMORY, so a GROUP BY spilling to a temp table stays in RAM
 //	wal_autocheckpoint 1000 pages, keeping the WAL from growing without bound
 const Pragmas = "_pragma=journal_mode(WAL)" +
-	"&_pragma=synchronous(NORMAL)" +
+	"&_pragma=synchronous(FULL)" +
+	"&_pragma=secure_delete(1)" +
 	"&_pragma=busy_timeout(5000)" +
 	"&_pragma=foreign_keys(1)" +
 	"&_pragma=cache_size(-64000)" +

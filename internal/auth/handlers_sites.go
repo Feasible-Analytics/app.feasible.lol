@@ -166,10 +166,9 @@ func (h *Handler) doNewSite(w http.ResponseWriter, r *http.Request) {
 
 	h.Log.Info("site created", "site", site.ID, "team", team.ID, "domain", site.Domain, "timezone", site.Timezone)
 
-	// The routing map is updated immediately rather than at the next refresh.
-	// It does not remove the shard-pull delay in a multi-process deployment,
-	// but in the single-process one it means the snippet works the moment it is
-	// pasted.
+	// The routing map is updated immediately rather than at the next refresh so
+	// the snippet works the moment it is pasted in this process. Other serving
+	// processes discover the durable control row on their normal refresh.
 	h.pushToCache(site, team)
 
 	http.Redirect(w, r, "/onboarding/"+strconv.FormatInt(site.ID, 10), http.StatusFound)

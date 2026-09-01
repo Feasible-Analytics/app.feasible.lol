@@ -41,9 +41,9 @@ const (
 	// on only produces a retry that fails identically.
 	ReasonInvalidPayload = "invalid_payload"
 
-	// ReasonInternalError is our failure, not the sender's. It exists so that
-	// a salt store that will not open shows up as our outage on the health
-	// panel instead of as every customer's traffic quietly stopping.
+	// ReasonInternalError is an unrecoverable derive failure rather than a
+	// temporary dependency outage. Retryable storage and salt failures answer
+	// 503 without being falsely counted as accepted drops.
 	ReasonInternalError = "internal_error"
 )
 

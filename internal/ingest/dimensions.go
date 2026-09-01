@@ -1,6 +1,6 @@
 //
 // dimensions.go
-// Resolving every dimension string in a batch to its integer id, before the transaction.
+// Resolving every dimension string in a batch to its integer id.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -14,12 +14,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
 )
 
-// dimensionIDs holds the id for every dimension value in one batch. It exists
-// because of a hard constraint rather than for tidiness: an account's writer is
-// a pool of exactly one connection, so a lookup issued while a transaction
-// holds that connection would wait forever for a connection only the
-// transaction can release. Everything that might insert a dimension row
-// therefore has to finish before the transaction opens.
+// dimensionIDs holds the id for every dimension value in one batch.
 type dimensionIDs struct {
 	values map[dimensionKey]int64
 }
@@ -28,6 +23,12 @@ type dimensionIDs struct {
 type dimensionKey struct {
 	dimension intern.Dimension
 	value     string
+}
+
+// dimensionResolver is implemented by both the warmed cache and its
+// transaction-scoped view.
+type dimensionResolver interface {
+	ID(context.Context, intern.Dimension, string) (int64, error)
 }
 
 // of returns the id for a value. A value that was not interned cannot happen —
@@ -50,7 +51,7 @@ func (d *dimensionIDs) of(dimension intern.Dimension, value string) int64 {
 // Both the events and the dirty sessions are walked, because a session's
 // attribution is frozen at its first event and that event may have been written
 // by an earlier batch — its strings are in memory but its ids are not.
-func internBatch(ctx context.Context, cache *intern.Cache, rows []eventRow, sessions []*Session) (*dimensionIDs, error) {
+func internBatch(ctx context.Context, cache dimensionResolver, rows []eventRow, sessions []*Session) (*dimensionIDs, error) {
 	ids := &dimensionIDs{values: map[dimensionKey]int64{}}
 
 	add := func(dimension intern.Dimension, value string) error {
