@@ -272,6 +272,7 @@ export async function journeyReport(
 	domain: string,
 	anchor: JourneyAnchor,
 	direction: "forward" | "backward",
+	grouping: "exact" | "prefix",
 	trail: JourneyAnchor[],
 	request: DashboardReportRequest,
 	signal?: AbortSignal,
@@ -281,7 +282,7 @@ export async function journeyReport(
 	params.set("anchor", anchor.value);
 	params.set("direction", direction);
 	params.set("trail", JSON.stringify(trail));
-	params.set("grouping", "exact");
+	params.set("grouping", grouping);
 	const response = await dashboardGet(
 		`/api/sites/${encodeURIComponent(domain)}/journey?${params.toString()}`,
 		signal,

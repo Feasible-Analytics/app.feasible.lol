@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { shared } from "../api/client";
-import type { DateRange, Preset } from "../api/types";
+import type { DateRange, JourneyAnchor, JourneyAnchorType, Preset } from "../api/types";
 import type { CompareMode } from "./compare";
 import type { FilterLabels, FilterState } from "./filters";
 import { readFilters, readLabels, writeFilters } from "./filters";
@@ -79,6 +79,21 @@ export interface DrawerState {
 	breakdown: string;
 }
 
+export type BehaviorTab = "goals" | "properties" | "funnels" | "explore";
+
+/** BehaviorState is the shareable selection inside the dashboard's lower
+ * analysis workspace. Keeping it beside filters and the period means Back,
+ * Forward, refresh, and a pasted link all restore the same report. */
+export interface BehaviorState {
+	tab: BehaviorTab;
+	property: string;
+	funnel: number;
+	exploreAnchor: JourneyAnchor | null;
+	exploreDirection: "forward" | "backward";
+	exploreGrouping: "exact" | "prefix";
+	exploreTrail: JourneyAnchor[];
+}
+
 export interface UrlState {
 	domain: string;
 	preset: Preset;
@@ -94,6 +109,7 @@ export interface UrlState {
 	 *  recipient sees the same pill the sender did. */
 	labels: FilterLabels;
 	drawer: DrawerState | null;
+	behavior: BehaviorState;
 }
 
 /** dateRange turns the URL's period into the wire form the engine reads. */
@@ -132,7 +148,56 @@ export function parse(url: URL): UrlState {
 		filters: readFilters(params),
 		labels: readLabels(params),
 		drawer: parseDrawer(params),
+		behavior: parseBehavior(params),
 	};
+}
+
+/** parseBehavior accepts only the small typed vocabulary the Explore endpoint
+ * supports; a damaged trail loses the trail rather than the whole dashboard. */
+function parseBehavior(params: URLSearchParams): BehaviorState {
+	const rawTab = params.get("analysis");
+	const tab: BehaviorTab = rawTab === "properties" || rawTab === "funnels" || rawTab === "explore" ? rawTab : "goals";
+	const rawType = params.get("explore_type");
+	const type = isJourneyType(rawType) ? rawType : null;
+	const value = params.get("explore_value") ?? "";
+	const label = params.get("explore_label") ?? "";
+	const rawFunnel = Number(params.get("funnel") ?? "0");
+
+	return {
+		tab,
+		property: params.get("property") ?? "",
+		funnel: Number.isSafeInteger(rawFunnel) && rawFunnel > 0 ? rawFunnel : 0,
+		exploreAnchor: type && value ? { type, value, label: label || undefined } : null,
+		exploreDirection: params.get("explore_direction") === "backward" ? "backward" : "forward",
+		exploreGrouping: params.get("explore_grouping") === "prefix" ? "prefix" : "exact",
+		exploreTrail: parseJourneyTrail(params.get("explore_trail")),
+	};
+}
+
+/** parseJourneyTrail validates every node before allowing it into continuation
+ * requests, and caps hand-edited URLs so one link cannot grow without bound. */
+function parseJourneyTrail(raw: string | null): JourneyAnchor[] {
+	if (!raw) return [];
+
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		if (!Array.isArray(parsed)) return [];
+
+		return parsed.slice(0, 20).flatMap((item): JourneyAnchor[] => {
+			if (!item || typeof item !== "object") return [];
+			const node = item as Partial<JourneyAnchor>;
+			if (!isJourneyType(node.type) || typeof node.value !== "string" || !node.value) return [];
+
+			return [{ type: node.type, value: node.value, label: typeof node.label === "string" ? node.label : undefined }];
+		});
+	} catch {
+		return [];
+	}
+}
+
+/** isJourneyType narrows untrusted URL text to the API's anchor vocabulary. */
+function isJourneyType(value: unknown): value is JourneyAnchorType {
+	return value === "page" || value === "event" || value === "goal";
 }
 
 /** isDate accepts only the bare-date form the engine documents, so a bad bound
@@ -182,6 +247,21 @@ export function href(state: UrlState): string {
 	if (state.compare !== "previous_period") params.set("compare", state.compare);
 
 	writeFilters(params, state.filters, state.labels);
+
+	const behavior = state.behavior;
+	if (behavior.tab !== "goals") params.set("analysis", behavior.tab);
+	if (behavior.property) params.set("property", behavior.property);
+	if (behavior.funnel > 0) params.set("funnel", String(behavior.funnel));
+	if (behavior.exploreAnchor) {
+		params.set("explore_type", behavior.exploreAnchor.type);
+		params.set("explore_value", behavior.exploreAnchor.value);
+		if (behavior.exploreAnchor.label && behavior.exploreAnchor.label !== behavior.exploreAnchor.value) {
+			params.set("explore_label", behavior.exploreAnchor.label);
+		}
+	}
+	if (behavior.exploreDirection === "backward") params.set("explore_direction", "backward");
+	if (behavior.exploreGrouping === "prefix") params.set("explore_grouping", "prefix");
+	if (behavior.exploreTrail.length > 0) params.set("explore_trail", JSON.stringify(behavior.exploreTrail));
 
 	const drawer = state.drawer;
 	if (drawer) {

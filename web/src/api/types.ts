@@ -368,6 +368,7 @@ export interface Navigation {
 	email: string;
 	sites_url: string;
 	site_settings_url?: string;
+	conversions_url?: string;
 	account_url: string;
 	billing_url?: string;
 	export_url?: string;

@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { Goal, JourneyAnchor } from "../api/types";
-import { anchorKey, conversionSettingsURL, extendJourneyTrail, goalFilter } from "./GoalsCard";
+import { anchorKey, extendJourneyTrail, filterAnchors, goalFilter } from "./GoalsCard";
 
 /** configuredGoal supplies all wire fields so each test changes only the goal
  * behavior it intends to exercise. */
@@ -42,12 +42,6 @@ test("goal rows filter through the exact goal definition", () => {
 	});
 });
 
-test("conversion settings links tolerate trailing slashes and missing navigation", () => {
-	assert.equal(conversionSettingsURL("/sites/example.com/settings/"), "/sites/example.com/settings/conversions");
-	assert.equal(conversionSettingsURL("/sites/example.com/settings"), "/sites/example.com/settings/conversions");
-	assert.equal(conversionSettingsURL(undefined), undefined);
-});
-
 test("journey continuation keeps typed anchors and does not mutate its trail", () => {
 	const page: JourneyAnchor = { type: "page", value: "/pricing", label: "Pricing" };
 	const event: JourneyAnchor = { type: "event", value: "Signup" };
@@ -58,4 +52,15 @@ test("journey continuation keeps typed anchors and does not mutate its trail", (
 	assert.deepEqual(next, [page, event]);
 	assert.equal(anchorKey(page), "page:/pricing");
 	assert.equal(anchorKey({ type: "goal", value: "7" }), "goal:7");
+});
+
+test("journey anchor search is case-insensitive and preserves server order", () => {
+	const anchors: JourneyAnchor[] = [
+		{ type: "page", value: "/pricing", label: "Pricing" },
+		{ type: "event", value: "Signup", label: "Newsletter signup" },
+		{ type: "goal", value: "7", label: "Paid Signup" },
+	];
+
+	assert.deepEqual(filterAnchors(anchors, "SIGNUP"), [anchors[1], anchors[2]]);
+	assert.equal(filterAnchors(anchors, "  "), anchors);
 });
