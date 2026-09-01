@@ -42,6 +42,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dataio"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/goals"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/google"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
@@ -70,6 +71,15 @@ const SitePrefix = PathPrefix + "sites/"
 
 // actions are the routes one site's screens answer, relative to its domain.
 var actions = []string{
+	"conversions",
+	"conversions/goals/create",
+	"conversions/goals/update",
+	"conversions/goals/delete",
+	"conversions/properties/allow",
+	"conversions/properties/allow-all",
+	"conversions/properties/delete",
+	"conversions/funnels/save",
+	"conversions/funnels/delete",
 	"shields",
 	"shields/add",
 	"shields/delete",
@@ -130,9 +140,10 @@ var templateFS embed.FS
 // start-up rather than per request: a template error is then a start-up failure
 // with a filename in it rather than a blank page at three in the morning.
 var pages = map[string]*template.Template{
-	"shields": mustParse("shields.html"),
-	"paths":   mustParse("paths.html"),
-	"imports": mustParse("imports.html"),
+	"conversions": mustParse("conversions.html"),
+	"shields":     mustParse("shields.html"),
+	"paths":       mustParse("paths.html"),
+	"imports":     mustParse("imports.html"),
 }
 
 // mustParse builds one screen's template set. Panicking is honest: an embedded
@@ -189,6 +200,27 @@ func funcs() template.FuncMap {
 		"canBilling": func(role teams.Role) bool {
 			return role == teams.RoleOwner || role == teams.RoleAdmin || role == teams.RoleBilling
 		},
+		"stepGoalID": func(funnel goals.Funnel, position int) int64 {
+			for _, step := range funnel.Steps {
+				if step.Position == position {
+					return step.GoalID
+				}
+			}
+			return 0
+		},
+		"propertyName": func(goal goals.Goal, index int) string {
+			if index < 0 || index >= len(goal.Properties) {
+				return ""
+			}
+			return goal.Properties[index].Name
+		},
+		"propertyValue": func(goal goals.Goal, index int) string {
+			if index < 0 || index >= len(goal.Properties) {
+				return ""
+			}
+			return goal.Properties[index].Value
+		},
+		"sub": func(left, right int) int { return left - right },
 
 		// A drop reason is translated at render rather than when the panel is
 		// built, because the same panel is also the JSON the API returns, and a
@@ -326,6 +358,14 @@ type page struct {
 	SearchConsoleNoticeID string
 	GA4                   *google.Connection
 	SearchConsole         *google.Connection
+
+	Goals             []goals.Goal
+	Properties        []goals.Property
+	SeenProperties    []string
+	Funnels           []goals.Funnel
+	NoBackfillNotice  string
+	PropertyPIINotice string
+	FunnelStepSlots   []int
 }
 
 // ruleGroup is one shield kind as the page renders it. The three labels are
@@ -394,6 +434,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch action {
+	case "conversions":
+		h.conversions(w, r, site)
+	case "conversions/goals/create":
+		h.createGoal(w, r, site)
+	case "conversions/goals/update":
+		h.updateGoal(w, r, site)
+	case "conversions/goals/delete":
+		h.deleteGoal(w, r, site)
+	case "conversions/properties/allow":
+		h.allowProperty(w, r, site)
+	case "conversions/properties/allow-all":
+		h.allowAllProperties(w, r, site)
+	case "conversions/properties/delete":
+		h.deleteProperty(w, r, site)
+	case "conversions/funnels/save":
+		h.saveFunnel(w, r, site)
+	case "conversions/funnels/delete":
+		h.deleteFunnel(w, r, site)
 	case "", "shields":
 		h.shields(w, r, site)
 	case "shields/add":

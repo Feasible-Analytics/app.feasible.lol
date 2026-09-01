@@ -1,4 +1,5 @@
 {
+  "settings.conversions.title": "Conversions",
   "settings.flash.alert_saved": "Saved. At most two alerts are sent per site per day.",
   "settings.flash.form_unreadable": "That form could not be read.",
   "settings.flash.guest_needs_site": "A guest is invited to one site — pick which one.",

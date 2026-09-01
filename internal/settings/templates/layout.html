@@ -82,6 +82,7 @@
 
 		{{ if .Domain }}
 			<a href="{{ url .Lang (printf "/sites/domain/%s/settings" .Domain) }}" class="-mb-px border-b-2 border-transparent px-3 py-3 text-sm font-medium text-muted hover:text-heading">{{ t .Lang "auth.site_settings.general" }}</a>
+			<a href="{{ url .Lang (printf "/settings/sites/%s/conversions" .Domain) }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "conversions" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">Conversions</a>
 			<a href="{{ url .Lang (printf "/settings/sites/%s/sharing" .Domain) }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "sharing" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.sharing" }}</a>
 			<a href="{{ url .Lang (printf "/settings/sites/%s/reports" .Domain) }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "reports" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.reports" }}</a>
 			<a href="{{ url .Lang (printf "/settings/sites/%s/health" .Domain) }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "health" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.health" }}</a>
