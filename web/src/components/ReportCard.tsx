@@ -203,12 +203,15 @@ export function ReportCard({
 								const filtered = on?.has(raw) ?? false;
 
 								return (
-									<li key={row.dimensions.join("|")} className="group/row relative flex h-row items-center">
+									<li
+										key={row.dimensions.join("|")}
+										className={`group/row relative flex items-center ${companion ? "h-row-stacked" : "h-row"}`}
+									>
 										<Bar share={value / peak} />
 
 										{/* The whole row is the control. A separate
 										    "filter by this" affordance would be a
-										    second target on a 32px row, and the row
+										    second target on a compact row, and the row
 										    itself is what everybody clicks first. */}
 										<button
 											type="button"
@@ -232,7 +235,9 @@ export function ReportCard({
 										<span className="pointer-events-none relative flex min-w-0 flex-1 items-center gap-2 pl-2 text-sm text-body">
 											{active.favicon && <Favicon name={raw || "Direct"} />}
 											<Flag glyph={flagFor(active.dimension, raw)} />
-											<span className="flex min-w-0 flex-col justify-center leading-tight">
+											<span
+												className={`flex min-w-0 flex-col justify-center leading-tight ${companion ? "gap-0.5" : ""}`}
+											>
 												{companion && (
 													<span className="truncate text-xs font-medium" title={companion}>
 														{companion}
