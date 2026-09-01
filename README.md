@@ -165,6 +165,23 @@ system actually has, and the game day that breaks things on purpose to check the
 runbooks are true. [`ops/README.md`](ops/README.md) lists every metric the binary
 emits, which is also the list a runbook is allowed to name.
 
+## Cutting a release
+
+Releases are deliberate stability checkpoints, not an automatic result of every
+merge. When `main` is in a state we are confident shipping, open the repository's
+**Actions** tab, select **Release**, choose **Run workflow**, and run it from
+`main`. This is always a manual decision.
+
+The optional version field accepts either `1.2.3` or `v1.2.3`. Leave it blank
+for the normal release: the workflow increments the patch component of the most
+recent semantic release tag (`x.y.z`). A repository with no previous release
+starts at `v0.0.1`.
+
+The workflow snapshots current `main`, creates the version tag and GitHub
+Release, and attaches Linux, Windows and macOS builds for amd64 and arm64 plus a
+SHA-256 checksum manifest. Do not run it until the pull requests making up the
+release are merged and `main` is stable.
+
 ### Before you push
 
 ```bash

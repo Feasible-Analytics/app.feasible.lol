@@ -1,6 +1,6 @@
 #
 # ci.yml
-# Lint, test and build every push and pull request.
+# Lint, test and build every pull request.
 #
 # Created: 2026-08-30
 # Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -13,16 +13,14 @@
 name: CI
 
 on:
-  push:
-    branches: ["**"]
   pull_request:
 
 # Nothing here writes to the repository.
 permissions:
   contents: read
 
-# A new push supersedes the run it interrupted. Waiting on results for code
-# nobody is looking at any more just delays the results for code they are.
+# A new revision of a pull request supersedes the run it interrupted. Waiting
+# on results for code nobody is looking at any more only delays current work.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
