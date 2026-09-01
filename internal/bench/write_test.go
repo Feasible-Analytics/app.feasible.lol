@@ -76,6 +76,8 @@ func TestWriteLoadIsHonest(t *testing.T) {
 		Accounts:          2,
 		Events:            1_200,
 		Visitors:          100,
+		BufferSize:        32,
+		Concurrency:       32,
 		ControlMigrations: migrate.Control(),
 	})
 	if err != nil {
