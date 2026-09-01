@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { Goal, JourneyAnchor } from "../api/types";
-import { anchorKey, extendJourneyTrail, filterAnchors, goalFilter } from "./GoalsCard";
+import { anchorKey, behaviorEnabled, extendJourneyTrail, filterAnchors, goalFilter } from "./GoalsCard";
 
 /** configuredGoal supplies all wire fields so each test changes only the goal
  * behavior it intends to exercise. */
@@ -63,4 +63,12 @@ test("journey anchor search is case-insensitive and preserves server order", () 
 
 	assert.deepEqual(filterAnchors(anchors, "SIGNUP"), [anchors[1], anchors[2]]);
 	assert.equal(filterAnchors(anchors, "  "), anchors);
+});
+
+test("deep-linked behavior tabs load before the lazy card reaches the viewport", () => {
+	assert.equal(behaviorEnabled("goals", false), false);
+	assert.equal(behaviorEnabled("properties", false), true);
+	assert.equal(behaviorEnabled("funnels", false), true);
+	assert.equal(behaviorEnabled("explore", false), true);
+	assert.equal(behaviorEnabled("goals", true), true);
 });

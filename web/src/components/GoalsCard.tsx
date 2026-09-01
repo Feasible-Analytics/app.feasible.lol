@@ -65,6 +65,14 @@ interface AnchorOptions {
 
 const TABS: BehaviorTab[] = ["goals", "properties", "funnels", "explore"];
 
+/** behaviorEnabled keeps the default Goals report lazy while ensuring a
+ * shared URL for another tab starts its request even before the card enters
+ * the viewport. Browser scroll restoration can otherwise leave a deep-linked
+ * tab displaying its loading state without ever scheduling the request. */
+export function behaviorEnabled(tab: BehaviorTab, near: boolean): boolean {
+	return near || tab !== "goals";
+}
+
 /** GoalsCard keeps every behavior-analysis mode visible in one full-width
  * section. Empty states belong inside their tabs so an unconfigured site still
  * teaches the reader which analyses are available and where to set them up. */
@@ -74,6 +82,7 @@ export function GoalsCard({ domain, range, filters, exact: exactAnswer, onFilter
 	const request = useMemo(() => ({ dateRange: range, filters, exact: exactAnswer }), [range, filters, exactAnswer]);
 	const settingsURL = bootstrap().navigation?.conversions_url;
 	const tab = behavior.tab;
+	const enabled = behaviorEnabled(tab, near);
 
 	return (
 		<section
@@ -114,15 +123,15 @@ export function GoalsCard({ domain, range, filters, exact: exactAnswer, onFilter
 
 			<div className="min-h-[350px] flex-1">
 				{tab === "goals" && (
-					<GoalsPanel domain={domain} request={request} enabled={near} onFilter={onFilter} settingsURL={settingsURL} />
+					<GoalsPanel domain={domain} request={request} enabled={enabled} onFilter={onFilter} settingsURL={settingsURL} />
 				)}
 				{tab === "properties" && (
-					<PropertiesPanel domain={domain} request={request} enabled={near} onFilter={onFilter} settingsURL={settingsURL} selected={behavior.property} onSelected={(property) => onBehaviorChange({ ...behavior, property })} />
+					<PropertiesPanel domain={domain} request={request} enabled={enabled} onFilter={onFilter} settingsURL={settingsURL} selected={behavior.property} onSelected={(property) => onBehaviorChange({ ...behavior, property })} />
 				)}
 				{tab === "funnels" && (
-					<FunnelsPanel domain={domain} request={request} enabled={near} settingsURL={settingsURL} selected={behavior.funnel} onSelected={(funnel) => onBehaviorChange({ ...behavior, funnel })} />
+					<FunnelsPanel domain={domain} request={request} enabled={enabled} settingsURL={settingsURL} selected={behavior.funnel} onSelected={(funnel) => onBehaviorChange({ ...behavior, funnel })} />
 				)}
-				{tab === "explore" && <ExplorePanel domain={domain} request={request} enabled={near} behavior={behavior} onBehaviorChange={onBehaviorChange} />}
+				{tab === "explore" && <ExplorePanel domain={domain} request={request} enabled={enabled} behavior={behavior} onBehaviorChange={onBehaviorChange} />}
 			</div>
 		</section>
 	);
