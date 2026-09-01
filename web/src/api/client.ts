@@ -15,11 +15,13 @@ import type { Annotation, Bootstrap, Shared, StatsRequest, StatsResponse } from 
  *  thing in the response. */
 export class QueryError extends Error {
 	readonly status: number;
+	readonly code: string;
 
-	constructor(status: number, message: string) {
+	constructor(status: number, message: string, code = "") {
 		super(message);
 		this.name = "QueryError";
 		this.status = status;
+		this.code = code;
 	}
 }
 
@@ -138,15 +140,17 @@ export async function query(
 		// not JSON at all means something in front of us answered — a proxy, a
 		// login redirect — and the status is then the only honest thing to say.
 		let message = t("dashboard.error.query_status", { status: response.status });
+		let code = "";
 
 		try {
-			const failure = (await response.json()) as { error?: string };
+			const failure = (await response.json()) as { error?: string; code?: string };
 			if (failure?.error) message = failure.error;
+			if (failure?.code) code = failure.code;
 		} catch {
 			/* Keep the status-based message. */
 		}
 
-		throw new QueryError(response.status, message);
+		throw new QueryError(response.status, message, code);
 	}
 
 	return (await response.json()) as StatsResponse;

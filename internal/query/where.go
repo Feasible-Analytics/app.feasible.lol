@@ -8,6 +8,8 @@
 
 package query
 
+import "encoding/json"
+
 // whereBuilder compiles a query's filters for one fact table. It exists per
 // table rather than once per query because the same filter means different SQL
 // on each: `event:page` is a column on `events` and a translation on
@@ -64,31 +66,40 @@ func (b *whereBuilder) base(q *Query) []expr {
 	// are kept rather than deleted — a misclassification has to be
 	// recoverable — so the exclusion has to happen here.
 	if !q.Include.Bots {
-		conditions = append(conditions, b.botExclusion())
+		if b.table == tableSessions && b.ctx.sessionFacts {
+			// Sampled membership constrains bot status in the same seek. Exact
+			// queries use one primary-key session fact rather than scanning every
+			// event in a potentially giant session.
+			if !(q.SampleRate > 0 && q.SampleRate < 1) {
+				conditions = append(conditions, expr{SQL: "(SELECT sf.is_bot FROM session_sampling sf WHERE sf.session_id = " + b.alias + ".id) = 0"})
+			}
+		} else {
+			conditions = append(conditions, b.botExclusion())
+		}
 	}
 
 	if q.SampleRate > 0 && q.SampleRate < 1 {
-		// Sampling picks visitors, not rows. Sampling rows would cut sessions
-		// in half, and half a visit bounces, lasts no time and views one page.
-		conditions = append(conditions, expr{
-			SQL:  "(ABS(" + b.alias + ".user_id) % 1000) < ?",
-			Args: []any{int64(q.SampleRate * 1000)},
-		})
+		// Each fact table has its own row bucket. Event-grain work samples event
+		// rows, while visit-grain work samples complete rows from sessions; no
+		// selected visitor can make either scan unbounded.
+		conditions = append(conditions, sampleCondition(
+			b.table, b.alias, b.sites, b.rangeStart, b.rangeEnd, q.SampleRate, !q.Include.Bots,
+		))
 	}
 
 	return conditions
 }
 
 // botExclusion keeps automated traffic out. On events it is a column; on
-// sessions there is none, so it is a correlated existence check through the
-// session's own events — one index probe per session row, which is affordable
-// because the session table in a range is far smaller than the event table.
+// sessions there is none in the pre-0011 compatibility schema, so that schema
+// uses a correlated existence check. The integrated schema never reaches that
+// branch because bot status is materialized in session_sampling.
 func (b *whereBuilder) botExclusion() expr {
 	if b.table == tableEvents {
 		return expr{SQL: b.alias + ".bot_reason_id = 0"}
 	}
 
-	return expr{SQL: "NOT EXISTS (SELECT 1 FROM events be WHERE be.session_id = " + b.alias + ".id AND be.bot_reason_id <> 0)"}
+	return expr{SQL: "NOT EXISTS (SELECT 1 FROM events be WHERE be.site_id = " + b.alias + ".site_id AND be.session_id = " + b.alias + ".id AND be.bot_reason_id <> 0)"}
 }
 
 // compile turns the query's filters into conditions. They AND together:
@@ -132,13 +143,13 @@ func (b *whereBuilder) one(f Filter) (expr, error) {
 // joining before aggregating would drag the string column through every row of
 // the scan.
 func (b *whereBuilder) interned(f Filter, d dimension) (expr, error) {
-	predicate, err := b.values(expr{SQL: "value"}, f)
+	predicate, err := b.values(expr{SQL: "dv.value"}, f)
 	if err != nil {
 		return expr{}, err
 	}
 
 	subquery := expr{
-		SQL:  "SELECT id FROM " + d.Interned.Table() + " WHERE " + predicate.SQL,
+		SQL:  "SELECT dv.id FROM " + d.Interned.Table() + " dv WHERE " + predicate.SQL,
 		Args: predicate.Args,
 	}
 
@@ -174,7 +185,7 @@ func negate(condition expr, negated bool) expr {
 func (b *whereBuilder) column(d dimension) (string, func(expr) expr, error) {
 	identity := func(e expr) expr { return e }
 
-	if d.EventColumn == "" && d.SessionColumn == "" && d.EntryColumn == "" {
+	if d.EventColumn == "" && d.SessionColumn == "" && d.EntryColumn == "" && d.EntryEventColumn == "" {
 		return "", nil, invalid("%q cannot be filtered", d.Name)
 	}
 
@@ -202,6 +213,12 @@ func (b *whereBuilder) column(d dimension) (string, func(expr) expr, error) {
 		return b.ctx.pathColumn(b.alias, d.EntryColumn, d), identity, nil
 	}
 
+	if d.EntryEventColumn != "" {
+		b.entryScoped = true
+
+		return sessionEntryEventColumn(b.alias, d.EntryEventColumn, dimEntry, b.ctx.sessionFacts), identity, nil
+	}
+
 	b.semiJoined = true
 
 	return b.ctx.pathColumn("e2", d.EventColumn, d), b.throughEvents, nil
@@ -223,15 +240,17 @@ func (b *whereBuilder) throughSessions(inner expr) expr {
 // uses the same index every other query on the table does.
 func (b *whereBuilder) throughEvents(inner expr) expr {
 	sites := inInt64("e2.site_id", b.sites)
+	conditions := []expr{
+		{SQL: "e2.session_id = " + b.alias + ".id"},
+		sites,
+		{SQL: "e2.timestamp >= ? AND e2.timestamp < ?", Args: []any{b.rangeStart, b.rangeEnd}},
+	}
 
-	sql := "EXISTS (SELECT 1 FROM events e2 WHERE e2.session_id = " + b.alias + ".id AND " + sites.SQL +
-		" AND e2.timestamp >= ? AND e2.timestamp < ? AND " + inner.SQL + ")"
+	conditions = append(conditions, inner)
 
-	args := append([]any{}, sites.Args...)
-	args = append(args, b.rangeStart, b.rangeEnd)
-	args = append(args, inner.Args...)
+	where := and(conditions)
 
-	return expr{SQL: sql, Args: args}
+	return expr{SQL: "EXISTS (SELECT 1 FROM events e2 WHERE " + where.SQL + ")", Args: where.Args}
 }
 
 // prop compiles a filter on a custom property. Properties live in the cold
@@ -239,30 +258,34 @@ func (b *whereBuilder) throughEvents(inner expr) expr {
 // the split exists so that a scan which never looks at props does not drag a
 // JSON blob off disk with every row.
 func (b *whereBuilder) prop(f Filter, d dimension) (expr, error) {
-	value := expr{SQL: "json_extract(ed.props, ?)", Args: []any{d.jsonPath()}}
-
-	predicate, err := b.values(value, f)
-	if err != nil {
-		return expr{}, err
-	}
-
-	details := expr{
-		SQL:  "SELECT ed.event_id FROM event_details ed WHERE " + predicate.SQL,
-		Args: predicate.Args,
-	}
-
 	// A property declared session-scoped describes the visit, so filtering on
 	// it selects whole visits on either table. Matching only the events that
 	// repeated the property would answer "the hits that mentioned the variant"
 	// where the caller asked for "the visits in it".
 	if d.sessionScoped(b.scopes) {
-		inner := expr{SQL: "e2.id IN (" + details.SQL + ")", Args: details.Args}
+		alias := b.alias
+		wrap := func(condition expr) expr { return condition }
+		if b.table == tableEvents {
+			alias = "s2"
+			wrap = b.throughSessions
+		}
 
-		return negate(b.visitsWith(inner), f.Negated()), nil
+		value := expr{SQL: "json_extract(" + alias + ".entry_props, ?)", Args: []any{d.jsonPath()}}
+		predicate, err := b.values(value, f)
+		if err != nil {
+			return expr{}, err
+		}
+
+		return negate(wrap(predicate), f.Negated()), nil
 	}
 
 	if b.table == tableEvents {
-		return negate(expr{SQL: b.alias + ".id IN (" + details.SQL + ")", Args: details.Args}, f.Negated()), nil
+		condition, err := b.eventProperty(f, d, b.alias)
+		if err != nil {
+			return expr{}, err
+		}
+
+		return negate(condition, f.Negated()), nil
 	}
 
 	// At session grain a property filter selects whole visits containing a
@@ -275,9 +298,31 @@ func (b *whereBuilder) prop(f Filter, d dimension) (expr, error) {
 		b.semiJoined = true
 	}
 
-	inner := expr{SQL: "e2.id IN (" + details.SQL + ")", Args: details.Args}
+	inner, err := b.eventProperty(f, d, "e2")
+	if err != nil {
+		return expr{}, err
+	}
 
 	return negate(b.throughEvents(inner), f.Negated()), nil
+}
+
+// eventProperty tests one event's cold property through its primary-key row.
+// Correlating details to an event selected by the sampled fact-table index is
+// what keeps a property filter bounded; selecting matching event ids from all
+// of event_details first would scan the unsampled cold table before SQLite had
+// a chance to apply the event-row buckets.
+func (b *whereBuilder) eventProperty(f Filter, d dimension, eventAlias string) (expr, error) {
+	value := expr{SQL: "json_extract(ep.props, ?)", Args: []any{d.jsonPath()}}
+
+	predicate, err := b.values(value, f)
+	if err != nil {
+		return expr{}, err
+	}
+
+	return expr{
+		SQL:  "EXISTS (SELECT 1 FROM event_details ep WHERE ep.event_id = " + eventAlias + ".id AND " + predicate.SQL + ")",
+		Args: predicate.Args,
+	}, nil
 }
 
 // hasDone selects whole visits by something that happened inside them. It is
@@ -321,16 +366,18 @@ func (b *whereBuilder) visitsWith(condition expr) expr {
 	}
 
 	// The window is applied to the inner events too: without it a match from
-	// last year would select a visit from today, and with it the lookup uses
-	// the same index every other query on the table does.
-	sql := column + " IN (SELECT e2.session_id FROM events e2 WHERE " + sites.SQL +
-		" AND e2.timestamp >= ? AND e2.timestamp < ? AND " + condition.SQL + ")"
+	// last year could select a visit from today. Sampled queries that reach this
+	// complete-session membership operation are refused before compilation;
+	// row-sampling this inner set would change its meaning.
+	conditions := []expr{
+		sites,
+		{SQL: "e2.timestamp >= ? AND e2.timestamp < ?", Args: []any{b.rangeStart, b.rangeEnd}},
+	}
+	conditions = append(conditions, condition)
 
-	args := append([]any{}, sites.Args...)
-	args = append(args, b.rangeStart, b.rangeEnd)
-	args = append(args, condition.Args...)
+	where := and(conditions)
 
-	return expr{SQL: sql, Args: args}
+	return expr{SQL: column + " IN (SELECT e2.session_id FROM events e2 WHERE " + where.SQL + ")", Args: where.Args}
 }
 
 // values builds the positive predicate for one filter's value list against a
@@ -341,44 +388,49 @@ func (b *whereBuilder) visitsWith(condition expr) expr {
 // that "is" and "is_not" are guaranteed to be exact complements instead of two
 // predicates somebody has to keep in step.
 func (b *whereBuilder) values(value expr, f Filter) (expr, error) {
-	predicates := make([]expr, 0, len(f.Values))
-
-	for _, raw := range f.Values {
-		predicate, err := b.predicate(value, f.Operator, raw, !f.CaseInsensitive)
-		if err != nil {
-			return expr{}, err
+	values := append([]string(nil), f.Values...)
+	if f.CaseInsensitive {
+		for i := range values {
+			values[i] = asciiLower(values[i])
 		}
-
-		predicates = append(predicates, predicate)
 	}
 
-	return or(predicates), nil
-}
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return expr{}, invalid("filter on %q could not be encoded", f.Dimension)
+	}
 
-// predicate compiles one operator against one value.
-func (b *whereBuilder) predicate(value expr, operator, raw string, caseSensitive bool) (expr, error) {
-	switch operator {
+	caseSensitive := !f.CaseInsensitive
+	list := string(encoded)
+
+	switch f.Operator {
 	case OpIs, OpIsNot:
 		if caseSensitive {
-			return expr{SQL: value.SQL + " = ?", Args: append(append([]any{}, value.Args...), raw)}, nil
+			return expr{
+				SQL:  value.SQL + " IN (SELECT fv.value FROM json_each(?) fv)",
+				Args: append(append([]any{}, value.Args...), list),
+			}, nil
 		}
 
 		// Both sides are folded the same ASCII-only way. Folding one side with
 		// Go's Unicode-aware rules and the other with SQLite's ASCII-only
 		// lower() would silently fail to match any non-ASCII value.
 		return expr{
-			SQL:  "lower(" + value.SQL + ") = ?",
-			Args: append(append([]any{}, value.Args...), asciiLower(raw)),
+			SQL:  "lower(" + value.SQL + ") IN (SELECT fv.value FROM json_each(?) fv)",
+			Args: append(append([]any{}, value.Args...), list),
 		}, nil
 
 	case OpContains, OpContainsNot:
 		if caseSensitive {
-			return expr{SQL: "instr(" + value.SQL + ", ?) > 0", Args: append(append([]any{}, value.Args...), raw)}, nil
+			return expr{
+				SQL:  "EXISTS (SELECT 1 FROM json_each(?) fv WHERE instr(" + value.SQL + ", fv.value) > 0)",
+				Args: append([]any{list}, value.Args...),
+			}, nil
 		}
 
 		return expr{
-			SQL:  "instr(lower(" + value.SQL + "), ?) > 0",
-			Args: append(append([]any{}, value.Args...), asciiLower(raw)),
+			SQL:  "EXISTS (SELECT 1 FROM json_each(?) fv WHERE instr(lower(" + value.SQL + "), fv.value) > 0)",
+			Args: append([]any{list}, value.Args...),
 		}, nil
 
 	case OpMatches, OpMatchesNot:
@@ -391,13 +443,16 @@ func (b *whereBuilder) predicate(value expr, operator, raw string, caseSensitive
 			sensitive = 1
 		}
 
-		args := []any{raw}
+		args := []any{list}
 		args = append(args, value.Args...)
 		args = append(args, sensitive)
 
-		return expr{SQL: MatchFunction + "(?, " + value.SQL + ", ?)", Args: args}, nil
+		return expr{
+			SQL:  "EXISTS (SELECT 1 FROM json_each(?) fv WHERE " + MatchFunction + "(fv.value, " + value.SQL + ", ?))",
+			Args: args,
+		}, nil
 
 	default:
-		return expr{}, invalid("unknown filter operator %q", operator)
+		return expr{}, invalid("unknown filter operator %q", f.Operator)
 	}
 }

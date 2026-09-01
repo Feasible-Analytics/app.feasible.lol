@@ -10,6 +10,7 @@ package query
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -40,6 +41,12 @@ func TestValidationRejectsBadInput(t *testing.T) {
 		{"no metric", func(q *Query) { q.Metrics = nil }, "metric"},
 		{"unknown metric", func(q *Query) { q.Metrics = []string{"vistors"} }, "unknown metric"},
 		{"duplicate metric", func(q *Query) { q.Metrics = []string{"visitors", "visitors"} }, "twice"},
+		{"too many metrics", func(q *Query) {
+			q.Metrics = make([]string, MaxMetrics+1)
+			for i := range q.Metrics {
+				q.Metrics[i] = fmt.Sprintf("sum(event:props:value_%d)", i)
+			}
+		}, "at most"},
 		{"unknown dimension", func(q *Query) { q.Dimensions = []string{"visit:planet"} }, "unknown dimension"},
 		{"duplicate dimension", func(q *Query) { q.Dimensions = []string{"visit:source", "visit:source"} }, "twice"},
 		{"too many dimensions", func(q *Query) {
@@ -52,6 +59,8 @@ func TestValidationRejectsBadInput(t *testing.T) {
 		{"oversized limit", func(q *Query) { q.Pagination.Limit = MaxLimit + 1 }, "limit"},
 		{"order by a metric nobody asked for", func(q *Query) { q.OrderBy = []Order{{Key: "pageviews"}} }, "order by"},
 		{"sample rate above one", func(q *Query) { q.SampleRate = 2 }, "sample_rate"},
+		{"sample rate below predicate precision", func(q *Query) { q.SampleRate = 0.0005 }, "increments"},
+		{"sample rate between predicate buckets", func(q *Query) { q.SampleRate = 0.1234 }, "increments"},
 		{"unknown operator", func(q *Query) {
 			q.Filters = []Filter{{Operator: "starts_with", Dimension: "event:page", Values: []string{"/"}}}
 		}, "operator"},

@@ -51,17 +51,6 @@ func (t table) timeColumn() string {
 	return "timestamp"
 }
 
-// propCorrelation is the column a session-scoped property's subquery is joined
-// back on: the row's own id on `sessions`, and the session it belongs to on
-// `events`.
-func (t table) propCorrelation() string {
-	if t == tableSessions {
-		return "s.id"
-	}
-
-	return "e.session_id"
-}
-
 // plan is the compiler's decision about how a query is answered: which table
 // produces the paginated result set, which one contributes the rest, and what
 // the answer will mean when a session-scoped metric had to be re-scoped to
@@ -146,6 +135,16 @@ func decideScoped(q *Query, scopes map[string]string) (*plan, error) {
 			needsSessions = true
 		case scopeSpecial:
 			p.Specials = append(p.Specials, name)
+
+			// A numeric property declared at session scope is computed from one
+			// sessions row per visit. Marking that grain here makes the ordinary
+			// dimension guard reject event-only breakdowns that could only count
+			// the same visit more than once.
+			if aggregate, parsed := parsePropAggregate(name); parsed && aggregate.Dim.sessionScoped(scopes) {
+				needsSessions = true
+			} else {
+				needsEvents = true
+			}
 		case scopeEither:
 			// Decided below, once it is known which table is being read
 			// anyway. Counting a visitor on a table the query already scans is
@@ -153,12 +152,20 @@ func decideScoped(q *Query, scopes map[string]string) (*plan, error) {
 		}
 	}
 
-	// Every composite is anchored on events: scroll depth and conversion rate
-	// are counted there, and exit rate divides by pageviews. Reading them from
-	// a plan whose group keys came from the sessions table would join an entry
-	// page against a viewed page and quietly return zeros.
-	if len(p.Specials) > 0 || (!needsEvents && !needsSessions) {
-		needsEvents = true
+	// A query made only of scopeEither metrics uses sessions unless an event-only
+	// breakdown needs hit grain. One sessions row is a bounded visit sample;
+	// counting distinct session ids through sampled events is frequency-biased
+	// and lets one giant session dominate the selected rows.
+	if !needsEvents && !needsSessions {
+		for _, dimension := range p.Dimensions {
+			if dimension.EventColumn != "" && dimension.SessionColumn == "" {
+				needsEvents = true
+				break
+			}
+		}
+		if !needsEvents {
+			needsSessions = true
+		}
 	}
 
 	if err := checkConversionGoal(q, p); err != nil {
@@ -220,7 +227,7 @@ func checkDimensionScopes(p *plan, needsSessions bool) error {
 	}
 
 	for _, resolved := range p.Dimensions {
-		if !resolved.eventOnly() || resolved.EntryColumn != "" {
+		if !resolved.eventOnly() || resolved.EntryColumn != "" || resolved.EntryEventColumn != "" {
 			continue
 		}
 
@@ -249,7 +256,7 @@ func checkDimensionScopes(p *plan, needsSessions bool) error {
 // exactly when the incumbent silently answers a different question.
 func entryScopeRequired(q *Query, p *plan) bool {
 	for _, resolved := range p.Dimensions {
-		if resolved.eventOnly() && resolved.EntryColumn != "" {
+		if resolved.eventOnly() && (resolved.EntryColumn != "" || resolved.EntryEventColumn != "") {
 			return true
 		}
 	}
@@ -264,7 +271,7 @@ func entryScopeRequired(q *Query, p *plan) bool {
 			continue
 		}
 
-		if resolved.eventOnly() && resolved.EntryColumn != "" {
+		if resolved.eventOnly() && (resolved.EntryColumn != "" || resolved.EntryEventColumn != "") {
 			return true
 		}
 	}

@@ -80,7 +80,15 @@ async function panel(page, title, events) {
 					"style",
 					"margin:0 0 .6rem;white-space:pre-wrap;word-break:break-all;border-left:2px solid #38bdf8;padding-left:.6rem",
 				);
-				row.textContent = JSON.stringify(event, null, 1);
+				// Stable ids and engagement duration are part of the wire shape but
+				// deliberately vary per run. Normalize only their displayed values so
+				// screenshots remain reviewable, deterministic artifacts.
+				const displayed = {
+					...event,
+					k: event.k ? "<stable UUID>" : undefined,
+					e: event.e === undefined ? undefined : "<milliseconds>",
+				};
+				row.textContent = JSON.stringify(displayed, null, 1);
 				box.appendChild(row);
 			}
 

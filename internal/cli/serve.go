@@ -474,6 +474,7 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 
 		return statsapi.Authorization{CacheKey: "session"}, nil
 	}
+	stats.SampleThreshold = e.cfg.API.QuerySampleThreshold
 
 	mux.Handle(statsapi.Pattern, metrics.Instrument(metrics.HandlerStats,
 		com.Gate.Protect(stats)))

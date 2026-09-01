@@ -10,14 +10,20 @@ package query
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"math"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
 // fixtureNow is the instant every test resolves its date range against. It is
@@ -63,6 +69,7 @@ type eventRow struct {
 	timestamp  int64
 	name       string
 	page       string
+	title      string
 	source     string
 	country    string
 	browser    string
@@ -89,22 +96,22 @@ var fixtureSessions = []sessionRow{
 // fixtureEvents is the hit-grain half.
 var fixtureEvents = []eventRow{
 	// Visit 1 — three pageviews and one engagement ping.
-	{session: 1, user: visitorA, timestamp: at(29, 10, 0), name: ingest.EventPageview, page: "/home", source: "Google", country: "US", browser: "Chrome"},
-	{session: 1, user: visitorA, timestamp: at(29, 10, 1), name: ingest.EventPageview, page: "/pricing", source: "Google", country: "US", browser: "Chrome"},
-	{session: 1, user: visitorA, timestamp: at(29, 10, 2), name: ingest.EventPageview, page: "/pricing", source: "Google", country: "US", browser: "Chrome"},
+	{session: 1, user: visitorA, timestamp: at(29, 10, 0), name: ingest.EventPageview, page: "/home", title: "Home", source: "Google", country: "US", browser: "Chrome"},
+	{session: 1, user: visitorA, timestamp: at(29, 10, 1), name: ingest.EventPageview, page: "/pricing", title: "Pricing", source: "Google", country: "US", browser: "Chrome"},
+	{session: 1, user: visitorA, timestamp: at(29, 10, 2), name: ingest.EventPageview, page: "/pricing", title: "Pricing", source: "Google", country: "US", browser: "Chrome"},
 	{session: 1, user: visitorA, timestamp: at(29, 10, 2), name: ingest.EventEngagement, page: "/pricing", source: "Google", country: "US", browser: "Chrome", scroll: 80, engagement: 45000},
 
 	// Visit 2 — a bounce that still reported engagement.
-	{session: 2, user: visitorB, timestamp: at(29, 11, 0), name: ingest.EventPageview, page: "/pricing", source: "Google", country: "US", browser: "Firefox"},
+	{session: 2, user: visitorB, timestamp: at(29, 11, 0), name: ingest.EventPageview, page: "/pricing", title: "Pricing", source: "Google", country: "US", browser: "Firefox"},
 	{session: 2, user: visitorB, timestamp: at(29, 11, 0), name: ingest.EventEngagement, page: "/pricing", source: "Google", country: "US", browser: "Firefox", scroll: 30, engagement: 5000},
 
 	// Visit 3 — today, and the only visit that converted.
-	{session: 3, user: visitorA, timestamp: at(30, 9, 0), name: ingest.EventPageview, page: "/home", country: "CA", browser: "Chrome"},
-	{session: 3, user: visitorA, timestamp: at(30, 9, 1), name: ingest.EventPageview, page: "/about", country: "CA", browser: "Chrome"},
+	{session: 3, user: visitorA, timestamp: at(30, 9, 0), name: ingest.EventPageview, page: "/home", title: "Home", country: "CA", browser: "Chrome"},
+	{session: 3, user: visitorA, timestamp: at(30, 9, 1), name: ingest.EventPageview, page: "/about", title: "About", country: "CA", browser: "Chrome"},
 	{session: 3, user: visitorA, timestamp: at(30, 9, 2), name: "Signup", page: "/about", country: "CA", browser: "Chrome", props: map[string]string{"plan": "pro"}},
 
 	// Visit 4 — today, a bounce.
-	{session: 4, user: visitorC, timestamp: at(30, 10, 0), name: ingest.EventPageview, page: "/home", source: "Twitter", country: "US", browser: "Chrome"},
+	{session: 4, user: visitorC, timestamp: at(30, 10, 0), name: ingest.EventPageview, page: "/home", title: "Home", source: "Twitter", country: "US", browser: "Chrome"},
 }
 
 // newEngine builds an engine over a freshly migrated account database seeded
@@ -141,6 +148,44 @@ func newEngineWithAccount(t *testing.T) (*Engine, *accounts.Account) {
 	engine.Now = func() time.Time { return fixtureNow }
 
 	return engine, account
+}
+
+// newAccountThrough opens a test account at one real migration boundary. Large
+// backfill fixtures stop at M9 version 10, write their historical facts, and
+// then exercise sampling migration 0011 through the production runner.
+func newAccountThrough(t testing.TB, version int) *accounts.Account {
+	t.Helper()
+
+	db, err := store.OpenDatabase(filepath.Join(t.TempDir(), "analytics.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close account database: %v", err)
+		}
+	})
+
+	if _, err := migrate.Run(context.Background(), db.Writer(), migrate.UpTo(migrate.Account(), version)); err != nil {
+		t.Fatal(err)
+	}
+
+	cache := intern.New(db.Writer())
+	if err := cache.Warm(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	return &accounts.Account{ID: 1, DB: db, Intern: cache}
+}
+
+// installSamplingSchema upgrades a version-10 fixture through account 0011
+// with the same migration runner production maintenance uses.
+func installSamplingSchema(t testing.TB, db *sql.DB) {
+	t.Helper()
+
+	if _, err := migrate.Run(context.Background(), db, migrate.Account()); err != nil {
+		t.Fatalf("install sampling test schema: %v", err)
+	}
 }
 
 // seed writes the fixture, interning every dimension string exactly as the
@@ -184,11 +229,11 @@ func seed(t *testing.T, account *accounts.Account) {
 
 		result, err := account.Writer().ExecContext(ctx, `
 			INSERT INTO events (id, site_id, timestamp, name_id, user_id, session_id,
-				pathname_id, source_id, country_id, browser_id,
+				pathname_id, page_title_id, source_id, country_id, browser_id,
 				scroll_depth, engagement_time, bot_reason_id, has_details)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			i+1, 1, event.timestamp, id(intern.EventName, event.name), event.user, event.session,
-			id(intern.Pathname, event.page), id(intern.Source, event.source),
+			id(intern.Pathname, event.page), id(intern.PageTitle, event.title), id(intern.Source, event.source),
 			id(intern.Country, event.country), id(intern.Browser, event.browser),
 			scroll, event.engagement, id(intern.BotReason, event.botReason), boolInt(len(event.props) > 0),
 		)
@@ -215,6 +260,265 @@ func seed(t *testing.T, account *accounts.Account) {
 			t.Fatal(err)
 		}
 	}
+}
+
+// TestPageTitlesComposeWithVisitMetrics checks the query used by Top Pages.
+// Titles enrich the path rather than becoming a grouping key: engagement,
+// custom events and Vitals all carry the route with a blank title, and none may
+// split a path into a second blank-titled row.
+func TestPageTitlesComposeWithVisitMetrics(t *testing.T) {
+	engine, account := newEngineWithAccount(t)
+
+	ctx := context.Background()
+	for i, event := range []struct {
+		name string
+		page string
+	}{
+		{name: "Custom Route Event", page: "/about"},
+		{name: "Web Vitals", page: "/home"},
+	} {
+		nameID, err := account.Intern.ID(ctx, intern.EventName, event.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pageID, err := account.Intern.ID(ctx, intern.Pathname, event.page)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := account.Writer().ExecContext(ctx, `
+			INSERT INTO events (id, site_id, timestamp, name_id, user_id, session_id, pathname_id)
+			VALUES (?, 1, ?, ?, ?, 3, ?)`, 100+i, at(30, 9, 10+i), nameID, visitorA, pageID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	q := baseQuery("visitors", "visits", "pageviews", "bounce_rate", "visit_duration")
+	q.Dimensions = []string{"event:page"}
+	q.Include.PageTitles = true
+
+	result := run(t, engine, q)
+	rows := map[string]Row{}
+	for _, row := range result.Results {
+		if _, duplicate := rows[row.Dimensions[0]]; duplicate {
+			t.Fatalf("path %q was split into titled and blank rows: %+v", row.Dimensions[0], result.Results)
+		}
+		if len(row.Dimensions) != 1 {
+			t.Fatalf("title became a grouping dimension for %q: %+v", row.Dimensions[0], row)
+		}
+		if row.Enrichments["page_title"] == "" {
+			t.Fatalf("path %q lost its representative title: %+v", row.Dimensions[0], result.Results)
+		}
+		rows[row.Dimensions[0]] = row
+	}
+	if len(rows) != 3 {
+		t.Fatalf("Top Pages returned %d path rows, want 3: %+v", len(rows), result.Results)
+	}
+
+	home, ok := rows["/home"]
+	if !ok {
+		t.Fatalf("home title was not returned alongside its path: %+v", result.Results)
+	}
+	if home.Enrichments["page_title"] != "Home" {
+		t.Fatalf("home title = %q, want Home", home.Enrichments["page_title"])
+	}
+
+	closeTo(t, "home visits", home.Metrics[1], 3)
+	closeTo(t, "home bounce rate", home.Metrics[3], 33.333)
+
+	pricing, ok := rows["/pricing"]
+	if !ok {
+		t.Fatalf("pricing title was not returned alongside its path: %+v", result.Results)
+	}
+
+	// Visits beside pageviews are visits that touched the page; the visit-grain
+	// bounce rate is entry-scoped and therefore uses only the pricing entrance.
+	closeTo(t, "pricing visits", pricing.Metrics[1], 2)
+	closeTo(t, "pricing bounce rate", pricing.Metrics[3], 100)
+}
+
+// TestPageTitleEnrichmentUsesCleanedSourcesAndThePathTimeIndex proves both
+// lookup contracts: a cleaned target receives the latest title captured on its
+// source path, and SQLite constrains each source by site, path and time through
+// events_page rather than scanning the site's events.
+func TestPageTitleEnrichmentUsesCleanedSourcesAndThePathTimeIndex(t *testing.T) {
+	engine, account := newUnseededSamplingEngine(t)
+	ctx := context.Background()
+
+	source, err := account.Intern.ID(ctx, intern.Pathname, "/products/42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := account.Intern.ID(ctx, intern.Pathname, "/products/:id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	title, err := account.Intern.ID(ctx, intern.PageTitle, "Product detail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	latestTitle, err := account.Intern.ID(ctx, intern.PageTitle, "Product detail updated")
+	if err != nil {
+		t.Fatal(err)
+	}
+	futureTitle, err := account.Intern.ID(ctx, intern.PageTitle, "Product detail future")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageview, err := account.Intern.ID(ctx, intern.EventName, "pageview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom, err := account.Intern.ID(ctx, intern.EventName, "Signup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	excludedTitle, err := account.Intern.ID(ctx, intern.PageTitle, "Excluded candidate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := account.Writer().ExecContext(ctx,
+		"INSERT INTO path_clean_map (site_id, source_id, target_id) VALUES (1, ?, ?)", source, target); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := account.Writer().ExecContext(ctx, `
+		INSERT INTO events (id, site_id, timestamp, name_id, user_id, session_id, pathname_id, page_title_id)
+		VALUES (1, 1, ?, ?, 1, 1, ?, ?)`, at(29, 0, 0), pageview, source, title); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := account.Writer().ExecContext(ctx, `
+		INSERT INTO events
+			(id, site_id, timestamp, name_id, user_id, session_id, pathname_id, page_title_id, is_imported, bot_reason_id)
+		VALUES (5, 1, ?, ?, 1, 1, ?, ?, 0, 0),
+		       (6, 1, ?, ?, 1, 1, ?, ?, 1, 0),
+		       (7, 1, ?, ?, 1, 1, ?, ?, 0, 1)`,
+		at(30, 2, 0), custom, source, excludedTitle,
+		at(30, 3, 0), pageview, source, excludedTitle,
+		at(30, 4, 0), pageview, source, excludedTitle); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := account.Writer().ExecContext(ctx, `
+		INSERT INTO events (id, site_id, timestamp, name_id, user_id, session_id, pathname_id, page_title_id)
+		VALUES (2, 1, ?, ?, 1, 1, ?, ?),
+		       (3, 1, ?, ?, 1, 1, ?, 0),
+		       (4, 1, ?, ?, 1, 1, ?, ?)`,
+		at(30, 0, 0), pageview, source, latestTitle,
+		at(30, 1, 0), pageview, source,
+		at(31, 0, 0), pageview, source, futureTitle); err != nil {
+		t.Fatal(err)
+	}
+
+	q := baseQuery("events")
+	q.Dimensions = []string{"event:page"}
+	q.Include.PageTitles = true
+	result := run(t, engine, q)
+	if len(result.Results) != 1 || result.Results[0].Dimensions[0] != "/products/:id" {
+		t.Fatalf("cleaned page rows = %+v", result.Results)
+	}
+	if got := result.Results[0].Enrichments["page_title"]; got != "Product detail updated" {
+		t.Fatalf("cleaned page title = %q, want Product detail updated", got)
+	}
+
+	resolved, err := q.DateRange.Resolve(fixtureNow, time.UTC, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.Normalise()
+	sqlText, args, err := pageTitleEnrichmentQuery([]int64{target}, []int64{1}, resolved, &q, pageview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := explainPlan(t, account, sqlText, args)
+	if !strings.Contains(plan, "SEARCH candidate USING INDEX events_page") ||
+		!strings.Contains(plan, "site_id=? AND pathname_id=? AND timestamp>?") {
+		t.Fatalf("title enrichment is not a bounded path/time seek:\n%s", plan)
+	}
+	if !strings.Contains(plan, "path_clean_map_target") {
+		t.Fatalf("title enrichment did not use the bounded reverse-clean-path index:\n%s", plan)
+	}
+	if !strings.Contains(sqlText, "candidate.name_id = ?") ||
+		!strings.Contains(sqlText, "candidate.bot_reason_id = 0") ||
+		!strings.Contains(sqlText, "candidate.is_imported = 0") {
+		t.Fatalf("title candidates do not match event population:\n%s", sqlText)
+	}
+
+	defaultRate := q
+	defaultRate.SampleRate = 0
+	defaultSQL, defaultArgs, err := pageTitleEnrichmentQuery([]int64{target}, []int64{1}, resolved, &defaultRate, pageview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = explainPlan(t, account, defaultSQL, defaultArgs)
+
+	q.SampleRate = 0.5
+	sampledSQL, sampledArgs, err := pageTitleEnrichmentQuery([]int64{target}, []int64{1}, resolved, &q, pageview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sampledPlan := explainPlan(t, account, sampledSQL, sampledArgs)
+	if !strings.Contains(sampledPlan, "event_sampling_seek") {
+		t.Fatalf("sampled title candidates escaped sampled population:\n%s", sampledPlan)
+	}
+}
+
+// BenchmarkPageTitleEnrichment measures the post-aggregation lookup over a
+// 750k-row/100-path account. Runtime should scale with displayed source paths,
+// not with one scalar lookup per aggregate fact row.
+func BenchmarkPageTitleEnrichment(b *testing.B) {
+	account := newAccountThrough(b, 10)
+
+	ctx := context.Background()
+	const paths = 100
+	for i := 1; i <= paths; i++ {
+		pathID, err := account.Intern.ID(ctx, intern.Pathname, fmt.Sprintf("/page/%03d", i))
+		if err != nil {
+			b.Fatal(err)
+		}
+		titleID, err := account.Intern.ID(ctx, intern.PageTitle, fmt.Sprintf("Page %03d", i))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if pathID != int64(i) || titleID != int64(i) {
+			b.Fatalf("fixture ids are path/title %d/%d, want %d", pathID, titleID, i)
+		}
+	}
+
+	const events = 750_100
+	if _, err := account.Writer().ExecContext(ctx, `
+		WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
+		INSERT INTO events (id, site_id, timestamp, name_id, user_id, session_id, pathname_id, page_title_id)
+		SELECT n, 1, ? + (n % 3600), 0, n, n, 1 + ((n - 1) % 100), 1 + ((n - 1) % 100) FROM seq`,
+		events, at(29, 0, 0)); err != nil {
+		b.Fatal(err)
+	}
+	installSamplingSchema(b, account.Writer())
+
+	page, _ := resolveDimension("event:page")
+	blueprint := &plan{Dimensions: []dimension{page}}
+	rows := make([]finalRow, paths)
+	for i := range rows {
+		rows[i].raw = []any{int64(i + 1)}
+	}
+	executor := &executor{
+		engine: New(account.Reader()),
+		query:  &Query{SiteIDs: []int64{1}, Include: Include{PageTitles: true}},
+		plan:   blueprint,
+		resolved: Resolved{
+			Start: time.Unix(at(28, 0, 0), 0),
+			End:   time.Unix(at(30, 0, 0), 0),
+		},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		titles, err := executor.pageTitleEnrichments(ctx, rows)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(titles) != paths {
+			b.Fatalf("title lookup returned %d paths, want %d", len(titles), paths)
+		}
+	}
+	b.ReportMetric(paths, "path_seeks/op")
 }
 
 // boolInt renders a flag the way the schema stores it.
@@ -775,10 +1079,11 @@ func TestSamplingScalesCountsAndNotRates(t *testing.T) {
 
 	result := run(t, engine, q)
 
-	// Every fixture visitor falls inside the sampled half, so the raw count is
-	// still seven and doubling it is the visible effect of the scaling.
-	closeTo(t, "sampled pageviews", result.Results[0].Metrics[0], 14)
-	closeTo(t, "sampled bounce_rate", result.Results[0].Metrics[1], 50)
+	// Three pageviews landed in the selected event buckets and one bouncing
+	// visit landed in the independently selected session buckets. The additive
+	// count expands by two; the rate remains the directly observed percentage.
+	closeTo(t, "sampled pageviews", result.Results[0].Metrics[0], 6)
+	closeTo(t, "sampled bounce_rate", result.Results[0].Metrics[1], 100)
 
 	if result.Meta.SampleRate != 0.5 {
 		t.Errorf("meta.sample_rate = %v, want 0.5", result.Meta.SampleRate)

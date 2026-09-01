@@ -8,7 +8,7 @@
 
 import { win } from "./state.js";
 import { resolve } from "./config.js";
-import { setEndpoint } from "./send.js";
+import { configure } from "./send.js";
 import { ignoreReason, warn } from "./exclude.js";
 import * as pageview from "./pageview.js";
 import * as engagement from "./engagement.js";
@@ -61,7 +61,7 @@ const reason = ignoreReason(cfg) || (cfg.d ? "" : "no data-domain");
 if (reason) {
 	warn("not tracking — " + reason);
 } else {
-	setEndpoint(cfg.a);
+	configure(cfg.a, cfg);
 
 	// Engagement and the click handlers are wired before the first pageview so
 	// that an interaction on a page that is still deferred — prerendered, or
@@ -69,6 +69,12 @@ if (reason) {
 	engagement.start();
 	clicks.start(cfg);
 	pageview.start(cfg);
+
+	// One script tag still controls the optional mode, but sites that leave it
+	// off no longer download the maintained collector at all. The module reports
+	// through the public function installed immediately below, retaining the
+	// base tracker's consent, bot and captured-route exclusion checks.
+	if (cfg.v > 0) import("./vitals.js").then((vitals) => vitals.start(cfg.v));
 }
 
 // The queue is drained last, so an event a site queued before the bundle loaded

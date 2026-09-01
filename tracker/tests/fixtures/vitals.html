@@ -1,0 +1,76 @@
+<!--
+  vitals.html
+  A page using the optional Vitals mode of the tracker script.
+
+  Created: 2026-08-31
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  One data attribute enables the mode; no second bundle is manually included.
+-->
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Vitals — tracker fixture</title>
+		<script>
+			window.__feasible = Object.assign({ track: 1 }, window.__feasible);
+			window.__pageShows = [];
+			window.addEventListener("pageshow", (event) => window.__pageShows.push(event.persisted));
+		</script>
+		<script
+			defer
+			data-domain="fixture.test"
+			data-capture-on-localhost="1"
+			data-vitals="1"
+			data-exclude="/vitals/private"
+			src="/js/script.js"
+		></script>
+		<style>
+			body {
+				font:
+					16px/1.5 system-ui,
+					sans-serif;
+				margin: 2rem;
+			}
+			#hero {
+				height: 240px;
+				background: #d1d5db;
+			}
+			button {
+				font: inherit;
+				padding: 0.4rem 0.8rem;
+			}
+		</style>
+	</head>
+	<body>
+		<h1>Vitals fixture</h1>
+
+		<!-- Something big enough to be the largest contentful paint. -->
+		<div id="hero">A large block</div>
+
+		<button id="interact" type="button">Interact</button>
+		<button id="navigate" type="button">Navigate</button>
+		<a id="away" href="/vitals-away.html">Leave the document</a>
+
+		<script>
+			// A handler that takes long enough to be a real interaction latency,
+			// so the collector has an interaction to report rather than nothing.
+			document.getElementById("interact").addEventListener("click", () => {
+				const until = performance.now() + 80;
+				while (performance.now() < until) {
+					// Busy on purpose: interaction to next paint measures the
+					// delay a visitor feels, and a handler that returns instantly
+					// produces no delay to measure.
+				}
+			});
+
+			// A route change lets the suite verify that measurements collected for
+			// the document are never reassigned to the current SPA URL.
+			document.getElementById("navigate").addEventListener("click", () => {
+				history.pushState({}, "", "/vitals/next");
+				document.title = "Next route";
+				document.getElementById("hero").textContent = "The next route";
+			});
+		</script>
+	</body>
+</html>

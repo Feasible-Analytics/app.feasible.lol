@@ -7,8 +7,8 @@
 //
 
 import { doc, loc, page } from "./state.js";
-import { send, drain } from "./send.js";
-import { excluded, warn } from "./exclude.js";
+import { send, drain, refusal } from "./send.js";
+import { warn } from "./exclude.js";
 import * as engagement from "./engagement.js";
 
 let cfg = null;
@@ -78,18 +78,19 @@ export function pageview(opts) {
 	// an SPA the page that is excluded is often not the one the document
 	// started on.
 	//
-	// It says so in the console for the same reason every other refusal does: a
-	// glob that matches more than its author meant it to looks exactly like a
-	// tracker that is broken, and the only difference between a five-second
-	// diagnosis and a support conversation is whether the page said which rule
-	// fired.
-	if (excluded(cfg)) {
-		warn("not tracking — excluded path");
+	const target = options.u ? new URL(options.u, loc.href).href : url();
+	const reason = refusal({ u: target });
+	if (reason) {
+		warn("not tracking — " + reason);
 		options.callback?.({ status: null });
+		page.k = cfg.h ? target : target.split("#")[0];
+		page.u = "";
+		engagement.suspend();
+		// A global privacy change withdraws persisted events too. A route-only
+		// exclusion leaves prior allowed routes durable for their next replay.
+		if (reason !== "excluded path") drain();
 		return;
 	}
-
-	const target = options.u ? new URL(options.u, loc.href).href : url();
 
 	page.u = target;
 	page.k = cfg.h ? target : target.split("#")[0];

@@ -8,7 +8,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import type { Filter, Preset } from "../api/types";
+import type { Filter, Preset, StatsRequest } from "../api/types";
 import type { CompareMode } from "../lib/compare";
 import { COMPARE_LABELS } from "../lib/compare";
 import { rangeLabel } from "../lib/format";
@@ -74,6 +74,18 @@ const CURRENT_RANGE: Preset = "5m";
  *  visitor whose only trace is a ping has left rather than arrived. Counting one
  *  is what makes a live figure drift above the rest of the dashboard. */
 const NOT_ENGAGEMENT: Filter = ["is_not", "event:name", ["engagement"], { case_sensitive: true }];
+
+/** currentVisitorsRequest builds the live-pill query. The number has no room
+ *  for a sampling caveat of its own, so it explicitly refuses sampling rather
+ *  than inheriting the query engine's automatic decision. */
+export function currentVisitorsRequest(filters: Filter[]): StatsRequest {
+	return {
+		metrics: ["visitors"],
+		date_range: CURRENT_RANGE,
+		filters: [...filters, NOT_ENGAGEMENT],
+		exact: true,
+	};
+}
 
 /**
  * TopBar is the one control surface on the page.
@@ -195,11 +207,7 @@ function CurrentVisitors({
 	live: boolean;
 	onOpen: () => void;
 }) {
-	const stats = useStats(domain, {
-		metrics: ["visitors"],
-		date_range: CURRENT_RANGE,
-		filters: [...filters, NOT_ENGAGEMENT],
-	});
+	const stats = useStats(domain, currentVisitorsRequest(filters));
 
 	useInterval(stats.reload, 30_000);
 

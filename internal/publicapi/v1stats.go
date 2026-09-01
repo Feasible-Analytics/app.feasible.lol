@@ -125,6 +125,13 @@ func (a *API) refuse(w http.ResponseWriter, err error) bool {
 }
 
 // toQuery turns a parsed v1 request into the engine's query.
+//
+// Exact is always set, and that is the one place this endpoint deliberately
+// behaves differently from v2. The v1 response shapes carry no meta at all, so
+// there is nowhere in them to say that a figure was read from a sample — and an
+// estimate a caller cannot tell from an exact number is the one thing sampling
+// must never produce. A very large v1 query is therefore slow rather than
+// approximate; v2 is where a caller can be told and can choose.
 func (v *v1Request) toQuery(dimensions []string, pagination query.Pagination) query.Query {
 	return query.Query{
 		SiteIDs:    []int64{v.Site.ID},
@@ -134,6 +141,7 @@ func (v *v1Request) toQuery(dimensions []string, pagination query.Pagination) qu
 		DateRange:  v.Range,
 		Timezone:   v.Site.Timezone,
 		Pagination: pagination,
+		Exact:      true,
 		Include: query.Include{
 			Bots:        v.WithBots,
 			Imports:     v.WithImported,
@@ -332,6 +340,12 @@ func (a *API) handleRealtimeVisitors(w http.ResponseWriter, r *http.Request) {
 		DateRange:  query.DateRange{Preset: query.RangeRealtime},
 		Timezone:   site.Timezone,
 		Pagination: query.Pagination{Limit: 1},
+
+		// The body is a bare integer, so there is nowhere in it to admit that
+		// the figure was estimated — and half an hour of traffic is cheap to
+		// count exactly even on the busiest site. A shape that cannot carry the
+		// caveat must not carry the estimate either.
+		Exact: true,
 	})
 	if err != nil {
 		a.answerQueryError(w, err)

@@ -226,6 +226,25 @@ test("data-manual withholds the automatic pageview until the site asks", async (
 	await settledCount(state, "pageview", 1);
 });
 
+// The completed sampling contract published data-sample as the rate paired
+// with a bare data-vitals flag. Keep that spelling live while new snippets put
+// the rate directly on data-vitals.
+test("data-sample remains a Web Vitals rate compatibility alias", async ({ page }) => {
+	const scripts = [];
+	page.on("request", (request) => {
+		if (request.resourceType() === "script") scripts.push(new URL(request.url()).pathname);
+	});
+
+	const state = await collect(page);
+	await serve(
+		page,
+		`data-domain="attrs.test" data-capture-on-localhost="1" data-vitals data-sample="1"`,
+	);
+	await page.goto(`${GEN}vitals-alias.html`);
+	await settledCount(state, "pageview", 1);
+	await expect.poll(() => scripts).toContain("/js/vitals.js");
+});
+
 test("data-hash makes a hash route a page of its own", async ({ page }) => {
 	const state = await collect(page);
 

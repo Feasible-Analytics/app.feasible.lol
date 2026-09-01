@@ -64,19 +64,20 @@ func buildPublic(e *env, control *sql.DB, cache *sites.Cache, manager *accounts.
 	dispatcher.Blocked = gate.Blocked
 
 	api := &publicapi.API{
-		Keys:           keys,
-		Limiter:        apikeys.NewLimiter(e.cfg.API.RateLimit),
-		Access:         gate,
-		Sites:          cache,
-		Control:        publicapi.NewControlStore(control),
-		Teams:          teams.NewStore(control),
-		Sharing:        sharing.NewStore(control),
-		Accounts:       manager,
-		SiteOperations: &destructive.Service{DB: control, Accounts: manager},
-		Webhooks:       hooks,
-		Dispatcher:     dispatcher,
-		BaseURL:        e.cfg.App.BaseURL,
-		Log:            e.log,
+		Keys:            keys,
+		Limiter:         apikeys.NewLimiter(e.cfg.API.RateLimit),
+		Access:          gate,
+		Sites:           cache,
+		Control:         publicapi.NewControlStore(control),
+		Teams:           teams.NewStore(control),
+		Sharing:         sharing.NewStore(control),
+		Accounts:        manager,
+		SiteOperations:  &destructive.Service{DB: control, Accounts: manager},
+		Webhooks:        hooks,
+		Dispatcher:      dispatcher,
+		BaseURL:         e.cfg.App.BaseURL,
+		Log:             e.log,
+		SampleThreshold: e.cfg.API.QuerySampleThreshold,
 	}
 
 	server := mcp.New(api, e.log)

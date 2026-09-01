@@ -19,7 +19,15 @@ export type Metric =
 	| "time_on_page"
 	| "scroll_depth"
 	| "exit_rate"
-	| "conversion_rate";
+	| "conversion_rate"
+	/** The numeric property aggregates, which are a family rather than fixed
+	 *  names: the property is a parameter, so no union could list them. The
+	 *  template literal still catches the mistakes worth catching — an
+	 *  aggregate we do not have, or a dimension that is not a property. */
+	| `${Aggregate}(event:props:${string})`;
+
+/** The aggregates a numeric property metric may use. */
+export type Aggregate = "sum" | "avg" | "min" | "max" | "p50" | "p75" | "p90" | "p95" | "p99";
 
 /** The date-range presets the engine resolves server-side. They are resolved
  *  there rather than here so the graph, the tables and an export taken a second
@@ -64,6 +72,7 @@ export interface Include {
 	bots?: boolean;
 	time_labels?: boolean;
 	total_rows?: boolean;
+	page_titles?: boolean;
 	comparisons?: Comparison;
 }
 
@@ -80,6 +89,9 @@ export interface StatsRequest {
 	include?: Include;
 	timezone?: string;
 	sample_rate?: number;
+	/** Refuses the automatic sampling a very large query would otherwise get,
+	 *  and waits for the exact answer instead. */
+	exact?: boolean;
 }
 
 export interface ComparisonRow {
@@ -93,12 +105,51 @@ export interface ComparisonRow {
 export interface Row {
 	metrics: number[];
 	dimensions: string[];
+	enrichments?: { page_title?: string };
 	comparison?: ComparisonRow;
 }
 
 export interface Warning {
 	code: string;
 	warning: string;
+}
+
+/** Why an answer was read from part of the data rather than all of it. It is
+ *  present exactly when the numbers are estimates, so its presence alone is
+ *  what the badge branches on. */
+export interface Sampling {
+	rate: number;
+	reason: "requested" | "automatic";
+	/** Roughly how many repeated fact-row reads the sampled raw plan represents before applying its rate,
+	 *  split by table and period. These estimates and the ceiling are absent for
+	 *  a rate the caller asked for. */
+	estimated_rows?: number;
+	estimated_event_rows?: number;
+	estimated_session_rows?: number;
+	estimated_primary_rows?: number;
+	estimated_comparison_rows?: number;
+	expected_sampled_event_rows?: number;
+	expected_sampled_session_rows?: number;
+	threshold?: number;
+	event_metrics: string[];
+	session_metrics: string[];
+	mixed_metrics: string[];
+	sparse: boolean;
+	zero_result: boolean;
+	uncertainty: string;
+	/** Additive totals are inverse-rate expanded. Direct metrics are calculated
+	 *  inside selected event/session rows and remain population estimates. */
+	scaled_metrics: string[];
+	direct_metrics: string[];
+	property_coverage?: Record<
+		string,
+		{
+			observed_values: number;
+			observed_numeric_values: number;
+			estimated_values: number;
+			estimated_numeric_values: number;
+		}
+	>;
 }
 
 export interface Meta {
@@ -111,6 +162,7 @@ export interface Meta {
 	total_rows?: number;
 	interval: Interval;
 	sample_rate: number;
+	sampling?: Sampling;
 	sources: string[];
 	comparison_date_range?: string[];
 }

@@ -88,6 +88,11 @@ type QuerySource struct {
 
 	// Now is the clock the rolling windows are measured from.
 	Now func() time.Time
+
+	// SampleThreshold is passed to each query engine. Reports and alerts force
+	// exact execution regardless, but keeping the configured ceiling available
+	// makes that invariant testable against an intentionally small population.
+	SampleThreshold int64
 }
 
 // NewQuerySource builds a source over the account manager.
@@ -113,6 +118,7 @@ func (q *QuerySource) engine(ctx context.Context, site SiteRef) (*query.Engine, 
 
 	engine := query.New(account.Reader())
 	engine.Now = q.now
+	engine.SampleThreshold = q.SampleThreshold
 
 	return engine, nil
 }
@@ -147,6 +153,7 @@ func (q *QuerySource) Period(ctx context.Context, site SiteRef, from, to time.Ti
 		DateRange: dateRange,
 		Timezone:  site.Timezone,
 		Include:   query.Include{Comparisons: &query.Comparison{Mode: query.ComparePreviousPeriod}},
+		Exact:     true,
 	})
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("reports: totals for %s: %w", site.Domain, err)
@@ -187,6 +194,7 @@ func (q *QuerySource) top(ctx context.Context, engine *query.Engine, site SiteRe
 		Timezone:   site.Timezone,
 		OrderBy:    []query.Order{{Key: metric, Descending: true}},
 		Pagination: query.Pagination{Limit: TopN},
+		Exact:      true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("reports: %s for %s: %w", dimension, site.Domain, err)
@@ -229,6 +237,7 @@ func (q *QuerySource) CurrentVisitors(ctx context.Context, site SiteRef) (int, e
 		Metrics:   []string{"visitors"},
 		DateRange: query.DateRange{Preset: query.RangeRealtime},
 		Timezone:  site.Timezone,
+		Exact:     true,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("reports: current visitors for %s: %w", site.Domain, err)
@@ -256,6 +265,7 @@ func (q *QuerySource) VisitorsInLastHours(ctx context.Context, site SiteRef, hou
 			End:    stripLocation(now),
 		},
 		Timezone: site.Timezone,
+		Exact:    true,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("reports: rolling visitors for %s: %w", site.Domain, err)

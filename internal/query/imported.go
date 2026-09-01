@@ -237,8 +237,8 @@ func (x *executor) importedPass(ctx context.Context, r Resolved, groups *groupSe
 		return nil
 	}
 
-	// Sampling picks visitors out of the raw tables and scales the answer back
-	// up. There are no visitors to pick from in a pre-aggregated row, so an
+	// Sampling picks fact rows out of the raw tables and scales additive totals
+	// back up. There are no fact rows to pick from in a pre-aggregated row, so an
 	// imported total added to a sampled one would be scaled by a rate it was
 	// never reduced by.
 	if x.query.SampleRate > 0 && x.query.SampleRate < 1 {
@@ -333,7 +333,7 @@ func (x *executor) importedPass(ctx context.Context, r Resolved, groups *groupSe
 		dims: dims, columns: columns, conditions: conditions,
 	}
 
-	sqlText, args := st.render()
+	sqlText, args := x.renderStatement(st)
 
 	// The rendered FROM names the fact table, so it is swapped for the roll-up
 	// table here. Rendering is shared on purpose: the SELECT list, GROUP BY and

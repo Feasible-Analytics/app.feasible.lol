@@ -64,6 +64,12 @@ type Handler struct {
 	// test can ask what "today" returns without waiting for tomorrow.
 	Now func() time.Time
 
+	// SampleThreshold is how many repeated event and session fact-row reads a
+	// query may be estimated to perform before it is answered from a sample.
+	// Zero takes the engine's own default; a negative value turns automatic
+	// sampling off.
+	SampleThreshold int64
+
 	// live holds the answers to reports whose range reaches today. A finished
 	// period is never held: it cannot change, and it is already answered from
 	// the summary tables in single-digit milliseconds.
@@ -129,16 +135,22 @@ type request struct {
 	Timezone   string           `json:"timezone"`
 	SampleRate float64          `json:"sample_rate"`
 
+	// Exact refuses the automatic sampling a very large query would otherwise
+	// get. It is on the wire rather than a header so that the request which
+	// asked for exactness and the response which echoes it are one document.
+	Exact bool `json:"exact"`
+
 	// Currency is the ISO 4217 code the money metrics are totalled in. It is
 	// optional: with one currency in the data the compiler resolves it, and
 	// with several it refuses rather than adding them together.
 	Currency string `json:"currency"`
 }
 
-// errorBody is what a failure looks like. One field, always the same shape, so
-// a client can read the reason without branching on the status code.
+// errorBody is what a failure looks like. Code is present only when the caller
+// can take a specific recovery action without parsing human-facing prose.
 type errorBody struct {
 	Error string `json:"error"`
+	Code  string `json:"code,omitempty"`
 }
 
 // ServeHTTP answers one query.
@@ -234,6 +246,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer lease.Release() //nolint:errcheck // query errors are more useful than an unlock error
 
 	engine := query.New(lease.Account.Reader())
+	engine.SampleThreshold = h.SampleThreshold
 	if h.Now != nil {
 		engine.Now = h.Now
 	}
@@ -248,7 +261,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var callerError *query.Error
 		if errors.As(err, &callerError) {
 			metrics.QueryFailures.WithLabelValues("caller").Inc()
-			h.fail(w, http.StatusBadRequest, callerError.Message)
+			h.failCode(w, http.StatusBadRequest, callerError.Message, callerError.Code)
 			return
 		}
 
@@ -398,6 +411,7 @@ func (r *request) toQuery(site sites.Site) query.Query {
 		Pagination: r.Pagination,
 		Include:    r.Include,
 		SampleRate: r.SampleRate,
+		Exact:      r.Exact,
 		Currency:   r.Currency,
 	}
 }
@@ -405,6 +419,12 @@ func (r *request) toQuery(site sites.Site) query.Query {
 // fail answers a caller's mistake with the reason.
 func (h *Handler) fail(w http.ResponseWriter, status int, message string) {
 	h.write(w, status, errorBody{Error: message})
+}
+
+// failCode answers a caller's mistake with a stable recovery code in addition
+// to the explanatory sentence shown to people and API consumers.
+func (h *Handler) failCode(w http.ResponseWriter, status int, message, code string) {
+	h.write(w, status, errorBody{Error: message, Code: code})
 }
 
 // internal answers our mistake. The detail goes to our log, because the caller

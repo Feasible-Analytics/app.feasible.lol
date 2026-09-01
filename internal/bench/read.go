@@ -97,6 +97,7 @@ func ReadCases(set Dataset) []ReadCase {
 			Timezone:   set.Timezone,
 			OrderBy:    []query.Order{{Key: "visitors", Descending: true}},
 			Pagination: query.Pagination{Limit: 100},
+			Exact:      true,
 		}
 	}
 
@@ -124,6 +125,11 @@ func RunRead(ctx context.Context, db *sql.DB, c ReadCase) (time.Duration, int, e
 	if !c.Rollups {
 		engine.Router = query.RawRouter{}
 	}
+
+	// The benchmark measures the cost of the whole scan, so it must not be
+	// sampled: a twelve-month case answered from a tenth of the visitors would
+	// report a tenth of the time and look like a win nobody made.
+	c.Query.Exact = true
 
 	started := time.Now()
 

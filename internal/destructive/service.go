@@ -219,7 +219,11 @@ const (
 var accountResetDisposition = map[string]resetDisposition{
 	"events":                    eraseOnReset,
 	"event_details":             eraseOnReset,
+	"event_sampling":            eraseOnReset,
 	"sessions":                  eraseOnReset,
+	"session_sampling":          eraseOnReset,
+	"sampling_strata":           eraseOnReset,
+	"sampling_daily_counts":     eraseOnReset,
 	"ingest_session_state":      eraseOnReset,
 	"ingest_orphan_engagements": eraseOnReset,
 	"hostname_rejections":       eraseOnReset,

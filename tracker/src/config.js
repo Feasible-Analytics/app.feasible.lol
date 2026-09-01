@@ -59,10 +59,9 @@ function read(el, name) {
 // the customer added by hand. A setting that silently does nothing is the worst
 // kind of setting.
 //
-// There is no build variant and no feature switch. Every feature is in every
-// build, which is exactly why the combinations that broke for the incumbent —
-// hash routing with exclusions, hash routing with outbound links, manual mode
-// with engagement — cannot break here: there is only one code path to break.
+// There is no configuration-specific build variant. The same resolved object
+// controls the base and any optional generated module, so one embedded script
+// tag remains sufficient for every combination.
 export function resolve() {
 	const baked = win.__fsc;
 	win.__fsc = null;
@@ -84,6 +83,9 @@ export function resolve() {
 		m: !!read(el, "manual"),
 		h: !!read(el, "hash"),
 		l: !!read(el, "capture-on-localhost"),
+		// A bare data-vitals captures every page. A decimal value samples that
+		// fraction once per document; data-sample remains a compatibility alias.
+		v: el && el.hasAttribute("data-vitals") ? read(el, "vitals") || read(el, "sample") || "1" : 0,
 		...baked,
 	};
 

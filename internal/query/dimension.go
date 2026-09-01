@@ -39,6 +39,11 @@ type dimension struct {
 	// session-scoped metrics, and the planner says so rather than guessing.
 	EntryColumn string
 
+	// EntryEventColumn is an event column whose value can be read at session
+	// grain from the first event on the session's entry page. Page title uses
+	// this because sessions store an entry pathname but not its captured title.
+	EntryEventColumn string
+
 	// Interned is the dim_* table this dimension's ids point at. Empty for
 	// dimensions whose value is not an id — time buckets and properties.
 	Interned intern.Dimension
@@ -95,7 +100,8 @@ var dimensions = map[string]dimension{
 		EntryColumn: "entry_hostname_id", Interned: intern.Hostname,
 	},
 	"event:page_title": {
-		Name: "event:page_title", EventColumn: "page_title_id", Interned: intern.PageTitle,
+		Name: "event:page_title", EventColumn: "page_title_id",
+		EntryEventColumn: "page_title_id", Interned: intern.PageTitle,
 	},
 	"event:name": {
 		Name: "event:name", EventColumn: "name_id", Interned: intern.EventName,
@@ -235,7 +241,8 @@ func ValidDimension(name string) error {
 // ValidMetric is the same check for a metric name.
 func ValidMetric(name string) error {
 	if _, ok := metricByName(name); !ok {
-		return invalid("unknown metric %q — known metrics are %s", name, strings.Join(MetricNames(), ", "))
+		return invalid("unknown metric %q — known metrics are %s, plus <aggregate>(event:props:<key>) where <aggregate> is one of %s",
+			name, strings.Join(MetricNames(), ", "), strings.Join(AggregateNames(), ", "))
 	}
 
 	return nil

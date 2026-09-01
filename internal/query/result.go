@@ -30,6 +30,10 @@ type Row struct {
 	Metrics    []float64 `json:"metrics"`
 	Dimensions []string  `json:"dimensions"`
 
+	// Enrichments are labels attached after aggregation. They are kept outside
+	// Dimensions so no client can mistake a title for part of the group key.
+	Enrichments map[string]string `json:"enrichments,omitempty"`
+
 	Comparison *ComparisonRow `json:"comparison,omitempty"`
 }
 
@@ -66,6 +70,12 @@ const (
 	// exchange rate covered its currency. Revenue that quietly vanishes from a
 	// total is the one number a customer will not double-check.
 	WarnMissingRate = "missing_rate"
+
+	// WarnNotNumeric marks an aggregate over a custom property that held text
+	// on some of the events it was measured over. Those values are left out
+	// rather than counted as zero, and leaving them out silently is how an
+	// average over a tenth of the data reads as an average over all of it.
+	WarnNotNumeric = "not_numeric"
 )
 
 // Meta is everything about the answer that is not a number in a row.
@@ -90,8 +100,14 @@ type Meta struct {
 	// Interval is the bucket width the range was rendered at.
 	Interval string `json:"interval"`
 
-	// SampleRate is the fraction of visitors actually read.
+	// SampleRate is the fraction of event and session fact rows actually read.
 	SampleRate float64 `json:"sample_rate"`
+
+	// Sampling is present exactly when this answer was read from part of the
+	// data, and absent when it was not. A client that wants one thing to
+	// branch on reads this; sample_rate stays for the client that already
+	// reads that.
+	Sampling *Sampling `json:"sampling,omitempty"`
 
 	// Sources names where the data came from — raw tables today, and a mix of
 	// raw and roll-up once summaries exist.
@@ -124,6 +140,7 @@ type ResolvedQuery struct {
 	Pagination Pagination `json:"pagination"`
 	Include    Include    `json:"include"`
 	SampleRate float64    `json:"sample_rate"`
+	Exact      bool       `json:"exact"`
 	Currency   string     `json:"currency,omitempty"`
 }
 
@@ -156,6 +173,7 @@ func resolvedQuery(q *Query, r Resolved) ResolvedQuery {
 		Pagination: q.Pagination,
 		Include:    q.Include,
 		SampleRate: q.SampleRate,
+		Exact:      q.Exact,
 		Currency:   q.Currency,
 	}
 }

@@ -15,9 +15,10 @@ import { t } from "../lib/i18n";
 import { flagFor } from "../lib/labels";
 import { usePref } from "../lib/prefs";
 import type { CardDef, Tab } from "../lib/reports";
-import { PRIMARY, findTab, groupsOf, labelOf, subTabsOf } from "../lib/reports";
+import { PRIMARY, dimensionsOf, findTab, groupsOf, labelOf, subTabsOf } from "../lib/reports";
 import { useNearViewport, useStats } from "../lib/useStats";
 import { Bar, Empty, Failure, Favicon, Flag, InfoDot, Spinner } from "./atoms";
+import { SampledMark } from "./SampledBadge";
 import { WorldMap } from "./WorldMap";
 
 /** How many rows the card previews. The rest live in the details drawer: a card
@@ -61,6 +62,10 @@ interface Props {
 	 *  is remembered per card in localStorage, so the card is the only thing that
 	 *  knows it. */
 	selected: ReadonlyMap<string, ReadonlySet<string>>;
+	/** Whether the reader has refused sampling. The card has to be told, rather
+	 *  than deciding for itself, or a dashboard would show exact totals above a
+	 *  grid of estimates and the two would disagree with no way to tell why. */
+	exact: boolean;
 }
 
 /**
@@ -80,6 +85,7 @@ export function ReportCard({
 	filters,
 	onFilter,
 	selected,
+	exact: exactAnswer,
 }: Props) {
 	const [ref, near] = useNearViewport<HTMLElement>();
 
@@ -108,9 +114,11 @@ export function ReportCard({
 	const body: StatsRequest = {
 		metrics: [PRIMARY],
 		date_range: range,
-		dimensions: [active.dimension],
+		dimensions: dimensionsOf(active),
 		pagination: { limit: active.map ? MAP_ROWS : ROWS },
 		filters: combined.length ? combined : undefined,
+		include: active.companion ? { page_titles: true } : undefined,
+		exact: exactAnswer || undefined,
 	};
 
 	const stats = useStats(domain, body, near);
@@ -128,6 +136,7 @@ export function ReportCard({
 			<header className="flex h-10 shrink-0 items-center gap-2 px-5">
 				<h2 className="flex shrink-0 items-center gap-1.5 text-sm font-semibold text-body">
 					{t(card.titleId)}
+					<SampledMark sampling={stats.data?.meta.sampling} />
 					{(active.caveatId || card.caveatId) && (
 						<InfoDot
 							text={[active.caveatId, card.caveatId].filter(Boolean).map((id) => t(id as string))}
@@ -188,10 +197,13 @@ export function ReportCard({
 								const value = row.metrics[0] ?? 0;
 								const raw = row.dimensions[0] ?? "";
 								const name = labelOf(active, raw);
+								const companion = active.companion
+									? (row.enrichments?.[active.companion.enrichment] ?? "")
+									: "";
 								const filtered = on?.has(raw) ?? false;
 
 								return (
-									<li key={name} className="group/row relative flex h-row items-center">
+									<li key={row.dimensions.join("|")} className="group/row relative flex h-row items-center">
 										<Bar share={value / peak} />
 
 										{/* The whole row is the control. A separate
@@ -220,8 +232,20 @@ export function ReportCard({
 										<span className="pointer-events-none relative flex min-w-0 flex-1 items-center gap-2 pl-2 text-sm text-body">
 											{active.favicon && <Favicon name={raw || "Direct"} />}
 											<Flag glyph={flagFor(active.dimension, raw)} />
-											<span className={`truncate ${filtered ? "font-medium text-accent" : ""}`} title={name}>
-												{name}
+											<span className="flex min-w-0 flex-col justify-center leading-tight">
+												{companion && (
+													<span className="truncate text-xs font-medium" title={companion}>
+														{companion}
+													</span>
+												)}
+												<span
+													className={`truncate ${companion ? "text-[10px] text-muted" : ""} ${
+														filtered ? "font-medium text-accent" : ""
+													}`}
+													title={name}
+												>
+													{name}
+												</span>
 											</span>
 										</span>
 

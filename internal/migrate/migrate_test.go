@@ -12,12 +12,281 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
+
+// accountThrough returns the real account migration prefix ending at version.
+// Benchmarks use the M9 version-10 database as their before-sampling fixture;
+// production always runs the complete Account set through version 11.
+func accountThrough(version int) Set {
+	return UpTo(Account(), version)
+}
+
+// BenchmarkSamplingIndexCost measures populated migration time, the
+// conservative write-lock window, WAL bytes, database growth, fact insert
+// throughput and production-shaped session UPSERT throughput with WAL enabled.
+// Run with -benchtime=1x; each size creates and migrates one production-shaped
+// fixture rather than repeating DDL in place.
+func BenchmarkSamplingIndexCost(b *testing.B) {
+	for _, eventRows := range []int64{10_000, 100_000, 500_000} {
+		b.Run(fmt.Sprintf("events_%d", eventRows), func(b *testing.B) {
+			basePath := filepath.Join(b.TempDir(), "sampling-cost-base.db")
+			baseDB, err := store.Open(basePath)
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer baseDB.Close()
+
+			ctx := context.Background()
+			if _, err := Run(ctx, baseDB, accountThrough(10)); err != nil {
+				b.Fatal(err)
+			}
+			if _, err := baseDB.ExecContext(ctx, `
+				PRAGMA journal_mode = WAL;
+				PRAGMA wal_autocheckpoint = 0;`); err != nil {
+				b.Fatal(err)
+			}
+
+			sessionRows := eventRows / 4
+			if err := populateSamplingFacts(ctx, baseDB, eventRows, sessionRows); err != nil {
+				b.Fatal(err)
+			}
+			if _, err := baseDB.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+				b.Fatal(err)
+			}
+
+			indexedPath := filepath.Join(b.TempDir(), "sampling-cost-indexed.db")
+			if err := copyDatabase(basePath, indexedPath); err != nil {
+				b.Fatal(err)
+			}
+			indexedDB, err := store.Open(indexedPath)
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer indexedDB.Close()
+			if _, err := indexedDB.ExecContext(ctx, "PRAGMA wal_autocheckpoint = 0"); err != nil {
+				b.Fatal(err)
+			}
+			beforeSize := fileSize(b, indexedPath)
+
+			migration := migrationByVersion(b, 11)
+			started := time.Now()
+			tx, err := indexedDB.BeginTx(ctx, nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if _, err := tx.ExecContext(ctx, migration.SQL); err != nil {
+				_ = tx.Rollback()
+				b.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				b.Fatal(err)
+			}
+			migrationTime := time.Since(started)
+			walBytes := fileSizeIfPresent(indexedPath + "-wal")
+			freeBytes := filesystemFreeBytes(b, indexedPath)
+			integrity := ""
+			if err := indexedDB.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&integrity); err != nil {
+				b.Fatal(err)
+			}
+			if integrity != "ok" {
+				b.Fatalf("integrity_check = %q", integrity)
+			}
+
+			var checkpointBusy, checkpointFrames, checkpointedFrames int64
+			if err := indexedDB.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").
+				Scan(&checkpointBusy, &checkpointFrames, &checkpointedFrames); err != nil {
+				b.Fatal(err)
+			}
+			afterSize := fileSize(b, indexedPath)
+
+			const eventWrites = int64(10_000)
+			const sessionWrites = eventWrites / 4
+			beforeWrite := timedFactInsert(ctx, b, baseDB, eventRows+1, sessionRows+1, eventWrites, sessionWrites)
+			afterWrite := timedFactInsert(ctx, b, indexedDB, eventRows+1, sessionRows+1, eventWrites, sessionWrites)
+			factWrites := eventWrites + sessionWrites
+			sessionUpdates := min(sessionRows, 10_000)
+			beforeSessionUpdate := timedSessionUpsert(ctx, b, baseDB, sessionUpdates)
+			afterSessionUpdate := timedSessionUpsert(ctx, b, indexedDB, sessionUpdates)
+
+			b.ReportMetric(float64(migrationTime.Microseconds())/1000, "migration_ms")
+			b.ReportMetric(float64(migrationTime.Microseconds())/1000, "lock_window_ms")
+			b.ReportMetric(float64(walBytes), "wal_bytes")
+			b.ReportMetric(float64(afterSize-beforeSize), "db_growth_bytes")
+			b.ReportMetric(float64(freeBytes), "free_disk_bytes")
+			b.ReportMetric(float64(checkpointBusy), "checkpoint_busy")
+			b.ReportMetric(float64(checkpointFrames), "checkpoint_frames")
+			b.ReportMetric(float64(checkpointedFrames), "checkpointed_frames")
+			b.ReportMetric(float64(factWrites)/beforeWrite.Seconds(), "fact_writes_before/s")
+			b.ReportMetric(float64(factWrites)/afterWrite.Seconds(), "fact_writes_after/s")
+			b.ReportMetric(float64(sessionUpdates)/beforeSessionUpdate.Seconds(), "session_upserts_before/s")
+			b.ReportMetric(float64(sessionUpdates)/afterSessionUpdate.Seconds(), "session_upserts_after/s")
+		})
+	}
+}
+
+// populateSamplingFacts inserts a production-shaped event/session ratio before
+// the sampling indexes exist, using one transaction-sized recursive statement
+// per fact table so fixture creation is not part of the measured migration.
+func populateSamplingFacts(ctx context.Context, db *sql.DB, events, sessions int64) error {
+	if _, err := db.ExecContext(ctx, `
+		WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
+		INSERT INTO sessions (id, site_id, started_at, last_seen_at, user_id)
+		SELECT n, 1, 1788134400 + (n % 86400), 1788134400 + (n % 86400), n % 10000 FROM seq`, sessions); err != nil {
+		return err
+	}
+
+	_, err := db.ExecContext(ctx, `
+		WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
+		INSERT INTO events (id, site_id, timestamp, name_id, user_id, session_id)
+		SELECT n, 1, 1788134400 + (n % 86400), 0, n % 10000, 1 + (n % ?) FROM seq`, events, sessions)
+	return err
+}
+
+// timedFactInsert measures identical event/session batches against checkpointed
+// copies with and without migration 0011. Absolute throughput is fixture-specific;
+// the ratio captures maintenance amplification for both new indexes.
+func timedFactInsert(ctx context.Context, b *testing.B, db *sql.DB, eventStart, sessionStart, events, sessions int64) time.Duration {
+	b.Helper()
+
+	started := time.Now()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		WITH RECURSIVE seq(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM seq WHERE n + 1 < ?)
+		INSERT INTO sessions (id, site_id, started_at, last_seen_at, user_id)
+		SELECT ? + n, 1, 1788134400 + (n % 86400), 1788134400 + (n % 86400), n % 10000 FROM seq`,
+		sessions, sessionStart); err != nil {
+		_ = tx.Rollback()
+		b.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		WITH RECURSIVE seq(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM seq WHERE n + 1 < ?)
+		INSERT INTO events (id, site_id, timestamp, name_id, user_id, session_id)
+		SELECT ? + n, 1, 1788134400 + (n % 86400), 0, n % 10000, ? + (n % ?) FROM seq`,
+		events, eventStart, sessionStart, sessions); err != nil {
+		_ = tx.Rollback()
+		b.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		b.Fatal(err)
+	}
+
+	return time.Since(started)
+}
+
+// timedSessionUpsert exercises the production conflict path, including its
+// assignment of started_at. Migration 0011's move trigger is registered for
+// that column on every session update, and its WHEN guard must make unchanged
+// starts cheap instead of rewriting sampling facts on every arriving event.
+func timedSessionUpsert(ctx context.Context, b *testing.B, db *sql.DB, sessions int64) time.Duration {
+	b.Helper()
+
+	started := time.Now()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO sessions (id, site_id, user_id, started_at, last_seen_at, duration,
+		                       is_bounce, pageviews, events, entry_page_id, exit_page_id)
+		SELECT id, site_id, user_id, started_at, last_seen_at + 1, duration + 1,
+		       is_bounce, pageviews, events + 1, entry_page_id, exit_page_id
+		FROM sessions
+		WHERE id BETWEEN 1 AND ?
+		ON CONFLICT(id) DO UPDATE SET
+			last_seen_at = excluded.last_seen_at,
+			started_at = excluded.started_at,
+			duration = excluded.duration,
+			is_bounce = excluded.is_bounce,
+			pageviews = excluded.pageviews,
+			events = excluded.events,
+			entry_page_id = excluded.entry_page_id,
+			exit_page_id = excluded.exit_page_id`, sessions); err != nil {
+		b.Fatal(err)
+	}
+
+	return time.Since(started)
+}
+
+// filesystemFreeBytes returns the available bytes on the volume holding a
+// benchmark database. Migration reports it beside peak WAL growth so an
+// operator can compare required temporary space with actual headroom.
+func filesystemFreeBytes(b *testing.B, path string) uint64 {
+	b.Helper()
+
+	var stats syscall.Statfs_t
+	if err := syscall.Statfs(path, &stats); err != nil {
+		b.Fatal(err)
+	}
+
+	return stats.Bavail * uint64(stats.Bsize)
+}
+
+// copyDatabase clones a checkpointed fixture so write throughput can compare
+// identical row populations instead of two different points in one growing WAL.
+func copyDatabase(source, destination string) error {
+	in, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+
+	out, err := os.Create(destination)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// migrationByVersion returns one embedded migration to a benchmark.
+func migrationByVersion(b *testing.B, version int) Migration {
+	b.Helper()
+
+	for _, migration := range Account().Migrations {
+		if migration.Version == version {
+			return migration
+		}
+	}
+
+	b.Fatalf("migration %d is missing", version)
+	return Migration{}
+}
+
+// fileSize returns a required fixture file's current length.
+func fileSize(b *testing.B, path string) int64 {
+	b.Helper()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	return info.Size()
+}
+
+// fileSizeIfPresent returns zero for a checkpointed-away WAL and fails for
+// errors other than absence.
+func fileSizeIfPresent(path string) int64 {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		return 0
+	}
+
+	return info.Size()
+}
 
 // newDatabase opens an empty database in a temporary directory. Every test here
 // starts from a file that has never been migrated, which is the state a fresh
@@ -731,9 +1000,8 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 	}
 }
 
-// TestAccountMigratesAFreshDatabase covers the schema every event is written
-// into, including the two decisions that are cheap now and a rewrite later: the
-// interned dimension tables and the hot/cold split.
+// TestAccountMigratesAFreshDatabase covers the complete assembled schema every
+// event is written into, including M9 annotations/health and sampling facts.
 func TestAccountMigratesAFreshDatabase(t *testing.T) {
 	ctx := context.Background()
 	db := newDatabase(t)
@@ -746,6 +1014,7 @@ func TestAccountMigratesAFreshDatabase(t *testing.T) {
 		"events", "event_details", "sessions", "dim_pathname", "dim_source", "dim_event_name",
 		"ingest_session_state", "ingest_orphan_engagements", "hostname_rejections", "session_id_allocator",
 		"annotations", "ingest_health", "ingest_last_request", "ingest_observations",
+		"sampling_strata", "event_sampling", "session_sampling", "sampling_daily_counts",
 	} {
 		if !tableExists(t, db, table) {
 			t.Errorf("account schema is missing %s", table)
@@ -755,7 +1024,9 @@ func TestAccountMigratesAFreshDatabase(t *testing.T) {
 	// The three filter indexes are the whole reason a filtered query does not
 	// fall back to a full scan, and an index is easy to drop by accident in a
 	// later migration.
-	for _, index := range []string{"events_main", "events_session", "events_page", "events_source", "events_country"} {
+	for _, index := range []string{
+		"events_main", "events_session", "events_page", "events_source", "events_country",
+	} {
 		var count int
 
 		query := "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?"
@@ -769,8 +1040,8 @@ func TestAccountMigratesAFreshDatabase(t *testing.T) {
 }
 
 // TestAccountV7ToCurrentKeepsPopulatedSessionOwnership validates the deployed
-// schema upgrade through ingest state 0008 and hostname/session authority 0009
-// without losing sessions or UUID receipts.
+// topology and M9 upgrade before sampling 0011 materializes its session facts,
+// without losing sessions or permanent UUID receipts.
 func TestAccountV7ToCurrentKeepsPopulatedSessionOwnership(t *testing.T) {
 	ctx := context.Background()
 	db := newDatabase(t)
@@ -792,8 +1063,8 @@ func TestAccountV7ToCurrentKeepsPopulatedSessionOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 7 || result.To != 10 || fmt.Sprint(result.Applied) != "[8 9 10]" {
-		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 10 via [8 9 10]",
+	if result.From != 7 || result.To != 11 || fmt.Sprint(result.Applied) != "[8 9 10 11]" {
+		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 11 via [8 9 10 11]",
 			result.From, result.To, result.Applied)
 	}
 
@@ -828,6 +1099,15 @@ func TestAccountV7ToCurrentKeepsPopulatedSessionOwnership(t *testing.T) {
 	if pruningIndexes != 0 {
 		t.Fatal("account upgrade retained the obsolete timed-pruning receipt index")
 	}
+
+	var sampledSessions int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM session_sampling WHERE session_id = 41 AND site_id = 7").Scan(&sampledSessions); err != nil {
+		t.Fatal(err)
+	}
+	if sampledSessions != 1 {
+		t.Fatalf("sampling migration materialized %d session rows, want 1", sampledSessions)
+	}
 }
 
 // TestCoordinatedMigrationNumbers pins the upgrade order requested by the
@@ -839,7 +1119,7 @@ func TestCoordinatedMigrationNumbers(t *testing.T) {
 		set  Set
 		want []int
 	}{
-		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10}},
+		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11}},
 		"control": {set: Control(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
 	} {
 		t.Run(name, func(t *testing.T) {

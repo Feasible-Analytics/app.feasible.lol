@@ -180,8 +180,9 @@ func ParsePayload(body []byte) (*Payload, error) {
 		return nil, fmt.Errorf(`"d" (domain) is required`)
 	}
 	if payload.Key != "" {
-		if _, err := uuid.Parse(payload.Key); err != nil {
-			return nil, fmt.Errorf(`"k" (idempotency key) must be a UUID`)
+		parsed, err := uuid.Parse(payload.Key)
+		if err != nil || parsed.Variant() != uuid.RFC4122 {
+			return nil, fmt.Errorf(`"k" (idempotency key) must be an RFC 4122 UUID`)
 		}
 	}
 

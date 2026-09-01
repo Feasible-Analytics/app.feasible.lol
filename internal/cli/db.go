@@ -198,7 +198,10 @@ func migrateTargets(dataDir string, controlMigrations migrate.Set) ([]target, er
 	for _, id := range ids {
 		targets = append(targets, target{
 			path: accounts.Path(dataDir, id),
-			set:  migrate.Account(),
+			// M9 account migration 0010 is now part of main, so the ordinary
+			// maintenance path applies sampling migration 0011 immediately after
+			// it through the same complete set account creation validates.
+			set: migrate.Account(),
 		})
 	}
 

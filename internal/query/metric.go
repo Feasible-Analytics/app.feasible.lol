@@ -59,6 +59,12 @@ type compileContext struct {
 
 	sampleRate float64
 
+	// sessionFacts says migration 0011 materialized bounded bot and entry-title
+	// facts. It remains a runtime capability gate so a version-10 database opened
+	// only for maintenance or compatibility tests stays on exact legacy probes;
+	// the assembled version-11 schema takes the constant-row path.
+	sessionFacts bool
+
 	// pathClean says at least one of the query's sites has path cleaning rules
 	// materialised. It is resolved once per query so that the grouper and the
 	// filter compiler cannot disagree about whether a page is the raw path or
@@ -87,9 +93,9 @@ type metric struct {
 	// a bounce rate of four billion percent on somebody's dashboard.
 	Percentage bool
 
-	// Scaled marks a count that sampling divides. A rate is unaffected by
-	// sampling; a total is not, and scaling it back up is the only thing that
-	// makes a sampled total comparable with an unsampled one.
+	// Scaled marks an additive total that sampling divides. Direct rates and
+	// distribution statistics are not inverse-rate expanded, but they remain
+	// estimates of the population because they use only selected fact rows.
 	Scaled bool
 
 	// Signed marks a metric that may legitimately be negative. Only money is:
@@ -290,18 +296,31 @@ func (m metric) additive(t table) bool {
 		return t == tableSessions
 	}
 
+	// Of the numeric property aggregates only a sum adds across two slices of
+	// time. The smallest value in a week is not the sum of the smallest value
+	// in each day, and neither an average nor a percentile can be recovered
+	// from two halves without the values behind them.
+	if parsed, ok := parsePropAggregate(m.Name); ok {
+		return parsed.Agg == AggSum
+	}
+
 	return true
 }
 
-// metricByName looks one up.
+// metricByName looks one up, falling through to the numeric property
+// aggregates. Those are a family rather than fixed entries — the property is a
+// parameter — so they are built on demand from the name, exactly as
+// event:props:<key> is on the dimension side.
 func metricByName(name string) (metric, bool) {
-	found, ok := metrics[name]
+	if found, ok := metrics[name]; ok {
+		return found, true
+	}
 
-	return found, ok
+	return propAggregateMetric(name)
 }
 
-// MetricNames lists every metric, sorted. The validation error prints it, so a
-// caller who mistyped one is told what the alternatives are in the same
+// MetricNames lists every fixed metric, sorted. The validation error prints it,
+// so a caller who mistyped one is told what the alternatives are in the same
 // response rather than in the documentation.
 func MetricNames() []string {
 	names := make([]string, 0, len(metrics))

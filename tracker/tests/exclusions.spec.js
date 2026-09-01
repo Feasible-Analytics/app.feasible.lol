@@ -121,6 +121,69 @@ test("hash x exclusions: a hash route that is not excluded still counts", async 
 	await settledCount(state, "Hash Custom", 1);
 });
 
+// The prior public page is allowed to flush when navigation begins, but once
+// the excluded route is active its time and scroll state must have no tracked
+// page to attach to. Returning public starts a clean measurement again.
+test("an excluded SPA route ends prior engagement and attributes no private activity", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/hash.html");
+	await settledCount(state, "pageview", 1);
+	await page.click("#private");
+	await page.waitForTimeout(3500);
+	await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+	await page.waitForTimeout(300);
+
+	expect(state.events.some((event) => event.u?.includes("/private/42"))).toBe(false);
+	const beforeReturn = named(state, "engagement").length;
+
+	await page.click("#assign");
+	await settledCount(state, "pageview", 2);
+	await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+	await page.waitForTimeout(3500);
+	await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+	await settledCount(state, "engagement", beforeReturn + 1);
+
+	expect(named(state, "engagement").at(-1).u).toContain("#/about");
+});
+
+test("a delayed custom event remains governed by its captured private route", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/hash.html");
+	await settledCount(state, "pageview", 1);
+	await page.evaluate(() => {
+		window.feasible("Delayed Private", {
+			u: new URL("/hash.html#/private/99", location.href).href,
+			props: { delayed: true },
+		});
+	});
+	await page.waitForTimeout(300);
+
+	expect(named(state, "Delayed Private")).toHaveLength(0);
+});
+
+test("consent revocation blocks pageview and engagement and clears persisted replay", async ({ page }) => {
+	const state = await collect(page);
+	state.fail = 1;
+
+	await page.goto("/spa.html");
+	await settledCount(state, "pageview", 1);
+	expect(await page.evaluate(() => localStorage.getItem("feasible_outbox"))).not.toBe("[]");
+
+	await page.evaluate(() => {
+		window.feasible.consent = false;
+		history.pushState({}, "", "/spa.html/private-after-consent");
+	});
+	await page.waitForTimeout(3500);
+	await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+	await page.waitForTimeout(300);
+
+	expect(named(state, "pageview")).toHaveLength(1);
+	expect(named(state, "engagement")).toHaveLength(0);
+	expect(await page.evaluate(() => localStorage.getItem("feasible_outbox"))).toBe("[]");
+});
+
 // The default that keeps a developer's own reloads out of production numbers.
 // The documented consequence is that a Capacitor, Cordova or Electron shell
 // serves its pages from localhost and records nothing until the flag is set.
@@ -151,7 +214,9 @@ test("an automated browser is not counted, and says so", async ({ page }) => {
 	await page.waitForTimeout(600);
 
 	expect(state.events).toHaveLength(0);
-	expect(messages.join(" ")).toContain("automated");
+	const warning = messages.join(" ");
+	expect(warning).toContain("automated");
+	expect(warning).toContain("bot");
 	expect(await droppedPageview(page)).toEqual({ status: null });
 });
 

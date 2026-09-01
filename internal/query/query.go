@@ -23,6 +23,7 @@ package query
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 	"time"
@@ -51,6 +52,11 @@ const (
 	MaxDimensions   = 5
 	MaxFilters      = 32
 	MaxFilterValues = 1000
+
+	// MaxMetrics bounds both the result width and the number of special passes
+	// one request can trigger. Numeric property aggregates each need their own
+	// scan, so an unbounded list would let one small JSON body consume the box.
+	MaxMetrics = 32
 
 	// MaxGroups caps how many groups are pulled back when the ordering cannot
 	// be pushed into SQL — see engine.go. It is a bound on memory, not a
@@ -100,11 +106,23 @@ type Query struct {
 	// together is a number nobody could ever reconcile.
 	Currency string `json:"currency,omitempty"`
 
-	// SampleRate is the fraction of visitors to read, between 0 and 1. One
-	// means no sampling and is the default. Sampling picks visitors rather
-	// than rows so that a sampled session is whole: sampling rows would break
-	// every session-scoped metric, because half a visit is not a visit.
+	// SampleRate is the fraction of fact rows to read, between 0 and 1. One
+	// means no sampling and is the default. Event-grain work samples events;
+	// visit-grain work samples complete rows from sessions. Operations that need
+	// complete visitor or session event membership are refused under sampling.
+	//
+	// Leaving it at one does not guarantee an exact answer: a query estimated
+	// to read more rows than the engine's threshold is sampled on the caller's
+	// behalf, and says so in meta.sampling. Exact is how a caller opts out.
 	SampleRate float64 `json:"sample_rate,omitempty"`
+
+	// Exact refuses automatic sampling, however large the range. It is the
+	// escape hatch for the answer that has to be right rather than quick — an
+	// invoice, a reconciliation, a figure going into a report — and it is a
+	// separate field rather than sample_rate: 1 because those two are
+	// indistinguishable on the wire, and defaulting to exactness would put
+	// every dashboard back on the slow path.
+	Exact bool `json:"exact,omitempty"`
 }
 
 // Filter is one predicate. The wire form is the array shape the ecosystem
@@ -165,6 +183,12 @@ type Include struct {
 	// TotalRows asks how many groups the query has before pagination.
 	TotalRows bool `json:"total_rows,omitempty"`
 
+	// PageTitles enriches rows grouped by event:page with one deterministic,
+	// recent nonblank title. It is response enrichment after aggregation, never
+	// a grouping dimension, so title changes cannot split a path or disable a
+	// roll-up read.
+	PageTitles bool `json:"page_titles,omitempty"`
+
 	Comparisons *Comparison `json:"comparisons,omitempty"`
 }
 
@@ -193,6 +217,7 @@ const (
 // instead of turning a bad page number into a 500.
 type Error struct {
 	Message string
+	Code    string
 }
 
 // Error renders the message. It is the message the API returns verbatim, so it
@@ -204,6 +229,16 @@ func (e *Error) Error() string {
 // invalid builds a caller-facing validation error.
 func invalid(format string, args ...any) *Error {
 	return &Error{Message: fmt.Sprintf(format, args...)}
+}
+
+// requiresExact builds a validation error that an interactive client can
+// resolve by issuing one explicit exact request. The code is stable; the
+// message remains useful to API callers and logs.
+func requiresExact(format string, args ...any) *Error {
+	return &Error{
+		Message: fmt.Sprintf(format, args...),
+		Code:    "sampling_requires_exact",
+	}
 }
 
 // Normalise fills in the defaults a caller left out. It runs before Validate
@@ -263,10 +298,15 @@ func (q *Query) Validate() error {
 		return invalid("at least one metric is required")
 	}
 
+	if len(q.Metrics) > MaxMetrics {
+		return invalid("a query may ask for at most %d metrics, not %d", MaxMetrics, len(q.Metrics))
+	}
+
 	seenMetric := map[string]bool{}
 	for _, name := range q.Metrics {
 		if _, ok := metricByName(name); !ok {
-			return invalid("unknown metric %q — known metrics are %s", name, strings.Join(MetricNames(), ", "))
+			return invalid("unknown metric %q — known metrics are %s, plus <aggregate>(event:props:<key>) where <aggregate> is one of %s",
+				name, strings.Join(MetricNames(), ", "), strings.Join(AggregateNames(), ", "))
 		}
 		if seenMetric[name] {
 			return invalid("metric %q is listed twice", name)
@@ -329,10 +369,23 @@ func (q *Query) Validate() error {
 		return invalid("sample_rate must be greater than 0 and at most 1, not %g", q.SampleRate)
 	}
 
+	// The SQL predicate has exactly SampleBuckets buckets. Accepting a finer
+	// decimal would truncate to a different rate while echoing the one the
+	// caller wrote, which would make the sampling metadata false.
+	scaledRate := q.SampleRate * SampleBuckets
+	if q.SampleRate < MinSampleRate || math.Abs(scaledRate-math.Round(scaledRate)) > 1e-9 {
+		return invalid("sample_rate must be %g or greater and use increments of %g, not %g",
+			MinSampleRate, MinSampleRate, q.SampleRate)
+	}
+
 	if q.Include.Comparisons != nil {
 		if err := q.Include.Comparisons.validate(); err != nil {
 			return err
 		}
+	}
+
+	if q.Include.PageTitles && !seenDimension["event:page"] {
+		return invalid("include.page_titles requires the event:page dimension")
 	}
 
 	return nil

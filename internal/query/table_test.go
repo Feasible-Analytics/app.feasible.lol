@@ -103,11 +103,6 @@ func TestDeciderRefusesTheCombinationsWithNoAnswer(t *testing.T) {
 				Dimensions: []string{"event:props:plan"}},
 		},
 		{
-			name: "views per visit per page title",
-			query: Query{SiteIDs: []int64{1}, Metrics: []string{"views_per_visit"},
-				Dimensions: []string{"event:page_title"}},
-		},
-		{
 			name:  "conversion rate with nothing to convert",
 			query: Query{SiteIDs: []int64{1}, Metrics: []string{"conversion_rate"}},
 		},
@@ -128,13 +123,30 @@ func TestDeciderRefusesTheCombinationsWithNoAnswer(t *testing.T) {
 // TestEntryScopedDimensionsStillCompose checks that the page dimensions which
 // do have a visit-grain analogue are allowed through.
 func TestEntryScopedDimensionsStillCompose(t *testing.T) {
-	for _, name := range []string{"event:page", "event:hostname", "visit:source", "time:day"} {
+	for _, name := range []string{"event:page", "event:hostname", "event:page_title", "visit:source", "time:day"} {
 		q := Query{SiteIDs: []int64{1}, Metrics: []string{"bounce_rate"}, Dimensions: []string{name}}
 		q.Normalise()
 
 		if _, err := decide(&q); err != nil {
 			t.Errorf("a bounce rate per %s should be answerable: %v", name, err)
 		}
+	}
+}
+
+// TestSessionPropertyAggregateUsesSessions checks that a visit-scoped numeric
+// property does not open the events table merely because aggregates use the
+// special-metric execution path.
+func TestSessionPropertyAggregateUsesSessions(t *testing.T) {
+	q := Query{SiteIDs: []int64{1}, Metrics: []string{"sum(event:props:price)"}}
+	q.Normalise()
+
+	decided, err := decideScoped(&q, map[string]string{"price": propScopeSession})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if decided.Primary != tableSessions || decided.HasSecondary {
+		t.Fatalf("session property aggregate should scan sessions alone, got %+v", decided)
 	}
 }
 

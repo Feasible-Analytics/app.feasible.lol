@@ -202,4 +202,27 @@ func TestEveryMetricEitherMapsOntoTheSummaryOrIsRefused(t *testing.T) {
 			t.Errorf("rollupComponents(%q) = %v, want %v", name, ok, want)
 		}
 	}
+
+	// The numeric property aggregates are a family rather than registry
+	// entries, so they are enumerated separately — but they are classified for
+	// the same reason and by the same rule.
+	//
+	// Every one of them is answered from raw events. The summary tables carry a
+	// fixed set of counter columns and no properties at all: a property is a
+	// key a customer invents, so summarising one would mean a column per key
+	// per site. Nor would a stored total be enough — a percentile needs the
+	// values themselves, and an average needs its own denominator because the
+	// events that carried a number are not the events the bucket counted.
+	for _, agg := range AggregateNames() {
+		name := agg + "(event:props:price)"
+
+		if _, ok := metricByName(name); !ok {
+			t.Errorf("%q is not a metric — AggregateNames and the parser disagree", name)
+			continue
+		}
+
+		if _, ok := rollupComponents(name, tableEvents); ok {
+			t.Errorf("rollupComponents(%q) claims the summary can answer a property", name)
+		}
+	}
 }

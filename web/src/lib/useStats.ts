@@ -16,6 +16,9 @@ export interface Stats {
 	data: StatsResponse | null;
 	loading: boolean;
 	error: string | null;
+	/** exactFallback is true when the server refused automatic sampling because
+	 *  this query needs complete membership and can be retried exactly once. */
+	exactFallback: boolean;
 	/** Bumping this re-runs the query without changing the question, which is
 	 *  what the current-visitors poll and the error state's Retry both need. */
 	reload: () => void;
@@ -37,6 +40,7 @@ export function useStats(domain: string, body: StatsRequest | null, enabled = tr
 	const [data, setData] = useState<StatsResponse | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [exactFallback, setExactFallback] = useState(false);
 	const [nonce, setNonce] = useState(0);
 
 	// The body is a fresh object literal on every render, so it cannot be a
@@ -58,12 +62,14 @@ export function useStats(domain: string, body: StatsRequest | null, enabled = tr
 
 		setLoading(true);
 		setError(null);
+		setExactFallback(false);
 
 		query(domain, JSON.parse(key) as StatsRequest, controller.signal)
 			.then((response) => {
 				if (!live) return;
 				previous.current = response;
 				setData(response);
+				setExactFallback(false);
 				setLoading(false);
 			})
 			.catch((err: unknown) => {
@@ -73,6 +79,7 @@ export function useStats(domain: string, body: StatsRequest | null, enabled = tr
 				if (!live || (err instanceof DOMException && err.name === "AbortError")) return;
 
 				setError(err instanceof QueryError || err instanceof Error ? err.message : t("dashboard.error.query_failed"));
+				setExactFallback(err instanceof QueryError && err.code === "sampling_requires_exact");
 				setLoading(false);
 			});
 
@@ -86,6 +93,7 @@ export function useStats(domain: string, body: StatsRequest | null, enabled = tr
 		data,
 		loading,
 		error,
+		exactFallback,
 		reload: () => setNonce((n) => n + 1),
 	};
 }

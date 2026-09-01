@@ -6,8 +6,8 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-import { hatch, VERSION } from "./state.js";
-import { warn } from "./exclude.js";
+import { win, loc, hatch, VERSION } from "./state.js";
+import { excluded, ignoreReason, warn } from "./exclude.js";
 
 // The outbox key. A request whose connection died was never seen by any server,
 // so no amount of durability behind the endpoint can recover it — the only
@@ -38,10 +38,34 @@ export const KEEPALIVE = (() => {
 // because every send site would otherwise have to carry the configuration
 // around purely to hand it back.
 let endpoint = "";
+let config = null;
 
-// setEndpoint records where events go.
-export function setEndpoint(url) {
+// configure records where events go and the policy applied immediately before
+// every live or persisted network attempt.
+export function configure(url, cfg) {
 	endpoint = url;
+	config = cfg;
+}
+
+// refusal applies current controls to the event's captured route immediately
+// before a live send or persisted replay and names the policy that stopped it.
+export function refusal(event) {
+	return ignoreReason(config) || (excluded(config, event.u || loc.href) ? "excluded path" : "");
+}
+
+// eventID creates the stable RFC 4122 version-4 identity that survives an
+// outbox replay. randomUUID is the shortest fast path; getRandomValues keeps
+// the same wire contract in browsers whose Web Crypto implementation predates
+// randomUUID, without weakening uniqueness to a time stamp or row sequence.
+function eventID() {
+	if (win.crypto.randomUUID) return win.crypto.randomUUID();
+
+	// This compact RFC 4122 formatter fixes the version and variant nibbles and
+	// draws every remaining nibble from Web Crypto. It is deliberately not a
+	// Math.random fallback: this value becomes a permanent database receipt.
+	return ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, (digit) =>
+		(digit ^ (win.crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (digit / 4)))).toString(16),
+	);
 }
 
 // readOutbox returns the stashed events. Every localStorage access in this file
@@ -60,13 +84,16 @@ function readOutbox() {
 // eviction: the 101st failure is no less real than the first, and browser quota
 // failure is handled explicitly by the memory fallback below.
 function writeOutbox(items) {
+	if (volatileOutbox) {
+		volatileOutbox = items;
+		return;
+	}
 	try {
-		if (!volatileOutbox) localStorage[OUTBOX_KEY] = JSON.stringify(items);
+		localStorage[OUTBOX_KEY] = JSON.stringify(items);
 	} catch {
 		warn("memory-only");
-		volatileOutbox = [];
+		volatileOutbox = items;
 	}
-	if (volatileOutbox) volatileOutbox = items;
 }
 
 // drain replays whatever failed last time. It runs on a pageview rather than on
@@ -79,7 +106,17 @@ export function drain() {
 	const items = readOutbox();
 	if (!items.length) return;
 
-	for (const body of items) post(body, 0);
+	writeOutbox(
+		items.filter((body) => {
+			try {
+				if (!refusal(JSON.parse(body))) {
+					post(body, 0);
+					return true;
+				}
+			} catch {}
+			return false;
+		}),
+	);
 }
 
 // post sends one already-serialised event.
@@ -134,9 +171,13 @@ export function post(body, callback) {
 // Absent keys are left out entirely rather than sent as null, which keeps a
 // pageview under two hundred bytes.
 export function send(event, callback) {
-	// The existing browser floor includes crypto.randomUUID. Creating the key
-	// before post means a lost 202, cancellation and later replay stay one event.
-	event.k = crypto.randomUUID();
+	if (refusal(event)) {
+		callback?.({ status: null });
+		return;
+	}
+	// Creating the key before post means a lost 202, cancellation and later
+	// replay stay one event with one permanent server receipt.
+	event.k = eventID();
 	event.v = VERSION;
 
 	post(JSON.stringify(event), callback);
