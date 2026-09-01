@@ -111,6 +111,7 @@ func (h *Handler) showSites(w http.ResponseWriter, r *http.Request) {
 	role, _ := h.Teams.RoleOf(r.Context(), team.ID, userFrom(r).ID)
 	p.Data["CanManage"] = teams.Can(role, teams.PermManageSites)
 	p.Data["CanConfigure"] = teams.Can(role, teams.PermManageSiteSettings)
+	p.Data["CanManageBilling"] = role == teams.RoleOwner || role == teams.RoleAdmin || role == teams.RoleBilling
 
 	if r.URL.Query().Get("welcome") == "1" {
 		p.Flash = i18n.T(p.Lang, "auth.flash.email_confirmed")
@@ -274,6 +275,19 @@ func (h *Handler) showSiteSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.render(w, r, "site_settings", p, http.StatusOK)
+}
+
+// showSiteSettingsByDomain gives the domain-keyed settings shell a stable way
+// back to General without teaching it control-database site ids.
+func (h *Handler) showSiteSettingsByDomain(w http.ResponseWriter, r *http.Request) {
+	site, ok := h.SiteCache.Lookup(r.PathValue("domain"))
+	if !ok {
+		h.notFound(w, r)
+		return
+	}
+
+	r.SetPathValue("id", strconv.FormatInt(site.ID, 10))
+	h.showSiteSettings(w, r)
 }
 
 // transferDestinations lists teams the user owns or administers, excluding the

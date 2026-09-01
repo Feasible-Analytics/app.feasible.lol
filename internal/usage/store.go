@@ -130,7 +130,10 @@ type PeriodCounts struct {
 // possibly be over its limit and reading it would be pure cost.
 func (s *Store) Teams(ctx context.Context, period string) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT team_id FROM usage_counters WHERE period = ? ORDER BY team_id
+		SELECT team_id FROM usage_counters
+		WHERE period = ?
+		  AND NOT EXISTS (SELECT 1 FROM account_comps WHERE account_comps.team_id = usage_counters.team_id)
+		ORDER BY team_id
 	`, period)
 	if err != nil {
 		return nil, fmt.Errorf("usage: teams for %s: %w", period, err)
@@ -157,7 +160,11 @@ func (s *Store) Teams(ctx context.Context, period string) ([]int64, error) {
 // still has to be unlocked when it comes back into range — and it would never be
 // looked at again if the walk were driven by this month's counters alone.
 func (s *Store) OverageTeams(ctx context.Context) ([]int64, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT team_id FROM usage_overages ORDER BY team_id`)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT team_id FROM usage_overages
+		WHERE NOT EXISTS (SELECT 1 FROM account_comps WHERE account_comps.team_id = usage_overages.team_id)
+		ORDER BY team_id
+	`)
 	if err != nil {
 		return nil, fmt.Errorf("usage: overage teams: %w", err)
 	}
@@ -328,7 +335,10 @@ func (s *Store) MarkReplied(ctx context.Context, teamID int64) error {
 // same reason the routing map is a snapshot.
 func (s *Store) LockedTeams(ctx context.Context) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT team_id FROM usage_overages WHERE locked_at IS NOT NULL ORDER BY team_id
+		SELECT team_id FROM usage_overages
+		WHERE locked_at IS NOT NULL
+		  AND NOT EXISTS (SELECT 1 FROM account_comps WHERE account_comps.team_id = usage_overages.team_id)
+		ORDER BY team_id
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("usage: locked teams: %w", err)

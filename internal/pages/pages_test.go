@@ -524,6 +524,33 @@ func TestBillingShowsPaymentStateAlongsideProviderStatus(t *testing.T) {
 	}
 }
 
+// TestBillingExplainsACompedAccount ensures a complimentary account does not
+// look like a broken subscription or invite its owner to buy access they
+// already have.
+func TestBillingExplainsACompedAccount(t *testing.T) {
+	handler, control := newHandler(t)
+
+	if _, err := control.Exec(`
+		INSERT INTO account_comps (team_id, owner_email, comped_at)
+		VALUES (1, 'owner@example.com', ?)
+	`, pagesNow.Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	body := render(t, handler, "/billing?team=1").Body.String()
+	for _, want := range []string{"Complimentary account", "fully active", "does not need a card"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("comped billing page is missing %q: %s", want, body)
+		}
+	}
+
+	for _, unwanted := range []string{`action="/billing/checkout"`, "Renews on", "No card on file"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("comped billing page contains %q: %s", unwanted, body)
+		}
+	}
+}
+
 // TestPricingPublishesTheLifecycleTimetable is the "we would rather tell you
 // before you buy" promise. All four phases have to be on the page somebody reads
 // while deciding.

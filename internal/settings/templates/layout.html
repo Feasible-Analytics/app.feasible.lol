@@ -60,6 +60,16 @@
 			feasible.lol
 		</a>
 		{{ if .Domain }}<span class="text-sm text-muted">{{ .Domain }}</span>{{ end }}
+		<nav class="ml-auto flex flex-wrap items-center gap-3 text-sm" aria-label="Account">
+			<a href="{{ url .Lang "/dashboard/" }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.dashboard" }}</a>
+			<a href="{{ url .Lang "/sites" }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.sites" }}</a>
+			<a href="{{ url .Lang "/settings" }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.account" }}</a>
+			{{ if canBilling .Role }}<a href="{{ url .Lang "/billing" }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.billing" }}</a>{{ end }}
+			<form method="post" action="{{ url .Lang "/logout" }}">
+				<input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+				<button type="submit" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.sign_out" }}</button>
+			</form>
+		</nav>
 	</div>
 </header>
 
@@ -68,9 +78,10 @@
      leads to /settings//shields is a tab that 404s. -->
 <nav class="border-b border-line bg-card" aria-label="{{ t .Lang "auth.settings_nav.label" }}">
 	<div class="mx-auto flex max-w-5xl flex-wrap gap-1 px-6">
-		<a href="{{ if .Domain }}{{ url .Lang (printf "/settings/members?site_context=%s" (.Domain | urlquery)) }}{{ else }}{{ url .Lang "/settings/members" }}{{ end }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "team" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.team" }}</a>
+		{{ if or (can .Role "manage_members") (can .Role "create_api_key") }}<a href="{{ if .Domain }}{{ url .Lang (printf "/settings/members?site_context=%s" (.Domain | urlquery)) }}{{ else }}{{ url .Lang "/settings/members" }}{{ end }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "team" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.team" }}</a>{{ end }}
 
 		{{ if .Domain }}
+			<a href="{{ url .Lang (printf "/sites/domain/%s/settings" .Domain) }}" class="-mb-px border-b-2 border-transparent px-3 py-3 text-sm font-medium text-muted hover:text-heading">{{ t .Lang "auth.site_settings.general" }}</a>
 			<a href="{{ url .Lang (printf "/settings/sites/%s/sharing" .Domain) }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "sharing" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.sharing" }}</a>
 			<a href="{{ url .Lang (printf "/settings/sites/%s/reports" .Domain) }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "reports" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.reports" }}</a>
 			<a href="{{ url .Lang (printf "/settings/sites/%s/health" .Domain) }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "health" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.health" }}</a>

@@ -57,7 +57,7 @@
 
   <section>
     <h2>{{ t .Lang "pages.billing.plan.heading" }}</h2>
-    <div class="grid two">
+    <div class="grid {{ if not .Comped }}two{{ end }}">
       <div class="panel">
         <div class="numbers">
 		  <div><div class="k">{{ t .Lang "pages.billing.plan.plan" }}</div><div class="v">{{ .Plan.Label }}</div></div>
@@ -69,7 +69,9 @@
           {{ if .Plan.CancelAtPeriodEnd }}{{ t .Lang "pages.billing.plan.ends" "date" .Plan.RenewsOn }}{{ else }}{{ t .Lang "pages.billing.plan.renews" "date" .Plan.RenewsOn }}{{ end }}
         </p>
         {{ end }}
-        {{ if .Plan.HasCustomer }}
+        {{ if .Comped }}
+        <p style="margin-top:14px;color:var(--muted)">{{ t .Lang "pages.billing.plan.comped_detail" }}</p>
+        {{ else if .Plan.HasCustomer }}
         <form method="POST" action="/billing/portal" style="margin-top:14px">
 		  <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
 		  <input type="hidden" name="team" value="{{ .TeamID }}">
@@ -80,6 +82,7 @@
         {{ end }}
       </div>
 
+      {{ if not .Comped }}
       <div class="panel plan">
         <div class="per">{{ t .Lang "pages.billing.upgrade.label" }}</div>
         <div class="price">$9.99<span class="per"> {{ t .Lang "pages.billing.upgrade.per_month" }}</span></div>
@@ -104,6 +107,7 @@
           </form>
         </div>
       </div>
+      {{ end }}
     </div>
   </section>
 

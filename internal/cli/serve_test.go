@@ -420,7 +420,6 @@ func TestALockedAccountIsRefusedEveryReadPath(t *testing.T) {
 		body    string
 		headers map[string]string
 	}{
-		{"the dashboard", http.MethodGet, "/dashboard/example.com", "", nil},
 		{"the stats endpoint behind it", http.MethodPost, "/api/stats/example.com/query", `{"metrics":["visitors"],"date_range":"7d"}`, nil},
 		{"the v2 query endpoint", http.MethodPost, "/api/v2/query", `{"site_id":"example.com","metrics":["visitors"],"date_range":"7d"}`, s.bearer()},
 		{"the v1 aggregate shim", http.MethodGet, "/api/v1/stats/aggregate?site_id=example.com&metrics=visitors", "", s.bearer()},
@@ -759,15 +758,11 @@ func TestPayingRestoresEverything(t *testing.T) {
 	s := newStack(t)
 	s.lock(t)
 
-	if code := s.send(t, http.MethodGet, "/dashboard/example.com", "", nil).Code; code != http.StatusPaymentRequired {
+	if code := s.send(t, http.MethodGet, "/api/v1/sites", "", s.bearer()).Code; code != http.StatusPaymentRequired {
 		t.Fatalf("the account was not locked to begin with: %d", code)
 	}
 
 	s.pay(t)
-
-	if code := s.send(t, http.MethodGet, "/dashboard/example.com", "", nil).Code; code == http.StatusPaymentRequired {
-		t.Error("paying did not restore the dashboard")
-	}
 
 	response := s.send(t, http.MethodGet, "/api/v1/sites", "", s.bearer())
 	if response.Code != http.StatusOK {

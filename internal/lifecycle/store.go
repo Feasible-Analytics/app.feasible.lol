@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -40,9 +41,145 @@ type Store struct {
 	db *sql.DB
 }
 
+// CompResult identifies the one account resolved by a complimentary-access
+// operation and whether it already carried the durable exemption.
+type CompResult struct {
+	TeamID        int64
+	OwnerEmail    string
+	AlreadyComped bool
+}
+
 // NewStore builds a store over the control database.
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
+}
+
+// IsComped reports whether billing lifecycle signals must leave this account
+// alone. The marker is checked inside the lifecycle transition lease so a comp
+// cannot race a failed-payment event into restarting the clock.
+func (s *Store) IsComped(ctx context.Context, teamID int64) (bool, error) {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM account_comps WHERE team_id = ?`, teamID).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("lifecycle: read account %d comp: %w", teamID, err)
+	}
+
+	return true, nil
+}
+
+// CompByOwnerEmail durably exempts the single team owned by an email address.
+// Resolving and writing happen in one transaction so an ambiguous owner never
+// receives a partial comp, and the lifecycle mirrors clear with the marker.
+func (s *Store) CompByOwnerEmail(ctx context.Context, email string) (CompResult, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return CompResult{}, fmt.Errorf("lifecycle: begin comp: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // a rollback after commit is a no-op
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT t.id, u.email
+		FROM users u
+		JOIN team_memberships m ON m.user_id = u.id AND m.role = 'owner'
+		JOIN teams t ON t.id = m.team_id
+		WHERE u.email = ? COLLATE NOCASE
+		ORDER BY t.id
+	`, strings.TrimSpace(email))
+	if err != nil {
+		return CompResult{}, fmt.Errorf("lifecycle: resolve comp owner: %w", err)
+	}
+
+	var matches []CompResult
+	for rows.Next() {
+		var result CompResult
+		if err := rows.Scan(&result.TeamID, &result.OwnerEmail); err != nil {
+			_ = rows.Close()
+			return CompResult{}, fmt.Errorf("lifecycle: resolve comp owner: %w", err)
+		}
+		matches = append(matches, result)
+	}
+	if err := rows.Close(); err != nil {
+		return CompResult{}, fmt.Errorf("lifecycle: resolve comp owner: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return CompResult{}, fmt.Errorf("lifecycle: resolve comp owner: %w", err)
+	}
+	if len(matches) == 0 {
+		return CompResult{}, fmt.Errorf("lifecycle: no team is owned by %s", email)
+	}
+	if len(matches) > 1 {
+		return CompResult{}, fmt.Errorf("lifecycle: %s owns %d teams; use a unique owner email", email, len(matches))
+	}
+
+	result := matches[0]
+	var activeSubscription string
+	err = tx.QueryRowContext(ctx, `
+		SELECT stripe_subscription_id
+		FROM subscriptions
+		WHERE team_id = ? AND stripe_subscription_id <> '' AND status NOT IN ('canceled', 'none')
+	`, result.TeamID).Scan(&activeSubscription)
+	if err == nil {
+		return CompResult{}, fmt.Errorf("lifecycle: account %d has active subscription %s; cancel it before comping", result.TeamID, activeSubscription)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return CompResult{}, fmt.Errorf("lifecycle: read account %d subscription: %w", result.TeamID, err)
+	}
+
+	var existing int64
+	err = tx.QueryRowContext(ctx, `SELECT comped_at FROM account_comps WHERE team_id = ?`, result.TeamID).Scan(&existing)
+	if err == nil {
+		result.AlreadyComped = true
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return CompResult{}, fmt.Errorf("lifecycle: read account %d comp: %w", result.TeamID, err)
+	}
+
+	now := time.Now().UTC().Unix()
+	if !result.AlreadyComped {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO account_comps (team_id, owner_email, comped_at) VALUES (?, ?, ?)
+		`, result.TeamID, result.OwnerEmail, now); err != nil {
+			return CompResult{}, fmt.Errorf("lifecycle: comp account %d: %w", result.TeamID, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE account_lifecycle
+		SET trigger = '', started_at = NULL, deleted_at = NULL, updated_at = ?
+		WHERE team_id = ?
+	`, now, result.TeamID); err != nil {
+		return CompResult{}, fmt.Errorf("lifecycle: stop account %d clock: %w", result.TeamID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE teams
+		SET trial_ends_at = NULL, accept_traffic_until = NULL, updated_at = ?
+		WHERE id = ?
+	`, now, result.TeamID); err != nil {
+		return CompResult{}, fmt.Errorf("lifecycle: clear account %d limits: %w", result.TeamID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE lifecycle_outbox
+		SET completed_at = COALESCE(completed_at, ?), outcome = CASE WHEN completed_at IS NULL THEN 'cancelled: account comped' ELSE outcome END,
+		    lease_token = '', lease_expires_at = 0, updated_at = ?
+		WHERE team_id = ? AND completed_at IS NULL
+	`, now, now, result.TeamID); err != nil {
+		return CompResult{}, fmt.Errorf("lifecycle: cancel account %d notices: %w", result.TeamID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE collection_gaps SET ended_at = COALESCE(ended_at, ?) WHERE team_id = ?
+	`, now, result.TeamID); err != nil {
+		return CompResult{}, fmt.Errorf("lifecycle: close account %d collection gap: %w", result.TeamID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_overages WHERE team_id = ?`, result.TeamID); err != nil {
+		return CompResult{}, fmt.Errorf("lifecycle: clear account %d volume lock: %w", result.TeamID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return CompResult{}, fmt.Errorf("lifecycle: commit account %d comp: %w", result.TeamID, err)
+	}
+
+	return result, nil
 }
 
 // DB exposes the handle for the few callers — the deletion path, mostly — that

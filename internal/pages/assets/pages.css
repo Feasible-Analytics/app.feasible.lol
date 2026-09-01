@@ -142,7 +142,9 @@ header.top .brand {
 
 header.top nav { margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px 20px; min-width: 0; }
 header.top nav a { color: var(--muted); text-decoration: none; font-size: 15px; }
-header.top nav a:hover, header.top nav a.on { color: var(--ink); }
+header.top nav form { display: inline; margin: 0; }
+header.top nav button { border: 0; padding: 0; background: transparent; color: var(--muted); font: inherit; font-size: 15px; cursor: pointer; }
+header.top nav a:hover, header.top nav a.on, header.top nav button:hover { color: var(--ink); }
 
 @media (max-width: 384px) {
   header.top .wrap {

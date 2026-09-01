@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/access"
@@ -401,6 +402,9 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	// cookie and verifier even though their handlers live in another package.
 	site.CSRF = app.IssueCSRF
 	site.CheckCSRF = app.CheckCSRF
+	site.Role = func(r *http.Request, current sites.Site) teams.Role {
+		return app.RoleForSite(r, current.ID)
+	}
 
 	// Every mount is wrapped with the name it is counted under. The name is
 	// given here rather than derived from the URL because a label taken from a
@@ -483,17 +487,37 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	// snapshot only to render the site picker; every number on it comes from
 	// the stats endpoint above.
 	shell := dashboard.New(service.Sites)
-	shell.Domains = func(r *http.Request) []string {
+	shell.Resolve = func(w http.ResponseWriter, r *http.Request) dashboard.Bootstrap {
 		domains, err := app.AccessibleDomains(r)
 		if err != nil {
 			e.log.Warn("could not list dashboard sites", "error", err)
-			return nil
+			return dashboard.Bootstrap{}
 		}
 
-		return domains
+		navRequest := r
+		if strings.TrimPrefix(r.URL.Path, dashboard.PathPrefix) == "" && len(domains) > 0 {
+			copy := r.Clone(r.Context())
+			copy.URL.Path = dashboard.PathPrefix + domains[0]
+			navRequest = copy
+		}
+		nav := app.NavigationForDashboard(w, navRequest)
+		boot := dashboard.Bootstrap{
+			Sites: domains,
+			Navigation: &dashboard.Navigation{
+				Name: nav.Name, Email: nav.Email, SitesURL: nav.SitesURL,
+				SiteSettingsURL: nav.SiteSettingsURL, AccountURL: nav.AccountURL,
+				BillingURL: nav.BillingURL, ExportURL: nav.ExportURL,
+				LogoutURL: nav.LogoutURL, CSRF: nav.CSRF, TeamID: nav.TeamID,
+			},
+		}
+		if refusal, locked := com.Gate.Check(nav.TeamID); locked {
+			boot.Lock = &dashboard.Lock{Reason: string(refusal.Reason), Error: refusal.Error}
+		}
+
+		return boot
 	}
 	mux.Handle(dashboard.PathPrefix, metrics.Instrument(metrics.HandlerDashboard,
-		com.Gate.Protect(app.GuardDashboard(shell))))
+		app.GuardDashboard(shell)))
 
 	// The public dashboard, the shared links, the annotations endpoint and the
 	// health panel's API. The shared-link handler is handed the same shell the

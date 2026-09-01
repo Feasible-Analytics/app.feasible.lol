@@ -14,6 +14,10 @@
     </a>
 
     <nav class="flex flex-col gap-1 text-sm">
+      <a href="{{ url $.Lang "/dashboard/" }}"
+         class="rounded-lg px-3 py-2 font-medium text-muted hover:bg-hover">
+        {{ t $.Lang "auth.sidebar.dashboard" }}
+      </a>
       <a href="{{ if .Team }}{{ url $.Lang (printf "/sites?team_id=%d" .Team.ID) }}{{ else }}{{ url $.Lang "/sites" }}{{ end }}"
          class="rounded-lg px-3 py-2 font-medium {{ if eq .Nav "sites" }}bg-accent/10 text-accent-ink{{ else }}text-muted hover:bg-hover{{ end }}">
         {{ t $.Lang "auth.sidebar.sites" }}
@@ -22,6 +26,12 @@
          class="rounded-lg px-3 py-2 font-medium {{ if eq .Nav "settings" }}bg-accent/10 text-accent-ink{{ else }}text-muted hover:bg-hover{{ end }}">
         {{ t $.Lang "auth.sidebar.settings" }}
       </a>
+      {{ if .CanManageBilling }}
+      <a href="{{ if .Team }}{{ url $.Lang (printf "/billing?team=%d" .Team.ID) }}{{ else }}{{ url $.Lang "/billing" }}{{ end }}"
+         class="rounded-lg px-3 py-2 font-medium text-muted hover:bg-hover">
+        {{ t $.Lang "auth.sidebar.billing" }}
+      </a>
+      {{ end }}
     </nav>
 
     {{ if eq .Nav "settings" }}
@@ -29,8 +39,8 @@
         <a href="{{ url $.Lang "/settings" }}" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">{{ t $.Lang "auth.sidebar.account" }}</a>
         <a href="{{ url $.Lang "/settings/security" }}" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">{{ t $.Lang "auth.sidebar.two_factor" }}</a>
         <a href="{{ url $.Lang "/settings/sessions" }}" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">{{ t $.Lang "auth.sidebar.devices" }}</a>
-        <a href="{{ if .Team }}{{ url $.Lang (printf "/settings/team?team_id=%d" .Team.ID) }}{{ else }}{{ url $.Lang "/settings/team" }}{{ end }}" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">{{ t $.Lang "auth.sidebar.team" }}</a>
-        <a href="{{ if .Team }}{{ url $.Lang (printf "/settings/members?team_id=%d" .Team.ID) }}{{ else }}{{ url $.Lang "/settings/members" }}{{ end }}" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">{{ t $.Lang "auth.sidebar.members" }}</a>
+		{{ if .CanManageTeam }}<a href="{{ if .Team }}{{ url $.Lang (printf "/settings/team?team_id=%d" .Team.ID) }}{{ else }}{{ url $.Lang "/settings/team" }}{{ end }}" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">{{ t $.Lang "auth.sidebar.team" }}</a>{{ end }}
+		{{ if .CanManageMembers }}<a href="{{ if .Team }}{{ url $.Lang (printf "/settings/members?team_id=%d" .Team.ID) }}{{ else }}{{ url $.Lang "/settings/members" }}{{ end }}" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">{{ t $.Lang "auth.sidebar.members" }}</a>{{ end }}
       </div>
     {{ end }}
 

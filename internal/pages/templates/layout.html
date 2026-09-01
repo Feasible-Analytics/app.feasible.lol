@@ -32,7 +32,17 @@
 	  <a href="/pricing{{ if .TeamID }}?team={{ .TeamID }}{{ end }}" {{ if eq .Nav "pricing" }}class="on"{{ end }}>{{ t .Lang "pages.nav.pricing" }}</a>
 	  <a href="/billing{{ if .TeamID }}?team={{ .TeamID }}{{ end }}" {{ if eq .Nav "billing" }}class="on"{{ end }}>{{ t .Lang "pages.nav.billing" }}</a>
 	  <a href="/docs" {{ if eq .Nav "docs" }}class="on"{{ end }}>{{ t .Lang "pages.nav.docs" }}</a>
+	  {{ if .SignedIn }}
 	  <a href="/dashboard/">{{ t .Lang "pages.nav.dashboard" }}</a>
+	  <a href="/sites{{ if .TeamID }}?team_id={{ .TeamID }}{{ end }}">Sites</a>
+	  <a href="/settings">Settings</a>
+	  <form method="post" action="/logout">
+	    <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+	    <button type="submit">Sign out</button>
+	  </form>
+	  {{ else }}
+	  <a href="/dashboard/">{{ t .Lang "pages.nav.dashboard" }}</a>
+	  {{ end }}
     </nav>
   </div>
 </header>

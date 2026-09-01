@@ -15,7 +15,7 @@
 
   <div class="min-w-0 flex-1">
     <div class="flex items-center gap-2">
-      <a href="{{ if .CanConfigure }}{{ url $.Lang (printf "/sites/%d/settings" .Site.ID) }}{{ else }}{{ url $.Lang (printf "/dashboard/%s" .Site.Domain) }}{{ end }}" class="truncate text-sm font-semibold text-heading hover:text-accent-ink">
+      <a href="{{ url $.Lang (printf "/dashboard/%s" .Site.Domain) }}" class="truncate text-sm font-semibold text-heading hover:text-accent-ink">
         {{ .Site.Label }}
       </a>
 
@@ -66,4 +66,8 @@
     {{ t $.Lang "auth.site_row.settings" }}
   </a>
   {{ end }}
+
+  <a href="{{ url $.Lang (printf "/dashboard/%s" .Site.Domain) }}" class="shrink-0 text-xs font-medium text-accent-ink hover:text-accent">
+    {{ t $.Lang "auth.site_row.dashboard" }}
+  </a>
 </li>

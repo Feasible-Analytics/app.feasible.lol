@@ -1120,7 +1120,7 @@ func TestCoordinatedMigrationNumbers(t *testing.T) {
 		want []int
 	}{
 		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11}},
-		"control": {set: Control(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
+		"control": {set: Control(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := make([]int, 0, len(test.set.Migrations))
@@ -1300,8 +1300,8 @@ func TestControlFinalChainAppliesM8AfterM9(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 9 || result.To != 10 || fmt.Sprint(result.Applied) != "[10]" {
-		t.Fatalf("control M8 upgrade = %+v, want 9 through [10]", result)
+	if result.From != 9 || result.To != 11 || fmt.Sprint(result.Applied) != "[10 11]" {
+		t.Fatalf("control upgrade = %+v, want 9 through [10 11]", result)
 	}
 }
 
@@ -1586,8 +1586,8 @@ func TestAccountDeletionCleanupMigration0010(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 9 || result.To != 10 || fmt.Sprint(result.Applied) != "[10]" {
-		t.Fatalf("deletion cleanup upgrade = %+v, want 9 through [10]", result)
+	if result.From != 9 || result.To != 11 || fmt.Sprint(result.Applied) != "[10 11]" {
+		t.Fatalf("deletion cleanup upgrade = %+v, want 9 through [10 11]", result)
 	}
 
 	tests := []struct {

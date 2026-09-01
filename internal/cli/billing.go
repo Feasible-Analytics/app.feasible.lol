@@ -229,12 +229,18 @@ func billingStatus(ctx context.Context, e *env, com *commerce, args []string) in
 	}
 
 	access := lifecycle.Capabilities(state.At(now))
+	comped, err := com.LifecycleStore.IsComped(ctx, teamID)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return ExitError
+	}
 
 	w := tabwriter.NewWriter(e.stdout, 0, 0, 2, ' ', 0)
 
 	fmt.Fprintf(w, "account\t%d\n", teamID)
 	fmt.Fprintf(w, "phase\t%s\n", state.At(now))
 	fmt.Fprintf(w, "trigger\t%s\n", orNone(string(state.Trigger)))
+	fmt.Fprintf(w, "comped\t%s\n", yesNo(comped))
 	fmt.Fprintf(w, "dashboard\t%s\n", yesNo(access.Dashboard))
 	fmt.Fprintf(w, "collecting\t%s\n", yesNo(access.Collect))
 	fmt.Fprintf(w, "export\t%s\n", yesNo(access.Export))

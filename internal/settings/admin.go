@@ -243,6 +243,11 @@ func (h *TeamHandler) sitePath(w http.ResponseWriter, r *http.Request, identity 
 func (h *TeamHandler) render(w http.ResponseWriter, r *http.Request, name string, data screen) {
 	data.BaseURL = h.BaseURL
 	data.Lang = i18n.Negotiate(r)
+	if identity, err := h.Identify(r); err == nil {
+		if role, roleErr := h.Teams.RoleOf(r.Context(), identity.TeamID, identity.UserID); roleErr == nil {
+			data.Role = role
+		}
+	}
 	if h.CSRF != nil {
 		data.CSRF = h.CSRF(w, r)
 	}

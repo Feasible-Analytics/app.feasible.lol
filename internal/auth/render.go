@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
 // templateFS and assetFS hold the interface. Both are embedded because a
@@ -83,8 +84,11 @@ type page struct {
 	// language, so the only place the answer can come from is the render data.
 	Lang string
 
-	User *User
-	Team *Team
+	User             *User
+	Team             *Team
+	CanManageBilling bool
+	CanManageMembers bool
+	CanManageTeam    bool
 
 	// CSRF is the token the forms submit back. Every page carries one, whether
 	// or not it has a form, so that a form added later cannot be added without
@@ -131,6 +135,11 @@ func (h *Handler) newPage(r *http.Request, title, nav string) *page {
 		if _, teamID, err := h.Identify(r); err == nil {
 			if team, err := h.Store.TeamByID(r.Context(), teamID); err == nil {
 				p.Team = team
+				if role, roleErr := h.Teams.RoleOf(r.Context(), teamID, p.User.ID); roleErr == nil {
+					p.CanManageBilling = role == teams.RoleOwner || role == teams.RoleAdmin || role == teams.RoleBilling
+					p.CanManageMembers = teams.Can(role, teams.PermManageMembers) || teams.Can(role, teams.PermCreateAPIKey)
+					p.CanManageTeam = teams.Can(role, teams.PermManageTeam) || teams.Can(role, teams.PermManageSecurity)
+				}
 			}
 		}
 	}

@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { Filter, Preset, StatsRequest } from "../api/types";
+import type { Navigation } from "../api/types";
 import type { CompareMode } from "../lib/compare";
 import { COMPARE_LABELS } from "../lib/compare";
 import { rangeLabel } from "../lib/format";
@@ -59,6 +60,8 @@ interface Props {
 	/** Bumped when the keyboard asks for the custom-range form. A counter rather
 	 *  than a flag, because pressing the key twice has to open it twice. */
 	pickCustom: number;
+	navigation?: Navigation;
+	locked?: boolean;
 }
 
 /**
@@ -94,7 +97,7 @@ export function currentVisitorsRequest(filters: Filter[]): StatsRequest {
  * address bar is always a description of what is on screen — which is what
  * makes a dashboard link worth sending to somebody.
  */
-export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, filters, onHelp, pickCustom }: Props) {
+export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, filters, onHelp, pickCustom, navigation, locked = false }: Props) {
 	const label = periodLabel(state);
 	const live = state.preset === "realtime" && !state.from;
 
@@ -102,7 +105,7 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, fil
 		<header className="sticky top-0 z-30 border-b border-line bg-card/95 backdrop-blur">
 			<div className="mx-auto flex max-w-shell flex-wrap items-center gap-2 px-4 py-2.5 sm:px-5">
 				<a
-					href="/"
+					href={navigation?.sites_url ?? "/"}
 					className="mr-1 flex items-center gap-2 text-sm font-semibold tracking-tight text-body"
 					title="feasible.lol"
 				>
@@ -112,35 +115,104 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, fil
 					<span className="hidden sm:inline">feasible</span>
 				</a>
 
-				<SitePicker current={state.domain} sites={sites} onPick={(domain) => onNavigate({ ...state, domain })} />
+				<SitePicker
+					current={state.domain}
+					sites={sites}
+					onPick={(domain) => {
+						if (navigation) {
+							window.location.assign(`/dashboard/${encodeURIComponent(domain)}`);
+							return;
+						}
+						onNavigate({ ...state, domain });
+					}}
+				/>
+				{navigation?.site_settings_url && (
+					<a
+						href={navigation.site_settings_url}
+						title={t("dashboard.navigation.site_settings")}
+						aria-label={t("dashboard.navigation.site_settings")}
+						className="flex size-control items-center justify-center rounded-md border border-line bg-card text-sm text-muted transition-colors hover:bg-hover hover:text-body"
+					>
+						⚙
+					</a>
+				)}
 
-				<CurrentVisitors
+				{!locked && <CurrentVisitors
 					domain={state.domain}
 					filters={filters}
 					live={live}
 					onOpen={() => onNavigate({ ...state, preset: "realtime", from: "", to: "", drawer: null })}
-				/>
+				/>}
 
 				<div className="ml-auto flex items-center gap-2">
 					{/* Comparison is hidden on the live view rather than disabled:
 					    there is no previous thirty minutes to compare the last
 					    thirty against, and a control that does nothing is worse
 					    than one that is not there. */}
-					{!live && <ComparePicker state={state} onNavigate={onNavigate} />}
+					{!locked && !live && <ComparePicker state={state} onNavigate={onNavigate} />}
 
-					<PeriodPicker
+					{!locked && <PeriodPicker
 						state={state}
 						label={label}
 						onNavigate={onNavigate}
 						resolved={resolved}
 						pickCustom={pickCustom}
-					/>
-					<HelpButton onHelp={onHelp} />
+					/>}
+					{!locked && <HelpButton onHelp={onHelp} />}
 					<ThemeToggle theme={theme} onTheme={onTheme} />
+					{navigation && <AccountMenu navigation={navigation} />}
 				</div>
 			</div>
 		</header>
 	);
+}
+
+/** AccountMenu keeps product navigation and the CSRF-protected sign-out in one
+ * compact control that remains usable at mobile widths. */
+function AccountMenu({ navigation }: { navigation: Navigation }) {
+	const [open, setOpen] = useState(false);
+	const wrap = useRef<HTMLDivElement>(null);
+
+	useDismiss(wrap, open, () => setOpen(false));
+
+	return (
+		<div ref={wrap} className="relative">
+			<button
+				type="button"
+				aria-expanded={open}
+				aria-haspopup="menu"
+				aria-label={t("dashboard.navigation.account_menu")}
+				onClick={() => setOpen((was) => !was)}
+				className="flex size-control items-center justify-center rounded-full border border-line bg-subtle text-xs font-semibold text-body transition-colors hover:bg-hover"
+			>
+				{(navigation.name || navigation.email).slice(0, 1).toUpperCase()}
+			</button>
+
+			{open && (
+				<div role="menu" className="absolute right-0 mt-2 w-56 rounded-md border border-line bg-card p-1.5 shadow-xl">
+					<div className="border-b border-line px-2.5 py-2">
+						<p className="truncate text-sm font-medium text-body">{navigation.name}</p>
+						<p className="truncate text-xs text-muted">{navigation.email}</p>
+					</div>
+					<NavItem href={navigation.sites_url} label={t("dashboard.navigation.sites")} />
+					{navigation.site_settings_url && <NavItem href={navigation.site_settings_url} label={t("dashboard.navigation.site_settings")} />}
+					<NavItem href={navigation.account_url} label={t("dashboard.navigation.account_settings")} />
+					{navigation.billing_url && <NavItem href={navigation.billing_url} label={t("dashboard.navigation.billing")} />}
+					<form method="post" action={navigation.logout_url}>
+						<input type="hidden" name="csrf_token" value={navigation.csrf} />
+						<button type="submit" role="menuitem" className="w-full rounded-sm px-2.5 py-2 text-left text-sm text-body hover:bg-hover">
+							{t("dashboard.navigation.sign_out")}
+						</button>
+					</form>
+				</div>
+			)}
+		</div>
+	);
+}
+
+/** NavItem is one consistent destination in the account menu. */
+function NavItem({ href, label }: { href: string; label: string }) {
+	return <a role="menuitem" href={href} className="block rounded-sm px-2.5 py-2 text-sm text-body hover:bg-hover">{label}</a>;
 }
 
 /** periodLabel names the current range for the button face. A custom range is

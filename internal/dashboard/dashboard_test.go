@@ -74,6 +74,29 @@ func TestShellCarriesTheSiteList(t *testing.T) {
 	}
 }
 
+// TestAuthenticatedBootstrapCarriesNavigationAndLock proves the shell can
+// render recovery context before the client mounts any report queries.
+func TestAuthenticatedBootstrapCarriesNavigationAndLock(t *testing.T) {
+	h := New(nil)
+	h.Resolve = func(_ http.ResponseWriter, _ *http.Request) Bootstrap {
+		return Bootstrap{
+			Sites: []string{"locked.example"},
+			Navigation: &Navigation{
+				Email: "owner@example.com", SitesURL: "/sites?team_id=7",
+				BillingURL: "/billing?team=7", LogoutURL: "/logout", CSRF: "token",
+			},
+			Lock: &Lock{Reason: "lifecycle", Error: "Your dashboard is locked."},
+		}
+	}
+
+	body := get(t, h, "/dashboard/locked.example").Body.String()
+	for _, want := range []string{`"navigation":{`, `"billing_url":"/billing?team=7"`, `"lock":{"reason":"lifecycle"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("authenticated bootstrap is missing %s: %s", want, body)
+		}
+	}
+}
+
 // TestShellHandlesNoSites checks the empty install. A nil source is what a
 // process with no database has, and it must render rather than panic.
 func TestShellHandlesNoSites(t *testing.T) {
