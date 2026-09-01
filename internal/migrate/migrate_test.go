@@ -488,6 +488,10 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 		VALUES (1, 'owner@example.com', 1, 1);
 		INSERT INTO teams (id, name, created_at, updated_at)
 		VALUES (1, 'Existing account', 1, 1);
+		INSERT INTO teams (id, name, created_at, updated_at)
+		VALUES
+			(2, 'Paid annual account', 2, 2),
+			(3, 'Unpaid beta account', 3, 3);
 		INSERT INTO team_memberships (team_id, user_id, role, created_at)
 		VALUES (1, 1, 'owner', 1);
 		INSERT INTO subscriptions
@@ -495,6 +499,11 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 			 stripe_price_id, billing_email, created_at, updated_at)
 		VALUES (1, 'cus_existing', 'sub_existing', 'active', 'monthly',
 		        'price_monthly', 'billing@example.com', 1, 1);
+		INSERT INTO subscriptions
+			(team_id, stripe_customer_id, stripe_subscription_id, status, plan,
+			 stripe_price_id, billing_email, created_at, updated_at)
+		VALUES (2, 'cus_annual', 'sub_annual', 'active', 'yearly',
+		        'price_yearly', 'annual@example.com', 2, 2);
 		INSERT INTO account_lifecycle
 			(team_id, trigger, started_at, created_at, updated_at)
 		VALUES (1, 'lapse', 10, 10, 10);
@@ -535,7 +544,7 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 	`).Scan(&customer, &subscription, &paymentState, &failedAt); err != nil {
 		t.Fatal(err)
 	}
-	if customer != "cus_existing" || subscription != "sub_existing" || paymentState != "" || failedAt.Valid {
+	if customer != "cus_existing" || subscription != "sub_existing" || paymentState != "paid" || failedAt.Valid {
 		t.Fatalf("populated subscription changed to customer=%q subscription=%q payment=%q failed_at=%v",
 			customer, subscription, paymentState, failedAt)
 	}
@@ -550,15 +559,35 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 		}
 	}
 
-	var events, clocks int
+	var annualPaymentState string
+	if err := db.QueryRowContext(ctx, `
+		SELECT payment_state FROM subscriptions WHERE team_id = 2
+	`).Scan(&annualPaymentState); err != nil {
+		t.Fatal(err)
+	}
+	if annualPaymentState != "paid" {
+		t.Fatalf("annual subscription payment_state=%q, want paid", annualPaymentState)
+	}
+
+	var events, clocks, paidClock, betaClock int
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM stripe_events WHERE event_id = 'evt_existing'").Scan(&events); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM account_lifecycle WHERE team_id = 1").Scan(&clocks); err != nil {
 		t.Fatal(err)
 	}
-	if events != 1 || clocks != 1 {
-		t.Fatalf("upgrade retained events=%d clocks=%d, want one each", events, clocks)
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM account_lifecycle WHERE team_id = 2").Scan(&paidClock); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM account_lifecycle
+		WHERE team_id = 3 AND trigger = 'trial' AND started_at > 0
+	`).Scan(&betaClock); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 || clocks != 1 || paidClock != 0 || betaClock != 1 {
+		t.Fatalf("upgrade retained events=%d existing_clocks=%d paid_clocks=%d beta_clocks=%d",
+			events, clocks, paidClock, betaClock)
 	}
 
 	var completed, retryable int

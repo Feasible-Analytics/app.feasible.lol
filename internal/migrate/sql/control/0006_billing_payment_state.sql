@@ -13,6 +13,13 @@
 ALTER TABLE subscriptions ADD COLUMN payment_state TEXT NOT NULL DEFAULT ''
     CHECK (payment_state IN ('', 'pending', 'paid', 'failed'));
 
+-- Before Managed Payments, active/trialing Stripe status was the application's
+-- paid-access proof. Preserve that established entitlement during upgrade; a
+-- later signed event will replace it with ordered payment evidence.
+UPDATE subscriptions
+SET payment_state = 'paid'
+WHERE status IN ('active', 'trialing');
+
 -- The first failed event in the current lapse is the contractual day zero.
 -- Keeping it beside the payment state makes delayed delivery and process
 -- restarts preserve the provider's clock instead of substituting local time.
@@ -214,7 +221,8 @@ END;
 -- caller responsibility. Start those accounts at migration time, rather than
 -- deriving day zero from an old signup date and immediately locking or deleting
 -- them. A staging table gives every backfilled clock and mirror the same exact
--- timestamp while leaving existing paid, trial, and lapse rows untouched.
+-- timestamp while leaving existing trial and lapse rows untouched. Teams whose
+-- legacy Stripe status already granted paid access remain Active with no clock.
 CREATE TEMP TABLE migration_0006_trial_backfill (
     team_id    INTEGER PRIMARY KEY,
     started_at INTEGER NOT NULL
@@ -224,7 +232,13 @@ INSERT INTO migration_0006_trial_backfill (team_id, started_at)
 SELECT teams.id, CAST(strftime('%s', 'now') AS INTEGER)
 FROM teams
 LEFT JOIN account_lifecycle ON account_lifecycle.team_id = teams.id
-WHERE account_lifecycle.team_id IS NULL;
+WHERE account_lifecycle.team_id IS NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM subscriptions
+      WHERE subscriptions.team_id = teams.id
+        AND subscriptions.payment_state = 'paid'
+  );
 
 INSERT INTO account_lifecycle
     (team_id, trigger, started_at, deleted_at, created_at, updated_at)
