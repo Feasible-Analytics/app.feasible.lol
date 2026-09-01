@@ -43,9 +43,9 @@ is, for arithmetic reasons that have nothing to do with your test.</p>
 <p>A property nobody has scoped is treated as event-scoped, which is the conservative answer. The
 scope can be changed later: getting it wrong the first time is normal, and correcting it is one
 setting rather than a support ticket.</p>
-<p><strong>Today there is no screen or API field that sets a scope</strong> — the engine reads it, the
-seeded demo data sets it, and the control for it arrives with the goals interface. Until then every
-property behaves as event-scoped.</p>
+<p>Register a property in site settings and choose its scope there. Properties already received from
+the tracker can be allowed individually or all at once. A property that has not been registered is
+still stored, but it is not exposed as a dashboard dimension until you allow it.</p>
 
 <h3>Do not put personal data in a property</h3>
 <p>Email addresses, names, user ids, session tokens. A property is stored and returned exactly as your
@@ -71,9 +71,8 @@ filter:</p>
 <p>There is no separate "custom dimensions" allowance to configure and no extra charge for using
 them.</p>
 
-<p>In the dashboard, a property is <strong>not yet</strong> in the filter menu or the breakdown list —
-that arrives with the same interface work as goals. The URL grammar already understands one, so a
-hand-written link filters correctly and the pill renders with the property's name:</p>
+<p>Registered properties appear in the dashboard filter menu and in the Properties report beside
+Goals, Funnels and Explore. Selecting a value adds the same URL filter used by the query API:</p>
 <pre><code>/dashboard/example.com?period=28d&amp;f=is,event:props:plan,yearly</code></pre>
 
 <h3>A property is not free, but it is not billed either</h3>
