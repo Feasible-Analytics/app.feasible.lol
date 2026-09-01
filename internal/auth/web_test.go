@@ -721,6 +721,77 @@ func TestMultiTeamRequestsRequireExplicitContext(t *testing.T) {
 	}
 }
 
+// TestMultiTeamSiteNavigationKeepsTheSelectedSiteAndTeam proves every route
+// away from a site settings screen stays in the team that owns that site.
+func TestMultiTeamSiteNavigationKeepsTheSelectedSiteAndTeam(t *testing.T) {
+	app := newTestApp(t)
+	c := registerAndVerify(t, app)
+	ctx := context.Background()
+	owner, _ := app.store.UserByEmail(ctx, "person@example.com")
+	stamp := app.store.Now().Unix()
+
+	result, err := app.store.DB().ExecContext(ctx,
+		`INSERT INTO teams (name, created_at, updated_at) VALUES ('Second', ?, ?)`, stamp, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _ := result.LastInsertId()
+	if _, err := app.store.DB().ExecContext(ctx, `
+		INSERT INTO team_memberships (team_id, user_id, role, created_at) VALUES (?, ?, 'owner', ?)
+	`, second, owner.ID, stamp); err != nil {
+		t.Fatal(err)
+	}
+
+	site, err := app.store.CreateSite(ctx, second, "second-team.example", "", "UTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.SiteCache.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	body := c.body("/sites/" + strconv.FormatInt(site.ID, 10) + "/settings")
+	for _, want := range []string{
+		`href="/sites?team_id=` + strconv.FormatInt(second, 10) + `"`,
+		`href="/dashboard/second-team.example"`,
+		`href="/settings/sites/second-team.example/conversions"`,
+		`href="/billing?team=` + strconv.FormatInt(second, 10) + `"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("second-team site settings are missing %s", want)
+		}
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("GET /dashboard/{domain}", app.GuardDashboard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		navigation := app.NavigationForDashboard(w, r)
+		_, _ = fmt.Fprintf(w, "%s\n%s\n%s\n%s",
+			navigation.SitesURL, navigation.SiteSettingsURL, navigation.ConversionsURL, navigation.BillingURL)
+	})))
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	response, err := c.http.Get(server.URL + "/dashboard/second-team.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	navigationBody, _ := io.ReadAll(response.Body)
+	closeResponseBody(t, response)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("dashboard navigation answered %d", response.StatusCode)
+	}
+	for _, want := range []string{
+		"/sites?team_id=" + strconv.FormatInt(second, 10),
+		"/sites/domain/second-team.example/settings",
+		"/settings/sites/second-team.example/conversions",
+		"/billing?team=" + strconv.FormatInt(second, 10),
+	} {
+		if !strings.Contains(string(navigationBody), want) {
+			t.Errorf("dashboard navigation is missing %q: %s", want, navigationBody)
+		}
+	}
+}
+
 // TestSiteContextUsesTheLiveOwnerAfterTransfer proves that authorization and
 // team selection change in the same request as a transfer, without waiting for
 // the routing cache's next refresh interval.

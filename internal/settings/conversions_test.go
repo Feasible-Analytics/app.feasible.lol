@@ -18,6 +18,8 @@ import (
 	"testing"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/goals"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
 // conversionPost submits one settings form through the same CSRF-aware handler as the browser.
@@ -35,6 +37,7 @@ func conversionPost(t *testing.T, handler *Handler, path string, values url.Valu
 // TestConversionsPageManagesGoalsPropertiesAndFunnels covers the complete reachable settings workflow.
 func TestConversionsPageManagesGoalsPropertiesAndFunnels(t *testing.T) {
 	handler, manager := newHandler(t)
+	handler.Role = func(*http.Request, sites.Site) teams.Role { return teams.RoleOwner }
 	account, err := manager.Open(context.Background(), 1)
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +60,13 @@ func TestConversionsPageManagesGoalsPropertiesAndFunnels(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("conversion settings answered %d", response.Code)
 	}
-	for _, text := range []string{"Goals", "Custom properties", "Funnels", "Pricing viewed", "Purchased", "Scroll depth"} {
+	for _, text := range []string{
+		"Goals", "Custom properties", "Funnels", "Pricing viewed", "Purchased", "Scroll depth",
+		`href="/dashboard/example.com"`,
+		`href="/sites?team_id=1&amp;site_context=example.com"`,
+		`href="/settings?team_id=1"`,
+		`href="/billing?team=1"`,
+	} {
 		if !strings.Contains(response.Body.String(), text) {
 			t.Errorf("conversion settings do not contain %q", text)
 		}

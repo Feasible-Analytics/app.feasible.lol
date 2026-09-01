@@ -83,14 +83,15 @@ func TestAuthenticatedBootstrapCarriesNavigationAndLock(t *testing.T) {
 			Sites: []string{"locked.example"},
 			Navigation: &Navigation{
 				Email: "owner@example.com", SitesURL: "/sites?team_id=7",
-				BillingURL: "/billing?team=7", LogoutURL: "/logout", CSRF: "token",
+				ConversionsURL: "/settings/sites/locked.example/conversions",
+				BillingURL:     "/billing?team=7", LogoutURL: "/logout", CSRF: "token",
 			},
 			Lock: &Lock{Reason: "lifecycle", Error: "Your dashboard is locked."},
 		}
 	}
 
 	body := get(t, h, "/dashboard/locked.example").Body.String()
-	for _, want := range []string{`"navigation":{`, `"billing_url":"/billing?team=7"`, `"lock":{"reason":"lifecycle"`} {
+	for _, want := range []string{`"navigation":{`, `"conversions_url":"/settings/sites/locked.example/conversions"`, `"billing_url":"/billing?team=7"`, `"lock":{"reason":"lifecycle"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("authenticated bootstrap is missing %s: %s", want, body)
 		}

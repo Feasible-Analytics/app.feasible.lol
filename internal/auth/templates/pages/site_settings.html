@@ -9,19 +9,23 @@
 {{ $site := .Data.Site }}
 
 <div class="mx-auto max-w-2xl">
-  <a href="{{ url $.Lang "/sites" }}" class="text-sm text-muted hover:text-body">{{ t $.Lang "auth.site_settings.back" }}</a>
+  <a href="{{ url $.Lang (printf "/sites?team_id=%d" .Data.CurrentTeamID) }}" class="text-sm text-muted hover:text-body">{{ t $.Lang "auth.site_settings.back" }}</a>
 
   <h1 class="mt-2 text-2xl font-semibold text-heading">{{ $site.Label }}</h1>
   <p class="mt-1 text-sm text-muted">{{ $site.Domain }}</p>
 
   <!-- The per-site screens that live outside this package. They are linked from
-       here rather than from the sidebar because all three are about one site,
+       here rather than from the sidebar because each is about one site,
        and a nav item that needs a site chosen first is a nav item that answers
        "which one?" with a 404. -->
   <div class="mt-4 flex flex-wrap gap-2">
     <a href="{{ url $.Lang (printf "/dashboard/%s" $site.Domain) }}"
        class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">
       {{ t $.Lang "auth.site_row.dashboard" }}
+    </a>
+    <a href="{{ url $.Lang (printf "/settings/sites/%s/conversions" $site.Domain) }}"
+       class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">
+      {{ t $.Lang "settings.conversions.title" }}
     </a>
     <a href="{{ url $.Lang (printf "/settings/sites/%s/sharing" $site.Domain) }}"
        class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">

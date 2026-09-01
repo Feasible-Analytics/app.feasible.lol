@@ -332,6 +332,7 @@ type page struct {
 	Error   string
 	CSRF    string
 	Role    teams.Role
+	TeamID  int64
 
 	// Lang is the language this response is written in. It lives on the page
 	// rather than being resolved inside a template function, because a template
@@ -500,8 +501,9 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, da
 	if h.CSRF != nil {
 		data.CSRF = h.CSRF(w, r)
 	}
-	if h.Role != nil {
-		if site, ok := h.Sites.Lookup(data.Domain); ok {
+	if site, ok := h.Sites.Lookup(data.Domain); ok {
+		data.TeamID = site.TeamID
+		if h.Role != nil {
 			data.Role = h.Role(r, site)
 		}
 	}

@@ -71,6 +71,11 @@ type Handler struct {
 	// that the snippet somebody pastes seconds later already resolves.
 	SiteCache *sites.Cache
 
+	// ProvisionSite creates account-backed defaults immediately after the
+	// control row is committed. The hook keeps auth independent of analytics
+	// packages while making site creation one product-level operation.
+	ProvisionSite func(context.Context, int64, int64, time.Time) error
+
 	// Access is the account lock. Almost nothing this handler serves is gated —
 	// signing in, settings and the route to billing all stay open, because
 	// locking somebody out of the page where they would pay us is self-
@@ -100,6 +105,7 @@ type DashboardNavigation struct {
 	Email           string
 	SitesURL        string
 	SiteSettingsURL string
+	ConversionsURL  string
 	AccountURL      string
 	BillingURL      string
 	ExportURL       string
@@ -110,19 +116,20 @@ type DashboardNavigation struct {
 
 // Options are the inputs to NewHandler.
 type Options struct {
-	Store       *Store
-	Teams       *teams.Store
-	Traffic     *Traffic
-	Mailer      *mail.Mailer
-	Sealer      *Sealer
-	Google      *Google
-	Deleter     *Deleter
-	Destructive *destructive.Service
-	Keyer       *tracker.Keyer
-	SiteCache   *sites.Cache
-	Access      func(accountID int64) bool
-	BaseURL     string
-	Log         *logger.Logger
+	Store         *Store
+	Teams         *teams.Store
+	Traffic       *Traffic
+	Mailer        *mail.Mailer
+	Sealer        *Sealer
+	Google        *Google
+	Deleter       *Deleter
+	Destructive   *destructive.Service
+	Keyer         *tracker.Keyer
+	SiteCache     *sites.Cache
+	ProvisionSite func(context.Context, int64, int64, time.Time) error
+	Access        func(accountID int64) bool
+	BaseURL       string
+	Log           *logger.Logger
 }
 
 // NewHandler builds the application and parses its templates.
@@ -142,22 +149,23 @@ func NewHandler(opts Options) (*Handler, error) {
 	}
 
 	h := &Handler{
-		Store:       opts.Store,
-		Teams:       teamStore,
-		Traffic:     opts.Traffic,
-		Mailer:      opts.Mailer,
-		Sealer:      opts.Sealer,
-		Google:      opts.Google,
-		Deleter:     opts.Deleter,
-		Destructive: opts.Destructive,
-		Limiter:     NewLimiter(),
-		Keyer:       opts.Keyer,
-		SiteCache:   opts.SiteCache,
-		Access:      opts.Access,
-		BaseURL:     strings.TrimRight(opts.BaseURL, "/"),
-		Log:         opts.Log,
-		Verifier:    &http.Client{Timeout: verifyTimeout},
-		views:       views,
+		Store:         opts.Store,
+		Teams:         teamStore,
+		Traffic:       opts.Traffic,
+		Mailer:        opts.Mailer,
+		Sealer:        opts.Sealer,
+		Google:        opts.Google,
+		Deleter:       opts.Deleter,
+		Destructive:   opts.Destructive,
+		Limiter:       NewLimiter(),
+		Keyer:         opts.Keyer,
+		SiteCache:     opts.SiteCache,
+		ProvisionSite: opts.ProvisionSite,
+		Access:        opts.Access,
+		BaseURL:       strings.TrimRight(opts.BaseURL, "/"),
+		Log:           opts.Log,
+		Verifier:      &http.Client{Timeout: verifyTimeout},
+		views:         views,
 	}
 
 	h.mux = h.routes()
@@ -720,7 +728,8 @@ func (h *Handler) NavigationForDashboard(w http.ResponseWriter, r *http.Request)
 	navigation.TeamID = site.TeamID
 	navigation.SitesURL = "/sites?team_id=" + strconv.FormatInt(site.TeamID, 10)
 	if teams.Can(role, teams.PermManageSiteSettings) {
-		navigation.SiteSettingsURL = "/sites/" + strconv.FormatInt(site.ID, 10) + "/settings"
+		navigation.SiteSettingsURL = "/sites/domain/" + site.Domain + "/settings"
+		navigation.ConversionsURL = "/settings/sites/" + site.Domain + "/conversions"
 	}
 	if role == teams.RoleOwner || role == teams.RoleAdmin || role == teams.RoleBilling {
 		navigation.BillingURL = "/billing?team=" + strconv.FormatInt(site.TeamID, 10)
