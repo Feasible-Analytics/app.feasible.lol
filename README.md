@@ -182,6 +182,11 @@ Release, and attaches Linux, Windows and macOS builds for amd64 and arm64 plus a
 SHA-256 checksum manifest. Do not run it until the pull requests making up the
 release are merged and `main` is stable.
 
+This organization enforces read-only built-in workflow tokens. The repository
+therefore needs a `RELEASE_TOKEN` Actions secret with contents write access for
+the publication step. The workflow falls back to GitHub's built-in token in a
+repository whose organization policy permits it.
+
 ### Before you push
 
 ```bash

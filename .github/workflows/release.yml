@@ -153,10 +153,13 @@ jobs:
           rm -rf "$staging"
 
       # gh creates the tag at the checked-out main commit and publishes every
-      # archive plus its checksum manifest as one GitHub Release.
+      # archive plus its checksum manifest as one GitHub Release. RELEASE_TOKEN
+      # supplies write access when organization policy makes github.token
+      # read-only; repositories that allow writable workflow tokens need no
+      # additional secret.
       - name: Publish GitHub Release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
           RELEASE_SHA: ${{ steps.release.outputs.sha }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
         shell: bash
