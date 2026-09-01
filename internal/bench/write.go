@@ -74,6 +74,11 @@ type WriteOptions struct {
 	// production default, which is what a run should normally measure.
 	BufferSize    int
 	FlushInterval time.Duration
+
+	// Concurrency is how many requests may wait for durable acknowledgement at
+	// once. Zero tracks BufferSize, because production batching requires enough
+	// simultaneous requests to fill a batch while each caller waits for commit.
+	Concurrency int
 }
 
 // WriteResult is one load run's numbers.
@@ -87,9 +92,9 @@ type WriteResult struct {
 	Elapsed         time.Duration
 	EventsPerSecond float64
 
-	// Accept is how long one call to the event endpoint took. It is the number
-	// the visitor's browser experiences, and it must stay flat as the accounts
-	// multiply — if it does not, the write has leaked onto the request path.
+	// Accept is how long one call to the event endpoint took, including the
+	// durable SQLite commit required before its 202 response. It is the number
+	// the visitor's browser experiences as account concurrency increases.
 	Accept Latencies
 
 	// Flush is how long one buffer flush took: a batch of up to BufferSize
@@ -153,6 +158,15 @@ func RunWrite(ctx context.Context, opts WriteOptions) (WriteResult, error) {
 	if opts.Visitors < 1 {
 		opts.Visitors = 1000
 	}
+	if opts.Concurrency < 1 {
+		opts.Concurrency = opts.BufferSize
+		if opts.Concurrency < 1 {
+			opts.Concurrency = ingest.DefaultBufferSize
+		}
+	}
+	if opts.Concurrency > opts.Events {
+		opts.Concurrency = opts.Events
+	}
 
 	control, err := newControl(ctx, opts.DataDir, opts.Accounts)
 	if err != nil {
@@ -177,6 +191,11 @@ func RunWrite(ctx context.Context, opts WriteOptions) (WriteResult, error) {
 	service.Buffer = ingest.NewBuffer(flushes, opts.BufferSize, opts.FlushInterval)
 	service.Handler.Buffer = service.Buffer
 
+	// This benchmark measures durable account writes, not abuse protection. All
+	// direct requests originate from httptest's one synthetic peer, so leaving
+	// the public limiter enabled would measure that fixture instead of SQLite.
+	service.Handler.Limiter = nil
+
 	// The background loops run, because they run in production: without the
 	// ticker the only thing that ever writes is the size trigger, and a size
 	// trigger that is already flushing skips rather than queueing — so a load
@@ -186,22 +205,50 @@ func RunWrite(ctx context.Context, opts WriteOptions) (WriteResult, error) {
 
 	service.Start(runCtx)
 
-	accepts := make([]time.Duration, 0, opts.Events)
+	accepts := make([]time.Duration, opts.Events)
 
 	started := time.Now()
 
+	// Public requests wait for a durable commit, so a sequential driver can
+	// only produce one-event timer flushes. A bounded worker set represents the
+	// concurrent requests that let the production buffer form real batches.
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	var requestErr error
+	var requestErrOnce sync.Once
+
+	for i := 0; i < opts.Concurrency; i++ {
+		workers.Add(1)
+
+		go func() {
+			defer workers.Done()
+
+			for eventIndex := range jobs {
+				request := buildRequest(eventIndex, opts).WithContext(ctx)
+				recorder := httptest.NewRecorder()
+
+				at := time.Now()
+				service.Handler.ServeHTTP(recorder, request)
+				accepts[eventIndex] = time.Since(at)
+
+				if recorder.Code != http.StatusAccepted {
+					requestErrOnce.Do(func() {
+						requestErr = fmt.Errorf("bench: event %d answered %d, want 202: %s",
+							eventIndex, recorder.Code, recorder.Body.String())
+					})
+				}
+			}
+		}()
+	}
+
 	for i := 0; i < opts.Events; i++ {
-		request := buildRequest(i, opts)
+		jobs <- i
+	}
+	close(jobs)
+	workers.Wait()
 
-		recorder := httptest.NewRecorder()
-
-		at := time.Now()
-		service.Handler.ServeHTTP(recorder, request)
-		accepts = append(accepts, time.Since(at))
-
-		if recorder.Code != http.StatusAccepted {
-			return WriteResult{}, fmt.Errorf("bench: event %d answered %d, want 202: %s", i, recorder.Code, recorder.Body.String())
-		}
+	if requestErr != nil {
+		return WriteResult{}, requestErr
 	}
 
 	// The last partial batch is still in memory when the final request returns,

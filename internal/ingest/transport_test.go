@@ -31,9 +31,8 @@ func TestDirectShardAlwaysAnswersZero(t *testing.T) {
 }
 
 // TestDirectTransportWrites checks the in-process implementation actually goes
-// through the writer. Every event flows accept, derive, buffer, forward, write
-// even when forward is a function call, and exercising the seam from day one is
-// the entire point of having it.
+// through the writer. Every event flows accept, derive, buffer, and direct
+// write; the seam keeps batching independently testable.
 func TestDirectTransportWrites(t *testing.T) {
 	ctx := context.Background()
 	writer, manager := newWriter(t)
@@ -58,9 +57,8 @@ func TestDirectTransportWrites(t *testing.T) {
 	}
 }
 
-// TestDirectTransportRefusesAnotherShard checks a misrouted batch is an error
-// rather than a silent write into the wrong file. There is exactly one shard in
-// this process, and pretending otherwise would lose the data.
+// TestDirectTransportRefusesAnotherShard checks a nonzero compatibility
+// partition is an error rather than a silent write into the wrong file.
 func TestDirectTransportRefusesAnotherShard(t *testing.T) {
 	writer, _ := newWriter(t)
 
@@ -85,9 +83,8 @@ func TestEmptyBatchIsFree(t *testing.T) {
 	}
 }
 
-// TestEventCarriesItsShard checks the field exists and travels with the event.
-// The shard is a property of the event so that the buffer can group by it
-// without knowing the routing table.
+// TestEventCarriesItsShard checks the compatibility partition travels with the
+// event while the consolidated runtime consistently assigns zero.
 func TestEventCarriesItsShard(t *testing.T) {
 	event := writerEvent(1, EventPageview, fixtureStart.Unix(), "/")
 

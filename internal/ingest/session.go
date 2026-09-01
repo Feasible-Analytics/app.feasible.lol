@@ -23,12 +23,12 @@ const sessionTimeoutSeconds = int64(SessionTimeout / time.Second)
 
 // SweepInterval is how often expired sessions leave the cache. Ten seconds is
 // often enough that memory tracks reality and rare enough that the sweep never
-// competes with ingestion for the shard locks.
+// competes with ingestion for the bucket locks.
 const SweepInterval = 10 * time.Second
 
 // DirtyGrace is how long past its last event a session whose rows have never
 // been written is kept. A writer wedged for an hour is not going to save it,
-// and keeping every dirty session forever turns one stuck shard into a process
+// and keeping every dirty session forever turns one stuck account into a process
 // that grows until it is killed — which loses the whole cache rather than one
 // visit.
 const DirtyGrace = time.Hour
@@ -185,6 +185,11 @@ type Merge struct {
 type SessionCache struct {
 	shards [sessionShards]sessionBucket
 
+	// maxOrphans bounds only process-local folds. The production writer uses a
+	// transaction-local cache backed by SQLite, where every accepted ping is
+	// already durable and must remain adoptable; zero disables this memory cap.
+	maxOrphans int
+
 	// nextID allocates session ids. In direct mode this process is the only
 	// writer of the sessions table, so a counter seeded from the file's high
 	// water mark is both correct and free — no round trip per new visit.
@@ -225,12 +230,22 @@ type sessionBucket struct {
 
 // NewSessionCache builds an empty cache.
 func NewSessionCache() *SessionCache {
-	cache := &SessionCache{nextID: map[int64]int64{}}
+	cache := &SessionCache{nextID: map[int64]int64{}, maxOrphans: MaxOrphanEngagements}
 
 	for i := range cache.shards {
 		cache.shards[i].sessions = map[sessionKey][]*Session{}
 		cache.shards[i].orphans = map[sessionKey][]*Event{}
 	}
+
+	return cache
+}
+
+// newDurableSessionCache builds the transaction-local fold used by Writer.
+// SQLite owns and bounds these orphan rows, so applying the process-memory cap
+// here would acknowledge a ping while making it impossible to adopt later.
+func newDurableSessionCache() *SessionCache {
+	cache := NewSessionCache()
+	cache.maxOrphans = 0
 
 	return cache
 }
@@ -285,6 +300,24 @@ const MaxOrphanEngagements = 32
 // applies is keyed off the event's own timestamp rather than the order it
 // arrived in.
 func (c *SessionCache) Apply(event *Event) (*Session, bool, []*Event) {
+	session, ok, revived, _ := c.apply(event, func() (int64, error) {
+		return c.allocateID(event.AccountID), nil
+	})
+
+	return session, ok, revived
+}
+
+// ApplyAllocated folds one event while taking a new session identity from the
+// caller. The writer supplies identities from an atomic database range; direct
+// fold users such as the deterministic seed generator keep using Apply.
+func (c *SessionCache) ApplyAllocated(event *Event, allocate func() (int64, error)) (*Session, bool, []*Event, error) {
+	return c.apply(event, allocate)
+}
+
+// apply contains the fold shared by the database-backed writer and direct
+// callers. The allocator is invoked only when the event genuinely opens a new
+// visit, while the visitor bucket is locked against a competing local fold.
+func (c *SessionCache) apply(event *Event, allocate func() (int64, error)) (*Session, bool, []*Event, error) {
 	key := sessionKey{siteID: event.SiteID, userID: event.UserID}
 	bucket := c.bucket(key)
 
@@ -322,12 +355,18 @@ func (c *SessionCache) Apply(event *Event) (*Session, bool, []*Event) {
 		// independent of arrival order: a retry that delivers the ping before
 		// its pageview must still produce the same row.
 		if event.IsEngagement() {
-			bucket.park(key, event)
+			bucket.park(key, event, c.maxOrphans)
 			bucket.mu.Unlock()
-			return nil, false, nil
+			return nil, false, nil, nil
 		}
 
-		session = c.newSession(event)
+		id, err := allocate()
+		if err != nil {
+			bucket.mu.Unlock()
+			return nil, false, nil, err
+		}
+
+		session = c.newSession(event, id)
 		bucket.sessions[key] = append(bucket.sessions[key], session)
 	}
 
@@ -358,16 +397,16 @@ func (c *SessionCache) Apply(event *Event) (*Session, bool, []*Event) {
 
 	c.recordMerges(session, absorbed)
 
-	return session, true, revived
+	return session, true, revived, nil
 }
 
 // park holds an engagement ping until the visit it belongs to appears. A ping
 // already parked is ignored, so a redelivery cannot be counted twice — the
 // database's dedupe table cannot help here, because a parked event has never
 // been written.
-func (b *sessionBucket) park(key sessionKey, event *Event) {
+func (b *sessionBucket) park(key sessionKey, event *Event, limit int) {
 	waiting := b.orphans[key]
-	if len(waiting) >= MaxOrphanEngagements {
+	if limit > 0 && len(waiting) >= limit {
 		return
 	}
 

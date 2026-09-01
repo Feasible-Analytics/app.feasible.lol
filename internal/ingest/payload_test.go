@@ -20,7 +20,8 @@ import (
 // somebody migrate by changing one hostname; renaming any of them would break
 // every deployed tracker in the world.
 func TestParsePayloadKeys(t *testing.T) {
-	body := `{"n":"pageview","u":"https://example.com/pricing?utm_source=x",
+	body := `{"k":"00112233-4455-4677-8899-aabbccddeeff",
+	          "n":"pageview","u":"https://example.com/pricing?utm_source=x",
 	          "d":"example.com","r":"https://google.com/","t":"Pricing",
 	          "v":3,"i":false,"sd":42,"e":9000}`
 
@@ -31,6 +32,9 @@ func TestParsePayloadKeys(t *testing.T) {
 
 	if payload.Name != "pageview" || payload.Domain != "example.com" {
 		t.Fatalf("name/domain = %q/%q", payload.Name, payload.Domain)
+	}
+	if payload.Key != "00112233-4455-4677-8899-aabbccddeeff" {
+		t.Fatalf("idempotency key = %q", payload.Key)
 	}
 	if payload.Title != "Pricing" {
 		t.Fatalf("title = %q, want Pricing", payload.Title)
@@ -51,14 +55,23 @@ func TestParsePayloadKeys(t *testing.T) {
 	}
 }
 
-// TestRequiredFields checks the three fields nothing can be derived without.
+// TestInvalidIdempotencyKeyIsRejected keeps arbitrary client text out of the
+// permanent receipt boundary. Legacy payloads may omit the key, but a supplied
+// value must be a complete UUID.
+func TestInvalidIdempotencyKeyIsRejected(t *testing.T) {
+	body := `{"k":"not-a-uuid","n":"pageview","u":"https://example.com/","d":"example.com"}`
+	if _, err := ParsePayload([]byte(body)); err == nil {
+		t.Fatal("an invalid client idempotency key was accepted")
+	}
+}
+
+// TestRequiredFields checks the two fields nothing can be derived without.
 // The caller is a script somebody wrote, and the only person who can fix it is
 // reading the response.
 func TestRequiredFields(t *testing.T) {
 	cases := map[string]string{
 		"no name":   `{"u":"https://example.com/","d":"example.com"}`,
 		"no domain": `{"n":"pageview","u":"https://example.com/"}`,
-		"no url":    `{"n":"pageview","d":"example.com"}`,
 		"empty":     ``,
 		"not json":  `pageview`,
 	}
@@ -67,6 +80,21 @@ func TestRequiredFields(t *testing.T) {
 		if _, err := ParsePayload([]byte(body)); err == nil {
 			t.Errorf("%s: ParsePayload accepted it", name)
 		}
+	}
+}
+
+// TestMissingURLReachesHostnameValidation keeps the parser from rejecting a
+// payload before the authoritative writer can count its hostname rejection.
+// Older tracker payloads may omit the URL, but their domain still identifies
+// the site and must follow the same hostname policy as every other request.
+func TestMissingURLReachesHostnameValidation(t *testing.T) {
+	payload, err := ParsePayload([]byte(`{"n":"pageview","d":"example.com"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if payload.URL != "" {
+		t.Fatalf("URL = %q, want empty", payload.URL)
 	}
 }
 

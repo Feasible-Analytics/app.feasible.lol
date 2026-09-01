@@ -24,13 +24,12 @@ that matter most.
 
 | Runbook | The page that wakes you |
 |---|---|
-| [shard-down.md](runbooks/shard-down.md) | Events are accepted and not written |
+| [shard-down.md](runbooks/shard-down.md) | Shared account storage is unavailable |
 | [rollup-behind.md](runbooks/rollup-behind.md) | Reports are slow and yesterday looks wrong |
 | [restore-account.md](runbooks/restore-account.md) | One account's database is gone or corrupt |
 | [write-buffer-growing.md](runbooks/write-buffer-growing.md) | The buffer only goes up |
 | [disk-filling.md](runbooks/disk-filling.md) | Free space is falling towards zero |
 | [salt-rotation.md](runbooks/salt-rotation.md) | Visitor counts jumped, or a salt outlived its 48 hours |
-| [orphaned-ingestor-volume.md](runbooks/orphaned-ingestor-volume.md) | An ingestor is gone and its volume still holds events |
 
 Every one of them has the same four sections, and the fourth is the one that
 saves the outage:
@@ -60,12 +59,9 @@ curl -s http://127.0.0.1:19401/metrics | grep '^feasible_'
 curl -s http://127.0.0.1:19401/health/ready | python3 -m json.tool
 ```
 
-The internal listener stays on loopback for two reasons. Our event rate, error
-rate and account count are not the internet's business, and it is the listener
-the `/internal/*` routes belong on — the ones that can reverse a visitor
-fingerprint. `Caddyfile`, and the load balancer in production, deny `/internal/*`
-outright as a second, independent control. Neither is the only thing keeping it
-private.
+The internal listener stays on loopback because event rate, error rate, and
+account count are not public data. It serves health and metrics; the
+consolidated runtime has no internal event-delivery or salt-distribution API.
 
 ## The signal inventory
 
@@ -95,7 +91,6 @@ filter into a reported outage.
 | `feasible_ingest_flushes_total` | `outcome`: `ok`, `error` |
 | `feasible_ingest_flush_duration_seconds` | — |
 | `feasible_ingest_flush_batch_events` | — |
-| `feasible_ingest_sessions_live` | — |
 
 **Roll-ups**
 
@@ -144,7 +139,7 @@ From `internal/bench/RESULTS.md`, measured rather than estimated. Re-run with
 |---|---|
 | Sustained write throughput, per process | ~6,000 events/s, flat from 1 to 16 accounts |
 | At 64 accounts on one shard | ~3,600 events/s |
-| Accepting one event | 13 µs, whatever the writes are doing |
+| Accepting one event | waits for its account transaction to commit |
 | Worst flush at 64 accounts | 9–13 s |
 | Roll-ups versus raw, 28 days | 20–30× faster |
 | Storage, all in | ~210 bytes per event |
@@ -155,9 +150,9 @@ under *what makes it worse* in more than one runbook.
 
 ## The two rules every procedure obeys
 
-**The IP address never reaches disk.** Geolocation and fingerprinting happen in
-the ingest tier and the address is discarded before anything is written or
-forwarded. No backup, no snapshot and no debugging step may reintroduce one — if
+**The IP address never reaches disk.** Geolocation and fingerprinting happen at
+the event endpoint and the address is discarded before anything is written. No
+backup, no snapshot and no debugging step may reintroduce one — if
 a procedure would have you capture raw requests, it is the wrong procedure.
 
 **Nothing fails silently.** If a step can lose data, the runbook says how much

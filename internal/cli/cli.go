@@ -42,7 +42,7 @@ Usage:
 Commands:
   serve        Run the whole product in one process. The default, and the only
                thing a self-hoster ever runs.
-  ingest       Run the ingest tier only: accept events, buffer, forward.
+  ingest       Run the event endpoint separately over the shared databases.
   db migrate   Migrate control.db and every account database. Never automatic.
   db backup    Write a consistent snapshot of every database.
   litestream   Generate and check the continuous replication configuration,

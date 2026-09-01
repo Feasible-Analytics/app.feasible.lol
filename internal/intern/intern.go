@@ -97,6 +97,16 @@ type Cache struct {
 	values map[Dimension]map[string]int64
 }
 
+// Transaction resolves dimension ids through an existing account transaction.
+// It holds the cache write lock until Commit or Rollback so no caller can
+// observe an id that SQLite may still roll back.
+type Transaction struct {
+	cache   *Cache
+	tx      *sql.Tx
+	pending map[Dimension]map[string]int64
+	done    bool
+}
+
 // New builds an empty cache for one account. It does not touch the database, so
 // a caller can construct the cache and decide separately when to pay for
 // warming it.
@@ -196,6 +206,87 @@ func (c *Cache) ID(ctx context.Context, dimension Dimension, value string) (int6
 	}
 
 	return c.insert(ctx, dimension, value)
+}
+
+// BeginTransaction creates a dimension resolver backed by tx. The caller must
+// invoke Commit after SQLite commits or Rollback on every failure path.
+func (c *Cache) BeginTransaction(tx *sql.Tx) *Transaction {
+	c.mu.Lock()
+
+	return &Transaction{
+		cache:   c,
+		tx:      tx,
+		pending: make(map[Dimension]map[string]int64),
+	}
+}
+
+// ID returns a dimension id visible inside the active SQLite transaction.
+func (t *Transaction) ID(ctx context.Context, dimension Dimension, value string) (int64, error) {
+	if value == "" {
+		return EmptyID, nil
+	}
+
+	table, known := t.cache.values[dimension]
+	if !known {
+		return 0, fmt.Errorf("intern: %q is not a dimension", dimension)
+	}
+
+	if id, ok := table[value]; ok {
+		return id, nil
+	}
+
+	if values := t.pending[dimension]; values != nil {
+		if id, ok := values[value]; ok {
+			return id, nil
+		}
+	}
+
+	tableName := dimension.Table()
+	if _, err := t.tx.ExecContext(ctx,
+		"INSERT INTO "+tableName+" (value) VALUES (?) ON CONFLICT(value) DO NOTHING", value,
+	); err != nil {
+		return 0, fmt.Errorf("intern %s: %w", tableName, err)
+	}
+
+	var id int64
+	if err := t.tx.QueryRowContext(ctx,
+		"SELECT id FROM "+tableName+" WHERE value = ?", value,
+	).Scan(&id); err != nil {
+		return 0, fmt.Errorf("intern %s: %w", tableName, err)
+	}
+
+	if t.pending[dimension] == nil {
+		t.pending[dimension] = map[string]int64{}
+	}
+	t.pending[dimension][value] = id
+
+	return id, nil
+}
+
+// Commit publishes ids after the surrounding SQLite transaction committed.
+func (t *Transaction) Commit() {
+	if t.done {
+		return
+	}
+
+	for dimension, values := range t.pending {
+		for value, id := range values {
+			t.cache.values[dimension][value] = id
+		}
+	}
+
+	t.done = true
+	t.cache.mu.Unlock()
+}
+
+// Rollback discards staged ids after the surrounding transaction failed.
+func (t *Transaction) Rollback() {
+	if t.done {
+		return
+	}
+
+	t.done = true
+	t.cache.mu.Unlock()
 }
 
 // insert adds a value nobody has sent before. It holds the write lock across

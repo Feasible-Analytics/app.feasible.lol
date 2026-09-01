@@ -10,6 +10,8 @@ package ingest
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -27,6 +29,10 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/useragent"
 )
 
+// ErrSaltUnavailable marks a retryable identity dependency failure. Public
+// handlers must not turn it into a successful acceptance or a counted drop.
+var ErrSaltUnavailable = errors.New("current fingerprint salt unavailable")
+
 // AcquisitionParams are the only query parameters we recognise and store. The
 // list is closed because every other parameter is stripped from the stored
 // path: a site that puts a session token or an email address in its query
@@ -41,11 +47,16 @@ var AcquisitionParams = []string{
 var clickIDParams = []string{referrer.ClickIDGoogle, referrer.ClickIDMicrosoft}
 
 // IPShield decides whether a customer has blocked an address. It is an
-// interface with a no-op default because the rule list belongs to the shard,
-// but the check has to run in the ingest tier: this is the only place in the
-// system where the raw IP still exists.
+// interface with a no-op default because the rule snapshot is injected, but
+// the check has to run here: this is the only place the raw IP still exists.
 type IPShield interface {
 	Blocked(siteID int64, addr netip.Addr) bool
+}
+
+// HostnamePolicy validates the page host against additive hostnames configured
+// for the claimed site.
+type HostnamePolicy interface {
+	AllowsHostname(siteID int64, hostname string) bool
 }
 
 // NoShield allows everything. It is the default so that an install with no
@@ -56,19 +67,26 @@ type NoShield struct{}
 // Blocked always allows.
 func (NoShield) Blocked(int64, netip.Addr) bool { return false }
 
+// NoHostnamePolicy adds no hostnames beyond the site's registered domain.
+type NoHostnamePolicy struct{}
+
+// AllowsHostname reports no additive hostname rule.
+func (NoHostnamePolicy) AllowsHostname(int64, string) bool { return false }
+
 // Pipeline turns an HTTP request into a derived event. Everything it needs is
 // injected, because every one of these is a different licensing, deployment or
 // performance decision and none of them should be reachable from a call site.
 type Pipeline struct {
-	Sites    *sites.Cache
-	Salts    *salts.Store
-	Geo      geo.Locator
-	Agents   *useragent.Cache
-	Bots     *BotFilter
-	Trusted  *TrustedProxies
-	Shards   ShardResolver
-	Shield   IPShield
-	Counters *Counters
+	Sites     *sites.Cache
+	Salts     *salts.Store
+	Geo       geo.Locator
+	Agents    *useragent.Cache
+	Bots      *BotFilter
+	Trusted   *TrustedProxies
+	Shards    ShardResolver
+	Shield    IPShield
+	Hostnames HostnamePolicy
+	Counters  *Counters
 
 	// Now is injectable so a replay test can drive the pipeline at a fixed
 	// instant rather than at whatever time the test suite happens to run.
@@ -169,11 +187,9 @@ type Result struct {
 //  10. parse the referrer
 //  11. derive the channel
 //
-// Steps 1 and 12 onward belong to the handler and the writer. Hostname
-// validation, country shields and page shields deliberately do not happen here:
-// they run at the shard, where the settings are live. The governing rule is
-// that the ingest tier holds only what needs the raw IP, and everything else
-// stays where it is current.
+// Steps 1 and 12 onward belong to the handler and writer. This layer records a
+// hostname advisory while the original URL exists; the writer applies the live
+// authoritative hostname, country, and page policy in the fact transaction.
 func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload) (Result, error) {
 	var result Result
 
@@ -225,6 +241,7 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 	// Step 9, in part: the hostname is needed by the referrer parser to tell an
 	// internal link from an acquisition.
 	pageURL, hostname, pathname, params, urlTruncated := parseEventURL(payload.URL)
+	actualURLValid := validEventURL(pageURL)
 	result.Truncation.URLTruncated = urlTruncated
 	result.Debug.Hostname = hostname
 	result.Debug.Pathname = pathname
@@ -245,6 +262,17 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 		return result, nil
 	}
 
+	// The public tier records an advisory decision while the original URL still
+	// exists. Known sites continue to the writer, which claims the UUID and
+	// applies the live authoritative rule in the same transaction as its count.
+	hostnameAllowed := known && hostnameClaimsDomain(hostname, site.Domain)
+	if known && p.Hostnames != nil && p.Hostnames.AllowsHostname(site.ID, hostname) {
+		hostnameAllowed = true
+	}
+	if !actualURLValid || !hostnameAllowed {
+		stop(ReasonHostnameNotAllowed)
+	}
+
 	result.Debug.SiteID = site.ID
 	result.Debug.AccountID = site.AccountID
 
@@ -257,9 +285,8 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 		return result, nil
 	}
 
-	// Not in the routing map means drop, by design: shards are the source of
-	// truth for what they own, and forwarding to a shard that does not hold the
-	// account would write the data into the wrong file.
+	// Not in the local partition map means drop by design. The consolidated
+	// runtime currently resolves every known account to partition zero.
 	shard, routed := p.Shards.Shard(site.AccountID)
 	if !routed && stop(ReasonSiteDeleted) {
 		return result, nil
@@ -287,8 +314,9 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 		// Without a salt there is no visitor id, so there is no event. It is
 		// our failure rather than the sender's, and it is counted as ours.
 		stop(ReasonInternalError)
-		return result, err
+		return result, fmt.Errorf("%w: %v", ErrSaltUnavailable, err)
 	}
+	defer pair.Erase()
 
 	// The third term is the domain the routing map is keyed by, never the raw
 	// "d" field. A site whose pages disagree about their own spelling —
@@ -340,8 +368,13 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 	// present, because somebody set them deliberately.
 	acquisition := resolveAcquisition(params, payload, source)
 
+	eventID := uuid.New()
+	if payload.Key != "" {
+		eventID = uuid.MustParse(payload.Key)
+	}
+
 	event := &Event{
-		UUID:      uuid.New(),
+		UUID:      eventID,
 		Shard:     shard,
 		AccountID: site.AccountID,
 		SiteID:    site.ID,
@@ -387,16 +420,31 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 		Props:   props,
 		Revenue: revenue,
 	}
+	if result.DropReason == ReasonHostnameNotAllowed {
+		event.RejectReason = ReasonHostnameNotAllowed
+	}
 
 	result.Event = event
 	fillDebug(&result.Debug, event, pair.Day, rootDomain, location.Subdivision2)
 	result.Debug.Truncation = result.Truncation
 
 	// pageURL is kept only so the debug view can show what we parsed. It is not
-	// stored: full-URL capture is an opt-in setting that lives at the shard.
+	// stored: full-URL capture is an opt-in setting at the account writer.
 	_ = pageURL
 
 	return result, nil
+}
+
+// hostnameClaimsDomain implements the default hostname policy: a registered
+// domain accepts itself and its subdomains, but never a parent or lookalike.
+func hostnameClaimsDomain(hostname, domain string) bool {
+	host := sites.Normalise(hostname)
+	claim := sites.Normalise(domain)
+	if host == "" || claim == "" || host == NoneHostname {
+		return false
+	}
+
+	return host == claim || strings.HasSuffix(host, "."+claim)
 }
 
 // tick returns a strictly increasing nanosecond stamp for the event being
@@ -580,6 +628,17 @@ func parseEventURL(raw string) (parsed *url.URL, hostname, pathname string, para
 	params = retainAcquisitionParams(parsed.Query())
 
 	return parsed, hostname, pathname, params, truncated
+}
+
+// validEventURL reports whether the actual page URL is absolute HTTP(S) and
+// carries a hostname that can substantiate the payload's domain claim.
+func validEventURL(parsed *url.URL) bool {
+	if parsed == nil || parsed.Hostname() == "" {
+		return false
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+	return scheme == "http" || scheme == "https"
 }
 
 // truncatePath cuts an escaped path to a byte limit without leaving half of

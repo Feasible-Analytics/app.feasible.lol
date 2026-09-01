@@ -41,12 +41,9 @@ type statusResponse struct {
 
 // onboardingStatus answers "has anything arrived yet".
 //
-// This endpoint is the whole reason the waiting screen works. Shard-pull
-// routing means a brand-new domain can take a full poll cycle before an
-// ingestor will accept anything for it, so somebody who pastes the snippet and
-// immediately reloads sees nothing and concludes the product is broken. A
-// screen that says "waiting" and then changes by itself turns that gap into a
-// normal-feeling wait.
+// This endpoint is the whole reason the waiting screen works. Another serving
+// process can take a control-cache refresh cycle to learn a new domain, so the
+// screen turns that bounded propagation gap into a normal-feeling wait.
 func (h *Handler) onboardingStatus(w http.ResponseWriter, r *http.Request) {
 	site, team, ok := h.siteOr404(w, r)
 	if !ok {

@@ -15,9 +15,8 @@
 // places for one reason. An IP rule can only be checked in the ingest tier,
 // because that tier is the only place the raw address exists at all — by design
 // the address is geolocated, hashed and discarded before anything is written or
-// forwarded. Country, page and hostname rules are checked at the shard, where
-// this table is the live copy rather than something that had to be shipped
-// across a network first.
+// stored. Country, page and hostname rules are checked by the account writer,
+// where the live snapshot can share the fact transaction's decision boundary.
 //
 // Shields are in every build. They are missing from the incumbent's community
 // edition entirely, which means the people most likely to be measuring their
@@ -47,10 +46,9 @@ const (
 	// KindPage blocks a path, or every path under it when it ends in a *.
 	KindPage = "page"
 
-	// KindHostname is an allow-list, not a block-list: with one or more
-	// hostname rules, anything not named is dropped. It is the rule people
-	// reach for when somebody else's site is sending events with their tracker
-	// id in it, and an allow-list is the only shape that solves that.
+	// KindHostname adds a host outside the registered domain and its subdomains
+	// to the allow-list. It is what makes an external preview or checkout host
+	// eligible without weakening the default claim-versus-page check.
 	KindHostname = "hostname"
 )
 
@@ -64,8 +62,8 @@ var Kinds = []string{KindIP, KindCountry, KindPage, KindHostname}
 const MaxRulesPerKind = 30
 
 // RefreshInterval is how often a running process rebuilds its rule snapshot. It
-// matches the routing poll, so a rule takes effect within one cycle rather than
-// the "a few minutes" the incumbent's documentation promises.
+// matches the site-cache refresh, so a rule takes effect within one cycle rather
+// than the "a few minutes" the incumbent's documentation promises.
 const RefreshInterval = 15 * time.Second
 
 // Rule is one stored rule.
@@ -221,6 +219,10 @@ func Delete(ctx context.Context, db *sql.DB, siteID, id int64) error {
 // parsed once here rather than per event, and the country and hostname lists
 // are maps because both are exact-match lookups.
 type Ruleset struct {
+	// domain is the site's registered domain. It makes the default hostname
+	// policy active even when the customer has configured no rules.
+	domain string
+
 	prefixes  []netip.Prefix
 	countries map[string]bool
 	hostnames map[string]bool
@@ -237,7 +239,14 @@ type Ruleset struct {
 // so an unparseable one means the file was edited by hand, and refusing to
 // serve traffic over it would be the wrong trade.
 func Compile(rules []Rule) *Ruleset {
+	return CompileFor("", rules)
+}
+
+// CompileFor compiles rules with the registered domain used by the default
+// hostname policy.
+func CompileFor(domain string, rules []Rule) *Ruleset {
 	set := &Ruleset{
+		domain:    normaliseHostname(domain),
 		countries: map[string]bool{},
 		hostnames: map[string]bool{},
 		pages:     map[string]bool{},
@@ -278,6 +287,27 @@ func Compile(rules []Rule) *Ruleset {
 	return set
 }
 
+// AllowedHostnames lists the explicit additive hostname rules.
+func (r *Ruleset) AllowedHostnames() []string {
+	if r == nil || len(r.hostnames) == 0 {
+		return nil
+	}
+
+	hostnames := make([]string, 0, len(r.hostnames))
+	for hostname := range r.hostnames {
+		hostnames = append(hostnames, hostname)
+	}
+	sort.Strings(hostnames)
+
+	return hostnames
+}
+
+// HostnameAllowed exposes the hostname decision without evaluating other
+// shield kinds.
+func (r *Ruleset) HostnameAllowed(hostname string) bool {
+	return r.hostnameAllowed(hostname)
+}
+
 // BlocksIP reports whether an address is on the blocked list.
 func (r *Ruleset) BlocksIP(addr netip.Addr) bool {
 	if r == nil || len(r.prefixes) == 0 || !addr.IsValid() {
@@ -297,10 +327,9 @@ func (r *Ruleset) BlocksIP(addr netip.Addr) bool {
 	return false
 }
 
-// Allowed evaluates the three shard-side rule kinds and names the reason when
-// one of them blocks. The order is cheapest first, and hostname is last because
-// it is the only one that can be an allow-list and therefore the only one whose
-// empty case means "allow everything".
+// Allowed evaluates the three account-writer rule kinds and names the reason
+// when one blocks. The order is cheapest first; hostname is last because its
+// registered-domain and additive allow-list check is the broadest decision.
 func (r *Ruleset) Allowed(hostname, pathname, country string) (bool, string) {
 	if r == nil {
 		return true, ""
@@ -314,11 +343,32 @@ func (r *Ruleset) Allowed(hostname, pathname, country string) (bool, string) {
 		return false, ingest.ReasonShieldPage
 	}
 
-	if len(r.hostnames) > 0 && !r.hostnames[normaliseHostname(hostname)] {
+	if !r.hostnameAllowed(hostname) {
 		return false, ingest.ReasonHostnameNotAllowed
 	}
 
 	return true, ""
+}
+
+// hostnameAllowed accepts the registered domain, its subdomains, or an
+// explicit additive hostname. A parent domain and a lookalike remain rejected.
+func (r *Ruleset) hostnameAllowed(hostname string) bool {
+	if r == nil {
+		return true
+	}
+
+	host := normaliseHostname(hostname)
+	if host == "" || host == ingest.NoneHostname {
+		return false
+	}
+	if r.hostnames[host] {
+		return true
+	}
+	if r.domain == "" {
+		return len(r.hostnames) == 0
+	}
+
+	return host == r.domain || strings.HasSuffix(host, "."+r.domain)
 }
 
 // blocksPage answers the page rules: an exact path, or any path under one
@@ -345,7 +395,7 @@ func (r *Ruleset) blocksPage(pathname string) bool {
 // no rules can be skipped without walking four empty collections per event.
 func (r *Ruleset) Empty() bool {
 	return r == nil ||
-		(len(r.prefixes) == 0 && len(r.countries) == 0 && len(r.hostnames) == 0 &&
+		(r.domain == "" && len(r.prefixes) == 0 && len(r.countries) == 0 && len(r.hostnames) == 0 &&
 			len(r.pages) == 0 && len(r.pagePaths) == 0)
 }
 

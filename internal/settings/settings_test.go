@@ -69,6 +69,8 @@ func newHandler(t *testing.T) (*Handler, *accounts.Manager) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	shieldCache := shields.New(siteCache, manager)
+	shieldCache.Rejections = shields.NewRejections(manager)
 
 	return &Handler{
 		Sites:    siteCache,
@@ -76,10 +78,54 @@ func newHandler(t *testing.T) (*Handler, *accounts.Manager) {
 		Jobs:     jobs.NewClient(control),
 		DataDir:  dataDir,
 		Trusted:  trusted,
-		Shields:  shields.New(siteCache, manager),
+		Shields:  shieldCache,
 		Paths:    pathclean.New(siteCache, manager),
 		Now:      func() time.Time { return time.Unix(1_800_000_000, 0) },
 	}, manager
+}
+
+// TestRejectedHostnameCanBeAllowedFromTheShieldsPage covers the one-click path
+// from committed rejection evidence to the live additive hostname policy.
+func TestRejectedHostnameCanBeAllowedFromTheShieldsPage(t *testing.T) {
+	handler, manager := newHandler(t)
+	account, err := manager.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := handler.Now().UTC().Unix() / 86400
+	if _, err := account.Writer().ExecContext(context.Background(), `
+		INSERT INTO hostname_rejections (site_id, hostname, day, events)
+		VALUES (1, 'preview.example.net', ?, 3)`, day); err != nil {
+		t.Fatal(err)
+	}
+
+	response := get(t, handler, "/settings/example.com/shields")
+	if response.Code != http.StatusOK {
+		t.Fatalf("shields page answered %d", response.Code)
+	}
+	if body := response.Body.String(); !strings.Contains(body, "preview.example.net") || !strings.Contains(body, ">Allow<") {
+		t.Fatal("the rejected hostname does not have a one-click Allow action")
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/settings/example.com/shields/allow-hostname",
+		strings.NewReader("hostname=preview.example.net"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("allow hostname answered %d", recorder.Code)
+	}
+
+	rules, err := shields.List(context.Background(), account.Reader(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].Kind != shields.KindHostname || rules[0].Value != "preview.example.net" {
+		t.Fatalf("allowed rules = %+v", rules)
+	}
+	if !handler.Shields.AllowsHostname(1, "preview.example.net") {
+		t.Fatal("the running shield cache was not refreshed")
+	}
 }
 
 // exec runs one statement or fails the test.

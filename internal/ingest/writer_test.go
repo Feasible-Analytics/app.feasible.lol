@@ -10,11 +10,33 @@ package ingest
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 )
+
+// rejectHostnameShield rejects every event as a hostname policy failure.
+type rejectHostnameShield struct{}
+
+// Allowed returns the explicit hostname rejection used by the transaction tests.
+func (rejectHostnameShield) Allowed(int64, string, string, string) (bool, string) {
+	return false, ReasonHostnameNotAllowed
+}
+
+// recordingAllowShield simulates a hostname becoming allowed after the public
+// request tier produced a stale rejection advisory.
+type recordingAllowShield struct{}
+
+// Allowed permits the now-live hostname rule.
+func (*recordingAllowShield) Allowed(int64, string, string, string) (bool, string) {
+	return true, ""
+}
 
 // newWriter builds a writer over a temporary data directory. Account databases
 // are created on first use, so nothing has to be set up beforehand.
@@ -160,6 +182,304 @@ func TestWriteIsIdempotent(t *testing.T) {
 	}
 	if got := countRows(t, manager, 1, "SELECT pageviews FROM sessions"); got != 2 {
 		t.Fatalf("session pageviews = %d, want 2 — the fold counted a duplicate", got)
+	}
+}
+
+// TestIndependentWritersClaimOneUUIDAtomically exercises separate process-local
+// locks over the same account file. SQLite must settle every retry while only
+// one process writes the fact.
+func TestIndependentWritersClaimOneUUIDAtomically(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	firstManager := accounts.NewManager(dir)
+	secondManager := accounts.NewManager(dir)
+	t.Cleanup(func() { _ = firstManager.CloseAll() })
+	t.Cleanup(func() { _ = secondManager.CloseAll() })
+
+	if _, err := firstManager.Open(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := secondManager.Open(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	first := NewWriter(firstManager, NewSessionCache())
+	second := NewWriter(secondManager, NewSessionCache())
+	first.Now = func() time.Time { return fixtureStart }
+	second.Now = first.Now
+	event := writerEvent(1, EventPageview, fixtureStart.Unix(), "/atomic")
+	writers := []*Writer{first, second}
+
+	var wait sync.WaitGroup
+	errors := make(chan error, 32)
+	for i := 0; i < cap(errors); i++ {
+		wait.Add(1)
+		go func(writer *Writer) {
+			defer wait.Done()
+			settled, err := writer.Write(ctx, []Event{event})
+			if err == nil && len(settled) != 1 {
+				err = fmt.Errorf("settled %d UUIDs, want 1", len(settled))
+			}
+			errors <- err
+		}(writers[i%len(writers)])
+	}
+	wait.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := countRows(t, firstManager, 1, "SELECT COUNT(*) FROM events"); got != 1 {
+		t.Fatalf("independent writers stored %d event rows, want 1", got)
+	}
+	if got := countRows(t, firstManager, 1, "SELECT pageviews FROM sessions"); got != 1 {
+		t.Fatalf("independent writers counted %d pageviews, want 1", got)
+	}
+}
+
+// TestIndependentWritersReserveDistinctSessionOwnership races separate SQLite
+// connections creating visits for different people. Session IDs must never be
+// reused for different visitor ownership.
+func TestIndependentWritersReserveDistinctSessionOwnership(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	firstManager := accounts.NewManager(dir)
+	secondManager := accounts.NewManager(dir)
+	t.Cleanup(func() { _ = firstManager.CloseAll() })
+	t.Cleanup(func() { _ = secondManager.CloseAll() })
+
+	if _, err := firstManager.Open(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := secondManager.Open(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	first := NewWriter(firstManager, NewSessionCache())
+	second := NewWriter(secondManager, NewSessionCache())
+	first.Now = func() time.Time { return fixtureStart }
+	second.Now = first.Now
+
+	one := writerEvent(1, EventPageview, fixtureStart.Unix(), "/one")
+	one.UUID = uuid.New()
+	one.UserID = 101
+	two := writerEvent(1, EventPageview, fixtureStart.Unix(), "/two")
+	two.UUID = uuid.New()
+	two.UserID = 202
+
+	start := make(chan struct{})
+	errors := make(chan error, 2)
+	for _, item := range []struct {
+		writer *Writer
+		event  Event
+	}{{first, one}, {second, two}} {
+		go func(item struct {
+			writer *Writer
+			event  Event
+		}) {
+			<-start
+			_, err := item.writer.Write(ctx, []Event{item.event})
+			errors <- err
+		}(item)
+	}
+	close(start)
+	for range 2 {
+		if err := <-errors; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := countRows(t, firstManager, 1, "SELECT COUNT(DISTINCT id) FROM sessions"); got != 2 {
+		t.Fatalf("independent writers created %d session identities, want 2", got)
+	}
+	if got := countRows(t, firstManager, 1, `
+		SELECT COUNT(*) FROM events e
+		JOIN sessions s ON s.id = e.session_id
+		WHERE e.site_id = s.site_id AND e.user_id = s.user_id`); got != 2 {
+		t.Fatalf("%d events link to the correctly owned session, want 2", got)
+	}
+}
+
+// TestIndependentWritersShareOneVisitorSession races different UUIDs for one
+// visitor. Durable fold state must keep both pageviews in one visit.
+func TestIndependentWritersShareOneVisitorSession(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	firstManager := accounts.NewManager(dir)
+	secondManager := accounts.NewManager(dir)
+	t.Cleanup(func() { _ = firstManager.CloseAll() })
+	t.Cleanup(func() { _ = secondManager.CloseAll() })
+
+	if _, err := firstManager.Open(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := secondManager.Open(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	first := NewWriter(firstManager, NewSessionCache())
+	second := NewWriter(secondManager, NewSessionCache())
+	first.Now = func() time.Time { return fixtureStart }
+	second.Now = first.Now
+
+	one := writerEvent(1, EventPageview, fixtureStart.Unix(), "/one")
+	two := writerEvent(1, EventPageview, fixtureStart.Unix()+10, "/two")
+	two.UUID = uuid.New()
+	start := make(chan struct{})
+	errors := make(chan error, 2)
+	for _, item := range []struct {
+		writer *Writer
+		event  Event
+	}{{first, one}, {second, two}} {
+		go func(item struct {
+			writer *Writer
+			event  Event
+		}) {
+			<-start
+			_, err := item.writer.Write(ctx, []Event{item.event})
+			errors <- err
+		}(item)
+	}
+	close(start)
+	for range 2 {
+		if err := <-errors; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := countRows(t, firstManager, 1, "SELECT COUNT(*) FROM sessions"); got != 1 {
+		t.Fatalf("overlapping writers created %d sessions for one visitor, want 1", got)
+	}
+	if got := countRows(t, firstManager, 1, "SELECT pageviews FROM sessions"); got != 2 {
+		t.Fatalf("shared visitor session has %d pageviews, want 2", got)
+	}
+}
+
+// TestHostnameRejectionClaimAndFactShareEveryKillBoundary proves the UUID
+// receipt and hostname evidence always commit or roll back together.
+func TestHostnameRejectionClaimAndFactShareEveryKillBoundary(t *testing.T) {
+	for _, stage := range []string{WriterStageAfterClaim, WriterStageAfterRejection, WriterStageBeforeCommit} {
+		t.Run(stage, func(t *testing.T) {
+			ctx := context.Background()
+			writer, manager := newWriter(t)
+			writer.Shield = rejectHostnameShield{}
+			writer.Counters = NewCounters()
+			writer.Failpoint = func(current string) error {
+				if current == stage {
+					return errors.New("simulated process kill")
+				}
+				return nil
+			}
+
+			event := writerEvent(1, EventPageview, fixtureStart.Unix(), "/rejected")
+			event.Hostname = "preview.example.net"
+			if _, err := writer.Write(ctx, []Event{event}); err == nil {
+				t.Fatal("kill boundary write committed")
+			}
+			for table, query := range map[string]string{
+				"receipt": "SELECT COUNT(*) FROM recent_event_ids", "rejection": "SELECT COUNT(*) FROM hostname_rejections",
+				"event": "SELECT COUNT(*) FROM events",
+			} {
+				if got := countRows(t, manager, 1, query); got != 0 {
+					t.Fatalf("%s survived rollback with %d rows", table, got)
+				}
+			}
+
+			writer.Failpoint = nil
+			for range 2 {
+				settled, err := writer.Write(ctx, []Event{event})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(settled) != 1 {
+					t.Fatalf("replay settled %d UUIDs, want 1", len(settled))
+				}
+			}
+			if got := countRows(t, manager, 1, "SELECT events FROM hostname_rejections"); got != 1 {
+				t.Fatalf("rejection count = %d, want 1", got)
+			}
+		})
+	}
+}
+
+// TestHostnameRejectionTransactionEnforcesTheDurableCap proves cardinality is
+// bounded in SQLite while preserving the exact rejected event total.
+func TestHostnameRejectionTransactionEnforcesTheDurableCap(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+	writer.Shield = rejectHostnameShield{}
+	batch := make([]Event, 0, MaxRejectedHostnames+5)
+	for i := 0; i < MaxRejectedHostnames+5; i++ {
+		event := writerEvent(1, EventPageview, fixtureStart.Unix(), "/rejected")
+		event.UUID = uuid.New()
+		event.Hostname = fmt.Sprintf("preview-%02d.example.net", i)
+		batch = append(batch, event)
+	}
+
+	if _, err := writer.Write(ctx, batch); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM hostname_rejections"); got != MaxRejectedHostnames+1 {
+		t.Fatalf("rejection table has %d rows, want %d", got, MaxRejectedHostnames+1)
+	}
+	if got := countRows(t, manager, 1, "SELECT SUM(events) FROM hostname_rejections"); got != int64(len(batch)) {
+		t.Fatalf("rejection table counted %d events, want %d", got, len(batch))
+	}
+}
+
+// TestMissingHostnameUsesTheAggregateRejectionBucket keeps malformed or absent
+// page URLs visible without offering a one-click rule for a hostname that can
+// never be valid.
+func TestMissingHostnameUsesTheAggregateRejectionBucket(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+	writer.Shield = rejectHostnameShield{}
+	event := writerEvent(1, EventPageview, fixtureStart.Unix(), "/")
+	event.Hostname = NoneHostname
+
+	if _, err := writer.Write(ctx, []Event{event}); err != nil {
+		t.Fatal(err)
+	}
+
+	account, err := manager.Open(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hostname string
+	if err := account.Reader().QueryRowContext(ctx,
+		"SELECT hostname FROM hostname_rejections").Scan(&hostname); err != nil {
+		t.Fatal(err)
+	}
+	if hostname != OtherRejectedHostname {
+		t.Fatalf("missing URL recorded as %q, want aggregate %q", hostname, OtherRejectedHostname)
+	}
+}
+
+// TestShardAllowsAHostnameNewlyValidAfterIngest proves a stale public advisory
+// cannot override the writer's live hostname policy.
+func TestShardAllowsAHostnameNewlyValidAfterIngest(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+	writer.Shield = &recordingAllowShield{}
+	writer.Counters = NewCounters()
+	event := writerEvent(1, EventPageview, fixtureStart.Unix(), "/rejected")
+	event.Hostname = "preview.example.net"
+	event.RejectReason = ReasonHostnameNotAllowed
+
+	for range 2 {
+		committed, err := writer.Write(ctx, []Event{event})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(committed) != 1 {
+			t.Fatalf("settled %d events, want 1", len(committed))
+		}
+	}
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events"); got != 1 {
+		t.Fatalf("newly valid hostname stored %d events, want 1", got)
+	}
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM hostname_rejections"); got != 0 {
+		t.Fatalf("newly valid hostname produced %d durable rejections", got)
 	}
 }
 
@@ -410,40 +730,35 @@ func TestMergedEventsTakeTheSurvivorsAcquisition(t *testing.T) {
 	}
 }
 
-// TestDedupeTableIsPruned checks the table stays bounded. Twenty-four hours is
-// what keeps the index small enough for the lookup to stay cheap on the write
-// path.
-func TestDedupeTableIsPruned(t *testing.T) {
+// TestDedupeReceiptSurvivesReplayPastTwentyFourHours proves a browser-retained
+// UUID never becomes a new fact merely because its acknowledgement was lost
+// for longer than the old receipt window.
+func TestDedupeReceiptSurvivesReplayPastTwentyFourHours(t *testing.T) {
 	ctx := context.Background()
 	writer, manager := newWriter(t)
 
 	clock := fixtureStart
 	writer.Now = func() time.Time { return clock }
+	event := writerEvent(1, EventPageview, fixtureStart.Unix(), "/")
 
-	if _, err := writer.Write(ctx, []Event{writerEvent(1, EventPageview, fixtureStart.Unix(), "/")}); err != nil {
+	if _, err := writer.Write(ctx, []Event{event}); err != nil {
 		t.Fatal(err)
 	}
 
-	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM recent_event_ids"); got != 1 {
-		t.Fatalf("recent_event_ids holds %d rows, want 1", got)
-	}
-
-	// A day and a minute later, the first id is past retention and the next
-	// write carries the prune along with it.
-	clock = fixtureStart.Add(DedupeRetention + time.Minute)
-
-	if _, err := writer.Write(ctx, []Event{writerEvent(1, EventPageview, clock.Unix(), "/later")}); err != nil {
+	clock = fixtureStart.Add(8 * 24 * time.Hour)
+	if _, err := writer.Write(ctx, []Event{event}); err != nil {
 		t.Fatal(err)
 	}
-
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events"); got != 1 {
+		t.Fatalf("late replay stored %d event rows, want 1", got)
+	}
 	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM recent_event_ids"); got != 1 {
-		t.Fatalf("recent_event_ids holds %d rows after pruning, want 1", got)
+		t.Fatalf("permanent receipt table holds %d rows, want 1", got)
 	}
 }
 
-// TestSessionIDsSurviveARestart checks the id allocator reads the file's high
-// water mark. Without it a new process would hand out ids that already exist and
-// overwrite finished visits.
+// TestSessionIDsSurviveARestart checks the durable allocator stays above the
+// identities already committed by a previous process.
 func TestSessionIDsSurviveARestart(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -535,6 +850,105 @@ func TestRevivedPingSurvivesAFailedCommit(t *testing.T) {
 	}
 	if got := countRows(t, manager, 1, "SELECT started_at FROM sessions"); got != base {
 		t.Fatalf("session started at %d, want %d — the ping did not reach the fold", got, base)
+	}
+}
+
+// TestRestartedWriterAdoptsAnotherWritersOrphan proves a pre-pageview ping is
+// durable shared state rather than ownership trapped in one process.
+func TestRestartedWriterAdoptsAnotherWritersOrphan(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	firstManager := accounts.NewManager(dir)
+	first := NewWriter(firstManager, NewSessionCache())
+	first.Now = func() time.Time { return fixtureStart }
+	base := fixtureStart.Unix()
+
+	ping := writerEvent(1, EventEngagement, base, "/")
+	settled, err := first.Write(ctx, []Event{ping})
+	if err != nil || len(settled) != 1 {
+		t.Fatalf("durable orphan settled %d events: %v", len(settled), err)
+	}
+	if err := firstManager.CloseAll(); err != nil {
+		t.Fatal(err)
+	}
+
+	secondManager := accounts.NewManager(dir)
+	t.Cleanup(func() { _ = secondManager.CloseAll() })
+	second := NewWriter(secondManager, NewSessionCache())
+	second.Now = first.Now
+	view := writerEvent(1, EventPageview, base+10, "/")
+	if _, err := second.Write(ctx, []Event{view}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := countRows(t, secondManager, 1, "SELECT COUNT(*) FROM events"); got != 2 {
+		t.Fatalf("restarted writer stored %d rows, want pageview plus adopted ping", got)
+	}
+	if got := countRows(t, secondManager, 1, "SELECT COUNT(*) FROM ingest_orphan_engagements"); got != 0 {
+		t.Fatalf("restarted writer left %d adopted orphan rows", got)
+	}
+	if got := countRows(t, secondManager, 1, "SELECT COUNT(DISTINCT session_id) FROM events"); got != 1 {
+		t.Fatalf("adopted events use %d sessions, want 1", got)
+	}
+}
+
+// TestDurableFoldAdoptsMoreThanTheLocalOrphanCap proves the old memory-safety
+// ceiling cannot acknowledge and strand a durable engagement event.
+func TestDurableFoldAdoptsMoreThanTheLocalOrphanCap(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+	base := fixtureStart.Unix()
+	batch := make([]Event, 0, 102)
+
+	for i := 0; i < 101; i++ {
+		ping := writerEvent(1, EventEngagement, base+int64(i%10), "/")
+		ping.UUID = uuid.New()
+		batch = append(batch, ping)
+	}
+	view := writerEvent(1, EventPageview, base+10, "/")
+	view.UUID = uuid.New()
+	batch = append(batch, view)
+
+	settled, err := writer.Write(ctx, batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(settled) != len(batch) {
+		t.Fatalf("settled %d events, want %d", len(settled), len(batch))
+	}
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events"); got != int64(len(batch)) {
+		t.Fatalf("durable fold wrote %d rows, want %d", got, len(batch))
+	}
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM ingest_orphan_engagements"); got != 0 {
+		t.Fatalf("durable fold stranded %d adoptable pings", got)
+	}
+}
+
+// TestPingRevivedInItsClaimTransactionStaysDeduplicated covers an engagement
+// parked and adopted in one batch. Its receipt must survive with its fact row.
+func TestPingRevivedInItsClaimTransactionStaysDeduplicated(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+	base := fixtureStart.Unix()
+
+	ping := writerEvent(1, EventEngagement, base, "/")
+	view := writerEvent(1, EventPageview, base+10, "/")
+	if _, err := writer.Write(ctx, []Event{ping, view}); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events"); got != 2 {
+		t.Fatalf("initial batch wrote %d rows, want 2", got)
+	}
+
+	committed, err := writer.Write(ctx, []Event{ping})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(committed) != 1 {
+		t.Fatalf("redelivery settled %d events, want 1", len(committed))
+	}
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events"); got != 2 {
+		t.Fatalf("redelivered ping produced %d rows, want 2", got)
 	}
 }
 

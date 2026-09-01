@@ -44,7 +44,7 @@ function install(fn) {
 
 		win[name] = fn;
 
-		if (queued) for (const args of queued) fn.apply(null, args);
+		if (queued) for (const args of queued) fn(...args);
 	}
 }
 
@@ -57,7 +57,7 @@ function install(fn) {
 // know it immediately, and leaving a signup form waiting for a timeout that we
 // could have ended is a page we made worse.
 function noop(_name, options) {
-	if (options && options.callback) options.callback({ status: null });
+	options?.callback?.({ status: null });
 }
 
 // One reason string, one warning. A missing domain is the commonest install
@@ -66,7 +66,7 @@ function noop(_name, options) {
 const reason = ignoreReason(cfg) || (cfg.d ? "" : "no data-domain");
 
 if (reason) {
-	warn(reason);
+	warn("not tracking — " + reason);
 } else {
 	setEndpoint(cfg.a);
 

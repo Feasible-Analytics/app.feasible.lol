@@ -50,6 +50,7 @@ var actions = []string{
 	"shields",
 	"shields/add",
 	"shields/delete",
+	"shields/allow-hostname",
 	"paths",
 	"paths/save",
 	"paths/trailing-slash",
@@ -148,7 +149,7 @@ func tr(r *http.Request, id string, args ...any) string {
 	return i18n.T(i18n.Negotiate(r), id, args...)
 }
 
-// Handler serves the settings pages for one shard.
+// Handler serves the settings pages backed by per-account databases.
 //
 // Nothing here authorises a request. The mount wraps every route in the signed
 // in application's own check, which is what keeps one definition of "may this
@@ -241,9 +242,10 @@ type page struct {
 
 	// Screen-specific fields. They are on one struct rather than three so the
 	// shared layout can be a single template with one data type behind it.
-	Viewer   shields.Viewer
-	Groups   []ruleGroup
-	MaxRules int
+	Viewer            shields.Viewer
+	Groups            []ruleGroup
+	MaxRules          int
+	RejectedHostnames []shields.RejectedHostname
 
 	Rules           []pathclean.Rule
 	Merges          []pathclean.Merge
@@ -322,6 +324,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.addShield(w, r, site)
 	case "shields/delete":
 		h.deleteShield(w, r, site)
+	case "shields/allow-hostname":
+		h.allowRejectedHostname(w, r, site)
 	case "paths":
 		h.paths(w, r, site, nil, false)
 	case "paths/save":
@@ -399,18 +403,53 @@ func (h *Handler) shields(w http.ResponseWriter, r *http.Request, site sites.Sit
 		return
 	}
 
+	var rejected []shields.RejectedHostname
+	if h.Shields != nil && h.Shields.Rejections != nil {
+		rejected, err = h.Shields.Rejections.ListRejected(r.Context(), site.AccountID, site.ID, 1)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		rejected = allowableRejections(rejected, rules)
+	}
+
 	message, failure := flash(r)
 
 	data := page{
 		TitleID: "auth.title.shields", Tab: "shields", Domain: site.Domain,
 		Lang:    i18n.Negotiate(r),
 		Message: message, Error: failure,
-		Viewer:   shields.ResolveViewer(r, h.Trusted),
-		MaxRules: shields.MaxRulesPerKind,
-		Groups:   groupRules(rules),
+		Viewer:            shields.ResolveViewer(r, h.Trusted),
+		MaxRules:          shields.MaxRulesPerKind,
+		Groups:            groupRules(rules),
+		RejectedHostnames: rejected,
 	}
 
 	h.render(w, "shields", data)
+}
+
+// allowableRejections removes aggregate and already-allowed hostnames from the
+// one-click list.
+func allowableRejections(rejected []shields.RejectedHostname, rules []shields.Rule) []shields.RejectedHostname {
+	allowed := map[string]struct{}{}
+	for _, rule := range rules {
+		if rule.Kind == shields.KindHostname {
+			allowed[rule.Value] = struct{}{}
+		}
+	}
+
+	out := make([]shields.RejectedHostname, 0, len(rejected))
+	for _, rejection := range rejected {
+		if rejection.Hostname == shields.OtherHostname {
+			continue
+		}
+		if _, exists := allowed[rejection.Hostname]; exists {
+			continue
+		}
+		out = append(out, rejection)
+	}
+
+	return out
 }
 
 // groupRules splits a rule list into the four sections the page shows, naming
@@ -503,6 +542,37 @@ func (h *Handler) deleteShield(w http.ResponseWriter, r *http.Request, site site
 	h.refreshShields(r.Context(), account.Reader(), site.ID)
 
 	h.redirect(w, r, site.Domain, "shields", tr(r, "auth.shields.flash_removed"), "")
+}
+
+// allowRejectedHostname turns one named rejection into an additive hostname
+// rule and refreshes the running policy immediately.
+func (h *Handler) allowRejectedHostname(w http.ResponseWriter, r *http.Request, site sites.Site) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST to allow a hostname", http.StatusMethodNotAllowed)
+		return
+	}
+
+	account, err := h.Accounts.Open(r.Context(), site.AccountID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	hostname := r.PostFormValue("hostname")
+	if hostname == shields.OtherHostname {
+		h.redirect(w, r, site.Domain, "shields", "", tr(r, "auth.shields.error_aggregate_hostname"))
+		return
+	}
+
+	rule, err := shields.Add(r.Context(), account.Writer(), site.ID, shields.KindHostname,
+		hostname, tr(r, "auth.shields.rejected_hostname_note"), h.now())
+	if err != nil {
+		h.redirect(w, r, site.Domain, "shields", "", err.Error())
+		return
+	}
+
+	h.refreshShields(r.Context(), account.Reader(), site.ID)
+	h.redirect(w, r, site.Domain, "shields", tr(r, "auth.shields.flash_hostname_allowed", "hostname", rule.Value), "")
 }
 
 // refreshShields pushes a site's rules into the running snapshot. Waiting for

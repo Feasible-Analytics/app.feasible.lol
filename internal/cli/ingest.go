@@ -1,6 +1,6 @@
 //
 // ingest.go
-// The `ingest` subcommand: accept events, buffer them, forward to a shard.
+// The `ingest` subcommand: serve event traffic separately over shared storage.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -18,17 +18,14 @@ import (
 
 const ingestHelp = `feasible ingest — run the ingest tier only.
 
-Accepts events, derives them, writes them to a local outbox, answers 202, then
-forwards to the shard that owns the account. Exists so the production front door
-scales horizontally without forking the payload-parsing code.
+Accepts events and writes them directly to the account databases on shared
+storage. It answers 202 only after the account transaction commits, and exists
+so the event listener scales without forking the payload-parsing code.
 
 Flags:
 `
 
-// runIngest starts the ingest-only process. It resolves and reports the shard
-// list on the way up because an ingestor with the wrong shards silently drops
-// every event it receives, and that is the failure we least want to discover in
-// production.
+// runIngest starts the ingest-only process and reports its resolved settings.
 func runIngest(e *env, args []string) int {
 	fs := newFlagSet("ingest", e, ingestHelp)
 	listen := fs.String("listen", e.cfg.Ingest.Listen, "listen address (host:port)")
@@ -43,9 +40,8 @@ func runIngest(e *env, args []string) int {
 	e.cfg.Ingest.Listen = *listen
 	e.cfg.Ingest.InternalListen = *internalListen
 
-	// An ingestor with the wrong shard list silently drops every event it
-	// receives, so the list is reported before anything else happens — and
-	// `ingest -check` prints it without needing a database to exist.
+	// Compatibility topology fields remain visible while deployments move to
+	// shared storage, even though direct account writes no longer use them.
 	e.log.Info("ingest configuration",
 		"listen", e.cfg.Ingest.Listen,
 		"internal_listen", e.cfg.Ingest.InternalListen,
@@ -71,9 +67,7 @@ func runIngest(e *env, args []string) int {
 	ingestHealth(checks, control, service, *dataDir)
 
 	// The blocked-address rules have to be loaded here as well as in the app
-	// process. This tier is the only place the raw IP still exists, so an
-	// ingestor running without them would forward traffic the customer has
-	// explicitly asked us not to count, and no later stage could tell.
+	// process. This endpoint is the only place the raw IP still exists.
 	rules, err := buildSiteRules(context.Background(), e, service, manager)
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)

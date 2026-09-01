@@ -12,6 +12,38 @@
 import { test, expect } from "@playwright/test";
 import { collect, settledCount, stubOutbound } from "./helpers.js";
 
+// pinUUIDs keeps the diagnostic artefacts reproducible now that the client
+// identity is visible in every captured payload. It is intentionally scoped to
+// screenshots; retry tests need the browser's real generator across documents.
+async function pinUUIDs(page) {
+	await page.addInitScript(() => {
+		let sequence = 0;
+		Object.defineProperty(crypto, "randomUUID", {
+			value: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`,
+		});
+	});
+}
+
+// diagnosticEvents presents logical events rather than timing-dependent retry
+// attempts. Engagement milliseconds depend on scheduler load, and an in-flight
+// successful body may be replayed harmlessly before its promise clears storage;
+// neither belongs in a committed diagnostic image.
+function diagnosticEvents(events) {
+	const seen = new Set();
+	const stable = [];
+
+	for (const event of events) {
+		if (event.k && seen.has(event.k)) continue;
+		if (event.k) seen.add(event.k);
+
+		const copy = { ...event };
+		if ("e" in copy) copy.e = "measured at runtime";
+		stable.push(copy);
+	}
+
+	return stable;
+}
+
 // panel draws the captured events onto the page being photographed, so the
 // screenshot shows the cause and the effect in one frame.
 async function panel(page, title, events) {
@@ -64,6 +96,7 @@ async function shoot(page, name) {
 }
 
 test("a pageview, a custom event and an outbound click", async ({ page }) => {
+	await pinUUIDs(page);
 	const state = await collect(page);
 	await stubOutbound(page);
 
@@ -79,13 +112,14 @@ test("a pageview, a custom event and an outbound click", async ({ page }) => {
 	await page.click("#download");
 	await settledCount(state, "File Download", 1);
 
-	await panel(page, "basic.html", state.events);
+	await panel(page, "basic.html", diagnosticEvents(state.events));
 	await shoot(page, "01-pageview-and-events");
 
 	expect(state.events.length).toBeGreaterThanOrEqual(4);
 });
 
 test("hash routing through both the hash and the History API", async ({ page }) => {
+	await pinUUIDs(page);
 	const state = await collect(page);
 
 	await page.goto("/hash.html");
@@ -101,7 +135,7 @@ test("hash routing through both the hash and the History API", async ({ page }) 
 	await page.click("#private");
 	await page.waitForTimeout(400);
 
-	await panel(page, "hash.html — the excluded route sent nothing", state.events);
+	await panel(page, "hash.html — the excluded route sent nothing", diagnosticEvents(state.events));
 	await shoot(page, "02-hash-routing-and-exclusions");
 
 	// Three routes, three pageviews, and nothing at all for the excluded one.
@@ -110,6 +144,7 @@ test("hash routing through both the hash and the History API", async ({ page }) 
 });
 
 test("scroll depth and time on page", async ({ page }) => {
+	await pinUUIDs(page);
 	const state = await collect(page);
 
 	await page.goto("/engagement.html");
@@ -121,13 +156,14 @@ test("scroll depth and time on page", async ({ page }) => {
 
 	await settledCount(state, "engagement", 1);
 
-	await panel(page, "engagement.html", state.events);
+	await panel(page, "engagement.html", diagnosticEvents(state.events));
 	await shoot(page, "03-engagement");
 
 	expect(state.events.length).toBeGreaterThanOrEqual(2);
 });
 
 test("a single-page application's route changes", async ({ page }) => {
+	await pinUUIDs(page);
 	const state = await collect(page);
 
 	await page.goto("/spa.html");
@@ -142,7 +178,7 @@ test("a single-page application's route changes", async ({ page }) => {
 	await page.click("#push-then-replace");
 	await settledCount(state, "pageview", 4);
 
-	await panel(page, "spa.html", state.events);
+	await panel(page, "spa.html", diagnosticEvents(state.events));
 	await shoot(page, "04-spa-navigation");
 
 	expect(state.events.length).toBeGreaterThanOrEqual(4);

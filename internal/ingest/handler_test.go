@@ -1,6 +1,6 @@
 //
 // handler_test.go
-// Tests for the public endpoint: always 202, never silent, debuggable in one curl.
+// Tests for durable 202s, retryable failures, named drops, and one-curl debug.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -106,6 +106,57 @@ func TestUnknownSiteIsDroppedWithAReason(t *testing.T) {
 	snapshot := h.service.Counters.Snapshot()
 	if len(snapshot.Dropped) != 1 || snapshot.Dropped[0].Reason != ReasonUnknownSite {
 		t.Fatalf("counters = %+v, want one unknown_site drop", snapshot.Dropped)
+	}
+}
+
+// TestActualURLHostnameIsAdvisoryAtThePublicRequest covers malformed, relative,
+// missing, and mismatched page URLs without letting a stale request-tier view
+// override the writer's live hostname policy.
+func TestActualURLHostnameIsAdvisoryAtThePublicRequest(t *testing.T) {
+	for name, rawURL := range map[string]string{
+		"missing": "", "relative": "/pricing", "malformed": "://bad", "mismatch": "https://copycat.test/pricing",
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHandlerHarness(t)
+			body := fmt.Sprintf(`{"n":"pageview","u":%q,"d":"example.com"}`, rawURL)
+			recorder := post(t, h, "text/plain", body, nil)
+
+			if recorder.Code != http.StatusAccepted {
+				t.Fatalf("status %d, want 202", recorder.Code)
+			}
+			if got := recorder.Header().Get(HeaderDropped); got != "" {
+				t.Fatalf("request-tier advisory produced dropped header %q", got)
+			}
+			snapshot := h.service.Counters.Snapshot()
+			if len(snapshot.Accepted) != 1 || len(snapshot.Dropped) != 0 {
+				t.Fatalf("advisory changed counters: %+v", snapshot)
+			}
+			if h.service.Buffer.Len() != 1 {
+				t.Fatalf("advisory queued %d events, want 1 for writer authority", h.service.Buffer.Len())
+			}
+		})
+	}
+}
+
+// TestRateLimitIsANamedAcceptedDrop proves one abusive source is refused before
+// derivation without turning the browser beacon into a 429 retry loop.
+func TestRateLimitIsANamedAcceptedDrop(t *testing.T) {
+	h := newHandlerHarness(t)
+	now := fixtureStart
+	h.service.Limiter = NewRateLimiter(1, 1)
+	h.service.Limiter.SetClock(func() time.Time { return now })
+	h.service.Handler.Limiter = h.service.Limiter
+
+	first := post(t, h, "text/plain", validBody, nil)
+	second := post(t, h, "text/plain", validBody, nil)
+	if first.Code != http.StatusAccepted || second.Code != http.StatusAccepted {
+		t.Fatalf("statuses = %d/%d, want 202/202", first.Code, second.Code)
+	}
+	if got := second.Header().Get(HeaderDropped); got != ReasonRateLimited {
+		t.Fatalf("second request drop = %q, want %q", got, ReasonRateLimited)
+	}
+	if h.service.Buffer.Len() != 1 {
+		t.Fatalf("rate limiter queued %d events, want only the first", h.service.Buffer.Len())
 	}
 }
 
@@ -453,11 +504,9 @@ func TestSizeTriggeredFlushSurvivesTheRequestEnding(t *testing.T) {
 	}
 }
 
-// TestInternalFailureIsStillA202 checks our own outage does not become the
-// sender's error. A salt store that will not open makes the fingerprint
-// impossible, and a 4xx would have every tracker retrying a request that cannot
-// succeed.
-func TestInternalFailureIsStillA202(t *testing.T) {
+// TestSaltFailureIsRetryableWithoutAcceptingOrDropping checks the identity
+// dependency fails closed before any durable or counter side effect.
+func TestSaltFailureIsRetryableWithoutAcceptingOrDropping(t *testing.T) {
 	h := newHandlerHarness(t)
 
 	key, err := salts.LoadKey(t.TempDir(), fixtureSaltKey)
@@ -483,21 +532,50 @@ func TestInternalFailureIsStillA202(t *testing.T) {
 
 	recorder := post(t, h, "text/plain", validBody, nil)
 
-	if recorder.Code != http.StatusAccepted {
-		t.Fatalf("status %d, want 202 — our failure must never reach the tracker as a 4xx", recorder.Code)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want retryable 503", recorder.Code)
 	}
-	if got := recorder.Header().Get(HeaderDropped); got != ReasonInternalError {
-		t.Fatalf("dropped header = %q, want %q", got, ReasonInternalError)
+	if got := recorder.Header().Get("Retry-After"); got == "" {
+		t.Fatal("salt outage response has no Retry-After")
+	}
+	if got := recorder.Header().Get(HeaderDropped); got != "" {
+		t.Fatalf("salt outage was falsely reported as an accepted drop: %q", got)
 	}
 
-	var counted int64
-	for _, count := range h.service.Counters.Snapshot().Dropped {
-		if count.Reason == ReasonInternalError {
-			counted = count.Count
-		}
+	snapshot := h.service.Counters.Snapshot()
+	if len(snapshot.Dropped) != 0 || len(snapshot.Accepted) != 0 {
+		t.Fatalf("salt outage changed ingest counters: %+v", snapshot)
 	}
-	if counted != 1 {
-		t.Fatalf("counted %d internal failures, want 1 — an outage nobody counts is an outage nobody fixes", counted)
+	if h.service.Buffer.Len() != 0 {
+		t.Fatal("salt outage queued an event that had no current fingerprint")
+	}
+}
+
+// TestDurableWriteFailureReturns503WithoutFalseCounters proves the public
+// acknowledgement and all accepted-event counters remain behind the account
+// transaction boundary. The browser, not process memory, owns the retry.
+func TestDurableWriteFailureReturns503WithoutFalseCounters(t *testing.T) {
+	h := newHandlerHarness(t)
+	transport := &recording{failNext: true}
+	h.service.Buffer = NewBuffer(transport, 100, time.Millisecond)
+	h.service.Handler.Buffer = h.service.Buffer
+	h.service.Handler.Durable = true
+
+	recorder := post(t, h, "text/plain", validBody, nil)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want retryable 503", recorder.Code)
+	}
+	if got := recorder.Header().Get(HeaderDropped); got != "" {
+		t.Fatalf("failed write was falsely reported as an accepted drop: %q", got)
+	}
+	if h.service.Buffer.Len() != 0 {
+		t.Fatal("failed durable request remained only in volatile process memory")
+	}
+
+	snapshot := h.service.Counters.Snapshot()
+	if len(snapshot.Accepted) != 0 || len(snapshot.Dropped) != 0 {
+		t.Fatalf("failed durable write changed counters: %+v", snapshot)
 	}
 }
 

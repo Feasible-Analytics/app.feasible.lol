@@ -11,6 +11,7 @@ package migrate
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -130,6 +131,49 @@ func TestControlMigratesAFreshDatabase(t *testing.T) {
 	}
 	if version != Control().Version() {
 		t.Fatalf("schema version is %d, want %d", version, Control().Version())
+	}
+}
+
+// TestRandomSaltAuthorityMigrationInvalidatesDeterministicRows exercises the
+// deployment boundary at control migration 0007. Existing material may have
+// been derived from the permanent encryption key and must not survive the
+// transition to random authority-owned values.
+func TestRandomSaltAuthorityMigrationInvalidatesDeterministicRows(t *testing.T) {
+	ctx := context.Background()
+	db := newDatabase(t)
+
+	throughSix := Set{Name: "control"}
+	for _, migration := range Control().Migrations {
+		if migration.Version <= 6 {
+			throughSix.Migrations = append(throughSix.Migrations, migration)
+		}
+	}
+	if _, err := Run(ctx, db, throughSix); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO salts (salt, created_at) VALUES (x'0011223344556677', 123)"); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Run(ctx, db, Control())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.From != 6 || fmt.Sprint(result.Applied) != "[7]" {
+		t.Fatalf("control authority upgrade moved from %d via %v, want 6 via [7]", result.From, result.Applied)
+	}
+
+	var count int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM salts").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("authority migration retained %d deterministic-era salt rows", count)
+	}
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO salts (salt, created_at, source_shard) VALUES (x'8899aabbccddeeff', 86400, 0)"); err != nil {
+		t.Fatalf("authority source column is unavailable after migration 0007: %v", err)
 	}
 }
 
@@ -394,8 +438,8 @@ func TestControlBackfillsMissingLifecycleAtUpgradeTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	after := time.Now().UTC().Unix()
-	if len(result.Applied) != 1 || result.Applied[0] != 6 {
-		t.Fatalf("upgrade applied %v, want only migration 6", result.Applied)
+	if fmt.Sprint(result.Applied) != "[6 7]" {
+		t.Fatalf("upgrade applied %v, want Stripe 6 followed by salt authority 7", result.Applied)
 	}
 
 	var backfilledStarted int64
@@ -467,8 +511,8 @@ func TestControlBackfillsMissingLifecycleAtUpgradeTime(t *testing.T) {
 }
 
 // TestControlUpgradesPopulatedBillingFromFiveToSix proves the production shape
-// keeps existing customer, subscription, lifecycle, and event data while the
-// durable payment-ordering tables and defaults are added.
+// keeps existing Stripe, lifecycle, and event data while migration 6 adds the
+// payment-ordering tables and migration 7 follows it with salt authority.
 func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 	ctx := context.Background()
 	db := newDatabase(t)
@@ -542,8 +586,8 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Applied) != 1 || result.Applied[0] != 6 {
-		t.Fatalf("upgrade applied %v, want only migration 6", result.Applied)
+	if fmt.Sprint(result.Applied) != "[6 7]" {
+		t.Fatalf("upgrade applied %v, want Stripe 6 followed by salt authority 7", result.Applied)
 	}
 
 	var customer, subscription, paymentState string
@@ -683,7 +727,10 @@ func TestAccountMigratesAFreshDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, table := range []string{"events", "event_details", "sessions", "dim_pathname", "dim_source", "dim_event_name"} {
+	for _, table := range []string{
+		"events", "event_details", "sessions", "dim_pathname", "dim_source", "dim_event_name",
+		"ingest_session_state", "ingest_orphan_engagements", "hostname_rejections", "session_id_allocator",
+	} {
 		if !tableExists(t, db, table) {
 			t.Errorf("account schema is missing %s", table)
 		}
@@ -702,6 +749,97 @@ func TestAccountMigratesAFreshDatabase(t *testing.T) {
 		if count == 0 {
 			t.Errorf("account schema is missing index %s", index)
 		}
+	}
+}
+
+// TestAccountV7ToCurrentKeepsPopulatedSessionOwnership validates the deployed
+// schema upgrade through ingest state 0008 and hostname/session authority 0009
+// without losing sessions or UUID receipts.
+func TestAccountV7ToCurrentKeepsPopulatedSessionOwnership(t *testing.T) {
+	ctx := context.Background()
+	db := newDatabase(t)
+
+	throughSeven := Set{Name: "account"}
+	for _, migration := range Account().Migrations {
+		if migration.Version <= 7 {
+			throughSeven.Migrations = append(throughSeven.Migrations, migration)
+		}
+	}
+	if _, err := Run(ctx, db, throughSeven); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO sessions (id, site_id, user_id, started_at, last_seen_at)
+		VALUES (41, 7, 9001, 100, 200);
+		INSERT INTO recent_event_ids (event_uuid, received_at)
+		VALUES (x'00112233445566778899aabbccddeeff', 123);
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Run(ctx, db, Account())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.From != 7 || result.To != 9 || fmt.Sprint(result.Applied) != "[8 9]" {
+		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 9 via [8 9]",
+			result.From, result.To, result.Applied)
+	}
+
+	var nextID int64
+	if err := db.QueryRowContext(ctx,
+		"SELECT next_id FROM session_id_allocator WHERE singleton = 1").Scan(&nextID); err != nil {
+		t.Fatal(err)
+	}
+	if nextID != 42 {
+		t.Fatalf("allocator starts at %d, want 42", nextID)
+	}
+
+	for name, query := range map[string]string{
+		"session": "SELECT COUNT(*) FROM sessions WHERE id = 41 AND site_id = 7 AND user_id = 9001",
+		"receipt": "SELECT COUNT(*) FROM recent_event_ids WHERE event_uuid = x'00112233445566778899aabbccddeeff'",
+	} {
+		var count int
+		if err := db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Errorf("%s row count = %d, want 1", name, count)
+		}
+	}
+
+	var pruningIndexes int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'index' AND name = 'recent_event_ids_received'`).Scan(&pruningIndexes); err != nil {
+		t.Fatal(err)
+	}
+	if pruningIndexes != 0 {
+		t.Fatal("account upgrade retained the obsolete timed-pruning receipt index")
+	}
+}
+
+// TestCoordinatedMigrationNumbers pins the upgrade order requested by the
+// consolidated runtime: account ingest state and hostname authority follow the
+// deployed 0007 settings migration, while control salt authority follows Stripe
+// 0006.
+func TestCoordinatedMigrationNumbers(t *testing.T) {
+	for name, test := range map[string]struct {
+		set  Set
+		want []int
+	}{
+		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9}},
+		"control": {set: Control(), want: []int{1, 2, 3, 4, 5, 6, 7}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := make([]int, 0, len(test.set.Migrations))
+			for _, migration := range test.set.Migrations {
+				got = append(got, migration.Version)
+			}
+			if fmt.Sprint(got) != fmt.Sprint(test.want) {
+				t.Fatalf("migration order = %v, want %v", got, test.want)
+			}
+		})
 	}
 }
 

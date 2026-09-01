@@ -12,11 +12,9 @@ package ingest
 // no-op default because the rules live in the account database and this package
 // must not learn to read one.
 //
-// It runs at the shard rather than in the ingest tier, and that placement is
-// the whole point: dim_pathname is the table these rules exist to stop growing,
-// and the shard is where a value becomes a row in it. A site with an identifier
-// in its URLs otherwise interns a new dimension row per request, and every
-// account's dimension tables are warmed into memory when the database opens.
+// It runs at the authoritative account writer rather than during request
+// derivation. That is where dim_pathname becomes a row and where a live rule
+// can share the fact transaction's decision boundary.
 //
 // Cleaning here does not make the rules retroactive — the query layer does
 // that, by grouping through a map from one interned id to another. Both halves

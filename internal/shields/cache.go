@@ -30,6 +30,10 @@ type Cache struct {
 	sites    *sites.Cache
 	accounts *accounts.Manager
 
+	// Rejections reads hostname facts already committed by the writer for the
+	// settings page's one-click allow flow.
+	Rejections *Rejections
+
 	snap atomic.Pointer[snapshot]
 }
 
@@ -58,6 +62,7 @@ func (c *Cache) Refresh(ctx context.Context) error {
 	}
 
 	bySite := map[int64]*Ruleset{}
+	rulesBySite := map[int64][]Rule{}
 
 	for accountID := range byAccount {
 		account, err := c.accounts.Open(ctx, accountID)
@@ -74,8 +79,12 @@ func (c *Cache) Refresh(ctx context.Context) error {
 		}
 
 		for siteID, list := range rules {
-			bySite[siteID] = Compile(list)
+			rulesBySite[siteID] = list
 		}
+	}
+
+	for _, site := range c.sites.All() {
+		bySite[site.ID] = CompileFor(site.Domain, rulesBySite[site.ID])
 	}
 
 	c.snap.Store(&snapshot{bySite: bySite, builtAt: time.Now()})
@@ -120,7 +129,14 @@ func (c *Cache) Set(siteID int64, rules []Rule) {
 	for id, set := range current.bySite {
 		bySite[id] = set
 	}
-	bySite[siteID] = Compile(rules)
+	domain := ""
+	for _, site := range c.sites.All() {
+		if site.ID == siteID {
+			domain = site.Domain
+			break
+		}
+	}
+	bySite[siteID] = CompileFor(domain, rules)
 
 	c.snap.Store(&snapshot{bySite: bySite, builtAt: current.builtAt})
 }
@@ -143,7 +159,7 @@ func (c *Cache) Blocked(siteID int64, addr netip.Addr) bool {
 	return c.snap.Load().bySite[siteID].BlocksIP(addr)
 }
 
-// Allowed implements the shard-side shield: country, page and hostname.
+// Allowed implements the account-writer shield: country, page and hostname.
 func (c *Cache) Allowed(siteID int64, hostname, pathname, country string) (bool, string) {
 	set := c.snap.Load().bySite[siteID]
 	if set.Empty() {
@@ -153,9 +169,15 @@ func (c *Cache) Allowed(siteID int64, hostname, pathname, country string) (bool,
 	return set.Allowed(hostname, pathname, country)
 }
 
+// AllowsHostname performs the same hostname check as the writer without
+// recording a rejection.
+func (c *Cache) AllowsHostname(siteID int64, hostname string) bool {
+	return c.snap.Load().bySite[siteID].HostnameAllowed(hostname)
+}
+
 // Run refreshes on a ticker until the context is cancelled. The interval
-// matches the routing poll, so "I added a rule" and "it started applying" are
-// the same fifteen seconds apart as adding a site.
+// matches the site-cache refresh, so rules and newly added sites propagate on
+// the same bounded schedule.
 func (c *Cache) Run(ctx context.Context, onError func(error)) {
 	ticker := time.NewTicker(RefreshInterval)
 	defer ticker.Stop()

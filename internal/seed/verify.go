@@ -476,7 +476,7 @@ func oddities(ctx context.Context, run *accountRun) ([]Check, error) {
 			Check{Name: "revenue arrives in three currencies", OK: currencies >= 3, Detail: fmt.Sprintf("%d distinct currencies", currencies), Enforced: true},
 			Check{Name: "an event carries the property cap", OK: capped >= 1, Detail: fmt.Sprintf("%d event(s) with thirty properties", capped), Enforced: true},
 			Check{Name: "a visitor is bucketed as Anonymous VPN Service", OK: vpn >= 1, Detail: fmt.Sprintf("%d event(s) from a VPN exit", vpn), Enforced: true},
-			Check{Name: "traffic arrives from an unvalidated hostname", OK: unknownHost >= 1, Detail: fmt.Sprintf("%d event(s) from %s", unknownHost, unvalidatedHostname), Enforced: true},
+			Check{Name: "unvalidated hostname traffic is rejected", OK: unknownHost == 0, Detail: fmt.Sprintf("%d stored event(s) from %s", unknownHost, unvalidatedHostname), Enforced: true},
 		)
 
 		// The empty state. A site with no rows at all is what every report card

@@ -14,6 +14,8 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 // Limits on what one event may carry. Every one of them is enforced by counting
@@ -79,6 +81,7 @@ const ScrollDepthUnset = 255
 // by changing one hostname. Renaming any of them breaks every deployed tracker
 // in the world.
 type Payload struct {
+	Key      string          `json:"k"`  // client-generated idempotency UUID
 	Name     string          `json:"n"`  // event name
 	URL      string          `json:"u"`  // full URL
 	Domain   string          `json:"d"`  // site identifier
@@ -166,6 +169,7 @@ func ParsePayload(body []byte) (*Payload, error) {
 	}
 
 	payload.Name = strings.TrimSpace(payload.Name)
+	payload.Key = strings.TrimSpace(payload.Key)
 	payload.Domain = strings.TrimSpace(payload.Domain)
 	payload.URL = strings.TrimSpace(payload.URL)
 
@@ -175,8 +179,10 @@ func ParsePayload(body []byte) (*Payload, error) {
 	if payload.Domain == "" {
 		return nil, fmt.Errorf(`"d" (domain) is required`)
 	}
-	if payload.URL == "" {
-		return nil, fmt.Errorf(`"u" (url) is required`)
+	if payload.Key != "" {
+		if _, err := uuid.Parse(payload.Key); err != nil {
+			return nil, fmt.Errorf(`"k" (idempotency key) must be a UUID`)
+		}
 	}
 
 	return &payload, nil

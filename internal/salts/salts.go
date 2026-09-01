@@ -18,9 +18,9 @@
 //   - Rotation is at 00:00 UTC, never a local midnight. A timezone-local
 //     rotation would give two accounts different visitor identities for the
 //     same person on the same day, and no later job could reconcile them.
-//   - Exactly two salts are live: today's, which hashes, and yesterday's, which
-//     is a session-lookup fallback and nothing else. Hashing with yesterday's
-//     would keep a visitor identifiable for two days.
+//   - Exactly two salts are usable: today's, which hashes, and yesterday's,
+//     which is a session-lookup fallback. Tomorrow's random material may be
+//     pre-provisioned for rollover but is never used early.
 //   - Rows older than 48 hours are deleted, not archived.
 package salts
 
@@ -62,10 +62,25 @@ const daySeconds int64 = 86400
 type Pair struct {
 	Current  []byte
 	Previous []byte
+	Next     []byte
 
 	// Day is the UTC day number Current belongs to, which is what tells a
 	// cached Pair apart from one that rotation has made stale.
 	Day int64
+
+	// SourceShard identifies the consolidated deployment authority. Only zero
+	// may generate material; any other marker is refused during loading.
+	SourceShard int
+}
+
+// Erase overwrites every secret slice owned by this snapshot. Store callers
+// receive isolated backing arrays so request-local erasure cannot race the
+// shared cache.
+func (p *Pair) Erase() {
+	zeroBytes(p.Current)
+	zeroBytes(p.Previous)
+	zeroBytes(p.Next)
+	*p = Pair{}
 }
 
 // Store reads and rotates the salts in control.db. It is safe for concurrent
@@ -137,12 +152,12 @@ func (s *Store) Pair(ctx context.Context) (Pair, error) {
 	today := Day(s.now())
 
 	s.mu.RLock()
-	cached := s.cached
-	s.mu.RUnlock()
-
-	if cached.Day == today && len(cached.Current) == Size {
-		return cached, nil
+	if s.cached.Day == today && len(s.cached.Current) == Size {
+		answer := clonePair(s.cached)
+		s.mu.RUnlock()
+		return answer, nil
 	}
+	s.mu.RUnlock()
 
 	// The periodic refresh runs every 90 seconds, which would leave a window
 	// after midnight where events hashed with yesterday's salt. Refreshing on
@@ -157,7 +172,10 @@ func (s *Store) Pair(ctx context.Context) (Pair, error) {
 func (s *Store) Refresh(ctx context.Context) (Pair, error) {
 	now := s.now()
 
-	if err := s.ensureToday(ctx, now); err != nil {
+	if err := s.ensureDay(ctx, Day(now)); err != nil {
+		return Pair{}, err
+	}
+	if err := s.ensureDay(ctx, Day(now)+1); err != nil {
 		return Pair{}, err
 	}
 
@@ -166,30 +184,33 @@ func (s *Store) Refresh(ctx context.Context) (Pair, error) {
 		return Pair{}, err
 	}
 
-	s.mu.Lock()
-	s.cached = pair
-	s.mu.Unlock()
-
-	// Pruning after loading rather than before means a failure to prune never
-	// leaves the process without salts. It is also the only place the 48-hour
-	// promise is actually kept, so it runs on every refresh rather than as a
-	// scheduled job that could be turned off.
+	// A store that cannot erase expired material fails closed. Continuing to
+	// hash after the privacy boundary is known to be broken would turn a 202
+	// into a false claim.
 	if err := s.Prune(ctx, now); err != nil {
-		return pair, err
+		zeroPair(&pair)
+		s.invalidateCache()
+		return Pair{}, err
 	}
 
-	return pair, nil
+	s.mu.Lock()
+	zeroPair(&s.cached)
+	s.cached = pair
+	answer := clonePair(s.cached)
+	s.mu.Unlock()
+
+	return answer, nil
 }
 
-// ensureToday inserts a salt for the current UTC day when there is not one
-// already. The unique index on the day bucket is what makes this safe with
-// several processes racing at midnight: they all try, one wins, and the losers
-// read the winner's row.
-func (s *Store) ensureToday(ctx context.Context, now time.Time) error {
+// ensureDay inserts random authority material for one UTC day. The next day is
+// generated ahead of time so every process can cross midnight without using a
+// stale identity.
+func (s *Store) ensureDay(ctx context.Context, day int64) error {
 	raw := make([]byte, Size)
 	if _, err := io.ReadFull(s.random, raw); err != nil {
 		return fmt.Errorf("salts: generate: %w", err)
 	}
+	defer zeroBytes(raw)
 
 	sealed, err := s.seal(raw)
 	if err != nil {
@@ -200,10 +221,10 @@ func (s *Store) ensureToday(ctx context.Context, now time.Time) error {
 	// instant. The row's day is derived from this column, and a row written at
 	// 23:59:59 would otherwise land in a different bucket depending on how long
 	// the insert took.
-	startOfDay := Day(now) * daySeconds
+	startOfDay := day * daySeconds
 
 	if _, err := s.db.ExecContext(ctx,
-		"INSERT INTO salts (salt, created_at) VALUES (?, ?) ON CONFLICT DO NOTHING",
+		"INSERT INTO salts (salt, created_at, source_shard) VALUES (?, ?, 0) ON CONFLICT DO NOTHING",
 		sealed, startOfDay,
 	); err != nil {
 		return fmt.Errorf("salts: insert: %w", err)
@@ -212,26 +233,35 @@ func (s *Store) ensureToday(ctx context.Context, now time.Time) error {
 	return nil
 }
 
-// load reads the two newest salts. It orders by created_at rather than by id so
-// that a restored or back-filled row cannot make an older salt look newer than
-// today's.
+// load reads the previous, current and pre-provisioned next generations.
 func (s *Store) load(ctx context.Context, now time.Time) (Pair, error) {
-	rows, err := s.db.QueryContext(ctx,
-		"SELECT salt, created_at FROM salts ORDER BY created_at DESC LIMIT 2")
+	today := Day(now)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT salt, created_at, source_shard
+		FROM salts
+		WHERE created_at >= ? AND created_at <= ?
+		ORDER BY created_at`, (today-1)*daySeconds, (today+1)*daySeconds)
 	if err != nil {
 		return Pair{}, fmt.Errorf("salts: read: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
 	var pair Pair
+	success := false
+	defer func() {
+		if !success {
+			pair.Erase()
+		}
+	}()
 
 	for rows.Next() {
 		var (
 			sealed    []byte
 			createdAt int64
+			source    int
 		)
 
-		if err := rows.Scan(&sealed, &createdAt); err != nil {
+		if err := rows.Scan(&sealed, &createdAt, &source); err != nil {
 			return Pair{}, fmt.Errorf("salts: read: %w", err)
 		}
 
@@ -240,13 +270,23 @@ func (s *Store) load(ctx context.Context, now time.Time) (Pair, error) {
 			return Pair{}, err
 		}
 
-		if pair.Current == nil {
-			pair.Current = raw
-			pair.Day = createdAt / daySeconds
-			continue
+		if source != 0 {
+			zeroBytes(raw)
+			return Pair{}, fmt.Errorf("salts: day %d came from non-authority source %d", createdAt/daySeconds, source)
 		}
 
-		pair.Previous = raw
+		switch createdAt / daySeconds {
+		case today - 1:
+			pair.Previous = raw
+		case today:
+			pair.Current = raw
+			pair.Day = today
+			pair.SourceShard = source
+		case today + 1:
+			pair.Next = raw
+		default:
+			zeroBytes(raw)
+		}
 	}
 
 	if err := rows.Err(); err != nil {
@@ -260,10 +300,16 @@ func (s *Store) load(ctx context.Context, now time.Time) (Pair, error) {
 	// A salt that is not today's would fingerprint every visitor under a stale
 	// identity, and nothing downstream could tell. Better to fail the refresh
 	// and keep serving with the previous cached pair.
-	if pair.Day != Day(now) {
+	if pair.Day != today {
+		zeroPair(&pair)
 		return Pair{}, fmt.Errorf("salts: newest salt is for day %d, expected %d", pair.Day, Day(now))
 	}
+	if pair.SourceShard != 0 {
+		zeroPair(&pair)
+		return Pair{}, fmt.Errorf("salts: current salt came from non-authority source %d", pair.SourceShard)
+	}
 
+	success = true
 	return pair, nil
 }
 
@@ -273,16 +319,50 @@ func (s *Store) load(ctx context.Context, now time.Time) (Pair, error) {
 func (s *Store) Prune(ctx context.Context, now time.Time) error {
 	cutoff := now.Add(-Retention).Unix()
 
-	if _, err := s.db.ExecContext(ctx, "DELETE FROM salts WHERE created_at < ?", cutoff); err != nil {
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM salts WHERE created_at <= ?", cutoff); err != nil {
 		return fmt.Errorf("salts: prune: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		return fmt.Errorf("salts: erase WAL: %w", err)
 	}
 
 	return nil
 }
 
-// Run refreshes on a ticker until the context is cancelled. Every process runs
-// its own copy: there is no leader and no coordination, because a salt is
-// derived from the calendar rather than from anything a process decides.
+// clonePair gives callers isolated slices so a cache rollover can overwrite
+// retired storage without racing an in-flight fingerprint operation.
+func clonePair(pair Pair) Pair {
+	return Pair{
+		Current:     append([]byte(nil), pair.Current...),
+		Previous:    append([]byte(nil), pair.Previous...),
+		Next:        append([]byte(nil), pair.Next...),
+		Day:         pair.Day,
+		SourceShard: pair.SourceShard,
+	}
+}
+
+// zeroPair overwrites every secret slice before releasing its backing arrays.
+func zeroPair(pair *Pair) {
+	pair.Erase()
+}
+
+// zeroBytes overwrites secret material before its slice is released.
+func zeroBytes(value []byte) {
+	for i := range value {
+		value[i] = 0
+	}
+}
+
+// invalidateCache erases the usable snapshot after a retention failure.
+func (s *Store) invalidateCache() {
+	s.mu.Lock()
+	zeroPair(&s.cached)
+	s.mu.Unlock()
+}
+
+// Run refreshes on a ticker until the context is cancelled. Every process reads
+// the same SQLite authority rows; uniqueness makes concurrent random proposals
+// converge on one current and one pre-provisioned next-day value.
 func (s *Store) Run(ctx context.Context, onError func(error)) {
 	ticker := time.NewTicker(RefreshInterval)
 	defer ticker.Stop()
@@ -292,7 +372,9 @@ func (s *Store) Run(ctx context.Context, onError func(error)) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if _, err := s.Refresh(ctx); err != nil && onError != nil {
+			pair, err := s.Refresh(ctx)
+			pair.Erase()
+			if err != nil && onError != nil {
 				onError(err)
 			}
 		}

@@ -74,8 +74,11 @@ func TestPragmasAreAppliedToBothHandles(t *testing.T) {
 		if keys := pragma(t, handle, "foreign_keys"); keys != "1" {
 			t.Errorf("%s foreign_keys is %q, want 1", name, keys)
 		}
-		if sync := pragma(t, handle, "synchronous"); sync != "1" {
-			t.Errorf("%s synchronous is %q, want 1 (NORMAL)", name, sync)
+		if sync := pragma(t, handle, "synchronous"); sync != "2" {
+			t.Errorf("%s synchronous is %q, want 2 (FULL)", name, sync)
+		}
+		if secure := pragma(t, handle, "secure_delete"); secure != "1" {
+			t.Errorf("%s secure_delete is %q, want 1", name, secure)
 		}
 		if cache := pragma(t, handle, "cache_size"); cache != "-64000" {
 			t.Errorf("%s cache_size is %q, want -64000", name, cache)
@@ -166,7 +169,7 @@ func TestDSNCarriesEveryPragma(t *testing.T) {
 
 	for _, want := range []string{
 		"file:/tmp/x.db?",
-		"journal_mode(WAL)", "synchronous(NORMAL)", "busy_timeout(5000)",
+		"journal_mode(WAL)", "synchronous(FULL)", "secure_delete(1)", "busy_timeout(5000)",
 		"foreign_keys(1)", "cache_size(-64000)", "mmap_size(268435456)",
 		"temp_store(MEMORY)", "wal_autocheckpoint(1000)", "_txlock=immediate",
 	} {

@@ -112,29 +112,21 @@ worse than the incident you just fixed.
 
 ## What is lost
 
-Three windows, and only the first is normally non-zero.
+The replica sync window is the authoritative bound.
 
 **Up to one second of committed database state.** `FEASIBLE_LITESTREAM_SYNC_SECONDS`
 is the recovery point, and it is 1 by default. Everything the shard committed in
 that last second and never shipped is gone.
 
-**Nothing that is still in an ingestor's outbox.** An outbox row is deleted only
-after the shard acknowledges the commit, so every event that had not been
-acknowledged is still on an ingestor and is re-forwarded when the shard comes
-back. This is why the practical loss is close to zero rather than close to one
-second of traffic.
+**Requests whose account transaction did not commit were not answered with
+202.** The official tracker retains those UUID-tagged bodies and retries them.
+That recovery is best effort because a browser can close permanently; do not
+subtract it from the replica recovery-point claim.
 
-**Whatever the shard had accepted but not committed at the instant it died** — at
-most one write buffer, which is 250 events or 500 milliseconds, whichever came
-first. Those events were acknowledged to the ingestor and deleted from its
-outbox, so nothing will resend them.
-
-**There is no double counting.** Every event carries an id, and the shard
-remembers written ids for `DedupeRetention`, 24 hours. A re-forwarded event that
-was already committed and restored is recognised and skipped. The one thing that
-breaks this is **replaying events by hand from an export into a database restored
-to a point more than 24 hours old** — the dedupe table no longer remembers those
-ids, and the rows land twice.
+**There is no age-based dedupe expiry.** Browser UUID receipts are permanent and
+commit with their facts or policy rejections. A replay found in the restored
+receipt table is skipped at any age. Manual imports remain a separate data path;
+do not invent UUIDs or write fact rows around the ingest transaction.
 
 ## Telling the customer
 
@@ -151,8 +143,7 @@ as "no data was lost" when a window exists. The whole reason the gap is one
 second rather than one day is that we can afford to be exact about it.
 
 If the account has an export, the customer may have their own copy of the missing
-window. Do not import it into a database restored past the 24-hour dedupe window
-without checking — that is the one path to double counting.
+window. Use the supported import path and verify its own idempotency rules.
 
 ## What makes it worse
 

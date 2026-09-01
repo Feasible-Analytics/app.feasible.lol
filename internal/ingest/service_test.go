@@ -430,6 +430,9 @@ func newHarness(t testing.TB, control *sql.DB, dataDir string, wrap func(Transpo
 		t.Fatal(err)
 	}
 	h.service = service
+	if !service.Handler.Durable {
+		t.Fatal("the public direct-mode handler does not wait for a durable account commit")
+	}
 
 	// The buffer is built with the same bounds production runs with. A harness
 	// that raises them writes every event through a path production never
@@ -443,10 +446,13 @@ func newHarness(t testing.TB, control *sql.DB, dataDir string, wrap func(Transpo
 
 	service.Buffer = NewBuffer(transport, DefaultBufferSize, DefaultFlushInterval)
 
-	// Store-and-forward answers 202 before it writes, so a failed flush is
-	// invisible unless something is listening for it. Production logs it; the
-	// harness fails, because a run that lost half its events would otherwise
-	// only show up as a metric nobody could explain.
+	// Replay tests deliberately flush at chosen boundaries. Production
+	// durability is asserted above; disabling the request waiter here prevents
+	// each sequential fixture request from forcing its own timer transaction.
+	service.Handler.Durable = false
+
+	// The replay harness uses the asynchronous path, so a failed flush needs an
+	// explicit test failure rather than being visible as a request status.
 	//
 	// The error is recorded rather than reported from the callback, because a
 	// flush runs on its own goroutine and may outlive the request that started

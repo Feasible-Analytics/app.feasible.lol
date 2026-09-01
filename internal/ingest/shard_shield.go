@@ -1,6 +1,6 @@
 //
 // shard_shield.go
-// The half of the shield rules that is evaluated where the settings are live.
+// The shield rules evaluated in the authoritative account transaction.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -14,11 +14,9 @@ package ingest
 // package must not learn how to read one.
 //
 // The split between the two is not arbitrary. An IP rule can only be evaluated
-// in the ingest tier, because that is the only place the raw address still
-// exists — by the time an event reaches here the address has been geolocated,
-// hashed into a fingerprint and thrown away. Everything else is evaluated here,
-// at the shard, where the rule list is the live table rather than a snapshot
-// that has been forwarded across a network.
+// at the event endpoint, because that is the only place the raw address still
+// exists. Everything else is evaluated by the writer against the live account
+// rule snapshot in the same process.
 type ShardShield interface {
 	// Allowed reports whether an event may be written, and the drop reason when
 	// it may not. The reason is one of the Reason constants, so it lands on the

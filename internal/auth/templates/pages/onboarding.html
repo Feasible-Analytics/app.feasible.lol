@@ -6,9 +6,8 @@
   Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 
   The waiting panel polls on its own and flips when the first pageview lands.
-  Shard-pull routing means a brand-new domain can take a poll cycle before an
-  ingestor accepts anything for it, so without a visible "we are waiting" state
-  people paste the snippet, reload, see nothing, and conclude it is broken.
+  Other serving processes can take one control-cache refresh to learn a new
+  domain, so the visible waiting state covers that bounded propagation delay.
 -->
 {{ define "content" }}
 {{ $site := .Data.Site }}

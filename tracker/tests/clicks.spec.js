@@ -184,9 +184,9 @@ test("a tagged form reports the name it was tagged with, once", async ({ page })
 
 	const events = await settledCount(state, "Article Saved", 1);
 
-	// Once, not twice: the click handler leaves a control that submits a form
-	// to the submit handler, or one submission produces two events.
-	expect(events).toHaveLength(1);
+	// One logical event: navigation may replay the durable body before the old
+	// page sees its 202, but a click-plus-submit bug would create two UUIDs.
+	expect(new Set(events.map((event) => event.k)).size).toBe(1);
 });
 
 // form.submit() drops the clicked button's name and value, which silently makes

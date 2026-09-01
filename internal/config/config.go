@@ -62,9 +62,8 @@ const (
 	DefaultLitestreamConfig = "/etc/litestream.yml"
 
 	// DefaultLitestreamSync is how often each database's new write-ahead log
-	// pages are shipped, in seconds. One second is the recovery point this
-	// project promises, and the events written inside it are still in the
-	// ingest outbox.
+	// pages are shipped, in seconds. One second is the replica recovery point;
+	// the public 202 already waited for the local account commit.
 	DefaultLitestreamSync = 1
 
 	// DefaultLitestreamSnapshot is how often a full copy is taken, in hours.
@@ -89,9 +88,9 @@ const (
 	AccountDatabaseDir  = "accounts"
 )
 
-// Transport names how the app process receives events. Direct means one process
-// does everything (the self-hoster path); http means a separate ingest tier
-// forwards over the network (the production shape).
+// Transport names which public process owns the event endpoint. Direct mounts
+// it in the app process; http leaves it to a separate ingest process that uses
+// the same shared control and account storage.
 const (
 	TransportDirect = "direct"
 	TransportHTTP   = "http"
@@ -111,9 +110,9 @@ const (
 	EnvDevelopment = "development"
 )
 
-// InternalKey is one shared secret used to sign requests between the ingest tier
-// and a shard. Keys carry an id so that a rotation can add the new key
-// everywhere before any signer starts using it.
+// InternalKey is retained only for configuration compatibility with retired
+// internal delivery deployments. The consolidated runtime does not sign an
+// ingest-to-writer network hop.
 type InternalKey struct {
 	ID     string `json:"id"`
 	Secret string `json:"secret"`
@@ -241,6 +240,8 @@ type Ingest struct {
 	// reconnaissance for anybody deciding whether we are worth attacking.
 	InternalListen string
 
+	// Shards and BufferPath retain environment parsing compatibility with the
+	// retired forwarding topology. Direct account writes do not consume them.
 	Shards     []string
 	BufferPath string
 
@@ -283,8 +284,8 @@ type Litestream struct {
 	ConfigPath string
 
 	// ReplicaURL is the prefix every database is replicated under. Empty means
-	// replication is not configured, which is the normal state for a
-	// self-hoster and an error for a shard.
+	// replication is not configured, which is normal for a self-hoster and an
+	// error for a hosted storage group.
 	ReplicaURL string
 
 	SyncInterval     time.Duration
@@ -631,9 +632,8 @@ func parseInternalKeys(raw string) ([]InternalKey, error) {
 	return keys, nil
 }
 
-// parseShards splits the shard list and checks each entry is an absolute URL.
-// A shard address that is missing its scheme fails at the first forward attempt
-// with an unhelpful error, hours after boot; catching it here costs nothing.
+// parseShards validates the retired compatibility list so an existing deploy
+// does not silently accept malformed configuration during migration.
 func parseShards(raw string) ([]string, error) {
 	var out []string
 

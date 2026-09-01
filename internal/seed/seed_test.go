@@ -218,7 +218,7 @@ func TestRunGeneratesTheAwkwardCases(t *testing.T) {
 			"revenue arrives in three currencies",
 			"an event carries the property cap",
 			"a visitor is bucketed as Anonymous VPN Service",
-			"traffic arrives from an unvalidated hostname",
+			"unvalidated hostname traffic is rejected",
 			"a site has no data at all",
 			"a locked account still has data",
 			"a dormant account stopped receiving traffic":
@@ -229,10 +229,10 @@ func TestRunGeneratesTheAwkwardCases(t *testing.T) {
 		}
 	}
 
-	// The dormant account's events are refused by the pipeline, which is the
-	// only drop the run should be producing.
+	// Deliberate policy rejections, including dormant-account traffic and the
+	// unvalidated-hostname fixture, must be visible in the run statistics.
 	if result.Dropped == 0 {
-		t.Error("no events were dropped, so the dormant account is still being accepted")
+		t.Error("no events were dropped, so deliberate policy rejections were accepted")
 	}
 
 	// Every account database has to exist, including the one whose account is

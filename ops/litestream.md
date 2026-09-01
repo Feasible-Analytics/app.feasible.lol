@@ -8,11 +8,11 @@ Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 
 # Replication
 
-Every SQLite database on a shard is replicated continuously to object storage by
-Litestream, running beside the app as its own service. The recovery point is
-roughly one second of database state, and the events written inside that second
-are still in the ingest outbox, because an outbox row is deleted only after the
-shard acknowledges the commit.
+Every SQLite database on the shared data volume is replicated continuously to
+object storage by Litestream. The recovery point is roughly one second of
+database state. A 202 proves the local account commit, not replica upload, so a
+volume lost before its latest WAL reaches object storage can lose that sync
+window; browser retries reduce but do not erase that recovery-point bound.
 
 Written against **Litestream 0.3.x**.
 
@@ -147,8 +147,8 @@ restored `control.db` without its key is a shard that cannot read any salt, whic
 is a fixable outage. A restored `control.db` with the key stored next to it is
 not fixable, because the property it breaks is one we told customers about.
 
-**Raw addresses.** There are none to leak: the IP is discarded in the ingest tier
-before anything is written or forwarded, so no replicated file has ever held one.
+**Raw addresses.** There are none to leak: the IP is discarded at the event
+endpoint before anything is written, so no replicated file has ever held one.
 Nothing in a backup procedure may reintroduce one — packet captures, request
 logs and "just log the header for a minute" are all the wrong answer.
 

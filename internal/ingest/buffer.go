@@ -30,28 +30,25 @@ const DefaultBufferSize = 250
 const DefaultFlushInterval = 500 * time.Millisecond
 
 // FlushTimeout bounds one flush the buffer starts on its own behalf. Without a
-// bound a wedged shard would park a goroutine and its batch for the life of the
-// process; with one the batch comes back to the front of the buffer and is
-// retried by the next flush.
+// bound a wedged account write would park a goroutine and its batch for the
+// life of the process; with one the batch can be settled by a later attempt.
 const FlushTimeout = 30 * time.Second
 
-// Buffer holds derived events until there are enough of them to be worth a
-// transaction. Every event goes through it, even in single-process mode where
-// "forward" is a function call, because exercising the seam from day one is the
-// entire point of having it.
+// Buffer holds derived events until there are enough to justify a transaction.
+// Public request waiters are released only after the direct account write.
 type Buffer struct {
 	transport Transport
 
 	size     int
 	interval time.Duration
 
-	// OnError is called when a flush fails. Store-and-forward hides failure by
-	// design — the client already has its 202 — so this callback is the only
-	// place a stuck buffer becomes visible to anyone.
+	// OnError reports a failed flush to operations in addition to the 503 sent
+	// to any durable request waiter.
 	OnError func(error)
 
 	mu      sync.Mutex
 	pending []Event
+	waiters map[uuid.UUID][]chan error
 
 	// flushing serialises flushes without holding the append lock across the
 	// write. An append during a flush lands in the next batch rather than
@@ -60,7 +57,7 @@ type Buffer struct {
 
 	// scheduled means a size-triggered flush is already on its way. Without it
 	// every append past the size threshold starts another goroutine that can
-	// only queue behind the first, so one slow shard turns a burst of traffic
+	// only queue behind the first, so one slow account turns a burst of traffic
 	// into a pile of goroutines. The ticker picks up anything this skips.
 	scheduled atomic.Bool
 }
@@ -75,7 +72,12 @@ func NewBuffer(transport Transport, size int, interval time.Duration) *Buffer {
 		interval = DefaultFlushInterval
 	}
 
-	return &Buffer{transport: transport, size: size, interval: interval}
+	return &Buffer{
+		transport: transport,
+		size:      size,
+		interval:  interval,
+		waiters:   map[uuid.UUID][]chan error{},
+	}
 }
 
 // Add appends an event and flushes if the batch is full. It never blocks on the
@@ -87,8 +89,50 @@ func NewBuffer(transport Transport, size int, interval time.Duration) *Buffer {
 // inherited it would be cancelled the moment the 202 was sent, which is a
 // buffer that never writes anything except on its ticker.
 func (b *Buffer) Add(event Event) {
+	b.add(event, nil)
+}
+
+// AddAndWait appends an event and waits until the transport has confirmed the
+// event was written. Every public serving mode uses this path because a 202 is
+// a durability promise: a process crash after the response must find the event
+// in SQLite, not only in this process's pending slice.
+//
+// Waiting retains batching. Concurrent requests collect behind the same flush,
+// and a quiet request starts one after the normal interval so it cannot wait
+// forever when a Buffer is exercised without its Run loop.
+func (b *Buffer) AddAndWait(ctx context.Context, event Event) error {
+	done := make(chan error, 1)
+	b.add(event, done)
+
+	timer := time.NewTimer(b.interval)
+	defer timer.Stop()
+
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), FlushTimeout)
+		_ = b.flush(flushCtx)
+		cancel()
+
+		select {
+		case err := <-done:
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// add records one event and an optional caller waiting for its write outcome.
+func (b *Buffer) add(event Event, waiter chan error) {
 	b.mu.Lock()
 	b.pending = append(b.pending, event)
+	if waiter != nil {
+		b.waiters[event.UUID] = append(b.waiters[event.UUID], waiter)
+	}
 	full := len(b.pending) >= b.size
 	b.mu.Unlock()
 
@@ -96,9 +140,9 @@ func (b *Buffer) Add(event Event) {
 		return
 	}
 
-	// The flush runs on its own goroutine so the request returns immediately.
-	// Losing the buffered events in a crash is the trade store-and-forward
-	// exists to make: the alternative is a visitor waiting on an fsync.
+	// The flush runs on its own goroutine so asynchronous internal callers do
+	// not block. Public handlers use AddAndWait and do not acknowledge until
+	// this flush has crossed its durable commit boundary.
 	go func() {
 		defer b.scheduled.Store(false)
 
@@ -156,6 +200,7 @@ func (b *Buffer) flush(ctx context.Context) error {
 		if err == nil {
 			metrics.Flushes.WithLabelValues(metrics.OutcomeOK).Inc()
 			metrics.EventsWritten.Add(float64(len(events)))
+			b.notify(events, nil, nil)
 			continue
 		}
 
@@ -172,26 +217,70 @@ func (b *Buffer) flush(ctx context.Context) error {
 			b.OnError(err)
 		}
 
-		// Whatever did not commit goes back on the front of the buffer. The
-		// committed ids come back from the transport precisely so that a partial
-		// failure can be retried without writing the successful half twice.
+		// Asynchronous internal callers retain their uncommitted work. Durable
+		// public callers receive the error and keep the authoritative browser
+		// copy, so requeue deliberately excludes events with request waiters.
 		b.requeue(events, committed)
+		b.notify(events, committed, err)
 	}
 
 	return firstErr
 }
 
-// requeue puts the uncommitted part of a failed batch back. It is what turns a
-// transient write failure into a delayed write rather than a lost event.
+// notify releases callers waiting for this flush. A partial write reports
+// success only for UUIDs the transport named; every other durable caller
+// receives the write error.
+func (b *Buffer) notify(events []Event, committed []uuid.UUID, sendErr error) {
+	done := make(map[uuid.UUID]struct{}, len(committed))
+	for _, id := range committed {
+		done[id] = struct{}{}
+	}
+
+	type result struct {
+		waiter chan error
+		err    error
+	}
+
+	var results []result
+
+	b.mu.Lock()
+	for _, event := range events {
+		err := sendErr
+		if sendErr == nil {
+			err = nil
+		} else if _, ok := done[event.UUID]; ok {
+			err = nil
+		}
+
+		for _, waiter := range b.waiters[event.UUID] {
+			results = append(results, result{waiter: waiter, err: err})
+		}
+		delete(b.waiters, event.UUID)
+	}
+	b.mu.Unlock()
+
+	for _, result := range results {
+		result.waiter <- result.err
+	}
+}
+
+// requeue puts uncommitted asynchronous events back while leaving durable
+// request retries to the browser copy that shares the same permanent UUID.
 func (b *Buffer) requeue(events []Event, committed []uuid.UUID) {
 	done := make(map[uuid.UUID]struct{}, len(committed))
 	for _, id := range committed {
 		done[id] = struct{}{}
 	}
 
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	var retry []Event
 	for _, event := range events {
 		if _, ok := done[event.UUID]; ok {
+			continue
+		}
+		if len(b.waiters[event.UUID]) > 0 {
 			continue
 		}
 		retry = append(retry, event)
@@ -201,9 +290,7 @@ func (b *Buffer) requeue(events []Event, committed []uuid.UUID) {
 		return
 	}
 
-	b.mu.Lock()
 	b.pending = append(retry, b.pending...)
-	b.mu.Unlock()
 }
 
 // Len reports how many events are waiting. A buffer that only grows is a

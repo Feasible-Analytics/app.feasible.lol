@@ -94,21 +94,14 @@ export function ignoreReason(cfg) {
 	// browser under automation sets navigator.webdriver, so without a way to say
 	// "count this on purpose" the headless rule below would make the tracker
 	// untestable in the only environment that tests it honestly.
-	const hatch = win.__feasible;
-	const deliberate = !!(hatch && hatch.track);
-
-	if (!deliberate) {
-		// Headless and automated browsers. The four checks below are the ones
-		// that are safe.
-		//
-		// `window.phantom` is deliberately NOT among them. A widely installed
-		// crypto wallet extension injects that exact global into every page, so
-		// checking it silently discards every visit from everyone who has the
-		// extension — which is what happened to the incumbent, for as long as it
-		// took somebody to notice and report it.
-		if (win._phantom || win.__nightmare || navigator.webdriver || win.Cypress) {
-			return "automated";
-		}
+	// Headless and automated browsers. The four checks below are the ones that
+	// are safe. `window.phantom` is deliberately absent because a widely used
+	// wallet extension injects that global into real visitors' pages.
+	if (
+		!win.__feasible?.track &&
+		(win._phantom || win.__nightmare || navigator.webdriver || win.Cypress)
+	) {
+		return "automated";
 	}
 
 	if (!cfg.l && (loc.protocol === "file:" || LOCAL_HOST.test(loc.hostname))) {
@@ -120,9 +113,8 @@ export function ignoreReason(cfg) {
 	return "";
 }
 
-// warn tells the developer why nothing is being sent. A tracker that fails
-// quietly is indistinguishable from a tracker that was never installed, and
-// this project's rule is that nothing fails silently.
-export function warn(reason) {
-	console.warn("feasible: not tracking — " + reason);
+// warn gives every tracker warning one compressed console prefix. Callers name
+// whether tracking stopped or browser durability was reduced.
+export function warn(message) {
+	console.warn("feasible: " + message);
 }

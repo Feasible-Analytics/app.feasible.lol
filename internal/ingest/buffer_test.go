@@ -216,9 +216,8 @@ func TestUncommittedEventsAreRequeued(t *testing.T) {
 	}
 }
 
-// TestFlushErrorIsReported checks a stuck buffer becomes visible. Store and
-// forward hides failure by design — the client already has its 202 — so this
-// callback is the only place anybody finds out.
+// TestFlushErrorIsReported checks a stuck buffer becomes visible to operators
+// as well as to any durable request waiter.
 func TestFlushErrorIsReported(t *testing.T) {
 	transport := &recording{failNext: true}
 	buffer := NewBuffer(transport, 100, time.Hour)
@@ -234,6 +233,28 @@ func TestFlushErrorIsReported(t *testing.T) {
 	}
 	if reported == nil {
 		t.Fatal("the failure was not reported to OnError")
+	}
+}
+
+// TestAddAndWaitReportsFailureBeforeAcknowledgement proves a request cannot
+// receive its durable success until the transport has committed the event. A
+// failed waiter is not retained internally because the browser owns the retry.
+func TestAddAndWaitReportsFailureBeforeAcknowledgement(t *testing.T) {
+	transport := &recording{failNext: true}
+	buffer := NewBuffer(transport, 100, time.Millisecond)
+	event := bufferEvent(0)
+
+	if err := buffer.AddAndWait(context.Background(), event); err == nil {
+		t.Fatal("durable add reported success after the transport failed")
+	}
+	if got := buffer.Len(); got != 0 {
+		t.Fatalf("failed durable request left %d internally owned retries", got)
+	}
+	if err := buffer.AddAndWait(context.Background(), event); err != nil {
+		t.Fatalf("caller retry did not commit: %v", err)
+	}
+	if got := transport.count(); got != 2 {
+		t.Fatalf("transport received %d attempts, want 2", got)
 	}
 }
 

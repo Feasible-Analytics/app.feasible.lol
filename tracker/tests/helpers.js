@@ -26,6 +26,8 @@ export async function collect(page, options = {}) {
 		// fail makes the next `count` requests fail, which is how a dropped
 		// connection is simulated without unplugging anything.
 		fail: 0,
+		disconnect: 0,
+		cancel: 0,
 	};
 
 	await page.route("**/api/event*", async (route) => {
@@ -46,6 +48,22 @@ export async function collect(page, options = {}) {
 			state.events.push(JSON.parse(body));
 		} catch {
 			state.events.push({ __unparseable: body });
+		}
+
+		// disconnect records receipt of the complete request and then makes the
+		// browser observe a lost response: the exact lost-202 boundary.
+		if (state.disconnect > 0) {
+			state.disconnect--;
+			await route.abort("connectionreset");
+			return;
+		}
+
+		// cancel simulates the browser ending an in-flight request during page
+		// teardown after the body has already been constructed.
+		if (state.cancel > 0) {
+			state.cancel--;
+			await route.abort("aborted");
+			return;
 		}
 
 		if (state.fail > 0) {

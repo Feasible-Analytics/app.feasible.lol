@@ -1,6 +1,6 @@
 //
 // writer.go
-// The shard side: dedupe, fold into sessions, and write one transaction per account.
+// Permanent receipts, transactional session folds, and one commit per account.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -13,6 +13,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,16 +23,31 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
 )
 
-// DedupeRetention is how long a written event id is remembered. Twenty-four
-// hours because the realistic redelivery window is seconds to minutes; the
-// bound is not about correctness, it is what keeps the index small enough for
-// the lookup to stay cheap on the write path.
-const DedupeRetention = 24 * time.Hour
+// Event receipts are permanent. A browser can replay a locally retained event
+// at any age, so expiring a UUID would eventually turn a lost acknowledgement
+// into a duplicated fact row.
 
-// prunePeriod is how often the dedupe table is trimmed. Once a minute is often
-// enough that the table never grows past a day's traffic and rare enough that
-// the DELETE never shares a transaction with a burst of events.
-const prunePeriod = time.Minute
+const (
+	// MaxRejectedHostnames is the durable cardinality cap per site and UTC day.
+	MaxRejectedHostnames = 50
+
+	// OtherRejectedHostname receives distinct hostnames past the cap.
+	OtherRejectedHostname = "other"
+
+	// RejectedHostnameRetentionDays bounds the evidence table by UTC days.
+	RejectedHostnameRetentionDays = 30
+)
+
+const (
+	// WriterStageAfterClaim is the first rollback boundary in a write.
+	WriterStageAfterClaim = "after_claim"
+
+	// WriterStageAfterRejection follows authoritative hostname evidence.
+	WriterStageAfterRejection = "after_rejection"
+
+	// WriterStageBeforeCommit is the final rollback-capable boundary.
+	WriterStageBeforeCommit = "before_commit"
+)
 
 // UsageRecorder is told what an account actually stored, so the billable volume
 // can be counted. It is an interface taking plain integers rather than the
@@ -42,9 +58,8 @@ type UsageRecorder interface {
 	Record(accountID int64, pageviews, customEvents int64)
 }
 
-// Writer applies batches to the account databases. It is the shard: everything
-// above it deals in HTTP and derived events, and it is the only thing that
-// knows a row from a column.
+// Writer applies batches to the shared account databases. Everything above it
+// deals in HTTP and derived events; this is the durable fact authority.
 type Writer struct {
 	accounts *accounts.Manager
 	sessions *SessionCache
@@ -53,8 +68,7 @@ type Writer struct {
 	// has no billing at all, and ingestion must not depend on it existing.
 	Usage UsageRecorder
 
-	// Now is injectable so a replay test can control the dedupe window and the
-	// prune cutoff rather than depending on when the suite runs.
+	// Now is injectable so replay and retention tests do not depend on wall time.
 	Now func() time.Time
 
 	// Shield holds the country, page and hostname rules. It is evaluated here
@@ -73,6 +87,10 @@ type Writer struct {
 	// with identifiers in its URLs.
 	Paths PathCleaner
 
+	// Failpoint injects deterministic rollback boundaries in tests. Production
+	// leaves it nil.
+	Failpoint func(stage string) error
+
 	// mu guards the per-account state below. Writes to one account are
 	// serialised anyway — SQLite allows one writer — so a per-account lock
 	// costs nothing and makes the read-then-fold sequence atomic.
@@ -80,33 +98,14 @@ type Writer struct {
 	locks map[int64]*accountLock
 }
 
-// accountLock is one account's write serialisation and the bookkeeping that has
-// to survive a failed transaction.
+// accountLock serialises one account's writes inside a process. SQLite provides
+// the corresponding arbitration between independent serving processes.
 type accountLock struct {
 	mu sync.Mutex
-
-	// seeded records that the session id allocator has read this database's
-	// high water mark. Without it two processes — or one process after a
-	// restart — would hand out ids that already exist.
-	seeded bool
-
-	// pending holds events that were folded into the session cache but whose
-	// transaction did not commit. A retry must not fold them a second time, and
-	// the database's own dedupe table cannot help because it rolled back with
-	// everything else.
-	pending map[uuid.UUID]int64
-
-	// deferred holds rows for engagement pings that were adopted out of the
-	// orphan map by a batch whose transaction then failed. Adoption is not
-	// undoable — the pings are gone from the cache and were never in the
-	// batch — so the rows are carried here until a transaction commits them.
-	// Without it their events rows are never written at all.
-	deferred []eventRow
-
-	lastPruned time.Time
 }
 
-// NewWriter builds a shard writer over the account manager and a session cache.
+// NewWriter builds an account writer. The cache is transaction-local working
+// state; production ownership is loaded from and published after SQLite.
 func NewWriter(manager *accounts.Manager, sessions *SessionCache) *Writer {
 	return &Writer{
 		accounts: manager,
@@ -115,8 +114,8 @@ func NewWriter(manager *accounts.Manager, sessions *SessionCache) *Writer {
 	}
 }
 
-// Sessions exposes the cache so that shutdown can persist it and a health check
-// can size it.
+// Sessions exposes fold working state for deterministic tests. Production
+// session ownership remains stored in each account database.
 func (w *Writer) Sessions() *SessionCache {
 	return w.sessions
 }
@@ -130,6 +129,56 @@ func (w *Writer) clock() time.Time {
 	return w.Now().UTC()
 }
 
+// fail invokes a deterministic transaction boundary when a test configured
+// one.
+func (w *Writer) fail(stage string) error {
+	if w.Failpoint == nil {
+		return nil
+	}
+	if err := w.Failpoint(stage); err != nil {
+		return fmt.Errorf("write batch: failpoint %s: %w", stage, err)
+	}
+
+	return nil
+}
+
+// sessionIDRange is one durable reservation from the account allocator.
+type sessionIDRange struct {
+	next int64
+	end  int64
+}
+
+// Next returns one reserved identity and fails closed if the batch exhausts
+// the range it reserved.
+func (r *sessionIDRange) Next() (int64, error) {
+	if r.next >= r.end {
+		return 0, fmt.Errorf("write batch: reserved session identity range exhausted")
+	}
+
+	id := r.next
+	r.next++
+	return id, nil
+}
+
+// reserveSessionIDs atomically advances the shared allocator. Gaps after a
+// crash are harmless; reusing an id for a different visitor is not.
+func reserveSessionIDs(ctx context.Context, db *sql.DB, count int) (*sessionIDRange, error) {
+	if count < 1 {
+		return &sessionIDRange{}, nil
+	}
+
+	var first int64
+	if err := db.QueryRowContext(ctx, `
+		UPDATE session_id_allocator
+		SET next_id = next_id + ?
+		WHERE singleton = 1
+		RETURNING next_id - ?`, count, count).Scan(&first); err != nil {
+		return nil, fmt.Errorf("write batch: reserve session identities: %w", err)
+	}
+
+	return &sessionIDRange{next: first, end: first + int64(count)}, nil
+}
+
 // lockFor returns an account's serialisation state, creating it on first use.
 func (w *Writer) lockFor(accountID int64) *accountLock {
 	w.mu.Lock()
@@ -137,7 +186,7 @@ func (w *Writer) lockFor(accountID int64) *accountLock {
 
 	state, ok := w.locks[accountID]
 	if !ok {
-		state = &accountLock{pending: map[uuid.UUID]int64{}}
+		state = &accountLock{}
 		w.locks[accountID] = state
 	}
 
@@ -150,7 +199,8 @@ func (w *Writer) lockFor(accountID int64) *accountLock {
 // At a thousand events a second spread across accounts that turns a thousand
 // individual writes into perhaps fifty to two hundred transactions: un-batched,
 // SQLite caps out in the low hundreds of writes per second, and batched under
-// synchronous=NORMAL it runs in the tens of thousands of rows per second.
+// synchronous=FULL it remains efficient while making the 202 durability
+// boundary explicit.
 func (w *Writer) Write(ctx context.Context, batch []Event) ([]uuid.UUID, error) {
 	if len(batch) == 0 {
 		return nil, nil
@@ -167,7 +217,7 @@ func (w *Writer) Write(ctx context.Context, batch []Event) ([]uuid.UUID, error) 
 	)
 
 	for accountID, events := range byAccount {
-		ids, err := w.writeAccount(ctx, accountID, events)
+		ids, err := w.writeAccountDurable(ctx, accountID, events)
 		committed = append(committed, ids...)
 
 		// One account failing must not stop the others. Their events are
@@ -181,13 +231,9 @@ func (w *Writer) Write(ctx context.Context, batch []Event) ([]uuid.UUID, error) 
 	return committed, firstErr
 }
 
-// writeAccount applies one account's events in a single transaction. The
-// sequence is deliberate: everything that has to talk to the database on its
-// own connection happens before the transaction opens, because the account
-// writer is a pool of exactly one connection and a query issued while a
-// transaction holds it would wait for a connection that only the transaction
-// can release.
-func (w *Writer) writeAccount(ctx context.Context, accountID int64, events []Event) ([]uuid.UUID, error) {
+// writeAccountDurable applies one account batch with SQLite as the authority
+// for UUID ownership, live fold state, and pre-pageview engagement ownership.
+func (w *Writer) writeAccountDurable(ctx context.Context, accountID int64, events []Event) ([]uuid.UUID, error) {
 	account, err := w.accounts.Open(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -197,145 +243,400 @@ func (w *Writer) writeAccount(ctx context.Context, accountID int64, events []Eve
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
-	if !state.seeded {
-		highest, err := highestSessionID(ctx, account.Writer())
-		if err != nil {
-			return nil, err
-		}
-		w.sessions.SeedIDs(accountID, highest)
-		state.seeded = true
-	}
-
-	// The dedupe check runs before the fold, not inside the transaction with
-	// it. Holding the account lock is what makes that safe: nothing else can
-	// insert an id between the check and the write.
-	fresh, duplicates, err := w.partition(ctx, account.Writer(), state, events)
+	identities, err := reserveSessionIDs(ctx, account.Writer(), len(events))
 	if err != nil {
 		return nil, err
 	}
 
-	// Shielded events are dropped before the fold. Folding one first would put
-	// it in a session's pageview count and its exit page, so the visit would
-	// carry traffic the customer asked us not to count even though no row for
-	// it was ever written.
-	fresh, shielded := w.applyShield(fresh)
+	tx, err := account.Writer().BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("write batch: begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
 
-	// Cleaning happens before the fold, so the session's entry and exit pages
-	// are the cleaned paths too. Cleaning afterwards would leave a session
-	// pointing at a raw path that no report groups by any more.
+	fresh, duplicates, err := w.claimEvents(ctx, tx, events)
+	if err != nil {
+		return nil, err
+	}
+	if err := w.fail(WriterStageAfterClaim); err != nil {
+		return nil, err
+	}
+
+	fresh, shielded := w.applyShieldDurable(fresh)
+	if err := persistHostnameRejections(ctx, tx, shielded, w.clock()); err != nil {
+		return nil, err
+	}
+	if err := w.fail(WriterStageAfterRejection); err != nil {
+		return nil, err
+	}
 	w.cleanPaths(fresh)
 
-	// A shielded event is acknowledged, not rejected. The sender has done
-	// nothing wrong, and telling it otherwise makes it retry an event we will
-	// throw away again every time.
-	committed := make([]uuid.UUID, 0, len(events))
-	committed = append(committed, shielded...)
+	committed := append([]uuid.UUID(nil), duplicates...)
+	if len(fresh) == 0 && len(shielded) == 0 {
+		return committed, nil
+	}
 
-	// A duplicate is committed as far as the sender is concerned. Telling it
-	// otherwise would make a lost acknowledgement retry forever.
-	committed = append(committed, duplicates...)
-
-	// Rows carried over from a failed commit go first: they are the oldest
-	// events in the batch and nothing else will ever bring them back.
-	carried := state.deferred
-	rows := make([]eventRow, 0, len(fresh)+len(carried))
-	rows = append(rows, carried...)
-
-	var adopted []eventRow
-
-	for i := range fresh {
-		event := &fresh[i]
-
-		sessionID, known := state.pending[event.UUID]
-		if known {
-			rows = append(rows, eventRow{event: event, sessionID: sessionID})
-			continue
-		}
-
-		session, ok, revived := w.sessions.Apply(event)
-		if !ok {
-			// An engagement ping with no visit to attach to yet. It is parked
-			// rather than lost, and comes back below when its pageview arrives.
-			continue
-		}
-
-		state.pending[event.UUID] = session.ID
-		rows = append(rows, eventRow{event: event, sessionID: session.ID})
-
-		// A ping that arrived before its own pageview was never written. Now
-		// that the visit exists, its row is written with everything else — this
-		// is where time-on-page and scroll depth stop depending on which order
-		// a retry delivered the batch in.
-		for _, ping := range revived {
-			state.pending[ping.UUID] = session.ID
-			row := eventRow{event: ping, sessionID: session.ID}
-			rows = append(rows, row)
-			adopted = append(adopted, row)
+	fold := newDurableSessionCache()
+	for key, span := range durableFoldRanges(fresh) {
+		if err := loadDurableFoldKey(ctx, tx, fold, accountID, key, span.first, span.last); err != nil {
+			return committed, err
 		}
 	}
 
-	dirty := w.sessions.TakeDirty(accountID)
-	merges := w.sessions.TakeMerges(accountID)
+	rows := make([]eventRow, 0, len(fresh))
+	batchRows := make(map[uuid.UUID]struct{}, len(fresh))
+	var orphaned []uuid.UUID
+	var adopted []uuid.UUID
 
-	// Every event takes its session's acquisition, geo and device block.
-	// Stamping here rather than as each event is folded is what makes it
-	// correct under the out-of-order path: a later event in this same batch can
-	// turn out to be the real start of the visit, and the snapshots above are
-	// the sessions as they stand after every fold in it.
-	//
-	// It also has to happen before the interning below, or the values written
-	// onto the rows would have no dimension ids.
+	for i := range fresh {
+		event := &fresh[i]
+		session, ok, revived, err := fold.ApplyAllocated(event, identities.Next)
+		if err != nil {
+			return committed, err
+		}
+		if !ok {
+			if err := persistDurableOrphan(ctx, tx, event); err != nil {
+				return committed, err
+			}
+			orphaned = append(orphaned, event.UUID)
+			continue
+		}
+
+		batchRows[event.UUID] = struct{}{}
+		rows = append(rows, eventRow{event: event, sessionID: session.ID})
+		for _, ping := range revived {
+			rows = append(rows, eventRow{event: ping, sessionID: session.ID})
+			adopted = append(adopted, ping.UUID)
+		}
+	}
+
+	dirty := fold.TakeDirty(accountID)
+	merges := fold.TakeMerges(accountID)
 	sessions := sessionsByID(dirty)
-
 	for _, row := range rows {
 		if session, ok := sessions[row.sessionID]; ok {
 			session.stamp(row.event)
 		}
 	}
 
-	// Nothing to do is the common shape of a retried batch the shard has
-	// already seen, and it must not cost a transaction.
-	if len(rows) == 0 && len(dirty) == 0 && len(merges) == 0 {
-		return committed, nil
-	}
+	cacheTx := account.Intern.BeginTransaction(tx)
+	defer cacheTx.Rollback()
 
-	// Interning may insert a dimension row, so it has to finish before the
-	// transaction takes the single write connection.
-	ids, err := internBatch(ctx, account.Intern, rows, dirty)
+	ids, err := internBatch(ctx, cacheTx, rows, dirty)
 	if err != nil {
-		return nil, err
-	}
-
-	if err := w.commit(ctx, account.Writer(), state, rows, dirty, merges, ids); err != nil {
-		// The fold already happened in memory. Putting the sessions back in the
-		// dirty set and keeping the pending ids is what makes the retry write
-		// the same rows rather than folding them a second time.
-		w.sessions.Redirty(accountID, dirty)
-
-		// The pings adopted by this attempt are no longer in the orphan map and
-		// are not in the batch the sender will retry, so this is the only place
-		// they still exist. Holding them is what makes adoption survive a
-		// rollback instead of losing their rows for good.
-		state.deferred = append(carried, adopted...)
-
 		return committed, err
 	}
+	if err := persistDurableFoldState(ctx, tx, dirty, merges, adopted); err != nil {
+		return committed, err
+	}
+	if err := w.commitDurable(ctx, tx, rows, dirty, merges, ids); err != nil {
+		return committed, err
+	}
+	cacheTx.Commit()
 
-	state.deferred = nil
-
-	for i := range rows {
-		delete(state.pending, rows[i].event.UUID)
-		committed = append(committed, rows[i].event.UUID)
+	for _, blocked := range shielded {
+		committed = append(committed, blocked.id)
+		if w.Counters != nil {
+			w.Counters.Dropped(blocked.siteID, blocked.reason)
+		}
+	}
+	committed = append(committed, orphaned...)
+	for _, row := range rows {
+		if _, belongsToBatch := batchRows[row.event.UUID]; belongsToBatch {
+			committed = append(committed, row.event.UUID)
+		}
 	}
 
-	// Counting happens here, after the commit, and never before it. An event
-	// that was rolled back must not appear on somebody's bill, and a retry that
-	// is deduplicated must not be counted a second time — which is why this
-	// counts the rows this transaction wrote rather than the batch it was
-	// handed.
 	w.recordUsage(accountID, rows)
-
 	return committed, nil
+}
+
+// durableFoldRange is the complete timestamp window one visitor key needs in
+// a batch.
+type durableFoldRange struct {
+	first int64
+	last  int64
+}
+
+// durableFoldRanges groups current and previous-day visitor identities before
+// the transaction folds anything.
+func durableFoldRanges(events []Event) map[sessionKey]durableFoldRange {
+	ranges := make(map[sessionKey]durableFoldRange)
+
+	for i := range events {
+		event := &events[i]
+		keys := []sessionKey{{siteID: event.SiteID, userID: event.UserID}}
+		if event.PreviousUserID != 0 && event.PreviousUserID != event.UserID {
+			keys = append(keys, sessionKey{siteID: event.SiteID, userID: event.PreviousUserID})
+		}
+
+		for _, key := range keys {
+			span, ok := ranges[key]
+			if !ok {
+				ranges[key] = durableFoldRange{first: event.Timestamp, last: event.Timestamp}
+				continue
+			}
+			if event.Timestamp < span.first {
+				span.first = event.Timestamp
+			}
+			if event.Timestamp > span.last {
+				span.last = event.Timestamp
+			}
+			ranges[key] = span
+		}
+	}
+
+	return ranges
+}
+
+// loadDurableFoldKey restores serialized fold state and durable orphan events
+// into a transaction-local cache.
+func loadDurableFoldKey(ctx context.Context, tx *sql.Tx, cache *SessionCache, accountID int64, key sessionKey, first, last int64) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT payload FROM ingest_session_state
+		WHERE site_id = ? AND user_id = ?
+		  AND started_at <= ? AND last_seen_at >= ?
+		ORDER BY started_at`,
+		key.siteID, key.userID, last+sessionTimeoutSeconds, first-sessionTimeoutSeconds)
+	if err != nil {
+		return fmt.Errorf("write batch: read durable sessions: %w", err)
+	}
+
+	bucket := cache.bucket(key)
+	bucket.mu.Lock()
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			bucket.mu.Unlock()
+			_ = rows.Close()
+			return fmt.Errorf("write batch: read durable session: %w", err)
+		}
+
+		var session Session
+		if err := json.Unmarshal(payload, &session); err != nil {
+			bucket.mu.Unlock()
+			_ = rows.Close()
+			return fmt.Errorf("write batch: decode durable session: %w", err)
+		}
+		session.AccountID = accountID
+		bucket.sessions[key] = append(bucket.sessions[key], &session)
+	}
+	bucket.mu.Unlock()
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("write batch: read durable sessions: %w", err)
+	}
+	if err := loadLegacyFoldKey(ctx, tx, cache, accountID, key, first, last); err != nil {
+		return err
+	}
+
+	orphans, err := tx.QueryContext(ctx, `
+		SELECT payload FROM ingest_orphan_engagements
+		WHERE site_id = ? AND user_id = ?
+		  AND timestamp BETWEEN ? AND ?
+		ORDER BY timestamp`,
+		key.siteID, key.userID, first-sessionTimeoutSeconds, last+sessionTimeoutSeconds)
+	if err != nil {
+		return fmt.Errorf("write batch: read durable orphans: %w", err)
+	}
+	defer func() { _ = orphans.Close() }()
+
+	bucket.mu.Lock()
+	defer bucket.mu.Unlock()
+	for orphans.Next() {
+		var payload []byte
+		if err := orphans.Scan(&payload); err != nil {
+			return fmt.Errorf("write batch: read durable orphan: %w", err)
+		}
+		event, err := decodeDurableEvent(payload)
+		if err != nil {
+			return err
+		}
+		copied := event
+		bucket.orphans[key] = append(bucket.orphans[key], &copied)
+	}
+	if err := orphans.Err(); err != nil {
+		return fmt.Errorf("write batch: read durable orphans: %w", err)
+	}
+
+	return nil
+}
+
+// loadLegacyFoldKey hydrates active session rows that predate the companion
+// state table. Their next successful fold writes complete durable state.
+func loadLegacyFoldKey(ctx context.Context, tx *sql.Tx, cache *SessionCache, accountID int64, key sessionKey, first, last int64) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT
+			s.id, s.started_at, s.last_seen_at, s.pageviews, s.events, s.is_bounce,
+			COALESCE(entry_page.value, ''), COALESCE(exit_page.value, ''),
+			COALESCE(entry_host.value, ''), COALESCE(exit_host.value, ''), s.entry_props,
+			COALESCE(referrer.value, ''), COALESCE(source.value, ''), COALESCE(channel.value, ''),
+			COALESCE(utm_source.value, ''), COALESCE(utm_medium.value, ''), COALESCE(utm_campaign.value, ''),
+			COALESCE(country.value, ''), COALESCE(region.value, ''), COALESCE(city.value, ''),
+			COALESCE(device.value, ''), COALESCE(screen.value, ''),
+			COALESCE(browser.value, ''), COALESCE(browser_version.value, ''),
+			COALESCE(os.value, ''), COALESCE(os_version.value, ''), COALESCE(language.value, ''),
+			(SELECT MIN(e.timestamp) FROM events e JOIN dim_event_name n ON n.id = e.name_id
+			 WHERE e.session_id = s.id AND n.value = 'pageview'),
+			(SELECT MAX(e.timestamp) FROM events e JOIN dim_event_name n ON n.id = e.name_id
+			 WHERE e.session_id = s.id AND n.value = 'pageview')
+		FROM sessions s
+		LEFT JOIN ingest_session_state state ON state.session_id = s.id
+		LEFT JOIN dim_pathname entry_page ON entry_page.id = s.entry_page_id
+		LEFT JOIN dim_pathname exit_page ON exit_page.id = s.exit_page_id
+		LEFT JOIN dim_hostname entry_host ON entry_host.id = s.entry_hostname_id
+		LEFT JOIN dim_hostname exit_host ON exit_host.id = s.exit_hostname_id
+		LEFT JOIN dim_referrer referrer ON referrer.id = s.referrer_id
+		LEFT JOIN dim_source source ON source.id = s.source_id
+		LEFT JOIN dim_channel channel ON channel.id = s.channel_id
+		LEFT JOIN dim_utm_source utm_source ON utm_source.id = s.utm_source_id
+		LEFT JOIN dim_utm_medium utm_medium ON utm_medium.id = s.utm_medium_id
+		LEFT JOIN dim_utm_campaign utm_campaign ON utm_campaign.id = s.utm_campaign_id
+		LEFT JOIN dim_country country ON country.id = s.country_id
+		LEFT JOIN dim_region region ON region.id = s.region_id
+		LEFT JOIN dim_city city ON city.id = s.city_id
+		LEFT JOIN dim_device_type device ON device.id = s.device_type_id
+		LEFT JOIN dim_screen_size screen ON screen.id = s.screen_size_id
+		LEFT JOIN dim_browser browser ON browser.id = s.browser_id
+		LEFT JOIN dim_browser_version browser_version ON browser_version.id = s.browser_version_id
+		LEFT JOIN dim_os os ON os.id = s.os_id
+		LEFT JOIN dim_os_version os_version ON os_version.id = s.os_version_id
+		LEFT JOIN dim_language language ON language.id = s.language_id
+		WHERE state.session_id IS NULL AND s.site_id = ? AND s.user_id = ?
+		  AND s.started_at <= ? AND s.last_seen_at >= ?
+		ORDER BY s.started_at`,
+		key.siteID, key.userID, last+sessionTimeoutSeconds, first-sessionTimeoutSeconds)
+	if err != nil {
+		return fmt.Errorf("write batch: read legacy sessions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	bucket := cache.bucket(key)
+	bucket.mu.Lock()
+	defer bucket.mu.Unlock()
+
+	for rows.Next() {
+		var (
+			session             Session
+			bounce              int
+			props               sql.NullString
+			firstPage, lastPage sql.NullInt64
+		)
+		if err := rows.Scan(
+			&session.ID, &session.StartedAt, &session.LastSeenAt,
+			&session.Pageviews, &session.Events, &bounce,
+			&session.EntryPage, &session.ExitPage, &session.EntryHostname, &session.ExitHostname, &props,
+			&session.Referrer, &session.Source, &session.Channel,
+			&session.UTMSource, &session.UTMMedium, &session.UTMCampaign,
+			&session.Country, &session.Region, &session.City,
+			&session.DeviceType, &session.ScreenSize, &session.Browser, &session.BrowserVersion,
+			&session.OS, &session.OSVersion, &session.Language,
+			&firstPage, &lastPage,
+		); err != nil {
+			return fmt.Errorf("write batch: read legacy session: %w", err)
+		}
+
+		session.AccountID = accountID
+		session.SiteID = key.siteID
+		session.UserID = key.userID
+		session.InteractiveNonPageview = bounce == 0 && session.Pageviews < 2
+		session.FirstAt = session.StartedAt
+		session.EntryAt = maxInt64
+		session.ExitAt = minInt64
+		if firstPage.Valid {
+			session.FirstAt = firstPage.Int64
+			session.FirstIsPageview = true
+			session.EntryAt = firstPage.Int64
+		}
+		if lastPage.Valid {
+			session.ExitAt = lastPage.Int64
+		}
+		if props.Valid && props.String != "" {
+			if err := json.Unmarshal([]byte(props.String), &session.EntryProps); err != nil {
+				return fmt.Errorf("write batch: decode legacy session props: %w", err)
+			}
+		}
+
+		bucket.sessions[key] = append(bucket.sessions[key], &session)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("write batch: read legacy sessions: %w", err)
+	}
+
+	return nil
+}
+
+// persistDurableOrphan stores an engagement event before acknowledging it.
+func persistDurableOrphan(ctx context.Context, tx *sql.Tx, event *Event) error {
+	payload, err := encodeDurableEvent(event)
+	if err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO ingest_orphan_engagements
+			(event_uuid, site_id, user_id, timestamp, payload)
+		VALUES (?, ?, ?, ?, ?)`, event.UUID[:], event.SiteID, event.UserID, event.Timestamp, payload); err != nil {
+		return fmt.Errorf("write batch: store durable orphan: %w", err)
+	}
+
+	return nil
+}
+
+// encodeDurableEvent serializes an orphan for the account database.
+func encodeDurableEvent(event *Event) ([]byte, error) {
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return nil, fmt.Errorf("write batch: encode durable orphan: %w", err)
+	}
+
+	return payload, nil
+}
+
+// decodeDurableEvent restores an orphan from the account database.
+func decodeDurableEvent(payload []byte) (Event, error) {
+	var event Event
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return Event{}, fmt.Errorf("write batch: decode durable orphan: %w", err)
+	}
+
+	return event, nil
+}
+
+// persistDurableFoldState writes changed sessions, removes absorbed state, and
+// deletes adopted orphans in the same transaction as their fact rows.
+func persistDurableFoldState(ctx context.Context, tx *sql.Tx, sessions []*Session, merges []Merge, adopted []uuid.UUID) error {
+	for _, session := range sessions {
+		payload, err := json.Marshal(session)
+		if err != nil {
+			return fmt.Errorf("write batch: encode durable session: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO ingest_session_state
+				(session_id, site_id, user_id, started_at, last_seen_at, payload)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(session_id) DO UPDATE SET
+				site_id = excluded.site_id,
+				user_id = excluded.user_id,
+				started_at = excluded.started_at,
+				last_seen_at = excluded.last_seen_at,
+				payload = excluded.payload`,
+			session.ID, session.SiteID, session.UserID, session.StartedAt, session.LastSeenAt, payload); err != nil {
+			return fmt.Errorf("write batch: store durable session: %w", err)
+		}
+	}
+
+	for _, merge := range merges {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM ingest_session_state WHERE session_id = ?", merge.Absorbed); err != nil {
+			return fmt.Errorf("write batch: delete absorbed durable session: %w", err)
+		}
+	}
+	for _, id := range adopted {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM ingest_orphan_engagements WHERE event_uuid = ?", id[:]); err != nil {
+			return fmt.Errorf("write batch: delete adopted durable orphan: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // recordUsage tells the billing counter what this account just stored.
@@ -366,20 +667,18 @@ func (w *Writer) recordUsage(accountID int64, rows []eventRow) {
 	w.Usage.Record(accountID, pageviews, customEvents)
 }
 
-// applyShield splits a batch into the events that may be written and the ids of
-// the ones a shield rule blocked. It returns ids rather than events because a
-// blocked event is acknowledged and then forgotten: nothing downstream has any
-// use for it, and keeping it would only invite somebody to count it.
-func (w *Writer) applyShield(events []Event) ([]Event, []uuid.UUID) {
-	if w.Shield == nil {
-		return events, nil
-	}
-
+// applyShieldDurable retains enough information to record authoritative
+// hostname evidence and emit counters only after commit.
+func (w *Writer) applyShieldDurable(events []Event) ([]Event, []shieldedEvent) {
 	kept := make([]Event, 0, len(events))
-	var blocked []uuid.UUID
+	var blocked []shieldedEvent
 
 	for i := range events {
 		event := &events[i]
+		if w.Shield == nil {
+			kept = append(kept, *event)
+			continue
+		}
 
 		allowed, reason := w.Shield.Allowed(event.SiteID, event.Hostname, event.Pathname, event.Country)
 		if allowed {
@@ -387,14 +686,82 @@ func (w *Writer) applyShield(events []Event) ([]Event, []uuid.UUID) {
 			continue
 		}
 
-		blocked = append(blocked, event.UUID)
-
-		if w.Counters != nil {
-			w.Counters.Dropped(event.SiteID, reason)
-		}
+		blocked = append(blocked, shieldedEvent{
+			id: event.UUID, siteID: event.SiteID, hostname: event.Hostname, reason: reason,
+		})
 	}
 
 	return kept, blocked
+}
+
+// shieldedEvent is a claimed rejection whose counter is emitted after commit.
+type shieldedEvent struct {
+	id       uuid.UUID
+	siteID   int64
+	hostname string
+	reason   string
+}
+
+// persistHostnameRejections writes rejection evidence inside the UUID claim
+// transaction, so a replay creates both the claim and exactly one count.
+func persistHostnameRejections(ctx context.Context, tx *sql.Tx, blocked []shieldedEvent, now time.Time) error {
+	day := now.UTC().Unix() / 86400
+	wrote := false
+
+	for _, event := range blocked {
+		if event.reason != ReasonHostnameNotAllowed {
+			continue
+		}
+
+		hostname := strings.ToLower(strings.TrimSpace(event.hostname))
+		hostname = strings.TrimPrefix(hostname, "www.")
+		hostname = strings.TrimSuffix(hostname, ".")
+		if hostname == "" || hostname == NoneHostname {
+			hostname = OtherRejectedHostname
+		}
+
+		if hostname != OtherRejectedHostname {
+			var exists int
+			if err := tx.QueryRowContext(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM hostname_rejections
+					WHERE site_id = ? AND day = ? AND hostname = ?
+				)`, event.siteID, day, hostname).Scan(&exists); err != nil {
+				return fmt.Errorf("write batch: read hostname rejection: %w", err)
+			}
+
+			if exists == 0 {
+				var distinct int
+				if err := tx.QueryRowContext(ctx, `
+					SELECT COUNT(*) FROM hostname_rejections
+					WHERE site_id = ? AND day = ? AND hostname <> ?`,
+					event.siteID, day, OtherRejectedHostname).Scan(&distinct); err != nil {
+					return fmt.Errorf("write batch: count hostname rejections: %w", err)
+				}
+				if distinct >= MaxRejectedHostnames {
+					hostname = OtherRejectedHostname
+				}
+			}
+		}
+
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO hostname_rejections (site_id, hostname, day, events)
+			VALUES (?, ?, ?, 1)
+			ON CONFLICT (site_id, day, hostname)
+			DO UPDATE SET events = events + 1`, event.siteID, hostname, day); err != nil {
+			return fmt.Errorf("write batch: record hostname rejection: %w", err)
+		}
+		wrote = true
+	}
+
+	if wrote {
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM hostname_rejections WHERE day < ?", day-RejectedHostnameRetentionDays); err != nil {
+			return fmt.Errorf("write batch: prune hostname rejections: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // cleanPaths rewrites a batch's paths in place. It is a no-op for a site with
@@ -416,39 +783,52 @@ type eventRow struct {
 	sessionID int64
 }
 
-// partition splits a batch into events nobody has written and events somebody
-// has. It consults the in-memory pending set first because a batch being
-// retried after a failed commit has ids the database never saw.
-func (w *Writer) partition(ctx context.Context, db *sql.DB, state *accountLock, events []Event) ([]Event, []uuid.UUID, error) {
-	seen, err := knownEventIDs(ctx, db, events)
-	if err != nil {
-		return nil, nil, err
-	}
-
+// claimEvents atomically claims each distinct UUID before analytics data is
+// inserted. SQLite arbitrates independent writers through the primary key.
+func (w *Writer) claimEvents(ctx context.Context, tx *sql.Tx, events []Event) ([]Event, []uuid.UUID, error) {
+	now := w.clock().Unix()
 	fresh := make([]Event, 0, len(events))
-	var duplicates []uuid.UUID
-
-	// A batch can carry the same id twice on its own, which is exactly what a
-	// sender that retried into the middle of a live batch produces.
-	inBatch := make(map[uuid.UUID]struct{}, len(events))
+	duplicates := make([]uuid.UUID, 0)
+	seen := make(map[uuid.UUID]struct{}, len(events))
 
 	for i := range events {
 		id := events[i].UUID
+		if _, repeated := seen[id]; repeated {
+			continue
+		}
+		seen[id] = struct{}{}
 
-		if _, ok := seen[id]; ok {
+		claimed, err := claimEventID(ctx, tx, id, now)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !claimed {
 			duplicates = append(duplicates, id)
 			continue
 		}
-		if _, ok := inBatch[id]; ok {
-			duplicates = append(duplicates, id)
-			continue
-		}
 
-		inBatch[id] = struct{}{}
 		fresh = append(fresh, events[i])
 	}
 
 	return fresh, duplicates, nil
+}
+
+// claimEventID inserts one permanent receipt in the fact transaction.
+func claimEventID(ctx context.Context, tx *sql.Tx, id uuid.UUID, now int64) (bool, error) {
+	result, err := tx.ExecContext(ctx,
+		"INSERT OR IGNORE INTO recent_event_ids (event_uuid, received_at) VALUES (?, ?)",
+		id[:], now,
+	)
+	if err != nil {
+		return false, fmt.Errorf("write batch: claim event: %w", err)
+	}
+
+	claimed, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("write batch: claim event: %w", err)
+	}
+
+	return claimed == 1, nil
 }
 
 // DedupeLookupChunk is how many ids one dedupe query asks about.
@@ -524,34 +904,17 @@ func lookupEventIDs(ctx context.Context, db *sql.DB, events []Event, seen map[uu
 	return nil
 }
 
-// commit writes everything for one account in a single transaction. Either the
-// whole batch lands or none of it does, which is what lets the caller retry the
-// batch unchanged.
-func (w *Writer) commit(ctx context.Context, db *sql.DB, state *accountLock, rows []eventRow, dirty []*Session, merges []Merge, ids *dimensionIDs) error {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("write batch: begin: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck // a rollback after a successful commit is a no-op
-
-	now := w.clock()
-
-	// The surviving sessions the merge repair below stamps from. Almost every
-	// batch merges nothing, so the index is only built when one does.
+// commitDurable writes facts and fold repairs through the transaction that
+// already owns the permanent UUID receipts.
+func (w *Writer) commitDurable(ctx context.Context, tx *sql.Tx, rows []eventRow, dirty []*Session, merges []Merge, ids *dimensionIDs) error {
 	var sessions map[int64]*Session
 	if len(merges) > 0 {
 		sessions = sessionsByID(dirty)
 	}
 
-	// Merges come first so that events written by an earlier batch are pointed
-	// at the surviving session before this batch's rows are counted against it.
 	for _, merge := range merges {
 		update := "UPDATE events SET session_id = ? WHERE session_id = ?"
 		args := []any{merge.Survivor, merge.Absorbed}
-
-		// Those events were stamped with the absorbed session's block, and the
-		// visit they belong to is the survivor's now. Repointing them without
-		// restamping them would leave one visit reported under two sources.
 		if survivor, ok := sessions[merge.Survivor]; ok {
 			update = "UPDATE events SET session_id = ?, " + sessionStampSet + " WHERE session_id = ?"
 			args = append([]any{merge.Survivor}, append(sessionStampArgs(survivor, ids), merge.Absorbed)...)
@@ -569,14 +932,9 @@ func (w *Writer) commit(ctx context.Context, db *sql.DB, state *accountLock, row
 		if err := upsertSession(ctx, tx, session, ids); err != nil {
 			return err
 		}
-
 		if !session.Restamp {
 			continue
 		}
-
-		// A late event turned out to be the start of this visit, so the rows
-		// already on disk carry a block the session no longer has. This batch's
-		// own rows were stamped from this same snapshot, so they need no repair.
 		if _, err := tx.ExecContext(ctx,
 			"UPDATE events SET "+sessionStampSet+" WHERE session_id = ?",
 			append(sessionStampArgs(session, ids), session.ID)...,
@@ -589,28 +947,11 @@ func (w *Writer) commit(ctx context.Context, db *sql.DB, state *accountLock, row
 		if err := insertEvent(ctx, tx, row, ids); err != nil {
 			return err
 		}
-
-		// INSERT OR IGNORE rather than a plain INSERT: two senders retrying the
-		// same event into two processes is a race the database should absorb,
-		// not a constraint error somebody has to handle.
-		if _, err := tx.ExecContext(ctx,
-			"INSERT OR IGNORE INTO recent_event_ids (event_uuid, received_at) VALUES (?, ?)",
-			row.event.UUID[:], now.Unix(),
-		); err != nil {
-			return fmt.Errorf("write batch: dedupe: %w", err)
-		}
 	}
 
-	// Pruning rides along on a batch that is already writing, so it never takes
-	// the write lock on its own.
-	if now.Sub(state.lastPruned) >= prunePeriod {
-		cutoff := now.Add(-DedupeRetention).Unix()
-		if _, err := tx.ExecContext(ctx, "DELETE FROM recent_event_ids WHERE received_at < ?", cutoff); err != nil {
-			return fmt.Errorf("write batch: prune dedupe: %w", err)
-		}
-		state.lastPruned = now
+	if err := w.fail(WriterStageBeforeCommit); err != nil {
+		return err
 	}
-
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("write batch: commit: %w", err)
 	}
@@ -805,18 +1146,6 @@ func upsertSession(ctx context.Context, tx *sql.Tx, session *Session, ids *dimen
 	}
 
 	return nil
-}
-
-// highestSessionID reads an account's session id high water mark. It runs once
-// per account per process, when the first batch for that account arrives.
-func highestSessionID(ctx context.Context, db *sql.DB) (int64, error) {
-	var highest sql.NullInt64
-
-	if err := db.QueryRowContext(ctx, "SELECT MAX(id) FROM sessions").Scan(&highest); err != nil {
-		return 0, fmt.Errorf("read session high water mark: %w", err)
-	}
-
-	return highest.Int64, nil
 }
 
 // boolToInt renders a Go bool as the integer SQLite stores. It exists so the
