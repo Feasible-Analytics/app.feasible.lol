@@ -41,6 +41,17 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # The Make target rebuilds both committed browser bundles before testing.
+      # npm ci consumes the lockfiles; setup-node keeps those exact tarballs in
+      # npm's download cache without caching a mutable node_modules directory.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            tracker/package-lock.json
+            web/package-lock.json
+
       - run: make test
 
   # The ingest pipeline, the write buffer and the roll-up worker are all
@@ -101,6 +112,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            tracker/package-lock.json
+            web/package-lock.json
 
       - run: make build
 

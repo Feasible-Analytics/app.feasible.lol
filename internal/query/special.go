@@ -259,7 +259,7 @@ func (x *executor) visitorDenominator(ctx context.Context, r Resolved, groups *g
 	if err != nil {
 		return fmt.Errorf("query: conversion denominator: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	totals := map[string]float64{}
 

@@ -26,7 +26,11 @@ func newAccount(t *testing.T) *accounts.Account {
 	t.Helper()
 
 	manager := accounts.NewManager(t.TempDir())
-	t.Cleanup(func() { manager.CloseAll() })
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close account manager: %v", err)
+		}
+	})
 
 	account, err := manager.Open(context.Background(), 1)
 	if err != nil {

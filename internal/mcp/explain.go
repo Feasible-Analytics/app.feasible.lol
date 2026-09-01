@@ -740,10 +740,10 @@ func narrate(answer *explanation) string {
 		change = fmt.Sprintf(" (%+.1f%%)", *answer.ChangePct)
 	}
 
-	out.WriteString(fmt.Sprintf("%s on %s %s from %s to %s%s, comparing %s..%s against %s..%s.\n\n",
+	fmt.Fprintf(&out, "%s on %s %s from %s to %s%s, comparing %s..%s against %s..%s.\n\n",
 		strings.Title(strings.ReplaceAll(answer.Metric, "_", " ")), //nolint:staticcheck // ASCII metric names only
 		answer.SiteID, direction, number(answer.Previous), number(answer.Current), change,
-		day(answer.Period[0]), day(answer.Period[1]), day(answer.Comparison[0]), day(answer.Comparison[1])))
+		day(answer.Period[0]), day(answer.Period[1]), day(answer.Comparison[0]), day(answer.Comparison[1]))
 
 	out.WriteString("What accounts for it:\n")
 	for _, note := range answer.Findings {
@@ -754,7 +754,7 @@ func narrate(answer *explanation) string {
 
 	for _, entry := range answer.Drivers {
 		if entry.Note != "" {
-			out.WriteString(fmt.Sprintf("  %s: %s\n", entry.Dimension, entry.Note))
+			fmt.Fprintf(&out, "  %s: %s\n", entry.Dimension, entry.Note)
 			continue
 		}
 
@@ -762,11 +762,11 @@ func narrate(answer *explanation) string {
 			continue
 		}
 
-		out.WriteString(fmt.Sprintf("  %s (%s, explains %.0f%%):\n", entry.Dimension, entry.Pattern, entry.ExplainsPct))
+		fmt.Fprintf(&out, "  %s (%s, explains %.0f%%):\n", entry.Dimension, entry.Pattern, entry.ExplainsPct)
 
 		for _, mover := range entry.Movers {
-			out.WriteString(fmt.Sprintf("    %-28s %s → %s  (%+.0f, %+.0f%% of the change)\n",
-				truncate(mover.Value, 28), number(mover.Previous), number(mover.Current), mover.Delta, mover.SharePct))
+			fmt.Fprintf(&out, "    %-28s %s → %s  (%+.0f, %+.0f%% of the change)\n",
+				truncate(mover.Value, 28), number(mover.Previous), number(mover.Current), mover.Delta, mover.SharePct)
 		}
 	}
 

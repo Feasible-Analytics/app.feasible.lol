@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -155,8 +156,10 @@ func (s *Store) ConsumeVerification(ctx context.Context, userID int64, code, lin
 		(linkToken != "" && constantTimeEqual(parts[1], HashToken(linkToken)))
 
 	if !matched {
-		remaining := 0
-		fmt.Sscanf(parts[2], "%d", &remaining)
+		remaining, err := strconv.Atoi(parts[2])
+		if err != nil {
+			return fmt.Errorf("auth: verification row %d has a malformed attempt count: %w", id, err)
+		}
 		remaining--
 
 		if remaining <= 0 {
@@ -201,7 +204,7 @@ func (s *Store) ConsumeVerification(ctx context.Context, userID int64, code, lin
 // UserIDForVerificationLink finds whose account a one-tap link belongs to. The
 // link has to work for somebody who opened the email on a phone that is not
 // signed in, so the user cannot be taken from the session.
-func (s *Store) UserIDForVerificationLink(ctx context.Context, linkToken string) (int64, error) {
+func (s *Store) UserIDForVerificationLink(ctx context.Context, linkToken string) (userID int64, err error) {
 	if linkToken == "" {
 		return 0, ErrNotFound
 	}
@@ -216,7 +219,7 @@ func (s *Store) UserIDForVerificationLink(ctx context.Context, linkToken string)
 	if err != nil {
 		return 0, fmt.Errorf("auth: read verification: %w", err)
 	}
-	defer rows.Close()
+	defer closeSQLRows(rows, &err, "read verification")
 
 	want := HashToken(linkToken)
 

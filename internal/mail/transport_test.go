@@ -26,7 +26,11 @@ func TestSMTPConversationDeadlineBoundsAStalledRelay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { listener.Close() })
+	t.Cleanup(func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close SMTP listener: %v", err)
+		}
+	})
 
 	accepted := make(chan struct{})
 	go func() {
@@ -34,7 +38,7 @@ func TestSMTPConversationDeadlineBoundsAStalledRelay(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		close(accepted)
 		time.Sleep(500 * time.Millisecond)
 	}()

@@ -14,9 +14,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -192,7 +195,7 @@ type tokenResponse struct {
 // treating it as an unexplained error is how a broken connection stays broken:
 // the incumbent's self-hosted build hit exactly this when a second site was
 // connected with the same Google account, and it was never root-caused.
-func (g *Google) Exchange(ctx context.Context, code, verifier string) (*Profile, error) {
+func (g *Google) Exchange(ctx context.Context, code, verifier string) (profile *Profile, err error) {
 	if !g.Configured() {
 		return nil, fmt.Errorf("auth: %s", g.DisabledReason())
 	}
@@ -215,7 +218,7 @@ func (g *Google) Exchange(ctx context.Context, code, verifier string) (*Profile,
 	if err != nil {
 		return nil, fmt.Errorf("auth: google token: %w", err)
 	}
-	defer resp.Body.Close()
+	defer closeHTTPResponse(resp.Body, &err, "google token")
 
 	var token tokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {
@@ -238,7 +241,7 @@ func (g *Google) Exchange(ctx context.Context, code, verifier string) (*Profile,
 }
 
 // profile reads the userinfo endpoint.
-func (g *Google) profile(ctx context.Context, accessToken string) (*Profile, error) {
+func (g *Google) profile(ctx context.Context, accessToken string) (profile *Profile, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, googleUserInfoURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("auth: google profile: %w", err)
@@ -249,22 +252,30 @@ func (g *Google) profile(ctx context.Context, accessToken string) (*Profile, err
 	if err != nil {
 		return nil, fmt.Errorf("auth: google profile: %w", err)
 	}
-	defer resp.Body.Close()
+	defer closeHTTPResponse(resp.Body, &err, "google profile")
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("auth: google profile: unexpected status %d", resp.StatusCode)
 	}
 
-	var profile Profile
-	if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
+	var found Profile
+	if err := json.NewDecoder(resp.Body).Decode(&found); err != nil {
 		return nil, fmt.Errorf("auth: google profile: %w", err)
 	}
 
-	if profile.Sub == "" {
+	if found.Sub == "" {
 		return nil, fmt.Errorf("auth: google returned no subject id")
 	}
 
-	return &profile, nil
+	return &found, nil
+}
+
+// closeHTTPResponse closes a completed authentication response and preserves a
+// primary request error while still reporting a transport cleanup failure.
+func closeHTTPResponse(body io.Closer, err *error, operation string) {
+	if closeErr := body.Close(); closeErr != nil {
+		*err = errors.Join(*err, fmt.Errorf("auth: %s: close response: %w", operation, closeErr))
+	}
 }
 
 // client returns the HTTP client, defaulting to one with a timeout so a nil
@@ -303,8 +314,8 @@ func (s *Store) ResolveProfile(ctx context.Context, profile *Profile) (*User, bo
 	email := NormaliseEmail(profile.Email)
 
 	existing, err := s.UserByEmail(ctx, email)
-	switch {
-	case err == nil:
+	switch err {
+	case nil:
 		if !profile.EmailVerified || !existing.Verified() {
 			return nil, false, fmt.Errorf(
 				"auth: an account already uses %s — sign in with your password first, then link Google from settings", email)
@@ -318,7 +329,7 @@ func (s *Store) ResolveProfile(ctx context.Context, profile *Profile) (*User, bo
 
 		return existing, false, nil
 
-	case err == ErrNotFound:
+	case ErrNotFound:
 		// A new account with no password at all. That is a complete identity:
 		// the person signs in with Google, and can set a password later from
 		// settings if they want a second way in.
@@ -403,8 +414,10 @@ func ReadOAuthStateCookie(w http.ResponseWriter, r *http.Request, sealer *Sealer
 		return "", "", "", fmt.Errorf("auth: the sign-in attempt could not be read — start again")
 	}
 
-	var expires int64
-	fmt.Sscanf(payload["exp"], "%d", &expires)
+	expires, parseErr := strconv.ParseInt(payload["exp"], 10, 64)
+	if parseErr != nil {
+		return "", "", "", fmt.Errorf("auth: the sign-in attempt could not be read — start again")
+	}
 
 	if expires <= time.Now().Unix() {
 		return "", "", "", fmt.Errorf("auth: the sign-in attempt expired — start again")

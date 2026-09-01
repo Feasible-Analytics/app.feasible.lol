@@ -443,7 +443,7 @@ func List(ctx context.Context, db *sql.DB, siteID int64) ([]Goal, error) {
 	if err != nil {
 		return nil, fmt.Errorf("goals: list: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var list []Goal
 
@@ -487,7 +487,7 @@ func List(ctx context.Context, db *sql.DB, siteID int64) ([]Goal, error) {
 	if err != nil {
 		return nil, fmt.Errorf("goals: list: %w", err)
 	}
-	defer constraints.Close()
+	defer func() { _ = constraints.Close() }()
 
 	for constraints.Next() {
 		var (
@@ -537,7 +537,7 @@ func Get(ctx context.Context, db *sql.DB, id int64) (Goal, error) {
 	if err != nil {
 		return Goal{}, fmt.Errorf("goals: get: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var constraint PropertyConstraint

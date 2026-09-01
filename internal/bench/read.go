@@ -43,7 +43,7 @@ func OpenDataset(ctx context.Context, dataDir string) (Dataset, error) {
 	if err != nil {
 		return Dataset{}, fmt.Errorf("bench: read sites: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var candidates []Dataset
 

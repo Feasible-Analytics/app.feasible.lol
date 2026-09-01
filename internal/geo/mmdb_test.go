@@ -75,7 +75,11 @@ func TestNoDatabaseDegradesToUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a missing database was reported as an error: %v", err)
 	}
-	defer locator.Close()
+	defer func() {
+		if err := locator.Close(); err != nil {
+			t.Errorf("close locator: %v", err)
+		}
+	}()
 
 	got := locator.Lookup(netip.MustParseAddr("203.0.113.7"))
 	if !got.IsZero() {

@@ -99,7 +99,7 @@ func (s *Store) History(ctx context.Context, teamID int64, limit int) ([]PeriodC
 	if err != nil {
 		return nil, fmt.Errorf("usage: history %d: %w", teamID, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []PeriodCounts
 
@@ -135,7 +135,7 @@ func (s *Store) Teams(ctx context.Context, period string) ([]int64, error) {
 	if err != nil {
 		return nil, fmt.Errorf("usage: teams for %s: %w", period, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var ids []int64
 
@@ -161,7 +161,7 @@ func (s *Store) OverageTeams(ctx context.Context) ([]int64, error) {
 	if err != nil {
 		return nil, fmt.Errorf("usage: overage teams: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var ids []int64
 
@@ -333,7 +333,7 @@ func (s *Store) LockedTeams(ctx context.Context) ([]int64, error) {
 	if err != nil {
 		return nil, fmt.Errorf("usage: locked teams: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var ids []int64
 

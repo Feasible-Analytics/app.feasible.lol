@@ -137,7 +137,7 @@ func (s *Session) Duration() int64 {
 // of two facts rather than a mutable flag is what makes it order-independent:
 // there is no sequence of arrivals that can produce a different answer.
 func (s *Session) IsBounce() bool {
-	return !(s.Pageviews >= 2 || s.InteractiveNonPageview)
+	return s.Pageviews < 2 && !s.InteractiveNonPageview
 }
 
 // covers reports whether an event at this timestamp belongs to this session.

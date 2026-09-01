@@ -99,7 +99,7 @@ FRESH ?= --fresh
 
 .DEFAULT_GOAL := help
 
-.PHONY: help assets tracker ui-css build test test-race test-web test-tracker test-integration test-ecosystem \
+.PHONY: help assets tracker-deps tracker web-deps ui-css build test test-race test-web test-tracker test-integration test-ecosystem \
 	bench lint check-env \
 	migrate migrate-fresh seed seed-big seed-http caddy app ingest testsite dev dev-solo \
 	caddy-ts app-ts ingest-ts testsite-ts dev-ts dev-solo-ts require-tailscale
@@ -146,6 +146,16 @@ help:
 
 # ── Toolchain ─────────────────────────────────────────────────────────────────
 
+## tracker-deps: install the exact tracker dependency graph from its lockfile
+tracker-deps:
+	@if command -v npm >/dev/null 2>&1; then \
+		npm --prefix tracker ci --silent; \
+	elif command -v node >/dev/null 2>&1; then \
+		echo "node is installed but npm is not — cannot install tracker dependencies"; exit 1; \
+	else \
+		echo "node is not installed — skipping tracker dependencies"; \
+	fi
+
 ## tracker: build the browser script and enforce its size budget
 # The bundle is minified and gzipped here, and the build fails outright if it is
 # over budget. A tracking script that grows without a ceiling eventually costs a
@@ -155,11 +165,23 @@ help:
 # The same budget is enforced by a Go test over the embedded copy, which is what
 # catches an over-budget bundle on a machine with no Node at all. This target is
 # what catches it before it is ever committed.
-tracker:
-	@if command -v node >/dev/null 2>&1; then \
-		node tracker/build.js; \
+tracker: tracker-deps
+	@if [ -d tracker/node_modules ]; then \
+		npm --prefix tracker run build; \
 	else \
 		echo "node is not installed — skipping the tracker build (go test still enforces the budget)"; \
+	fi
+
+## web-deps: install the exact dashboard dependency graph from its lockfile
+web-deps:
+	@if [ ! -f web/package-lock.json ]; then \
+		echo "no web/ directory yet — no dashboard dependencies to install"; \
+	elif command -v npm >/dev/null 2>&1; then \
+		npm --prefix web ci --silent; \
+	elif command -v node >/dev/null 2>&1; then \
+		echo "node is installed but npm is not — cannot install dashboard dependencies"; exit 1; \
+	else \
+		echo "node is not installed — skipping dashboard dependencies"; \
 	fi
 
 ## assets: build the front-end assets Go embeds
@@ -170,10 +192,10 @@ tracker:
 # rather than by hand. It keeps `go build` and `go install` working for anyone
 # without a JavaScript toolchain, which is the whole promise of a single binary;
 # the JavaScript sources stay the source of truth.
-assets: tracker ui-css
-	@if [ -f web/package.json ]; then \
+assets: tracker web-deps ui-css
+	@if [ -d web/node_modules ]; then \
 		echo "building front-end assets"; \
-		npm --prefix web ci && npm --prefix web run build; \
+		npm --prefix web run build; \
 	else \
 		echo "no web/ directory yet — nothing to build"; \
 	fi
@@ -182,11 +204,12 @@ assets: tracker ui-css
 # The output is committed, like every other compiled asset, so `go build` works
 # on a machine with no JavaScript toolchain. A missing Tailwind binary is a note
 # rather than a failure for the same reason: the committed file is still there.
-ui-css:
-	@if command -v tailwindcss >/dev/null 2>&1; then \
+ui-css: web-deps
+	@if [ -x web/node_modules/.bin/tailwindcss ]; then \
+		NODE_PATH="$(CURDIR)/web/node_modules" web/node_modules/.bin/tailwindcss \
+			-i internal/auth/tailwind.css -o internal/auth/assets/app.css --minify; \
+	elif command -v tailwindcss >/dev/null 2>&1; then \
 		tailwindcss -i internal/auth/tailwind.css -o internal/auth/assets/app.css --minify; \
-	elif command -v npx >/dev/null 2>&1; then \
-		npx --yes @tailwindcss/cli@4 -i internal/auth/tailwind.css -o internal/auth/assets/app.css --minify; \
 	else \
 		echo "tailwindcss is not installed — keeping the committed internal/auth/assets/app.css"; \
 	fi
@@ -208,11 +231,9 @@ test: tracker test-web
 # three are the kind of thing a rendering test would pass while getting wrong. A
 # machine with no JavaScript toolchain skips them rather than failing, the same
 # way the tracker build does — the Go suite still has to pass there.
-test-web:
+test-web: web-deps
 	@if [ -d web/node_modules ]; then \
 		npm --prefix web test; \
-	elif command -v npm >/dev/null 2>&1; then \
-		npm --prefix web ci --silent && npm --prefix web test; \
 	else \
 		echo "npm is not installed — skipping the dashboard unit tests"; \
 	fi

@@ -13,6 +13,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
@@ -42,7 +43,7 @@ func NewTraffic(manager *accounts.Manager) *Traffic {
 // other number in the product is bucketed by, and a sparkline whose days do not
 // line up with the dashboard's days is a chart that quietly disagrees with the
 // page it links to.
-func (t *Traffic) Sparklines(ctx context.Context, accountID int64, list []*Site, now time.Time) error {
+func (t *Traffic) Sparklines(ctx context.Context, accountID int64, list []*Site, now time.Time) (err error) {
 	if len(list) == 0 {
 		return nil
 	}
@@ -76,7 +77,7 @@ func (t *Traffic) Sparklines(ctx context.Context, accountID int64, list []*Site,
 	if err != nil {
 		return fmt.Errorf("auth: sparklines: %w", err)
 	}
-	defer rows.Close()
+	defer closeSQLRows(rows, &err, "sparklines")
 
 	for rows.Next() {
 		var siteID, startedAt int64
@@ -92,8 +93,10 @@ func (t *Traffic) Sparklines(ctx context.Context, accountID int64, list []*Site,
 
 		day := time.Unix(startedAt, 0).In(location).Format("20060102")
 
-		var key int64
-		fmt.Sscanf(day, "%d", &key)
+		key, err := strconv.ParseInt(day, 10, 64)
+		if err != nil {
+			return fmt.Errorf("auth: sparklines: parse day %q: %w", day, err)
+		}
 
 		buckets[siteID][key]++
 	}
@@ -112,8 +115,10 @@ func (t *Traffic) Sparklines(ctx context.Context, accountID int64, list []*Site,
 		for offset := SparklineDays - 1; offset >= 0; offset-- {
 			day := now.In(location).AddDate(0, 0, -offset).Format("20060102")
 
-			var key int64
-			fmt.Sscanf(day, "%d", &key)
+			key, err := strconv.ParseInt(day, 10, 64)
+			if err != nil {
+				return fmt.Errorf("auth: sparklines: parse day %q: %w", day, err)
+			}
 
 			series = append(series, counts[key])
 			total += counts[key]

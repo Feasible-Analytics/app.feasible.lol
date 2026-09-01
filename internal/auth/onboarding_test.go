@@ -63,7 +63,7 @@ func TestSnippetUsesThePerSiteToken(t *testing.T) {
 // screen is hoping for.
 func TestVerifyFindsTheSnippet(t *testing.T) {
 	result := verifyAgainst(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(`<html><head><script defer src="https://feasible.lol/js/fs-abc.js"></script></head></html>`))
+		writeTestResponse(t, w, `<html><head><script defer src="https://feasible.lol/js/fs-abc.js"></script></head></html>`)
 	}, &Site{Domain: "example.com"})
 
 	if result.Outcome != VerifyFound {
@@ -79,7 +79,7 @@ func TestVerifyFindsTheSnippet(t *testing.T) {
 // loads fine and the change was never deployed.
 func TestVerifyReportsAMissingSnippet(t *testing.T) {
 	result := verifyAgainst(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(`<html><head><title>Hello</title></head><body>nothing here</body></html>`))
+		writeTestResponse(t, w, `<html><head><title>Hello</title></head><body>nothing here</body></html>`)
 	}, &Site{Domain: "example.com"})
 
 	if result.Outcome != VerifyMissing {
@@ -92,7 +92,7 @@ func TestVerifyReportsAMissingSnippet(t *testing.T) {
 // which is why this is its own outcome rather than "missing".
 func TestVerifyReportsTheWrongDomain(t *testing.T) {
 	result := verifyAgainst(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(`<script defer data-domain="other.example.com" src="https://feasible.lol/js/script.js"></script>`))
+		writeTestResponse(t, w, `<script defer data-domain="other.example.com" src="https://feasible.lol/js/script.js"></script>`)
 	}, &Site{Domain: "example.com"})
 
 	if result.Outcome != VerifyWrongDomain {
@@ -106,7 +106,7 @@ func TestVerifyReportsTheWrongDomain(t *testing.T) {
 	// A snippet listing several domains is legitimate — that is how one script
 	// serves a site and its www variant.
 	multi := verifyAgainst(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(`<script defer data-domain="example.com,www.example.com" src="https://feasible.lol/js/script.js"></script>`))
+		writeTestResponse(t, w, `<script defer data-domain="example.com,www.example.com" src="https://feasible.lol/js/script.js"></script>`)
 	}, &Site{Domain: "example.com"})
 
 	if multi.Outcome != VerifyFound {
@@ -119,7 +119,7 @@ func TestVerifyReportsTheWrongDomain(t *testing.T) {
 func TestVerifyReportsACSPBlock(t *testing.T) {
 	result := verifyAgainst(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' cdn.example.com")
-		w.Write([]byte(`<script defer src="https://feasible.lol/js/fs-abc.js"></script>`))
+		writeTestResponse(t, w, `<script defer src="https://feasible.lol/js/fs-abc.js"></script>`)
 	}, &Site{Domain: "example.com"})
 
 	if result.Outcome != VerifyBlockedByCSP {
@@ -130,7 +130,7 @@ func TestVerifyReportsACSPBlock(t *testing.T) {
 	// would send somebody to edit a security header for no reason.
 	allowed := verifyAgainst(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Security-Policy", "script-src 'self' feasible.lol")
-		w.Write([]byte(`<script defer src="https://feasible.lol/js/fs-abc.js"></script>`))
+		writeTestResponse(t, w, `<script defer src="https://feasible.lol/js/fs-abc.js"></script>`)
 	}, &Site{Domain: "example.com"})
 
 	if allowed.Outcome != VerifyFound {

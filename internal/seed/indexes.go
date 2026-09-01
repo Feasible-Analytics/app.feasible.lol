@@ -11,6 +11,7 @@ package seed
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -59,9 +60,12 @@ func suspendIndexes(ctx context.Context, db *sql.DB) ([]suspendedIndex, error) {
 		for rows.Next() {
 			var index suspendedIndex
 
-			if err := rows.Scan(&index.name, &index.sql); err != nil {
-				rows.Close()
-				return nil, fmt.Errorf("seed: read indexes: %w", err)
+			if scanErr := rows.Scan(&index.name, &index.sql); scanErr != nil {
+				readErr := fmt.Errorf("seed: read indexes: %w", scanErr)
+				if closeErr := rows.Close(); closeErr != nil {
+					readErr = errors.Join(readErr, fmt.Errorf("seed: close index rows: %w", closeErr))
+				}
+				return nil, readErr
 			}
 
 			// Matched on the definition rather than the name, so renaming an
@@ -74,12 +78,17 @@ func suspendIndexes(ctx context.Context, db *sql.DB) ([]suspendedIndex, error) {
 			suspended = append(suspended, index)
 		}
 
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("seed: read indexes: %w", err)
+		if rowErr := rows.Err(); rowErr != nil {
+			readErr := fmt.Errorf("seed: read indexes: %w", rowErr)
+			if closeErr := rows.Close(); closeErr != nil {
+				readErr = errors.Join(readErr, fmt.Errorf("seed: close index rows: %w", closeErr))
+			}
+			return nil, readErr
 		}
 
-		rows.Close()
+		if err := rows.Close(); err != nil {
+			return nil, fmt.Errorf("seed: close index rows: %w", err)
+		}
 	}
 
 	for _, index := range suspended {

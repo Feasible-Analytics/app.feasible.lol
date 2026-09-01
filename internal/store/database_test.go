@@ -27,7 +27,11 @@ func newDatabase(t *testing.T) *Database {
 		t.Fatal(err)
 	}
 
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close database: %v", err)
+		}
+	})
 
 	return db
 }

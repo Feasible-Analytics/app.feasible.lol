@@ -224,7 +224,7 @@ func pageJourney(ctx context.Context, db *sql.DB, siteID int64, window Window, p
 	if err != nil {
 		return nil, nil, fmt.Errorf("goals: journey pages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var (
 		ids    = map[int64]bool{}
@@ -313,7 +313,7 @@ func eventJourney(ctx context.Context, db *sql.DB, siteID int64, window Window, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("goals: journey events: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var (
 		ids    = map[int64]bool{}
@@ -405,7 +405,7 @@ func labelsFor(ctx context.Context, db *sql.DB, table string, ids map[int64]bool
 	if err != nil {
 		return nil, fmt.Errorf("goals: read %s: %w", table, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var (

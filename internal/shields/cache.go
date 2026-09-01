@@ -89,7 +89,7 @@ func allRules(ctx context.Context, db *sql.DB) (map[int64][]Rule, error) {
 	if err != nil {
 		return nil, fmt.Errorf("shields: read rules: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	bySite := map[int64][]Rule{}
 

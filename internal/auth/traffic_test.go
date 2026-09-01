@@ -23,7 +23,7 @@ func newTestTraffic(t *testing.T) (*Traffic, *accounts.Manager) {
 
 	manager := accounts.NewManager(t.TempDir())
 
-	t.Cleanup(func() { manager.CloseAll() })
+	t.Cleanup(func() { checkClose(t, "account manager", manager.CloseAll) })
 
 	return NewTraffic(manager), manager
 }

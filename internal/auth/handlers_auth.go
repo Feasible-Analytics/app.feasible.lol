@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -607,14 +608,19 @@ func (h *Handler) readPendingTwoFactor(r *http.Request) (userID int64, next stri
 		return 0, "", false
 	}
 
-	var expires int64
-	fmt.Sscanf(parts[1], "%d", &expires)
+	expires, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return 0, "", false
+	}
 
 	if expires <= h.Store.Now().Unix() {
 		return 0, "", false
 	}
 
-	fmt.Sscanf(parts[0], "%d", &userID)
+	userID, err = strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return 0, "", false
+	}
 
 	return userID, safeNext(parts[2]), userID > 0
 }

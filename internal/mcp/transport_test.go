@@ -23,6 +23,21 @@ import (
 	"time"
 )
 
+// checkClose runs one test cleanup and reports a failure against the test that
+// owns the resource instead of silently discarding it.
+func checkClose(t testing.TB, name string, close func() error) {
+	t.Helper()
+	if err := close(); err != nil {
+		t.Errorf("close %s: %v", name, err)
+	}
+}
+
+// closeResponse closes a test HTTP response through the shared cleanup check.
+func closeResponse(t testing.TB, response *http.Response) {
+	t.Helper()
+	checkClose(t, "response body", response.Body.Close)
+}
+
 // httpFixture wraps the shared fixture with a mounted HTTP endpoint and the
 // OAuth server in front of it.
 type httpFixture struct {
@@ -80,7 +95,7 @@ func (h *httpFixture) rpc(t *testing.T, token, body string) (int, map[string]any
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer closeResponse(t, response)
 
 	raw, err := io.ReadAll(response.Body)
 	if err != nil {
@@ -112,7 +127,7 @@ func TestHTTPRequiresABearerToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer closeResponse(t, response)
 
 	if response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", response.StatusCode)
@@ -186,7 +201,7 @@ func TestHTTPRefusesTheServerStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer closeResponse(t, response)
 
 	if response.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", response.StatusCode)
@@ -342,7 +357,7 @@ func TestOAuthFlowEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer closeResponse(t, response)
 
 	if response.StatusCode != http.StatusFound {
 		body, _ := io.ReadAll(response.Body)
@@ -497,7 +512,7 @@ func TestAuthorizationRefusesAnUnregisteredRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer closeResponse(t, response)
 
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", response.StatusCode)
@@ -598,7 +613,7 @@ func (h *httpFixture) authorize(t *testing.T) (clientID, code, verifier string) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer closeResponse(t, response)
 
 	if response.StatusCode != http.StatusFound {
 		body, _ := io.ReadAll(response.Body)
@@ -642,7 +657,7 @@ func TestConsentRefusesABadKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer closeResponse(t, response)
 
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want the form back", response.StatusCode)
@@ -663,7 +678,7 @@ func getJSON(t *testing.T, target string) map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer closeResponse(t, response)
 
 	decoded := map[string]any{}
 	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
@@ -686,7 +701,7 @@ func postJSON(t *testing.T, target string, body map[string]any) map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer closeResponse(t, response)
 
 	decoded := map[string]any{}
 	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
@@ -704,7 +719,7 @@ func postForm(t *testing.T, target string, form url.Values) map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer closeResponse(t, response)
 
 	decoded := map[string]any{}
 	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {

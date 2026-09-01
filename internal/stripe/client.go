@@ -122,7 +122,7 @@ func (c *Client) call(ctx context.Context, method, path string, form url.Values,
 // call that times out and is retried without one produces two sessions, and in
 // the payment path a retry that creates a second object is the difference
 // between a customer paying once and paying twice.
-func (c *Client) callWithVersion(ctx context.Context, method, path string, form url.Values, idempotencyKey, apiVersion string, out any) error {
+func (c *Client) callWithVersion(ctx context.Context, method, path string, form url.Values, idempotencyKey, apiVersion string, out any) (err error) {
 	if !c.Configured() {
 		return fmt.Errorf("stripe: no secret key configured")
 	}
@@ -166,7 +166,11 @@ func (c *Client) callWithVersion(ctx context.Context, method, path string, form 
 	if err != nil {
 		return fmt.Errorf("stripe: %s %s: %w", method, path, err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		if closeErr := response.Body.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("stripe: %s %s: close response: %w", method, path, closeErr))
+		}
+	}()
 
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
 	if err != nil {

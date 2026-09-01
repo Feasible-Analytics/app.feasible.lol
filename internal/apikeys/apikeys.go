@@ -300,16 +300,18 @@ func (s *Store) touch(ctx context.Context, key *Key) {
 
 // List returns a team's keys, newest first. The hash is never returned: there is
 // nothing a caller could do with it except try to reverse it.
-func (s *Store) List(ctx context.Context, teamID int64) ([]Key, error) {
+func (s *Store) List(ctx context.Context, teamID int64) (keys []Key, err error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, team_id, user_id, name, key_prefix, scopes, hourly_limit, last_used_at, created_at, revoked_at
 		FROM api_keys WHERE team_id = ? ORDER BY id DESC`, teamID)
 	if err != nil {
 		return nil, fmt.Errorf("apikeys: list: %w", err)
 	}
-	defer rows.Close()
-
-	var keys []Key
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("apikeys: list: close rows: %w", closeErr))
+		}
+	}()
 
 	for rows.Next() {
 		var (

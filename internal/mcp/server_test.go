@@ -686,7 +686,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 
 	manager := accounts.NewManager(dir)
-	t.Cleanup(func() { manager.CloseAll() })
+	t.Cleanup(func() { checkClose(t, "account manager", manager.CloseAll) })
 
 	account, err := manager.Open(ctx, teamID)
 	if err != nil {

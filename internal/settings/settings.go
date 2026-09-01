@@ -832,7 +832,11 @@ func (h *Handler) uploadImport(w http.ResponseWriter, r *http.Request, site site
 		h.redirect(w, r, site.Domain, "imports", "", tr(r, "auth.imports.error_choose_file"))
 		return
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil && h.Log != nil {
+			h.Log.Warn("could not close uploaded import", "file", header.Filename, "error", closeErr)
+		}
+	}()
 
 	record, err := dataio.CreateImport(r.Context(), account.Writer(), site.ID,
 		dataio.SourceCSV, header.Filename, h.now())
@@ -969,7 +973,11 @@ func (h *Handler) downloadExport(w http.ResponseWriter, r *http.Request, site si
 		http.Error(w, "the prepared archive is no longer on disk — prepare a new export", http.StatusGone)
 		return
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil && h.Log != nil {
+			h.Log.Warn("could not close export download", "file", export.Path, "error", closeErr)
+		}
+	}()
 
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition",

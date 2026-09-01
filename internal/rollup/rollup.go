@@ -20,6 +20,7 @@ package rollup
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -216,7 +217,7 @@ func (b *Builder) eventNames(ctx context.Context) (eventNames, error) {
 	if err != nil {
 		return names, fmt.Errorf("rollup: read event names: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var (
@@ -248,7 +249,7 @@ type eventNames struct {
 // buildChunk rewrites one slice of buckets inside a single transaction. The
 // transaction is the unit that makes a roll-up safe to rebuild while the site
 // is live: a reader either sees the old buckets or the new ones.
-func (b *Builder) buildChunk(ctx context.Context, site Site, grain query.Grain, names eventNames, from, to time.Time) error {
+func (b *Builder) buildChunk(ctx context.Context, site Site, grain query.Grain, names eventNames, from, to time.Time) (err error) {
 	// The working tables are temporary and therefore per connection, so the
 	// whole chunk runs on one pinned connection rather than on whichever
 	// connection the pool hands out next.
@@ -256,7 +257,11 @@ func (b *Builder) buildChunk(ctx context.Context, site Site, grain query.Grain, 
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("rollup: close build connection: %w", closeErr))
+		}
+	}()
 
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {

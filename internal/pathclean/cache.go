@@ -90,16 +90,16 @@ func (c *Cache) Refresh(ctx context.Context) error {
 }
 
 // allRules reads every site's rules out of one account database.
-func allRules(ctx context.Context, db *sql.DB) (map[int64][]Rule, error) {
+func allRules(ctx context.Context, db *sql.DB) (bySite map[int64][]Rule, err error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, site_id, position, pattern, replacement, label, is_enabled
 		FROM path_clean_rules ORDER BY site_id, position`)
 	if err != nil {
 		return nil, fmt.Errorf("pathclean: read rules: %w", err)
 	}
-	defer rows.Close()
+	defer closePathRows(rows, &err, "read rules")
 
-	bySite := map[int64][]Rule{}
+	bySite = map[int64][]Rule{}
 
 	for rows.Next() {
 		var rule Rule

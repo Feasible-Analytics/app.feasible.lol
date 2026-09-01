@@ -22,12 +22,21 @@ func newWriter(t testing.TB) (*Writer, *accounts.Manager) {
 	t.Helper()
 
 	manager := accounts.NewManager(t.TempDir())
-	t.Cleanup(func() { manager.CloseAll() })
+	t.Cleanup(func() { checkClose(t, "account manager", manager.CloseAll) })
 
 	writer := NewWriter(manager, NewSessionCache())
 	writer.Now = func() time.Time { return fixtureStart }
 
 	return writer, manager
+}
+
+// checkClose runs one test cleanup and reports a failure against the test that
+// owns the resource instead of silently discarding it.
+func checkClose(t testing.TB, name string, close func() error) {
+	t.Helper()
+	if err := close(); err != nil {
+		t.Errorf("close %s: %v", name, err)
+	}
 }
 
 // countRows is the "how many are actually on disk" check every test here makes.
@@ -453,7 +462,7 @@ func TestSessionIDsSurviveARestart(t *testing.T) {
 	// A second process over the same files, with an empty cache — exactly what
 	// a restart looks like.
 	second := accounts.NewManager(dir)
-	t.Cleanup(func() { second.CloseAll() })
+	t.Cleanup(func() { checkClose(t, "second account manager", second.CloseAll) })
 
 	writerTwo := NewWriter(second, NewSessionCache())
 	writerTwo.Now = func() time.Time { return fixtureStart }

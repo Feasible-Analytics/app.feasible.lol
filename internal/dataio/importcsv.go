@@ -101,12 +101,12 @@ func ImportCSV(ctx context.Context, db *sql.DB, cache *intern.Cache, record *Imp
 // carried. Every error names the file and the line, because "your import
 // failed" without either is a message the customer cannot act on and we cannot
 // answer a ticket about.
-func importOneFile(ctx context.Context, db *sql.DB, cache *intern.Cache, record *Import, source CSVSource, location *time.Location) ([]string, int64, int64, int64, error) {
+func importOneFile(ctx context.Context, db *sql.DB, cache *intern.Cache, record *Import, source CSVSource, location *time.Location) (result []string, firstResult, lastResult, rowsResult int64, err error) {
 	handle, err := source.Open()
 	if err != nil {
 		return nil, 0, 0, 0, fmt.Errorf("%s: could not be opened: %w", source.Name, err)
 	}
-	defer handle.Close()
+	defer closeResource(handle, &err, source.Name)
 
 	reader := csv.NewReader(handle)
 	reader.FieldsPerRecord = -1
@@ -208,11 +208,11 @@ func planColumns(filename string, header []string) (*columnPlan, error) {
 	for i, raw := range header {
 		name := normaliseHeader(raw)
 
-		switch {
-		case name == "":
+		switch name {
+		case "":
 			continue
 
-		case name == DateHeader:
+		case DateHeader:
 			plan.dateIndex = i
 
 		default:
@@ -388,9 +388,11 @@ func sourcesFromZip(path string) ([]CSVSource, func() error, error) {
 	}
 
 	if len(sources) == 0 {
-		archive.Close()
-
-		return nil, nil, fmt.Errorf("that zip file has no CSVs in it — an import expects the files named %s", strings.Join(SheetNames(), ", "))
+		emptyErr := fmt.Errorf("that zip file has no CSVs in it — an import expects the files named %s", strings.Join(SheetNames(), ", "))
+		if closeErr := archive.Close(); closeErr != nil {
+			emptyErr = errors.Join(emptyErr, fmt.Errorf("dataio: close empty upload archive: %w", closeErr))
+		}
+		return nil, nil, emptyErr
 	}
 
 	return sources, archive.Close, nil

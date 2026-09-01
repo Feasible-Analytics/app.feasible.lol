@@ -307,7 +307,7 @@ func ControlLister(control *sql.DB) Lister {
 		if err != nil {
 			return nil, fmt.Errorf("rollup: read sites: %w", err)
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 
 		var refs []SiteRef
 

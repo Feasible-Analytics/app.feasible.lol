@@ -29,7 +29,7 @@ func TestDeleteAccountRemovesTheDatabaseFile(t *testing.T) {
 	dataDir := t.TempDir()
 	manager := accounts.NewManager(dataDir)
 
-	t.Cleanup(func() { manager.CloseAll() })
+	t.Cleanup(func() { checkClose(t, "account manager", manager.CloseAll) })
 
 	user, team, err := s.CreateUser(ctx, "a@example.com", "", "hash", "")
 	if err != nil {

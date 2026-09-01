@@ -164,7 +164,7 @@ func (s *Store) SessionByToken(ctx context.Context, token string) (*Session, err
 // ListSessions returns a person's signed-in browsers, most recently used
 // first. This is what the login-management screen renders, so the order is the
 // one that puts "this browser" and anything suspicious at the top.
-func (s *Store) ListSessions(ctx context.Context, userID int64) ([]Session, error) {
+func (s *Store) ListSessions(ctx context.Context, userID int64) (sessions []Session, err error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, user_id, device_label, created_at, last_seen_at, expires_at
 		FROM user_sessions
@@ -174,9 +174,7 @@ func (s *Store) ListSessions(ctx context.Context, userID int64) ([]Session, erro
 	if err != nil {
 		return nil, fmt.Errorf("auth: list sessions: %w", err)
 	}
-	defer rows.Close()
-
-	var sessions []Session
+	defer closeSQLRows(rows, &err, "list sessions")
 
 	for rows.Next() {
 		var session Session

@@ -310,7 +310,7 @@ func (s *Store) Running(ctx context.Context) ([]Account, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lifecycle: running: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []Account
 
@@ -419,7 +419,7 @@ func (s *Store) SentEmails(ctx context.Context, teamID int64, startedAt time.Tim
 	if err != nil {
 		return nil, fmt.Errorf("lifecycle: sent emails %d: %w", teamID, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	sent := map[string]bool{}
 
@@ -664,7 +664,7 @@ func (s *Store) Gaps(ctx context.Context, teamID int64) ([]Gap, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lifecycle: gaps %d: %w", teamID, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []Gap
 

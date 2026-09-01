@@ -502,7 +502,7 @@ func lookupEventIDs(ctx context.Context, db *sql.DB, events []Event, seen map[uu
 	if err != nil {
 		return fmt.Errorf("dedupe lookup: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var raw []byte

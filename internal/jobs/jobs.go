@@ -331,7 +331,7 @@ func (c *Client) FailedOfKind(ctx context.Context, kind string) ([]Job, error) {
 	if err != nil {
 		return nil, fmt.Errorf("jobs: read failed %s: %w", kind, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var found []Job
 

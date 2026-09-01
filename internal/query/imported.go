@@ -365,7 +365,7 @@ func (x *executor) importCandidates(ctx context.Context, r Resolved) ([]importCa
 	if err != nil {
 		return nil, fmt.Errorf("query: read imported shapes: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var candidates []importCandidate
 

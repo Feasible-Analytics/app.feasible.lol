@@ -720,7 +720,7 @@ func TestEveryDimensionTableSeedsTheEmptyString(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tables []string
 	for rows.Next() {

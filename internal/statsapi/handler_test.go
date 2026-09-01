@@ -32,7 +32,11 @@ func newServer(t *testing.T) *httptest.Server {
 	t.Helper()
 
 	manager := accounts.NewManager(t.TempDir())
-	t.Cleanup(func() { manager.CloseAll() })
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close account manager: %v", err)
+		}
+	})
 
 	account, err := manager.Open(context.Background(), 7)
 	if err != nil {
@@ -98,7 +102,11 @@ func post(t *testing.T, server *httptest.Server, domain, body string) (int, map[
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	}()
 
 	decoded := map[string]any{}
 	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
@@ -278,7 +286,11 @@ func TestOnlyPostIsAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	}()
 
 	// The mux itself refuses a method the pattern does not name, which is the
 	// same answer the handler would give.

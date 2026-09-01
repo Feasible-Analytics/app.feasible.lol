@@ -173,7 +173,7 @@ func (c *ControlStore) ListSites(ctx context.Context, teamID int64, limit, offse
 	if err != nil {
 		return nil, 0, fmt.Errorf("publicapi: list sites: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	list := []*Site{}
 
@@ -373,7 +373,7 @@ func (c *ControlStore) CustomProperties(ctx context.Context, siteID int64) ([]Cu
 	if err != nil {
 		return nil, fmt.Errorf("publicapi: custom properties: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	properties := []CustomProperty{}
 
@@ -434,7 +434,7 @@ func (c *ControlStore) SharedLinks(ctx context.Context, siteID int64) ([]SharedL
 	if err != nil {
 		return nil, fmt.Errorf("publicapi: shared links: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	links := []SharedLink{}
 
@@ -498,7 +498,7 @@ func (c *ControlStore) Guests(ctx context.Context, siteID int64) ([]Guest, error
 	if err != nil {
 		return nil, fmt.Errorf("publicapi: guests: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	guests := []Guest{}
 
@@ -565,7 +565,7 @@ func (c *ControlStore) Members(ctx context.Context, teamID int64) ([]Member, err
 	if err != nil {
 		return nil, fmt.Errorf("publicapi: members: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	members := []Member{}
 

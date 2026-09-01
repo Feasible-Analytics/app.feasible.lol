@@ -244,7 +244,7 @@ func (f *Favicons) pathFor(host string) string {
 }
 
 // fetch pulls one icon from upstream.
-func (f *Favicons) fetch(ctx context.Context, host string) ([]byte, string, error) {
+func (f *Favicons) fetch(ctx context.Context, host string) (body []byte, contentType string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 
@@ -262,13 +262,17 @@ func (f *Favicons) fetch(ctx context.Context, host string) ([]byte, string, erro
 	if err != nil {
 		return nil, "", err
 	}
-	defer response.Body.Close()
+	defer func() {
+		if closeErr := response.Body.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close upstream response: %w", closeErr))
+		}
+	}()
 
 	if response.StatusCode != http.StatusOK {
 		return nil, "", fmt.Errorf("upstream answered %d", response.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxIconBytes))
+	body, err = io.ReadAll(io.LimitReader(response.Body, maxIconBytes))
 	if err != nil {
 		return nil, "", err
 	}
@@ -277,7 +281,7 @@ func (f *Favicons) fetch(ctx context.Context, host string) ([]byte, string, erro
 		return nil, "", errors.New("upstream answered with an empty body")
 	}
 
-	contentType := response.Header.Get("Content-Type")
+	contentType = response.Header.Get("Content-Type")
 
 	// The response is written into an <img> on a page that also renders one
 	// account's traffic. Anything that is not an image — an HTML error page a

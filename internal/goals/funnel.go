@@ -161,7 +161,7 @@ func ListFunnels(ctx context.Context, db *sql.DB, siteID int64) ([]Funnel, error
 	if err != nil {
 		return nil, fmt.Errorf("goals: list funnels: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var ids []int64
 
@@ -218,7 +218,7 @@ func GetFunnel(ctx context.Context, db *sql.DB, id int64) (Funnel, error) {
 	if err != nil {
 		return Funnel{}, fmt.Errorf("goals: get funnel: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var step Step
@@ -409,7 +409,7 @@ func walkFunnel(ctx context.Context, db *sql.DB, funnel Funnel, window Window) (
 	if err != nil {
 		return nil, nil, fmt.Errorf("goals: funnel: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// A visitor's score is the furthest any single visit of theirs got. A
 	// funnel is a thing that happens inside a visit, so steps done in two

@@ -14,6 +14,7 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -121,10 +122,16 @@ func secretFromFile(path string) ([]byte, error) {
 
 		return nil, fmt.Errorf("script key %s: %w", path, err)
 	}
-	defer file.Close()
-
 	if _, err := file.WriteString(hex.EncodeToString(secret)); err != nil {
-		return nil, fmt.Errorf("script key %s: %w", path, err)
+		writeErr := fmt.Errorf("script key %s: %w", path, err)
+		if closeErr := file.Close(); closeErr != nil {
+			writeErr = errors.Join(writeErr, fmt.Errorf("script key %s: close after write failure: %w", path, closeErr))
+		}
+		return nil, writeErr
+	}
+
+	if err := file.Close(); err != nil {
+		return nil, fmt.Errorf("script key %s: close: %w", path, err)
 	}
 
 	return secret, nil
