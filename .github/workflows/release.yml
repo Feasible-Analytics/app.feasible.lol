@@ -152,21 +152,26 @@ jobs:
           "$staging/feasible" --version | grep -F "feasible v${RELEASE_VERSION}"
           rm -rf "$staging"
 
-      # gh creates the tag at the checked-out main commit and publishes every
-      # archive plus its checksum manifest as one GitHub Release. RELEASE_TOKEN
-      # supplies write access when organization policy makes github.token
-      # read-only; repositories that allow writable workflow tokens need no
-      # additional secret.
-      - name: Publish GitHub Release
+      # Push the tag before creating the release. This preserves the exact
+      # checked-out commit that produced the binaries and follows the release
+      # path already proven in harbor-cli.
+      - name: Create tag
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
           RELEASE_SHA: ${{ steps.release.outputs.sha }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
 
-          gh release create "$RELEASE_TAG" dist/* \
-            --target "$RELEASE_SHA" \
-            --title "$RELEASE_TAG" \
-            --generate-notes
+          git tag "$RELEASE_TAG" "$RELEASE_SHA"
+          git push origin "$RELEASE_TAG"
+
+      # action-gh-release publishes against the tag created above using the
+      # workflow's built-in GITHUB_TOKEN and contents write permission.
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: ${{ steps.release.outputs.tag }}
+          generate_release_notes: true
+          files: dist/*
