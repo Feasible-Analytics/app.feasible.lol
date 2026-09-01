@@ -237,14 +237,6 @@ func (h *Handler) serveRead(w http.ResponseWriter, r *http.Request, site sites.S
 	return nil
 }
 
-// now returns the injected clock or UTC wall time.
-func (h *Handler) now() time.Time {
-	if h.Now != nil {
-		return h.Now()
-	}
-	return time.Now().UTC()
-}
-
 // decodeReportRequest reads the compact query-string wire form. The date range
 // and filters remain JSON because both already have strict JSON decoders and a
 // second ad-hoc grammar here would accept different questions than /api/stats.

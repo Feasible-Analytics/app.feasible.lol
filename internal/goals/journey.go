@@ -493,15 +493,6 @@ func journeyScrollPredicates(ctx context.Context, db *sql.DB, req JourneyRequest
 	return compiled, nil
 }
 
-// firstPathSegment groups a path by its first non-empty segment.
-func firstPathSegment(path string) string {
-	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
-	if len(parts) == 0 || parts[0] == "" {
-		return "/"
-	}
-	return "/" + parts[0] + "/**"
-}
-
 // conditionsFor and bindsFor are the base clause split into its two halves, so
 // a statement that needs to append its own conditions can interleave the
 // arguments in the right order.
