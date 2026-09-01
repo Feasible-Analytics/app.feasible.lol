@@ -655,12 +655,18 @@ func TestTrafficMirrorFollowsTheClock(t *testing.T) {
 	if err := h.control.QueryRow(`SELECT accept_traffic_until FROM teams WHERE id = 1`).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	if before.Valid {
-		t.Fatal("a fresh team already has a traffic deadline")
+	if !before.Valid {
+		t.Fatal("a fresh team was not atomically enrolled in its trial")
+	}
+	state, err := h.store.Load(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := state.Boundary(PhaseDormant).Unix(); before.Int64 != want {
+		t.Fatalf("initial accept_traffic_until is %d, want %d", before.Int64, want)
 	}
 
-	transition, err := h.service.Signal(ctx, 1, SignalTrialStarted)
-	if err != nil {
+	if _, err := h.service.Signal(ctx, 1, SignalPaymentSucceeded); err != nil {
 		t.Fatal(err)
 	}
 
@@ -668,12 +674,8 @@ func TestTrafficMirrorFollowsTheClock(t *testing.T) {
 	if err := h.control.QueryRow(`SELECT accept_traffic_until FROM teams WHERE id = 1`).Scan(&after); err != nil {
 		t.Fatal(err)
 	}
-	if !after.Valid {
-		t.Fatal("starting a clock did not set the traffic deadline")
-	}
-
-	if want := transition.State.Boundary(PhaseDormant).Unix(); after.Int64 != want {
-		t.Errorf("accept_traffic_until is %d, want %d (the dormant boundary)", after.Int64, want)
+	if after.Valid {
+		t.Fatalf("payment left accept_traffic_until set to %d", after.Int64)
 	}
 }
 
@@ -911,6 +913,81 @@ func TestDeletionSurvivesAFailingPaymentProvider(t *testing.T) {
 	}
 }
 
+// TestDeletionRemovesEveryDiscoveredCustomerAndRetriesIndependently protects
+// against a late Checkout Session creating a second Stripe customer. Each
+// customer gets its own durable outcome, and a retry skips completed removals.
+func TestDeletionRemovesEveryDiscoveredCustomerAndRetriesIndependently(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	h.purger.Payments = &staticPaymentCoordinator{customerIDs: []string{"cus_alpha", "cus_beta", "cus_alpha"}}
+
+	var firstCalls []string
+	h.purger.Customers = removerFunc(func(_ context.Context, id string) error {
+		firstCalls = append(firstCalls, id)
+		if id == "cus_beta" {
+			return errFake
+		}
+		return nil
+	})
+	if _, err := h.service.Signal(ctx, 1, SignalPaymentFailed); err != nil {
+		t.Fatal(err)
+	}
+	h.travel(DeletionDays)
+	if _, err := h.service.Sweep(ctx); err == nil || !contains(err.Error(), "payment provider is unreachable") {
+		t.Fatalf("first multi-customer deletion returned %v", err)
+	}
+	if len(firstCalls) != 2 || firstCalls[0] != "cus_alpha" || firstCalls[1] != "cus_beta" {
+		t.Fatalf("first provider removals were %v", firstCalls)
+	}
+
+	var alphaRemoved, betaRemoved sql.NullInt64
+	var alphaError, betaError string
+	if err := h.control.QueryRow(`
+		SELECT removed_at, last_error FROM account_deletion_customers
+		WHERE team_id = 1 AND customer_id = 'cus_alpha'
+	`).Scan(&alphaRemoved, &alphaError); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.control.QueryRow(`
+		SELECT removed_at, last_error FROM account_deletion_customers
+		WHERE team_id = 1 AND customer_id = 'cus_beta'
+	`).Scan(&betaRemoved, &betaError); err != nil {
+		t.Fatal(err)
+	}
+	if !alphaRemoved.Valid || alphaError != "" || betaRemoved.Valid || !contains(betaError, "unreachable") {
+		t.Fatalf("customer checkpoints alpha=(%v,%q) beta=(%v,%q)", alphaRemoved, alphaError, betaRemoved, betaError)
+	}
+
+	var secondCalls []string
+	h.purger.Customers = removerFunc(func(_ context.Context, id string) error {
+		secondCalls = append(secondCalls, id)
+		return nil
+	})
+	if _, err := h.service.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(secondCalls) != 1 || secondCalls[0] != "cus_beta" {
+		t.Fatalf("retry removed %v, want only cus_beta", secondCalls)
+	}
+
+	var completed, providerRemoved sql.NullInt64
+	var unfinished int
+	if err := h.control.QueryRow(`
+		SELECT completed_at, provider_removed_at FROM account_deletions WHERE team_id = 1
+	`).Scan(&completed, &providerRemoved); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.control.QueryRow(`
+		SELECT COUNT(*) FROM account_deletion_customers
+		WHERE team_id = 1 AND (removed_at IS NULL OR last_error <> '')
+	`).Scan(&unfinished); err != nil {
+		t.Fatal(err)
+	}
+	if !completed.Valid || !providerRemoved.Valid || unfinished != 0 {
+		t.Fatalf("retry completion=%v provider=%v unfinished=%d", completed, providerRemoved, unfinished)
+	}
+}
+
 // TestDeletionIsIdempotent covers a crash between any two steps: running the
 // whole thing again must succeed rather than fail on something already gone.
 func TestDeletionIsIdempotent(t *testing.T) {
@@ -1046,7 +1123,7 @@ func TestLegacyCrashAfterTeamRemovalRemainsDiscoverable(t *testing.T) {
 		t.Fatal(err)
 	}
 	account := Account{TeamID: 1, TeamName: "Example Co", Email: "owner@example.com", State: state}
-	claimed, err := h.purger.claim(ctx, account, at(DeletionDays))
+	claimed, err := h.purger.claim(ctx, account, at(DeletionDays), nil, 0, false)
 	if err != nil || !claimed {
 		t.Fatalf("legacy deletion claim=%t error=%v", claimed, err)
 	}
@@ -1077,6 +1154,34 @@ type removerFunc func(ctx context.Context, id string) error
 func (f removerFunc) DeleteCustomer(ctx context.Context, id string) error {
 	return f(ctx, id)
 }
+
+// staticPaymentCoordinator supplies provider customers discovered while a live
+// account still exists, matching the state the billing coordinator hands to the
+// deletion claim before the team cascade.
+type staticPaymentCoordinator struct {
+	customerIDs []string
+}
+
+// AcquireAccountLease returns a no-op lease because this lifecycle test covers
+// durable deletion checkpoints rather than billing's cross-process lease.
+func (*staticPaymentCoordinator) AcquireAccountLease(context.Context, int64) (AccountLease, error) {
+	return staticAccountLease{}, nil
+}
+
+// QuiesceForDeletion returns the discovered customer set with no provider
+// mutations; billing's own tests cover subscription and invoice quiescence.
+func (p *staticPaymentCoordinator) QuiesceForDeletion(context.Context, AccountLease, int64, string, time.Time, bool) (PaymentQuiescence, error) {
+	return PaymentQuiescence{CustomerIDs: append([]string(nil), p.customerIDs...)}, nil
+}
+
+// staticAccountLease is the minimum lease implementation needed by the purger.
+type staticAccountLease struct{}
+
+// Renew keeps the deterministic test lease valid.
+func (staticAccountLease) Renew(context.Context) error { return nil }
+
+// Release ends the deterministic test lease.
+func (staticAccountLease) Release() {}
 
 // errFake is a stand-in for a payment provider that will not answer.
 var errFake = &fakeError{}

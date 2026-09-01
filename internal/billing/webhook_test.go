@@ -103,6 +103,9 @@ func (p *provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.customerDeleted = true
 		fmt.Fprintf(w, `{"id":%q,"deleted":true}`, customerID)
 
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/customers":
+		fmt.Fprintf(w, `{"object":"list","has_more":false,"data":[{"id":%q,"metadata":{"feasible_team_id":"1"}}]}`, customerID)
+
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/customers/"):
 		if p.settleOnCustomerAt != 0 {
 			p.invoiceStatus = "paid"
@@ -240,6 +243,12 @@ func newHarness(t *testing.T) *harness {
 	client.BaseURL = server.URL
 
 	lifecycleStore := lifecycle.NewStore(control)
+	// Billing webhook fixtures start from an already-active account. Team
+	// insertion now atomically starts a real trial, so clear that clock here;
+	// individual trial tests explicitly start the state they need.
+	if err := lifecycleStore.Save(context.Background(), teamID, lifecycle.State{}); err != nil {
+		t.Fatal(err)
+	}
 
 	lifecycleService := &lifecycle.Service{
 		Store:  lifecycleStore,
@@ -1131,11 +1140,11 @@ func TestSessionlessCheckoutRecoveryHonorsAChangedPlan(t *testing.T) {
 	}
 }
 
-// TestExpiredCheckoutClaimIsReplacedAtTheBoundary exercises failure, restart,
-// exact expiry, concurrent reclaim, a monthly-to-yearly change, and a late
-// response from the abandoned provider call. Stripe idempotency is deliberately
-// not reused after expiry; the old session is explicitly neutralized instead.
-func TestExpiredCheckoutClaimIsReplacedAtTheBoundary(t *testing.T) {
+// TestIndeterminateCheckoutClaimFailsClosedAtTheBoundary exercises failure,
+// restart, exact retry-window expiry, concurrent attempts, and a late provider
+// response. No worker may replace the claim once Stripe can prune its original
+// idempotency result.
+func TestIndeterminateCheckoutClaimFailsClosedAtTheBoundary(t *testing.T) {
 	h := newHarness(t)
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
@@ -1236,9 +1245,9 @@ func TestExpiredCheckoutClaimIsReplacedAtTheBoundary(t *testing.T) {
 	third.Store = NewStore(thirdControl)
 	third.Store.Now = func() time.Time { return h.now() }
 
-	// At the exact boundary, two restarted workers race to replace monthly with
-	// yearly. The durable lease permits one create; the other reads its session.
-	h.travel(time.Second)
+	// At the exact provider retry boundary, two restarted workers both fail
+	// closed. Neither may send a second create under an old or replacement key.
+	h.travel(checkoutProviderRetryWindow - accountLeaseDuration + time.Second)
 	start := make(chan struct{})
 	results := make(chan *stripe.CheckoutSession, 2)
 	errors := make(chan error, 2)
@@ -1258,13 +1267,13 @@ func TestExpiredCheckoutClaimIsReplacedAtTheBoundary(t *testing.T) {
 	close(results)
 	close(errors)
 	for err := range errors {
-		if err != nil {
-			t.Fatal(err)
+		if err == nil || !strings.Contains(err.Error(), "indeterminate checkout") {
+			t.Fatalf("boundary retry returned %v", err)
 		}
 	}
 	for session := range results {
-		if session == nil || session.ID != "cs_new" {
-			t.Fatalf("concurrent expiry reclaim returned %+v", session)
+		if session != nil {
+			t.Fatalf("indeterminate checkout returned %+v", session)
 		}
 	}
 
@@ -1284,17 +1293,17 @@ func TestExpiredCheckoutClaimIsReplacedAtTheBoundary(t *testing.T) {
 	}
 	providerMu.Lock()
 	defer providerMu.Unlock()
-	if len(forms) != 2 || len(keys) != 2 {
-		t.Fatalf("provider creates forms=%d keys=%d, want old plus one replacement", len(forms), len(keys))
+	if len(forms) != 1 || len(keys) != 1 {
+		t.Fatalf("provider creates forms=%d keys=%d, want only the original attempt", len(forms), len(keys))
 	}
-	if forms[0].Get("line_items[0][price]") != "price_monthly" || forms[1].Get("line_items[0][price]") != "price_yearly" {
-		t.Fatalf("provider plan attempts are %q then %q", forms[0].Get("line_items[0][price]"), forms[1].Get("line_items[0][price]"))
+	if forms[0].Get("line_items[0][price]") != "price_monthly" {
+		t.Fatalf("provider plan attempt is %q", forms[0].Get("line_items[0][price]"))
 	}
-	if keys[0] == "" || keys[1] == "" || keys[0] == keys[1] || claim.IdempotencyKey != keys[1] {
-		t.Fatalf("replacement keys=%v stored=%q", keys, claim.IdempotencyKey)
+	if keys[0] == "" || claim.IdempotencyKey != keys[0] {
+		t.Fatalf("original key=%v stored=%q", keys, claim.IdempotencyKey)
 	}
-	if claim.Plan != "yearly" || claim.PriceID != "price_yearly" || claim.SessionID != "cs_new" || expiredOld != 2 || cleanupRows != 0 {
-		t.Fatalf("replacement claim=%+v expired_old=%d cleanup=%d", claim, expiredOld, cleanupRows)
+	if claim.Plan != "monthly" || claim.PriceID != "price_monthly" || claim.SessionID != "" || expiredOld != 1 || cleanupRows != 0 {
+		t.Fatalf("indeterminate claim=%+v expired_old=%d cleanup=%d", claim, expiredOld, cleanupRows)
 	}
 }
 
@@ -1309,7 +1318,9 @@ func TestExpiredCheckoutRestartPersistsCleanupFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.travel(accountLeaseDuration)
+	if err := h.service.Store.MarkCheckoutClaimStatus(ctx, old, "expired"); err != nil {
+		t.Fatal(err)
+	}
 
 	var mu sync.Mutex
 	expireCalls := 0
@@ -1415,7 +1426,9 @@ func TestCompletedCheckoutTruthBlocksOnlyAnUntrackedSubscription(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				h.travel(accountLeaseDuration)
+				if err := h.service.Store.MarkCheckoutClaimStatus(ctx, claim, "expired"); err != nil {
+					t.Fatal(err)
+				}
 			}
 
 			creates := 0
@@ -2416,6 +2429,54 @@ func TestDay90RestoresDurableQuiescenceAfterProcessCrash(t *testing.T) {
 	if recoveryRows != 0 || h.provider.paused || !h.provider.invoiceAutoAdvance || h.phase() != lifecycle.PhaseActive {
 		t.Fatalf("crash recovery rows=%d paused=%t invoice_auto=%t phase=%q",
 			recoveryRows, h.provider.paused, h.provider.invoiceAutoAdvance, h.phase())
+	}
+}
+
+// TestDeletionFailsClosedWithoutStripeCredentials proves a recorded provider
+// customer is never treated as removed when the deployment cannot authenticate
+// to Stripe. The live team and unclaimed audit remain available for a retry.
+func TestDeletionFailsClosedWithoutStripeCredentials(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	failureAt := h.now().Add(-lifecycle.DeletionDays * lifecycle.Day)
+	if _, err := h.service.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentFailed, failureAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.Store.Save(ctx, Subscription{
+		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_test_1",
+		Status: stripe.StatusCanceled, Plan: "monthly", PriceID: "price_monthly",
+		PaymentState: PaymentFailed, PaymentFailedAt: failureAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.service.Stripe = stripe.New("")
+	h.service.Lifecycle.Purger.Payments = h.service
+	h.service.Lifecycle.Purger.Customers = h.service
+	state, err := lifecycle.NewStore(h.control).Load(ctx, teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = h.service.Lifecycle.Purger.Purge(ctx, lifecycle.Account{
+		TeamID: teamID, TeamName: "Example Co", Email: "owner@example.com",
+		CustomerID: customerID, State: state,
+	}, h.now())
+	if err == nil || !strings.Contains(err.Error(), "Stripe credentials are unavailable") {
+		t.Fatalf("credentialless provider cleanup returned %v", err)
+	}
+
+	var teams, deletions, customerAudits int
+	for query, target := range map[string]*int{
+		`SELECT COUNT(*) FROM teams WHERE id = 1`:                           &teams,
+		`SELECT COUNT(*) FROM account_deletions WHERE team_id = 1`:          &deletions,
+		`SELECT COUNT(*) FROM account_deletion_customers WHERE team_id = 1`: &customerAudits,
+	} {
+		if err := h.control.QueryRow(query).Scan(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if teams != 1 || deletions != 0 || customerAudits != 0 {
+		t.Fatalf("credentialless cleanup teams=%d deletions=%d customers=%d", teams, deletions, customerAudits)
 	}
 }
 

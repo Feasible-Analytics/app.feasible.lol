@@ -199,6 +199,15 @@ func TestAJumpStraightToTheLimitStillSendsTheSeventyPercentEmail(t *testing.T) {
 func TestReachingTheLimitDoesNotLockAnything(t *testing.T) {
 	f := newFixture(t)
 
+	var beforeTrigger string
+	var beforeStarted int64
+	var beforeDeleted sql.NullInt64
+	if err := f.control.QueryRow(`
+		SELECT trigger, started_at, deleted_at FROM account_lifecycle WHERE team_id = 1
+	`).Scan(&beforeTrigger, &beforeStarted, &beforeDeleted); err != nil {
+		t.Fatal(err)
+	}
+
 	f.add("2026-03", 1_500_000)
 	f.sweep()
 
@@ -211,13 +220,19 @@ func TestReachingTheLimitDoesNotLockAnything(t *testing.T) {
 		t.Fatal("one month over locked the dashboard")
 	}
 
-	// And nothing has touched the lifecycle clock.
-	var clocks int
-	if err := f.control.QueryRow(`SELECT COUNT(*) FROM account_lifecycle`).Scan(&clocks); err != nil {
+	// Team creation starts the trial clock atomically. Volume overage must leave
+	// that existing clock byte-for-byte unchanged rather than starting a lapse.
+	var afterTrigger string
+	var afterStarted int64
+	var afterDeleted sql.NullInt64
+	if err := f.control.QueryRow(`
+		SELECT trigger, started_at, deleted_at FROM account_lifecycle WHERE team_id = 1
+	`).Scan(&afterTrigger, &afterStarted, &afterDeleted); err != nil {
 		t.Fatal(err)
 	}
-	if clocks != 0 {
-		t.Fatal("going over the plan started a deletion clock")
+	if afterTrigger != beforeTrigger || afterStarted != beforeStarted || afterDeleted != beforeDeleted {
+		t.Fatalf("going over the plan changed lifecycle from (%q,%d,%v) to (%q,%d,%v)",
+			beforeTrigger, beforeStarted, beforeDeleted, afterTrigger, afterStarted, afterDeleted)
 	}
 }
 

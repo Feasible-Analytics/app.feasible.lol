@@ -410,6 +410,32 @@ func (c *Client) CheckoutSessions(ctx context.Context) ([]CheckoutSession, error
 	}
 }
 
+// Customers reads every provider customer so permanent deletion can discover
+// duplicate records created by a lost Checkout response or an old integration.
+// Stripe's customer list has no metadata filter, and deletion is rare enough
+// that a complete paginated scan is preferable to an eventually consistent
+// search that could leave a chargeable record behind.
+func (c *Client) Customers(ctx context.Context) ([]Customer, error) {
+	form := url.Values{}
+	form.Set("limit", "100")
+
+	var customers []Customer
+	for {
+		var page list[Customer]
+		if err := c.get(ctx, "/v1/customers", form, &page); err != nil {
+			return nil, err
+		}
+		customers = append(customers, page.Data...)
+		if !page.HasMore {
+			return customers, nil
+		}
+		if len(page.Data) == 0 {
+			return nil, fmt.Errorf("stripe: customers page said has_more without any data")
+		}
+		form.Set("starting_after", page.Data[len(page.Data)-1].ID)
+	}
+}
+
 // CreatePortalSession returns a Customer Portal link. Card updates, plan
 // switches, invoice history and cancellation all live there rather than being
 // rebuilt in this product: Stripe already handles SCA, 3D Secure and every

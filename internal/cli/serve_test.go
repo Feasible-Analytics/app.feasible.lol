@@ -167,7 +167,7 @@ func newStack(t *testing.T) *stack {
 
 	com := buildCommerce(e, control, manager, service.Sites, mailer)
 
-	app, err := buildApp(e, control, manager, service, secret, mailer, com.Gate)
+	app, err := buildApp(e, control, manager, service, secret, mailer, com.Gate, com.Purger)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -545,9 +545,22 @@ func (s *Service) AcquireAccountLease(ctx context.Context, teamID int64) (lifecy
 // claim. Reversible mutations are persisted before Stripe is called; open
 // invoices are voided because disabling automatic retries still leaves manual
 // portal payment possible. Settlement is read both before and after mutation.
-func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.AccountLease, teamID int64, customerID string, lapseStarted time.Time) (lifecycle.PaymentQuiescence, error) {
+func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.AccountLease, teamID int64, customerID string, lapseStarted time.Time, recoverSettlement bool) (lifecycle.PaymentQuiescence, error) {
+	customers := make(map[string]bool)
+	if customerID != "" {
+		customers[customerID] = true
+	}
+	if !s.Stripe.Configured() {
+		if customerID != "" {
+			return lifecycle.PaymentQuiescence{}, fmt.Errorf(
+				"billing: account %d has payment customer %s but Stripe credentials are unavailable",
+				teamID, customerID,
+			)
+		}
+		return lifecycle.PaymentQuiescence{CustomerIDs: nil, Restore: func(context.Context) error { return nil }}, nil
+	}
 	restore := func(restoreCtx context.Context) error {
-		return s.restoreQuiescence(restoreCtx, lease, teamID, customerID)
+		return s.restoreQuiescence(restoreCtx, lease, teamID, sortedCustomerIDs(customers))
 	}
 	fail := func(err error) (lifecycle.PaymentQuiescence, error) {
 		_ = restore(context.WithoutCancel(ctx))
@@ -561,7 +574,7 @@ func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.Accoun
 	if err != nil {
 		return fail(err)
 	}
-	if existing.PaymentState == PaymentPaid {
+	if recoverSettlement && existing.PaymentState == PaymentPaid {
 		paidAt := s.now()
 		if existing.EvidenceEventAt > 0 {
 			paidAt = time.Unix(existing.EvidenceEventAt, 0).UTC()
@@ -575,37 +588,46 @@ func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.Accoun
 		if _, err := s.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentSucceeded, paidAt); err != nil {
 			return lifecycle.PaymentQuiescence{}, err
 		}
-		return lifecycle.PaymentQuiescence{Recovered: true}, nil
-	}
-
-	var subscriptions []stripe.Subscription
-	var invoices []stripe.Invoice
-	if customerID != "" {
-		subscriptions, err = s.Stripe.Subscriptions(ctx, customerID)
-		if err != nil {
-			return fail(err)
-		}
-		invoices, err = s.Stripe.Invoices(ctx, customerID)
-		if err != nil {
-			return fail(err)
-		}
-		if recovered, err := s.recoverSettlement(ctx, lease, teamID, customerID, lapseStarted,
-			s.now(), subscriptions, invoices); err != nil || recovered {
-			return lifecycle.PaymentQuiescence{Recovered: recovered}, err
-		}
+		return lifecycle.PaymentQuiescence{Recovered: true, CustomerIDs: sortedCustomerIDs(customers)}, nil
 	}
 
 	stable := false
 	for attempt := 0; attempt < 3; attempt++ {
-		changed := false
-		if customerID != "" {
+		beforeCustomers := len(customers)
+		providerCustomers, err := s.Stripe.Customers(ctx)
+		if err != nil {
+			return fail(fmt.Errorf("billing: discover payment customers for account %d: %w", teamID, err))
+		}
+		for i := range providerCustomers {
+			if !providerCustomers[i].Deleted && providerCustomers[i].Meta.TeamID() == teamID {
+				customers[providerCustomers[i].ID] = true
+			}
+		}
+		changed, err := s.cleanupCheckoutSessions(ctx, lease, teamID, false, "", customers)
+		if err != nil {
+			return fail(err)
+		}
+		changed = changed || len(customers) != beforeCustomers
+
+		for _, currentCustomerID := range sortedCustomerIDs(customers) {
 			if err := lease.Renew(ctx); err != nil {
 				return lifecycle.PaymentQuiescence{}, err
 			}
-			subscriptions, err = s.Stripe.Subscriptions(ctx, customerID)
+			subscriptions, err := s.Stripe.Subscriptions(ctx, currentCustomerID)
 			if err != nil {
 				return fail(err)
 			}
+			invoices, err := s.Stripe.Invoices(ctx, currentCustomerID)
+			if err != nil {
+				return fail(err)
+			}
+			if recoverSettlement {
+				if recovered, err := s.recoverSettlement(ctx, lease, teamID, currentCustomerID, sortedCustomerIDs(customers), lapseStarted,
+					s.now(), subscriptions, invoices); err != nil || recovered {
+					return lifecycle.PaymentQuiescence{Recovered: recovered, CustomerIDs: sortedCustomerIDs(customers)}, err
+				}
+			}
+
 			for i := range subscriptions {
 				subscription := &subscriptions[i]
 				if !subscription.BlocksCheckout() || subscription.Paused() {
@@ -624,10 +646,6 @@ func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.Accoun
 				changed = true
 			}
 
-			invoices, err = s.Stripe.Invoices(ctx, customerID)
-			if err != nil {
-				return fail(err)
-			}
 			for i := range invoices {
 				invoice := &invoices[i]
 				switch invoice.Status {
@@ -637,11 +655,13 @@ func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.Accoun
 					}
 					if err := s.Stripe.DeleteDraftInvoice(ctx, invoice.ID,
 						fmt.Sprintf("deletion-delete-draft-%d-%s", teamID, invoice.ID)); err != nil {
-						current, readErr := s.Stripe.Invoices(ctx, customerID)
-						if readErr == nil {
-							if recovered, recoverErr := s.recoverSettlement(ctx, lease, teamID, customerID,
-								lapseStarted, s.now(), subscriptions, current); recoverErr != nil || recovered {
-								return lifecycle.PaymentQuiescence{Recovered: recovered}, recoverErr
+						if recoverSettlement {
+							current, readErr := s.Stripe.Invoices(ctx, currentCustomerID)
+							if readErr == nil {
+								if recovered, recoverErr := s.recoverSettlement(ctx, lease, teamID, currentCustomerID, sortedCustomerIDs(customers),
+									lapseStarted, s.now(), subscriptions, current); recoverErr != nil || recovered {
+									return lifecycle.PaymentQuiescence{Recovered: recovered, CustomerIDs: sortedCustomerIDs(customers)}, recoverErr
+								}
 							}
 						}
 						return fail(fmt.Errorf("billing: delete draft invoice %s before deletion: %w", invoice.ID, err))
@@ -654,11 +674,13 @@ func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.Accoun
 					}
 					if _, err := s.Stripe.VoidInvoice(ctx, invoice.ID,
 						fmt.Sprintf("deletion-void-invoice-%d-%s", teamID, invoice.ID)); err != nil {
-						current, readErr := s.Stripe.Invoices(ctx, customerID)
-						if readErr == nil {
-							if recovered, recoverErr := s.recoverSettlement(ctx, lease, teamID, customerID,
-								lapseStarted, s.now(), subscriptions, current); recoverErr != nil || recovered {
-								return lifecycle.PaymentQuiescence{Recovered: recovered}, recoverErr
+						if recoverSettlement {
+							current, readErr := s.Stripe.Invoices(ctx, currentCustomerID)
+							if readErr == nil {
+								if recovered, recoverErr := s.recoverSettlement(ctx, lease, teamID, currentCustomerID, sortedCustomerIDs(customers),
+									lapseStarted, s.now(), subscriptions, current); recoverErr != nil || recovered {
+									return lifecycle.PaymentQuiescence{Recovered: recovered, CustomerIDs: sortedCustomerIDs(customers)}, recoverErr
+								}
 							}
 						}
 						return fail(fmt.Errorf("billing: void invoice %s before deletion: %w", invoice.ID, err))
@@ -668,11 +690,6 @@ func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.Accoun
 			}
 		}
 
-		cleaned, err := s.cleanupCheckoutSessions(ctx, lease, teamID, false, "")
-		if err != nil {
-			return fail(err)
-		}
-		changed = changed || cleaned
 		if !changed {
 			stable = true
 			break
@@ -683,64 +700,83 @@ func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.Accoun
 	}
 
 	quiescedAt := s.now()
-	if customerID == "" {
-		return lifecycle.PaymentQuiescence{Restore: restore}, nil
-	}
-	if err := lease.Renew(ctx); err != nil {
-		return lifecycle.PaymentQuiescence{}, err
-	}
-	subscriptions, err = s.Stripe.Subscriptions(ctx, customerID)
-	if err != nil {
-		return fail(err)
-	}
-	for i := range subscriptions {
-		if subscriptions[i].BlocksCheckout() && !subscriptions[i].Paused() {
-			return fail(fmt.Errorf("billing: subscription %s appeared after provider quiescence", subscriptions[i].ID))
+	for _, currentCustomerID := range sortedCustomerIDs(customers) {
+		if err := lease.Renew(ctx); err != nil {
+			return lifecycle.PaymentQuiescence{}, err
 		}
-	}
-	invoices, err = s.Stripe.Invoices(ctx, customerID)
-	if err != nil {
-		return fail(err)
-	}
-	for i := range invoices {
-		if invoices[i].Status == "open" || invoices[i].Status == "draft" {
-			return fail(fmt.Errorf("billing: invoice %s remained payable after provider quiescence", invoices[i].ID))
+		subscriptions, err := s.Stripe.Subscriptions(ctx, currentCustomerID)
+		if err != nil {
+			return fail(err)
 		}
-	}
-	if recovered, err := s.recoverSettlement(ctx, lease, teamID, customerID, lapseStarted,
-		quiescedAt, subscriptions, invoices); err != nil || recovered {
-		return lifecycle.PaymentQuiescence{Recovered: recovered}, err
+		for i := range subscriptions {
+			if subscriptions[i].BlocksCheckout() && !subscriptions[i].Paused() {
+				return fail(fmt.Errorf("billing: subscription %s appeared after provider quiescence", subscriptions[i].ID))
+			}
+		}
+		invoices, err := s.Stripe.Invoices(ctx, currentCustomerID)
+		if err != nil {
+			return fail(err)
+		}
+		for i := range invoices {
+			if invoices[i].Status == "open" || invoices[i].Status == "draft" {
+				return fail(fmt.Errorf("billing: invoice %s remained payable after provider quiescence", invoices[i].ID))
+			}
+		}
+		if recoverSettlement {
+			if recovered, err := s.recoverSettlement(ctx, lease, teamID, currentCustomerID, sortedCustomerIDs(customers), lapseStarted,
+				quiescedAt, subscriptions, invoices); err != nil || recovered {
+				return lifecycle.PaymentQuiescence{Recovered: recovered, CustomerIDs: sortedCustomerIDs(customers)}, err
+			}
+		}
 	}
 
-	return lifecycle.PaymentQuiescence{Restore: restore}, nil
+	return lifecycle.PaymentQuiescence{CustomerIDs: sortedCustomerIDs(customers), Restore: restore}, nil
+}
+
+// sortedCustomerIDs makes multi-customer cleanup deterministic for tests,
+// logs, and provider mutation order.
+func sortedCustomerIDs(customers map[string]bool) []string {
+	ids := make([]string, 0, len(customers))
+	for customerID := range customers {
+		if customerID != "" {
+			ids = append(ids, customerID)
+		}
+	}
+	sort.Strings(ids)
+
+	return ids
 }
 
 // restoreQuiescence restores every reversible provider object recorded before a
 // process crash, then clears the durable list. Terminal invoices are skipped.
-func (s *Service) restoreQuiescence(ctx context.Context, lease lifecycle.AccountLease, teamID int64, customerID string) error {
+func (s *Service) restoreQuiescence(ctx context.Context, lease lifecycle.AccountLease, teamID int64, customerIDs []string) error {
 	objects, err := s.Store.QuiescenceObjects(ctx, teamID)
 	if err != nil || len(objects) == 0 {
 		return err
 	}
-	if customerID == "" {
+	if len(customerIDs) == 0 {
 		return fmt.Errorf("billing: account %d has provider quiescence without a customer", teamID)
 	}
 
-	subscriptions, err := s.Stripe.Subscriptions(ctx, customerID)
-	if err != nil {
-		return err
-	}
-	invoices, err := s.Stripe.Invoices(ctx, customerID)
-	if err != nil {
-		return err
-	}
-	subscriptionByID := make(map[string]*stripe.Subscription, len(subscriptions))
-	for i := range subscriptions {
-		subscriptionByID[subscriptions[i].ID] = &subscriptions[i]
-	}
-	invoiceByID := make(map[string]*stripe.Invoice, len(invoices))
-	for i := range invoices {
-		invoiceByID[invoices[i].ID] = &invoices[i]
+	subscriptionByID := make(map[string]*stripe.Subscription)
+	invoiceByID := make(map[string]*stripe.Invoice)
+	for _, customerID := range customerIDs {
+		subscriptions, err := s.Stripe.Subscriptions(ctx, customerID)
+		if err != nil {
+			return err
+		}
+		for i := range subscriptions {
+			subscription := subscriptions[i]
+			subscriptionByID[subscription.ID] = &subscription
+		}
+		invoices, err := s.Stripe.Invoices(ctx, customerID)
+		if err != nil {
+			return err
+		}
+		for i := range invoices {
+			invoice := invoices[i]
+			invoiceByID[invoice.ID] = &invoice
+		}
 	}
 
 	for _, object := range objects {
@@ -775,12 +811,12 @@ func (s *Service) restoreQuiescence(ctx context.Context, lease lifecycle.Account
 // recoverSettlement restores provider collection and applies paid_at evidence
 // before any deletion claim. The same account lease fences mirror finalization.
 func (s *Service) recoverSettlement(ctx context.Context, lease lifecycle.AccountLease, teamID int64, customerID string,
-	lapseStarted, quiescedAt time.Time, subscriptions []stripe.Subscription, invoices []stripe.Invoice) (bool, error) {
+	restoreCustomerIDs []string, lapseStarted, quiescedAt time.Time, subscriptions []stripe.Subscription, invoices []stripe.Invoice) (bool, error) {
 	invoice, paidAt, err := settledInvoice(subscriptions, invoices, lapseStarted, quiescedAt)
 	if err != nil || invoice == nil {
 		return false, err
 	}
-	if err := s.restoreQuiescence(ctx, lease, teamID, customerID); err != nil {
+	if err := s.restoreQuiescence(ctx, lease, teamID, restoreCustomerIDs); err != nil {
 		return false, err
 	}
 	if s.Lifecycle == nil {
@@ -845,7 +881,7 @@ func settledInvoice(subscriptions []stripe.Subscription, invoices []stripe.Invoi
 // account's metadata plus every late session already recorded locally. A
 // completed orphan blocks a first customer; historical completions are harmless
 // once provider subscription truth says an existing customer is fully terminal.
-func (s *Service) cleanupCheckoutSessions(ctx context.Context, lease lifecycle.AccountLease, teamID int64, blockCompleted bool, verifyCustomerID string) (bool, error) {
+func (s *Service) cleanupCheckoutSessions(ctx context.Context, lease lifecycle.AccountLease, teamID int64, blockCompleted bool, verifyCustomerID string, deletionCustomers map[string]bool) (bool, error) {
 	pending, err := s.Store.CheckoutCleanupSessions(ctx, teamID)
 	if err != nil {
 		return false, err
@@ -877,9 +913,15 @@ func (s *Service) cleanupCheckoutSessions(ctx context.Context, lease lifecycle.A
 		if err != nil {
 			return changed, fmt.Errorf("billing: inspect checkout %s before replacement: %w", id, err)
 		}
+		if deletionCustomers != nil && session.Customer != "" {
+			deletionCustomers[session.Customer] = true
+		}
 		if session.Status == "complete" || session.Subscription != "" {
 			if blockCompleted {
 				return changed, fmt.Errorf("billing: checkout %s completed before it could be recorded locally", id)
+			}
+			if deletionCustomers != nil && session.Customer == "" {
+				return changed, fmt.Errorf("billing: completed checkout %s has no customer identity for permanent deletion", id)
 			}
 			if verifyCustomerID != "" {
 				if err := s.verifyCompletedCheckoutIsTerminal(ctx, lease, session, verifyCustomerID); err != nil {
@@ -1073,13 +1115,13 @@ func (s *Service) Checkout(ctx context.Context, teamID int64, planKey, email str
 		claim.Status = "expired"
 	}
 	if found && claim.Expired(s.now()) {
-		if err := s.retireCheckoutClaim(ctx, lease, claim); err != nil {
-			return nil, err
-		}
-		claim.Status = "expired"
+		return nil, fmt.Errorf(
+			"billing: account %d has an indeterminate checkout older than the safe Stripe idempotency retry window; inspect provider session metadata before retrying",
+			teamID,
+		)
 	}
 	if found && claim.Status == "expired" {
-		if _, err := s.cleanupCheckoutSessions(ctx, lease, teamID, existing.CustomerID == "", existing.CustomerID); err != nil {
+		if _, err := s.cleanupCheckoutSessions(ctx, lease, teamID, existing.CustomerID == "", existing.CustomerID, nil); err != nil {
 			return nil, err
 		}
 	}
@@ -1161,7 +1203,7 @@ func (s *Service) Checkout(ctx context.Context, teamID int64, planKey, email str
 		if err := s.retireCheckoutClaim(ctx, lease, claim); err != nil {
 			return nil, err
 		}
-		if _, err := s.cleanupCheckoutSessions(ctx, lease, teamID, existing.CustomerID == "", existing.CustomerID); err != nil {
+		if _, err := s.cleanupCheckoutSessions(ctx, lease, teamID, existing.CustomerID == "", existing.CustomerID, nil); err != nil {
 			return nil, err
 		}
 		if err := lease.Renew(ctx); err != nil {
@@ -1220,8 +1262,11 @@ func (s *Service) Portal(ctx context.Context, teamID int64) (*stripe.PortalSessi
 // exposed here rather than reached through the client directly so that the
 // lifecycle package can hold a small interface instead of the whole client.
 func (s *Service) DeleteCustomer(ctx context.Context, customerID string) error {
-	if !s.Stripe.Configured() || customerID == "" {
+	if customerID == "" {
 		return nil
+	}
+	if !s.Stripe.Configured() {
+		return fmt.Errorf("billing: cannot delete payment customer %s without Stripe credentials", customerID)
 	}
 
 	return s.Stripe.DeleteCustomer(ctx, customerID)

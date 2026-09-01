@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
@@ -76,6 +77,12 @@ func newTestApp(t *testing.T) *testApp {
 	mailer := mail.NewWithTransport(sender, "feasible <no-reply@example.com>", "http://localhost:19312")
 
 	log := logger.New(logger.Options{Level: "error", Output: os.Stderr})
+	purger := &lifecycle.Purger{
+		Store:    lifecycle.NewStore(db),
+		Accounts: manager,
+		DataDir:  dataDir,
+		Log:      log,
+	}
 
 	handler, err := NewHandler(Options{
 		Store:     store,
@@ -83,7 +90,7 @@ func newTestApp(t *testing.T) *testApp {
 		Mailer:    mailer,
 		Sealer:    newTestSealer(t),
 		Google:    NewGoogle("", "", "http://localhost:19312"),
-		Deleter:   NewDeleter(store, manager, dataDir, NewStripe("", log), log),
+		Deleter:   NewDeleter(purger, log),
 		SiteCache: sites.New(db),
 		BaseURL:   "http://localhost:19312",
 		Log:       log,
@@ -1049,6 +1056,76 @@ func TestAnotherTeamsSiteIs404(t *testing.T) {
 
 	if page.StatusCode != http.StatusNotFound {
 		t.Errorf("another team's site should be a 404, got %d", page.StatusCode)
+	}
+}
+
+// TestDeletingAnOwnedTeamDoesNotPromoteAnotherMembership proves a surviving
+// admin membership cannot become implicit ownership after the user's own team
+// is gone. Team name, team-wide 2FA, and permanent deletion stay owner-only.
+func TestDeletingAnOwnedTeamDoesNotPromoteAnotherMembership(t *testing.T) {
+	app := newTestApp(t)
+	owner := registerAndVerify(t, app)
+	ctx := context.Background()
+
+	member, err := app.store.UserByEmail(ctx, "person@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, otherTeam, err := app.store.CreateUser(ctx, "other-owner@example.com", "Other Owner", "unused hash", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.store.DB().Exec(`
+		INSERT INTO team_memberships (team_id, user_id, role, created_at)
+		VALUES (?, ?, 'admin', ?)
+	`, otherTeam.ID, member.ID, app.store.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted := owner.post("/settings/delete", url.Values{
+		"confirm":  {"DELETE"},
+		"password": {"a long enough password"},
+	})
+	deleted.Body.Close()
+	if deleted.StatusCode != http.StatusOK {
+		t.Fatalf("owned team deletion answered %d", deleted.StatusCode)
+	}
+
+	remaining := newClient(t, app)
+	loggedIn := remaining.post("/login", url.Values{
+		"email":    {"person@example.com"},
+		"password": {"a long enough password"},
+	})
+	loggedIn.Body.Close()
+	if loggedIn.StatusCode != http.StatusFound {
+		t.Fatalf("surviving member could not sign back in: %d", loggedIn.StatusCode)
+	}
+
+	renamed := remaining.post("/settings/team", url.Values{
+		"name":        {"Hijacked name"},
+		"require_2fa": {"1"},
+	})
+	renamed.Body.Close()
+	if renamed.StatusCode != http.StatusNotFound {
+		t.Fatalf("non-owner team mutation answered %d, want 404", renamed.StatusCode)
+	}
+
+	removed := remaining.post("/settings/delete", url.Values{
+		"confirm":  {"DELETE"},
+		"password": {"a long enough password"},
+	})
+	removed.Body.Close()
+	if removed.StatusCode != http.StatusNotFound {
+		t.Fatalf("non-owner account deletion answered %d, want 404", removed.StatusCode)
+	}
+
+	var name string
+	var require2FA bool
+	if err := app.store.DB().QueryRow(`SELECT name, require_2fa FROM teams WHERE id = ?`, otherTeam.ID).Scan(&name, &require2FA); err != nil {
+		t.Fatal(err)
+	}
+	if name != "Other Owner" || require2FA {
+		t.Fatalf("another team was changed to name=%q require_2fa=%t", name, require2FA)
 	}
 }
 

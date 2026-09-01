@@ -197,9 +197,9 @@ func TestSubscriptionSelectionAndBlockingAreDeterministic(t *testing.T) {
 	}
 }
 
-// TestCheckoutSessionsPaginatesAndVoidInvoiceUsesIdempotency covers the two
-// recovery writes that close untracked or manually payable Stripe objects.
-func TestCheckoutSessionsPaginatesAndVoidInvoiceUsesIdempotency(t *testing.T) {
+// TestProviderListsPaginateAndVoidInvoiceUsesIdempotency covers the discovery
+// reads and recovery writes that close untracked Stripe objects.
+func TestProviderListsPaginateAndVoidInvoiceUsesIdempotency(t *testing.T) {
 	var voidKey string
 	var deleteKey string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -209,6 +209,10 @@ func TestCheckoutSessionsPaginatesAndVoidInvoiceUsesIdempotency(t *testing.T) {
 			_, _ = w.Write([]byte(`{"has_more":true,"data":[{"id":"cs_1","status":"open"}]}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions":
 			_, _ = w.Write([]byte(`{"has_more":false,"data":[{"id":"cs_2","status":"open"}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/customers" && r.URL.Query().Get("starting_after") == "":
+			_, _ = w.Write([]byte(`{"has_more":true,"data":[{"id":"cus_1","metadata":{"feasible_team_id":"7"}}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/customers":
+			_, _ = w.Write([]byte(`{"has_more":false,"data":[{"id":"cus_2","metadata":{"feasible_team_id":"7"}}]}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/invoices/in_open/void":
 			voidKey = r.Header.Get("Idempotency-Key")
 			_, _ = w.Write([]byte(`{"id":"in_open","status":"void"}`))
@@ -229,6 +233,13 @@ func TestCheckoutSessionsPaginatesAndVoidInvoiceUsesIdempotency(t *testing.T) {
 	}
 	if len(sessions) != 2 || sessions[0].ID != "cs_1" || sessions[1].ID != "cs_2" {
 		t.Fatalf("open checkout pages are %+v", sessions)
+	}
+	customers, err := client.Customers(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(customers) != 2 || customers[0].ID != "cus_1" || customers[1].ID != "cus_2" || customers[1].Meta.TeamID() != 7 {
+		t.Fatalf("customer pages are %+v", customers)
 	}
 	invoice, err := client.VoidInvoice(context.Background(), "in_open", "void-in-open")
 	if err != nil {

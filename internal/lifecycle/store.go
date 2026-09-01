@@ -339,6 +339,43 @@ func (s *Store) Running(ctx context.Context) ([]Account, error) {
 	return out, rows.Err()
 }
 
+// AccountForDeletion resolves the immutable facts an owner-requested deletion
+// must capture before the team cascade removes them. The lifecycle state is
+// loaded separately so the claim transaction can compare-and-swap the exact
+// clock the requester observed.
+func (s *Store) AccountForDeletion(ctx context.Context, teamID int64) (Account, error) {
+	var account Account
+	var email sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT t.id, COALESCE(t.name, ''),
+		       COALESCE(NULLIF(subscriptions.billing_email, ''), (
+		           SELECT u.email FROM team_memberships m
+		           JOIN users u ON u.id = m.user_id
+		           WHERE m.team_id = t.id AND m.role = 'owner'
+		           ORDER BY m.id LIMIT 1
+		       ), ''),
+		       COALESCE(subscriptions.stripe_customer_id, '')
+		FROM teams t
+		LEFT JOIN subscriptions ON subscriptions.team_id = t.id
+		WHERE t.id = ?
+	`, teamID).Scan(&account.TeamID, &account.TeamName, &email, &account.CustomerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Account{}, fmt.Errorf("lifecycle: account %d does not exist", teamID)
+	}
+	if err != nil {
+		return Account{}, fmt.Errorf("lifecycle: load account %d for deletion: %w", teamID, err)
+	}
+
+	state, err := s.Load(ctx, teamID)
+	if err != nil {
+		return Account{}, err
+	}
+	account.State = state
+	account.Email = email.String
+
+	return account, nil
+}
+
 // Contact resolves one account's billing contact and display name, which is
 // what the usage ladder needs and what the sweeper falls back to.
 func (s *Store) Contact(ctx context.Context, teamID int64) (string, string, error) {

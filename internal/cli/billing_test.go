@@ -103,8 +103,9 @@ func TestBillingPreflightRunsBeforeDatabaseSetup(t *testing.T) {
 	}
 }
 
-// TestBillingTrialAndStatus is the path an operator actually walks: put an
-// account on the clock, then ask what is going to happen to it.
+// TestBillingTrialAndStatus proves team creation already enrolled the account,
+// an operator cannot move day zero by enrolling again, and status explains the
+// resulting clock.
 func TestBillingTrialAndStatus(t *testing.T) {
 	dir := billingDataDir(t)
 
@@ -112,12 +113,12 @@ func TestBillingTrialAndStatus(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("exit code %d, stderr: %s", code, stderr)
 	}
-	if !strings.Contains(stdout, "trial started") {
+	if !strings.Contains(stdout, "already on a clock") {
 		t.Fatalf("stdout is %q", stdout)
 	}
 
-	// Enrolling twice must not move day 0, and must say so rather than looking
-	// like it worked.
+	// Repeated enrollment must keep reporting the same no-op rather than looking
+	// like it moved day zero.
 	code, stdout, _ = run(t, "billing", "-data-dir", dir, "trial", "1")
 	if code != ExitOK {
 		t.Fatalf("exit code %d", code)
@@ -140,22 +141,12 @@ func TestBillingTrialAndStatus(t *testing.T) {
 	}
 }
 
-// TestBillingStatusListsEveryRunningClock covers the no-argument form, which is
-// the "what is about to be deleted" question.
+// TestBillingStatusListsEveryRunningClock covers the no-argument form, including
+// the trial clock atomically created with every new team.
 func TestBillingStatusListsEveryRunningClock(t *testing.T) {
 	dir := billingDataDir(t)
 
 	code, stdout, _ := run(t, "billing", "-data-dir", dir, "status")
-	if code != ExitOK {
-		t.Fatalf("exit code %d", code)
-	}
-	if !strings.Contains(stdout, "no account is on a lifecycle clock") {
-		t.Fatalf("a fresh install reported %q", stdout)
-	}
-
-	run(t, "billing", "-data-dir", dir, "trial", "1")
-
-	code, stdout, _ = run(t, "billing", "-data-dir", dir, "status")
 	if code != ExitOK {
 		t.Fatalf("exit code %d", code)
 	}

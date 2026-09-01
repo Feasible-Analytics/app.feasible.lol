@@ -82,6 +82,12 @@ const accountLeaseDuration = 5 * time.Minute
 // control.db while another process reconciles the same account.
 const accountLeasePoll = 20 * time.Millisecond
 
+// checkoutProviderRetryWindow stops automatic provider retries before Stripe
+// may prune the idempotency result. A sessionless claim older than this fails
+// closed for operator review; replacing it or retrying it after the provider's
+// retention floor could create a second live Checkout Session.
+const checkoutProviderRetryWindow = 23 * time.Hour
+
 // NewStore builds a store over the control database.
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
@@ -503,8 +509,9 @@ type CheckoutClaim struct {
 	BillingEmail   string
 }
 
-// Expired reports whether a provider call that never stored a session may be
-// replaced. Claims with a session are resolved from Stripe instead.
+// Expired reports whether a sessionless provider result is now indeterminate.
+// It must not be replaced automatically: after Stripe's documented 24-hour
+// idempotency floor, neither reusing nor changing the key can prove uniqueness.
 func (c CheckoutClaim) Expired(now time.Time) bool {
 	return c.Status == "creating" && c.SessionID == "" && !c.ExpiresAt.After(now.UTC())
 }
@@ -535,8 +542,10 @@ func (s *Store) CheckoutClaimForAccount(ctx context.Context, teamID int64) (Chec
 	return claim, true, nil
 }
 
-// NewCheckoutClaim replaces an absent or expired checkout with a fresh intent.
-// Callers hold the account lease, so a plain upsert is sufficient here.
+// NewCheckoutClaim replaces an absent or explicitly retired checkout with a
+// fresh intent. Sessionless claims are never replaced merely because time
+// passed; Checkout must recover them with their original idempotency key or
+// fail closed before Stripe may prune that key.
 func (s *Store) NewCheckoutClaim(ctx context.Context, teamID int64, plan, priceID, customerID, billingEmail string) (CheckoutClaim, error) {
 	token, err := randomToken()
 	if err != nil {
@@ -551,7 +560,7 @@ func (s *Store) NewCheckoutClaim(ctx context.Context, teamID int64, plan, priceI
 		IdempotencyKey: fmt.Sprintf("checkout-%d-%s", teamID, token),
 		Status:         "creating",
 		ClaimToken:     token,
-		ExpiresAt:      s.now().Add(accountLeaseDuration),
+		ExpiresAt:      s.now().Add(checkoutProviderRetryWindow),
 		CustomerID:     customerID,
 		BillingEmail:   billingEmail,
 	}
@@ -576,11 +585,8 @@ func (s *Store) NewCheckoutClaim(ctx context.Context, teamID int64, plan, priceI
 			created_at = excluded.created_at,
 			updated_at = excluded.updated_at
 		WHERE billing_checkouts.status = 'expired'
-		   OR (billing_checkouts.status = 'creating'
-		       AND billing_checkouts.session_id = ''
-		       AND billing_checkouts.claim_expires_at <= ?)
 	`, teamID, plan, priceID, claim.IdempotencyKey, token,
-		claim.ExpiresAt.Unix(), customerID, billingEmail, now, now, now)
+		claim.ExpiresAt.Unix(), customerID, billingEmail, now, now)
 	if err != nil {
 		return CheckoutClaim{}, fmt.Errorf("billing: create checkout claim %d: %w", teamID, err)
 	}

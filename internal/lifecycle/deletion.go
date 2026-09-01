@@ -30,8 +30,9 @@ type CustomerRemover interface {
 // account. Restore is called if the local claim loses or fails; a successful
 // claim deliberately leaves collection paused until the customer is removed.
 type PaymentQuiescence struct {
-	Recovered bool
-	Restore   func(context.Context) error
+	Recovered   bool
+	CustomerIDs []string
+	Restore     func(context.Context) error
 }
 
 // AccountLease is the durable ownership fence shared by billing and deletion.
@@ -46,7 +47,7 @@ type AccountLease interface {
 // closes provider-side settlement opportunities before local destruction.
 type PaymentCoordinator interface {
 	AcquireAccountLease(ctx context.Context, teamID int64) (AccountLease, error)
-	QuiesceForDeletion(ctx context.Context, lease AccountLease, teamID int64, customerID string, lapseStarted time.Time) (PaymentQuiescence, error)
+	QuiesceForDeletion(ctx context.Context, lease AccountLease, teamID int64, customerID string, lapseStarted time.Time, recoverSettlement bool) (PaymentQuiescence, error)
 }
 
 // Purger performs the day-90 deletion. It is a type rather than a function
@@ -96,6 +97,25 @@ type Purger struct {
 // There is no soft delete and no recycle bin. Keeping one would mean the
 // deletion we spent ninety days warning somebody about was not real.
 func (p *Purger) Purge(ctx context.Context, account Account, now time.Time) error {
+	return p.purge(ctx, account, now, 0, false)
+}
+
+// DeleteNow runs the same durable, resumable deletion workflow for an explicit
+// owner request. The owner id is revalidated in the deletion-claim transaction,
+// so a stale settings page cannot delete an account after ownership changes.
+func (p *Purger) DeleteNow(ctx context.Context, userID, teamID int64, now time.Time) error {
+	account, err := p.Store.AccountForDeletion(ctx, teamID)
+	if err != nil {
+		return err
+	}
+
+	return p.purge(ctx, account, now, userID, true)
+}
+
+// purge owns the shared scheduled and owner-requested deletion sequence.
+// Force changes only the claim policy: provider quiescence and every durable
+// cleanup checkpoint remain identical in both paths.
+func (p *Purger) purge(ctx context.Context, account Account, now time.Time, userID int64, force bool) error {
 	pending, completed, claimedAt, err := p.deletionStatus(ctx, account.TeamID)
 	if err != nil {
 		return err
@@ -116,7 +136,9 @@ func (p *Purger) Purge(ctx context.Context, account Account, now time.Time) erro
 		}
 		defer lease.Release()
 
-		quiescence, err = p.Payments.QuiesceForDeletion(ctx, lease, account.TeamID, account.CustomerID, account.State.StartedAt)
+		quiescence, err = p.Payments.QuiesceForDeletion(
+			ctx, lease, account.TeamID, account.CustomerID, account.State.StartedAt, !force,
+		)
 		if err != nil {
 			return err
 		}
@@ -140,7 +162,7 @@ func (p *Purger) Purge(ctx context.Context, account Account, now time.Time) erro
 		defer transitionLease.Release()
 	}
 
-	claimed, err := p.claim(ctx, account, now)
+	claimed, err := p.claim(ctx, account, now, quiescence.CustomerIDs, userID, force)
 	if err != nil {
 		if quiescence.Restore != nil {
 			_ = quiescence.Restore(ctx)
@@ -149,7 +171,12 @@ func (p *Purger) Purge(ctx context.Context, account Account, now time.Time) erro
 	}
 	if !claimed {
 		if quiescence.Restore != nil {
-			return quiescence.Restore(ctx)
+			if err := quiescence.Restore(ctx); err != nil {
+				return err
+			}
+		}
+		if force {
+			return fmt.Errorf("lifecycle: account %d deletion claim lost or requester is no longer owner", account.TeamID)
 		}
 		return nil
 	}
@@ -185,24 +212,38 @@ func (p *Purger) Purge(ctx context.Context, account Account, now time.Time) erro
 		return err
 	}
 
-	if account.CustomerID != "" {
-		if p.Customers == nil {
-			return fmt.Errorf("lifecycle: account %d still has payment customer %s but no customer remover is configured", account.TeamID, account.CustomerID)
-		}
-		if err := p.Customers.DeleteCustomer(ctx, account.CustomerID); err != nil {
-			_ = p.appendDeletionNote(ctx, account.TeamID, "payment customer NOT removed: "+err.Error())
+	customers, err := p.pendingPaymentCustomers(ctx, account.TeamID)
+	if err != nil {
+		return err
+	}
+	customerCount, err := p.paymentCustomerCount(ctx, account.TeamID)
+	if err != nil {
+		return err
+	}
+	if len(customers) > 0 && p.Customers == nil {
+		return fmt.Errorf("lifecycle: account %d still has %d payment customers but no customer remover is configured", account.TeamID, len(customers))
+	}
+	for _, customerID := range customers {
+		if err := p.Customers.DeleteCustomer(ctx, customerID); err != nil {
+			recordErr := p.recordPaymentCustomerFailure(ctx, account.TeamID, customerID, err)
 			if p.Log != nil {
 				p.Log.Error("could not delete the payment provider's customer; deletion will retry",
-					"team", account.TeamID, "customer", account.CustomerID, "error", err)
+					"team", account.TeamID, "customer", customerID, "error", err)
 			}
-			return fmt.Errorf("lifecycle: delete payment customer %s: %w", account.CustomerID, err)
+			if recordErr != nil {
+				return fmt.Errorf("lifecycle: delete payment customer %s: %w; could not checkpoint failure: %v", customerID, err, recordErr)
+			}
+			return fmt.Errorf("lifecycle: delete payment customer %s: %w", customerID, err)
 		}
-		if err := p.markDeletionStep(ctx, account.TeamID, "provider_removed_at", now,
-			"payment customer "+account.CustomerID+" removed"); err != nil {
+		if err := p.markPaymentCustomerRemoved(ctx, account.TeamID, customerID, now); err != nil {
 			return err
 		}
-	} else if err := p.markDeletionStep(ctx, account.TeamID, "provider_removed_at", now,
-		"no payment customer existed"); err != nil {
+	}
+	providerNote := "no payment customer existed"
+	if customerCount > 0 {
+		providerNote = fmt.Sprintf("%d payment customer(s) removed", customerCount)
+	}
+	if err := p.markDeletionStep(ctx, account.TeamID, "provider_removed_at", now, providerNote); err != nil {
 		return err
 	}
 
@@ -246,6 +287,26 @@ func (p *Purger) removeControl(ctx context.Context, teamID int64, now time.Time)
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback after commit is harmless
 
+	// Remove identities whose only remaining membership is this account. Users
+	// who belong to or are guests of another team survive with that access intact.
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM users
+		WHERE id IN (
+		    SELECT user_id FROM team_memberships WHERE team_id = ?
+		)
+		AND NOT EXISTS (
+		    SELECT 1 FROM team_memberships other
+		    WHERE other.user_id = users.id AND other.team_id <> ?
+		)
+		AND NOT EXISTS (
+		    SELECT 1 FROM guest_memberships guest
+		    JOIN sites guest_site ON guest_site.id = guest.site_id
+		    WHERE guest.user_id = users.id AND guest_site.account_id <> ?
+		)
+	`, teamID, teamID, teamID); err != nil {
+		return fmt.Errorf("lifecycle: delete orphan users for team %d: %w", teamID, err)
+	}
+
 	if _, err := tx.ExecContext(ctx, `DELETE FROM teams WHERE id = ?`, teamID); err != nil {
 		return fmt.Errorf("lifecycle: delete team %d: %w", teamID, err)
 	}
@@ -283,16 +344,105 @@ func (p *Purger) markDeletionStep(ctx context.Context, teamID int64, column stri
 	return nil
 }
 
-// appendDeletionNote preserves a failed external attempt without completing its
-// checkpoint, so a later sweep retries it.
-func (p *Purger) appendDeletionNote(ctx context.Context, teamID int64, note string) error {
-	_, err := p.Store.DB().ExecContext(ctx, `
+// pendingPaymentCustomers returns every provider customer discovered before
+// the team cascade, excluding customers already confirmed deleted on an earlier
+// retry. The table deliberately survives team deletion with the audit row.
+func (p *Purger) pendingPaymentCustomers(ctx context.Context, teamID int64) ([]string, error) {
+	rows, err := p.Store.DB().QueryContext(ctx, `
+		SELECT customer_id FROM account_deletion_customers
+		WHERE team_id = ? AND removed_at IS NULL
+		ORDER BY customer_id
+	`, teamID)
+	if err != nil {
+		return nil, fmt.Errorf("lifecycle: list payment customers for deletion %d: %w", teamID, err)
+	}
+	defer rows.Close()
+
+	var customers []string
+	for rows.Next() {
+		var customerID string
+		if err := rows.Scan(&customerID); err != nil {
+			return nil, fmt.Errorf("lifecycle: read payment customer for deletion %d: %w", teamID, err)
+		}
+		customers = append(customers, customerID)
+	}
+
+	return customers, rows.Err()
+}
+
+// paymentCustomerCount returns the complete durable provider set, including
+// customers removed on an earlier attempt. It keeps the final audit note
+// accurate across a crash after the last per-customer checkpoint.
+func (p *Purger) paymentCustomerCount(ctx context.Context, teamID int64) (int, error) {
+	var count int
+	if err := p.Store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM account_deletion_customers WHERE team_id = ?
+	`, teamID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("lifecycle: count payment customers for deletion %d: %w", teamID, err)
+	}
+
+	return count, nil
+}
+
+// markPaymentCustomerRemoved checkpoints one provider record independently.
+// A later provider failure leaves completed customers out of the next retry and
+// continues from the durable unfinished set.
+func (p *Purger) markPaymentCustomerRemoved(ctx context.Context, teamID int64, customerID string, now time.Time) error {
+	result, err := p.Store.DB().ExecContext(ctx, `
+		UPDATE account_deletion_customers
+		SET removed_at = COALESCE(removed_at, ?), last_error = ''
+		WHERE team_id = ? AND customer_id = ?
+	`, now.UTC().Unix(), teamID, customerID)
+	if err != nil {
+		return fmt.Errorf("lifecycle: checkpoint payment customer %s for %d: %w", customerID, teamID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("lifecycle: checkpoint payment customer %s for %d: affected rows: %w", customerID, teamID, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("lifecycle: payment customer %s was not recorded for deletion %d", customerID, teamID)
+	}
+
+	return nil
+}
+
+// recordPaymentCustomerFailure preserves the latest provider error beside the
+// exact customer that failed. The aggregate deletion note remains useful for a
+// support timeline, while the per-customer field drives precise retry audits.
+func (p *Purger) recordPaymentCustomerFailure(ctx context.Context, teamID int64, customerID string, providerErr error) error {
+	tx, err := p.Store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("lifecycle: record payment customer failure %s for %d: %w", customerID, teamID, err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is harmless
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE account_deletion_customers
+		SET last_error = ?
+		WHERE team_id = ? AND customer_id = ? AND removed_at IS NULL
+	`, providerErr.Error(), teamID, customerID)
+	if err != nil {
+		return fmt.Errorf("lifecycle: record payment customer failure %s for %d: %w", customerID, teamID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("lifecycle: record payment customer failure %s for %d: affected rows: %w", customerID, teamID, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("lifecycle: failed payment customer %s was not pending for deletion %d", customerID, teamID)
+	}
+
+	note := "payment customer " + customerID + " NOT removed: " + providerErr.Error()
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE account_deletions
 		SET notes = CASE WHEN notes = '' THEN ? ELSE notes || '; ' || ? END
 		WHERE team_id = ?
-	`, note, note, teamID)
-	if err != nil {
-		return fmt.Errorf("lifecycle: append deletion note %d: %w", teamID, err)
+	`, note, note, teamID); err != nil {
+		return fmt.Errorf("lifecycle: append payment customer failure note %d: %w", teamID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("lifecycle: commit payment customer failure %s for %d: %w", customerID, teamID, err)
 	}
 
 	return nil
@@ -356,7 +506,7 @@ func (p *Purger) finishControl(ctx context.Context, teamID int64, now time.Time)
 // audit row before destruction starts. A concurrent payment either clears the
 // clock first and makes this a no-op, or observes deleted_at and cannot revive
 // an account whose deletion has begun.
-func (p *Purger) claim(ctx context.Context, account Account, now time.Time) (bool, error) {
+func (p *Purger) claim(ctx context.Context, account Account, now time.Time, customerIDs []string, userID int64, force bool) (bool, error) {
 	db := p.Store.DB()
 
 	// A clock already marked deleted with an unfinished audit row is a crash
@@ -374,7 +524,7 @@ func (p *Purger) claim(ctx context.Context, account Account, now time.Time) (boo
 		return pending == 1, nil
 	}
 
-	if !account.State.DueForDeletion(now) {
+	if !force && !account.State.DueForDeletion(now) {
 		return false, nil
 	}
 
@@ -384,17 +534,29 @@ func (p *Purger) claim(ctx context.Context, account Account, now time.Time) (boo
 	}
 	defer tx.Rollback() //nolint:errcheck // a rollback after a successful commit is a no-op
 
-	result, err := tx.ExecContext(ctx, `
+	query := `
 		UPDATE account_lifecycle
 		SET deleted_at = ?, updated_at = ?
 		WHERE team_id = ? AND trigger = ? AND started_at IS ? AND deleted_at IS NULL
-		  AND NOT EXISTS (
-		      SELECT 1 FROM subscriptions
-		      WHERE subscriptions.team_id = account_lifecycle.team_id
-		        AND subscriptions.payment_state = 'paid'
-		  )
-	`, now.UTC().Unix(), now.UTC().Unix(), account.TeamID,
-		string(account.State.Trigger), toUnix(account.State.StartedAt))
+	`
+	args := []any{now.UTC().Unix(), now.UTC().Unix(), account.TeamID,
+		string(account.State.Trigger), toUnix(account.State.StartedAt)}
+	if force {
+		query += ` AND EXISTS (
+			SELECT 1 FROM team_memberships
+			WHERE team_memberships.team_id = account_lifecycle.team_id
+			  AND team_memberships.user_id = ?
+			  AND team_memberships.role = 'owner'
+		)`
+		args = append(args, userID)
+	} else {
+		query += ` AND NOT EXISTS (
+			SELECT 1 FROM subscriptions
+			WHERE subscriptions.team_id = account_lifecycle.team_id
+			  AND subscriptions.payment_state = 'paid'
+		)`
+	}
+	result, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return false, fmt.Errorf("lifecycle: claim deletion %d: %w", account.TeamID, err)
 	}
@@ -415,6 +577,26 @@ func (p *Purger) claim(ctx context.Context, account Account, now time.Time) (boo
 	`, account.TeamID, account.TeamName, account.Email, account.CustomerID,
 		account.State.StartedAt.UTC().Unix(), now.UTC().Unix()); err != nil {
 		return false, fmt.Errorf("lifecycle: record deletion %d: %w", account.TeamID, err)
+	}
+
+	uniqueCustomers := make(map[string]bool, len(customerIDs)+1)
+	if account.CustomerID != "" {
+		uniqueCustomers[account.CustomerID] = true
+	}
+	for _, customerID := range customerIDs {
+		if customerID != "" {
+			uniqueCustomers[customerID] = true
+		}
+	}
+	for customerID := range uniqueCustomers {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO account_deletion_customers
+				(team_id, customer_id, created_at)
+			VALUES (?, ?, ?)
+			ON CONFLICT (team_id, customer_id) DO NOTHING
+		`, account.TeamID, customerID, now.UTC().Unix()); err != nil {
+			return false, fmt.Errorf("lifecycle: record payment customer %s for deletion %d: %w", customerID, account.TeamID, err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

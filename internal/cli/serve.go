@@ -127,7 +127,7 @@ func runServe(e *env, args []string) int {
 	// The signed-in application. It is built before the listener binds so that a
 	// broken template or an unreadable key is a start-up failure with a message,
 	// rather than a 500 on somebody's sign-in page.
-	app, err := buildApp(e, control, manager, service, secret, mailer, com.Gate)
+	app, err := buildApp(e, control, manager, service, secret, mailer, com.Gate, com.Purger)
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError
@@ -280,7 +280,7 @@ func (d *dataStack) background() func(context.Context, func(func())) {
 // missing key or an unparseable template stops the process with a message that
 // names the file — and so a test can build the same handler over a temporary
 // database.
-func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *ingest.Service, secret []byte, mailer *mail.Mailer, gate *access.Gate) (*auth.Handler, error) {
+func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *ingest.Service, secret []byte, mailer *mail.Mailer, gate *access.Gate, purger auth.PermanentAccountDeleter) (*auth.Handler, error) {
 	key, err := auth.LoadKey(e.cfg.App.DataDir, e.cfg.App.SecretKey)
 	if err != nil {
 		return nil, err
@@ -292,15 +292,13 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 	}
 
 	store := auth.NewStore(control)
-	stripe := auth.NewStripe(e.cfg.App.Stripe.SecretKey, e.log)
-
 	return auth.NewHandler(auth.Options{
 		Store:     store,
 		Traffic:   auth.NewTraffic(manager),
 		Mailer:    mailer,
 		Sealer:    sealer,
 		Google:    auth.NewGoogle(e.cfg.App.Google.ClientID, e.cfg.App.Google.ClientSecret, e.cfg.App.BaseURL),
-		Deleter:   auth.NewDeleter(store, manager, e.cfg.App.DataDir, stripe, e.log),
+		Deleter:   auth.NewDeleter(purger, e.log),
 		Keyer:     tracker.NewKeyer(secret, service.Sites),
 		SiteCache: service.Sites,
 		Access:    gate.Blocked,
