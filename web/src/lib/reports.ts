@@ -287,15 +287,6 @@ export const DEVICES: CardDef = {
 			emptyLabelId: NOT_SET,
 			nounId: "dashboard.noun.screen_sizes",
 		},
-	],
-};
-
-export const LANGUAGES: CardDef = {
-	id: "languages",
-	titleId: "dashboard.report.languages.title",
-	tint: "tint-languages",
-	caveatId: "dashboard.report.languages.caveat",
-	tabs: [
 		{
 			id: "languages",
 			labelId: "dashboard.report.languages.title",
@@ -303,11 +294,12 @@ export const LANGUAGES: CardDef = {
 			dimension: "visit:language",
 			emptyLabelId: NOT_SET,
 			nounId: "dashboard.noun.languages",
+			caveatId: "dashboard.report.languages.caveat",
 		},
 	],
 };
 
-export const CARDS: CardDef[] = [SOURCES, PAGES, LOCATIONS, DEVICES, LANGUAGES];
+export const CARDS: CardDef[] = [SOURCES, PAGES, LOCATIONS, DEVICES];
 
 /** dimensionsOf returns the ordered grouping dimensions for a card or drawer
  * request. Response enrichments never appear here. */

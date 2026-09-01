@@ -7,7 +7,7 @@
 //
 
 import { t } from "../lib/i18n";
-import type { Annotation, Bootstrap, Shared, StatsRequest, StatsResponse } from "./types";
+import type { Annotation, Bootstrap, DateRange, Filter, GoalReport, Shared, StatsRequest, StatsResponse } from "./types";
 
 /** QueryError carries the server's own sentence. The endpoint answers a caller
  *  mistake with a message written for the person holding the failing request,
@@ -156,6 +156,43 @@ export async function query(
 	}
 
 	return (await response.json()) as StatsResponse;
+}
+
+/** goalsReport reads configured conversions over the dashboard's current
+ * population. Date ranges and filters retain their existing JSON wire form in
+ * query parameters so this read remains a GET without inventing a second
+ * parser for either structure. */
+export async function goalsReport(
+	domain: string,
+	request: { dateRange: DateRange; filters?: Filter[]; exact?: boolean },
+	signal?: AbortSignal,
+): Promise<GoalReport> {
+	const params = new URLSearchParams({ date_range: JSON.stringify(request.dateRange) });
+	if (request.filters?.length) params.set("filters", JSON.stringify(request.filters));
+	if (request.exact) params.set("exact", "true");
+
+	const response = await fetch(`/api/sites/${encodeURIComponent(domain)}/goals/report?${params.toString()}`, {
+		headers: capabilityHeaders(),
+		signal,
+	});
+
+	if (!response.ok) {
+		let message = t("dashboard.error.query_status", { status: response.status });
+
+		try {
+			const failure = (await response.json()) as { error?: string };
+			if (failure?.error) message = failure.error;
+		} catch {
+			/* Keep the status-based message. */
+		}
+
+		throw new QueryError(response.status, message);
+	}
+
+	const report = (await response.json()) as GoalReport;
+	report.rows = Array.isArray(report.rows) ? report.rows : [];
+
+	return report;
 }
 
 /** capabilityHeaders carries the public/shared capability on every stats

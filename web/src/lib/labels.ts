@@ -100,8 +100,14 @@ export function countryName(code: string): string {
 export function languageName(tag: string): string {
 	if (!tag) return tag;
 
-	const resolved = namer("language")?.of(tag);
-	if (resolved && resolved !== tag) return resolved;
+	try {
+		const resolved = namer("language")?.of(tag);
+		if (resolved && resolved !== tag) return resolved;
+	} catch {
+		// Intl throws for syntactically invalid tags even when fallback is
+		// disabled. Analytics input is visitor-owned, so the raw stored value is
+		// the safe label for anything the platform refuses to name.
+	}
 
 	// A tag the browser cannot name is still worth showing with its region
 	// spelled out: "en-XX" reads better than nothing at all.

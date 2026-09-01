@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { query } from "./client";
+import { goalsReport, query } from "./client";
 
 /** TestQueryCarriesSharedCapability proves filter and period requests cannot
  * drop the bearer that limits a shared dashboard to its validated link. */
@@ -51,4 +51,27 @@ test("every stats query carries the shared-link capability", async () => {
 	});
 
 	assert.equal(presented, capability);
+});
+
+test("the goals report carries capabilities, filters, and the selected period", async () => {
+	let requested = "";
+	let presented = "";
+	globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+		requested = String(input);
+		presented = new Headers(init?.headers).get("X-Feasible-Share") ?? "";
+
+		return new Response(JSON.stringify({ rows: [], visitors: 0, visits: 0, from: "", to: "" }), {
+			status: 200,
+			headers: { "Content-Type": "application/json" },
+		});
+	}) as typeof fetch;
+
+	await goalsReport("example.com", {
+		dateRange: "28d",
+		filters: [["is", "event:page", ["/pricing"]]],
+	});
+
+	assert.equal(presented, "unguessable-shared-link");
+	assert.match(decodeURIComponent(requested), /date_range="28d"/);
+	assert.match(decodeURIComponent(requested), /event:page/);
 });

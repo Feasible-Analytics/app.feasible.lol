@@ -182,6 +182,46 @@ export interface StatsResponse {
 	query: ResolvedQuery;
 }
 
+/** One configured conversion goal. The matching details remain present so a
+ *  later details surface can explain what the readable label represents. */
+export interface Goal {
+	id: number;
+	site_id: number;
+	kind: "page" | "event";
+	display_name: string;
+	page_pattern?: string;
+	event_name?: string;
+	is_revenue: boolean;
+	currency?: string;
+	is_automatic: boolean;
+	created_at: number;
+}
+
+/** One row in the full-width goals report. */
+export interface GoalReportRow {
+	goal: Goal;
+	label: string;
+	unique_conversions: number;
+	total_conversions: number;
+	converted_visitors: number;
+	conversion_rate: number;
+	revenue: number;
+	average_revenue: number;
+	revenue_per_visitor: number;
+	currency?: string;
+	from: string;
+	partial: boolean;
+}
+
+/** The goals report plus the period totals used as its denominators. */
+export interface GoalReport {
+	rows: GoalReportRow[];
+	visitors: number;
+	visits: number;
+	from: string;
+	to: string;
+}
+
 /** The read-only mode the dashboard runs in behind a share or public URL. */
 export interface Shared {
 	mode: "share" | "public";
