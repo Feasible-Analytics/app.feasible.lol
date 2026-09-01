@@ -86,9 +86,15 @@ type Key struct {
 	ID     int64
 	TeamID int64
 	UserID int64
+	Role   string
 	Name   string
 	Prefix string
 	Scopes []string
+
+	// GrantedScopes is nil for a directly presented API key. OAuth sets it to
+	// the scopes approved for that grant, so a bearer token can only narrow the
+	// API key it represents and can never regain a scope the key did not have.
+	GrantedScopes []string
 
 	// HourlyLimit is this key's own request ceiling, or zero to take the
 	// deployment's configured default.
@@ -104,11 +110,18 @@ type Key struct {
 // for stats and provisioning alike, because making people mint a second key is
 // exactly the friction this package exists to remove.
 func (k *Key) Allows(scope string) bool {
-	if len(k.Scopes) == 0 {
-		return true
+	return allowsScope(k.Scopes, scope, true) && allowsScope(k.GrantedScopes, scope, k.GrantedScopes == nil)
+}
+
+// allowsScope checks one side of the API-key/OAuth scope intersection. Empty
+// API-key scopes mean the historical all-scopes default, while an explicitly
+// empty OAuth grant means no scopes, so callers provide the empty behavior.
+func allowsScope(scopes []string, scope string, emptyAllows bool) bool {
+	if len(scopes) == 0 {
+		return emptyAllows
 	}
 
-	for _, held := range k.Scopes {
+	for _, held := range scopes {
 		if held == scope || held == "*" {
 			return true
 		}
@@ -160,6 +173,23 @@ func Hash(key string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// Display is the readable head of a key — the part stored in the clear so a
+// list can tell two keys apart. It is exported for the same reason Hash is: the
+// team screen writes an api_keys row of its own, and a second answer to "how
+// much of the key is safe to keep" would show a different amount of a live
+// credential depending on which screen made it.
+//
+// A key shorter than the head is returned whole. It cannot be one this package
+// minted, and slicing past the end would panic on a value that only ever
+// reaches here by mistake.
+func Display(plaintext string) string {
+	if len(plaintext) <= displayPrefixLength {
+		return plaintext
+	}
+
+	return plaintext[:displayPrefixLength]
+}
+
 // Create issues a key for a team and returns both the row and the plaintext.
 // The plaintext is returned rather than stored because this is the only moment
 // it exists: a customer who loses it mints another one.
@@ -170,6 +200,15 @@ func (s *Store) Create(ctx context.Context, teamID, userID int64, name string, s
 
 	if hourlyLimit < 0 {
 		return nil, "", fmt.Errorf("apikeys: create: hourly limit cannot be negative")
+	}
+
+	var role string
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT role FROM team_memberships WHERE team_id = ? AND user_id = ?
+	`, teamID, userID).Scan(&role); errors.Is(err, sql.ErrNoRows) {
+		return nil, "", fmt.Errorf("apikeys: create: %w", ErrNotFound)
+	} else if err != nil {
+		return nil, "", fmt.Errorf("apikeys: create: read membership: %w", err)
 	}
 
 	plaintext, err := Generate()
@@ -187,7 +226,7 @@ func (s *Store) Create(ctx context.Context, teamID, userID int64, name string, s
 	}
 
 	now := s.now()
-	display := plaintext[:displayPrefixLength]
+	display := Display(plaintext)
 
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO api_keys (team_id, user_id, name, key_hash, key_prefix, scopes, hourly_limit, created_at)
@@ -203,13 +242,13 @@ func (s *Store) Create(ctx context.Context, teamID, userID int64, name string, s
 	}
 
 	return &Key{
-		ID: id, TeamID: teamID, UserID: userID, Name: name,
+		ID: id, TeamID: teamID, UserID: userID, Role: role, Name: name,
 		Prefix: display, Scopes: scopes, HourlyLimit: hourlyLimit, CreatedAt: now,
 	}, plaintext, nil
 }
 
-// Authenticate turns a presented key into the row it belongs to, and records
-// that it was used.
+// Authenticate turns a presented key into the row it belongs to, proves its
+// owner is still a member of that key's team, and records that it was used.
 //
 // The lookup is by hash rather than by a scan and compare, so it is one indexed
 // read no matter how many keys exist. The constant-time compare afterwards is
@@ -237,6 +276,37 @@ func (s *Store) Authenticate(ctx context.Context, presented string) (*Key, error
 	return key, nil
 }
 
+// Validate proves an already-resolved key is still active and its owner is
+// still a member of the key's team. Long-lived transports use this before each
+// message so leaving a team revokes an existing connection, not only the next
+// connection attempt.
+func (s *Store) Validate(ctx context.Context, key *Key) error {
+	if key == nil {
+		return ErrNotFound
+	}
+
+	var role string
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT team_memberships.role
+		FROM api_keys
+		JOIN team_memberships
+		  ON team_memberships.team_id = api_keys.team_id
+		 AND team_memberships.user_id = api_keys.user_id
+		WHERE api_keys.id = ? AND api_keys.revoked_at IS NULL
+	`, key.ID).Scan(&role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("apikeys: validate: %w", err)
+	}
+
+	key.Role = role
+
+	return nil
+}
+
 // byHash reads one key row.
 func (s *Store) byHash(ctx context.Context, hashed string) (*Key, string, error) {
 	var (
@@ -249,9 +319,16 @@ func (s *Store) byHash(ctx context.Context, hashed string) (*Key, string, error)
 	)
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, team_id, user_id, name, key_hash, key_prefix, scopes, hourly_limit, last_used_at, created_at, revoked_at
-		FROM api_keys WHERE key_hash = ?`, hashed).
-		Scan(&key.ID, &key.TeamID, &key.UserID, &key.Name, &storedHash, &key.Prefix,
+		SELECT api_keys.id, api_keys.team_id, api_keys.user_id, team_memberships.role, api_keys.name,
+		       api_keys.key_hash, api_keys.key_prefix, api_keys.scopes,
+		       api_keys.hourly_limit, api_keys.last_used_at,
+		       api_keys.created_at, api_keys.revoked_at
+		FROM api_keys
+		JOIN team_memberships
+		  ON team_memberships.team_id = api_keys.team_id
+		 AND team_memberships.user_id = api_keys.user_id
+		WHERE api_keys.key_hash = ?`, hashed).
+		Scan(&key.ID, &key.TeamID, &key.UserID, &key.Role, &key.Name, &storedHash, &key.Prefix,
 			&scopes, &key.HourlyLimit, &lastUsed, &created, &revoked)
 
 	if errors.Is(err, sql.ErrNoRows) {

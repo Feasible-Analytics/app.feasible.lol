@@ -82,6 +82,12 @@ type Writer struct {
 	// down after I added a rule" has to be answerable.
 	Counters *Counters
 
+	// Observer receives only final writer outcomes. The handler records the
+	// request details before buffering, but accepted and shard-side drop counts
+	// belong here because this is where an event is either committed, blocked
+	// by a live shield, or left waiting for a pageview that never arrives.
+	Observer Observer
+
 	// Paths applies the site's path cleaning rules before anything is interned,
 	// which is what stops dim_pathname growing by a row per request on a site
 	// with identifiers in its URLs.
@@ -339,12 +345,14 @@ func (w *Writer) writeAccountDurable(ctx context.Context, accountID int64, event
 		if w.Counters != nil {
 			w.Counters.Dropped(blocked.siteID, blocked.reason)
 		}
+		w.observe(&blocked.event, false, blocked.reason)
 	}
 	committed = append(committed, orphaned...)
 	for _, row := range rows {
 		if _, belongsToBatch := batchRows[row.event.UUID]; belongsToBatch {
 			committed = append(committed, row.event.UUID)
 		}
+		w.observe(row.event, true, row.event.BotReason)
 	}
 
 	w.recordUsage(accountID, rows)
@@ -687,7 +695,7 @@ func (w *Writer) applyShieldDurable(events []Event) ([]Event, []shieldedEvent) {
 		}
 
 		blocked = append(blocked, shieldedEvent{
-			id: event.UUID, siteID: event.SiteID, hostname: event.Hostname, reason: reason,
+			id: event.UUID, siteID: event.SiteID, hostname: event.Hostname, reason: reason, event: *event,
 		})
 	}
 
@@ -700,6 +708,7 @@ type shieldedEvent struct {
 	siteID   int64
 	hostname string
 	reason   string
+	event    Event
 }
 
 // persistHostnameRejections writes rejection evidence inside the UUID claim
@@ -762,6 +771,25 @@ func persistHostnameRejections(ctx context.Context, tx *sql.Tx, blocked []shield
 	}
 
 	return nil
+}
+
+// observe records a final outcome without recreating request-only details the
+// handler has already supplied. The event timestamp keeps the outcome in the
+// same health bucket as the request even when a buffered write or orphan sweep
+// finishes later.
+func (w *Writer) observe(event *Event, accepted bool, reason string) {
+	if w.Observer == nil || event == nil {
+		return
+	}
+
+	w.Observer.Observe(Observation{
+		SiteID:      event.SiteID,
+		AccountID:   event.AccountID,
+		ReceivedAt:  event.Timestamp,
+		DropReason:  reason,
+		Accepted:    accepted,
+		OutcomeOnly: true,
+	})
 }
 
 // cleanPaths rewrites a batch's paths in place. It is a no-op for a site with

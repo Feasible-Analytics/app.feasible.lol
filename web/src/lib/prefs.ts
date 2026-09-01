@@ -8,6 +8,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { shared } from "../api/client";
+
 /**
  * The split between this file and url.ts is deliberate and is the whole state
  * model of the dashboard.
@@ -23,10 +25,33 @@ import { useCallback, useEffect, useState } from "react";
  */
 const PREFIX = "feasible.";
 
+/**
+ * storable reports whether this page may touch localStorage at all.
+ *
+ * The server says no for an embedded dashboard, and that is not a nicety. In a
+ * third-party iframe with storage partitioned or third-party cookies blocked —
+ * Brave by default, Safari, and any browser somebody has hardened — reading
+ * `localStorage` does not return null. **It throws a SecurityError**, and it
+ * throws on the *property access*, before any method is called.
+ *
+ * The incumbent's embedded dashboard read it unguarded, the exception escaped
+ * during the first render, and the entire embed showed a blank frame for every
+ * one of those users, with an error only the visitor could see.
+ *
+ * So there are two defences here and both are deliberate. This check keeps an
+ * embed from touching storage in the first place, and every access below is
+ * still wrapped, because a page can be framed without the server knowing.
+ */
+function storable(): boolean {
+	return shared()?.storage !== false;
+}
+
 /** read pulls one preference, tolerating a browser with storage switched off.
  *  A private window is a normal way to look at a dashboard and must not be a
  *  crash. */
 function read(key: string): string | null {
+	if (!storable()) return null;
+
 	try {
 		return localStorage.getItem(PREFIX + key);
 	} catch {
@@ -37,6 +62,8 @@ function read(key: string): string | null {
 /** write stores one preference, ignoring a quota or permission failure. Losing
  *  a remembered tab is not worth an error boundary. */
 function write(key: string, value: string): void {
+	if (!storable()) return;
+
 	try {
 		localStorage.setItem(PREFIX + key, value);
 	} catch {
@@ -83,6 +110,12 @@ const THEME_KEY = "theme";
  */
 export function useTheme(): [Theme, (next: Theme) => void] {
 	const [theme, setTheme] = useState<Theme>(() => {
+		// A share URL's theme parameter is applied by the server and wins over
+		// anything stored, because the person who built the embed chose it and
+		// the reader is a visitor rather than an account holder.
+		const forced = shared()?.theme;
+		if (forced) return forced;
+
 		const stored = read(THEME_KEY);
 
 		return stored === "dark" || stored === "light" ? stored : "system";
@@ -108,6 +141,8 @@ export function useTheme(): [Theme, (next: Theme) => void] {
 
 	const set = useCallback((next: Theme) => {
 		setTheme(next);
+
+		if (!storable()) return;
 
 		try {
 			if (next === "system") localStorage.removeItem(PREFIX + THEME_KEY);

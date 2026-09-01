@@ -36,16 +36,50 @@ const RefreshInterval = 15 * time.Second
 // only the decisions that can be made without opening the account database,
 // because that is the boundary the ingest tier lives on.
 type Site struct {
-	ID        int64
+	ID int64
+	// AccountID names the analytics database where this site's history lives.
 	AccountID int64
-	Domain    string
-	Timezone  string
+	// TeamID is the current owner and therefore the access and billing boundary.
+	TeamID   int64
+	Domain   string
+	Timezone string
 
 	// AcceptTrafficUntil is when we stop accepting events for a lapsed
 	// account, as unix seconds; zero means no limit. Dropping a paying
 	// customer's traffic the instant a card fails loses data they can never get
 	// back, so a lapse costs dashboard access first and ingestion much later.
 	AcceptTrafficUntil int64
+
+	// AllowedHostnames is the list of hostnames this site will accept events
+	// from. Empty means any hostname, which is what almost every site wants; a
+	// customer sets one when somebody has copied their snippet onto a staging
+	// domain or a scraper mirror and started polluting their numbers.
+	//
+	// It rides on the routing snapshot rather than being read per event so that
+	// the check costs a slice scan on the hot path, and so it is exactly as
+	// current as the domain map itself — both are rebuilt by the same refresh.
+	AllowedHostnames []string
+}
+
+// HostnameAllowed reports whether an event from this hostname counts.
+//
+// An empty list allows everything. That is the default and it has to stay the
+// default: a list that started out empty and was treated as "allow nothing"
+// would silently drop every event every site ever sent.
+func (s Site) HostnameAllowed(hostname string) bool {
+	if len(s.AllowedHostnames) == 0 {
+		return true
+	}
+
+	hostname = Normalise(hostname)
+
+	for _, allowed := range s.AllowedHostnames {
+		if allowed == hostname {
+			return true
+		}
+	}
+
+	return false
 }
 
 // Cache holds the current snapshot. The zero value is not usable — the map has
@@ -79,11 +113,12 @@ func New(db *sql.DB) *Cache {
 // a table that holds a few thousand rows.
 func (c *Cache) Refresh(ctx context.Context) error {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT sites.id, sites.account_id, sites.domain, sites.timezone,
+		SELECT sites.id, sites.account_id, COALESCE(sites.owner_team_id, sites.account_id),
+		       sites.domain, sites.timezone,
 		       COALESCE(teams.accept_traffic_until, 0),
 		       sites.previous_domain, COALESCE(sites.previous_domain_until, 0)
 		FROM sites
-		JOIN teams ON teams.id = sites.account_id
+		JOIN teams ON teams.id = COALESCE(sites.owner_team_id, sites.account_id)
 	`)
 	if err != nil {
 		return fmt.Errorf("sites: refresh: %w", err)
@@ -100,7 +135,7 @@ func (c *Cache) Refresh(ctx context.Context) error {
 			previousUntil  int64
 		)
 
-		if err := rows.Scan(&site.ID, &site.AccountID, &site.Domain, &site.Timezone,
+		if err := rows.Scan(&site.ID, &site.AccountID, &site.TeamID, &site.Domain, &site.Timezone,
 			&site.AcceptTrafficUntil, &previousDomain, &previousUntil); err != nil {
 			return fmt.Errorf("sites: refresh: %w", err)
 		}
@@ -124,7 +159,51 @@ func (c *Cache) Refresh(ctx context.Context) error {
 		return fmt.Errorf("sites: refresh: %w", err)
 	}
 
+	if err := c.attachAllowedHostnames(ctx, byDomain); err != nil {
+		return err
+	}
+
 	c.snap.Store(&snapshot{byDomain: byDomain, builtAt: time.Now()})
+
+	return nil
+}
+
+// attachAllowedHostnames folds each site's allow-list into the snapshot being
+// built. It is a second query rather than a join because the list is one-to-
+// many: joining would return one row per hostname per site and the scan would
+// have to reassemble them, for a table that is empty for almost every site.
+func (c *Cache) attachAllowedHostnames(ctx context.Context, byDomain map[string]Site) error {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT sites.domain, site_allowed_hostnames.hostname
+		FROM site_allowed_hostnames
+		JOIN sites ON sites.id = site_allowed_hostnames.site_id
+	`)
+	if err != nil {
+		return fmt.Errorf("sites: refresh allow-lists: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var domain, hostname string
+
+		if err := rows.Scan(&domain, &hostname); err != nil {
+			return fmt.Errorf("sites: refresh allow-lists: %w", err)
+		}
+
+		key := Normalise(domain)
+
+		site, ok := byDomain[key]
+		if !ok {
+			continue
+		}
+
+		site.AllowedHostnames = append(site.AllowedHostnames, Normalise(hostname))
+		byDomain[key] = site
+	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("sites: refresh allow-lists: %w", err)
+	}
 
 	return nil
 }

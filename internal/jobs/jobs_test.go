@@ -13,6 +13,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -263,5 +264,86 @@ func TestStaleClaimsAreReleased(t *testing.T) {
 
 	if job.State != StateAvailable {
 		t.Fatalf("an abandoned job is in state %q, want available", job.State)
+	}
+}
+
+// TestEnqueueRefusesADuplicateAndEnqueueUniqueDoesNot pins the difference
+// between the two, which is the difference between work a person asked for and
+// a tick every replica tries to create.
+//
+// An import enqueued twice doubles a customer's numbers, so Enqueue has to say
+// no out loud. An hourly tick is expected to lose that race on every replica
+// but one, and reporting each loss as an error would put a failure in the log
+// every minute on every box.
+func TestEnqueueRefusesADuplicateAndEnqueueUniqueDoesNot(t *testing.T) {
+	ctx := context.Background()
+	client := NewClient(newControl(t))
+
+	if _, err := client.Enqueue(ctx, QueueImports, KindCSVImport, struct{}{}, "import:7"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := client.Enqueue(ctx, QueueImports, KindCSVImport, struct{}{}, "import:7"); err == nil {
+		t.Fatal("a duplicate import was accepted silently")
+	}
+
+	if _, created, err := client.EnqueueUnique(ctx, "notifications", "reports.schedule", struct{}{}, "cron:1"); err != nil || !created {
+		t.Fatalf("the first tick was created=%v err=%v", created, err)
+	}
+
+	_, created, err := client.EnqueueUnique(ctx, "notifications", "reports.schedule", struct{}{}, "cron:1")
+	if err != nil {
+		t.Fatalf("a losing tick was reported as an error: %v", err)
+	}
+
+	if created {
+		t.Fatal("the same tick was created twice in one period")
+	}
+}
+
+// TestEnqueueUniqueNeedsAKey refuses the call that would otherwise enqueue an
+// unbounded number of identical rows, one per look.
+func TestEnqueueUniqueNeedsAKey(t *testing.T) {
+	client := NewClient(newControl(t))
+
+	if _, _, err := client.EnqueueUnique(context.Background(), "notifications", "reports.schedule", struct{}{}, ""); err == nil {
+		t.Fatal("a unique enqueue with no key was accepted")
+	}
+}
+
+// TestAPanickingWorkerFailsTheJobRatherThanTheProcess covers the deployment
+// this product is built for. In the single-process shape the runner shares a
+// process with the endpoint that accepts events, so a worker that panics on one
+// malformed row would take ingestion down with it — and leave the row claimed,
+// so the next boot picks up the same job and panics again.
+func TestAPanickingWorkerFailsTheJobRatherThanTheProcess(t *testing.T) {
+	ctx := context.Background()
+	client := NewClient(newControl(t))
+
+	id, err := client.Enqueue(ctx, QueueImports, KindCSVImport, struct{}{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runner := NewRunner(client)
+	runner.Register(QueueImports, KindCSVImport, WorkerFunc(func(context.Context, Job) error {
+		panic("a row the parser did not expect")
+	}))
+
+	if _, err := runner.Once(ctx); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+
+	job, err := client.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if job.State == StateCompleted {
+		t.Fatal("a job that panicked was recorded as completed")
+	}
+
+	if !strings.Contains(job.LastError, "panicked") {
+		t.Fatalf("the row does not say the worker panicked: %q", job.LastError)
 	}
 }

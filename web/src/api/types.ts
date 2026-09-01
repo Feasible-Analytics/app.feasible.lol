@@ -130,6 +130,27 @@ export interface StatsResponse {
 	query: ResolvedQuery;
 }
 
+/** The read-only mode the dashboard runs in behind a share or public URL. */
+export interface Shared {
+	mode: "share" | "public";
+	/** The path prefix every URL this app builds must keep. It is handed to us
+	 *  rather than assumed, because a shared dashboard that drops its own
+	 *  /share/<token> segment when a filter is applied produces a link that
+	 *  redirects to a login and back forever — which is what the incumbent's
+	 *  did. */
+	base: string;
+	domain: string;
+	capability: string;
+	embed: boolean;
+	theme?: "light" | "dark" | "system";
+	background?: string;
+	/** Whether the front end may touch localStorage at all. It is false in an
+	 *  embed, and not as a preference: in a third-party frame with storage
+	 *  blocked, a storage accessor *throws* rather than returning null. */
+	storage: boolean;
+	segment_id?: number;
+}
+
 /** What the server writes into the page before the bundle runs. */
 export interface Bootstrap {
 	sites: string[];
@@ -139,4 +160,18 @@ export interface Bootstrap {
 	 *  the server. It arrives resolved rather than as a locale to look up so the
 	 *  browser needs no catalogue and no fallback rule of its own. */
 	messages: Record<string, string>;
+	shared?: Shared;
+}
+
+/** One dated note rendered as a marker on the main graph. */
+export interface Annotation {
+	id: number;
+	site_id: number;
+	/** The local date the marker sits on, as YYYY-MM-DD in the site's timezone. */
+	shown_on: string;
+	body: string;
+	author_user_id: number;
+	author_name: string;
+	created_at: number;
+	updated_at: number;
 }

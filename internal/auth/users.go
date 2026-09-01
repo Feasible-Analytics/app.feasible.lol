@@ -434,6 +434,33 @@ func (s *Store) BillingTeamForUser(ctx context.Context, userID, requestedTeamID 
 	return &t, role, nil
 }
 
+// TeamByID reads one team after a membership-aware authorization check has
+// selected it. It deliberately performs no access check of its own.
+func (s *Store) TeamByID(ctx context.Context, teamID int64) (*Team, error) {
+	var (
+		team       Team
+		trialEnds  sql.NullInt64
+		acceptTill sql.NullInt64
+	)
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, name, trial_ends_at, accept_traffic_until, require_2fa, created_at, updated_at
+		FROM teams WHERE id = ?
+	`, teamID).Scan(&team.ID, &team.Name, &trialEnds, &acceptTill, &team.Require2FA,
+		&team.CreatedAt, &team.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("auth: read team: %w", err)
+	}
+
+	team.TrialEndsAt = nullInt64(trialEnds)
+	team.AcceptTrafficUntil = nullInt64(acceptTill)
+
+	return &team, nil
+}
+
 // SetRequire2FA flips the team-wide two-factor policy. Turning it on does not
 // enrol anybody: it makes the next page load of every member who has not
 // enrolled land on the enrolment screen, which is the only version of this that

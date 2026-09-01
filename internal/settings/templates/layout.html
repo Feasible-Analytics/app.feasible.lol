@@ -1,14 +1,30 @@
 {{define "layout"}}<!doctype html>
-<html lang="{{ .Lang }}" class="h-full">
+<!--
+  layout.html
+  The frame every settings screen is drawn in.
+
+  There is one of these for the whole /settings/ surface. Two layouts would mean
+  two navigations, and a person who reached Shields from the tab bar and then
+  could not find their way back to Members would be looking at what is, to them,
+  one screen that lost half of itself.
+
+  The stylesheet is the one the rest of the server-rendered product compiles,
+  built from the shared palette in ui/tokens.css, so every colour below is a
+  semantic role rather than a picked value.
+-->
+<html lang="{{ .Lang }}"{{ if rtl .Lang }} dir="rtl"{{ end }} class="h-full">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{ t .Lang .TitleID }} — {{ .Domain }} — feasible.lol</title>
+<title>{{ t .Lang .TitleID }}{{ if .Domain }} — {{ .Domain }}{{ end }} — feasible.lol</title>
 
-<!-- The one compiled stylesheet the server-rendered screens share. These pages
-     have no palette of their own: every colour below is a semantic role from
-     ui/tokens.css, so light and dark fall out of one declaration. -->
-<link rel="stylesheet" href="/app/assets/app.css">
+<!--
+	The same teal mark the dashboard uses, inlined so it costs no request. A
+	browser asks for /favicon.ico whether or not anything points at one, and the
+	two surfaces showing different marks in adjacent tabs is the same drift the
+	shared palette exists to stop.
+-->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d9488'/%3E%3Ctext x='16' y='23' text-anchor='middle' fill='white' font-family='system-ui,sans-serif' font-size='21' font-weight='700'%3Ef%3C/text%3E%3C/svg%3E">
 
 <!-- The theme is decided before the first paint, from the same key the
      dashboard and the sign-in screens write. Deciding it after the paint is a
@@ -21,29 +37,52 @@
 				(saved !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
 
 			if (dark) document.documentElement.classList.add("dark");
-		} catch (e) {}
+		} catch (e) {
+			/* A browser with storage disabled still gets the system theme. */
+		}
 	})();
 </script>
+
+<!-- The stylesheet comes out of the binary. A CDN would be one more thing to be
+     blocked, one more thing to be offline, and one more thing to copy. -->
+<link rel="stylesheet" href="/app/assets/app.css">
+
+<!-- These screens are behind a login and carry no analytics of their own. -->
+<meta name="robots" content="noindex, nofollow">
 </head>
 
-<body class="min-h-full bg-page text-body">
+<body class="min-h-full bg-page text-body antialiased">
 
 <header class="border-b border-line bg-card">
-	<div class="mx-auto flex max-w-4xl items-baseline gap-3 px-6 py-4">
-		<a href="/sites" class="text-sm font-semibold text-heading">feasible.lol</a>
-		<span class="text-sm text-muted">{{ .Domain }}</span>
+	<div class="mx-auto flex max-w-5xl items-center gap-3 px-6 py-4">
+		<a href="/sites{{ if .Domain }}?site_context={{ .Domain | urlquery }}{{ end }}" class="flex items-center gap-2 font-semibold text-heading">
+			<span class="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-sm font-bold text-fill-fg">f</span>
+			feasible.lol
+		</a>
+		{{ if .Domain }}<span class="text-sm text-muted">{{ .Domain }}</span>{{ end }}
 	</div>
 </header>
 
+<!-- One navigation for the whole surface. The team screen is always reachable;
+     the per-site screens appear once a site is in scope, because a tab that
+     leads to /settings//shields is a tab that 404s. -->
 <nav class="border-b border-line bg-card" aria-label="{{ t .Lang "auth.settings_nav.label" }}">
-	<div class="mx-auto flex max-w-4xl gap-1 px-6">
-		<a href="/settings/{{ .Domain }}/shields" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "shields" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "auth.shields.title" }}</a>
-		<a href="/settings/{{ .Domain }}/paths" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "paths" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "auth.paths.title" }}</a>
-		<a href="/settings/{{ .Domain }}/imports" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "imports" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "auth.imports.title" }}</a>
+	<div class="mx-auto flex max-w-5xl flex-wrap gap-1 px-6">
+		<a href="/settings/members{{ if .Domain }}?site_context={{ .Domain | urlquery }}{{ end }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "team" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.team" }}</a>
+
+		{{ if .Domain }}
+			<a href="/settings/sites/{{ .Domain }}/sharing" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "sharing" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.sharing" }}</a>
+			<a href="/settings/sites/{{ .Domain }}/reports" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "reports" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.reports" }}</a>
+			<a href="/settings/sites/{{ .Domain }}/health" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "health" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.health" }}</a>
+			<a href="/settings/sites/{{ .Domain }}/shields" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "shields" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "auth.shields.title" }}</a>
+			<a href="/settings/sites/{{ .Domain }}/paths" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "paths" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "auth.paths.title" }}</a>
+			<a href="/settings/sites/{{ .Domain }}/imports" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "imports" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "auth.imports.title" }}</a>
+			<a href="/dashboard/{{ .Domain }}" class="-mb-px border-b-2 border-transparent px-3 py-3 text-sm font-medium text-muted hover:text-heading">{{ t .Lang "settings.nav.dashboard" }}</a>
+		{{ end }}
 	</div>
 </nav>
 
-<main class="mx-auto max-w-4xl px-6 pb-20 pt-8">
+<main class="mx-auto w-full max-w-5xl px-6 pb-20 pt-8">
 	{{ if .Error }}
 	<div class="mb-6 rounded-xl border border-down/30 bg-down/10 px-4 py-3 text-sm text-down-ink" role="alert">{{ .Error }}</div>
 	{{ end }}

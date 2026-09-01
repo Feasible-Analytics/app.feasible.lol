@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
 // contextKey is this package's own key type, so a value stored here can never
@@ -49,6 +50,12 @@ func KeyFrom(ctx context.Context) (*apikeys.Key, bool) {
 // can present the same authenticated identity to the shared handlers.
 func WithKey(ctx context.Context, key *apikeys.Key) context.Context {
 	return context.WithValue(ctx, keyContextKey, key)
+}
+
+// KeyCan answers whether the key's current membership role grants a product
+// permission. It is exported so MCP tools apply the same matrix as HTTP APIs.
+func KeyCan(key *apikeys.Key, permission teams.Permission) bool {
+	return key != nil && teams.Can(teams.Role(key.Role), permission)
 }
 
 // authenticated wraps the mux with the credential check, the rate limit and the
@@ -153,6 +160,19 @@ func (a *API) requireScope(w http.ResponseWriter, key *apikeys.Key, scope string
 	}
 
 	a.fail(w, http.StatusForbidden, "this API key does not carry the "+scope+" scope")
+
+	return false
+}
+
+// requirePermission refuses a key whose current team role does not grant the
+// requested action. Scopes narrow a credential; roles narrow its owner, and a
+// request must satisfy both independent boundaries.
+func (a *API) requirePermission(w http.ResponseWriter, key *apikeys.Key, permission teams.Permission) bool {
+	if KeyCan(key, permission) {
+		return true
+	}
+
+	a.fail(w, http.StatusForbidden, "this API key's current team role does not permit "+string(permission))
 
 	return false
 }

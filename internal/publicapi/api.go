@@ -40,8 +40,10 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/statsapi"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/webhooks"
 )
 
@@ -76,8 +78,25 @@ type API struct {
 	// genuinely have to write to it.
 	Control *ControlStore
 
+	// Teams creates invitations for membership changes. Public API membership
+	// writes never insert a membership directly; the verified recipient accepts
+	// this time-limited, revocable invitation through the normal workflow.
+	Teams *teams.Store
+
+	// Sharing owns shared-link token and password creation. Keeping the public
+	// API on this store guarantees API and settings links use one salted PBKDF2
+	// representation and one compatibility verifier.
+	Sharing *sharing.Store
+
 	// Accounts hands out per-account analytics handles.
 	Accounts *accounts.Manager
+
+	// SiteOperations is the durable cross-database reset/delete workflow. The
+	// API and browser UI share it so neither can leave analytics orphaned or
+	// erase a site while ownership moves.
+	SiteOperations interface {
+		DeleteSite(ctx context.Context, ownerTeamID, siteID int64) error
+	}
 
 	// Webhooks and Dispatcher back the webhook management endpoints.
 	Webhooks   *webhooks.Store
@@ -152,6 +171,7 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/sites/guests", a.handleListGuests)
 	mux.HandleFunc("PUT /api/v1/sites/guests", a.handleCreateGuest)
 	mux.HandleFunc("DELETE /api/v1/sites/guests/{guest_id}", a.handleDeleteGuest)
+	mux.HandleFunc("DELETE /api/v1/sites/guest-invitations/{invitation_id}", a.handleRevokeGuestInvitation)
 	mux.HandleFunc("GET /api/v1/sites/custom-props", a.handleListCustomProps)
 	mux.HandleFunc("PUT /api/v1/sites/custom-props", a.handleCreateCustomProp)
 	mux.HandleFunc("DELETE /api/v1/sites/custom-props/{prop_id}", a.handleDeleteCustomProp)
@@ -230,7 +250,7 @@ func (a *API) resolveSite(w http.ResponseWriter, key *apikeys.Key, identifier st
 	}
 
 	site, ok := a.Sites.Lookup(identifier)
-	if !ok || site.AccountID != key.TeamID {
+	if !ok || site.TeamID != key.TeamID {
 		a.fail(w, http.StatusNotFound, "no site named "+identifier+" is available to this key")
 		return sites.Site{}, false
 	}

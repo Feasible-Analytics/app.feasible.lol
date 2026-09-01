@@ -11,6 +11,9 @@ package cli
 import (
 	"strings"
 	"testing"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 )
 
 // TestIngestReportsShards checks the shard list is parsed and reported. An
@@ -54,5 +57,25 @@ func TestIngestListenFlagOverrides(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "listen=127.0.0.1:29302") {
 		t.Fatalf("flag did not override the environment: %q", stdout)
+	}
+}
+
+// TestStandaloneRecorderCoversRequestAndWriterSides pins the split-topology
+// wiring. The standalone command must attach the recorder to the public
+// pipeline and to final shard outcomes, just as the direct app process does.
+func TestStandaloneRecorderCoversRequestAndWriterSides(t *testing.T) {
+	service := &ingest.Service{
+		Handler: &ingest.Handler{},
+		Writer:  &ingest.Writer{},
+	}
+	recorder := &health.Recorder{}
+
+	attachIngestRecorder(service, recorder)
+
+	if service.Handler.Observer != recorder {
+		t.Fatal("the standalone request pipeline does not use the health recorder")
+	}
+	if service.Writer.Observer != recorder {
+		t.Fatal("the standalone writer does not use the health recorder")
 	}
 }

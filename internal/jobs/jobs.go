@@ -166,14 +166,136 @@ func (c *Client) Enqueue(ctx context.Context, queue, kind string, args any, uniq
 	}
 
 	result, err := c.db.ExecContext(ctx, `
-		INSERT INTO jobs (queue, kind, args, state, max_attempts, scheduled_at, unique_key)
-		VALUES (?, ?, ?, 'available', ?, ?, ?)`,
-		queue, kind, string(encoded), DefaultMaxAttempts, c.now().Unix(), key)
+		INSERT INTO jobs (queue, kind, args, site_id, state, max_attempts, scheduled_at, unique_key)
+		VALUES (?, ?, ?, ?, 'available', ?, ?, ?)`,
+		queue, kind, string(encoded), siteIDFromArgs(encoded), DefaultMaxAttempts, c.now().Unix(), key)
 	if err != nil {
 		return 0, fmt.Errorf("jobs: enqueue %s: %w", kind, err)
 	}
 
 	return result.LastInsertId()
+}
+
+// EnqueueUnique adds a job only if its key is not already live, and says which
+// happened.
+//
+// Enqueue above refuses a duplicate with an error, which is right for work a
+// person asked for: an import enqueued twice must be refused loudly. A
+// recurring tick is the opposite case — every process in a deployment enqueues
+// the same one, they race, and all but one are expected to lose. Reporting that
+// as an error would put a failure in the log every minute on every replica.
+//
+// OR IGNORE rather than a check-then-insert, so the losers are decided by the
+// partial unique index in one statement rather than by a window between two.
+func (c *Client) EnqueueUnique(ctx context.Context, queue, kind string, args any, uniqueKey string) (int64, bool, error) {
+	if uniqueKey == "" {
+		return 0, false, fmt.Errorf("jobs: %s needs a unique key to be enqueued once", kind)
+	}
+
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return 0, false, fmt.Errorf("jobs: encode %s arguments: %w", kind, err)
+	}
+
+	result, err := c.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO jobs (queue, kind, args, site_id, state, max_attempts, scheduled_at, unique_key)
+		VALUES (?, ?, ?, ?, 'available', ?, ?, ?)`,
+		queue, kind, string(encoded), siteIDFromArgs(encoded), DefaultMaxAttempts, c.now().Unix(), uniqueKey)
+	if err != nil {
+		return 0, false, fmt.Errorf("jobs: enqueue %s: %w", kind, err)
+	}
+
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return 0, false, nil
+	}
+
+	id, err := result.LastInsertId()
+
+	return id, true, err
+}
+
+// EnqueuePeriodic creates one recurring job for one durable time bucket. The
+// slot and job share a transaction, so completion cannot make the bucket
+// enqueueable again and a crash between the two writes cannot strand a slot
+// with no work behind it.
+func (c *Client) EnqueuePeriodic(ctx context.Context, queue, kind string, args any, bucket int64) (int64, bool, error) {
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return 0, false, fmt.Errorf("jobs: encode %s arguments: %w", kind, err)
+	}
+
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, false, fmt.Errorf("jobs: begin periodic %s: %w", kind, err)
+	}
+	defer tx.Rollback() //nolint:errcheck // a rollback after a successful commit is a no-op
+
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO cron_slots (queue, kind, bucket, created_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT DO NOTHING
+	`, queue, kind, bucket, c.now().Unix())
+	if err != nil {
+		return 0, false, fmt.Errorf("jobs: reserve periodic %s: %w", kind, err)
+	}
+
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return 0, false, nil
+	}
+
+	job, err := tx.ExecContext(ctx, `
+		INSERT INTO jobs (queue, kind, args, site_id, state, max_attempts, scheduled_at)
+		VALUES (?, ?, ?, ?, 'available', ?, ?)
+	`, queue, kind, string(encoded), siteIDFromArgs(encoded), DefaultMaxAttempts, c.now().Unix())
+	if err != nil {
+		return 0, false, fmt.Errorf("jobs: enqueue periodic %s: %w", kind, err)
+	}
+
+	id, err := job.LastInsertId()
+	if err != nil {
+		return 0, false, fmt.Errorf("jobs: identify periodic %s: %w", kind, err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE cron_slots SET job_id = ? WHERE queue = ? AND kind = ? AND bucket = ?
+	`, id, queue, kind, bucket); err != nil {
+		return 0, false, fmt.Errorf("jobs: link periodic %s: %w", kind, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, false, fmt.Errorf("jobs: commit periodic %s: %w", kind, err)
+	}
+
+	return id, true, nil
+}
+
+// siteIDFromArgs copies the conventional site_id field out of a job's JSON into
+// the queue's structural scope column. Jobs with no site remain NULL; malformed
+// or non-positive values fail closed as unscoped rather than naming site zero.
+func siteIDFromArgs(encoded []byte) any {
+	var scope struct {
+		SiteID int64 `json:"site_id"`
+	}
+	if json.Unmarshal(encoded, &scope) != nil || scope.SiteID < 1 {
+		return nil
+	}
+
+	return scope.SiteID
+}
+
+// LatestPeriodicBucket returns the newest durable scheduler slot for one job.
+// Absence means this installation has never scheduled it, in which case Cron
+// starts at the current bucket instead of manufacturing a backlog from the
+// beginning of its lookback window.
+func (c *Client) LatestPeriodicBucket(ctx context.Context, queue, kind string) (int64, bool, error) {
+	var bucket sql.NullInt64
+	if err := c.db.QueryRowContext(ctx, `
+		SELECT MAX(bucket) FROM cron_slots WHERE queue = ? AND kind = ?
+	`, queue, kind).Scan(&bucket); err != nil {
+		return 0, false, fmt.Errorf("jobs: read latest periodic %s: %w", kind, err)
+	}
+
+	return bucket.Int64, bucket.Valid, nil
 }
 
 // Claim takes the oldest available job on a queue whose time has come. The
@@ -419,6 +541,12 @@ func (r *Runner) queueNames() []string {
 	return append([]string(nil), r.queues...)
 }
 
+// Queues is what this process will drain, for the line it logs at start-up.
+// A queue somebody expected and does not see named there is the difference
+// between finding a missing registration now and finding it when the work does
+// not happen.
+func (r *Runner) Queues() []string { return r.queueNames() }
+
 // Run drains every registered queue until the context is cancelled. Each queue
 // runs at concurrency one, which suits a system with a single SQLite writer per
 // account and makes batch work deliberately serial.
@@ -510,7 +638,7 @@ func (r *Runner) dispatch(ctx context.Context, job *Job) {
 		return
 	}
 
-	if err := worker.Run(ctx, *job); err != nil {
+	if err := run(ctx, worker, *job); err != nil {
 		if failErr := r.client.Fail(ctx, job, err); failErr != nil && r.OnError != nil {
 			r.OnError(failErr)
 		}
@@ -521,4 +649,21 @@ func (r *Runner) dispatch(ctx context.Context, job *Job) {
 	if err := r.client.Complete(ctx, job.ID); err != nil && r.OnError != nil {
 		r.OnError(err)
 	}
+}
+
+// run calls a worker and turns a panic into an ordinary failed attempt.
+//
+// A worker is arbitrary code touching a customer's data, and in the
+// single-process deployment it shares its process with the endpoint that
+// accepts events. Without this, one malformed row takes the ingest listener
+// down with it, and the job is left claimed until the stale sweep releases it —
+// so the same row is picked up and panics again on the next boot.
+func run(ctx context.Context, worker Worker, job Job) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("jobs: %s panicked: %v", job.Kind, recovered)
+		}
+	}()
+
+	return worker.Run(ctx, job)
 }

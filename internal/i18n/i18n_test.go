@@ -301,7 +301,7 @@ var referencePattern = regexp.MustCompile(
 // namespaces are the top-level segments every message id starts with. Adding a
 // surface means adding its namespace here, which is a deliberate speed bump:
 // a namespace nobody listed is a screen this check cannot see.
-var namespaces = []string{"common", "auth", "dashboard"}
+var namespaces = []string{"common", "auth", "dashboard", "settings"}
 
 // pluralSuffixes are the categories an id can be split into. They are stripped
 // before comparing so that a catalogue holding "sites.count_one" and
@@ -427,6 +427,9 @@ func scanForIDs(t *testing.T) map[string]bool {
 		filepath.Join("..", "google"):           {".go"},
 		filepath.Join("..", "shields"):          {".go"},
 		filepath.Join("..", "dashboard"):        {".go"},
+		filepath.Join("..", "settings"):         {".html", ".go"},
+		filepath.Join("..", "health"):           {".go"},
+		filepath.Join("..", "sharing"):          {".go"},
 		filepath.Join("..", "..", "web", "src"): {".ts", ".tsx"},
 	}
 

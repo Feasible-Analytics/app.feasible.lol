@@ -17,10 +17,13 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/access"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/destructive"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mcp"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/publicapi"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/webhooks"
 )
 
@@ -61,16 +64,19 @@ func buildPublic(e *env, control *sql.DB, cache *sites.Cache, manager *accounts.
 	dispatcher.Blocked = gate.Blocked
 
 	api := &publicapi.API{
-		Keys:       keys,
-		Limiter:    apikeys.NewLimiter(e.cfg.API.RateLimit),
-		Access:     gate,
-		Sites:      cache,
-		Control:    publicapi.NewControlStore(control),
-		Accounts:   manager,
-		Webhooks:   hooks,
-		Dispatcher: dispatcher,
-		BaseURL:    e.cfg.App.BaseURL,
-		Log:        e.log,
+		Keys:           keys,
+		Limiter:        apikeys.NewLimiter(e.cfg.API.RateLimit),
+		Access:         gate,
+		Sites:          cache,
+		Control:        publicapi.NewControlStore(control),
+		Teams:          teams.NewStore(control),
+		Sharing:        sharing.NewStore(control),
+		Accounts:       manager,
+		SiteOperations: &destructive.Service{DB: control, Accounts: manager},
+		Webhooks:       hooks,
+		Dispatcher:     dispatcher,
+		BaseURL:        e.cfg.App.BaseURL,
+		Log:            e.log,
 	}
 
 	server := mcp.New(api, e.log)

@@ -9,10 +9,16 @@
 package publicapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
 // TestSiteLifecycle walks the whole of what an agency provisioning a client
@@ -81,6 +87,49 @@ func TestSiteLifecycle(t *testing.T) {
 
 	if status, _ := h.get(t, "/api/v1/sites/fresh.example.com"); status != http.StatusNotFound {
 		t.Fatalf("the deleted site still answers: %d", status)
+	}
+}
+
+// TestDirectAPIDeletionRetriesTheDurableWorkflow checks that a live operation
+// is reported as a conflict and an expired crash claim is reclaimed to remove
+// both analytics and control state.
+func TestDirectAPIDeletionRetriesTheDurableWorkflow(t *testing.T) {
+	h := newHarness(t)
+	now := time.Now().UTC().Unix()
+	if _, err := h.Control.Exec(`
+		INSERT INTO destructive_operations
+			(resource_type, resource_id, kind, owner_team_id, storage_account_id,
+			 state, lease_token, lease_until, created_at, updated_at)
+		VALUES ('site', ?, 'site_delete', ?, ?, 'claimed', 'dead-worker', ?, ?, ?)
+	`, siteID, teamID, teamID, now+60, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	status, body := h.do(t, http.MethodDelete, "/api/v1/sites/example.com", "", h.Key)
+	if status != http.StatusConflict {
+		t.Fatalf("live operation status = %d, want 409 (%s)", status, body)
+	}
+	if _, err := h.Control.Exec(`UPDATE destructive_operations SET lease_until = 0 WHERE resource_id = ?`, siteID); err != nil {
+		t.Fatal(err)
+	}
+	status, body = h.do(t, http.MethodDelete, "/api/v1/sites/example.com", "", h.Key)
+	if status != http.StatusOK {
+		t.Fatalf("retry status = %d (%s)", status, body)
+	}
+
+	var sites, sessions int
+	if err := h.Control.QueryRow(`SELECT COUNT(*) FROM sites WHERE id = ?`, siteID).Scan(&sites); err != nil {
+		t.Fatal(err)
+	}
+	account, err := h.API.Accounts.Open(context.Background(), teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := account.Reader().QueryRow(`SELECT COUNT(*) FROM sessions WHERE site_id = ?`, siteID).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if sites != 0 || sessions != 0 {
+		t.Fatalf("retry left sites/sessions = %d/%d", sites, sessions)
 	}
 }
 
@@ -237,6 +286,38 @@ func TestSharedLinkIsUnguessable(t *testing.T) {
 	if !strings.Contains(string(body), "https://example.test/share/") {
 		t.Errorf("a listed link must carry the URL somebody opens: %s", body)
 	}
+
+	status, protectedBody := h.do(t, http.MethodPut, "/api/v1/sites/shared-links",
+		`{"site_id":"example.com","name":"Protected","password":"api-secret"}`, h.Key)
+	if status != http.StatusCreated {
+		t.Fatalf("protected link status = %d (%s)", status, protectedBody)
+	}
+	protectedSlug, _ := decode(t, protectedBody)["slug"].(string)
+	var passwordHash, salt string
+	if err := h.Control.QueryRow(`
+		SELECT password_hash, password_salt FROM shared_links WHERE slug = ?
+	`, protectedSlug).Scan(&passwordHash, &salt); err != nil {
+		t.Fatal(err)
+	}
+	if passwordHash == "" || salt == "" {
+		t.Fatal("public API created a legacy unsalted password hash")
+	}
+	if err := h.API.Sharing.CheckPassword(context.Background(), protectedSlug, "wrong"); !errors.Is(err, sharing.ErrWrongPassword) {
+		t.Fatalf("public API link accepted a wrong password: %v", err)
+	}
+	var afterHash, afterSalt string
+	if err := h.Control.QueryRow(`
+		SELECT password_hash, password_salt FROM shared_links WHERE slug = ?
+	`, protectedSlug).Scan(&afterHash, &afterSalt); err != nil {
+		t.Fatal(err)
+	}
+	if afterHash != passwordHash || afterSalt != salt {
+		t.Fatalf("failed API verification downgraded hash/salt %q/%q to %q/%q",
+			passwordHash, salt, afterHash, afterSalt)
+	}
+	if err := h.API.Sharing.CheckPassword(context.Background(), protectedSlug, "api-secret"); err != nil {
+		t.Fatalf("public API link is not readable by the sharing verifier: %v", err)
+	}
 }
 
 // createSharedLink mints a link and returns its slug.
@@ -254,32 +335,111 @@ func (h *harness) createSharedLink(t *testing.T, name string) string {
 	return slug
 }
 
-// TestGuestsAndMemberships checks the two access endpoints, including the
-// refusal for somebody who has no account. Creating one as a side effect of an
-// API call would mint a passwordless account in somebody else's name.
+// TestGuestsAndMemberships checks that known and unknown addresses receive the
+// same invitation response and that no guest access exists before acceptance.
+// It also covers the 48-hour deadline and revocation of an unknown recipient's
+// outstanding offer.
 func TestGuestsAndMemberships(t *testing.T) {
 	h := newHarness(t)
 
-	status, body := h.do(t, http.MethodPut, "/api/v1/sites/guests",
-		`{"site_id":"example.com","email":"guest@example.test","role":"guest_viewer"}`, h.Key)
-	if status != http.StatusCreated {
-		t.Fatalf("status = %d (%s)", status, body)
+	responses := map[string]map[string]any{}
+	for _, email := range []string{"guest@example.test", "nobody@example.test"} {
+		status, body := h.do(t, http.MethodPut, "/api/v1/sites/guests",
+			`{"site_id":"example.com","email":"`+email+`","role":"guest_viewer"}`, h.Key)
+		if status != http.StatusCreated {
+			t.Fatalf("invite %s status = %d (%s)", email, status, body)
+		}
+		responses[email] = decode(t, body)
+		if responses[email]["token"] == "" || int64(responses[email]["expires_at"].(float64)) != testNow.Add(teams.InvitationTTL).Unix() {
+			t.Fatalf("invitation response for %s = %+v", email, responses[email])
+		}
+	}
+	for _, field := range []string{"invitation_id", "email", "role", "expires_at", "token"} {
+		if _, known := responses["guest@example.test"][field]; !known {
+			t.Fatalf("known-address response is missing %s", field)
+		}
+		if _, unknown := responses["nobody@example.test"][field]; !unknown {
+			t.Fatalf("unknown-address response is missing %s", field)
+		}
+	}
+
+	status, body := h.get(t, "/api/v1/sites/guests?site_id=example.com")
+	if status != http.StatusOK || strings.Contains(string(body), "guest@example.test") {
+		t.Fatalf("an unaccepted invitation appeared as guest access: status=%d body=%s", status, body)
+	}
+	if _, err := h.API.Teams.Accept(context.Background(), responses["guest@example.test"]["token"].(string), 3); err != nil {
+		t.Fatalf("accept known guest invitation: %v", err)
+	}
+	status, body = h.get(t, "/api/v1/sites/guests?site_id=example.com")
+	if status != http.StatusOK || !strings.Contains(string(body), "guest@example.test") {
+		t.Fatalf("accepted guest is absent: status=%d body=%s", status, body)
+	}
+
+	unknownID := int64(responses["nobody@example.test"]["invitation_id"].(float64))
+	status, body = h.do(t, http.MethodDelete,
+		"/api/v1/sites/guest-invitations/"+itoa(unknownID)+"?site_id=example.com", "", h.Key)
+	if status != http.StatusOK {
+		t.Fatalf("revoke unknown-address invitation status = %d (%s)", status, body)
+	}
+	if _, err := h.API.Teams.Accept(context.Background(), responses["nobody@example.test"]["token"].(string), 3); !errors.Is(err, teams.ErrNotFound) {
+		t.Fatalf("revoked invitation acceptance = %v, want ErrNotFound", err)
 	}
 
 	status, body = h.do(t, http.MethodPut, "/api/v1/sites/guests",
-		`{"site_id":"example.com","email":"nobody@example.test"}`, h.Key)
-	if status != http.StatusNotFound {
-		t.Fatalf("status = %d for an address with no account, want 404 (%s)", status, body)
+		`{"site_id":"example.com","email":"other@example.test","role":"guest_editor"}`, h.Key)
+	if status != http.StatusCreated {
+		t.Fatalf("expiry invitation status = %d (%s)", status, body)
 	}
-
-	status, body = h.get(t, "/api/v1/sites/guests?site_id=example.com")
-	if status != http.StatusOK || !strings.Contains(string(body), "guest@example.test") {
-		t.Fatalf("status = %d (%s)", status, body)
+	expiring := decode(t, body)
+	if _, err := h.Control.Exec(`UPDATE team_invitations SET expires_at = ? WHERE id = ?`,
+		testNow.Unix(), int64(expiring["invitation_id"].(float64))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.API.Teams.Accept(context.Background(), expiring["token"].(string), 2); !errors.Is(err, teams.ErrExpired) {
+		t.Fatalf("expired guest invitation acceptance = %v, want ErrExpired", err)
 	}
 
 	status, body = h.get(t, "/api/v1/teams/memberships")
 	if status != http.StatusOK || !strings.Contains(string(body), "owner@example.test") {
 		t.Fatalf("status = %d (%s)", status, body)
+	}
+}
+
+// TestMembershipWriteCreatesAnInvitationWithoutEnumeratingAccounts proves the
+// compatibility endpoint no longer inserts a membership and gives known and
+// unknown addresses the same outward result.
+func TestMembershipWriteCreatesAnInvitationWithoutEnumeratingAccounts(t *testing.T) {
+	h := newHarness(t)
+	for _, email := range []string{"nobody@example.test", "guest@example.test"} {
+		status, body := h.do(t, http.MethodPut, "/api/v1/teams/memberships",
+			`{"email":"`+email+`","role":"viewer"}`, h.Key)
+		if status != http.StatusCreated {
+			t.Fatalf("invite %s status = %d (%s)", email, status, body)
+		}
+		answer := decode(t, body)
+		if answer["token"] == "" || int64(answer["expires_at"].(float64)) != testNow.Add(teams.InvitationTTL).Unix() {
+			t.Fatalf("invitation response for %s = %+v", email, answer)
+		}
+
+		var members int
+		if err := h.Control.QueryRow(`SELECT COUNT(*) FROM team_memberships WHERE team_id = ? AND user_id = 3`, teamID).
+			Scan(&members); err != nil {
+			t.Fatal(err)
+		}
+		if members != 0 {
+			t.Fatalf("%s was inserted directly into the team", email)
+		}
+
+		if email == "guest@example.test" {
+			if _, err := h.API.Teams.Accept(context.Background(), answer["token"].(string), 3); err != nil {
+				t.Fatalf("accept invitation: %v", err)
+			}
+		}
+	}
+
+	role, err := h.API.Teams.RoleOf(context.Background(), teamID, 3)
+	if err != nil || role != teams.RoleViewer {
+		t.Fatalf("accepted API invitation role = %s, %v", role, err)
 	}
 }
 

@@ -1,0 +1,319 @@
+<!--
+  health.html
+  The ingestion health panel: nothing is dropped without a reason on this page.
+
+  Created: 2026-08-31
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+{{define "body"}}
+	<h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "settings.health.title" "domain" .Domain }}</h1>
+	<p class="mt-1 text-sm text-muted">
+		{{ t $.Lang "settings.health.lede" }}
+	</p>
+
+	<section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm">
+		<div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
+			<div>
+				<div class="text-2xl font-bold tracking-tight text-heading">{{.Panel.Accepted}}</div>
+				<div class="text-xs text-muted">{{ t $.Lang "settings.health.stat_accepted" }}</div>
+			</div>
+			<div>
+				<div class="text-2xl font-bold tracking-tight {{if .Panel.Dropped}}text-down{{else}}text-heading{{end}}">{{.Panel.Dropped}}</div>
+				<div class="text-xs text-muted">{{ t $.Lang "settings.health.stat_dropped" }}</div>
+			</div>
+			<div>
+				<div class="text-2xl font-bold tracking-tight text-heading">{{.Panel.Classified}}</div>
+				<div class="text-xs text-muted">{{ t $.Lang "settings.health.stat_classified" }}</div>
+			</div>
+			<div>
+				<div class="text-2xl font-bold tracking-tight text-heading">{{.TruncatedTotal}}</div>
+				<div class="text-xs text-muted">{{ t $.Lang "settings.health.stat_truncated" }}</div>
+			</div>
+		</div>
+	</section>
+
+	{{if .Panel.Warnings}}
+		<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+			<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.health.warnings_heading" }}</h2>
+			<p class="mt-1 text-sm text-muted">{{ t $.Lang "settings.health.warnings_hint" }}</p>
+			{{range .Panel.Warnings}}
+				<div class="mt-4 rounded-xl border border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn-ink">
+					<strong class="font-semibold">{{.Title}}</strong>
+					<div class="mt-1">{{.Detail}}</div>
+					{{if eq .Action "allow_hostname"}}
+						<form method="post" action="/settings/sites/{{$.Domain}}/health/allow" class="mt-2">
+							<input type="hidden" name="csrf_token" value="{{$.CSRF}}" />
+							<input type="hidden" name="hostname" value="{{.Hostname}}" />
+							<button type="submit" class="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "settings.health.allow_hostname" "hostname" .Hostname }}</button>
+						</form>
+					{{end}}
+				</div>
+			{{end}}
+		</section>
+	{{else}}
+		<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+			<div role="status" class="rounded-xl border border-up/30 bg-up/10 px-4 py-3 text-sm text-up-ink">
+				{{ t $.Lang "settings.health.all_clear" }}
+			</div>
+		</section>
+	{{end}}
+
+	<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+		<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.health.last_request_heading" }}</h2>
+		<p class="mt-1 text-sm text-muted">
+			{{ t $.Lang "settings.health.last_request_hint_before" }}
+			<code class="rounded bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">X-Debug-Request</code>
+			{{ t $.Lang "settings.health.last_request_hint_middle" }}
+			<code class="rounded bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">curl</code>
+			{{ t $.Lang "settings.health.last_request_hint_after" }}
+		</p>
+		{{if .Panel.LastRequest}}
+			<div class="mt-4 overflow-x-auto">
+				<table class="w-full text-sm">
+					<tbody>
+						<tr>
+							<td class="w-52 border-t border-line py-2.5 pr-3 align-middle"><strong class="font-semibold text-heading">{{ t $.Lang "settings.health.row_client_ip" }}</strong></td>
+							<td class="border-t border-line py-2.5 pr-3 align-middle font-mono text-xs text-muted">{{if .Panel.LastRequest.ClientIP}}{{.Panel.LastRequest.ClientIP}}{{else}}{{ t $.Lang "settings.health.none" }}{{end}}</td>
+						</tr>
+						<tr>
+							<td class="border-t border-line py-2.5 pr-3 align-middle"><strong class="font-semibold text-heading">{{ t $.Lang "settings.health.row_read_from" }}</strong></td>
+							<td class="border-t border-line py-2.5 pr-3 align-middle">
+								<span class="rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide {{if eq .Panel.LastRequest.ClientIPSource "socket"}}bg-warn/15 text-warn-ink{{else}}bg-subtle text-muted{{end}}">{{.Panel.LastRequest.ClientIPSource}}</span>
+								{{if eq .Panel.LastRequest.ClientIPSource "socket"}}
+									{{ t $.Lang "settings.health.socket_note" }}
+								{{end}}
+							</td>
+						</tr>
+						<tr>
+							<td class="border-t border-line py-2.5 pr-3 align-middle"><strong class="font-semibold text-heading">{{ t $.Lang "settings.health.row_trusted_proxy" }}</strong></td>
+							<td class="border-t border-line py-2.5 pr-3 align-middle">{{if .Panel.LastRequest.TrustedProxy}}{{ t $.Lang "settings.health.trusted_proxy_yes" }}{{else}}{{ t $.Lang "settings.health.trusted_proxy_no" }}{{end}}</td>
+						</tr>
+						<tr>
+							<td class="border-t border-line py-2.5 pr-3 align-middle"><strong class="font-semibold text-heading">{{ t $.Lang "settings.health.row_hostname" }}</strong></td>
+							<td class="border-t border-line py-2.5 pr-3 align-middle font-mono text-xs text-muted">{{.Panel.LastRequest.Hostname}}</td>
+						</tr>
+						<tr>
+							<td class="border-t border-line py-2.5 pr-3 align-middle"><strong class="font-semibold text-heading">{{ t $.Lang "settings.health.row_path" }}</strong></td>
+							<td class="border-t border-line py-2.5 pr-3 align-middle font-mono text-xs text-muted">{{.Panel.LastRequest.Pathname}}</td>
+						</tr>
+						<tr>
+							<td class="border-t border-line py-2.5 pr-3 align-middle"><strong class="font-semibold text-heading">{{ t $.Lang "settings.health.row_tracker_version" }}</strong></td>
+							<td class="border-t border-line py-2.5 pr-3 align-middle">{{.Panel.LastRequest.TrackerVersion}}</td>
+						</tr>
+						<tr>
+							<td class="border-t border-line py-2.5 pr-3 align-middle"><strong class="font-semibold text-heading">{{ t $.Lang "settings.health.row_user_agent" }}</strong></td>
+							<td class="border-t border-line py-2.5 pr-3 align-middle font-mono text-xs text-muted">{{.Panel.LastRequest.UserAgent}}</td>
+						</tr>
+						<tr>
+							<td class="border-t border-line py-2.5 pr-3 align-middle"><strong class="font-semibold text-heading">{{ t $.Lang "settings.health.row_outcome" }}</strong></td>
+							<td class="border-t border-line py-2.5 pr-3 align-middle">
+								{{if .Panel.LastRequest.DropReason}}
+									<span class="rounded-md bg-down/15 px-2 py-0.5 text-xs font-medium text-down-ink">{{.Panel.LastRequest.DropReason}}</span>
+								{{else}}
+									<span class="rounded-md bg-up/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-up-ink">{{ t $.Lang "settings.health.counted" }}</span>
+								{{end}}
+							</td>
+						</tr>
+						<tr>
+							<td class="border-t border-line py-2.5 pr-3 align-middle"><strong class="font-semibold text-heading">{{ t $.Lang "settings.health.row_received" }}</strong></td>
+							<td class="border-t border-line py-2.5 pr-3 align-middle">{{.LastRequestAt}}</td>
+						</tr>
+					</tbody>
+				</table>
+			</div>
+		{{else}}
+			<p class="mt-4 text-sm text-muted">{{ t $.Lang "settings.health.last_request_empty" }}</p>
+		{{end}}
+	</section>
+
+	<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+		<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.health.test_heading" }}</h2>
+		<p class="mt-1 text-sm text-muted">
+			{{ t $.Lang "settings.health.test_hint_before" }}
+			<code class="break-all rounded bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">{{.BaseURL}}/api/event</code>
+			{{ t $.Lang "settings.health.test_hint_after" }}
+		</p>
+		<form method="post" action="/settings/sites/{{.Domain}}/health/test-event" class="mt-4">
+			<input type="hidden" name="csrf_token" value="{{.CSRF}}" />
+			<button type="submit" class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "settings.health.test_submit" }}</button>
+		</form>
+		{{if .TestEvent}}
+			{{if .TestEvent.OK}}
+				<div role="status" class="mt-3 rounded-xl border border-up/30 bg-up/10 px-4 py-3 text-sm text-up-ink">
+					{{ t $.Lang "settings.health.test_ok_before" }}
+					<code class="break-all rounded bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">{{.TestEvent.URL}}</code>
+					{{ t $.Lang "settings.health.test_ok_answered" "status" .TestEvent.Status }}
+					{{if .TestEvent.DroppedReason}}{{ t $.Lang "settings.health.test_ok_dropped" }} <strong class="font-semibold">{{.TestEvent.DroppedReason}}</strong>.{{else}}{{ t $.Lang "settings.health.test_ok_counted" }}{{end}}
+				</div>
+			{{else}}
+				<div role="alert" class="mt-3 rounded-xl border border-down/30 bg-down/10 px-4 py-3 text-sm text-down-ink">{{if .TestEvent.Error}}{{.TestEvent.Error}}{{else}}{{ t $.Lang "settings.health.test_failed" "url" .TestEvent.URL "status" .TestEvent.Status }}{{end}}</div>
+			{{end}}
+			{{if .TestEventDerived}}
+				<pre class="mt-3 overflow-x-auto rounded-xl bg-code p-4 text-xs text-code-fg">{{.TestEventDerived}}</pre>
+			{{end}}
+		{{end}}
+	</section>
+
+	<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+		<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.health.drops_heading" }}</h2>
+		<p class="mt-1 text-sm text-muted">
+			{{ t $.Lang "settings.health.drops_hint" }}
+		</p>
+		{{if .Panel.Drops}}
+			<div class="mt-4 overflow-x-auto">
+				<table class="w-full text-sm">
+					<thead>
+						<tr>
+							<th class="pb-2 pr-3 text-left text-[11px] font-semibold uppercase tracking-wide text-faint">{{ t $.Lang "settings.health.column_reason" }}</th>
+							<th class="pb-2 pr-3 text-left text-[11px] font-semibold uppercase tracking-wide text-faint">{{ t $.Lang "settings.health.column_meaning" }}</th>
+							<th class="pb-2 pr-0 text-right text-[11px] font-semibold uppercase tracking-wide text-faint">{{ t $.Lang "settings.health.column_events" }}</th>
+						</tr>
+					</thead>
+					<tbody>
+						{{range .Panel.Drops}}
+							<tr>
+								<td class="border-t border-line py-2.5 pr-3 align-middle font-mono text-xs text-muted">{{.Reason}}</td>
+								<td class="border-t border-line py-2.5 pr-3 align-middle">{{ explain $.Lang .Reason }}</td>
+								<td class="border-t border-line py-2.5 pr-0 text-right align-middle">{{.Count}}</td>
+							</tr>
+						{{end}}
+					</tbody>
+				</table>
+			</div>
+		{{else}}
+			<p class="mt-4 text-sm text-muted">{{ t $.Lang "settings.health.drops_empty" }}</p>
+		{{end}}
+
+		{{if .Panel.Classifications}}
+			<h2 class="mt-6 text-lg font-medium text-heading">{{ t $.Lang "settings.health.classified_heading" }}</h2>
+			<p class="mt-1 text-sm text-muted">
+				{{ t $.Lang "settings.health.classified_hint" }}
+			</p>
+			<div class="mt-4 overflow-x-auto">
+				<table class="w-full text-sm">
+					<thead>
+						<tr>
+							<th class="pb-2 pr-3 text-left text-[11px] font-semibold uppercase tracking-wide text-faint">{{ t $.Lang "settings.health.column_reason" }}</th>
+							<th class="pb-2 pr-3 text-left text-[11px] font-semibold uppercase tracking-wide text-faint">{{ t $.Lang "settings.health.column_meaning" }}</th>
+							<th class="pb-2 pr-0 text-right text-[11px] font-semibold uppercase tracking-wide text-faint">{{ t $.Lang "settings.health.column_events" }}</th>
+						</tr>
+					</thead>
+					<tbody>
+						{{range .Panel.Classifications}}
+							<tr>
+								<td class="border-t border-line py-2.5 pr-3 align-middle font-mono text-xs text-muted">{{.Reason}}</td>
+								<td class="border-t border-line py-2.5 pr-3 align-middle">{{ explain $.Lang .Reason }}</td>
+								<td class="border-t border-line py-2.5 pr-0 text-right align-middle">{{.Count}}</td>
+							</tr>
+						{{end}}
+					</tbody>
+				</table>
+			</div>
+		{{end}}
+
+		{{if .Panel.Truncations}}
+			<h2 class="mt-6 text-lg font-medium text-heading">{{ t $.Lang "settings.health.truncated_heading" }}</h2>
+			<p class="mt-1 text-sm text-muted">
+				{{ t $.Lang "settings.health.truncated_hint" }}
+			</p>
+			<div class="mt-4 overflow-x-auto">
+				<table class="w-full text-sm">
+					<thead>
+						<tr>
+							<th class="pb-2 pr-3 text-left text-[11px] font-semibold uppercase tracking-wide text-faint">{{ t $.Lang "settings.health.column_limit" }}</th>
+							<th class="pb-2 pr-3 text-left text-[11px] font-semibold uppercase tracking-wide text-faint">{{ t $.Lang "settings.health.column_meaning" }}</th>
+							<th class="pb-2 pr-0 text-right text-[11px] font-semibold uppercase tracking-wide text-faint">{{ t $.Lang "settings.health.column_occurrences" }}</th>
+						</tr>
+					</thead>
+					<tbody>
+						{{range .Panel.Truncations}}
+							<tr>
+								<td class="border-t border-line py-2.5 pr-3 align-middle font-mono text-xs text-muted">{{.Reason}}</td>
+								<td class="border-t border-line py-2.5 pr-3 align-middle">{{ explain $.Lang .Reason }}</td>
+								<td class="border-t border-line py-2.5 pr-0 text-right align-middle">{{.Count}}</td>
+							</tr>
+						{{end}}
+					</tbody>
+				</table>
+			</div>
+		{{end}}
+	</section>
+
+	<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+		<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.health.allowlist_heading" }}</h2>
+		<p class="mt-1 text-sm text-muted">
+			{{ t $.Lang "settings.health.allowlist_hint_before" }}
+			<code class="rounded bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">{{.Domain}}</code>
+			{{ t $.Lang "settings.health.allowlist_hint_after" }}
+		</p>
+		{{if .Panel.AllowedHostnames}}
+			<div class="mb-2.5 mt-4 flex flex-wrap items-center gap-2">
+				{{range .Panel.AllowedHostnames}}<span class="rounded-md bg-subtle px-2 py-0.5 font-mono text-xs text-muted">{{.}}</span>{{end}}
+			</div>
+		{{else}}
+			<p class="mb-2.5 mt-4 text-sm text-muted">{{ t $.Lang "settings.health.allowlist_empty" }}</p>
+		{{end}}
+		<form method="post" action="/settings/sites/{{.Domain}}/health/allow" class="flex flex-wrap items-center gap-2">
+			<input type="hidden" name="csrf_token" value="{{.CSRF}}" />
+			<input type="text" name="hostname" placeholder="{{ t $.Lang "settings.health.hostname_placeholder" }}" class="rounded-xl border border-field bg-card px-3 py-2 font-mono text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
+			<button type="submit" class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "settings.health.allow_submit" }}</button>
+		</form>
+	</section>
+
+	<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+		<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.health.traffic_heading" }}</h2>
+		<div class="mt-4 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+			<div>
+				<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "settings.health.ip_sources_heading" }}</h2>
+				<div class="mt-2 overflow-x-auto">
+					<table class="w-full text-sm">
+						<tbody>
+							{{range .Panel.IPSources}}
+								<tr>
+									<td class="border-t border-line py-2.5 pr-3 align-middle font-mono text-xs text-muted">{{.Value}}</td>
+									<td class="border-t border-line py-2.5 pr-0 text-right align-middle">{{.Count}}</td>
+								</tr>
+							{{else}}
+								<tr><td colspan="2" class="border-t border-line py-2.5 pr-3 align-middle text-sm text-muted">{{ t $.Lang "settings.health.nothing_recorded" }}</td></tr>
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</div>
+			<div>
+				<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "settings.health.tracker_versions_heading" }}</h2>
+				<div class="mt-2 overflow-x-auto">
+					<table class="w-full text-sm">
+						<tbody>
+							{{range .Panel.TrackerVersions}}
+								<tr>
+									<td class="border-t border-line py-2.5 pr-3 align-middle font-mono text-xs text-muted">v{{.Value}}</td>
+									<td class="border-t border-line py-2.5 pr-0 text-right align-middle">{{.Count}}</td>
+								</tr>
+							{{else}}
+								<tr><td colspan="2" class="border-t border-line py-2.5 pr-3 align-middle text-sm text-muted">{{ t $.Lang "settings.health.nothing_recorded" }}</td></tr>
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</div>
+			<div>
+				<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "settings.health.unknown_hostnames_heading" }}</h2>
+				<div class="mt-2 overflow-x-auto">
+					<table class="w-full text-sm">
+						<tbody>
+							{{range .Panel.UnknownHostnames}}
+								<tr>
+									<td class="border-t border-line py-2.5 pr-3 align-middle font-mono text-xs text-muted">{{.Value}}</td>
+									<td class="border-t border-line py-2.5 pr-0 text-right align-middle">{{.Count}}</td>
+								</tr>
+							{{else}}
+								<tr><td colspan="2" class="border-t border-line py-2.5 pr-3 align-middle text-sm text-muted">{{ t $.Lang "settings.health.none_recorded" }}</td></tr>
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</div>
+		</div>
+	</section>
+{{end}}

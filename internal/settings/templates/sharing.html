@@ -1,0 +1,150 @@
+<!--
+  sharing.html
+  Public dashboards, shared links and the embed snippet.
+
+  Created: 2026-08-31
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+{{define "body"}}
+	<h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "settings.sharing.title" "domain" .Domain }}</h1>
+	<p class="mt-1 text-sm text-muted">{{ t $.Lang "settings.sharing.lede" }}</p>
+
+	<section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm">
+		<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.sharing.public_heading" }}</h2>
+		<p class="mt-1 text-sm text-muted">
+			{{ t $.Lang "settings.sharing.public_hint" }}
+		</p>
+		<form method="post" action="/settings/sites/{{.Domain}}/sharing/public" class="mt-4 flex flex-wrap items-center gap-3">
+			<input type="hidden" name="csrf_token" value="{{.CSRF}}" />
+			<input type="hidden" name="public" value="{{if .IsPublic}}0{{else}}1{{end}}" />
+			{{if .IsPublic}}
+				<span class="rounded-md bg-up/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-up-ink">{{ t $.Lang "settings.sharing.state_public" }}</span>
+				<span class="break-all font-mono text-xs text-muted">{{.BaseURL}}/public/{{.Domain}}</span>
+				<button type="submit" class="rounded-xl border border-down/50 px-4 py-2 text-sm font-semibold text-down-ink hover:bg-down/10">{{ t $.Lang "settings.sharing.make_private" }}</button>
+			{{else}}
+				<span class="rounded-md bg-down/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-down-ink">{{ t $.Lang "settings.sharing.state_private" }}</span>
+				<button type="submit" class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "settings.sharing.make_public" }}</button>
+			{{end}}
+		</form>
+	</section>
+
+	<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+		<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.sharing.links_heading" }}</h2>
+		<p class="mt-1 text-sm text-muted">
+			{{ t $.Lang "settings.sharing.links_hint" }}
+		</p>
+
+		<form method="post" action="/settings/sites/{{.Domain}}/sharing/links" class="mb-4 mt-4 flex flex-wrap items-center gap-2">
+			<input type="hidden" name="csrf_token" value="{{.CSRF}}" />
+			<input type="text" name="name" placeholder="{{ t $.Lang "settings.sharing.link_name_placeholder" }}" class="grow basis-[200px] rounded-xl border border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
+			<input type="password" name="password" placeholder="{{ t $.Lang "settings.sharing.link_password_placeholder" }}" autocomplete="new-password" class="rounded-xl border border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
+			<button type="submit" class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "settings.sharing.link_create" }}</button>
+		</form>
+
+		{{if .Links}}
+			<div class="overflow-x-auto">
+				<table class="w-full text-sm">
+					<thead>
+						<tr>
+							<th class="pb-2 pr-3 text-left text-[11px] font-semibold uppercase tracking-wide text-faint">{{ t $.Lang "settings.sharing.column_name" }}</th>
+							<th class="pb-2 pr-3 text-left text-[11px] font-semibold uppercase tracking-wide text-faint">{{ t $.Lang "settings.sharing.column_url" }}</th>
+							<th class="pb-2 pr-3 text-left text-[11px] font-semibold uppercase tracking-wide text-faint">{{ t $.Lang "settings.sharing.column_password" }}</th>
+							<th class="pb-2 pr-3 text-left text-[11px] font-semibold uppercase tracking-wide text-faint">{{ t $.Lang "settings.sharing.column_embeddable" }}</th>
+							<th class="pb-2 pr-0 text-right text-[11px] font-semibold uppercase tracking-wide text-faint"></th>
+						</tr>
+					</thead>
+					<tbody>
+						{{range .Links}}
+							<tr>
+								<td class="border-t border-line py-2.5 pr-3 align-middle">{{if .Name}}{{.Name}}{{else}}{{ t $.Lang "settings.sharing.unnamed" }}{{end}}</td>
+								<td class="border-t border-line py-2.5 pr-3 align-middle break-all font-mono text-xs text-muted">{{$.BaseURL}}{{.Path}}</td>
+								<td class="border-t border-line py-2.5 pr-3 align-middle">
+									{{if .HasPassword}}
+										<span class="rounded-md bg-warn/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-warn-ink">{{ t $.Lang "settings.sharing.password_protected" }}</span>
+									{{else}}
+										<span class="rounded-md bg-subtle px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">{{ t $.Lang "settings.sharing.password_none" }}</span>
+									{{end}}
+								</td>
+								<td class="border-t border-line py-2.5 pr-3 align-middle">
+									{{if .Embeddable}}
+										<span class="rounded-md bg-up/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-up-ink">{{ t $.Lang "settings.sharing.embeddable_yes" }}</span>
+									{{else}}
+										<span class="rounded-md bg-down/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-down-ink">{{ t $.Lang "settings.sharing.embeddable_no" }}</span>
+									{{end}}
+								</td>
+								<td class="border-t border-line py-2.5 pr-0 text-right align-middle">
+									<form class="inline-flex items-center align-middle" method="post" action="/settings/sites/{{$.Domain}}/sharing/links/revoke">
+										<input type="hidden" name="csrf_token" value="{{$.CSRF}}" />
+										<input type="hidden" name="link_id" value="{{.ID}}" />
+										<button type="submit" class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">{{ t $.Lang "settings.sharing.revoke" }}</button>
+									</form>
+								</td>
+							</tr>
+						{{end}}
+					</tbody>
+				</table>
+			</div>
+		{{else}}
+			<p class="text-sm text-muted">{{ t $.Lang "settings.sharing.links_empty" }}</p>
+		{{end}}
+	</section>
+
+	<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+		<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.sharing.embedding_heading" }}</h2>
+
+		<div class="mt-4 rounded-xl border border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn-ink">
+			<strong class="font-semibold">{{ t $.Lang "settings.sharing.embed_warning_title" }}</strong>
+			{{ t $.Lang "settings.sharing.embed_warning_before" }}
+			<code class="rounded bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">?embed=true</code>
+			{{ t $.Lang "settings.sharing.embed_warning_middle" }}
+			<code class="break-all rounded bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">{{.BaseURL}}/dashboard/{{.Domain}}</code>
+			{{ t $.Lang "settings.sharing.embed_warning_after" }}
+		</div>
+
+		{{if .EmbedURL}}
+			<p class="mt-4 text-sm text-muted">
+				{{ t $.Lang "settings.sharing.embed_params_intro" }}
+				<code class="rounded bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">embed=true</code>,
+				<code class="rounded bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">theme</code>
+				(<code class="rounded bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">light</code>,
+				<code class="rounded bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">dark</code>
+				{{ t $.Lang "settings.sharing.embed_params_or" }}
+				<code class="rounded bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">system</code>)
+				{{ t $.Lang "settings.sharing.embed_params_and" }}
+				<code class="rounded bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">background</code>
+				({{ t $.Lang "settings.sharing.embed_params_background" }}
+				<code class="rounded bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">transparent</code>).
+			</p>
+			<pre class="mt-3 overflow-x-auto rounded-xl bg-code p-4 text-xs text-code-fg">&lt;iframe
+  src="{{.EmbedURL}}?embed=true&amp;theme=light&amp;background=%23ffffff"
+  scrolling="no" frameborder="0" loading="lazy"
+  style="width:1px;min-width:100%;height:1600px"&gt;&lt;/iframe&gt;</pre>
+		{{else}}
+			<p class="mt-4 text-sm text-muted">{{ t $.Lang "settings.sharing.embed_none" }}</p>
+		{{end}}
+
+		<div class="mt-4 rounded-xl border border-down/30 bg-down/10 px-4 py-3 text-sm text-down-ink">
+			<strong class="font-semibold">{{ t $.Lang "settings.sharing.embed_password_title" }}</strong>
+			{{ t $.Lang "settings.sharing.embed_password_before" }}
+			<code class="rounded bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">X-Frame-Options</code>{{ t $.Lang "settings.sharing.embed_password_after" }}
+		</div>
+
+		<div class="mt-4 rounded-xl border border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn-ink">
+			<strong class="font-semibold">{{ t $.Lang "settings.sharing.embed_blocked_title" }}</strong>
+			{{ t $.Lang "settings.sharing.embed_blocked_body" }}
+		</div>
+	</section>
+
+	<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+		<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.sharing.transport_heading" }}</h2>
+		<p class="mt-1 text-sm text-muted">
+			{{if .HTTPS}}
+				{{ t $.Lang "settings.sharing.transport_https" }}
+			{{else}}
+				{{ t $.Lang "settings.sharing.transport_plain_before" }}
+				<code class="rounded bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">FEASIBLE_APP_BASE_URL</code>
+				{{ t $.Lang "settings.sharing.transport_plain_after" }}
+			{{end}}
+		</p>
+	</section>
+{{end}}

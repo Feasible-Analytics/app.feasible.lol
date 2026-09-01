@@ -19,7 +19,7 @@
 
     <div class="flex items-center gap-2">
       <label for="sort" class="sr-only">{{ t $.Lang "auth.sites.sort_label" }}</label>
-      <select id="sort" onchange="window.location = '/sites?sort=' + this.value"
+      <select id="sort" onchange="window.location = '/sites?team_id={{ .Data.TeamID }}&sort=' + this.value"
               class="rounded-xl border border-field bg-card px-3 py-2 text-sm text-body">
         <option value="" {{ if eq .Data.Sort "" }}selected{{ end }}>{{ t $.Lang "auth.sites.sort_manual" }}</option>
         <option value="traffic" {{ if eq .Data.Sort "traffic" }}selected{{ end }}>{{ t $.Lang "auth.sites.sort_traffic" }}</option>
@@ -27,10 +27,12 @@
         <option value="created" {{ if eq .Data.Sort "created" }}selected{{ end }}>{{ t $.Lang "auth.sites.sort_newest" }}</option>
       </select>
 
-      <a href="/sites/new"
+      {{ if .Data.CanManage }}
+      <a href="/sites/new?team_id={{ .Data.TeamID }}"
          class="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
         {{ t $.Lang "auth.sites.add" }}
       </a>
+      {{ end }}
     </div>
   </div>
 
@@ -40,10 +42,12 @@
       <p class="mx-auto mt-2 max-w-md text-sm text-muted">
         {{ t $.Lang "auth.sites.empty_body" }}
       </p>
-      <a href="/sites/new"
+      {{ if .Data.CanManage }}
+      <a href="/sites/new?team_id={{ .Data.TeamID }}"
          class="mt-6 inline-block rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
         {{ t $.Lang "auth.sites.empty_action" }}
       </a>
+      {{ end }}
     </div>
   {{ else }}
 
@@ -64,13 +68,16 @@
               <form method="post" action="/folders/{{ .ID }}/delete"
                     onsubmit="return confirm('{{ t $.Lang "auth.sites.folder_delete_confirm" }}')">
                 <input type="hidden" name="csrf_token" value="{{ $.CSRF }}">
+                <input type="hidden" name="team_id" value="{{ $.Data.TeamID }}">
+                {{ if $.Data.CanManage }}
                 <button type="submit" class="text-xs text-faint hover:text-down">{{ t $.Lang "auth.sites.folder_delete" }}</button>
+                {{ end }}
               </form>
             </header>
 
             <ul class="divide-y divide-line" data-folder-list="{{ .ID }}">
               {{ range .Sites }}
-                {{ template "site_row.html" (dict "Site" . "CSRF" $.CSRF "Lang" $.Lang "Locked" $.Data.Locked) }}
+                {{ template "site_row.html" (dict "Site" . "CSRF" $.CSRF "Lang" $.Lang "Locked" $.Data.Locked "CanConfigure" $.Data.CanConfigure "CanManage" $.Data.CanManage) }}
               {{ else }}
                 <li class="px-5 py-6 text-sm text-faint">{{ t $.Lang "auth.sites.folder_empty" }}</li>
               {{ end }}
@@ -90,15 +97,17 @@
 
         <ul class="divide-y divide-line" data-folder-list="0">
           {{ range .Data.Sites }}
-            {{ template "site_row.html" (dict "Site" . "CSRF" $.CSRF "Lang" $.Lang "Locked" $.Data.Locked) }}
+            {{ template "site_row.html" (dict "Site" . "CSRF" $.CSRF "Lang" $.Lang "Locked" $.Data.Locked "CanConfigure" $.Data.CanConfigure "CanManage" $.Data.CanManage) }}
           {{ end }}
         </ul>
       </div>
     {{ end }}
   {{ end }}
 
+  {{ if .Data.CanManage }}
   <form method="post" action="/folders" class="mt-8 flex items-end gap-2">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+    <input type="hidden" name="team_id" value="{{ .Data.TeamID }}">
     <div>
       <label for="folder-name" class="block text-xs font-medium text-muted">{{ t $.Lang "auth.sites.folder_new_label" }}</label>
       <input id="folder-name" name="name" type="text" placeholder="{{ t $.Lang "auth.sites.folder_new_placeholder" }}" required
@@ -109,6 +118,7 @@
       {{ t $.Lang "auth.sites.folder_create" }}
     </button>
   </form>
+  {{ end }}
 </div>
 
 <script>
@@ -181,7 +191,7 @@
             .map(el => parseInt(el.dataset.site, 10));
         });
 
-        fetch('/folders/reorder', {
+        fetch('/folders/reorder?team_id={{ .Data.TeamID }}', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
           body: JSON.stringify({ folders: folders, sites: sites })

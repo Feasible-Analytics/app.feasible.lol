@@ -10,6 +10,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -83,5 +84,43 @@ func TestDeleteAccountRemovesTheDatabaseFile(t *testing.T) {
 	}
 	if replacement.ID <= team.ID {
 		t.Fatalf("settings deletion reused team id %d for replacement %d", team.ID, replacement.ID)
+	}
+}
+
+// TestDeleteRefusesEitherSideOfTransferredStorage checks that deleting the old
+// storage team cannot erase history and deleting the new owner cannot orphan
+// it in a database no control row names.
+func TestDeleteRefusesEitherSideOfTransferredStorage(t *testing.T) {
+	store, db := newTestStore(t)
+	ctx := context.Background()
+
+	oldUser, oldTeam, err := store.CreateUser(ctx, "old@example.com", "", "hash", "")
+	if err != nil {
+		t.Fatalf("create old team: %v", err)
+	}
+	newUser, newTeam, err := store.CreateUser(ctx, "new@example.com", "", "hash", "")
+	if err != nil {
+		t.Fatalf("create new team: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO sites (account_id, owner_team_id, domain, created_at, updated_at)
+		VALUES (?, ?, 'transferred.example', 0, 0)
+	`, oldTeam.ID, newTeam.ID); err != nil {
+		t.Fatalf("insert transferred site: %v", err)
+	}
+
+	dataDir := t.TempDir()
+	manager := accounts.NewManager(dataDir)
+	t.Cleanup(func() { checkClose(t, "account manager", manager.CloseAll) })
+	purger := &lifecycle.Purger{Store: lifecycle.NewStore(db), Accounts: manager, DataDir: dataDir}
+	deleter := NewDeleter(purger, nil)
+
+	for _, target := range []struct{ userID, teamID int64 }{
+		{oldUser.ID, oldTeam.ID},
+		{newUser.ID, newTeam.ID},
+	} {
+		if err := deleter.DeleteAccount(ctx, target.userID, target.teamID); !errors.Is(err, ErrTransferredSiteStorage) {
+			t.Fatalf("delete team %d = %v, want ErrTransferredSiteStorage", target.teamID, err)
+		}
 	}
 }

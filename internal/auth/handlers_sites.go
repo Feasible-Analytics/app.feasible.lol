@@ -9,25 +9,43 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
+
+// transferDestination is one team the current source owner may move a site
+// into. Only owner and admin memberships are queried, matching TransferSite's
+// live destination authorization rather than advertising a choice it refuses.
+type transferDestination struct {
+	ID   int64
+	Name string
+}
+
+// siteTransferRequest is the authenticated JSON transfer contract. Carrying
+// the expected owner makes a stale confirmation fail instead of moving a site
+// that was already transferred by another request.
+type siteTransferRequest struct {
+	FromTeamID int64  `json:"from_team_id"`
+	ToTeamID   int64  `json:"to_team_id"`
+	Confirm    string `json:"confirm"`
+}
 
 // showSites renders the sites list, grouped into folders, with a sparkline
 // against each one.
 func (h *Handler) showSites(w http.ResponseWriter, r *http.Request) {
-	user := userFrom(r)
-
-	team, err := h.Store.TeamForUser(r.Context(), user.ID)
+	team, err := h.teamForRequest(r, teams.PermViewDashboard)
 	if err != nil {
-		h.fail(w, r, err)
+		h.teamSelectionError(w, r, err)
 		return
 	}
 
@@ -50,7 +68,7 @@ func (h *Handler) showSites(w http.ResponseWriter, r *http.Request) {
 	// a site has been created. A failure here degrades the page rather than
 	// breaking it: a list with no little charts is still a usable list.
 	if !locked {
-		if err := h.Traffic.Sparklines(r.Context(), team.ID, list, h.Store.Now()); err != nil {
+		if err := h.Traffic.SparklinesForSites(r.Context(), list, h.Store.Now()); err != nil {
 			h.Log.Warn("could not read sparklines", "team", team.ID, "error", err)
 		}
 	}
@@ -89,6 +107,10 @@ func (h *Handler) showSites(w http.ResponseWriter, r *http.Request) {
 	p.Data["Total"] = len(list)
 	p.Data["Sort"] = order
 	p.Data["Locked"] = locked
+	p.Data["TeamID"] = team.ID
+	role, _ := h.Teams.RoleOf(r.Context(), team.ID, userFrom(r).ID)
+	p.Data["CanManage"] = teams.Can(role, teams.PermManageSites)
+	p.Data["CanConfigure"] = teams.Can(role, teams.PermManageSiteSettings)
 
 	if r.URL.Query().Get("welcome") == "1" {
 		p.Flash = i18n.T(p.Lang, "auth.flash.email_confirmed")
@@ -103,8 +125,16 @@ func (h *Handler) showSites(w http.ResponseWriter, r *http.Request) {
 
 // showNewSite renders the create-site form.
 func (h *Handler) showNewSite(w http.ResponseWriter, r *http.Request) {
+	team, err := h.teamForRequest(r, teams.PermManageSites)
+	if err != nil {
+		h.teamSelectionError(w, r, err)
+
+		return
+	}
+
 	p := h.newPage(r, tr(r, "auth.title.site_new"), "sites")
 	p.Data["Timezones"] = CommonTimezones()
+	p.Data["TeamID"] = team.ID
 
 	h.render(w, r, "site_new", p, http.StatusOK)
 }
@@ -121,11 +151,9 @@ func (h *Handler) doNewSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := userFrom(r)
-
-	team, err := h.Store.TeamForUser(r.Context(), user.ID)
+	team, err := h.teamForRequest(r, teams.PermManageSites)
 	if err != nil {
-		h.fail(w, r, err)
+		h.teamSelectionError(w, r, err)
 		return
 	}
 
@@ -152,6 +180,7 @@ func (h *Handler) doNewSite(w http.ResponseWriter, r *http.Request) {
 		p.Data["Domain"] = domain
 		p.Data["DisplayName"] = displayName
 		p.Data["Timezone"] = timezone
+		p.Data["TeamID"] = team.ID
 
 		if errors.Is(err, ErrDomainTaken) {
 			p.Error = i18n.T(p.Lang, "auth.error.domain_taken")
@@ -183,6 +212,7 @@ func (h *Handler) pushToCache(site *Site, team *Team) {
 	h.SiteCache.Set(sites.Site{
 		ID:                 site.ID,
 		AccountID:          site.AccountID,
+		TeamID:             site.TeamID,
 		Domain:             site.Domain,
 		Timezone:           site.Timezone,
 		AcceptTrafficUntil: team.AcceptTrafficUntil,
@@ -195,7 +225,7 @@ func (h *Handler) doPinSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	site, team, ok := h.siteOr404(w, r)
+	site, team, ok := h.siteOr404(w, r, teams.PermManageSiteSettings)
 	if !ok {
 		return
 	}
@@ -205,12 +235,12 @@ func (h *Handler) doPinSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/sites", http.StatusFound)
+	http.Redirect(w, r, "/sites?team_id="+strconv.FormatInt(team.ID, 10), http.StatusFound)
 }
 
 // showSiteSettings renders general, timezone, domain, reset and delete.
 func (h *Handler) showSiteSettings(w http.ResponseWriter, r *http.Request) {
-	site, team, ok := h.siteOr404(w, r)
+	site, team, ok := h.siteOr404(w, r, teams.PermManageSiteSettings)
 	if !ok {
 		return
 	}
@@ -228,6 +258,11 @@ func (h *Handler) showSiteSettings(w http.ResponseWriter, r *http.Request) {
 	p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
 	p.Data["DualWrite"] = site.DualWriteActive(h.Store.Now())
 	p.Data["DualWriteHours"] = int(DualWriteWindow.Hours())
+	p.Data["TransferTeams"] = h.transferDestinations(r.Context(), userFrom(r).ID, team.ID)
+	p.Data["CurrentTeamID"] = team.ID
+	if problem := strings.TrimSpace(r.URL.Query().Get("transfer_error")); problem != "" {
+		p.Error = problem
+	}
 
 	switch r.URL.Query().Get("saved") {
 	case "general":
@@ -241,13 +276,168 @@ func (h *Handler) showSiteSettings(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, "site_settings", p, http.StatusOK)
 }
 
+// transferDestinations lists teams the user owns or administers, excluding the
+// source. The transfer transaction repeats both role checks; this list is an
+// ergonomic filter, not an authorization boundary.
+func (h *Handler) transferDestinations(ctx context.Context, userID, sourceTeamID int64) []transferDestination {
+	role, err := h.Teams.RoleOf(ctx, sourceTeamID, userID)
+	if err != nil || role != teams.RoleOwner {
+		return nil
+	}
+
+	rows, err := h.Store.DB().QueryContext(ctx, `
+		SELECT teams.id, teams.name
+		FROM teams
+		JOIN team_memberships ON team_memberships.team_id = teams.id
+		WHERE team_memberships.user_id = ? AND team_memberships.role IN ('owner', 'admin')
+		  AND teams.id <> ?
+		ORDER BY teams.name COLLATE NOCASE, teams.id
+	`, userID, sourceTeamID)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+
+	var destinations []transferDestination
+	for rows.Next() {
+		var destination transferDestination
+		if err := rows.Scan(&destination.ID, &destination.Name); err != nil {
+			return destinations
+		}
+		destinations = append(destinations, destination)
+	}
+
+	return destinations
+}
+
+// doSiteTransfer handles the confirmed browser form. Every decision is repeated
+// by TransferSiteFrom under the writer lock, so a stale page cannot authorize a
+// second transfer after ownership has already moved.
+func (h *Handler) doSiteTransfer(w http.ResponseWriter, r *http.Request) {
+	if !h.checkCSRF(w, r) {
+		return
+	}
+
+	site, team, ok := h.siteOr404(w, r, teams.PermManageSites)
+	if !ok {
+		return
+	}
+
+	fromTeamID, _ := strconv.ParseInt(r.PostFormValue("from_team_id"), 10, 64)
+	toTeamID, _ := strconv.ParseInt(r.PostFormValue("to_team_id"), 10, 64)
+	if fromTeamID != team.ID || toTeamID < 1 || toTeamID == team.ID {
+		h.redirectTransferError(w, r, site.ID, "Choose another team and reload this page before trying again.")
+		return
+	}
+	if strings.TrimSpace(r.PostFormValue("confirm")) != site.Domain {
+		h.redirectTransferError(w, r, site.ID, "Type the site's domain exactly to confirm the transfer.")
+		return
+	}
+
+	if err := h.Teams.TransferSiteFrom(r.Context(), userFrom(r).ID, site.ID, fromTeamID, toTeamID); err != nil {
+		h.redirectTransferError(w, r, site.ID, transferErrorMessage(err))
+		return
+	}
+
+	h.refreshCache(r)
+	if h.Log != nil {
+		h.Log.Warn("site transferred", "site", site.ID, "from_team", fromTeamID, "to_team", toTeamID, "domain", site.Domain)
+	}
+	http.Redirect(w, r, "/sites?team_id="+strconv.FormatInt(toTeamID, 10)+"&transferred=1", http.StatusFound)
+}
+
+// doSiteTransferAPI exposes the same compare-and-swap to signed-in clients.
+// Session authentication and CSRF are both required because this endpoint is a
+// browser credential surface, not the bearer-key public API.
+func (h *Handler) doSiteTransferAPI(w http.ResponseWriter, r *http.Request) {
+	if !h.checkCSRF(w, r) {
+		return
+	}
+
+	var request siteTransferRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		h.apiAccessError(w, http.StatusBadRequest, "the request body must be valid transfer JSON")
+		return
+	}
+
+	site, err := h.Store.SiteByIDAny(r.Context(), pathID(r, "id"))
+	if errors.Is(err, ErrNotFound) {
+		h.apiAccessError(w, http.StatusNotFound, "no such site")
+		return
+	}
+	if err != nil {
+		h.apiAccessError(w, http.StatusInternalServerError, "the site could not be read")
+		return
+	}
+	role, err := h.Teams.AuthoriseSite(r.Context(), site.ID, userFrom(r).ID, teams.PermManageSites)
+	if err != nil || role != teams.RoleOwner {
+		h.apiAccessError(w, http.StatusNotFound, "no such site")
+		return
+	}
+	if site.TeamID != request.FromTeamID {
+		h.apiAccessError(w, http.StatusConflict, transferErrorMessage(teams.ErrStaleTransfer))
+		return
+	}
+	if strings.TrimSpace(request.Confirm) != site.Domain {
+		h.apiAccessError(w, http.StatusBadRequest, "confirm must exactly match the site's domain")
+		return
+	}
+
+	err = h.Teams.TransferSiteFrom(r.Context(), userFrom(r).ID, site.ID, request.FromTeamID, request.ToTeamID)
+	if err != nil {
+		status := http.StatusForbidden
+		switch {
+		case errors.Is(err, teams.ErrStaleTransfer), errors.Is(err, teams.ErrOperationInProgress):
+			status = http.StatusConflict
+		case errors.Is(err, teams.ErrNotFound):
+			status = http.StatusNotFound
+		}
+		h.apiAccessError(w, status, transferErrorMessage(err))
+		return
+	}
+
+	h.refreshCache(r)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"transferred":  true,
+		"site_id":      site.ID,
+		"from_team_id": request.FromTeamID,
+		"to_team_id":   request.ToTeamID,
+	})
+}
+
+// redirectTransferError returns to the settings page without echoing form data.
+// The query carries only an explanatory sentence and is escaped before use.
+func (h *Handler) redirectTransferError(w http.ResponseWriter, r *http.Request, siteID int64, message string) {
+	http.Redirect(w, r, "/sites/"+strconv.FormatInt(siteID, 10)+"/settings?transfer_error="+url.QueryEscape(message), http.StatusSeeOther)
+}
+
+// transferErrorMessage turns authorization and compare-and-swap sentinels into
+// actionable UI/API text while keeping unknown team ids non-enumerable.
+func transferErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, teams.ErrStaleTransfer):
+		return "The site owner changed. Reload the page before transferring it again."
+	case errors.Is(err, teams.ErrOperationInProgress):
+		return "A reset, deletion, or account purge is in progress. Retry after it finishes."
+	case errors.Is(err, teams.ErrForbidden):
+		return "Only the source team's Owner can transfer this site, and the destination must be a team they own or administer."
+	case errors.Is(err, teams.ErrNotFound):
+		return "The site or destination team is not available to this account."
+	default:
+		return "The site could not be transferred."
+	}
+}
+
 // doSiteGeneral saves the display name, timezone, folder and public flag.
 func (h *Handler) doSiteGeneral(w http.ResponseWriter, r *http.Request) {
 	if !h.checkCSRF(w, r) {
 		return
 	}
 
-	site, team, ok := h.siteOr404(w, r)
+	site, team, ok := h.siteOr404(w, r, teams.PermManageSiteSettings)
 	if !ok {
 		return
 	}
@@ -292,7 +482,7 @@ func (h *Handler) doSiteDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	site, team, ok := h.siteOr404(w, r)
+	site, team, ok := h.siteOr404(w, r, teams.PermManageSiteSettings)
 	if !ok {
 		return
 	}
@@ -324,13 +514,14 @@ func (h *Handler) doSiteDomain(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/sites/"+strconv.FormatInt(site.ID, 10)+"/settings?saved=domain", http.StatusFound)
 }
 
-// doSiteReset deletes a site's recorded traffic and nothing else.
+// doSiteReset erases every datum scoped to a site while retaining the site row
+// itself so the domain can begin collecting again under the same owner.
 func (h *Handler) doSiteReset(w http.ResponseWriter, r *http.Request) {
 	if !h.checkCSRF(w, r) {
 		return
 	}
 
-	site, team, ok := h.siteOr404(w, r)
+	site, team, ok := h.siteOr404(w, r, teams.PermManageSites)
 	if !ok {
 		return
 	}
@@ -348,7 +539,11 @@ func (h *Handler) doSiteReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Traffic.ResetStats(r.Context(), team.ID, site.ID); err != nil {
+	if h.Destructive == nil {
+		h.fail(w, r, errors.New("auth: destructive site operations are unavailable"))
+		return
+	}
+	if err := h.Destructive.ResetSite(r.Context(), team.ID, site.ID); err != nil {
 		h.fail(w, r, err)
 		return
 	}
@@ -364,7 +559,7 @@ func (h *Handler) doSiteDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	site, team, ok := h.siteOr404(w, r)
+	site, team, ok := h.siteOr404(w, r, teams.PermManageSites)
 	if !ok {
 		return
 	}
@@ -382,14 +577,11 @@ func (h *Handler) doSiteDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The events go first. Deleting the routing row first would leave the
-	// account database holding rows for a site id nothing can name any more.
-	if err := h.Traffic.ResetStats(r.Context(), team.ID, site.ID); err != nil {
-		h.fail(w, r, err)
+	if h.Destructive == nil {
+		h.fail(w, r, errors.New("auth: destructive site operations are unavailable"))
 		return
 	}
-
-	if err := h.Store.DeleteSite(r.Context(), team.ID, site.ID); err != nil {
+	if err := h.Destructive.DeleteSite(r.Context(), team.ID, site.ID); err != nil {
 		h.fail(w, r, err)
 		return
 	}
@@ -398,7 +590,7 @@ func (h *Handler) doSiteDelete(w http.ResponseWriter, r *http.Request) {
 
 	h.refreshCache(r)
 
-	http.Redirect(w, r, "/sites?deleted=1", http.StatusFound)
+	http.Redirect(w, r, "/sites?team_id="+strconv.FormatInt(team.ID, 10)+"&deleted=1", http.StatusFound)
 }
 
 // doCreateFolder adds a folder.
@@ -407,11 +599,9 @@ func (h *Handler) doCreateFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := userFrom(r)
-
-	team, err := h.Store.TeamForUser(r.Context(), user.ID)
+	team, err := h.teamForRequest(r, teams.PermManageSites)
 	if err != nil {
-		h.fail(w, r, err)
+		h.teamSelectionError(w, r, err)
 		return
 	}
 
@@ -419,7 +609,7 @@ func (h *Handler) doCreateFolder(w http.ResponseWriter, r *http.Request) {
 		h.Log.Warn("could not create a folder", "team", team.ID, "error", err)
 	}
 
-	http.Redirect(w, r, "/sites", http.StatusFound)
+	http.Redirect(w, r, "/sites?team_id="+strconv.FormatInt(team.ID, 10), http.StatusFound)
 }
 
 // doRenameFolder renames a folder.
@@ -428,11 +618,9 @@ func (h *Handler) doRenameFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := userFrom(r)
-
-	team, err := h.Store.TeamForUser(r.Context(), user.ID)
+	team, err := h.teamForRequest(r, teams.PermManageSites)
 	if err != nil {
-		h.fail(w, r, err)
+		h.teamSelectionError(w, r, err)
 		return
 	}
 
@@ -440,7 +628,7 @@ func (h *Handler) doRenameFolder(w http.ResponseWriter, r *http.Request) {
 		h.Log.Warn("could not rename a folder", "team", team.ID, "error", err)
 	}
 
-	http.Redirect(w, r, "/sites", http.StatusFound)
+	http.Redirect(w, r, "/sites?team_id="+strconv.FormatInt(team.ID, 10), http.StatusFound)
 }
 
 // doDeleteFolder removes a folder and leaves its sites at the top level.
@@ -449,11 +637,9 @@ func (h *Handler) doDeleteFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := userFrom(r)
-
-	team, err := h.Store.TeamForUser(r.Context(), user.ID)
+	team, err := h.teamForRequest(r, teams.PermManageSites)
 	if err != nil {
-		h.fail(w, r, err)
+		h.teamSelectionError(w, r, err)
 		return
 	}
 
@@ -462,7 +648,7 @@ func (h *Handler) doDeleteFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/sites", http.StatusFound)
+	http.Redirect(w, r, "/sites?team_id="+strconv.FormatInt(team.ID, 10), http.StatusFound)
 }
 
 // reorderRequest is what the drag handle posts back: the folder order, and the
@@ -483,11 +669,9 @@ func (h *Handler) doReorder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := userFrom(r)
-
-	team, err := h.Store.TeamForUser(r.Context(), user.ID)
+	team, err := h.teamForRequest(r, teams.PermManageSites)
 	if err != nil {
-		http.Error(w, "not signed in", http.StatusUnauthorized)
+		http.Error(w, "an explicit authorized team_id is required", http.StatusForbidden)
 		return
 	}
 

@@ -23,11 +23,14 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/access"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/destructive"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/webhooks"
 )
 
@@ -127,17 +130,21 @@ func newHarness(t *testing.T) *harness {
 	// is paying, and the ones that care lock it with Set rather than by walking
 	// a ninety-day clock.
 	api := &API{
-		Keys:       keys,
-		Limiter:    apikeys.NewLimiter(0),
-		Access:     access.New(nil, nil, nil, nil),
-		Sites:      cache,
-		Control:    NewControlStore(control),
-		Accounts:   manager,
-		Webhooks:   hooks,
-		Dispatcher: webhooks.NewDispatcher(hooks),
-		BaseURL:    "https://example.test",
-		Now:        func() time.Time { return testNow },
+		Keys:           keys,
+		Limiter:        apikeys.NewLimiter(0),
+		Access:         access.New(nil, nil, nil, nil),
+		Sites:          cache,
+		Control:        NewControlStore(control),
+		Teams:          teams.NewStore(control),
+		Sharing:        sharing.NewStore(control),
+		Accounts:       manager,
+		SiteOperations: &destructive.Service{DB: control, Accounts: manager},
+		Webhooks:       hooks,
+		Dispatcher:     webhooks.NewDispatcher(hooks),
+		BaseURL:        "https://example.test",
+		Now:            func() time.Time { return testNow },
 	}
+	api.Teams.Now = func() time.Time { return testNow }
 
 	server := httptest.NewServer(api.Routes())
 	t.Cleanup(server.Close)
@@ -161,6 +168,7 @@ func seedControl(t *testing.T, control *sql.DB) {
 		{`INSERT INTO users (id, email, name, created_at, updated_at) VALUES (2, 'other@example.test', 'Other', ?, ?)`, []any{now, now}},
 		{`INSERT INTO users (id, email, name, created_at, updated_at) VALUES (3, 'guest@example.test', 'Guest', ?, ?)`, []any{now, now}},
 		{`INSERT INTO team_memberships (team_id, user_id, role, created_at) VALUES (?, 1, 'owner', ?)`, []any{teamID, now}},
+		{`INSERT INTO team_memberships (team_id, user_id, role, created_at) VALUES (?, 2, 'owner', ?)`, []any{otherTeamID, now}},
 		{`INSERT INTO sites (id, account_id, domain, display_name, timezone, created_at, updated_at)
 		  VALUES (?, ?, 'example.com', 'Example', 'UTC', ?, ?)`, []any{siteID, teamID, now, now}},
 		{`INSERT INTO sites (id, account_id, domain, display_name, timezone, created_at, updated_at)

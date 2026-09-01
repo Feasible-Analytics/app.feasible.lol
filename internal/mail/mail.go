@@ -366,6 +366,37 @@ func (m *Mailer) SendVerification(ctx context.Context, to, name, code, link stri
 	return err
 }
 
+// SendInvitation delivers the bearer link that grants a team or guest role.
+// The link is handed directly to the transport and is never returned in a log
+// detail, so application logs cannot become a second invitation inbox.
+func (m *Mailer) SendInvitation(ctx context.Context, to, teamName, inviterName, role, link string, expires time.Time) error {
+	inviter := strings.TrimSpace(inviterName)
+	if inviter == "" {
+		inviter = "A team administrator"
+	}
+
+	content := Content{
+		Subject: "You're invited to " + teamName + " on feasible.lol",
+		Heading: "Join " + teamName,
+		Body: []string{
+			fmt.Sprintf("%s invited you to join %s as %s.", inviter, teamName, role),
+			"Sign in or create an account with this email address to accept the invitation.",
+		},
+		Facts:   []Fact{{Label: "Invitation expires", Value: expires.UTC().Format(DateFormat)}},
+		Primary: Button{Label: "Accept invitation", URL: link},
+		Closing: "If you were not expecting this invitation, you can ignore this email.",
+	}
+
+	message, err := content.Message(to, "team_invitation")
+	if err != nil {
+		return err
+	}
+
+	_, err = m.Send(ctx, message)
+
+	return err
+}
+
 // SendPasswordReset emails a single-use reset link. There is no code variant:
 // a reset grants far more than proving an address does, so it is worth making
 // the recipient come back through a URL we minted rather than something they

@@ -192,6 +192,16 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 	return service, nil
 }
 
+// SetObserver attaches one observer to both halves of ingestion. The handler
+// records request diagnostics and derive-time drops; the writer records the
+// final accepted, classified, shielded and orphaned outcomes. Keeping the two
+// assignments together prevents direct and standalone process wiring from
+// quietly exposing different health histories.
+func (s *Service) SetObserver(observer Observer) {
+	s.Handler.Observer = observer
+	s.Writer.Observer = observer
+}
+
 // Start launches the buffer, salt, site, and source-address limiter loops. Live
 // session ownership is transactional account state, so there is no process-
 // local session sweep to coordinate across serving processes.

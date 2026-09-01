@@ -131,6 +131,24 @@ func (t *Traffic) Sparklines(ctx context.Context, accountID int64, list []*Site,
 	return nil
 }
 
+// SparklinesForSites fills a mixed-owner site list from each site's immutable
+// storage account. Ownership transfers make the current team and analytics
+// database different facts, so one team page may need more than one account.
+func (t *Traffic) SparklinesForSites(ctx context.Context, list []*Site, now time.Time) error {
+	byAccount := map[int64][]*Site{}
+	for _, site := range list {
+		byAccount[site.AccountID] = append(byAccount[site.AccountID], site)
+	}
+
+	for accountID, sites := range byAccount {
+		if err := t.Sparklines(ctx, accountID, sites, now); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // SortByTraffic reorders a list by the sparkline total, busiest first, with
 // pinned sites still held at the top. The sort happens here rather than in SQL
 // because the counts live in a different database from the site rows.

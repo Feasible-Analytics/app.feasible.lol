@@ -6,12 +6,12 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 
-import type { Metric, StatsResponse } from "../api/types";
+import type { Annotation, Metric, StatsResponse } from "../api/types";
 import { changePercent, comparisonSeries, previousBucketLabel } from "../lib/compare";
 import { bucketLong, bucketShort, compact, metricTitle, metricValue, rangeLabel } from "../lib/format";
-import { t } from "../lib/i18n";
+import { n, t } from "../lib/i18n";
 import { INVERTED } from "../lib/reports";
 import { ChangeChip, Failure, Spinner } from "./atoms";
 import { tileLabel, tileLabelLower } from "./TopStats";
@@ -34,6 +34,68 @@ const PAD = { top: 16, right: 14, bottom: 26, left: 46 };
 /** The graph's height, from the design system. */
 const HEIGHT = 368;
 
+/** The attribute the keyboard shortcut finds a marker by. A data attribute
+ *  rather than a class, because a class is a styling decision somebody will
+ *  reasonably rename, and the shortcut would go with it silently. */
+export const MARKER_ATTRIBUTE = "data-annotation";
+
+/** AnnotationTooltipState separates transient pointer/focus visibility from a
+ *  click or tap that deliberately pins a tooltip open. */
+export interface AnnotationTooltipState {
+	hovered: number | null;
+	focused: number | null;
+	pinned: number | null;
+}
+
+/** AnnotationTooltipAction is the closed interaction set used by markers and
+ *  the document-level Escape/outside-click listeners. */
+export type AnnotationTooltipAction =
+	| { type: "pointer-enter"; index: number; pointerType: string }
+	| { type: "pointer-leave"; index: number }
+	| { type: "focus"; index: number }
+	| { type: "blur"; index: number }
+	| { type: "toggle"; index: number }
+	| { type: "escape" }
+	| { type: "outside" }
+	| { type: "reset" };
+
+/** annotationTooltipReducer keeps touch from masquerading as a permanent hover
+ *  and makes click/tap, Escape, and outside dismissal deterministic. */
+export function annotationTooltipReducer(
+	state: AnnotationTooltipState,
+	action: AnnotationTooltipAction,
+): AnnotationTooltipState {
+	switch (action.type) {
+		case "pointer-enter":
+			return action.pointerType === "touch" ? state : { ...state, hovered: action.index };
+		case "pointer-leave":
+			return state.hovered === action.index ? { ...state, hovered: null } : state;
+		case "focus":
+			return { ...state, focused: action.index };
+		case "blur":
+			return state.focused === action.index ? { ...state, focused: null } : state;
+		case "toggle": {
+			if (state.pinned !== action.index) return { ...state, pinned: action.index };
+
+			return {
+				hovered: state.hovered === action.index ? null : state.hovered,
+				focused: state.focused === action.index ? null : state.focused,
+				pinned: null,
+			};
+		}
+		case "escape":
+		case "outside":
+		case "reset":
+			return { hovered: null, focused: null, pinned: null };
+	}
+}
+
+/** visibleAnnotationTooltip chooses the deliberate pin before keyboard focus
+ *  and hover, so moving a pointer cannot replace a tooltip opened by tap. */
+export function visibleAnnotationTooltip(state: AnnotationTooltipState): number | null {
+	return state.pinned ?? state.focused ?? state.hovered;
+}
+
 interface Props {
 	stats: { data: StatsResponse | null; loading: boolean; error: string | null; reload: () => void };
 	metric: Metric;
@@ -41,6 +103,9 @@ interface Props {
 	 *  same rows as the current period, so this only decides whether they are
 	 *  drawn, never whether they were asked for. */
 	comparing: boolean;
+	/** The dated notes to render as markers. Empty is the normal case and costs
+	 *  one map over an empty array. */
+	annotations?: Annotation[];
 }
 
 /**
@@ -50,13 +115,18 @@ interface Props {
  * engine only returns buckets that had traffic, so a chart built from the rows
  * alone would silently close up an empty Tuesday and draw a week as six days.
  */
-export function MainGraph({ stats, metric, comparing }: Props) {
+export function MainGraph({ stats, metric, comparing, annotations = [] }: Props) {
 	// Zero until the wrapper has been measured. The chart is not drawn at a
 	// guessed width: a default that happens to be wider than the container
 	// paints a graph that runs off the side of its own card, and on a phone that
 	// is most of the graph.
 	const [width, setWidth] = useState(0);
 	const [hover, setHover] = useState<number | null>(null);
+	const [markerState, dispatchMarker] = useReducer(annotationTooltipReducer, {
+		hovered: null,
+		focused: null,
+		pinned: null,
+	});
 	const wrap = useRef<HTMLDivElement>(null);
 
 	// The chart is drawn at real pixel width rather than with a viewBox, so the
@@ -77,8 +147,35 @@ export function MainGraph({ stats, metric, comparing }: Props) {
 	}, []);
 
 	// A pointer left over an old chart would keep a tooltip pinned to a bucket
-	// that no longer exists after the range changes.
-	useEffect(() => setHover(null), [stats.data]);
+	// that no longer exists after the range changes. An open marker is cleared
+	// with it: it is indexed by those same buckets.
+	useEffect(() => {
+		setHover(null);
+		dispatchMarker({ type: "reset" });
+	}, [stats.data]);
+
+	// A pinned tooltip behaves like a small popover: tapping elsewhere or
+	// pressing Escape closes it. Marker events remain responsible for hover and
+	// focus so keyboard and mouse behavior do not depend on document listeners.
+	useEffect(() => {
+		if (markerState.pinned === null) return;
+
+		const pointerDown = (event: PointerEvent) => {
+			const target = event.target;
+			if (target instanceof Element && target.closest(`[${MARKER_ATTRIBUTE}]`)) return;
+			dispatchMarker({ type: "outside" });
+		};
+		const keyDown = (event: KeyboardEvent) => {
+			if (event.key === "Escape") dispatchMarker({ type: "escape" });
+		};
+
+		document.addEventListener("pointerdown", pointerDown);
+		document.addEventListener("keydown", keyDown);
+		return () => {
+			document.removeEventListener("pointerdown", pointerDown);
+			document.removeEventListener("keydown", keyDown);
+		};
+	}, [markerState.pinned]);
 
 	const data = stats.data;
 	const labels = data?.meta.time_labels ?? [];
@@ -134,6 +231,10 @@ export function MainGraph({ stats, metric, comparing }: Props) {
 		PAD.left + (labels.length <= 1 ? plotWidth / 2 : (index * plotWidth) / (labels.length - 1));
 	const y = (value: number) => PAD.top + plotHeight - (value / ceiling) * plotHeight;
 
+	// Where the plot stops and the axis begins. The markers hang off it, so it
+	// is named once rather than added up at four call sites.
+	const axis = PAD.top + plotHeight;
+
 	const runs = contiguous(points);
 	const ticks = [0, 0.25, 0.5, 0.75, 1].map((fraction) => Math.round(ceiling * fraction));
 	const axisEvery = Math.max(1, Math.ceil(labels.length / Math.max(2, Math.floor(plotWidth / 90))));
@@ -142,6 +243,10 @@ export function MainGraph({ stats, metric, comparing }: Props) {
 	const hoverLabel = hover !== null ? labels[hover] : undefined;
 	const hoveredEarlier = hover !== null ? (previous[hover] ?? null) : null;
 	const earlierRuns = contiguous(previous);
+
+	const markers = placeMarkers(annotations, labels, interval);
+	const marker = visibleAnnotationTooltip(markerState);
+	const openMarker = marker !== null ? markers[marker] : undefined;
 
 	return (
 		<div ref={wrap} className="relative px-1" style={{ height: HEIGHT }}>
@@ -238,7 +343,7 @@ export function MainGraph({ stats, metric, comparing }: Props) {
 					return (
 						<g key={run.from}>
 							<path
-								d={areaPath(points, run.from, run.to, x, y, PAD.top + plotHeight)}
+								d={areaPath(points, run.from, run.to, x, y, axis)}
 								fill="url(#fs-area)"
 								stroke="none"
 							/>
@@ -269,13 +374,121 @@ export function MainGraph({ stats, metric, comparing }: Props) {
 					);
 				})}
 
+				{/* Annotations are drawn after both series, so a marker sits on
+				    top of the comparison line rather than under it, and they
+				    hang off the axis rather than off the line, so a marker never
+				    covers the value it is explaining and a day with three notes
+				    gets one flag rather than three overlapping ones.
+
+				    The guide is a solid accent rule where the comparison overlay
+				    is a neutral dashed one. Two dashed verticals in the same
+				    chart read as the same thing said twice, and the marker is
+				    the one a reader is meant to be able to pick out of it. */}
+				{markers.map((entry, index) => {
+					const open = marker === index;
+					const tooltipID = `annotation-tooltip-${entry.index}`;
+
+					return (
+						<g
+							key={entry.index}
+							{...{ [MARKER_ATTRIBUTE]: "" }}
+							tabIndex={0}
+							role="button"
+							aria-expanded={open}
+							aria-controls={tooltipID}
+							aria-label={n("dashboard.graph.annotations", entry.notes.length, {
+								date: entry.notes[0]?.shown_on ?? "",
+								body: entry.notes[0]?.body ?? "",
+							})}
+							className="cursor-pointer focus:outline-none"
+							onPointerEnter={(event) =>
+								dispatchMarker({ type: "pointer-enter", index, pointerType: event.pointerType })
+							}
+							onPointerLeave={() => dispatchMarker({ type: "pointer-leave", index })}
+							onFocus={() => dispatchMarker({ type: "focus", index })}
+							onBlur={() => dispatchMarker({ type: "blur", index })}
+							onClick={(event) => {
+								const closing = markerState.pinned === index;
+								dispatchMarker({ type: "toggle", index });
+								if (closing) event.currentTarget.blur();
+							}}
+							onKeyDown={(event) => {
+								if (event.key === "Escape") {
+									// Escape hands the marker back rather than
+									// leaving a card pinned open with the pointer
+									// nowhere near it. Stopping it here keeps the
+									// page's own Escape from also clearing the
+									// filters underneath.
+									event.stopPropagation();
+									dispatchMarker({ type: "escape" });
+									event.currentTarget.blur();
+									return;
+								}
+								if (event.key !== "Enter" && event.key !== " ") return;
+
+								event.preventDefault();
+								const closing = markerState.pinned === index;
+								dispatchMarker({ type: "toggle", index });
+								if (closing) event.currentTarget.blur();
+							}}
+						>
+							<line
+								x1={x(entry.index)}
+								x2={x(entry.index)}
+								y1={PAD.top}
+								y2={axis}
+								stroke="var(--fs-accent)"
+								strokeWidth={open ? 1.5 : 1}
+								opacity={open ? 0.75 : 0.4}
+							/>
+
+							{/* The focus ring is drawn rather than left to the
+							    browser's outline: an outline on a group is a
+							    rectangle around its bounding box, and this
+							    group is as tall as the chart. */}
+							{open && (
+								<circle
+									cx={x(entry.index)}
+									cy={axis + 7}
+									r={8.5}
+									fill="none"
+									stroke="var(--fs-accent)"
+									strokeWidth={2}
+									opacity={0.4}
+								/>
+							)}
+
+							{/* The pin is filled with the card colour rather
+							    than left hollow, so it stays a solid shape
+							    wherever the comparison line passes behind it. */}
+							<circle
+								cx={x(entry.index)}
+								cy={axis + 7}
+								r={5}
+								fill="var(--fs-card)"
+								stroke="var(--fs-accent)"
+								strokeWidth={2}
+							/>
+
+							<text
+								x={x(entry.index)}
+								y={axis + 10.5}
+								textAnchor="middle"
+								className="fill-[var(--fs-accent)] text-[8px] font-bold"
+							>
+								{entry.notes.length > 1 ? entry.notes.length : ""}
+							</text>
+						</g>
+					);
+				})}
+
 				{hover !== null && (
 					<g>
 						<line
 							x1={x(hover)}
 							x2={x(hover)}
 							y1={PAD.top}
-							y2={PAD.top + plotHeight}
+							y2={axis}
 							stroke="var(--fs-line)"
 							strokeWidth={1}
 						/>
@@ -293,7 +506,7 @@ export function MainGraph({ stats, metric, comparing }: Props) {
 				)}
 			</svg>
 
-			{hover !== null && hoverLabel && (
+			{hover !== null && hoverLabel && !openMarker && (
 				<div
 					// The tooltip is HTML rather than SVG so it can use the same
 					// card tokens as everything else and wrap its own text.
@@ -345,6 +558,32 @@ export function MainGraph({ stats, metric, comparing }: Props) {
 				</div>
 			)}
 
+			{/* The note's own card sits above the value tooltip. Somebody who has
+			    reached for a marker, by pointer or by Tab, has asked for this one
+			    rather than for whatever the pointer happens to be over. */}
+			{openMarker && (
+				<div
+					id={`annotation-tooltip-${openMarker.index}`}
+					role="tooltip"
+					className="pointer-events-none absolute z-30 w-max max-w-64 rounded-md border border-line bg-card px-3 py-2 shadow-lg"
+					style={{
+						left: Math.min(Math.max(x(openMarker.index) - 90, 4), Math.max(4, width - 200)),
+						// Anchored to its own bottom rather than its top, so a
+						// note of any length grows upwards and the card never
+						// covers the pin that opened it.
+						bottom: HEIGHT - axis + 16,
+					}}
+				>
+					<p className="text-[11px] text-muted">{openMarker.notes[0]?.shown_on}</p>
+					{openMarker.notes.map((note) => (
+						<p key={note.id} className="mt-1 text-sm text-body">
+							{note.body}
+							{note.author_name && <span className="text-xs text-muted"> — {note.author_name}</span>}
+						</p>
+					))}
+				</div>
+			)}
+
 			{/* The legend names the window the dashes are, because "previous
 			    period" is ambiguous the moment the range is a custom one. */}
 			{comparing && comparisonBounds && (
@@ -357,6 +596,80 @@ export function MainGraph({ stats, metric, comparing }: Props) {
 			)}
 		</div>
 	);
+}
+
+/** Marker is one bucket that carries annotations. */
+export interface Marker {
+	index: number;
+	notes: Annotation[];
+}
+
+/**
+ * placeMarkers maps dated notes onto graph buckets.
+ *
+ * A note carries a local date, and a bucket carries whatever label the engine
+ * emitted for the interval — a date for a daily chart, a timestamp for an
+ * hourly one, a Monday for a weekly one, or a month for a yearly one. Daily
+ * and hourly labels match by date prefix; monthly and weekly annotations are
+ * first snapped through the same calendar bucket rule as the query engine.
+ *
+ * The buckets are the ones the graph actually drew, so a filtered graph places
+ * its markers against the same axis as its line rather than against an axis of
+ * their own.
+ *
+ * Notes outside the range are dropped rather than clamped to the edge. A marker
+ * pinned to the first bucket for something that happened before the range began
+ * is a marker that says the wrong thing.
+ */
+export function placeMarkers(annotations: Annotation[], labels: string[], interval: string): Marker[] {
+	if (annotations.length === 0 || labels.length === 0) return [];
+
+	const byIndex = new Map<number, Annotation[]>();
+
+	for (const note of annotations) {
+		// A monthly bucket is labelled by its month. A weekly bucket is labelled
+		// by the Monday that starts it, so an arbitrary date must be snapped to
+		// that Monday before matching. Every other interval starts with the
+		// annotation's full date.
+		let key = note.shown_on;
+		if (interval === "month") key = note.shown_on.slice(0, 7);
+		if (interval === "week") key = weekStart(note.shown_on);
+		if (!key) continue;
+
+		const index = labels.findIndex((label) => label.startsWith(key));
+		if (index < 0) continue;
+
+		const existing = byIndex.get(index);
+		if (existing) existing.push(note);
+		else byIndex.set(index, [note]);
+	}
+
+	return [...byIndex.entries()]
+		.map(([index, notes]) => ({ index, notes }))
+		.sort((a, b) => a.index - b.index);
+}
+
+/** weekStart returns the Monday containing a YYYY-MM-DD local calendar date.
+ * UTC is only an arithmetic workspace: annotation and bucket labels are wall
+ * clock dates with no timezone, and local Date parsing would move them around
+ * daylight-saving changes or when tests run in another timezone. */
+function weekStart(label: string): string {
+	const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(label);
+	if (!match) return "";
+
+	const year = Number(match[1]);
+	const month = Number(match[2]);
+	const day = Number(match[3]);
+	const date = new Date(Date.UTC(year, month - 1, day));
+
+	// Reject calendar overflow such as 2026-02-31 instead of silently placing
+	// it in March, which would turn corrupt annotation data into a wrong marker.
+	if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return "";
+
+	const offset = (date.getUTCDay() + 6) % 7;
+	date.setUTCDate(date.getUTCDate() - offset);
+
+	return `${String(date.getUTCFullYear()).padStart(4, "0")}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
 }
 
 /** contiguous groups the buckets that have data into runs, so a gap becomes a

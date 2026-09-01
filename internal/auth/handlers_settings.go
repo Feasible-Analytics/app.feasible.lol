@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
 // showAccountSettings renders the profile and password screen.
@@ -362,7 +363,19 @@ func (h *Handler) doDisableTwoFactor(w http.ResponseWriter, r *http.Request) {
 	p.Data["RecoveryLeft"] = RecoveryCodesLeft(user)
 	p.Data["HasPassword"] = user.PasswordHash != ""
 
-	if team, err := h.Store.TeamForUser(r.Context(), user.ID); err == nil && team.Require2FA {
+	locked, err := exists(r.Context(), h.Store.DB(), `
+		SELECT 1
+		FROM teams
+		JOIN team_memberships ON team_memberships.team_id = teams.id
+		WHERE team_memberships.user_id = ? AND teams.require_2fa = 1
+		LIMIT 1
+	`, user.ID)
+	if err != nil {
+		h.fail(w, r, err)
+
+		return
+	}
+	if locked {
 		p.Error = i18n.T(p.Lang, "auth.error.two_factor_locked")
 		h.render(w, r, "settings_security", p, http.StatusForbidden)
 
@@ -387,7 +400,16 @@ func (h *Handler) doDisableTwoFactor(w http.ResponseWriter, r *http.Request) {
 
 // showTeamSettings renders the team name and the two-factor policy.
 func (h *Handler) showTeamSettings(w http.ResponseWriter, r *http.Request) {
+	team, err := h.teamForRequest(r, teams.PermManageTeam)
+	if err != nil {
+		h.teamSelectionError(w, r, err)
+
+		return
+	}
+
 	p := h.newPage(r, tr(r, "auth.title.team"), "settings")
+	p.Team = team
+	p.Data["TeamID"] = team.ID
 
 	if r.URL.Query().Get("saved") == "1" {
 		p.Flash = i18n.T(p.Lang, "auth.flash.team_saved")
@@ -402,11 +424,9 @@ func (h *Handler) doTeamSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := userFrom(r)
-
-	team, err := h.Store.OwnedTeamForUser(r.Context(), user.ID)
+	team, err := h.teamForRequest(r, teams.PermManageTeam)
 	if err != nil {
-		h.notFound(w, r)
+		h.teamSelectionError(w, r, err)
 		return
 	}
 
@@ -425,7 +445,7 @@ func (h *Handler) doTeamSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.Log.Info("team settings saved", "team", team.ID, "require_2fa", require)
-	http.Redirect(w, r, "/settings/team?saved=1", http.StatusFound)
+	http.Redirect(w, r, "/settings/team?team_id="+strconv.FormatInt(team.ID, 10)+"&saved=1", http.StatusFound)
 }
 
 // doDeleteAccount deletes everything.
@@ -441,9 +461,9 @@ func (h *Handler) doDeleteAccount(w http.ResponseWriter, r *http.Request) {
 
 	user := userFrom(r)
 
-	team, err := h.Store.OwnedTeamForUser(r.Context(), user.ID)
+	team, err := h.teamForRequest(r, teams.PermDeleteTeam)
 	if err != nil {
-		h.notFound(w, r)
+		h.teamSelectionError(w, r, err)
 		return
 	}
 
@@ -485,6 +505,19 @@ func (h *Handler) doDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, "deleted", p, http.StatusOK)
 }
 
+// teamSelectionError maps explicit team-context failures without disclosing a
+// team the current user cannot access.
+func (h *Handler) teamSelectionError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, ErrTeamRequired):
+		http.Error(w, "Choose a team for this request.", http.StatusBadRequest)
+	case errors.Is(err, teams.ErrForbidden), errors.Is(err, teams.ErrNotFound), errors.Is(err, ErrTwoFactorNeeded):
+		http.Error(w, "This account cannot perform that action.", http.StatusForbidden)
+	default:
+		h.fail(w, r, err)
+	}
+}
+
 // notFound renders the 404 page. It is used wherever a site id in a URL does
 // not belong to the signed-in team, so a guessed id is indistinguishable from
 // one that does not exist.
@@ -497,22 +530,33 @@ func (h *Handler) notFound(w http.ResponseWriter, r *http.Request) {
 
 // siteOr404 loads a site scoped to the signed-in team, rendering the 404 page
 // and reporting false when it is not theirs.
-func (h *Handler) siteOr404(w http.ResponseWriter, r *http.Request) (*Site, *Team, bool) {
+func (h *Handler) siteOr404(w http.ResponseWriter, r *http.Request, permission teams.Permission) (*Site, *Team, bool) {
 	user := userFrom(r)
 
-	team, err := h.Store.TeamForUser(r.Context(), user.ID)
-	if err != nil {
-		h.notFound(w, r)
-		return nil, nil, false
-	}
-
-	site, err := h.Store.SiteByID(r.Context(), team.ID, pathID(r, "id"))
+	site, err := h.Store.SiteByIDAny(r.Context(), pathID(r, "id"))
 	if errors.Is(err, ErrNotFound) {
 		h.notFound(w, r)
 		return nil, nil, false
 	}
 	if err != nil {
 		h.fail(w, r, err)
+		return nil, nil, false
+	}
+	if _, err := h.Teams.AuthoriseSite(r.Context(), site.ID, user.ID, permission); err != nil {
+		h.notFound(w, r)
+
+		return nil, nil, false
+	}
+
+	team, err := h.Store.TeamByID(r.Context(), site.TeamID)
+	if err != nil {
+		h.fail(w, r, err)
+
+		return nil, nil, false
+	}
+	if team.Require2FA && !user.TwoFactorEnabled() {
+		h.notFound(w, r)
+
 		return nil, nil, false
 	}
 

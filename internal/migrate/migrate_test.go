@@ -118,7 +118,8 @@ func TestControlMigratesAFreshDatabase(t *testing.T) {
 		"email_verification_codes", "password_reset_tokens",
 		"billing_account_leases", "billing_account_customers", "billing_quiescence_objects", "billing_checkouts",
 		"billing_checkout_cleanup", "lifecycle_account_leases", "lifecycle_outbox",
-		"account_deletion_customers", "team_id_sequence",
+		"account_deletion_customers", "team_id_sequence", "destructive_operations",
+		"report_subscriptions", "alert_rules", "notification_claims", "cron_slots",
 	} {
 		if !tableExists(t, db, table) {
 			t.Errorf("control schema is missing %s", table)
@@ -156,7 +157,13 @@ func TestRandomSaltAuthorityMigrationInvalidatesDeterministicRows(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	result, err := Run(ctx, db, Control())
+	throughSeven := Set{Name: "control"}
+	for _, migration := range Control().Migrations {
+		if migration.Version <= 7 {
+			throughSeven.Migrations = append(throughSeven.Migrations, migration)
+		}
+	}
+	result, err := Run(ctx, db, throughSeven)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,8 +445,8 @@ func TestControlBackfillsMissingLifecycleAtUpgradeTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	after := time.Now().UTC().Unix()
-	if fmt.Sprint(result.Applied) != "[6 7]" {
-		t.Fatalf("upgrade applied %v, want Stripe 6 followed by salt authority 7", result.Applied)
+	if fmt.Sprint(result.Applied) != "[6 7 8 9]" {
+		t.Fatalf("upgrade applied %v, want Stripe 6, topology 7, then M9 8 and 9", result.Applied)
 	}
 
 	var backfilledStarted int64
@@ -586,8 +593,8 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(result.Applied) != "[6 7]" {
-		t.Fatalf("upgrade applied %v, want Stripe 6 followed by salt authority 7", result.Applied)
+	if fmt.Sprint(result.Applied) != "[6 7 8 9]" {
+		t.Fatalf("upgrade applied %v, want Stripe 6, topology 7, then M9 8 and 9", result.Applied)
 	}
 
 	var customer, subscription, paymentState string
@@ -606,7 +613,8 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 	for _, table := range []string{
 		"billing_account_leases", "billing_account_customers", "billing_quiescence_objects", "billing_checkouts",
 		"billing_checkout_cleanup", "lifecycle_account_leases", "lifecycle_outbox",
-		"account_deletion_customers", "team_id_sequence",
+		"account_deletion_customers", "team_id_sequence", "destructive_operations",
+		"report_subscriptions", "alert_rules", "notification_claims", "cron_slots",
 	} {
 		if !tableExists(t, db, table) {
 			t.Errorf("upgraded control schema is missing %s", table)
@@ -730,6 +738,7 @@ func TestAccountMigratesAFreshDatabase(t *testing.T) {
 	for _, table := range []string{
 		"events", "event_details", "sessions", "dim_pathname", "dim_source", "dim_event_name",
 		"ingest_session_state", "ingest_orphan_engagements", "hostname_rejections", "session_id_allocator",
+		"annotations", "ingest_health", "ingest_last_request", "ingest_observations",
 	} {
 		if !tableExists(t, db, table) {
 			t.Errorf("account schema is missing %s", table)
@@ -781,8 +790,8 @@ func TestAccountV7ToCurrentKeepsPopulatedSessionOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 7 || result.To != 9 || fmt.Sprint(result.Applied) != "[8 9]" {
-		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 9 via [8 9]",
+	if result.From != 7 || result.To != 10 || fmt.Sprint(result.Applied) != "[8 9 10]" {
+		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 10 via [8 9 10]",
 			result.From, result.To, result.Applied)
 	}
 
@@ -828,8 +837,8 @@ func TestCoordinatedMigrationNumbers(t *testing.T) {
 		set  Set
 		want []int
 	}{
-		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9}},
-		"control": {set: Control(), want: []int{1, 2, 3, 4, 5, 6, 7}},
+		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10}},
+		"control": {set: Control(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := make([]int, 0, len(test.set.Migrations))

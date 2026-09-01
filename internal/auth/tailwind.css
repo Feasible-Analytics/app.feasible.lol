@@ -28,10 +28,10 @@
 
 /* Only these templates are scanned. Pointing Tailwind at the repository root
    would pull class names out of the React dashboard and the tracker tests,
-   which do not share this stylesheet. The site configuration screens live in
-   their own package but load this same file, so they are named here too — a
-   class used only there would otherwise be missing from the build with nothing
-   to say so but an unstyled page. */
+   which do not share this stylesheet. The settings screens live in their own
+   package but load this same file, so they are named here too — a class used
+   only there would otherwise be missing from the build with nothing to say so
+   but an unstyled page. */
 @source "./templates";
 @source "../settings/templates";
 

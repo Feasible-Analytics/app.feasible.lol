@@ -8,13 +8,13 @@
 <aside class="w-full border-b border-line bg-card lg:h-screen lg:w-64 lg:shrink-0 lg:border-b-0 lg:border-r lg:sticky lg:top-0"
        :class="mobileNav ? 'block' : 'hidden lg:block'">
   <div class="flex h-full flex-col p-4">
-    <a href="/sites" class="mb-8 hidden items-center gap-2 px-2 text-base font-semibold text-heading lg:flex">
+    <a href="/sites{{ if .Team }}?team_id={{ .Team.ID }}{{ end }}" class="mb-8 hidden items-center gap-2 px-2 text-base font-semibold text-heading lg:flex">
       <span class="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-accent text-fill-fg font-bold">f</span>
       feasible.lol
     </a>
 
     <nav class="flex flex-col gap-1 text-sm">
-      <a href="/sites"
+      <a href="/sites{{ if .Team }}?team_id={{ .Team.ID }}{{ end }}"
          class="rounded-lg px-3 py-2 font-medium {{ if eq .Nav "sites" }}bg-accent/10 text-accent-ink{{ else }}text-muted hover:bg-hover{{ end }}">
         {{ t $.Lang "auth.sidebar.sites" }}
       </a>
@@ -29,7 +29,8 @@
         <a href="/settings" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">{{ t $.Lang "auth.sidebar.account" }}</a>
         <a href="/settings/security" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">{{ t $.Lang "auth.sidebar.two_factor" }}</a>
         <a href="/settings/sessions" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">{{ t $.Lang "auth.sidebar.devices" }}</a>
-        <a href="/settings/team" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">{{ t $.Lang "auth.sidebar.team" }}</a>
+        <a href="/settings/team{{ if .Team }}?team_id={{ .Team.ID }}{{ end }}" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">{{ t $.Lang "auth.sidebar.team" }}</a>
+        <a href="/settings/members{{ if .Team }}?team_id={{ .Team.ID }}{{ end }}" class="rounded-lg px-3 py-1.5 text-muted hover:text-heading">{{ t $.Lang "auth.sidebar.members" }}</a>
       </div>
     {{ end }}
 

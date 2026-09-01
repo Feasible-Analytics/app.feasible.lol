@@ -59,6 +59,7 @@ const ACTION_KEYS: { key: string; labelId: string }[] = [
 	{ key: "←  →", labelId: "dashboard.shortcuts.step" },
 	{ key: "X", labelId: "dashboard.shortcuts.compare" },
 	{ key: "I", labelId: "dashboard.shortcuts.interval" },
+	{ key: "K", labelId: "dashboard.shortcuts.annotations" },
 	{ key: "/", labelId: "dashboard.shortcuts.search" },
 	{ key: "0", labelId: "dashboard.shortcuts.sites" },
 	{ key: "?", labelId: "dashboard.shortcuts.list" },
@@ -73,6 +74,7 @@ export interface ShortcutActions {
 	onStep: (direction: -1 | 1) => void;
 	onCompare: () => void;
 	onInterval: () => void;
+	onAnnotations: () => void;
 	onSearch: () => void;
 	onSites: () => void;
 	onHelp: () => void;
@@ -162,6 +164,11 @@ export function useShortcuts(actions: ShortcutActions): void {
 
 			if (key === "i") {
 				current.onInterval();
+				return;
+			}
+
+			if (key === "k") {
+				current.onAnnotations();
 				return;
 			}
 

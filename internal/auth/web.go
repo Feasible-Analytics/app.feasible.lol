@@ -10,6 +10,9 @@ package auth
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -17,9 +20,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/destructive"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
 )
 
@@ -37,18 +42,28 @@ const (
 	contextTeam    contextKey = "feasible.auth.team"
 )
 
+// Request authorization failures are sentinels so an API can return the right
+// status without matching a sentence intended for a browser.
+var (
+	ErrUnauthenticated = errors.New("auth: no authenticated session")
+	ErrSiteForbidden   = errors.New("auth: this session cannot access the site")
+	ErrTeamRequired    = errors.New("auth: an explicit team_id is required")
+)
+
 // Handler is the whole server-rendered application. Everything it needs is a
 // field rather than a package-level variable, so a test can build one over a
 // temporary database and drive real requests through it.
 type Handler struct {
-	Store   *Store
-	Traffic *Traffic
-	Mailer  *mail.Mailer
-	Sealer  *Sealer
-	Google  *Google
-	Deleter *Deleter
-	Limiter *Limiter
-	Keyer   *tracker.Keyer
+	Store       *Store
+	Teams       *teams.Store
+	Traffic     *Traffic
+	Mailer      *mail.Mailer
+	Sealer      *Sealer
+	Google      *Google
+	Deleter     *Deleter
+	Destructive *destructive.Service
+	Limiter     *Limiter
+	Keyer       *tracker.Keyer
 
 	// SiteCache is the routing map the ingest path reads. A newly created site
 	// is pushed into it directly rather than waiting for the next rebuild, so
@@ -78,17 +93,19 @@ type Handler struct {
 
 // Options are the inputs to NewHandler.
 type Options struct {
-	Store     *Store
-	Traffic   *Traffic
-	Mailer    *mail.Mailer
-	Sealer    *Sealer
-	Google    *Google
-	Deleter   *Deleter
-	Keyer     *tracker.Keyer
-	SiteCache *sites.Cache
-	Access    func(accountID int64) bool
-	BaseURL   string
-	Log       *logger.Logger
+	Store       *Store
+	Teams       *teams.Store
+	Traffic     *Traffic
+	Mailer      *mail.Mailer
+	Sealer      *Sealer
+	Google      *Google
+	Deleter     *Deleter
+	Destructive *destructive.Service
+	Keyer       *tracker.Keyer
+	SiteCache   *sites.Cache
+	Access      func(accountID int64) bool
+	BaseURL     string
+	Log         *logger.Logger
 }
 
 // NewHandler builds the application and parses its templates.
@@ -102,21 +119,28 @@ func NewHandler(opts Options) (*Handler, error) {
 		return nil, err
 	}
 
+	teamStore := opts.Teams
+	if teamStore == nil && opts.Store != nil {
+		teamStore = teams.NewStore(opts.Store.DB())
+	}
+
 	h := &Handler{
-		Store:     opts.Store,
-		Traffic:   opts.Traffic,
-		Mailer:    opts.Mailer,
-		Sealer:    opts.Sealer,
-		Google:    opts.Google,
-		Deleter:   opts.Deleter,
-		Limiter:   NewLimiter(),
-		Keyer:     opts.Keyer,
-		SiteCache: opts.SiteCache,
-		Access:    opts.Access,
-		BaseURL:   strings.TrimRight(opts.BaseURL, "/"),
-		Log:       opts.Log,
-		Verifier:  &http.Client{Timeout: verifyTimeout},
-		views:     views,
+		Store:       opts.Store,
+		Teams:       teamStore,
+		Traffic:     opts.Traffic,
+		Mailer:      opts.Mailer,
+		Sealer:      opts.Sealer,
+		Google:      opts.Google,
+		Deleter:     opts.Deleter,
+		Destructive: opts.Destructive,
+		Limiter:     NewLimiter(),
+		Keyer:       opts.Keyer,
+		SiteCache:   opts.SiteCache,
+		Access:      opts.Access,
+		BaseURL:     strings.TrimRight(opts.BaseURL, "/"),
+		Log:         opts.Log,
+		Verifier:    &http.Client{Timeout: verifyTimeout},
+		views:       views,
 	}
 
 	h.mux = h.routes()
@@ -143,6 +167,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // carries its site in the state parameter and is authorised when the state is
 // verified rather than from the path.
 func (h *Handler) GuardSite(domainOf func(*http.Request) string, next http.Handler) http.Handler {
+	return h.GuardSitePermission(domainOf, teams.PermManageSiteSettings, next)
+}
+
+// GuardSitePermission protects an HTML handler with a session and a live
+// site-role check. The requested site, not a user's first team, supplies the
+// authorization context, so guests and multi-team users resolve correctly.
+func (h *Handler) GuardSitePermission(domainOf func(*http.Request) string, permission teams.Permission, next http.Handler) http.Handler {
 	return http.HandlerFunc(h.require(func(w http.ResponseWriter, r *http.Request) {
 		domain := domainOf(r)
 		if domain == "" {
@@ -150,17 +181,13 @@ func (h *Handler) GuardSite(domainOf func(*http.Request) string, next http.Handl
 			return
 		}
 
-		team, err := h.Store.TeamForUser(r.Context(), userFrom(r).ID)
-		if err != nil {
+		site, known := h.SiteCache.Lookup(domain)
+		if !known {
 			h.notFound(w, r)
 			return
 		}
 
-		// A site somebody else owns answers exactly as a site that does not
-		// exist. Telling the difference would turn this into a way to ask which
-		// domains are tracked here.
-		site, err := h.Store.SiteByDomain(r.Context(), domain)
-		if err != nil || site.AccountID != team.ID {
+		if err := h.authoriseCurrentSite(r, site.ID, permission); err != nil {
 			h.notFound(w, r)
 			return
 		}
@@ -279,19 +306,107 @@ func (h *Handler) CurrentAccount(r *http.Request) (int64, string, error) {
 	return team.ID, user.Email, nil
 }
 
-// FormToken returns the existing auth CSRF token and renews its signed cookie.
-// Server-rendered packages use this callback without depending on auth types.
-func (h *Handler) FormToken(w http.ResponseWriter, r *http.Request) string {
-	token := h.csrfToken(r)
-	h.issueCSRF(w, token)
-
-	return token
-}
-
 // ValidateForm applies the same signed double-submit check used by every auth
 // form. It writes the 403 response itself when validation fails.
 func (h *Handler) ValidateForm(w http.ResponseWriter, r *http.Request) bool {
 	return h.checkCSRF(w, r)
+}
+
+// GuardSiteAPI protects a JSON endpoint with the same session, verification,
+// two-factor and live site-role checks as the HTML surface. permission may
+// choose by method, which is how annotation reads remain available to viewers
+// while writes require an editor.
+func (h *Handler) GuardSiteAPI(domainOf func(*http.Request) string, permission func(*http.Request) teams.Permission, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, session, ok := h.currentUser(r)
+		if !ok || !user.Verified() {
+			h.apiAccessError(w, http.StatusUnauthorized, "an authenticated, verified session is required")
+			return
+		}
+
+		site, known := h.SiteCache.Lookup(domainOf(r))
+		if !known {
+			h.apiAccessError(w, http.StatusNotFound, "no such site")
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), contextUser, user)
+		ctx = context.WithValue(ctx, contextSession, session)
+		r = r.WithContext(ctx)
+
+		if err := h.authoriseCurrentSite(r, site.ID, permission(r)); err != nil {
+			status := http.StatusForbidden
+			if errors.Is(err, teams.ErrNotFound) {
+				status = http.StatusNotFound
+			}
+
+			h.apiAccessError(w, status, "this session cannot access the site")
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+			if !h.checkCSRF(w, r) {
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// AuthoriseSiteRequest validates a session for one site without writing a
+// response. The stats capability layer uses it as one of its authorization
+// choices alongside public and shared-link access.
+func (h *Handler) AuthoriseSiteRequest(r *http.Request, siteID int64, permission teams.Permission) (*User, error) {
+	user, _, ok := h.currentUser(r)
+	if !ok || !user.Verified() {
+		return nil, ErrUnauthenticated
+	}
+
+	request := r.WithContext(context.WithValue(r.Context(), contextUser, user))
+	if err := h.authoriseCurrentSite(request, siteID, permission); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrSiteForbidden, err)
+	}
+
+	return user, nil
+}
+
+// authoriseCurrentSite checks the user already attached to a request against
+// the site's current team and its two-factor policy.
+func (h *Handler) authoriseCurrentSite(r *http.Request, siteID int64, permission teams.Permission) error {
+	user := userFrom(r)
+	if user == nil || h.Teams == nil {
+		return ErrUnauthenticated
+	}
+
+	var requireTwoFactor bool
+
+	err := h.Store.DB().QueryRowContext(r.Context(), `
+		SELECT teams.require_2fa
+		FROM sites
+		JOIN teams ON teams.id = COALESCE(sites.owner_team_id, sites.account_id)
+		WHERE sites.id = ?
+	`, siteID).Scan(&requireTwoFactor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return teams.ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("auth: read site security policy: %w", err)
+	}
+
+	if requireTwoFactor && !user.TwoFactorEnabled() {
+		return ErrTwoFactorNeeded
+	}
+
+	_, err = h.Teams.AuthoriseSite(r.Context(), siteID, user.ID, permission)
+
+	return err
+}
+
+// apiAccessError writes the fixed JSON shape every data endpoint uses.
+func (h *Handler) apiAccessError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
 // routes builds the route table.
@@ -317,6 +432,7 @@ func (h *Handler) routes() *http.ServeMux {
 	mux.HandleFunc("POST /forgot-password", h.optional(h.doForgot))
 	mux.HandleFunc("GET /reset-password", h.optional(h.showReset))
 	mux.HandleFunc("POST /reset-password", h.optional(h.doReset))
+	mux.HandleFunc("GET /invitations/{token}", h.optional(h.beginInvitation))
 
 	// Half-signed-in: the address is not proven, or the second factor is not
 	// answered yet. These deliberately do not go through requireUser.
@@ -342,6 +458,9 @@ func (h *Handler) routes() *http.ServeMux {
 	mux.HandleFunc("POST /sites/{id}/domain", h.require(h.doSiteDomain))
 	mux.HandleFunc("POST /sites/{id}/reset", h.require(h.doSiteReset))
 	mux.HandleFunc("POST /sites/{id}/delete", h.require(h.doSiteDelete))
+	mux.HandleFunc("POST /sites/{id}/transfer", h.require(h.doSiteTransfer))
+	mux.HandleFunc("POST /api/sites/{id}/transfer", h.require(h.doSiteTransferAPI))
+	mux.HandleFunc("GET /invitations/accept", h.require(h.acceptInvitation))
 
 	mux.HandleFunc("POST /folders", h.require(h.doCreateFolder))
 	mux.HandleFunc("POST /folders/{id}/rename", h.require(h.doRenameFolder))
@@ -447,12 +566,17 @@ func (h *Handler) require(next http.HandlerFunc) http.HandlerFunc {
 		ctx = context.WithValue(ctx, contextSession, session)
 		r = r.WithContext(ctx)
 
-		team, err := h.Store.TeamForUser(r.Context(), user.ID)
-		if err == nil {
+		team, teamErr := h.Store.TeamForUser(r.Context(), user.ID)
+		if teamErr == nil {
 			ctx = context.WithValue(r.Context(), contextTeam, team)
 			r = r.WithContext(ctx)
 		}
-		if err == nil && team.Require2FA && !user.TwoFactorEnabled() {
+		requireTwoFactor, err := h.userRequiresTwoFactor(r.Context(), user.ID)
+		if err != nil {
+			h.fail(w, r, err)
+			return
+		}
+		if requireTwoFactor && !user.TwoFactorEnabled() {
 			// The enrolment screen itself has to stay reachable, or the policy
 			// is a door locked from the inside.
 			if !strings.HasPrefix(r.URL.Path, "/settings/security") {
@@ -463,6 +587,290 @@ func (h *Handler) require(next http.HandlerFunc) http.HandlerFunc {
 
 		next(w, r)
 	}
+}
+
+// userRequiresTwoFactor checks every team membership rather than whichever row
+// SQLite returns first. A multi-team user cannot bypass one team's policy by
+// also belonging to a team without it.
+func (h *Handler) userRequiresTwoFactor(ctx context.Context, userID int64) (bool, error) {
+	var required bool
+
+	err := h.Store.DB().QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM teams
+			JOIN team_memberships ON team_memberships.team_id = teams.id
+			WHERE team_memberships.user_id = ? AND teams.require_2fa = 1
+		)
+	`, userID).Scan(&required)
+	if err != nil {
+		return false, fmt.Errorf("auth: read two-factor policies: %w", err)
+	}
+
+	return required, nil
+}
+
+// Protect is require, for a handler this package does not own.
+//
+// The team, sharing, report and health screens live in their own package but
+// are the same signed-in application to the person using them, and the three
+// gates that decide what "signed in" means — a session, a verified address, a
+// team's two-factor policy — must not be re-implemented over there where they
+// could drift. One of them being wrong is somebody administering an account
+// they are not in.
+func (h *Handler) Protect(next http.Handler) http.Handler {
+	return http.HandlerFunc(h.require(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+			if !h.checkCSRF(w, r) {
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	}))
+}
+
+// GuardDashboard requires a signed-in viewer and, when the URL names a site,
+// checks that exact site. Assets and the bare picker route need only the
+// session; every site dashboard is resolved through its live membership.
+func (h *Handler) GuardDashboard(next http.Handler) http.Handler {
+	return http.HandlerFunc(h.require(func(w http.ResponseWriter, r *http.Request) {
+		trimmed := strings.TrimPrefix(r.URL.Path, "/dashboard/")
+		domain, _, _ := strings.Cut(trimmed, "/")
+
+		if domain != "" && domain != "assets" {
+			site, ok := h.SiteCache.Lookup(domain)
+			if !ok || h.authoriseCurrentSite(r, site.ID, teams.PermViewDashboard) != nil {
+				h.notFound(w, r)
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	}))
+}
+
+// GuardTeam protects a billing or administration handler with a live team-role
+// check and the application's CSRF verifier for unsafe methods.
+func (h *Handler) GuardTeam(permission teams.Permission, next http.Handler) http.Handler {
+	return http.HandlerFunc(h.require(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := h.teamForRequest(r, permission); err != nil {
+			h.teamSelectionError(w, r, err)
+
+			return
+		}
+
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+			if !h.checkCSRF(w, r) {
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	}))
+}
+
+// AuthoriseTeamRequest resolves the authenticated explicit team context for a
+// handler that needs the team id after GuardTeam has admitted it.
+func (h *Handler) AuthoriseTeamRequest(r *http.Request, permission teams.Permission) (int64, error) {
+	team, err := h.teamForRequest(r, permission)
+	if err != nil {
+		return 0, err
+	}
+
+	return team.ID, nil
+}
+
+// FormToken issues and returns the application's signed double-submit token so
+// server-rendered forms outside this package use the same CSRF boundary.
+func (h *Handler) FormToken(w http.ResponseWriter, r *http.Request) string {
+	token := h.csrfToken(r)
+	h.issueCSRF(w, token)
+
+	return token
+}
+
+// AccessibleDomains lists only the sites the signed-in user may view. Team
+// memberships and per-site guest memberships are combined here so the
+// dashboard picker cannot disclose another team's domains from the global
+// routing cache.
+func (h *Handler) AccessibleDomains(r *http.Request) ([]string, error) {
+	user := userFrom(r)
+	if user == nil {
+		return nil, ErrUnauthenticated
+	}
+
+	rows, err := h.Store.DB().QueryContext(r.Context(), `
+		SELECT sites.domain, team_memberships.role
+		FROM sites
+		JOIN team_memberships ON team_memberships.team_id = COALESCE(sites.owner_team_id, sites.account_id)
+		WHERE team_memberships.user_id = ?
+		UNION ALL
+		SELECT sites.domain, guest_memberships.role
+		FROM sites
+		JOIN guest_memberships ON guest_memberships.site_id = sites.id
+		WHERE guest_memberships.user_id = ?
+		ORDER BY 1
+	`, user.ID, user.ID)
+	if err != nil {
+		return nil, fmt.Errorf("auth: list accessible sites: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	seen := map[string]bool{}
+	var domains []string
+
+	for rows.Next() {
+		var (
+			domain string
+			role   teams.Role
+		)
+
+		if err := rows.Scan(&domain, &role); err != nil {
+			return nil, fmt.Errorf("auth: list accessible sites: %w", err)
+		}
+
+		if teams.Can(role, teams.PermViewDashboard) && !seen[domain] {
+			seen[domain] = true
+			domains = append(domains, domain)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("auth: list accessible sites: %w", err)
+	}
+
+	return domains, nil
+}
+
+// Identify reports who is signed in and which team they are acting in.
+//
+// It reads the values Protect put on the request rather than the database, so a
+// handler behind it cannot be told about a different person from the one the
+// gates admitted. Outside Protect there is nobody, and it says so rather than
+// falling back to an account it guessed.
+func (h *Handler) Identify(r *http.Request) (userID, teamID int64, err error) {
+	user := userFrom(r)
+	if user == nil {
+		return 0, 0, fmt.Errorf("auth: nobody is signed in on this request")
+	}
+
+	if domain := r.PathValue("domain"); domain != "" {
+		if site, ok := h.SiteCache.Lookup(domain); ok {
+			if _, err := h.Teams.AuthoriseSite(r.Context(), site.ID, user.ID, teams.PermViewDashboard); err == nil {
+				teamID, err := h.Teams.TeamIDForSite(r.Context(), site.ID)
+				if err == nil {
+					return user.ID, teamID, nil
+				}
+			}
+		}
+	}
+	if strings.HasPrefix(r.URL.Path, "/sites/") || strings.HasPrefix(r.URL.Path, "/onboarding/") {
+		siteID, parseErr := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if parseErr == nil && siteID > 0 {
+			site, siteErr := h.Store.SiteByIDAny(r.Context(), siteID)
+			if siteErr == nil {
+				if _, siteErr = h.Teams.AuthoriseSite(r.Context(), site.ID, user.ID, teams.PermViewDashboard); siteErr == nil {
+					return user.ID, site.TeamID, nil
+				}
+			}
+		}
+	}
+
+	teamID, err = h.selectedTeamID(r, user.ID, teams.PermViewDashboard)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	if _, err := h.Teams.Authorise(r.Context(), teamID, user.ID, teams.PermViewDashboard); err != nil {
+		return 0, 0, err
+	}
+
+	return user.ID, teamID, nil
+}
+
+// teamForRequest resolves an explicit team context and enforces one permission
+// against the live membership. A single eligible team is an unambiguous
+// default; a multi-team user must name team_id.
+func (h *Handler) teamForRequest(r *http.Request, permission teams.Permission) (*Team, error) {
+	user := userFrom(r)
+	if user == nil {
+		return nil, ErrUnauthenticated
+	}
+
+	teamID, err := h.selectedTeamID(r, user.ID, permission)
+	if err != nil {
+		return nil, err
+	}
+
+	team, err := h.Store.TeamByID(r.Context(), teamID)
+	if err != nil {
+		return nil, err
+	}
+	if team.Require2FA && !user.TwoFactorEnabled() {
+		return nil, ErrTwoFactorNeeded
+	}
+
+	if _, err := h.Teams.Authorise(r.Context(), teamID, user.ID, permission); err != nil {
+		return nil, err
+	}
+
+	return team, nil
+}
+
+// selectedTeamID reads team_id or infers the sole team on which the user has
+// the requested permission.
+func (h *Handler) selectedTeamID(r *http.Request, userID int64, permission teams.Permission) (int64, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("team_id"))
+	if raw == "" {
+		raw = strings.TrimSpace(r.FormValue("team_id"))
+	}
+
+	if raw != "" {
+		teamID, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || teamID < 1 {
+			return 0, ErrTeamRequired
+		}
+
+		return teamID, nil
+	}
+
+	if domain := strings.TrimSpace(r.URL.Query().Get("site_context")); domain != "" {
+		site, ok := h.SiteCache.Lookup(domain)
+		if !ok {
+			return 0, ErrTeamRequired
+		}
+
+		return h.Teams.TeamIDForSite(r.Context(), site.ID)
+	}
+
+	ids, err := h.Teams.TeamIDs(r.Context(), userID, permission)
+	if err != nil {
+		return 0, err
+	}
+	if len(ids) != 1 {
+		return 0, ErrTeamRequired
+	}
+
+	return ids[0], nil
+}
+
+// RequestUser returns the identity attached by one of this handler's guards.
+// It never falls back to a cookie lookup, so a downstream handler cannot use
+// it unless the request has already crossed the authorization boundary.
+func RequestUser(r *http.Request) *User {
+	return userFrom(r)
+}
+
+// requestLogPath removes bearer invitation material before a request path is
+// written to an application log. The acceptance route contains no secret and
+// remains distinguishable from the initial token-bearing route.
+func requestLogPath(r *http.Request) string {
+	if strings.HasPrefix(r.URL.Path, "/invitations/") && r.URL.Path != "/invitations/accept" {
+		return "/invitations/[redacted]"
+	}
+
+	return r.URL.Path
 }
 
 // userFrom pulls the signed-in user back out of the request context.

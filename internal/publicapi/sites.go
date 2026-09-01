@@ -9,8 +9,6 @@
 package publicapi
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -20,7 +18,10 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/destructive"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/webhooks"
 )
 
@@ -29,7 +30,7 @@ import (
 // can act on; this comes back naming the roles that exist.
 var (
 	guestRoles  = []string{"guest_editor", "guest_viewer"}
-	memberRoles = []string{"owner", "admin", "editor", "billing", "viewer"}
+	memberRoles = []string{"admin", "editor", "billing", "viewer"}
 )
 
 // decodeBody reads a JSON request body into a target, refusing anything it does
@@ -82,9 +83,9 @@ func readableJSONError(err error) string {
 // one inventing its own.
 func (a *API) answerStoreError(w http.ResponseWriter, what string, err error) {
 	switch {
-	case errors.Is(err, ErrNotFound), errors.Is(err, webhooks.ErrNotFound):
+	case errors.Is(err, ErrNotFound), errors.Is(err, sharing.ErrNotFound), errors.Is(err, webhooks.ErrNotFound):
 		a.fail(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, ErrConflict):
+	case errors.Is(err, ErrConflict), errors.Is(err, sharing.ErrSiteOwnerChanged):
 		a.fail(w, http.StatusConflict, err.Error())
 	default:
 		a.internal(w, what, err)
@@ -121,6 +122,9 @@ func (a *API) siteFromPath(w http.ResponseWriter, r *http.Request, scope string)
 	if !a.requireScope(w, key, scope) {
 		return nil, sites.Site{}, false
 	}
+	if !a.requirePermission(w, key, sitePermission(scope)) {
+		return nil, sites.Site{}, false
+	}
 
 	site, ok := a.resolveSite(w, key, r.PathValue("site_id"))
 	if !ok {
@@ -143,6 +147,9 @@ func (a *API) siteFromQuery(w http.ResponseWriter, r *http.Request, scope string
 	if !a.requireScope(w, key, scope) {
 		return nil, sites.Site{}, false
 	}
+	if !a.requirePermission(w, key, sitePermission(scope)) {
+		return nil, sites.Site{}, false
+	}
 
 	site, ok := a.resolveSite(w, key, r.URL.Query().Get("site_id"))
 	if !ok {
@@ -150,6 +157,16 @@ func (a *API) siteFromQuery(w http.ResponseWriter, r *http.Request, scope string
 	}
 
 	return key, site, true
+}
+
+// sitePermission maps the two site scopes onto the role permission needed for
+// that kind of request. An unknown scope fails closed as a site mutation.
+func sitePermission(scope string) teams.Permission {
+	if scope == apikeys.ScopeSitesRead {
+		return teams.PermViewDashboard
+	}
+
+	return teams.PermManageSiteSettings
 }
 
 // idFromPath reads a numeric path segment, refusing a non-number with a 400.
@@ -183,6 +200,9 @@ func (a *API) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !a.requireScope(w, key, apikeys.ScopeSitesProvision) {
+		return
+	}
+	if !a.requirePermission(w, key, teams.PermManageSites) {
 		return
 	}
 
@@ -304,6 +324,9 @@ func (a *API) handleListSites(w http.ResponseWriter, r *http.Request) {
 	if !a.requireScope(w, key, apikeys.ScopeSitesRead) {
 		return
 	}
+	if !a.requirePermission(w, key, teams.PermViewDashboard) {
+		return
+	}
 
 	limit, page, ok := a.pageParams(w, r)
 	if !ok {
@@ -395,15 +418,30 @@ func (a *API) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 	a.write(w, http.StatusOK, record)
 }
 
-// handleDeleteSite removes a site from the index.
+// handleDeleteSite runs the same durable analytics-and-control deletion as the
+// dashboard, including retryable tombstones and ownership revalidation.
 func (a *API) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 	key, site, ok := a.siteFromPath(w, r, apikeys.ScopeSitesProvision)
 	if !ok {
 		return
 	}
+	if !a.requirePermission(w, key, teams.PermManageSites) {
+		return
+	}
 
-	if err := a.Control.DeleteSite(r.Context(), key.TeamID, site.ID); err != nil {
-		a.answerStoreError(w, "delete site", err)
+	if a.SiteOperations == nil {
+		a.internal(w, "delete site", errors.New("site deletion service is unavailable"))
+		return
+	}
+	if err := a.SiteOperations.DeleteSite(r.Context(), key.TeamID, site.ID); err != nil {
+		switch {
+		case errors.Is(err, destructive.ErrBusy):
+			a.fail(w, http.StatusConflict, "site deletion is already in progress; retry after its lease expires")
+		case errors.Is(err, destructive.ErrNotFound):
+			a.fail(w, http.StatusNotFound, "the site is no longer owned by this credential's team")
+		default:
+			a.answerStoreError(w, "delete site", err)
+		}
 		return
 	}
 
@@ -416,8 +454,11 @@ func (a *API) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 // implies. The snippet is returned alongside the settings because the settings
 // on their own are not what anybody wants: they want the line to paste.
 func (a *API) handleGetTracker(w http.ResponseWriter, r *http.Request) {
-	_, site, ok := a.siteFromPath(w, r, apikeys.ScopeSitesRead)
+	key, site, ok := a.siteFromPath(w, r, apikeys.ScopeSitesRead)
 	if !ok {
+		return
+	}
+	if !a.requirePermission(w, key, teams.PermManageSiteSettings) {
 		return
 	}
 
@@ -502,8 +543,11 @@ func trackerSnippet(baseURL, domain string, config *TrackerConfig) string {
 
 // handleListCustomProps lists a site's allowed properties.
 func (a *API) handleListCustomProps(w http.ResponseWriter, r *http.Request) {
-	_, site, ok := a.siteFromQuery(w, r, apikeys.ScopeSitesRead)
+	key, site, ok := a.siteFromQuery(w, r, apikeys.ScopeSitesRead)
 	if !ok {
+		return
+	}
+	if !a.requirePermission(w, key, teams.PermManageSiteSettings) {
 		return
 	}
 
@@ -531,6 +575,9 @@ func (a *API) handleCreateCustomProp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !a.requireScope(w, key, apikeys.ScopeSitesProvision) {
+		return
+	}
+	if !a.requirePermission(w, key, teams.PermManageSiteSettings) {
 		return
 	}
 
@@ -586,8 +633,11 @@ func (a *API) handleDeleteCustomProp(w http.ResponseWriter, r *http.Request) {
 
 // handleListSharedLinks lists a site's public dashboard links.
 func (a *API) handleListSharedLinks(w http.ResponseWriter, r *http.Request) {
-	_, site, ok := a.siteFromQuery(w, r, apikeys.ScopeSitesRead)
+	key, site, ok := a.siteFromQuery(w, r, apikeys.ScopeSitesRead)
 	if !ok {
+		return
+	}
+	if !a.requirePermission(w, key, teams.PermManageSiteSettings) {
 		return
 	}
 
@@ -632,6 +682,9 @@ func (a *API) handleCreateSharedLink(w http.ResponseWriter, r *http.Request) {
 	if !a.requireScope(w, key, apikeys.ScopeSitesProvision) {
 		return
 	}
+	if !a.requirePermission(w, key, teams.PermManageSiteSettings) {
+		return
+	}
 
 	var request sharedLinkRequest
 	if !a.decodeBody(w, r, &request) {
@@ -648,24 +701,20 @@ func (a *API) handleCreateSharedLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slug, err := randomSlug()
-	if err != nil {
-		a.internal(w, "mint shared link slug", err)
+	if a.Sharing == nil {
+		a.internal(w, "create shared link", errors.New("shared-link service is unavailable"))
 		return
 	}
 
-	// The password is hashed with the same one-way function every other secret
-	// in control.db uses. A shared link's password guards somebody's traffic
-	// data, and storing it readable would mean a copy of the file exposes it.
-	passwordHash := ""
-	if request.Password != "" {
-		passwordHash = apikeys.Hash(request.Password)
-	}
-
-	link, err := a.Control.CreateSharedLink(r.Context(), site.ID, request.Name, slug, passwordHash)
+	created, err := a.Sharing.CreateLinkForOwner(r.Context(), site.ID, key.TeamID,
+		request.Name, request.Password, 0, key.UserID)
 	if err != nil {
 		a.answerStoreError(w, "create shared link", err)
 		return
+	}
+	link := SharedLink{
+		ID: created.ID, Name: created.Name, Slug: created.Slug,
+		HasPassword: created.HasPassword, CreatedAt: created.CreatedAt,
 	}
 
 	link.URL = a.sharedLinkURL(link.Slug)
@@ -673,22 +722,9 @@ func (a *API) handleCreateSharedLink(w http.ResponseWriter, r *http.Request) {
 	a.write(w, http.StatusCreated, link)
 }
 
-// randomSlug mints the unguessable part of a shared-link URL. It is random
-// rather than derived from the name because a shared link is a capability:
-// anybody with the URL sees the dashboard, so the URL must not be guessable
-// from the site's name.
-func randomSlug() (string, error) {
-	raw := make([]byte, 16)
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
-	}
-
-	return base64.RawURLEncoding.EncodeToString(raw), nil
-}
-
 // handleDeleteSharedLink revokes a link.
 func (a *API) handleDeleteSharedLink(w http.ResponseWriter, r *http.Request) {
-	_, site, ok := a.siteFromQuery(w, r, apikeys.ScopeSitesProvision)
+	key, site, ok := a.siteFromQuery(w, r, apikeys.ScopeSitesProvision)
 	if !ok {
 		return
 	}
@@ -698,7 +734,12 @@ func (a *API) handleDeleteSharedLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.Control.DeleteSharedLink(r.Context(), site.ID, id); err != nil {
+	if a.Sharing == nil {
+		a.internal(w, "delete shared link", errors.New("shared-link service is unavailable"))
+		return
+	}
+
+	if err := a.Sharing.RevokeLinkForOwner(r.Context(), site.ID, key.TeamID, id); err != nil {
 		a.answerStoreError(w, "delete shared link", err)
 		return
 	}
@@ -708,8 +749,11 @@ func (a *API) handleDeleteSharedLink(w http.ResponseWriter, r *http.Request) {
 
 // handleListGuests lists the people with access to one site only.
 func (a *API) handleListGuests(w http.ResponseWriter, r *http.Request) {
-	_, site, ok := a.siteFromQuery(w, r, apikeys.ScopeSitesRead)
+	key, site, ok := a.siteFromQuery(w, r, apikeys.ScopeSitesRead)
 	if !ok {
+		return
+	}
+	if !a.requirePermission(w, key, teams.PermManageSiteSettings) {
 		return
 	}
 
@@ -729,7 +773,9 @@ type guestRequest struct {
 	Role   string `json:"role"`
 }
 
-// handleCreateGuest gives one account access to one site.
+// handleCreateGuest creates a 48-hour invitation for any email address. The
+// established route name remains for compatibility, but no membership exists
+// until the verified recipient accepts through the normal invitation flow.
 func (a *API) handleCreateGuest(w http.ResponseWriter, r *http.Request) {
 	key, ok := KeyFrom(r.Context())
 	if !ok {
@@ -738,6 +784,9 @@ func (a *API) handleCreateGuest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !a.requireScope(w, key, apikeys.ScopeSitesProvision) {
+		return
+	}
+	if !a.requirePermission(w, key, teams.PermManageSiteSettings) {
 		return
 	}
 
@@ -767,13 +816,67 @@ func (a *API) handleCreateGuest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	guest, err := a.Control.AddGuest(r.Context(), site.ID, email, role)
+	if a.Teams == nil {
+		a.internal(w, "invite guest", errors.New("team invitation service is unavailable"))
+		return
+	}
+	token, invitation, err := a.Teams.Invite(r.Context(), key.UserID, teams.Invitation{
+		TeamID: key.TeamID,
+		SiteID: site.ID,
+		Email:  email,
+		Role:   teams.Role(role),
+	})
 	if err != nil {
-		a.answerStoreError(w, "add guest", err)
+		switch {
+		case errors.Is(err, teams.ErrForbidden), errors.Is(err, teams.ErrInvalidRole):
+			a.fail(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, teams.ErrNotFound):
+			a.fail(w, http.StatusNotFound, "the site is not available to this credential")
+		default:
+			a.internal(w, "invite guest", err)
+		}
 		return
 	}
 
-	a.write(w, http.StatusCreated, guest)
+	a.write(w, http.StatusCreated, map[string]any{
+		"invitation_id": invitation.ID,
+		"email":         invitation.Email,
+		"role":          invitation.Role,
+		"expires_at":    invitation.ExpiresAt,
+		"token":         token,
+	})
+}
+
+// handleRevokeGuestInvitation withdraws an unaccepted invitation and scopes
+// the id to the site named in the query so one site's integration cannot use a
+// guessed id to revoke another site's offer.
+func (a *API) handleRevokeGuestInvitation(w http.ResponseWriter, r *http.Request) {
+	key, site, ok := a.siteFromQuery(w, r, apikeys.ScopeSitesProvision)
+	if !ok {
+		return
+	}
+
+	id, ok := a.idFromPath(w, r, "invitation_id")
+	if !ok {
+		return
+	}
+	if a.Teams == nil {
+		a.internal(w, "revoke guest invitation", errors.New("team invitation service is unavailable"))
+		return
+	}
+	if err := a.Teams.RevokeSiteInvitation(r.Context(), key.UserID, key.TeamID, site.ID, id); err != nil {
+		switch {
+		case errors.Is(err, teams.ErrForbidden):
+			a.fail(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, teams.ErrNotFound):
+			a.fail(w, http.StatusNotFound, "the invitation is not available for this site")
+		default:
+			a.internal(w, "revoke guest invitation", err)
+		}
+		return
+	}
+
+	a.write(w, http.StatusOK, map[string]any{"revoked": true})
 }
 
 // handleDeleteGuest removes a guest.
@@ -807,6 +910,9 @@ func (a *API) handleListMemberships(w http.ResponseWriter, r *http.Request) {
 	if !a.requireScope(w, key, apikeys.ScopeSitesRead) {
 		return
 	}
+	if !a.requirePermission(w, key, teams.PermManageMembers) {
+		return
+	}
 
 	members, err := a.Control.Members(r.Context(), key.TeamID)
 	if err != nil {
@@ -817,13 +923,15 @@ func (a *API) handleListMemberships(w http.ResponseWriter, r *http.Request) {
 	a.write(w, http.StatusOK, map[string]any{"memberships": members})
 }
 
-// membershipRequest is the body of a team addition.
+// membershipRequest is the body of a team invitation.
 type membershipRequest struct {
 	Email string `json:"email"`
 	Role  string `json:"role"`
 }
 
-// handleCreateMembership puts an account into the key's team.
+// handleCreateMembership creates a 48-hour invitation. Keeping the established
+// route name preserves client compatibility while removing direct membership
+// insertion and its account-enumeration side channel.
 func (a *API) handleCreateMembership(w http.ResponseWriter, r *http.Request) {
 	key, ok := KeyFrom(r.Context())
 	if !ok {
@@ -832,6 +940,9 @@ func (a *API) handleCreateMembership(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !a.requireScope(w, key, apikeys.ScopeSitesProvision) {
+		return
+	}
+	if !a.requirePermission(w, key, teams.PermManageMembers) {
 		return
 	}
 
@@ -850,19 +961,50 @@ func (a *API) handleCreateMembership(w http.ResponseWriter, r *http.Request) {
 	if role == "" {
 		role = "viewer"
 	}
+	if role == string(teams.RoleOwner) {
+		a.fail(w, http.StatusForbidden, "ownership only changes through the ownership transfer workflow")
+		return
+	}
 
 	if !contains(memberRoles, role) {
 		a.fail(w, http.StatusBadRequest, "role must be one of "+strings.Join(memberRoles, ", ")+", not "+strconv.Quote(role))
 		return
 	}
-
-	member, err := a.Control.AddMember(r.Context(), key.TeamID, email, role)
-	if err != nil {
-		a.answerStoreError(w, "add member", err)
+	requestedRole := teams.Role(role)
+	actorRole := teams.Role(key.Role)
+	if teams.Rank(requestedRole) > teams.Rank(actorRole) {
+		a.fail(w, http.StatusForbidden, "this API key's owner may not grant that team role")
 		return
 	}
 
-	a.write(w, http.StatusCreated, member)
+	if a.Teams == nil {
+		a.internal(w, "invite member", errors.New("team invitation service is unavailable"))
+		return
+	}
+	token, invitation, err := a.Teams.Invite(r.Context(), key.UserID, teams.Invitation{
+		TeamID: key.TeamID,
+		Email:  email,
+		Role:   requestedRole,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, teams.ErrForbidden), errors.Is(err, teams.ErrInvalidRole):
+			a.fail(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, teams.ErrNotFound):
+			a.fail(w, http.StatusNotFound, "the team is not available to this credential")
+		default:
+			a.internal(w, "invite member", err)
+		}
+		return
+	}
+
+	a.write(w, http.StatusCreated, map[string]any{
+		"invitation_id": invitation.ID,
+		"email":         invitation.Email,
+		"role":          invitation.Role,
+		"expires_at":    invitation.ExpiresAt,
+		"token":         token,
+	})
 }
 
 // handleDeleteMembership takes somebody out of the team.
@@ -876,21 +1018,40 @@ func (a *API) handleDeleteMembership(w http.ResponseWriter, r *http.Request) {
 	if !a.requireScope(w, key, apikeys.ScopeSitesProvision) {
 		return
 	}
+	if !a.requirePermission(w, key, teams.PermManageMembers) {
+		return
+	}
 
 	id, ok := a.idFromPath(w, r, "membership_id")
 	if !ok {
 		return
 	}
 
-	err := a.Control.RemoveMember(r.Context(), key.TeamID, id)
+	targetUserID, targetRole, err := a.Control.MembershipTarget(r.Context(), key.TeamID, id)
+	if err != nil {
+		a.answerStoreError(w, "read membership", err)
+		return
+	}
+	if teams.Rank(teams.Role(targetRole)) > teams.Rank(teams.Role(key.Role)) {
+		a.fail(w, http.StatusForbidden, "this API key's owner may not remove that team role")
+		return
+	}
+
+	if a.Teams == nil {
+		a.internal(w, "remove member", errors.New("team membership service is unavailable"))
+		return
+	}
+	err = a.Teams.RemoveMember(r.Context(), key.UserID, key.TeamID, targetUserID)
 
 	switch {
 	case err == nil:
 		a.write(w, http.StatusOK, map[string]any{"deleted": true})
-	case errors.Is(err, ErrNotFound):
+	case errors.Is(err, ErrNotFound), errors.Is(err, teams.ErrNotFound):
 		a.fail(w, http.StatusNotFound, "no such membership in this team")
-	case strings.Contains(err.Error(), "only owner"):
+	case errors.Is(err, teams.ErrLastOwner):
 		a.fail(w, http.StatusConflict, err.Error())
+	case errors.Is(err, teams.ErrForbidden):
+		a.fail(w, http.StatusForbidden, err.Error())
 	default:
 		a.internal(w, "remove member", err)
 	}

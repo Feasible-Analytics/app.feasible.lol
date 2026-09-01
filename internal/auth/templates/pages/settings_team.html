@@ -11,6 +11,7 @@
 
   <form method="post" action="/settings/team" class="mt-8 space-y-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+    <input type="hidden" name="team_id" value="{{ .Data.TeamID }}">
 
     <div>
       <label for="name" class="block text-sm font-medium text-body">{{ t $.Lang "auth.settings_team.name" }}</label>

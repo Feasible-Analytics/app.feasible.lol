@@ -16,6 +16,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/publicapi"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
 // A model that has to guess a dimension name will guess "utm_campaign" or
@@ -67,8 +68,8 @@ func resourceTemplates() []map[string]any {
 
 // listResources enumerates one schema per site the credential can see.
 func (s *Server) listResources(_ context.Context, key *apikeys.Key, request *rpcRequest) *rpcResponse {
-	if key == nil {
-		return failure(request.ID, codeUnauthorized, "this connection is not authenticated")
+	if refusal := authorizeScope(key, resourceScopes["resources/list"], teams.PermViewDashboard); refusal != "" {
+		return failure(request.ID, codeUnauthorized, "%s", refusal)
 	}
 
 	list := s.API.SitesFor(key)
@@ -125,8 +126,8 @@ type siteSchema struct {
 
 // readResource answers one schema.
 func (s *Server) readResource(ctx context.Context, key *apikeys.Key, request *rpcRequest) *rpcResponse {
-	if key == nil {
-		return failure(request.ID, codeUnauthorized, "this connection is not authenticated")
+	if refusal := authorizeScope(key, resourceScopes["resources/read"], teams.PermViewDashboard); refusal != "" {
+		return failure(request.ID, codeUnauthorized, "%s", refusal)
 	}
 
 	var params readResourceParams

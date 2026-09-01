@@ -11,9 +11,11 @@ package cli
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/access"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
@@ -21,6 +23,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dashboard"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dataio"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/destructive"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/google"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
@@ -31,8 +34,11 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/pathclean"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/rollup"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/settings"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/shields"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/statsapi"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
 )
 
@@ -176,8 +182,21 @@ func runServe(e *env, args []string) int {
 		"sales_email", e.cfg.App.SalesEmail,
 	)
 
+	// Teams, sharing, scheduled reports, annotations and the ingestion health
+	// panel. They are assembled in one place so that the shared-link handler and
+	// the authenticated dashboard render the same shell rather than two copies
+	// of it that drift.
+	extra := buildServices(e, control, manager, service, mailer)
+
 	checks := &health.Set{}
 	ingestHealth(checks, control, service, e.cfg.App.DataDir)
+	if e.cfg.App.Worker {
+		// A worker process is not ready when its durable scheduler has never run,
+		// has failed its latest pass, or has silently stopped ticking.
+		checks.Require("recurring_scheduler", func(context.Context) error {
+			return extra.Cron.Health(time.Now().UTC())
+		})
+	}
 
 	// The routing map is checked for having been built, not for holding
 	// anything. An install with no sites yet is a fresh install, and a process
@@ -192,10 +211,15 @@ func runServe(e *env, args []string) int {
 	// Importing and exporting a site's history: the screens that start the work
 	// and the runner that does it. Both halves are built here so an import can
 	// only ever be started by a process that is also willing to run it.
+	//
+	// The runner is the one that drains everything, the notifier's hourly ticks
+	// included. Two runners would be two answers to "is anything stuck", and the
+	// metrics endpoint and the readiness probe can each only report on one.
 	data := buildData(e, control, manager, service, site)
+	extra.Register(data.runner)
 
 	server := httpserver.New("app", e.cfg.App.Listen,
-		serveRoutes(e, service, manager, secret, e.cfg.App.DataDir, app, public, com, data.settings))
+		serveRoutes(e, service, manager, secret, e.cfg.App.DataDir, app, public, com, data.settings, extra))
 	server.Health = checks
 
 	internal := internalServer("app-internal", e.cfg.App.InternalListen, checks)
@@ -204,7 +228,7 @@ func runServe(e *env, args []string) int {
 	go app.RunPrune(pruneCtx)
 
 	return serveUntilSignalWith(e, server, internal, service, worker,
-		backgroundLoops(com.Start, site.background(e), data.background()),
+		backgroundLoops(com.Start, site.background(e), data.background(), extra.background(e)),
 		func() error { stopPrune(); stopWorker(); return nil }, manager.CloseAll, control.Close)
 }
 
@@ -293,17 +317,19 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 
 	store := auth.NewStore(control)
 	return auth.NewHandler(auth.Options{
-		Store:     store,
-		Traffic:   auth.NewTraffic(manager),
-		Mailer:    mailer,
-		Sealer:    sealer,
-		Google:    auth.NewGoogle(e.cfg.App.Google.ClientID, e.cfg.App.Google.ClientSecret, e.cfg.App.BaseURL),
-		Deleter:   auth.NewDeleter(purger, e.log),
-		Keyer:     tracker.NewKeyer(secret, service.Sites),
-		SiteCache: service.Sites,
-		Access:    gate.Blocked,
-		BaseURL:   e.cfg.App.BaseURL,
-		Log:       e.log,
+		Store:       store,
+		Teams:       teams.NewStore(control),
+		Traffic:     auth.NewTraffic(manager),
+		Mailer:      mailer,
+		Sealer:      sealer,
+		Google:      auth.NewGoogle(e.cfg.App.Google.ClientID, e.cfg.App.Google.ClientSecret, e.cfg.App.BaseURL),
+		Deleter:     auth.NewDeleter(purger, e.log),
+		Destructive: &destructive.Service{DB: control, Accounts: manager},
+		Keyer:       tracker.NewKeyer(secret, service.Sites),
+		SiteCache:   service.Sites,
+		Access:      gate.Blocked,
+		BaseURL:     e.cfg.App.BaseURL,
+		Log:         e.log,
 	})
 }
 
@@ -365,10 +391,16 @@ func (s *siteRules) background(e *env) func(context.Context, func(func())) {
 
 // serveRoutes is the app process's public surface: the tracker script, the
 // stats API the dashboard runs on, the server-rendered application, the pages
-// that sell it, the site configuration screens, and — with the direct transport
-// — the ingest endpoint, which this process serves rather than a separate tier.
-func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, secret []byte, dataDir string, app *auth.Handler, public *publicStack, com *commerce, site *settings.Handler) http.Handler {
+// that sell it, the settings screens, and — with the direct transport — the
+// ingest endpoint, which this process serves rather than a separate tier.
+func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, secret []byte, dataDir string,
+	app *auth.Handler, public *publicStack, com *commerce, site *settings.Handler, extra *services) http.Handler {
 	mux := http.NewServeMux()
+
+	// Legacy per-site settings pages share the signed-in application's CSRF
+	// cookie and verifier even though their handlers live in another package.
+	site.CSRF = app.IssueCSRF
+	site.CheckCSRF = app.CheckCSRF
 
 	// Every mount is wrapped with the name it is counted under. The name is
 	// given here rather than derived from the URL because a label taken from a
@@ -380,18 +412,26 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	// specific pattern, so /api/event and /js/ still reach their own handlers.
 	mux.Handle("/", metrics.Instrument(metrics.HandlerApp, app))
 
-	// The site configuration screens: shields, path cleaning, import and
-	// export. They are server-rendered rather than part of the React bundle,
-	// because a form that posts and redirects needs no API endpoint per field.
+	// The settings surface: shields, path cleaning, import and export on one
+	// handler; the team screen, sharing, scheduled reports and the ingestion
+	// health panel on the other. They are server-rendered rather than part of
+	// the React bundle, because a form that posts and redirects needs no API
+	// endpoint per field.
 	//
-	// Every one of them edits what traffic a site counts, or prepares a full
-	// archive of it, so they go behind the same sign-in and site-ownership
-	// check the rest of the signed-in screens use.
-	if site != nil {
-		guarded := app.GuardSite(settings.DomainOf, site)
-		for _, pattern := range settings.Patterns() {
-			mux.Handle(pattern, guarded)
-		}
+	// The two gates are different because the two questions are. Configuring a
+	// site is "does this person own this site". Publishing one, mailing reports
+	// about it or administering the team is "what may this person do in this
+	// team", which is the signed-in application's full check plus the team's
+	// own permission table.
+	//
+	// Registration goes through settings.Mount rather than a loop here, so
+	// every route on the segment comes from the one table a test can walk. A
+	// pattern registered beside that table rather than in it is a pattern
+	// nothing checks for shadowing — which is how this has broken three times.
+	if site != nil || extra != nil {
+		settings.Mount(mux,
+			app.GuardSite(settings.DomainOf, site),
+			app.Protect(extra.screens(e, app)))
 	}
 
 	// Every report in the product is this one endpoint with different metrics
@@ -401,19 +441,69 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	// The access gate wraps it as well as the dashboard, and that is the point:
 	// the numbers come from here, so a lock that only covered the HTML would be
 	// no lock at all.
+	stats := statsapi.New(service.Sites, manager, e.log)
+	capabilities := sharing.StatsAuthorizer{Secret: sharing.DeriveSecret(secret)}
+	if extra != nil {
+		capabilities.Store = extra.Sharing
+	}
+
+	stats.Authorize = func(r *http.Request, site sites.Site) (statsapi.Authorization, error) {
+		if capabilities.Store != nil {
+			capability, presented, err := capabilities.Authorize(r, site.Domain)
+			if presented {
+				switch {
+				case err == nil:
+					return statsapi.Authorization{PinnedFilters: capability.Filters, CacheKey: capability.CacheKey}, nil
+				case errors.Is(err, sharing.ErrPasswordRequired):
+					return statsapi.Authorization{}, statsapi.Refuse(http.StatusUnauthorized, "the shared link password has not been verified")
+				case errors.Is(err, sharing.ErrNotFound):
+					return statsapi.Authorization{}, statsapi.Refuse(http.StatusNotFound, "the sharing capability is no longer valid")
+				default:
+					return statsapi.Authorization{}, err
+				}
+			}
+		}
+
+		if _, err := app.AuthoriseSiteRequest(r, site.ID, teams.PermViewDashboard); err != nil {
+			if errors.Is(err, auth.ErrUnauthenticated) {
+				return statsapi.Authorization{}, statsapi.Refuse(http.StatusUnauthorized, "an authenticated session or validated sharing capability is required")
+			}
+
+			return statsapi.Authorization{}, statsapi.Refuse(http.StatusNotFound, "no such site")
+		}
+
+		return statsapi.Authorization{CacheKey: "session"}, nil
+	}
+
 	mux.Handle(statsapi.Pattern, metrics.Instrument(metrics.HandlerStats,
-		com.Gate.Protect(statsapi.New(service.Sites, manager, e.log))))
+		com.Gate.Protect(stats)))
 
 	// The compiled React dashboard, served out of the binary. It reads the site
 	// snapshot only to render the site picker; every number on it comes from
 	// the stats endpoint above.
-	mux.Handle(dashboard.PathPrefix, metrics.Instrument(metrics.HandlerDashboard,
-		com.Gate.Protect(dashboard.New(service.Sites))))
+	shell := dashboard.New(service.Sites)
+	shell.Domains = func(r *http.Request) []string {
+		domains, err := app.AccessibleDomains(r)
+		if err != nil {
+			e.log.Warn("could not list dashboard sites", "error", err)
+			return nil
+		}
 
-	// Pricing, billing, docs and the legal pages, plus the payment provider's
-	// webhook. They are deliberately outside the gate: somebody whose dashboard
-	// is locked has to be able to reach the page where they would pay us, and
-	// the export link on it.
+		return domains
+	}
+	mux.Handle(dashboard.PathPrefix, metrics.Instrument(metrics.HandlerDashboard,
+		com.Gate.Protect(app.GuardDashboard(shell))))
+
+	// The public dashboard, the shared links, the annotations endpoint and the
+	// health panel's API. The shared-link handler is handed the same shell the
+	// authenticated dashboard uses, so a public dashboard and a signed-in one
+	// can never render two different builds of the front end.
+	if extra != nil {
+		extra.mount(mux, e, app, shell, secret)
+	}
+
+	// Pricing, billing, docs and legal pages remain reachable outside the
+	// payment gate, while commerce applies the current account and CSRF guards.
 	com.Routes(mux, app)
 
 	// The source icons the report rows are drawn with. Fetching them here

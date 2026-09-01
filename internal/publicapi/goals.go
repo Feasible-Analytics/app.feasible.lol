@@ -13,12 +13,16 @@ import (
 	"strings"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
 // handleListGoals lists a site's conversions.
 func (a *API) handleListGoals(w http.ResponseWriter, r *http.Request) {
-	_, site, ok := a.siteFromQuery(w, r, apikeys.ScopeSitesRead)
+	key, site, ok := a.siteFromQuery(w, r, apikeys.ScopeSitesRead)
 	if !ok {
+		return
+	}
+	if !a.requirePermission(w, key, teams.PermManageSiteSettings) {
 		return
 	}
 
@@ -56,6 +60,9 @@ func (a *API) handleCreateGoal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !a.requireScope(w, key, apikeys.ScopeSitesProvision) {
+		return
+	}
+	if !a.requirePermission(w, key, teams.PermManageSiteSettings) {
 		return
 	}
 

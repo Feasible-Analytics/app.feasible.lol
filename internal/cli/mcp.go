@@ -106,9 +106,10 @@ func runMCP(e *env, args []string) int {
 	go gate.Run(ctx)
 
 	if err := mcp.ServeStdio(ctx, public.MCP, mcp.StdioOptions{
-		In:  os.Stdin,
-		Out: e.stdout,
-		Key: key,
+		In:       os.Stdin,
+		Out:      e.stdout,
+		Key:      key,
+		Validate: keys.Validate,
 	}); err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError

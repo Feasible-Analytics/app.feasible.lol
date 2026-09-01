@@ -19,6 +19,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/publicapi"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
 // toolset builds every tool. It is one function returning a slice rather than a
@@ -461,6 +462,7 @@ func (s *Server) createSiteTool() *Tool {
 		Name:        "create_site",
 		Title:       "Create site",
 		Description: "Register a new site on this team and return the tracking snippet to install.",
+		Permission:  teams.PermManageSites,
 		InputSchema: object(map[string]any{
 			"domain":       str("The bare hostname, such as example.com — not a URL."),
 			"display_name": str("What to call it in the dashboard. Defaults to the domain."),
@@ -547,6 +549,7 @@ func (s *Server) listGoalsTool() *Tool {
 		Title:       "List goals",
 		Description: "List the conversions this site counts.",
 		ReadOnly:    true,
+		Permission:  teams.PermManageSiteSettings,
 		InputSchema: object(map[string]any{"site_id": siteArg()}, "site_id"),
 		Handler: func(ctx context.Context, key *apikeys.Key, raw json.RawMessage) (*toolResult, error) {
 			args := &siteOnlyArgs{}
@@ -735,6 +738,7 @@ func (s *Server) listShieldsTool() *Tool {
 		Title:       "List shield rules",
 		Description: "List the rules that keep traffic out of this site's numbers — blocked IP addresses, countries, pages and hostnames.",
 		ReadOnly:    true,
+		Permission:  teams.PermManageSiteSettings,
 		InputSchema: object(map[string]any{"site_id": siteArg()}, "site_id"),
 		Handler: func(ctx context.Context, key *apikeys.Key, raw json.RawMessage) (*toolResult, error) {
 			args := &siteOnlyArgs{}

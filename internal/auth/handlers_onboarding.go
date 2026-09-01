@@ -12,11 +12,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
 // showOnboarding renders the install-and-wait screen for a site.
 func (h *Handler) showOnboarding(w http.ResponseWriter, r *http.Request) {
-	site, _, ok := h.siteOr404(w, r)
+	site, _, ok := h.siteOr404(w, r, teams.PermManageSiteSettings)
 	if !ok {
 		return
 	}
@@ -45,12 +47,12 @@ type statusResponse struct {
 // process can take a control-cache refresh cycle to learn a new domain, so the
 // screen turns that bounded propagation gap into a normal-feeling wait.
 func (h *Handler) onboardingStatus(w http.ResponseWriter, r *http.Request) {
-	site, team, ok := h.siteOr404(w, r)
+	site, team, ok := h.siteOr404(w, r, teams.PermManageSiteSettings)
 	if !ok {
 		return
 	}
 
-	at, err := h.Traffic.FirstEventAt(r.Context(), team.ID, site.ID)
+	at, err := h.Traffic.FirstEventAt(r.Context(), site.AccountID, site.ID)
 	if err != nil {
 		// A site whose account database has never been written to is not an
 		// error, it is the normal state of the screen that is waiting for the
@@ -94,7 +96,7 @@ func (h *Handler) doVerifyInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	site, _, ok := h.siteOr404(w, r)
+	site, _, ok := h.siteOr404(w, r, teams.PermManageSiteSettings)
 	if !ok {
 		return
 	}
@@ -132,7 +134,7 @@ func (h *Handler) doSkipOnboarding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	site, team, ok := h.siteOr404(w, r)
+	site, team, ok := h.siteOr404(w, r, teams.PermManageSiteSettings)
 	if !ok {
 		return
 	}

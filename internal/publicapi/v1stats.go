@@ -16,6 +16,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
 // The v1 endpoints exist so that an integration written against the established
@@ -53,6 +54,9 @@ func (a *API) parseV1(w http.ResponseWriter, r *http.Request) (*v1Request, bool)
 	}
 
 	if !a.requireScope(w, key, apikeys.ScopeStatsRead) {
+		return nil, false
+	}
+	if !a.requirePermission(w, key, teams.PermViewDashboard) {
 		return nil, false
 	}
 

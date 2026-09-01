@@ -14,6 +14,25 @@
   <h1 class="mt-2 text-2xl font-semibold text-heading">{{ $site.Label }}</h1>
   <p class="mt-1 text-sm text-muted">{{ $site.Domain }}</p>
 
+  <!-- The per-site screens that live outside this package. They are linked from
+       here rather than from the sidebar because all three are about one site,
+       and a nav item that needs a site chosen first is a nav item that answers
+       "which one?" with a 404. -->
+  <div class="mt-4 flex flex-wrap gap-2">
+    <a href="/settings/sites/{{ $site.Domain }}/sharing"
+       class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">
+      {{ t $.Lang "auth.site_settings.sharing" }}
+    </a>
+    <a href="/settings/sites/{{ $site.Domain }}/reports"
+       class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">
+      {{ t $.Lang "auth.site_settings.reports" }}
+    </a>
+    <a href="/settings/sites/{{ $site.Domain }}/health"
+       class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">
+      {{ t $.Lang "auth.site_settings.health" }}
+    </a>
+  </div>
+
   {{ if .Data.DualWrite }}
     <div class="mt-6 rounded-2xl border border-warn/30 bg-warn/10 p-4 text-sm text-warn-ink">
       <strong>{{ t $.Lang "auth.site_settings.dual_write_title" }}</strong>
@@ -113,6 +132,33 @@
       </button>
     </form>
   </section>
+
+  {{ if .Data.TransferTeams }}
+  <section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+    <h2 class="text-sm font-semibold text-heading">Transfer site</h2>
+    <p class="mt-1 text-sm text-muted">Move this site to another team you own or administer. Existing history stays with the site; guests, pending invitations, and shared links are revoked.</p>
+
+    <form method="post" action="/sites/{{ $site.ID }}/transfer" class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end"
+          onsubmit="return confirm('Transfer {{ $site.Domain }} to the selected team?')">
+      <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+      <input type="hidden" name="from_team_id" value="{{ .Data.CurrentTeamID }}">
+
+      <label class="min-w-0 text-sm font-medium text-body">
+        Destination team
+        <select name="to_team_id" required class="mt-1 block w-full min-w-0 rounded-xl border border-field px-3 py-2 text-sm">
+          {{ range .Data.TransferTeams }}<option value="{{ .ID }}">{{ .Name }}</option>{{ end }}
+        </select>
+      </label>
+
+      <label class="min-w-0 text-sm font-medium text-body">
+        Type {{ $site.Domain }} to confirm
+        <input name="confirm" type="text" required class="mt-1 block w-full min-w-0 rounded-xl border border-field px-3 py-2 text-sm">
+      </label>
+
+      <button type="submit" class="w-full rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover sm:w-auto">Transfer</button>
+    </form>
+  </section>
+  {{ end }}
 
   <!-- Destructive -->
   <section class="mt-6 rounded-2xl border border-down/30 bg-card p-6 shadow-sm">

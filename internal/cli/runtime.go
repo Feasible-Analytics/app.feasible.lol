@@ -96,6 +96,14 @@ func buildIngest(ctx context.Context, e *env, dataDir string) (*ingest.Service, 
 	return service, control, manager, nil
 }
 
+// attachIngestRecorder keeps the direct and standalone topologies on the same
+// observation wiring. Both the request-side handler and final-outcome writer
+// must report to one recorder or the health panel either loses diagnostics or
+// claims buffered events were stored before the shard decided their fate.
+func attachIngestRecorder(service *ingest.Service, recorder *health.Recorder) {
+	service.SetObserver(recorder)
+}
+
 // ingestHealth registers what any process that accepts events depends on. Both
 // process shapes call it, so neither can end up with a readiness probe that
 // checks less than the other; what differs between them is registered by the
