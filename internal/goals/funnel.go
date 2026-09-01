@@ -500,8 +500,9 @@ func walkFunnel(ctx context.Context, db *sql.DB, funnel Funnel, window Window, f
 		if err != nil {
 			return nil, nil, err
 		}
-		statement += " AND e.name_id <> ?"
+		statement += " AND (e.name_id <> ? OR (" + strings.Join(matchAny, " OR ") + "))"
 		params = append(params, engagementID)
+		params = append(params, binds...)
 	} else {
 		// Sequential mode can skip unrelated events, so selecting only events
 		// that match at least one step keeps the ordered walk small.
@@ -522,10 +523,11 @@ func walkFunnel(ctx context.Context, db *sql.DB, funnel Funnel, window Window, f
 	best := map[int64]int{}
 
 	var (
-		current int64
-		haveRow bool
-		user    int64
-		reached int
+		current  int64
+		haveRow  bool
+		user     int64
+		reached  int
+		furthest int
 	)
 
 	// finishVisit is the end of one visit: it turns the visit's accumulated
@@ -535,7 +537,7 @@ func walkFunnel(ctx context.Context, db *sql.DB, funnel Funnel, window Window, f
 			return
 		}
 
-		got := reached
+		got := furthest
 
 		for i := 0; i < got; i++ {
 			visits[i]++
@@ -560,18 +562,22 @@ func walkFunnel(ctx context.Context, db *sql.DB, funnel Funnel, window Window, f
 		if !haveRow || session != current {
 			finishVisit()
 
-			current, user, reached, haveRow = session, owner, 0, true
+			current, user, reached, furthest, haveRow = session, owner, 0, 0, true
 		}
 
 		if !funnel.StrictOrder {
 			if reached < steps && matched&(1<<uint(reached)) != 0 {
 				reached++
+				furthest = reached
 			}
 			continue
 		}
 
 		if reached < steps && matched&(1<<uint(reached)) != 0 {
 			reached++
+			if reached > furthest {
+				furthest = reached
+			}
 			continue
 		}
 
@@ -580,6 +586,9 @@ func walkFunnel(ctx context.Context, db *sql.DB, funnel Funnel, window Window, f
 		reached = 0
 		if matched&1 != 0 {
 			reached = 1
+			if furthest == 0 {
+				furthest = 1
+			}
 		}
 	}
 

@@ -253,15 +253,11 @@ func exploreJourney(ctx context.Context, db *sql.DB, engine *query.Engine, req J
 	var anchorPredicate predicate
 	switch req.AnchorType {
 	case "page":
-		var pathID int64
-		err := db.QueryRowContext(ctx, "SELECT id FROM dim_pathname WHERE value = ?", req.Anchor).Scan(&pathID)
-		if errors.Is(err, sql.ErrNoRows) {
-			return []ExploreStep{}, anchor, nil
-		}
+		var err error
+		anchorPredicate, err = journeyPagePredicate(ctx, db, req.Anchor, pageviewID, "e.")
 		if err != nil {
 			return nil, anchor, fmt.Errorf("goals: explore page anchor: %w", err)
 		}
-		anchorPredicate = predicate{SQL: "e.name_id = ? AND e.pathname_id = ?", Args: []any{pageviewID, pathID}}
 	case "event":
 		nameID, err := eventNameID(ctx, db, req.Anchor)
 		if err != nil {
@@ -293,7 +289,20 @@ func exploreJourney(ctx context.Context, db *sql.DB, engine *query.Engine, req J
 		where += " AND (" + filterSQL + ")"
 		args = append(args, filterArgs...)
 	}
+	scrollPredicates, err := journeyScrollPredicates(ctx, db, req, pageviewID)
+	if err != nil {
+		return nil, anchor, err
+	}
 	args = append(args, engagementID)
+	engagementClause := "e.name_id <> ?"
+	if len(scrollPredicates) > 0 {
+		parts := make([]string, 0, len(scrollPredicates))
+		for _, compiled := range scrollPredicates {
+			parts = append(parts, "("+compiled.SQL+")")
+			args = append(args, compiled.Args...)
+		}
+		engagementClause = "(e.name_id <> ? OR " + strings.Join(parts, " OR ") + ")"
+	}
 	adjacent := "LEAD"
 	known := "LAG"
 	terminal := ExitStep
@@ -329,7 +338,8 @@ func exploreJourney(ctx context.Context, db *sql.DB, engine *query.Engine, req J
 		WHEN adjacent_name = ` + strconv.FormatInt(pageviewID, 10) + ` THEN (
 			SELECT CASE WHEN instr(substr(value, 2), '/') > 0
 				THEN '/' || substr(substr(value, 2), 1, instr(substr(value, 2), '/') - 1) || '/**'
-				ELSE value END FROM dim_pathname WHERE id = adjacent_path)
+				WHEN value = '/' THEN '/'
+				ELSE '/' || substr(value, 2) || '/**' END FROM dim_pathname WHERE id = adjacent_path)
 		ELSE (SELECT value FROM dim_event_name WHERE id = adjacent_name) END)`
 	}
 	outerConditions := []string{"(" + anchorPredicate.SQL + ")"}
@@ -342,7 +352,7 @@ func exploreJourney(ctx context.Context, db *sql.DB, engine *query.Engine, req J
 		SELECT e.id, e.site_id, e.session_id, e.user_id, e.name_id, e.pathname_id, e.scroll_depth,
 		       ` + adjacent + `(e.name_id) OVER (PARTITION BY e.session_id ORDER BY e.timestamp, e.id) AS adjacent_name,
 		       ` + adjacent + `(e.pathname_id) OVER (PARTITION BY e.session_id ORDER BY e.timestamp, e.id) AS adjacent_path` + extraColumns + `
-		FROM events e WHERE ` + where + ` AND e.name_id <> ?
+		FROM events e WHERE ` + where + ` AND ` + engagementClause + `
 	)
 	SELECT adjacent_name, ` + valueExpression + ` AS adjacent_value,
 	       COUNT(DISTINCT user_id), COUNT(DISTINCT session_id), COUNT(*)
@@ -393,14 +403,7 @@ func journeyAnchorPredicate(ctx context.Context, db *sql.DB, siteID int64, ancho
 	alias := prefix
 	switch anchor.Type {
 	case "page":
-		var pathID int64
-		if err := db.QueryRowContext(ctx, "SELECT id FROM dim_pathname WHERE value = ?", anchor.Value).Scan(&pathID); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return predicate{SQL: "0 = 1"}, nil
-			}
-			return predicate{}, err
-		}
-		return predicate{SQL: alias + "name_id = ? AND " + alias + "pathname_id = ?", Args: []any{pageviewID, pathID}}, nil
+		return journeyPagePredicate(ctx, db, anchor.Value, pageviewID, alias)
 	case "event":
 		nameID, err := eventNameID(ctx, db, anchor.Value)
 		if err != nil {
@@ -428,6 +431,66 @@ func journeyAnchorPredicate(ctx context.Context, db *sql.DB, siteID int64, ancho
 	default:
 		return predicate{}, invalid("a journey trail anchor is page, event, or goal, not %q", anchor.Type)
 	}
+}
+
+// journeyPagePredicate compiles an exact page or an Explore prefix group
+// against either raw event columns or one windowed trail position. Prefix
+// rows deliberately retain their `/**` wire value so selecting a grouped row
+// continues through every path represented by that row.
+func journeyPagePredicate(ctx context.Context, db *sql.DB, value string, pageviewID int64, prefix string) (predicate, error) {
+	if strings.HasSuffix(value, "/**") {
+		base := strings.TrimSuffix(value, "/**")
+		return predicate{
+			SQL: prefix + "name_id = ? AND " + prefix + `pathname_id IN
+				(SELECT id FROM dim_pathname WHERE value = ? OR substr(value, 1, length(?) + 1) = ? || '/')`,
+			Args: []any{pageviewID, base, base, base},
+		}, nil
+	}
+
+	var pathID int64
+	if err := db.QueryRowContext(ctx, "SELECT id FROM dim_pathname WHERE value = ?", value).Scan(&pathID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return predicate{SQL: "0 = 1"}, nil
+		}
+		return predicate{}, err
+	}
+	return predicate{SQL: prefix + "name_id = ? AND " + prefix + "pathname_id = ?", Args: []any{pageviewID, pathID}}, nil
+}
+
+// journeyScrollPredicates finds the scroll goals that must remain in the
+// ordered event stream because they are the current anchor or part of its
+// selected trail. Other engagement heartbeats stay out of Explore and cannot
+// appear as misleading adjacent visitor actions.
+func journeyScrollPredicates(ctx context.Context, db *sql.DB, req JourneyRequest, pageviewID int64) ([]predicate, error) {
+	anchors := append([]JourneyAnchor{{Type: req.AnchorType, Value: req.Anchor}}, req.Trail...)
+	compiled := make([]predicate, 0, len(anchors))
+	seen := map[int64]bool{}
+	for _, anchor := range anchors {
+		if anchor.Type != "goal" {
+			continue
+		}
+		goalID := anchor.GoalID
+		if goalID == 0 {
+			goalID, _ = strconv.ParseInt(anchor.Value, 10, 64)
+		}
+		if goalID < 1 || seen[goalID] {
+			continue
+		}
+		goal, err := Get(ctx, db, goalID)
+		if err != nil || goal.SiteID != req.SiteID {
+			return nil, ErrNotFound
+		}
+		if goal.Kind != KindScroll {
+			continue
+		}
+		item, err := goalPredicate(ctx, db, goal, pageviewID)
+		if err != nil {
+			return nil, err
+		}
+		seen[goalID] = true
+		compiled = append(compiled, item)
+	}
+	return compiled, nil
 }
 
 // firstPathSegment groups a path by its first non-empty segment.

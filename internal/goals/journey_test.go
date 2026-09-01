@@ -11,6 +11,7 @@ package goals
 import (
 	"context"
 	"database/sql"
+	"strconv"
 	"testing"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
@@ -215,6 +216,105 @@ func TestAPageWithNoHistoryAnswersEmpty(t *testing.T) {
 
 	if result.Views != 0 || len(result.NextPages) != 0 || len(result.PreviousPages) != 0 {
 		t.Errorf("a page nobody visited reported %+v, want an empty journey", result)
+	}
+}
+
+// TestExploreContinuationNarrowsToTheChosenTrail verifies a second click does
+// not widen back out to every occurrence of the current anchor.
+func TestExploreContinuationNarrowsToTheChosenTrail(t *testing.T) {
+	db, engine := newFixture(t)
+	result, err := Journey(context.Background(), db, engine, JourneyRequest{
+		SiteID: siteID, DateRange: fixtureRange(), Timezone: "UTC",
+		AnchorType: "page", Anchor: "/checkout", Direction: "forward",
+		Trail: []JourneyAnchor{{Type: "page", Value: "/cart"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range result.Steps {
+		if step.Anchor.Value == "/cart" {
+			t.Fatal("reverse-flow checkout traffic leaked into the /cart -> /checkout continuation")
+		}
+	}
+	if len(result.Steps) == 0 {
+		t.Fatal("the selected /cart -> /checkout path has no continuation")
+	}
+}
+
+// TestExplorePrefixGroupingAggregatesBeforeCounting verifies related paths are
+// one row with distinct visitor/session counts rather than duplicate labels.
+func TestExplorePrefixGroupingAggregatesBeforeCounting(t *testing.T) {
+	db, engine := newFixture(t)
+	result, err := Journey(context.Background(), db, engine, JourneyRequest{
+		SiteID: siteID, DateRange: fixtureRange(), Timezone: "UTC",
+		AnchorType: "page", Anchor: "/cart", Direction: "forward", Grouping: "prefix",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := 0
+	for _, step := range result.Steps {
+		if step.Anchor.Value == "/checkout/**" {
+			rows++
+			if step.Visits != 3 {
+				t.Fatalf("grouped checkout visits = %d, want 3", step.Visits)
+			}
+		}
+	}
+	if rows != 1 {
+		t.Fatalf("checkout prefix rows = %d, want one aggregated row: %+v", rows, result.Steps)
+	}
+}
+
+// TestExploreContinuesFromAPrefixGroup verifies the value returned by prefix
+// grouping is itself a valid anchor. Selecting `/checkout/**` must continue
+// from both checkout paths instead of looking for a literal path containing
+// stars and returning an empty chart.
+func TestExploreContinuesFromAPrefixGroup(t *testing.T) {
+	db, engine := newFixture(t)
+	result, err := Journey(context.Background(), db, engine, JourneyRequest{
+		SiteID: siteID, DateRange: fixtureRange(), Timezone: "UTC",
+		AnchorType: "page", Anchor: "/checkout/**", Direction: "forward",
+		Trail: []JourneyAnchor{{Type: "page", Value: "/cart"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Steps) == 0 {
+		t.Fatal("the selected /cart -> /checkout/** group has no continuation")
+	}
+	foundPayment := false
+	for _, step := range result.Steps {
+		foundPayment = foundPayment || step.Anchor.Value == "/checkout/payment"
+	}
+	if !foundPayment {
+		t.Fatalf("prefix continuation omitted /checkout/payment: %+v", result.Steps)
+	}
+}
+
+// TestExploreCanContinueThroughAScrollGoal ensures the engagement event used
+// for a scroll threshold remains in the typed journey while unselected
+// heartbeat measurements stay out of ordinary page and event rows.
+func TestExploreCanContinueThroughAScrollGoal(t *testing.T) {
+	db, engine := newFixture(t)
+	writeScrollMeasurement(t, db)
+	scroll := mustCreate(t, db, Goal{
+		SiteID: siteID, Kind: KindScroll, PagePattern: "/pricing", ScrollDepth: 50,
+	})
+	result, err := Journey(context.Background(), db, engine, JourneyRequest{
+		SiteID: siteID, DateRange: fixtureRange(), Timezone: "UTC",
+		AnchorType: "goal", Anchor: strconv.FormatInt(scroll.ID, 10), Direction: "forward",
+		Trail: []JourneyAnchor{{Type: "page", Value: "/pricing"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundSignup := false
+	for _, step := range result.Steps {
+		foundSignup = foundSignup || step.Anchor.Value == "/signup"
+	}
+	if !foundSignup {
+		t.Fatalf("scroll continuation omitted /signup: %+v", result.Steps)
 	}
 }
 

@@ -13,16 +13,8 @@ import (
 	"errors"
 )
 
-// Goals, funnels, shields and annotations are owned elsewhere in the product and
-// do not exist yet. Every one of them has an endpoint and an MCP tool here
-// anyway, because the alternative — leaving the route out until the feature
-// lands — is worse in a specific way: a 404 tells an integrator their URL is
-// wrong and sends them to check their code, where a 501 naming the feature tells
-// them the truth and lets them come back later.
-//
-// Each is a narrow interface rather than a direct dependency so that wiring the
-// real implementation in is one line in `serve`, and so this package's tests do
-// not need the feature to exist.
+// Conversion, shield, and annotation features are narrow interfaces so the
+// public API and MCP share one implementation without owning their storage.
 
 // ErrNotAvailable is what an unimplemented dependency answers with.
 var ErrNotAvailable = errors.New("not available yet")

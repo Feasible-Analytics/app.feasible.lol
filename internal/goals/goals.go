@@ -503,6 +503,13 @@ func Rename(ctx context.Context, db *sql.DB, id int64, name string) error {
 // deliberate: deleting a goal out from under a funnel would leave a chart with
 // a step nobody could explain.
 func Delete(ctx context.Context, db *sql.DB, id int64) error {
+	existing, err := Get(ctx, db, id)
+	if err != nil {
+		return err
+	}
+	if existing.IsAutomatic {
+		return invalid("automatic goals cannot be deleted")
+	}
 	var steps int
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM funnel_steps WHERE goal_id = ?", id).Scan(&steps); err != nil {
 		return fmt.Errorf("goals: delete: %w", err)

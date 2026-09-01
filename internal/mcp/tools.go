@@ -653,11 +653,14 @@ func (s *Server) listGoalsTool() *Tool {
 
 // createGoalArgs is the create_goal tool's arguments.
 type createGoalArgs struct {
-	SiteID      string `json:"site_id"`
-	DisplayName string `json:"display_name"`
-	EventName   string `json:"event_name"`
-	PagePath    string `json:"page_path"`
-	Currency    string `json:"currency"`
+	SiteID      string                   `json:"site_id"`
+	Kind        string                   `json:"kind"`
+	DisplayName string                   `json:"display_name"`
+	EventName   string                   `json:"event_name"`
+	PagePath    string                   `json:"page_path"`
+	ScrollDepth int                      `json:"scroll_depth"`
+	Currency    string                   `json:"currency"`
+	Properties  []publicapi.GoalProperty `json:"properties"`
 }
 
 // createGoalTool registers a conversion.
@@ -665,13 +668,18 @@ func (s *Server) createGoalTool() *Tool {
 	return &Tool{
 		Name:        "create_goal",
 		Title:       "Create goal",
-		Description: "Register a conversion, counted either when a named custom event fires or when a page is viewed.",
+		Description: "Register a page, custom-event, or scroll-depth conversion with optional revenue and property constraints.",
 		InputSchema: object(map[string]any{
 			"site_id":      siteArg(),
+			"kind":         enum("The goal kind.", "page", "event", "scroll"),
 			"display_name": str("What to call it in reports."),
 			"event_name":   str("The custom event name to count, such as Signup. Give this or page_path, not both."),
 			"page_path":    str("The path to count a view of, such as /thanks. Give this or event_name, not both."),
+			"scroll_depth": integer("Percentage threshold for a scroll goal.", 1, 100),
 			"currency":     str("Three-letter ISO code, if the goal carries revenue."),
+			"properties": listOf("Up to three exact custom-property constraints.", object(map[string]any{
+				"name": str("Property name."), "value": str("Exact property value."),
+			}, "name", "value")),
 		}, "site_id"),
 		Handler: func(ctx context.Context, key *apikeys.Key, raw json.RawMessage) (*toolResult, error) {
 			args := &createGoalArgs{}
@@ -687,7 +695,11 @@ func (s *Server) createGoalTool() *Tool {
 			// The arguments are checked before the feature is, so a model
 			// building a call against a build with no goals still learns that
 			// its arguments were wrong rather than only that goals are missing.
-			goal, err := publicapi.ValidateGoalRequest(args.DisplayName, args.EventName, args.PagePath, args.Currency)
+			goal, err := publicapi.ValidateGoalDefinition(publicapi.Goal{
+				Kind: args.Kind, DisplayName: args.DisplayName, EventName: args.EventName,
+				PagePath: args.PagePath, ScrollDepth: args.ScrollDepth,
+				Currency: args.Currency, Properties: args.Properties,
+			})
 			if err != nil {
 				return toolFailure("%s", err.Error()), nil
 			}

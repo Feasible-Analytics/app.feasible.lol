@@ -177,7 +177,11 @@ func (s *Server) readResource(ctx context.Context, key *apikeys.Key, request *rp
 	}
 
 	for _, property := range properties {
-		schema.PropertyDimensions = append(schema.PropertyDimensions, "event:props:"+property.Key)
+		scope := property.Scope
+		if scope == "" {
+			scope = "event"
+		}
+		schema.PropertyDimensions = append(schema.PropertyDimensions, scope+":props:"+property.Key)
 	}
 
 	if s.API.Goals != nil {

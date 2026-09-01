@@ -1,6 +1,6 @@
 //
 // goals.go
-// The goals endpoints, which exist before the feature behind them does.
+// Goal and funnel management endpoints.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -179,6 +179,10 @@ func (a *API) handleCreateFunnel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if err := validateFunnelRequest(request); err != nil {
+		a.refuse(w, err)
+		return
+	}
 	manager, ok := a.Funnels.(FunnelManager)
 	if !ok {
 		a.notImplemented(w, "funnel management")
@@ -210,6 +214,10 @@ func (a *API) handleUpdateFunnel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if err := validateFunnelRequest(request); err != nil {
+		a.refuse(w, err)
+		return
+	}
 	manager, ok := a.Funnels.(FunnelManager)
 	if !ok {
 		a.notImplemented(w, "funnel management")
@@ -225,8 +233,11 @@ func (a *API) handleUpdateFunnel(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteFunnel removes one site's funnel definition.
 func (a *API) handleDeleteFunnel(w http.ResponseWriter, r *http.Request) {
-	_, site, ok := a.siteFromQuery(w, r, apikeys.ScopeSitesProvision)
+	key, site, ok := a.siteFromQuery(w, r, apikeys.ScopeSitesProvision)
 	if !ok {
+		return
+	}
+	if !a.requirePermission(w, key, teams.PermManageSiteSettings) {
 		return
 	}
 	id, ok := a.idFromPath(w, r, "funnel_id")
@@ -245,17 +256,59 @@ func (a *API) handleDeleteFunnel(w http.ResponseWriter, r *http.Request) {
 	a.write(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
+// validateFunnelRequest checks limits and duplicate steps before calling the
+// account-backed domain store.
+func validateFunnelRequest(request funnelRequest) error {
+	name := strings.TrimSpace(request.Name)
+	if name == "" || len(name) > 200 {
+		return badParam("a funnel needs a name of at most 200 characters")
+	}
+	if len(request.Steps) < 2 || len(request.Steps) > 8 {
+		return badParam("a funnel needs between two and eight steps")
+	}
+	seen := map[int64]bool{}
+	for _, step := range request.Steps {
+		if step.GoalID < 1 {
+			return badParam("every funnel step needs a positive goal_id")
+		}
+		if seen[step.GoalID] {
+			return badParam("a goal cannot appear twice in one funnel")
+		}
+		seen[step.GoalID] = true
+	}
+	return nil
+}
+
 // validateGoal checks that a goal names exactly one thing to count.
 func validateGoal(request goalRequest) (*Goal, error) {
 	eventName := strings.TrimSpace(request.EventName)
 	pagePath := strings.TrimSpace(request.PagePath)
 
 	kind := strings.TrimSpace(request.Kind)
-	if kind == "scroll" {
+	if kind == "" && request.ScrollDepth != 0 {
+		kind = "scroll"
+	}
+	switch kind {
+	case "":
+	case "scroll":
 		if request.ScrollDepth < 1 || request.ScrollDepth > 100 {
 			return nil, badParam("scroll_depth must be between 1 and 100")
 		}
-	} else if eventName == "" && pagePath == "" {
+		if eventName != "" {
+			return nil, badParam("a scroll goal cannot also name an event")
+		}
+	case "event":
+		if eventName == "" || pagePath != "" || request.ScrollDepth != 0 {
+			return nil, badParam("an event goal needs only event_name")
+		}
+	case "page":
+		if pagePath == "" || eventName != "" || request.ScrollDepth != 0 {
+			return nil, badParam("a page goal needs only page_path")
+		}
+	default:
+		return nil, badParam("kind must be page, event, or scroll")
+	}
+	if kind == "" && eventName == "" && pagePath == "" {
 		return nil, badParam("a goal needs either event_name or page_path")
 	}
 
@@ -269,6 +322,22 @@ func validateGoal(request goalRequest) (*Goal, error) {
 
 	if request.Currency != "" && len(request.Currency) != 3 {
 		return nil, badParam("currency must be a three-letter ISO code, for example USD")
+	}
+	for _, char := range strings.ToUpper(request.Currency) {
+		if char < 'A' || char > 'Z' {
+			return nil, badParam("currency must contain three letters")
+		}
+	}
+	if len(request.Properties) > 3 {
+		return nil, badParam("a goal may have at most three property constraints")
+	}
+	for _, property := range request.Properties {
+		if strings.TrimSpace(property.Name) == "" || len(property.Name) > 300 {
+			return nil, badParam("each property constraint needs a name of at most 300 characters")
+		}
+		if len(property.Value) > 2000 {
+			return nil, badParam("a property constraint value may be at most 2000 characters")
+		}
 	}
 
 	displayName := strings.TrimSpace(request.DisplayName)
@@ -300,8 +369,11 @@ func validateGoal(request goalRequest) (*Goal, error) {
 
 // handleDeleteGoal removes a conversion.
 func (a *API) handleDeleteGoal(w http.ResponseWriter, r *http.Request) {
-	_, site, ok := a.siteFromQuery(w, r, apikeys.ScopeSitesProvision)
+	key, site, ok := a.siteFromQuery(w, r, apikeys.ScopeSitesProvision)
 	if !ok {
+		return
+	}
+	if !a.requirePermission(w, key, teams.PermManageSiteSettings) {
 		return
 	}
 

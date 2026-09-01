@@ -262,6 +262,14 @@ func TestToolsListIsCompleteAndDescribed(t *testing.T) {
 			t.Errorf("%s does not publish its exact argument", name)
 		}
 	}
+
+	createSchema := byName["create_goal"]["inputSchema"].(map[string]any)
+	properties := createSchema["properties"].(map[string]any)
+	for _, name := range []string{"kind", "scroll_depth", "properties"} {
+		if _, ok := properties[name]; !ok {
+			t.Errorf("create_goal schema omits %s", name)
+		}
+	}
 }
 
 // TestQueryStatsRoundTrip is the test that matters most: a tool call reaching
@@ -662,6 +670,26 @@ func TestMissingFeaturesSayWhatTheyAreRatherThanVanishing(t *testing.T) {
 	}
 }
 
+// TestCreateGoalAcceptsTheCanonicalConversionShapes checks the MCP mutation
+// validates the same scroll and property-constrained definitions as HTTP. The
+// fixture intentionally has no goal store, so reaching its clear unavailable
+// response proves validation accepted the full shape first.
+func TestCreateGoalAcceptsTheCanonicalConversionShapes(t *testing.T) {
+	f := newFixture(t)
+	answer := f.tool(t, "create_goal", `{
+		"site_id":"example.com","kind":"scroll","page_path":"/article","scroll_depth":75,
+		"properties":[{"name":"author","value":"Ada"}]}`)
+	if !answer.IsError || !strings.Contains(answer.Content[0].Text, "goals") || !strings.Contains(answer.Content[0].Text, "not available") {
+		t.Fatalf("canonical scroll goal answer = %+v", answer)
+	}
+
+	invalid := f.tool(t, "create_goal", `{
+		"site_id":"example.com","kind":"page","page_path":"/thanks","event_name":"Signup"}`)
+	if !invalid.IsError || strings.Contains(invalid.Content[0].Text, "not available") {
+		t.Fatalf("invalid mixed goal reached the unavailable store: %+v", invalid)
+	}
+}
+
 // TestMissingFeaturesStillCheckTheirArguments checks that a call with bad
 // arguments is told so even when the feature behind it is absent — otherwise
 // that error would be waiting for the integrator on the day it lands.
@@ -723,6 +751,42 @@ func TestSiteSchemaResourceTellsAModelWhatExists(t *testing.T) {
 	// confidently report that this site tracks no conversions.
 	if schema.GoalsAvailable {
 		t.Error("goals are not wired into this build but the schema claims they are")
+	}
+}
+
+// canonicalPropertyFixture supplies the account-backed property registry to a
+// schema resource test without falling through to the legacy control table.
+type canonicalPropertyFixture struct{}
+
+// ListProperties returns the single canonical session property in the test.
+func (canonicalPropertyFixture) ListProperties(context.Context, int64) ([]publicapi.CustomProperty, error) {
+	return []publicapi.CustomProperty{{ID: 9, Key: "account_tier", Scope: "session"}}, nil
+}
+
+// CreateProperty is unused by the read-only schema resource.
+func (canonicalPropertyFixture) CreateProperty(context.Context, int64, string, string) (*publicapi.CustomProperty, error) {
+	return nil, nil
+}
+
+// DeleteProperty is unused by the read-only schema resource.
+func (canonicalPropertyFixture) DeleteProperty(context.Context, int64, int64) error {
+	return nil
+}
+
+// TestSchemaResourceUsesTheCanonicalPropertyRegistry proves MCP does not read
+// the legacy control registry once the account-backed registry is wired. The
+// scope is also preserved in the dimension name the model receives.
+func TestSchemaResourceUsesTheCanonicalPropertyRegistry(t *testing.T) {
+	f := newFixture(t)
+	f.API.CustomProperties = canonicalPropertyFixture{}
+	read := f.call(t, "resources/read", `{"uri":"feasible://site/example.com/schema"}`)
+	contents := read.Result.(map[string]any)["contents"].([]map[string]any)
+	var schema siteSchema
+	if err := json.Unmarshal([]byte(contents[0]["text"].(string)), &schema); err != nil {
+		t.Fatal(err)
+	}
+	if len(schema.PropertyDimensions) != 1 || schema.PropertyDimensions[0] != "session:props:account_tier" {
+		t.Fatalf("canonical property dimensions = %v", schema.PropertyDimensions)
 	}
 }
 
