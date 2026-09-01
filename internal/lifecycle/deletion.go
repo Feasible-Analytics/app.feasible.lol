@@ -115,6 +115,7 @@ func (p *Purger) DeleteNow(ctx context.Context, userID, teamID int64, now time.T
 // Force changes only the claim policy: provider quiescence and every durable
 // cleanup checkpoint remain identical in both paths.
 func (p *Purger) purge(ctx context.Context, account Account, now time.Time, userID int64, force bool) error {
+	requestedNow := force
 	pending, completed, claimedAt, ownerRequested, err := p.deletionStatus(ctx, account.TeamID)
 	if err != nil {
 		return err
@@ -124,7 +125,7 @@ func (p *Purger) purge(ctx context.Context, account Account, now time.Time, user
 	}
 	if pending {
 		account.State.DeletedAt = claimedAt
-		force = force || ownerRequested
+		force = ownerRequested
 	}
 	live, err := p.teamExists(ctx, account.TeamID)
 	if err != nil {
@@ -139,6 +140,16 @@ func (p *Purger) purge(ctx context.Context, account Account, now time.Time, user
 			return err
 		}
 		defer lease.Release()
+	}
+	if pending && requestedNow && !ownerRequested {
+		authorized, err := p.promotePendingOwnerIntent(ctx, userID, account.TeamID)
+		if err != nil {
+			return err
+		}
+		if !authorized {
+			return fmt.Errorf("lifecycle: account %d deletion requester is no longer owner", account.TeamID)
+		}
+		force = true
 	}
 
 	var transitionLease *TransitionLease
@@ -290,6 +301,49 @@ func (p *Purger) purge(ctx context.Context, account Account, now time.Time, user
 	}
 
 	return nil
+}
+
+// promotePendingOwnerIntent transactionally converts an older scheduled claim
+// into an explicit owner request before provider work. Membership revocation and
+// this update serialize in SQLite, so exactly one authorization state wins.
+func (p *Purger) promotePendingOwnerIntent(ctx context.Context, userID, teamID int64) (bool, error) {
+	lease, err := p.Store.AcquireTransitionLease(ctx, teamID)
+	if err != nil {
+		return false, err
+	}
+	defer lease.Release()
+
+	result, err := p.Store.DB().ExecContext(ctx, `
+		UPDATE account_deletions
+		SET owner_requested = 1
+		WHERE team_id = ? AND completed_at IS NULL AND owner_requested = 0
+		  AND EXISTS (
+		      SELECT 1 FROM team_memberships
+		      WHERE team_memberships.team_id = account_deletions.team_id
+		        AND team_memberships.user_id = ?
+		        AND team_memberships.role = 'owner'
+		  )
+	`, teamID, userID)
+	if err != nil {
+		return false, fmt.Errorf("lifecycle: authorize pending owner deletion %d: %w", teamID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("lifecycle: authorize pending owner deletion %d: affected rows: %w", teamID, err)
+	}
+	if rows == 1 {
+		return true, nil
+	}
+
+	var alreadyAuthorized int
+	if err := p.Store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM account_deletions
+		WHERE team_id = ? AND completed_at IS NULL AND owner_requested = 1
+	`, teamID).Scan(&alreadyAuthorized); err != nil {
+		return false, fmt.Errorf("lifecycle: inspect pending owner deletion %d: %w", teamID, err)
+	}
+
+	return alreadyAuthorized == 1, nil
 }
 
 // cancelRecoveredDeletion atomically retires a scheduled legacy claim when

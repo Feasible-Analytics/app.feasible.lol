@@ -143,6 +143,13 @@ func (s *Service) Reconcile(ctx context.Context, teamID int64, customerID string
 // account lease. The deletion path uses this after quiescing Stripe so it can
 // recover a just-paid account without recursively acquiring the same lease.
 func (s *Service) reconcileLocked(ctx context.Context, lease lifecycle.AccountLease, teamID int64, customerID string, update PaymentUpdate) (bool, error) {
+	return s.reconcileLockedWithRecovery(ctx, lease, teamID, customerID, update, false)
+}
+
+// reconcileLockedWithRecovery permits provider-paid truth through only for an
+// unfinished scheduled deletion. Ordinary reconciliation and owner-requested
+// deletion remain fenced by the immutable audit.
+func (s *Service) reconcileLockedWithRecovery(ctx context.Context, lease lifecycle.AccountLease, teamID int64, customerID string, update PaymentUpdate, recoverScheduled bool) (bool, error) {
 	if err := lease.Renew(ctx); err != nil {
 		return false, err
 	}
@@ -151,7 +158,16 @@ func (s *Service) reconcileLocked(ctx context.Context, lease lifecycle.AccountLe
 		return false, err
 	}
 	if deleting {
-		return false, nil
+		if !recoverScheduled {
+			return false, nil
+		}
+		recoverable, err := s.Store.RecoverableScheduledDeletion(ctx, teamID)
+		if err != nil {
+			return false, err
+		}
+		if !recoverable {
+			return false, nil
+		}
 	}
 
 	trigger := update.Trigger
@@ -831,8 +847,15 @@ func (s *Service) recoverSettlement(ctx context.Context, lease lifecycle.Account
 		SourceCreated: invoice.Created, EventCreated: paidAt.Unix(),
 		Trigger: stripe.EventInvoicePaymentSucceed, RequireSubscriptionMatch: true,
 	}
-	if _, err := s.reconcileLocked(ctx, lease, teamID, customerID, update); err != nil {
+	if _, err := s.reconcileLockedWithRecovery(ctx, lease, teamID, customerID, update, true); err != nil {
 		return false, err
+	}
+	mirror, err := s.Store.Load(ctx, teamID)
+	if err != nil {
+		return false, err
+	}
+	if mirror.PaymentState != PaymentPaid {
+		return false, fmt.Errorf("billing: recovered account %d payment mirror remained %q", teamID, mirror.PaymentState)
 	}
 
 	return true, nil

@@ -404,6 +404,26 @@ func (s *Store) DeletionStarted(ctx context.Context, teamID int64) (bool, error)
 	return exists == 1, nil
 }
 
+// RecoverableScheduledDeletion reports whether the only deletion intent is an
+// unfinished scheduled claim. Settlement recovery may repair billing through
+// this narrow state; an explicit owner intent remains terminal.
+func (s *Store) RecoverableScheduledDeletion(ctx context.Context, teamID int64) (bool, error) {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM account_deletions
+			JOIN teams ON teams.id = account_deletions.team_id
+			WHERE account_deletions.team_id = ?
+			  AND account_deletions.completed_at IS NULL
+			  AND account_deletions.owner_requested = 0
+		)
+	`, teamID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("billing: inspect recoverable deletion %d: %w", teamID, err)
+	}
+
+	return exists == 1, nil
+}
+
 // Save writes the mirror back. It is a full overwrite rather than a set of
 // partial updates because the whole row is read from the provider in one go —
 // updating some columns from a fresh read and leaving others from an older one

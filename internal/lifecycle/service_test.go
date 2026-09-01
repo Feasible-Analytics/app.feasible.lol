@@ -1079,6 +1079,72 @@ func TestRevokedOwnerCannotReachProviderQuiescence(t *testing.T) {
 	}
 }
 
+// TestRevokedOwnerCannotPromoteScheduledDeletion covers the pending-audit path:
+// a stale explicit request must not convert scheduled recovery into irreversible
+// owner deletion or reach the provider after membership has been revoked.
+func TestRevokedOwnerCannotPromoteScheduledDeletion(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	if _, err := h.control.Exec(`
+		INSERT INTO account_deletions
+			(team_id, team_name, clock_started_at, started_at)
+		VALUES (1, 'Example Co', ?, ?);
+		DELETE FROM team_memberships WHERE team_id = 1 AND user_id = 1
+	`, day0.Unix(), at(DeletionDays).Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	quiesced := false
+	h.purger.Payments = &staticPaymentCoordinator{onQuiesce: func() { quiesced = true }}
+	if err := h.purger.DeleteNow(ctx, 1, 1, at(DeletionDays)); err == nil {
+		t.Fatal("revoked owner promoted the scheduled deletion")
+	}
+	if quiesced {
+		t.Fatal("revoked pending request reached provider quiescence")
+	}
+	var ownerRequested int
+	if err := h.control.QueryRow(`
+		SELECT owner_requested FROM account_deletions WHERE team_id = 1
+	`).Scan(&ownerRequested); err != nil {
+		t.Fatal(err)
+	}
+	if ownerRequested != 0 {
+		t.Fatalf("revoked request changed owner_requested to %d", ownerRequested)
+	}
+}
+
+// TestOwnerPromotesScheduledDeletionBeforeProviderQuiescence proves a valid
+// explicit request durably changes the pending claim's origin before any
+// provider callback, so crash recovery cannot reinterpret it as scheduled.
+func TestOwnerPromotesScheduledDeletionBeforeProviderQuiescence(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	if _, err := h.control.Exec(`
+		INSERT INTO account_deletions
+			(team_id, team_name, clock_started_at, started_at)
+		VALUES (1, 'Example Co', ?, ?)
+	`, day0.Unix(), at(DeletionDays).Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	promoted := false
+	h.purger.Payments = &staticPaymentCoordinator{onQuiesce: func() {
+		var ownerRequested int
+		if err := h.control.QueryRow(`
+			SELECT owner_requested FROM account_deletions WHERE team_id = 1
+		`).Scan(&ownerRequested); err != nil {
+			t.Fatal(err)
+		}
+		promoted = ownerRequested == 1
+	}}
+	if err := h.purger.DeleteNow(ctx, 1, 1, at(DeletionDays)); err != nil {
+		t.Fatal(err)
+	}
+	if !promoted {
+		t.Fatal("provider quiescence preceded pending owner authorization")
+	}
+}
+
 // TestDeletionIsIdempotent covers a crash between any two steps: running the
 // whole thing again must succeed rather than fail on something already gone.
 func TestDeletionIsIdempotent(t *testing.T) {

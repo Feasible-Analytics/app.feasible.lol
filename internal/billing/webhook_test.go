@@ -2318,6 +2318,75 @@ func TestDay90RevalidatesSettlementBeforeDeletion(t *testing.T) {
 	}
 }
 
+// TestLegacyPendingDeletionPersistsRecoveredPaymentMirror reproduces the v5
+// resume shape: the audit already exists while the live billing mirror is still
+// failed. Provider-paid truth must be durable before lifecycle cancels the audit.
+func TestLegacyPendingDeletionPersistsRecoveredPaymentMirror(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	failureAt := h.now().Add(-lifecycle.DeletionDays * lifecycle.Day)
+	paidAt := h.now().Add(-time.Hour)
+
+	if err := h.service.Store.Save(ctx, Subscription{
+		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_test_1",
+		Status: stripe.StatusPastDue, Plan: "monthly", PriceID: "price_monthly",
+		PaymentState: PaymentFailed, PaymentFailedAt: failureAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.service.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentFailed, failureAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.control.Exec(`
+		INSERT INTO account_deletions
+			(team_id, team_name, contact_email, stripe_customer_id, clock_started_at, started_at)
+		VALUES (1, 'Example Co', 'owner@example.com', ?, ?, ?);
+		INSERT INTO account_deletion_customers (team_id, customer_id, created_at)
+		VALUES (1, ?, ?)
+	`, customerID, failureAt.Unix(), h.now().Unix(), customerID, h.now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	h.provider.mu.Lock()
+	h.provider.status = stripe.StatusActive
+	h.provider.invoiceStatus = "paid"
+	h.provider.invoiceAutoAdvance = false
+	h.provider.invoicePaidAt = paidAt.Unix()
+	h.provider.mu.Unlock()
+
+	h.service.Lifecycle.Purger.Payments = h.service
+	h.service.Lifecycle.Purger.Customers = h.service
+	pending, err := h.service.Lifecycle.Purger.PendingDeletions(ctx)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("legacy pending deletion=%v error=%v", pending, err)
+	}
+	if err := h.service.Lifecycle.Purger.Purge(ctx, pending[0], h.now()); err != nil {
+		t.Fatal(err)
+	}
+
+	mirror, err := h.service.Store.Load(ctx, teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var teams, deletions, customers int
+	for query, target := range map[string]*int{
+		`SELECT COUNT(*) FROM teams WHERE id = 1`:                           &teams,
+		`SELECT COUNT(*) FROM account_deletions WHERE team_id = 1`:          &deletions,
+		`SELECT COUNT(*) FROM account_deletion_customers WHERE team_id = 1`: &customers,
+	} {
+		if err := h.control.QueryRow(query).Scan(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.provider.mu.Lock()
+	customerDeleted := h.provider.customerDeleted
+	h.provider.mu.Unlock()
+	if mirror.PaymentState != PaymentPaid || teams != 1 || deletions != 0 || customers != 0 ||
+		h.phase() != lifecycle.PhaseActive || customerDeleted {
+		t.Fatalf("legacy recovery mirror=%q teams=%d deletions=%d customers=%d phase=%q provider_deleted=%t",
+			mirror.PaymentState, teams, deletions, customers, h.phase(), customerDeleted)
+	}
+}
+
 // TestDay90RecoversSettlementAtTheVoidFence covers the last provider race: an
 // invoice settles after the final pre-mutation read, exactly when deletion tries
 // to void it. The failed void is re-read as paid_at evidence and recovery wins.
