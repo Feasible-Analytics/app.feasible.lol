@@ -988,6 +988,97 @@ func TestDeletionRemovesEveryDiscoveredCustomerAndRetriesIndependently(t *testin
 	}
 }
 
+// TestOwnerDeletionIntentPrecedesProviderQuiescence revokes the requester at
+// the first provider boundary. The immutable owner-authorized intent must
+// already exist, so irreversible invoice cleanup never runs for a stale request.
+func TestOwnerDeletionIntentPrecedesProviderQuiescence(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	if _, err := h.control.Exec(`
+		INSERT INTO users (id, email, name, created_at, updated_at)
+		VALUES (2, 'second-owner@example.com', 'Second Owner', ?, ?);
+		INSERT INTO team_memberships (team_id, user_id, role, created_at)
+		VALUES (1, 2, 'owner', ?)
+	`, day0.Unix(), day0.Unix(), day0.Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	quiesced := false
+	h.purger.Payments = &staticPaymentCoordinator{
+		customerIDs: []string{"cus_authorized"},
+		onQuiesce: func() {
+			var audits, deleted, ownerRequested int
+			if err := h.control.QueryRow(`
+				SELECT COUNT(*) FROM account_deletions
+				WHERE team_id = 1 AND completed_at IS NULL AND owner_requested = 1
+			`).Scan(&audits); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.control.QueryRow(`
+				SELECT COUNT(*) FROM account_lifecycle
+				WHERE team_id = 1 AND deleted_at IS NOT NULL
+			`).Scan(&deleted); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.control.QueryRow(`
+				SELECT COUNT(*) FROM team_memberships
+				WHERE team_id = 1 AND user_id = 1 AND role = 'owner'
+			`).Scan(&ownerRequested); err != nil {
+				t.Fatal(err)
+			}
+			if audits != 1 || deleted != 1 || ownerRequested != 1 {
+				t.Fatalf("provider mutation preceded authorization: audits=%d deleted=%d owner=%d",
+					audits, deleted, ownerRequested)
+			}
+			if _, err := h.control.Exec(`DELETE FROM team_memberships WHERE team_id = 1 AND user_id = 1`); err != nil {
+				t.Fatal(err)
+			}
+			quiesced = true
+		},
+	}
+	removed := ""
+	h.purger.Customers = removerFunc(func(_ context.Context, customerID string) error {
+		removed = customerID
+		return nil
+	})
+
+	if err := h.purger.DeleteNow(ctx, 1, 1, day0); err != nil {
+		t.Fatal(err)
+	}
+	if !quiesced || removed != "cus_authorized" {
+		t.Fatalf("authorized deletion quiesced=%t removed=%q", quiesced, removed)
+	}
+}
+
+// TestRevokedOwnerCannotReachProviderQuiescence proves the initial durable
+// claim fails closed before provider work when ownership was already removed.
+func TestRevokedOwnerCannotReachProviderQuiescence(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	if _, err := h.control.Exec(`DELETE FROM team_memberships WHERE team_id = 1 AND user_id = 1`); err != nil {
+		t.Fatal(err)
+	}
+
+	quiesced := false
+	h.purger.Payments = &staticPaymentCoordinator{onQuiesce: func() { quiesced = true }}
+	if err := h.purger.DeleteNow(ctx, 1, 1, day0); err == nil {
+		t.Fatal("revoked owner deleted the account")
+	}
+	if quiesced {
+		t.Fatal("revoked owner reached provider quiescence")
+	}
+	var teams, audits int
+	if err := h.control.QueryRow(`SELECT COUNT(*) FROM teams WHERE id = 1`).Scan(&teams); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.control.QueryRow(`SELECT COUNT(*) FROM account_deletions WHERE team_id = 1`).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if teams != 1 || audits != 0 {
+		t.Fatalf("revoked request changed teams=%d audits=%d", teams, audits)
+	}
+}
+
 // TestDeletionIsIdempotent covers a crash between any two steps: running the
 // whole thing again must succeed rather than fail on something already gone.
 func TestDeletionIsIdempotent(t *testing.T) {
@@ -1147,6 +1238,121 @@ func TestLegacyCrashAfterTeamRemovalRemainsDiscoverable(t *testing.T) {
 	}
 }
 
+// TestUpgradeRetriesLegacyStripeDeletionFailures builds the exact v5 audit
+// shapes that previously stranded provider customers, migrates them, and proves
+// one normal sweep removes both customers before completing either audit.
+func TestUpgradeRetriesLegacyStripeDeletionFailures(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	control, err := store.Open(filepath.Join(dataDir, "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { control.Close() })
+
+	throughFive := migrate.Set{Name: "control"}
+	for _, migration := range migrate.Control().Migrations {
+		if migration.Version <= 5 {
+			throughFive.Migrations = append(throughFive.Migrations, migration)
+		}
+	}
+	if _, err := migrate.Run(ctx, control, throughFive); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Exec(`
+		INSERT INTO account_deletions
+			(team_id, stripe_customer_id, clock_started_at, started_at, notes)
+		VALUES
+			(99, 'cus_interrupted', 1, 10, 'claimed'),
+			(100, 'cus_failed', 2, 20, 'payment customer NOT removed: provider unavailable; control rows removed');
+		UPDATE account_deletions SET completed_at = 21 WHERE team_id = 100
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrate.Run(ctx, control, migrate.Control()); err != nil {
+		t.Fatal(err)
+	}
+
+	var removed []string
+	purger := &Purger{
+		Store:    NewStore(control),
+		Accounts: accounts.NewManager(dataDir),
+		DataDir:  dataDir,
+		Customers: removerFunc(func(_ context.Context, customerID string) error {
+			removed = append(removed, customerID)
+			return nil
+		}),
+	}
+	service := &Service{Store: purger.Store, Purger: purger, Now: func() time.Time { return day0 }}
+	if _, err := service.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var completed, pendingCustomers int
+	if err := control.QueryRow(`
+		SELECT COUNT(*) FROM account_deletions
+		WHERE team_id IN (99, 100) AND completed_at IS NOT NULL
+	`).Scan(&completed); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.QueryRow(`
+		SELECT COUNT(*) FROM account_deletion_customers
+		WHERE team_id IN (99, 100) AND removed_at IS NULL
+	`).Scan(&pendingCustomers); err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 2 || removed[0] != "cus_interrupted" || removed[1] != "cus_failed" || completed != 2 || pendingCustomers != 0 {
+		t.Fatalf("legacy recovery removed=%v completed=%d pending=%d", removed, completed, pendingCustomers)
+	}
+}
+
+// TestRecoveredLegacyDeletionClearsItsPendingIntent proves a payment that wins
+// against a v5 pre-destruction crash restores the live account completely rather
+// than leaving an audit that every future sweep mistakes for pending deletion.
+func TestRecoveredLegacyDeletionClearsItsPendingIntent(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	if _, err := h.control.Exec(`
+		INSERT INTO account_deletions
+			(team_id, team_name, stripe_customer_id, clock_started_at, started_at)
+		VALUES (1, 'Example Co', 'cus_recovered', ?, ?);
+		INSERT INTO account_deletion_customers (team_id, customer_id, created_at)
+		VALUES (1, 'cus_recovered', ?)
+	`, day0.Unix(), at(DeletionDays).Unix(), at(DeletionDays).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	h.purger.Payments = &staticPaymentCoordinator{recovered: true}
+	h.purger.Customers = removerFunc(func(context.Context, string) error {
+		t.Fatal("recovered account reached customer deletion")
+		return nil
+	})
+
+	pending, err := h.purger.PendingDeletions(ctx)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending legacy deletion=%v error=%v", pending, err)
+	}
+	if err := h.purger.Purge(ctx, pending[0], at(DeletionDays)); err != nil {
+		t.Fatal(err)
+	}
+
+	var teams, audits, customers, running, pendingNotices int
+	for query, destination := range map[string]*int{
+		`SELECT COUNT(*) FROM teams WHERE id = 1`:                                                          &teams,
+		`SELECT COUNT(*) FROM account_deletions WHERE team_id = 1`:                                         &audits,
+		`SELECT COUNT(*) FROM account_deletion_customers WHERE team_id = 1`:                                &customers,
+		`SELECT COUNT(*) FROM account_lifecycle WHERE team_id = 1 AND trigger = '' AND deleted_at IS NULL`: &running,
+		`SELECT COUNT(*) FROM lifecycle_outbox WHERE team_id = 1 AND completed_at IS NULL`:                 &pendingNotices,
+	} {
+		if err := h.control.QueryRow(query).Scan(destination); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if teams != 1 || audits != 0 || customers != 0 || running != 1 || pendingNotices != 0 {
+		t.Fatalf("recovered account teams=%d audits=%d customers=%d active=%d notices=%d",
+			teams, audits, customers, running, pendingNotices)
+	}
+}
+
 // removerFunc adapts a function to the CustomerRemover interface.
 type removerFunc func(ctx context.Context, id string) error
 
@@ -1160,6 +1366,8 @@ func (f removerFunc) DeleteCustomer(ctx context.Context, id string) error {
 // deletion claim before the team cascade.
 type staticPaymentCoordinator struct {
 	customerIDs []string
+	onQuiesce   func()
+	recovered   bool
 }
 
 // AcquireAccountLease returns a no-op lease because this lifecycle test covers
@@ -1171,7 +1379,10 @@ func (*staticPaymentCoordinator) AcquireAccountLease(context.Context, int64) (Ac
 // QuiesceForDeletion returns the discovered customer set with no provider
 // mutations; billing's own tests cover subscription and invoice quiescence.
 func (p *staticPaymentCoordinator) QuiesceForDeletion(context.Context, AccountLease, int64, string, time.Time, bool) (PaymentQuiescence, error) {
-	return PaymentQuiescence{CustomerIDs: append([]string(nil), p.customerIDs...)}, nil
+	if p.onQuiesce != nil {
+		p.onQuiesce()
+	}
+	return PaymentQuiescence{Recovered: p.recovered, CustomerIDs: append([]string(nil), p.customerIDs...)}, nil
 }
 
 // staticAccountLease is the minimum lease implementation needed by the purger.

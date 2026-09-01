@@ -135,6 +135,7 @@ FROM lifecycle_emails;
 ALTER TABLE account_deletions ADD COLUMN local_removed_at INTEGER;
 ALTER TABLE account_deletions ADD COLUMN provider_removed_at INTEGER;
 ALTER TABLE account_deletions ADD COLUMN control_removed_at INTEGER;
+ALTER TABLE account_deletions ADD COLUMN owner_requested INTEGER NOT NULL DEFAULT 0;
 
 -- A single account can acquire more than one Stripe customer when an older
 -- Checkout Session completes after a replacement. This no-FK audit survives
@@ -149,6 +150,25 @@ CREATE TABLE account_deletion_customers (
 
     PRIMARY KEY (team_id, customer_id)
 );
+
+-- Version 5 could stop after writing the immutable audit but before removing
+-- the Stripe customer. It also completed the audit after a failed provider
+-- call, recording the failure only in notes. Materialize both shapes as pending
+-- provider work before the new sweeper starts, and reopen known failures so a
+-- restart cannot mistake an outstanding stored payment method for completion.
+INSERT INTO account_deletion_customers (team_id, customer_id, created_at)
+SELECT team_id, stripe_customer_id, started_at
+FROM account_deletions
+WHERE stripe_customer_id <> ''
+  AND (
+      completed_at IS NULL
+      OR instr(notes, 'payment customer NOT removed:') > 0
+  );
+
+UPDATE account_deletions
+SET completed_at = NULL
+WHERE stripe_customer_id <> ''
+  AND instr(notes, 'payment customer NOT removed:') > 0;
 
 -- Purge retries ask for one team's unfinished provider objects. Keeping only
 -- pending rows in this index prevents completed deletion history from making

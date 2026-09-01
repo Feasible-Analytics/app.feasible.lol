@@ -81,11 +81,10 @@ type Purger struct {
 // The order is deliberate and each step is idempotent, because a crash between
 // any two of them must be resumable by simply running it again:
 //
-//  1. Lease the account and suspend provider-side checkout, subscription, and
-//     invoice collection before re-reading settlement evidence.
-//  2. Record the deletion in a table with no foreign key, capturing the contact
-//     address. Everything else about the account is about to cease to exist,
-//     including every row that could tell us who to write to.
+//  1. Lease the account. An explicit owner request records its authorized intent
+//     before provider mutation; a scheduled deletion first re-reads settlement.
+//  2. Suspend provider-side checkout, subscription, and invoice collection, then
+//     record every discovered customer in an audit with no foreign key.
 //  3. Mark the clock deleted. From this moment the sweeper skips the account,
 //     so a failure below cannot leave it half-deleted and still ticking.
 //  4. Delete the team row, whose cascade prevents new authorized account work.
@@ -116,7 +115,7 @@ func (p *Purger) DeleteNow(ctx context.Context, userID, teamID int64, now time.T
 // Force changes only the claim policy: provider quiescence and every durable
 // cleanup checkpoint remain identical in both paths.
 func (p *Purger) purge(ctx context.Context, account Account, now time.Time, userID int64, force bool) error {
-	pending, completed, claimedAt, err := p.deletionStatus(ctx, account.TeamID)
+	pending, completed, claimedAt, ownerRequested, err := p.deletionStatus(ctx, account.TeamID)
 	if err != nil {
 		return err
 	}
@@ -125,17 +124,47 @@ func (p *Purger) purge(ctx context.Context, account Account, now time.Time, user
 	}
 	if pending {
 		account.State.DeletedAt = claimedAt
+		force = force || ownerRequested
+	}
+	live, err := p.teamExists(ctx, account.TeamID)
+	if err != nil {
+		return err
 	}
 
 	var quiescence PaymentQuiescence
 	var lease AccountLease
-	if !account.State.Deleted() && p.Payments != nil {
+	if live && p.Payments != nil {
 		lease, err = p.Payments.AcquireAccountLease(ctx, account.TeamID)
 		if err != nil {
 			return err
 		}
 		defer lease.Release()
+	}
 
+	var transitionLease *TransitionLease
+	if force && !account.State.Deleted() {
+		transitionLease, err = p.Store.AcquireTransitionLease(ctx, account.TeamID)
+		if err != nil {
+			return err
+		}
+		defer transitionLease.Release()
+
+		if lease != nil {
+			if err := lease.Renew(ctx); err != nil {
+				return err
+			}
+		}
+		claimed, err := p.claim(ctx, account, now, nil, userID, true)
+		if err != nil {
+			return err
+		}
+		if !claimed {
+			return fmt.Errorf("lifecycle: account %d deletion claim lost or requester is no longer owner", account.TeamID)
+		}
+		account.State.DeletedAt = now.UTC()
+	}
+
+	if live && p.Payments != nil {
 		quiescence, err = p.Payments.QuiesceForDeletion(
 			ctx, lease, account.TeamID, account.CustomerID, account.State.StartedAt, !force,
 		)
@@ -143,6 +172,9 @@ func (p *Purger) purge(ctx context.Context, account Account, now time.Time, user
 			return err
 		}
 		if quiescence.Recovered {
+			if pending {
+				return p.cancelRecoveredDeletion(ctx, account.TeamID, now)
+			}
 			return nil
 		}
 	}
@@ -152,7 +184,7 @@ func (p *Purger) purge(ctx context.Context, account Account, now time.Time, user
 		}
 	}
 	if !account.State.Deleted() {
-		transitionLease, err := p.Store.AcquireTransitionLease(ctx, account.TeamID)
+		transitionLease, err = p.Store.AcquireTransitionLease(ctx, account.TeamID)
 		if err != nil {
 			if quiescence.Restore != nil {
 				_ = quiescence.Restore(ctx)
@@ -184,10 +216,10 @@ func (p *Purger) purge(ctx context.Context, account Account, now time.Time, user
 		account.State.DeletedAt = now.UTC()
 	}
 
-	// A rerun after a crash finds the team already gone. Everything below is
+	// A rerun after a crash can find the team already gone. Everything below is
 	// idempotent, but the clock row cascaded away with the team, so writing it
 	// again would fail on a foreign key and stop the resume dead.
-	live, err := p.teamExists(ctx, account.TeamID)
+	live, err = p.teamExists(ctx, account.TeamID)
 	if err != nil {
 		return err
 	}
@@ -260,22 +292,92 @@ func (p *Purger) purge(ctx context.Context, account Account, now time.Time, user
 	return nil
 }
 
-// deletionStatus distinguishes a new claim, a crash recovery, and an already
-// completed idempotent retry before any team-scoped lease is acquired.
-func (p *Purger) deletionStatus(ctx context.Context, teamID int64) (bool, bool, time.Time, error) {
-	var started int64
-	var completed sql.NullInt64
-	err := p.Store.DB().QueryRowContext(ctx, `
-		SELECT started_at, completed_at FROM account_deletions WHERE team_id = ?
-	`, teamID).Scan(&started, &completed)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, false, time.Time{}, nil
-	}
+// cancelRecoveredDeletion atomically retires a scheduled legacy claim when
+// provider evidence proves the live account paid before destruction completed.
+// Owner-requested intents are never eligible for payment-based cancellation.
+func (p *Purger) cancelRecoveredDeletion(ctx context.Context, teamID int64, now time.Time) error {
+	lease, err := p.Store.AcquireTransitionLease(ctx, teamID)
 	if err != nil {
-		return false, false, time.Time{}, fmt.Errorf("lifecycle: inspect deletion %d: %w", teamID, err)
+		return err
+	}
+	defer lease.Release()
+
+	tx, err := p.Store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("lifecycle: cancel recovered deletion %d: %w", teamID, err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is harmless
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE account_lifecycle
+		SET trigger = '', started_at = NULL, deleted_at = NULL, updated_at = ?
+		WHERE team_id = ?
+		  AND EXISTS (
+		      SELECT 1 FROM account_deletions
+		      WHERE team_id = ? AND completed_at IS NULL AND owner_requested = 0
+		  )
+	`, now.UTC().Unix(), teamID, teamID)
+	if err != nil {
+		return fmt.Errorf("lifecycle: restore recovered account %d: %w", teamID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("lifecycle: restore recovered account %d: affected rows: %w", teamID, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("lifecycle: recovered deletion %d is missing or owner-requested", teamID)
 	}
 
-	return !completed.Valid, completed.Valid, time.Unix(started, 0).UTC(), nil
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE teams
+		SET trial_ends_at = NULL, accept_traffic_until = NULL, updated_at = ?
+		WHERE id = ?
+	`, now.UTC().Unix(), teamID); err != nil {
+		return fmt.Errorf("lifecycle: restore recovered account mirrors %d: %w", teamID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM lifecycle_outbox WHERE team_id = ? AND completed_at IS NULL
+	`, teamID); err != nil {
+		return fmt.Errorf("lifecycle: cancel recovered deletion notices %d: %w", teamID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE collection_gaps SET ended_at = ? WHERE team_id = ? AND ended_at IS NULL
+	`, now.UTC().Unix(), teamID); err != nil {
+		return fmt.Errorf("lifecycle: close recovered deletion gaps %d: %w", teamID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM account_deletion_customers WHERE team_id = ?`, teamID); err != nil {
+		return fmt.Errorf("lifecycle: clear recovered payment customers %d: %w", teamID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM account_deletions
+		WHERE team_id = ? AND completed_at IS NULL AND owner_requested = 0
+	`, teamID); err != nil {
+		return fmt.Errorf("lifecycle: clear recovered deletion audit %d: %w", teamID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("lifecycle: cancel recovered deletion %d: %w", teamID, err)
+	}
+
+	return nil
+}
+
+// deletionStatus distinguishes a new claim, a crash recovery, and an already
+// completed idempotent retry before any team-scoped lease is acquired.
+func (p *Purger) deletionStatus(ctx context.Context, teamID int64) (bool, bool, time.Time, bool, error) {
+	var started int64
+	var completed sql.NullInt64
+	var ownerRequested int
+	err := p.Store.DB().QueryRowContext(ctx, `
+		SELECT started_at, completed_at, owner_requested FROM account_deletions WHERE team_id = ?
+	`, teamID).Scan(&started, &completed, &ownerRequested)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, time.Time{}, false, nil
+	}
+	if err != nil {
+		return false, false, time.Time{}, false, fmt.Errorf("lifecycle: inspect deletion %d: %w", teamID, err)
+	}
+
+	return !completed.Valid, completed.Valid, time.Unix(started, 0).UTC(), ownerRequested != 0, nil
 }
 
 // removeControl atomically removes the live account rows and checkpoints that
@@ -509,22 +611,7 @@ func (p *Purger) finishControl(ctx context.Context, teamID int64, now time.Time)
 func (p *Purger) claim(ctx context.Context, account Account, now time.Time, customerIDs []string, userID int64, force bool) (bool, error) {
 	db := p.Store.DB()
 
-	// A clock already marked deleted with an unfinished audit row is a crash
-	// recovery, not a new claim. The remaining idempotent steps must resume.
-	if account.State.Deleted() {
-		var pending int
-		err := db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM account_deletions
-			WHERE team_id = ? AND completed_at IS NULL
-		`, account.TeamID).Scan(&pending)
-		if err != nil {
-			return false, fmt.Errorf("lifecycle: inspect deletion %d: %w", account.TeamID, err)
-		}
-
-		return pending == 1, nil
-	}
-
-	if !force && !account.State.DueForDeletion(now) {
+	if !account.State.Deleted() && !force && !account.State.DueForDeletion(now) {
 		return false, nil
 	}
 
@@ -533,6 +620,31 @@ func (p *Purger) claim(ctx context.Context, account Account, now time.Time, cust
 		return false, fmt.Errorf("lifecycle: claim deletion %d: %w", account.TeamID, err)
 	}
 	defer tx.Rollback() //nolint:errcheck // a rollback after a successful commit is a no-op
+
+	// A clock already marked deleted with an unfinished audit row is a crash
+	// recovery, not a new claim. Provider discovery may have happened after an
+	// explicit intent was recorded, so merge those customer IDs before resuming.
+	if account.State.Deleted() {
+		var pending int
+		err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM account_deletions
+			WHERE team_id = ? AND completed_at IS NULL
+		`, account.TeamID).Scan(&pending)
+		if err != nil {
+			return false, fmt.Errorf("lifecycle: inspect deletion %d: %w", account.TeamID, err)
+		}
+		if pending != 1 {
+			return false, nil
+		}
+		if err := p.recordPaymentCustomers(ctx, tx, account, customerIDs, now); err != nil {
+			return false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return false, fmt.Errorf("lifecycle: resume deletion claim %d: %w", account.TeamID, err)
+		}
+
+		return true, nil
+	}
 
 	query := `
 		UPDATE account_lifecycle
@@ -569,16 +681,34 @@ func (p *Purger) claim(ctx context.Context, account Account, now time.Time, cust
 		return false, nil
 	}
 
+	ownerRequested := 0
+	if force {
+		ownerRequested = 1
+	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO account_deletions
-			(team_id, team_name, contact_email, stripe_customer_id, clock_started_at, started_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT (team_id) DO NOTHING
-	`, account.TeamID, account.TeamName, account.Email, account.CustomerID,
-		account.State.StartedAt.UTC().Unix(), now.UTC().Unix()); err != nil {
+			INSERT INTO account_deletions
+				(team_id, team_name, contact_email, stripe_customer_id, clock_started_at, started_at, owner_requested)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (team_id) DO NOTHING
+		`, account.TeamID, account.TeamName, account.Email, account.CustomerID,
+		account.State.StartedAt.UTC().Unix(), now.UTC().Unix(), ownerRequested); err != nil {
 		return false, fmt.Errorf("lifecycle: record deletion %d: %w", account.TeamID, err)
 	}
 
+	if err := p.recordPaymentCustomers(ctx, tx, account, customerIDs, now); err != nil {
+		return false, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("lifecycle: claim deletion %d: %w", account.TeamID, err)
+	}
+
+	return true, nil
+}
+
+// recordPaymentCustomers merges every provider identity discovered before or
+// after an authorized deletion intent into the no-FK retry audit transaction.
+func (p *Purger) recordPaymentCustomers(ctx context.Context, tx *sql.Tx, account Account, customerIDs []string, now time.Time) error {
 	uniqueCustomers := make(map[string]bool, len(customerIDs)+1)
 	if account.CustomerID != "" {
 		uniqueCustomers[account.CustomerID] = true
@@ -594,16 +724,12 @@ func (p *Purger) claim(ctx context.Context, account Account, now time.Time, cust
 				(team_id, customer_id, created_at)
 			VALUES (?, ?, ?)
 			ON CONFLICT (team_id, customer_id) DO NOTHING
-		`, account.TeamID, customerID, now.UTC().Unix()); err != nil {
-			return false, fmt.Errorf("lifecycle: record payment customer %s for deletion %d: %w", customerID, account.TeamID, err)
+			`, account.TeamID, customerID, now.UTC().Unix()); err != nil {
+			return fmt.Errorf("lifecycle: record payment customer %s for deletion %d: %w", customerID, account.TeamID, err)
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("lifecycle: claim deletion %d: %w", account.TeamID, err)
-	}
-
-	return true, nil
+	return nil
 }
 
 // teamExists reports whether the account's control rows are still there. It is

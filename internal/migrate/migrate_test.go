@@ -510,6 +510,11 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 				(team_id, team_name, contact_email, stripe_customer_id,
 				 clock_started_at, started_at, notes)
 			VALUES (99, 'Historical deletion', 'old@example.com', 'cus_old', 1, 91, 'claimed');
+			INSERT INTO account_deletions
+				(team_id, team_name, contact_email, stripe_customer_id,
+				 clock_started_at, started_at, completed_at, notified_at, notes)
+			VALUES (100, 'Failed provider deletion', 'failed@example.com', 'cus_failed',
+			        2, 92, 93, 94, 'payment customer NOT removed: provider unavailable; control rows removed');
 	`); err != nil {
 		t.Fatal(err)
 	}
@@ -581,12 +586,31 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 			localRemoved, providerRemoved, controlRemoved)
 	}
 
+	var pendingLegacyCustomers, reopenedFailures int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM account_deletion_customers
+		WHERE (team_id = 99 AND customer_id = 'cus_old')
+		   OR (team_id = 100 AND customer_id = 'cus_failed')
+	`).Scan(&pendingLegacyCustomers); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM account_deletions
+		WHERE team_id = 100 AND completed_at IS NULL AND notified_at = 94
+	`).Scan(&reopenedFailures); err != nil {
+		t.Fatal(err)
+	}
+	if pendingLegacyCustomers != 2 || reopenedFailures != 1 {
+		t.Fatalf("legacy provider recovery has customers=%d reopened=%d, want 2 and 1",
+			pendingLegacyCustomers, reopenedFailures)
+	}
+
 	var lastTeamID int64
 	if err := db.QueryRowContext(ctx, `SELECT last_id FROM team_id_sequence WHERE singleton = 1`).Scan(&lastTeamID); err != nil {
 		t.Fatal(err)
 	}
-	if lastTeamID != 99 {
-		t.Fatalf("team id sequence started at %d, want historical maximum 99", lastTeamID)
+	if lastTeamID != 100 {
+		t.Fatalf("team id sequence started at %d, want historical maximum 100", lastTeamID)
 	}
 }
 
