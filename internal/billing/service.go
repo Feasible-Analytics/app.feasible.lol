@@ -326,9 +326,14 @@ func (s *Service) reconcileLockedWithRecovery(ctx context.Context, lease lifecyc
 
 		return true, nil
 	}
+	if deleting && recoverScheduled {
+		return true, nil
+	}
 
 	signalAt := s.now()
-	if signal == lifecycle.SignalPaymentFailed && !mirror.PaymentFailedAt.IsZero() {
+	if signal == lifecycle.SignalPaymentSucceeded && triggerUpdate.EventCreated > 0 {
+		signalAt = time.Unix(triggerUpdate.EventCreated, 0).UTC()
+	} else if signal == lifecycle.SignalPaymentFailed && !mirror.PaymentFailedAt.IsZero() {
 		signalAt = mirror.PaymentFailedAt
 	}
 
@@ -601,8 +606,14 @@ func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.Accoun
 		if s.Lifecycle == nil {
 			return lifecycle.PaymentQuiescence{}, fmt.Errorf("billing: cannot recover account %d without lifecycle service", teamID)
 		}
-		if _, err := s.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentSucceeded, paidAt); err != nil {
+		pendingDeletion, err := s.Store.RecoverableScheduledDeletion(ctx, teamID)
+		if err != nil {
 			return lifecycle.PaymentQuiescence{}, err
+		}
+		if !pendingDeletion {
+			if _, err := s.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentSucceeded, paidAt); err != nil {
+				return lifecycle.PaymentQuiescence{}, err
+			}
 		}
 		return lifecycle.PaymentQuiescence{Recovered: true, CustomerIDs: sortedCustomerIDs(customers)}, nil
 	}
@@ -837,9 +848,6 @@ func (s *Service) recoverSettlement(ctx context.Context, lease lifecycle.Account
 	}
 	if s.Lifecycle == nil {
 		return false, fmt.Errorf("billing: cannot recover account %d without lifecycle service", teamID)
-	}
-	if _, err := s.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentSucceeded, paidAt); err != nil {
-		return false, err
 	}
 
 	update := PaymentUpdate{
@@ -1143,7 +1151,7 @@ func (s *Service) Checkout(ctx context.Context, teamID int64, planKey, email str
 			teamID,
 		)
 	}
-	if found && claim.Status == "expired" {
+	if !found || claim.Status == "expired" {
 		if _, err := s.cleanupCheckoutSessions(ctx, lease, teamID, existing.CustomerID == "", existing.CustomerID, nil); err != nil {
 			return nil, err
 		}

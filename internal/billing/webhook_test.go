@@ -803,6 +803,8 @@ func TestConcurrentCheckoutAcrossStoresCreatesOneStripeSession(t *testing.T) {
 			_, _ = w.Write([]byte(`{"id":"cs_single","status":"open","url":"https://checkout.example/single"}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions/cs_single":
 			_, _ = w.Write([]byte(`{"id":"cs_single","status":"open","url":"https://checkout.example/single"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions":
+			_, _ = w.Write([]byte(`{"object":"list","has_more":false,"data":[]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -902,6 +904,13 @@ func TestOpenCheckoutCanSwitchPlans(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions/cs_monthly":
 			_, _ = w.Write([]byte(`{"id":"cs_monthly","status":"open","url":"https://checkout.example/monthly","metadata":{"feasible_team_id":"1"}}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions":
+			providerMu.Lock()
+			created := len(prices) > 0
+			providerMu.Unlock()
+			if !created {
+				_, _ = w.Write([]byte(`{"data":[],"has_more":false}`))
+				return
+			}
 			_, _ = w.Write([]byte(`{"data":[{"id":"cs_monthly","status":"open","metadata":{"feasible_team_id":"1"}}],"has_more":false}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions/cs_monthly/expire":
 			providerMu.Lock()
@@ -971,6 +980,10 @@ func TestCheckoutRecoversAfterSessionPersistenceFailure(t *testing.T) {
 	expirations := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions" {
+			_, _ = w.Write([]byte(`{"object":"list","has_more":false,"data":[]}`))
+			return
+		}
 		if r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions/cs_recovered/expire" {
 			providerMu.Lock()
 			expirations++
@@ -1079,6 +1092,13 @@ func TestSessionlessCheckoutRecoveryHonorsAChangedPlan(t *testing.T) {
 			}
 			_, _ = w.Write([]byte(`{"id":"cs_replacement_yearly","status":"open","url":"https://checkout.example/yearly"}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions":
+			providerMu.Lock()
+			created := len(prices) > 0
+			providerMu.Unlock()
+			if !created {
+				_, _ = w.Write([]byte(`{"data":[],"has_more":false}`))
+				return
+			}
 			_, _ = w.Write([]byte(`{"data":[{"id":"cs_recovered_monthly","status":"open","metadata":{"feasible_team_id":"1"}}],"has_more":false}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions/cs_recovered_monthly":
 			_, _ = w.Write([]byte(`{"id":"cs_recovered_monthly","status":"open","metadata":{"feasible_team_id":"1"}}`))
@@ -1177,8 +1197,9 @@ func TestIndeterminateCheckoutClaimFailsClosedAtTheBoundary(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions":
 			providerMu.Lock()
 			expired := oldExpired
+			created := len(forms) > 0
 			providerMu.Unlock()
-			if expired {
+			if expired || !created {
 				_, _ = w.Write([]byte(`{"object":"list","has_more":false,"data":[]}`))
 			} else {
 				_, _ = w.Write([]byte(`{"object":"list","has_more":false,"data":[{"id":"cs_old","status":"open","metadata":{"feasible_team_id":"1"}}]}`))
@@ -1386,6 +1407,71 @@ func TestExpiredCheckoutRestartPersistsCleanupFailure(t *testing.T) {
 	}
 	if cleanup != 0 || created != 1 || claim.Plan != "yearly" || claim.IdempotencyKey == old.IdempotencyKey {
 		t.Fatalf("cleanup=%d creates=%d claim=%+v old_key=%q", cleanup, created, claim, old.IdempotencyKey)
+	}
+}
+
+// TestFirstCheckoutDiscoversPreMigrationProviderSessions covers accounts that
+// predate billing_checkouts. Provider metadata is authoritative even without a
+// local claim: open sessions are expired and completed first checkouts block.
+func TestFirstCheckoutDiscoversPreMigrationProviderSessions(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     string
+		wantCreate int
+		wantExpire int
+		wantError  string
+	}{
+		{name: "open session is retired", status: "open", wantCreate: 1, wantExpire: 1},
+		{name: "completed first checkout blocks", status: "complete", wantError: "completed before it could be recorded locally"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			ctx := context.Background()
+			status := tc.status
+			creates := 0
+			expires := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions":
+					if status == "expired" {
+						_, _ = w.Write([]byte(`{"object":"list","has_more":false,"data":[]}`))
+						return
+					}
+					fmt.Fprintf(w, `{"object":"list","has_more":false,"data":[{"id":"cs_v5","status":%q,"metadata":{"feasible_team_id":"1"}}]}`, status)
+				case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions/cs_v5":
+					subscription := ""
+					if status == "complete" {
+						subscription = "sub_v5"
+					}
+					fmt.Fprintf(w, `{"id":"cs_v5","status":%q,"subscription":%q,"metadata":{"feasible_team_id":"1"}}`, status, subscription)
+				case r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions/cs_v5/expire":
+					expires++
+					status = "expired"
+					_, _ = w.Write([]byte(`{"id":"cs_v5","status":"expired"}`))
+				case r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions":
+					creates++
+					_, _ = w.Write([]byte(`{"id":"cs_new","status":"open","url":"https://checkout.example/new"}`))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(server.Close)
+			h.service.Stripe = stripe.New("sk_test_fake")
+			h.service.Stripe.BaseURL = server.URL
+
+			session, err := h.service.Checkout(ctx, teamID, "monthly", "owner@example.com")
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("pre-migration checkout session=%+v error=%v", session, err)
+				}
+			} else if err != nil || session == nil || session.ID != "cs_new" {
+				t.Fatalf("pre-migration replacement session=%+v error=%v", session, err)
+			}
+			if creates != tc.wantCreate || expires != tc.wantExpire {
+				t.Fatalf("provider creates=%d expires=%d, want %d and %d", creates, expires, tc.wantCreate, tc.wantExpire)
+			}
+		})
 	}
 }
 
@@ -2262,8 +2348,8 @@ func TestDay90RevalidatesSettlementBeforeDeletion(t *testing.T) {
 		t.Fatalf("local mirror after provider-side settlement is %+v error=%v", mirror, err)
 	}
 
-	// Make the first post-recovery mirror write crash. The lifecycle transition
-	// occurs first, so this fault must not leave an otherwise-paid account locked.
+	// Make the first post-recovery mirror write crash. Lifecycle activation must
+	// wait for that durable mirror so the whole recovery remains retryable.
 	if _, err := h.control.Exec(`
 		CREATE TRIGGER fail_paid_mirror
 		BEFORE UPDATE OF payment_state ON subscriptions
@@ -2288,8 +2374,8 @@ func TestDay90RevalidatesSettlementBeforeDeletion(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "simulated paid mirror crash") {
 		t.Fatalf("day-90 recovery returned %v", err)
 	}
-	if got := h.phase(); got != lifecycle.PhaseActive {
-		t.Fatalf("failed mirror write left paid lifecycle in %q, want active", got)
+	if got := h.phase(); got != lifecycle.PhaseDeleted {
+		t.Fatalf("failed mirror write advanced lifecycle to %q, want deletion retry", got)
 	}
 	var deletions int
 	if err := h.control.QueryRow(`SELECT COUNT(*) FROM account_deletions WHERE team_id = 1`).Scan(&deletions); err != nil {
@@ -2302,13 +2388,17 @@ func TestDay90RevalidatesSettlementBeforeDeletion(t *testing.T) {
 	if _, err := h.control.Exec(`DROP TRIGGER fail_paid_mirror`); err != nil {
 		t.Fatal(err)
 	}
-	response := h.deliverCreated("evt_paid_after_day_90", stripe.EventInvoicePaymentSucceed,
-		invoiceObjectFor("in_test_1", "sub_test_1", paidAt), paidAt)
-	if response.Code != http.StatusOK {
-		t.Fatalf("delayed paid event answered %d: %s", response.Code, response.Body.String())
+	if err := h.service.Lifecycle.Purger.Purge(ctx, lifecycle.Account{
+		TeamID: 1, TeamName: "Example Co", Email: "owner@example.com",
+		CustomerID: customerID, State: state,
+	}, h.now()); err != nil {
+		t.Fatalf("day-90 recovery retry returned %v", err)
 	}
 	if mirror, err := h.service.Store.Load(ctx, teamID); err != nil || mirror.PaymentState != PaymentPaid {
-		t.Fatalf("delayed paid event left mirror %+v error=%v", mirror, err)
+		t.Fatalf("recovery retry left mirror %+v error=%v", mirror, err)
+	}
+	if got := h.phase(); got != lifecycle.PhaseActive {
+		t.Fatalf("durable mirror retry left lifecycle in %q, want active", got)
 	}
 
 	h.provider.mu.Lock()
@@ -2384,6 +2474,83 @@ func TestLegacyPendingDeletionPersistsRecoveredPaymentMirror(t *testing.T) {
 		h.phase() != lifecycle.PhaseActive || customerDeleted {
 		t.Fatalf("legacy recovery mirror=%q teams=%d deletions=%d customers=%d phase=%q provider_deleted=%t",
 			mirror.PaymentState, teams, deletions, customers, h.phase(), customerDeleted)
+	}
+}
+
+// TestLegacyPendingDeletionMirrorCrashKeepsAuditRetryable injects the fault
+// between provider settlement discovery and mirror persistence. Lifecycle and
+// the scheduled audit must remain terminal until a later sweep writes paid.
+func TestLegacyPendingDeletionMirrorCrashKeepsAuditRetryable(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	failureAt := h.now().Add(-lifecycle.DeletionDays * lifecycle.Day)
+	paidAt := h.now().Add(-time.Hour)
+
+	if err := h.service.Store.Save(ctx, Subscription{
+		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_test_1",
+		Status: stripe.StatusPastDue, Plan: "monthly", PriceID: "price_monthly",
+		PaymentState: PaymentFailed, PaymentFailedAt: failureAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.service.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentFailed, failureAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.control.Exec(`
+		INSERT INTO account_deletions
+			(team_id, team_name, stripe_customer_id, clock_started_at, started_at)
+		VALUES (1, 'Example Co', ?, ?, ?);
+		CREATE TRIGGER fail_legacy_paid_mirror
+		BEFORE UPDATE OF payment_state ON subscriptions
+		WHEN NEW.payment_state = 'paid'
+		BEGIN SELECT RAISE(FAIL, 'simulated legacy paid mirror crash'); END
+	`, customerID, failureAt.Unix(), h.now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	h.provider.mu.Lock()
+	h.provider.status = stripe.StatusActive
+	h.provider.invoiceStatus = "paid"
+	h.provider.invoiceAutoAdvance = false
+	h.provider.invoicePaidAt = paidAt.Unix()
+	h.provider.mu.Unlock()
+	h.service.Lifecycle.Purger.Payments = h.service
+	h.service.Lifecycle.Purger.Customers = h.service
+
+	pending, err := h.service.Lifecycle.Purger.PendingDeletions(ctx)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("legacy pending deletion=%v error=%v", pending, err)
+	}
+	if err := h.service.Lifecycle.Purger.Purge(ctx, pending[0], h.now()); err == nil ||
+		!strings.Contains(err.Error(), "simulated legacy paid mirror crash") {
+		t.Fatalf("legacy mirror fault returned %v", err)
+	}
+	mirror, err := h.service.Store.Load(ctx, teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var audits int
+	if err := h.control.QueryRow(`SELECT COUNT(*) FROM account_deletions WHERE team_id = 1`).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if mirror.PaymentState != PaymentFailed || audits != 1 || h.phase() != lifecycle.PhaseDeleted {
+		t.Fatalf("mirror crash state=%q audits=%d phase=%q", mirror.PaymentState, audits, h.phase())
+	}
+
+	if _, err := h.control.Exec(`DROP TRIGGER fail_legacy_paid_mirror`); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.Lifecycle.Purger.Purge(ctx, pending[0], h.now()); err != nil {
+		t.Fatal(err)
+	}
+	mirror, err = h.service.Store.Load(ctx, teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.control.QueryRow(`SELECT COUNT(*) FROM account_deletions WHERE team_id = 1`).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if mirror.PaymentState != PaymentPaid || audits != 0 || h.phase() != lifecycle.PhaseActive {
+		t.Fatalf("mirror retry state=%q audits=%d phase=%q", mirror.PaymentState, audits, h.phase())
 	}
 }
 
