@@ -25,6 +25,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dashboard"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dataio"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/destructive"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/goals"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/google"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
@@ -482,6 +483,26 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 
 	mux.Handle(statsapi.Pattern, metrics.Instrument(metrics.HandlerStats,
 		com.Gate.Protect(stats)))
+
+	// Goal definitions need their own report wrapper, but every count inside it
+	// still runs through the same query engine and authorization choices as the
+	// rest of the dashboard. Converting the stats authorization result here keeps
+	// session, public, shared-link, and pinned-segment access in lockstep.
+	goalReport := goals.NewHandler(service.Sites, manager, e.log)
+	goalReport.Authorize = func(r *http.Request, site sites.Site) (goals.Authorization, error) {
+		authorized, err := stats.Authorize(r, site)
+		if err != nil {
+			var refusal *statsapi.AuthorizationError
+			if errors.As(err, &refusal) {
+				return goals.Authorization{}, goals.Refuse(refusal.Status, refusal.Message)
+			}
+
+			return goals.Authorization{}, err
+		}
+
+		return goals.Authorization{PinnedFilters: authorized.PinnedFilters}, nil
+	}
+	mux.Handle(goals.ReportPattern, com.Gate.Protect(goalReport))
 
 	// The compiled React dashboard, served out of the binary. It reads the site
 	// snapshot only to render the site picker; every number on it comes from

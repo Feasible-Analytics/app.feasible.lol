@@ -27,6 +27,15 @@ type ReportRequest struct {
 	DateRange query.DateRange
 	Timezone  string
 
+	// Filters narrow both the population that could convert and each goal's
+	// matching events. Dashboard filters therefore describe one population
+	// consistently from the headline visitors through the conversion rate.
+	Filters []query.Filter
+
+	// Exact carries the dashboard's explicit refusal of sampled answers through
+	// every underlying query used to assemble the report.
+	Exact bool
+
 	// Currency converts every goal's money into one currency so the totals can
 	// be added up. Empty means each goal reports in its own currency and
 	// nothing is converted, which needs no exchange rate and is never wrong.
@@ -43,6 +52,10 @@ type ReportRequest struct {
 // ReportRow is one goal's line.
 type ReportRow struct {
 	Goal Goal `json:"goal"`
+
+	// Label is the goal's display name or its readable fallback. Sending the
+	// package's own label prevents every client from reimplementing that rule.
+	Label string `json:"label"`
 
 	// UniqueConversions counts each visit at most once. Clicking a tracked
 	// button twice in one visit is one unique conversion and two total ones,
@@ -116,7 +129,7 @@ func Report(ctx context.Context, db *sql.DB, engine *query.Engine, req ReportReq
 
 	full := NewWindow(resolved.Start, resolved.End)
 
-	result := &ReportResult{From: resolved.Start, To: resolved.End}
+	result := &ReportResult{Rows: []ReportRow{}, From: resolved.Start, To: resolved.End}
 
 	// The divisor is read once per distinct window. Most goals share the whole
 	// period, so this is one query however many goals a site has, and a goal
@@ -135,6 +148,7 @@ func Report(ctx context.Context, db *sql.DB, engine *query.Engine, req ReportReq
 
 		row := ReportRow{
 			Goal:    goal,
+			Label:   goal.Label(),
 			From:    time.Unix(window.Start, 0).In(resolved.Location),
 			Partial: window.Start > full.Start,
 		}
@@ -185,8 +199,10 @@ func periodFor(ctx context.Context, engine *query.Engine, req ReportRequest, win
 	q := query.Query{
 		SiteIDs:   []int64{req.SiteID},
 		Metrics:   []string{"visitors", "visits"},
+		Filters:   append([]query.Filter(nil), req.Filters...),
 		DateRange: customRange(window, loc),
 		Timezone:  req.Timezone,
+		Exact:     req.Exact,
 	}
 
 	result, err := engine.Run(ctx, q)
@@ -213,6 +229,7 @@ func countGoal(ctx context.Context, engine *query.Engine, req ReportRequest, goa
 	if err != nil {
 		return err
 	}
+	filters = append(filters, req.Filters...)
 
 	// A visit is the unit of a unique conversion, which is why "visits" is the
 	// metric: on the events table it counts the distinct sessions a matching
@@ -231,6 +248,7 @@ func countGoal(ctx context.Context, engine *query.Engine, req ReportRequest, goa
 		DateRange: customRange(window, loc),
 		Timezone:  req.Timezone,
 		Currency:  reportCurrency(req, goal),
+		Exact:     req.Exact,
 	}
 
 	result, err := engine.Run(ctx, q)

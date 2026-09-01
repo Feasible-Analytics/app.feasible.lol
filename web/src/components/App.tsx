@@ -22,6 +22,7 @@ import { dateRange, useUrlState } from "../lib/url";
 import { useStats } from "../lib/useStats";
 import { Drawer } from "./Drawer";
 import { FilterBar } from "./FilterBar";
+import { GoalsCard } from "./GoalsCard";
 import { MARKER_ATTRIBUTE, MainGraph } from "./MainGraph";
 import { Realtime } from "./Realtime";
 import { ReportCard } from "./ReportCard";
@@ -457,6 +458,7 @@ function AnalyticsDashboard() {
 							exact={exact}
 						/>
 					))}
+					<GoalsCard domain={state.domain} range={range} filters={filters} exact={exact} />
 				</div>
 			</main>
 

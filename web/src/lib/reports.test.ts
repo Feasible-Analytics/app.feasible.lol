@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { PAGES, breakdownValueIndex, dimensionsOf } from "./reports";
+import { CARDS, DEVICES, PAGES, breakdownValueIndex, dimensionsOf } from "./reports";
 
 test("Top Pages keeps captured titles outside its grouping dimensions", () => {
 	const pages = PAGES.tabs[0];
@@ -27,4 +27,9 @@ test("reports without a companion keep their existing dimension order", () => {
 
 	assert.deepEqual(dimensionsOf(entries, "visit:country"), ["visit:entry_page", "visit:country"]);
 	assert.equal(breakdownValueIndex(entries), 1);
+});
+
+test("Languages shares the Devices card and leaves four half-width reports", () => {
+	assert.equal(DEVICES.tabs.at(-1)?.dimension, "visit:language");
+	assert.deepEqual(CARDS.map((card) => card.id), ["sources", "pages", "locations", "devices"]);
 });
