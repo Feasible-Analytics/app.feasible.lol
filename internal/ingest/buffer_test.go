@@ -26,6 +26,10 @@ type recording struct {
 	batches [][]Event
 	shards  []int
 
+	// rejectCanceled makes Send model the real writer's immediate refusal when
+	// a queued flush reaches it with an already-expired context.
+	rejectCanceled bool
+
 	// failNext makes the next send fail, and commitOnFail decides how much of
 	// the batch it claims to have committed — a partial commit is exactly what
 	// a lost acknowledgement mid-batch looks like.
@@ -34,12 +38,16 @@ type recording struct {
 }
 
 // Send records the batch and either accepts it or fails as configured.
-func (r *recording) Send(_ context.Context, shard int, batch []Event) ([]uuid.UUID, error) {
+func (r *recording) Send(ctx context.Context, shard int, batch []Event) ([]uuid.UUID, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.batches = append(r.batches, append([]Event(nil), batch...))
 	r.shards = append(r.shards, shard)
+
+	if r.rejectCanceled && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 
 	if r.failNext {
 		r.failNext = false
@@ -255,6 +263,55 @@ func TestAddAndWaitReportsFailureBeforeAcknowledgement(t *testing.T) {
 	}
 	if got := transport.count(); got != 2 {
 		t.Fatalf("transport received %d attempts, want 2", got)
+	}
+}
+
+// TestExpiredQueuedFlushDoesNotConsumeLaterBatch proves a flush whose context
+// expires while waiting for serialization cannot detach and fail work that
+// arrived after it queued. A later live flush remains responsible for the
+// event and its durable waiter.
+func TestExpiredQueuedFlushDoesNotConsumeLaterBatch(t *testing.T) {
+	transport := &recording{rejectCanceled: true}
+	buffer := NewBuffer(transport, 100, time.Hour)
+
+	buffer.flushing.Lock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	queued := make(chan struct{})
+	finished := make(chan error, 1)
+	go func() {
+		close(queued)
+		finished <- buffer.Flush(ctx)
+	}()
+
+	<-queued
+	cancel()
+
+	event := bufferEvent(0)
+	waiter := make(chan error, 1)
+	buffer.add(event, waiter)
+	buffer.flushing.Unlock()
+
+	if err := <-finished; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expired flush returned %v, want context cancellation", err)
+	}
+	if got := transport.count(); got != 0 {
+		t.Fatalf("expired flush sent %d batches, want none", got)
+	}
+	if got := buffer.Len(); got != 1 {
+		t.Fatalf("expired flush left %d events pending, want 1", got)
+	}
+	select {
+	case err := <-waiter:
+		t.Fatalf("expired flush released the later waiter with %v", err)
+	default:
+	}
+
+	if err := buffer.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-waiter; err != nil {
+		t.Fatalf("live flush failed the preserved waiter: %v", err)
 	}
 }
 

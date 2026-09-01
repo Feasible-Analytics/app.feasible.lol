@@ -170,6 +170,13 @@ func (b *Buffer) flush(ctx context.Context) error {
 	b.flushing.Lock()
 	defer b.flushing.Unlock()
 
+	// A timer-triggered flush may spend its entire deadline queued behind an
+	// active write. Check only after serialization so an expired caller cannot
+	// detach newer pending work and hand it to the writer with a stale context.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	b.mu.Lock()
 	batch := b.pending
 	b.pending = nil
