@@ -552,7 +552,7 @@ func (p *Purger) pendingPaymentCustomers(ctx context.Context, teamID int64) ([]s
 	if err != nil {
 		return nil, fmt.Errorf("lifecycle: list payment customers for deletion %d: %w", teamID, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var customers []string
 	for rows.Next() {
@@ -878,7 +878,7 @@ func (p *Purger) PendingDeletions(ctx context.Context) ([]Account, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lifecycle: pending deletions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []Account
 	for rows.Next() {
@@ -912,7 +912,7 @@ func (p *Purger) PendingConfirmations(ctx context.Context) ([]Deletion, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lifecycle: pending confirmations: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []Deletion
 

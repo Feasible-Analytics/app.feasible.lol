@@ -55,7 +55,11 @@ func newHandler(t *testing.T) (*Handler, *accounts.Manager) {
 	}
 
 	manager := accounts.NewManager(dataDir)
-	t.Cleanup(func() { manager.CloseAll() })
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close account manager: %v", err)
+		}
+	})
 
 	if _, err := manager.Open(ctx, 1); err != nil {
 		t.Fatal(err)

@@ -64,7 +64,7 @@ type bucket struct {
 // The raw events file is included in every build. Data somebody generated on
 // their own site is theirs, and putting the only complete copy of it behind a
 // plan is how a customer discovers they cannot leave.
-func BuildExport(ctx context.Context, db *sql.DB, siteID int64, location *time.Location, destination string) (int64, error) {
+func BuildExport(ctx context.Context, db *sql.DB, siteID int64, location *time.Location, destination string) (size int64, err error) {
 	if location == nil {
 		location = time.UTC
 	}
@@ -82,24 +82,30 @@ func BuildExport(ctx context.Context, db *sql.DB, siteID int64, location *time.L
 	if err != nil {
 		return 0, fmt.Errorf("dataio: create %s: %w", destination, err)
 	}
-	defer file.Close()
+	defer closeResource(file, &err, destination)
 
 	archive := zip.NewWriter(file)
+	archiveClosed := false
+	defer func() {
+		if !archiveClosed {
+			closeResource(archive, &err, destination+" archive")
+		}
+	}()
 
 	for _, sheet := range Sheets {
 		if err := writeSheet(ctx, db, archive, siteID, location, from, to, sheet); err != nil {
-			archive.Close()
 			return 0, err
 		}
 	}
 
 	if err := writeRawEvents(ctx, db, archive, siteID, location); err != nil {
-		archive.Close()
 		return 0, err
 	}
 
-	if err := archive.Close(); err != nil {
-		return 0, fmt.Errorf("dataio: finish %s: %w", destination, err)
+	closeErr := archive.Close()
+	archiveClosed = true
+	if closeErr != nil {
+		return 0, fmt.Errorf("dataio: finish %s: %w", destination, closeErr)
 	}
 
 	// The sync is what makes "the row says the file is ready" true after a
@@ -283,7 +289,7 @@ func collect(ctx context.Context, db *sql.DB, siteID int64, location *time.Locat
 	if err != nil {
 		return fmt.Errorf("dataio: read %s: %w", sheet.Name, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		day := ""
@@ -436,7 +442,7 @@ func eventNameIDs(ctx context.Context, db *sql.DB) (int64, int64, error) {
 	if err != nil {
 		return 0, 0, fmt.Errorf("dataio: read event names: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var id int64
@@ -524,7 +530,7 @@ func writeRawEvents(ctx context.Context, db *sql.DB, archive *zip.Writer, siteID
 	if err != nil {
 		return fmt.Errorf("dataio: read raw events: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var (

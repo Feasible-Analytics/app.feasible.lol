@@ -11,6 +11,7 @@ package mail
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/smtp"
@@ -160,8 +161,8 @@ type SMTPTransport struct {
 // acceptance is recorded verbatim in Detail: it is the strongest claim that can
 // honestly be made, and calling it "delivered" is the mistake this package was
 // written to avoid.
-func (t *SMTPTransport) Send(ctx context.Context, msg Message) (Result, error) {
-	result := Result{Transport: "smtp"}
+func (t *SMTPTransport) Send(ctx context.Context, msg Message) (result Result, err error) {
+	result = Result{Transport: "smtp"}
 
 	if t.Config.Host == "" {
 		return result, fmt.Errorf("mail: no SMTP host configured")
@@ -186,9 +187,12 @@ func (t *SMTPTransport) Send(ctx context.Context, msg Message) (Result, error) {
 		deadline = contextDeadline
 	}
 	if err := conn.SetDeadline(deadline); err != nil {
-		conn.Close()
+		conversationErr := fmt.Errorf("mail: set %s conversation deadline: %w", addr, err)
+		if closeErr := conn.Close(); closeErr != nil {
+			conversationErr = errors.Join(conversationErr, fmt.Errorf("mail: close %s after deadline failure: %w", addr, closeErr))
+		}
 		result.Detail = err.Error()
-		return result, fmt.Errorf("mail: set %s conversation deadline: %w", addr, err)
+		return result, conversationErr
 	}
 
 	// Port 465 speaks TLS from the first byte; 587 and 25 negotiate it after
@@ -201,11 +205,23 @@ func (t *SMTPTransport) Send(ctx context.Context, msg Message) (Result, error) {
 
 	client, err := smtp.NewClient(conn, t.Config.Host)
 	if err != nil {
-		conn.Close()
+		conversationErr := fmt.Errorf("mail: %s: %w", addr, err)
+		if closeErr := conn.Close(); closeErr != nil {
+			conversationErr = errors.Join(conversationErr, fmt.Errorf("mail: close %s after SMTP greeting failure: %w", addr, closeErr))
+		}
 		result.Detail = err.Error()
-		return result, fmt.Errorf("mail: %s: %w", addr, err)
+		return result, conversationErr
 	}
-	defer client.Close()
+	clientClosed := false
+	defer func() {
+		if clientClosed {
+			return
+		}
+		if closeErr := client.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("mail: close %s SMTP connection: %w", addr, closeErr))
+			result.Detail = err.Error()
+		}
+	}()
 
 	if t.Config.StartTLS && t.Config.Port != 465 {
 		if ok, _ := client.Extension("STARTTLS"); ok {
@@ -246,9 +262,12 @@ func (t *SMTPTransport) Send(ctx context.Context, msg Message) (Result, error) {
 	}
 
 	if _, err := writer.Write([]byte(Render(from, msg))); err != nil {
-		writer.Close()
+		writeErr := fmt.Errorf("mail: write body: %w", err)
+		if closeErr := writer.Close(); closeErr != nil {
+			writeErr = errors.Join(writeErr, fmt.Errorf("mail: close rejected DATA body: %w", closeErr))
+		}
 		result.Detail = err.Error()
-		return result, fmt.Errorf("mail: write body: %w", err)
+		return result, writeErr
 	}
 
 	// The relay's verdict arrives on the close of DATA, not on the write. A
@@ -260,9 +279,15 @@ func (t *SMTPTransport) Send(ctx context.Context, msg Message) (Result, error) {
 		return result, fmt.Errorf("mail: relay rejected the message: %w", err)
 	}
 
-	if err := client.Quit(); err != nil && t.Log != nil {
-		t.Log.Warn("smtp quit failed after the message was accepted", "error", err, "to", msg.To)
+	if quitErr := client.Quit(); quitErr != nil {
+		if t.Log != nil {
+			t.Log.Warn("smtp quit failed after the message was accepted", "error", quitErr, "to", msg.To)
+		}
+		if closeErr := client.Close(); closeErr != nil && t.Log != nil {
+			t.Log.Warn("smtp close failed after the message was accepted", "error", closeErr, "to", msg.To)
+		}
 	}
+	clientClosed = true
 
 	result.Accepted = true
 	result.Detail = "accepted by " + addr

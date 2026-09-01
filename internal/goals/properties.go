@@ -153,7 +153,7 @@ func Allowed(ctx context.Context, db *sql.DB, siteID int64) ([]Property, error) 
 	if err != nil {
 		return nil, fmt.Errorf("goals: allowed properties: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var list []Property
 
@@ -203,7 +203,7 @@ func Scopes(ctx context.Context, db *sql.DB, siteIDs []int64) (map[string]string
 	if err != nil {
 		return nil, fmt.Errorf("goals: property scopes: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	scopes := map[string]string{}
 
@@ -320,7 +320,7 @@ func Values(ctx context.Context, db *sql.DB, req PropertyRequest) ([]PropertyRow
 	if err != nil {
 		return nil, fmt.Errorf("goals: property values: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var list []PropertyRow
 
@@ -378,7 +378,7 @@ func Seen(ctx context.Context, db *sql.DB, siteID int64, window Window, limit in
 	if err != nil {
 		return nil, fmt.Errorf("goals: seen properties: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var names []string
 

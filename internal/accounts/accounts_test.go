@@ -28,9 +28,18 @@ func newManager(t *testing.T) *Manager {
 	t.Helper()
 
 	manager := NewManager(t.TempDir())
-	t.Cleanup(func() { manager.CloseAll() })
+	t.Cleanup(func() { checkClose(t, "account manager", manager.CloseAll) })
 
 	return manager
+}
+
+// checkClose runs a test cleanup and reports a failure against the test that
+// owns the resource instead of silently discarding it.
+func checkClose(t testing.TB, name string, close func() error) {
+	t.Helper()
+	if err := close(); err != nil {
+		t.Errorf("close %s: %v", name, err)
+	}
 }
 
 // TestOpenCreatesTheDatabaseOnFirstUse covers the path an account's first event
@@ -102,8 +111,8 @@ func TestOpenClosesAHandleCachedBeforeAnotherManagerDeletedTheAccount(t *testing
 	deleting := NewManager(dataDir)
 	stale := NewManager(dataDir)
 	t.Cleanup(func() {
-		deleting.CloseAll()
-		stale.CloseAll()
+		checkClose(t, "deleting account manager", deleting.CloseAll)
+		checkClose(t, "stale account manager", stale.CloseAll)
 	})
 
 	if _, err := deleting.Open(ctx, 1); err != nil {
@@ -137,7 +146,7 @@ func TestOpenCannotCrossTheDeletionMarkerCriticalSection(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
 	manager := NewManager(dataDir)
-	t.Cleanup(func() { manager.CloseAll() })
+	t.Cleanup(func() { checkClose(t, "account manager", manager.CloseAll) })
 
 	lock, err := lockAccount(dataDir, 1)
 	if err != nil {
@@ -273,7 +282,7 @@ func TestEnsureSchemaRefusesAnOutOfDateDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer checkClose(t, "account database", db.Close)
 
 	if _, err := migrate.Run(ctx, db.Writer(), migrate.Account()); err != nil {
 		t.Fatal(err)
@@ -442,7 +451,7 @@ func TestDiscoverFindsEveryAccount(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	manager := NewManager(dir)
-	defer manager.CloseAll()
+	defer checkClose(t, "account manager", manager.CloseAll)
 
 	for _, id := range []int64{1, 4, 12} {
 		if _, err := manager.Open(ctx, id); err != nil {

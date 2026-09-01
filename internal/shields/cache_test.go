@@ -71,7 +71,11 @@ func TestShardShieldStopsAnEventReachingDisk(t *testing.T) {
 
 	dataDir := t.TempDir()
 	manager := accounts.NewManager(dataDir)
-	t.Cleanup(func() { manager.CloseAll() })
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close account manager: %v", err)
+		}
+	})
 
 	account, err := manager.Open(ctx, 1)
 	if err != nil {
@@ -133,7 +137,11 @@ func TestIPShieldIsAnsweredFromTheSnapshot(t *testing.T) {
 	ctx := context.Background()
 
 	manager := accounts.NewManager(t.TempDir())
-	t.Cleanup(func() { manager.CloseAll() })
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close account manager: %v", err)
+		}
+	})
 
 	account, err := manager.Open(ctx, 1)
 	if err != nil {

@@ -152,7 +152,11 @@ func newStack(t *testing.T) *stack {
 		t.Fatal(err)
 	}
 
-	t.Cleanup(func() { manager.CloseAll() })
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close account manager: %v", err)
+		}
+	})
 	t.Cleanup(func() { control.Close() })
 
 	secret, err := tracker.LoadSecret(dir)

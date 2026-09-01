@@ -221,7 +221,7 @@ func (s *Store) load(ctx context.Context, now time.Time) (Pair, error) {
 	if err != nil {
 		return Pair{}, fmt.Errorf("salts: read: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var pair Pair
 

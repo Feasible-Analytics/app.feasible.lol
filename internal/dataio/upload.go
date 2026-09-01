@@ -9,6 +9,7 @@
 package dataio
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -90,36 +91,51 @@ func SaveUpload(source io.Reader, destination string) (int64, error) {
 
 	written, err := io.Copy(file, io.LimitReader(source, MaxUploadBytes+1))
 	if err != nil {
-		file.Close()
-		os.Remove(destination)
-
-		return 0, fmt.Errorf("dataio: write %s: %w", destination, err)
+		return 0, discardUpload(file, destination, fmt.Errorf("dataio: write %s: %w", destination, err))
 	}
 
 	if written > MaxUploadBytes {
-		file.Close()
-		os.Remove(destination)
-
-		return 0, fmt.Errorf("that file is larger than the %d MB an import may be", MaxUploadBytes>>20)
+		return 0, discardUpload(file, destination,
+			fmt.Errorf("that file is larger than the %d MB an import may be", MaxUploadBytes>>20))
 	}
 
 	// The sync is what makes "the row says the file is there" true after a
 	// power cut. An import row pointing at a file that never reached the disk
 	// is a job that fails forever with a confusing message.
 	if err := file.Sync(); err != nil {
-		file.Close()
-		os.Remove(destination)
-
-		return 0, fmt.Errorf("dataio: sync %s: %w", destination, err)
+		return 0, discardUpload(file, destination, fmt.Errorf("dataio: sync %s: %w", destination, err))
 	}
 
 	if err := file.Close(); err != nil {
-		os.Remove(destination)
-
-		return 0, fmt.Errorf("dataio: close %s: %w", destination, err)
+		closeErr := fmt.Errorf("dataio: close %s: %w", destination, err)
+		if removeErr := os.Remove(destination); removeErr != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("dataio: remove failed upload %s: %w", destination, removeErr))
+		}
+		return 0, closeErr
 	}
 
 	return written, nil
+}
+
+// discardUpload closes and removes a partial upload, preserving the triggering
+// failure together with any cleanup failures so an operator can act on all of
+// the paths that need attention.
+func discardUpload(file *os.File, destination string, cause error) error {
+	if err := file.Close(); err != nil {
+		cause = errors.Join(cause, fmt.Errorf("dataio: close failed upload %s: %w", destination, err))
+	}
+	if err := os.Remove(destination); err != nil {
+		cause = errors.Join(cause, fmt.Errorf("dataio: remove failed upload %s: %w", destination, err))
+	}
+	return cause
+}
+
+// closeResource closes a data import/export resource and joins cleanup failure
+// to the operation failure that caused the function to return.
+func closeResource(resource io.Closer, err *error, operation string) {
+	if closeErr := resource.Close(); closeErr != nil {
+		*err = errors.Join(*err, fmt.Errorf("dataio: close %s: %w", operation, closeErr))
+	}
 }
 
 // MoveFile copies a file to a new path and removes the original, for the same
@@ -130,9 +146,10 @@ func MoveFile(source, destination string) error {
 	if err != nil {
 		return fmt.Errorf("dataio: open %s: %w", source, err)
 	}
-	defer in.Close()
-
 	if _, err := SaveUpload(in, destination); err != nil {
+		if closeErr := in.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("dataio: close %s after copy failure: %w", source, closeErr))
+		}
 		return err
 	}
 

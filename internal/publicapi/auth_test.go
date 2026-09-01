@@ -53,7 +53,7 @@ func TestAuthenticationIsRequired(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer response.Body.Close()
+			defer closeResponse(t, response)
 
 			if response.StatusCode != http.StatusUnauthorized {
 				t.Fatalf("status = %d, want 401", response.StatusCode)
@@ -159,7 +159,7 @@ func TestRateLimitHeadersCountDown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first.Body.Close()
+	closeResponse(t, first)
 
 	if got := first.Header.Get("X-RateLimit-Limit"); got != "2" {
 		t.Errorf("X-RateLimit-Limit = %q, want 2", got)

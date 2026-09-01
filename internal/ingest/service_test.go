@@ -416,7 +416,7 @@ func newHarness(t testing.TB, control *sql.DB, dataDir string, wrap func(Transpo
 	t.Helper()
 
 	manager := accounts.NewManager(dataDir)
-	t.Cleanup(func() { manager.CloseAll() })
+	t.Cleanup(func() { checkClose(t, "account manager", manager.CloseAll) })
 
 	h := &harness{manager: manager}
 	h.setClock(fixtureStart)
@@ -624,7 +624,7 @@ func (h *harness) sessionRows(t testing.TB) []sessionRow {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []sessionRow
 
@@ -1126,7 +1126,7 @@ func (h *harness) sourceVisitors(t testing.TB) map[string]int64 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := map[string]int64{}
 
@@ -1195,7 +1195,7 @@ func (h *harness) eventAttribution(t testing.TB) []eventAttribution {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []eventAttribution
 

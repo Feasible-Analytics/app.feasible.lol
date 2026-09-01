@@ -21,6 +21,7 @@ package intern
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -135,14 +136,18 @@ func (c *Cache) Warm(ctx context.Context) error {
 
 // load reads one dimension table. It is a full scan by design: these tables are
 // small, and one scan at start-up buys every later lookup for free.
-func load(ctx context.Context, db *sql.DB, dimension Dimension) (map[string]int64, error) {
+func load(ctx context.Context, db *sql.DB, dimension Dimension) (values map[string]int64, err error) {
 	rows, err := db.QueryContext(ctx, "SELECT id, value FROM "+dimension.Table())
 	if err != nil {
 		return nil, fmt.Errorf("warm %s: %w", dimension.Table(), err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("warm %s: close rows: %w", dimension.Table(), closeErr))
+		}
+	}()
 
-	values := map[string]int64{}
+	values = map[string]int64{}
 
 	for rows.Next() {
 		var (

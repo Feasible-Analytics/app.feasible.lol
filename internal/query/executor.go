@@ -701,7 +701,7 @@ func (x *executor) readRows(ctx context.Context, sqlText string, args []any, dim
 	if err != nil {
 		return 0, fmt.Errorf("query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	count := 0
 
@@ -1077,7 +1077,7 @@ func (x *executor) lookup(ctx context.Context, d dimension, ids []int64) (map[in
 	if err != nil {
 		return nil, fmt.Errorf("query: read %s: %w", d.Interned.Table(), err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	values := map[int64]string{}
 

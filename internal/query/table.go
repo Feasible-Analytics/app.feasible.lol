@@ -102,18 +102,6 @@ type plan struct {
 	Scopes map[string]string
 }
 
-// Session-scoped metrics that are ratios over the whole visit. These are the
-// three that cannot be re-scoped to an event without changing what they mean:
-// a bounce is a property of a visit, and half a visit does not bounce.
-func isSessionRatio(name string) bool {
-	switch name {
-	case "bounce_rate", "visit_duration", "views_per_visit":
-		return true
-	}
-
-	return false
-}
-
 // decide is the table decider. It reads the requested metrics and dimensions
 // and returns the plan, or a caller-facing error for a combination that has no
 // correct answer.

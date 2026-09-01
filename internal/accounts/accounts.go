@@ -21,6 +21,7 @@ package accounts
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -153,8 +154,12 @@ func lockAccount(dataDir string, id int64) (*os.File, error) {
 		return nil, fmt.Errorf("account %d: open lock: %w", id, err)
 	}
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
-		file.Close()
-		return nil, fmt.Errorf("account %d: lock: %w", id, err)
+		closeErr := file.Close()
+		lockErr := fmt.Errorf("account %d: lock: %w", id, err)
+		if closeErr != nil {
+			lockErr = errors.Join(lockErr, fmt.Errorf("account %d: close failed lock file: %w", id, closeErr))
+		}
+		return nil, lockErr
 	}
 
 	return file, nil
@@ -186,8 +191,12 @@ func lockAccountLifetime(dataDir string, id int64, exclusive bool) (*os.File, er
 		mode = syscall.LOCK_EX
 	}
 	if err := syscall.Flock(int(file.Fd()), mode); err != nil {
-		file.Close()
-		return nil, fmt.Errorf("account %d: acquire lifetime lock: %w", id, err)
+		closeErr := file.Close()
+		lockErr := fmt.Errorf("account %d: acquire lifetime lock: %w", id, err)
+		if closeErr != nil {
+			lockErr = errors.Join(lockErr, fmt.Errorf("account %d: close failed lifetime lock file: %w", id, closeErr))
+		}
+		return nil, lockErr
 	}
 
 	return file, nil
@@ -292,16 +301,24 @@ func (m *Manager) Open(ctx context.Context, id int64) (*Account, error) {
 	}
 
 	if err := ensureSchema(ctx, db, migrate.Account()); err != nil {
-		db.Close()
+		closeErr := db.Close()
 		unlockAccount(lifetimeLock)
-		return nil, fmt.Errorf("account %d: %w", id, err)
+		openErr := fmt.Errorf("account %d: %w", id, err)
+		if closeErr != nil {
+			openErr = errors.Join(openErr, fmt.Errorf("account %d: close database after schema failure: %w", id, closeErr))
+		}
+		return nil, openErr
 	}
 
 	cache := intern.New(db.Writer())
 	if err := cache.Warm(ctx); err != nil {
-		db.Close()
+		closeErr := db.Close()
 		unlockAccount(lifetimeLock)
-		return nil, fmt.Errorf("account %d: %w", id, err)
+		openErr := fmt.Errorf("account %d: %w", id, err)
+		if closeErr != nil {
+			openErr = errors.Join(openErr, fmt.Errorf("account %d: close database after cache failure: %w", id, closeErr))
+		}
+		return nil, openErr
 	}
 
 	account := &Account{

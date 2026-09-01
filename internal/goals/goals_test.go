@@ -140,7 +140,11 @@ func newFixture(t *testing.T) (*sql.DB, *query.Engine) {
 	t.Helper()
 
 	manager := accounts.NewManager(t.TempDir())
-	t.Cleanup(func() { manager.CloseAll() })
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close account manager: %v", err)
+		}
+	})
 
 	ctx := context.Background()
 

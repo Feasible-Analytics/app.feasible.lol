@@ -375,7 +375,7 @@ func (s *Store) List(ctx context.Context, teamID int64) ([]*Endpoint, error) {
 	if err != nil {
 		return nil, fmt.Errorf("webhooks: list: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	endpoints := []*Endpoint{}
 
@@ -608,7 +608,7 @@ func (s *Store) Deliveries(ctx context.Context, teamID, endpointID int64, limit,
 	if err != nil {
 		return nil, fmt.Errorf("webhooks: deliveries: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	deliveries := []*Delivery{}
 

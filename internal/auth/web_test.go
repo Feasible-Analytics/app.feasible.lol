@@ -70,7 +70,7 @@ func newTestApp(t *testing.T) *testApp {
 	dataDir := t.TempDir()
 	manager := accounts.NewManager(dataDir)
 
-	t.Cleanup(func() { manager.CloseAll() })
+	t.Cleanup(func() { checkClose(t, "account manager", manager.CloseAll) })
 
 	sender := &captureSender{}
 
@@ -152,7 +152,7 @@ func (c *client) body(path string) string {
 	c.t.Helper()
 
 	resp := c.get(path)
-	defer resp.Body.Close()
+	defer closeResponseBody(c.t, resp)
 
 	buf := make([]byte, 1<<20)
 	n, _ := resp.Body.Read(buf)
@@ -188,7 +188,7 @@ func (c *client) csrfToken() string {
 	}
 
 	// Loading any page issues one.
-	c.get("/login").Body.Close()
+	closeResponseBody(c.t, c.get("/login"))
 
 	if token, ok := c.tokenFromJar(); ok {
 		return token
@@ -261,7 +261,7 @@ func registerAndVerify(t *testing.T, app *testApp) *client {
 		"password": {"a long enough password"},
 		"name":     {"Person"},
 	})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	if location := resp.Header.Get("Location"); location != "/verify-email" {
 		t.Fatalf("registration should go to the verification screen, got %q (status %d)", location, resp.StatusCode)
@@ -274,7 +274,7 @@ func registerAndVerify(t *testing.T, app *testApp) *client {
 	code := extractCode(t, message.Text)
 
 	resp = c.post("/verify-email", url.Values{"code": {code}})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	if !strings.HasPrefix(resp.Header.Get("Location"), "/sites") {
 		t.Fatalf("verification should go to the sites list, got %q (status %d)",
@@ -350,13 +350,13 @@ func TestAccountMiddlewareRequiresVerificationRolesAndMembership(t *testing.T) {
 
 	c := newClient(t, app)
 	selectedSignedOut := c.get("/commerce-optional?team=2")
-	selectedSignedOut.Body.Close()
+	closeResponseBody(t, selectedSignedOut)
 	if selectedSignedOut.StatusCode != http.StatusFound || selectedSignedOut.Header.Get("Location") != "/login?next=%2Fcommerce-optional%3Fteam%3D2" {
 		t.Fatalf("selected signed-out route answered %d at %q", selectedSignedOut.StatusCode, selectedSignedOut.Header.Get("Location"))
 	}
 
 	signedOut := c.get("/commerce-probe?team=999")
-	signedOut.Body.Close()
+	closeResponseBody(t, signedOut)
 	if signedOut.StatusCode != http.StatusFound || !strings.HasPrefix(signedOut.Header.Get("Location"), "/login?next=") {
 		t.Fatalf("signed-out account route answered %d and redirected to %q", signedOut.StatusCode, signedOut.Header.Get("Location"))
 	}
@@ -366,20 +366,20 @@ func TestAccountMiddlewareRequiresVerificationRolesAndMembership(t *testing.T) {
 		"password": {"a long enough password"},
 		"name":     {"Billing Owner"},
 	})
-	registered.Body.Close()
+	closeResponseBody(t, registered)
 
 	unverified := c.get("/commerce-probe?team=999")
-	unverified.Body.Close()
+	closeResponseBody(t, unverified)
 	if unverified.StatusCode != http.StatusFound || unverified.Header.Get("Location") != "/verify-email" {
 		t.Fatalf("unverified account route answered %d and redirected to %q", unverified.StatusCode, unverified.Header.Get("Location"))
 	}
 
 	code := extractCode(t, app.sent.last(t).Text)
 	verified := c.post("/verify-email", url.Values{"code": {code}})
-	verified.Body.Close()
+	closeResponseBody(t, verified)
 
 	forged := c.get("/commerce-probe?team=999")
-	forged.Body.Close()
+	closeResponseBody(t, forged)
 	if forged.StatusCode != http.StatusNotFound {
 		t.Fatalf("forged account selector answered %d, want 404", forged.StatusCode)
 	}
@@ -415,7 +415,7 @@ func TestAccountMiddlewareRequiresVerificationRolesAndMembership(t *testing.T) {
 	}
 	for _, denied := range []string{"3", "4"} {
 		response := c.get("/commerce-probe?team=" + denied)
-		response.Body.Close()
+		closeResponseBody(t, response)
 		if response.StatusCode != http.StatusNotFound {
 			t.Errorf("non-billing team %s answered %d, want 404", denied, response.StatusCode)
 		}
@@ -424,12 +424,12 @@ func TestAccountMiddlewareRequiresVerificationRolesAndMembership(t *testing.T) {
 		t.Fatal(err)
 	}
 	removed := c.get("/commerce-probe?team=2")
-	removed.Body.Close()
+	closeResponseBody(t, removed)
 	if removed.StatusCode != http.StatusNotFound {
 		t.Fatalf("removed billing membership answered %d, want 404", removed.StatusCode)
 	}
 	removedOptional := c.get("/commerce-optional?team=2")
-	removedOptional.Body.Close()
+	closeResponseBody(t, removedOptional)
 	if removedOptional.StatusCode != http.StatusNotFound {
 		t.Fatalf("removed optional membership answered %d, want 404", removedOptional.StatusCode)
 	}
@@ -456,7 +456,7 @@ func TestRegisterVerifyAndCreateASite(t *testing.T) {
 		"display_name": {"Marketing site"},
 		"timezone":     {"Europe/London"},
 	})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	if !strings.HasPrefix(resp.Header.Get("Location"), "/onboarding/") {
 		t.Fatalf("creating a site should go to onboarding, got %q", resp.Header.Get("Location"))
@@ -503,7 +503,7 @@ func TestPurchaseIntentSurvivesAuthentication(t *testing.T) {
 			"password": {"a long enough password"},
 			"next":     {next},
 		})
-		registered.Body.Close()
+		closeResponseBody(t, registered)
 		if got := registered.Header.Get("Location"); got != "/verify-email?next=%2Fpricing%3Fplan%3Dmonthly%26team%3D1" {
 			t.Fatalf("registration intent redirected to %q", got)
 		}
@@ -512,7 +512,7 @@ func TestPurchaseIntentSurvivesAuthentication(t *testing.T) {
 			"code": {extractCode(t, app.sent.last(t).Text)},
 			"next": {next},
 		})
-		verified.Body.Close()
+		closeResponseBody(t, verified)
 		if got := verified.Header.Get("Location"); got != next {
 			t.Fatalf("typed verification redirected to %q, want %q", got, next)
 		}
@@ -528,7 +528,7 @@ func TestPurchaseIntentSurvivesAuthentication(t *testing.T) {
 			"password": {"a long enough password"},
 			"next":     {next},
 		})
-		registered.Body.Close()
+		closeResponseBody(t, registered)
 
 		link, err := url.Parse(extractVerificationLink(t, app.sent.last(t).Text))
 		if err != nil {
@@ -536,7 +536,7 @@ func TestPurchaseIntentSurvivesAuthentication(t *testing.T) {
 		}
 		verifying := newClient(t, app)
 		verified := verifying.get(link.RequestURI())
-		verified.Body.Close()
+		closeResponseBody(t, verified)
 		if got := verified.Header.Get("Location"); got != next {
 			t.Fatalf("one-tap verification redirected to %q, want %q", got, next)
 		}
@@ -555,7 +555,7 @@ func TestPurchaseIntentSurvivesAuthentication(t *testing.T) {
 			"password": {"a long enough password"},
 			"next":     {"/pricing?plan=monthly&team=1"},
 		})
-		loggedIn.Body.Close()
+		closeResponseBody(t, loggedIn)
 		if got := loggedIn.Header.Get("Location"); got != "/pricing?plan=monthly&team=1" {
 			t.Fatalf("login redirected to %q", got)
 		}
@@ -572,7 +572,7 @@ func TestPurchaseIntentSurvivesAuthentication(t *testing.T) {
 				"password": {"a long enough password"},
 				"next":     {hostile},
 			})
-			rejected.Body.Close()
+			closeResponseBody(t, rejected)
 			if got := rejected.Header.Get("Location"); got != "/sites" {
 				t.Errorf("hostile next target %q redirected to %q", hostile, got)
 			}
@@ -596,7 +596,7 @@ func TestALockedAccountGetsTheSitesListWithoutItsNumbers(t *testing.T) {
 		"display_name": {"Marketing site"},
 		"timezone":     {"UTC"},
 	})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	open := c.body("/sites")
 	if !strings.Contains(open, "<polyline") {
@@ -636,7 +636,7 @@ func TestSignedOutRequestsAreRedirected(t *testing.T) {
 	c := newClient(t, app)
 
 	resp := c.get("/sites")
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	if resp.StatusCode != http.StatusFound {
 		t.Fatalf("want a redirect, got %d", resp.StatusCode)
@@ -662,10 +662,10 @@ func TestUnverifiedUsersAreHeldAtVerification(t *testing.T) {
 		"email":    {"person@example.com"},
 		"password": {"a long enough password"},
 	})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	resp = c.get("/sites")
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	if resp.Header.Get("Location") != "/verify-email" {
 		t.Errorf("an unverified account should be held at verification, got %q", resp.Header.Get("Location"))
@@ -680,14 +680,14 @@ func TestFormsRejectAMissingToken(t *testing.T) {
 	c := newClient(t, app)
 
 	// Load a page so the cookie exists, then submit a wrong token.
-	c.get("/login").Body.Close()
+	closeResponseBody(t, c.get("/login"))
 
 	resp := c.post("/login", url.Values{
 		csrfField:  {"not-the-token"},
 		"email":    {"a@example.com"},
 		"password": {"whatever"},
 	})
-	defer resp.Body.Close()
+	defer closeResponseBody(t, resp)
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("want 403 for a mismatched form token, got %d", resp.StatusCode)
@@ -707,13 +707,13 @@ func TestLoginFailureDoesNotRevealWhetherAnAccountExists(t *testing.T) {
 		"email":    {"person@example.com"},
 		"password": {"the wrong password"},
 	})
-	defer wrongPassword.Body.Close()
+	defer closeResponseBody(t, wrongPassword)
 
 	unknown := newClient(t, app).post("/login", url.Values{
 		"email":    {"nobody@example.com"},
 		"password": {"the wrong password"},
 	})
-	defer unknown.Body.Close()
+	defer closeResponseBody(t, unknown)
 
 	if wrongPassword.StatusCode != unknown.StatusCode {
 		t.Errorf("both failures should answer the same way, got %d and %d",
@@ -732,7 +732,7 @@ func TestLoginIsRateLimited(t *testing.T) {
 
 	for i := 0; i < LoginAttempts+2; i++ {
 		if last != nil {
-			last.Body.Close()
+			closeResponseBody(t, last)
 		}
 
 		last = c.post("/login", url.Values{
@@ -741,7 +741,7 @@ func TestLoginIsRateLimited(t *testing.T) {
 		})
 	}
 
-	defer last.Body.Close()
+	defer closeResponseBody(t, last)
 
 	if last.StatusCode != http.StatusTooManyRequests {
 		t.Errorf("want 429 once the limit is reached, got %d", last.StatusCode)
@@ -757,7 +757,7 @@ func TestPasswordResetFlow(t *testing.T) {
 	c := newClient(t, app)
 
 	resp := c.post("/forgot-password", url.Values{"email": {"person@example.com"}})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	// The response is identical whether or not the address exists, so a test
 	// has to read the mailbox to know a link was sent.
@@ -769,7 +769,7 @@ func TestPasswordResetFlow(t *testing.T) {
 		"token":    {token},
 		"password": {"a brand new password"},
 	})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	if !strings.Contains(resp.Header.Get("Location"), "/login") {
 		t.Fatalf("a completed reset should go to sign-in, got %q", resp.Header.Get("Location"))
@@ -781,7 +781,7 @@ func TestPasswordResetFlow(t *testing.T) {
 		"email":    {"person@example.com"},
 		"password": {"a brand new password"},
 	})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	if resp.StatusCode != http.StatusFound {
 		t.Errorf("the new password should work, got %d", resp.StatusCode)
@@ -792,7 +792,7 @@ func TestPasswordResetFlow(t *testing.T) {
 		"token":    {token},
 		"password": {"yet another password"},
 	})
-	defer again.Body.Close()
+	defer closeResponseBody(t, again)
 
 	if again.StatusCode != http.StatusBadRequest {
 		t.Errorf("a spent reset link should be refused, got %d", again.StatusCode)
@@ -836,7 +836,7 @@ func TestGoogleButtonIsHiddenWithoutCredentials(t *testing.T) {
 	}
 
 	resp := c.get("/auth/google")
-	defer resp.Body.Close()
+	defer closeResponseBody(t, resp)
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("want 404 for an unconfigured provider, got %d", resp.StatusCode)
@@ -856,7 +856,7 @@ func TestSessionsScreenListsAndRevokes(t *testing.T) {
 	}
 
 	resp := c.post("/settings/sessions/revoke", url.Values{"all": {"1"}})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	if resp.StatusCode != http.StatusFound {
 		t.Errorf("want a redirect after revoking, got %d", resp.StatusCode)
@@ -908,21 +908,21 @@ func TestTwoFactorSetupAndChallenge(t *testing.T) {
 		"password": {"a long enough password"},
 		"next":     {"/pricing?plan=yearly&team=1"},
 	})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	if resp.Header.Get("Location") != "/login/2fa" {
 		t.Fatalf("a two-factor account should go to the code screen, got %q", resp.Header.Get("Location"))
 	}
 
 	resp = fresh.post("/login/2fa", url.Values{"code": {"000000"}})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("a wrong code should be refused, got %d", resp.StatusCode)
 	}
 
 	resp = fresh.post("/login/2fa", url.Values{"code": {currentCode(t, key.Secret(), app.store)}})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	if resp.StatusCode != http.StatusFound {
 		t.Errorf("the right code should complete the sign-in, got %d", resp.StatusCode)
@@ -955,7 +955,7 @@ func TestSiteSettingsChangeDomainAndDelete(t *testing.T) {
 		"domain":   {"old.example.com"},
 		"timezone": {"Etc/UTC"},
 	})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	site, err := app.store.SiteByDomain(context.Background(), "old.example.com")
 	if err != nil {
@@ -971,7 +971,7 @@ func TestSiteSettingsChangeDomainAndDelete(t *testing.T) {
 	}
 
 	resp = c.post("/sites/"+itoa(site.ID)+"/domain", url.Values{"domain": {"new.example.com"}})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	changed, err := app.store.SiteByID(context.Background(), site.AccountID, site.ID)
 	if err != nil {
@@ -984,14 +984,14 @@ func TestSiteSettingsChangeDomainAndDelete(t *testing.T) {
 
 	// A wrong confirmation must not delete anything.
 	resp = c.post("/sites/"+itoa(site.ID)+"/delete", url.Values{"confirm": {"wrong"}})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	if _, err := app.store.SiteByID(context.Background(), site.AccountID, site.ID); err != nil {
 		t.Fatalf("the site should still exist: %v", err)
 	}
 
 	resp = c.post("/sites/"+itoa(site.ID)+"/delete", url.Values{"confirm": {"new.example.com"}})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	if _, err := app.store.SiteByID(context.Background(), site.AccountID, site.ID); err != ErrNotFound {
 		t.Errorf("the site should be gone, got %v", err)
@@ -1005,7 +1005,7 @@ func TestOnboardingStatusFlips(t *testing.T) {
 	c := registerAndVerify(t, app)
 
 	resp := c.post("/sites/new", url.Values{"domain": {"example.com"}, "timezone": {"Etc/UTC"}})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	site, err := app.store.SiteByDomain(context.Background(), "example.com")
 	if err != nil {
@@ -1026,7 +1026,7 @@ func TestAnotherTeamsSiteIs404(t *testing.T) {
 	owner := registerAndVerify(t, app)
 
 	resp := owner.post("/sites/new", url.Values{"domain": {"example.com"}, "timezone": {"Etc/UTC"}})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	site, err := app.store.SiteByDomain(context.Background(), "example.com")
 	if err != nil {
@@ -1040,7 +1040,7 @@ func TestAnotherTeamsSiteIs404(t *testing.T) {
 		"email":    {"other@example.com"},
 		"password": {"a long enough password"},
 	})
-	resp.Body.Close()
+	closeResponseBody(t, resp)
 
 	user, err := app.store.UserByEmail(context.Background(), "other@example.com")
 	if err != nil {
@@ -1052,7 +1052,7 @@ func TestAnotherTeamsSiteIs404(t *testing.T) {
 	}
 
 	page := other.get("/sites/" + itoa(site.ID) + "/settings")
-	defer page.Body.Close()
+	defer closeResponseBody(t, page)
 
 	if page.StatusCode != http.StatusNotFound {
 		t.Errorf("another team's site should be a 404, got %d", page.StatusCode)
@@ -1086,7 +1086,7 @@ func TestDeletingAnOwnedTeamDoesNotPromoteAnotherMembership(t *testing.T) {
 		"confirm":  {"DELETE"},
 		"password": {"a long enough password"},
 	})
-	deleted.Body.Close()
+	closeResponseBody(t, deleted)
 	if deleted.StatusCode != http.StatusOK {
 		t.Fatalf("owned team deletion answered %d", deleted.StatusCode)
 	}
@@ -1096,7 +1096,7 @@ func TestDeletingAnOwnedTeamDoesNotPromoteAnotherMembership(t *testing.T) {
 		"email":    {"person@example.com"},
 		"password": {"a long enough password"},
 	})
-	loggedIn.Body.Close()
+	closeResponseBody(t, loggedIn)
 	if loggedIn.StatusCode != http.StatusFound {
 		t.Fatalf("surviving member could not sign back in: %d", loggedIn.StatusCode)
 	}
@@ -1105,7 +1105,7 @@ func TestDeletingAnOwnedTeamDoesNotPromoteAnotherMembership(t *testing.T) {
 		"name":        {"Hijacked name"},
 		"require_2fa": {"1"},
 	})
-	renamed.Body.Close()
+	closeResponseBody(t, renamed)
 	if renamed.StatusCode != http.StatusNotFound {
 		t.Fatalf("non-owner team mutation answered %d, want 404", renamed.StatusCode)
 	}
@@ -1114,7 +1114,7 @@ func TestDeletingAnOwnedTeamDoesNotPromoteAnotherMembership(t *testing.T) {
 		"confirm":  {"DELETE"},
 		"password": {"a long enough password"},
 	})
-	removed.Body.Close()
+	closeResponseBody(t, removed)
 	if removed.StatusCode != http.StatusNotFound {
 		t.Fatalf("non-owner account deletion answered %d, want 404", removed.StatusCode)
 	}
@@ -1138,7 +1138,7 @@ func TestAssetsAreServedFromTheBinary(t *testing.T) {
 
 	for _, path := range []string{"/app/assets/app.css", "/app/assets/alpine.js"} {
 		resp := c.get(path)
-		resp.Body.Close()
+		closeResponseBody(t, resp)
 
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("%s should be served, got %d", path, resp.StatusCode)
@@ -1150,7 +1150,7 @@ func TestAssetsAreServedFromTheBinary(t *testing.T) {
 func readAll(t *testing.T, resp *http.Response) string {
 	t.Helper()
 
-	defer resp.Body.Close()
+	defer closeResponseBody(t, resp)
 
 	buf := make([]byte, 1<<20)
 	n, _ := resp.Body.Read(buf)

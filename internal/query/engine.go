@@ -336,7 +336,7 @@ func (e *Engine) compileContext(ctx context.Context, q *Query) (compileContext, 
 	if err != nil {
 		return compile, fmt.Errorf("query: read event names: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var (
@@ -376,7 +376,7 @@ func (e *Engine) propertyScopes(ctx context.Context, sites []int64) (map[string]
 	if err != nil {
 		return nil, fmt.Errorf("query: read property scopes: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	scopes := map[string]string{}
 

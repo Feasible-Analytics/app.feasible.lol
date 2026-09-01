@@ -162,7 +162,7 @@ func (w *Writer) Add(ctx context.Context, row Row) error {
 }
 
 // Flush writes everything queued in one transaction.
-func (w *Writer) Flush(ctx context.Context) error {
+func (w *Writer) Flush(ctx context.Context) (err error) {
 	if len(w.pending) == 0 {
 		return nil
 	}
@@ -180,7 +180,7 @@ func (w *Writer) Flush(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("dataio: write roll-ups: %w", err)
 	}
-	defer prepared.Close()
+	defer closeResource(prepared, &err, "roll-up statement")
 
 	for _, args := range w.pending {
 		if _, err := prepared.ExecContext(ctx, args...); err != nil {

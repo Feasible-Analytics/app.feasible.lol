@@ -215,7 +215,7 @@ func (a *App) Refresh(ctx context.Context, refreshToken string, now time.Time) (
 }
 
 // token performs one token request.
-func (a *App) token(ctx context.Context, values url.Values, now time.Time) (*Token, error) {
+func (a *App) token(ctx context.Context, values url.Values, now time.Time) (token *Token, err error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, TokenURL, strings.NewReader(values.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("google: token request: %w", err)
@@ -226,7 +226,7 @@ func (a *App) token(ctx context.Context, values url.Values, now time.Time) (*Tok
 	if err != nil {
 		return nil, fmt.Errorf("google: token request: %w", err)
 	}
-	defer response.Body.Close()
+	defer closeResource(response.Body, &err, "token response")
 
 	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
@@ -256,6 +256,14 @@ func (a *App) token(ctx context.Context, values url.Values, now time.Time) (*Tok
 		ExpiresAt:    now.Add(time.Duration(parsed.ExpiresIn) * time.Second),
 		Scope:        parsed.Scope,
 	}, nil
+}
+
+// closeResource closes a Google API resource and preserves both the request
+// failure and a transport or statement cleanup failure when they coincide.
+func closeResource(resource io.Closer, err *error, operation string) {
+	if closeErr := resource.Close(); closeErr != nil {
+		*err = errors.Join(*err, fmt.Errorf("google: close %s: %w", operation, closeErr))
+	}
 }
 
 // Connection is one site's grant for one provider.

@@ -206,7 +206,8 @@ func TestOAuthStateCookieRoundTrips(t *testing.T) {
 
 	// A tampered cookie must not verify.
 	tampered := httptest.NewRequest("GET", "/auth/google/callback", nil)
-	tampered.AddCookie(&(*cookie))
+	tamperedCookie := *cookie
+	tampered.AddCookie(&tamperedCookie)
 	tampered.Header.Set("Cookie", strings.Replace(tampered.Header.Get("Cookie"), cookie.Value, cookie.Value+"x", 1))
 
 	if _, _, _, err := ReadOAuthStateCookie(httptest.NewRecorder(), tampered, sealer, "https://example.com"); err == nil {

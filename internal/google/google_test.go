@@ -24,7 +24,11 @@ func newAccount(t *testing.T) *accounts.Account {
 	t.Helper()
 
 	manager := accounts.NewManager(t.TempDir())
-	t.Cleanup(func() { manager.CloseAll() })
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close account manager: %v", err)
+		}
+	})
 
 	account, err := manager.Open(context.Background(), 1)
 	if err != nil {
@@ -121,7 +125,9 @@ func TestInvalidGrantAsksForAReconnect(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`{"error":"invalid_grant","error_description":"Token has been expired or revoked."}`))
+		if _, err := w.Write([]byte(`{"error":"invalid_grant","error_description":"Token has been expired or revoked."}`)); err != nil {
+			t.Errorf("write token error response: %v", err)
+		}
 	}))
 	defer server.Close()
 
@@ -167,7 +173,9 @@ func TestRefreshKeepsTheRefreshToken(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"access_token":"fresh","expires_in":3600,"scope":"` + ScopeAnalytics + `"}`))
+		if _, err := w.Write([]byte(`{"access_token":"fresh","expires_in":3600,"scope":"` + ScopeAnalytics + `"}`)); err != nil {
+			t.Errorf("write token response: %v", err)
+		}
 	}))
 	defer server.Close()
 

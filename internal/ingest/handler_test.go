@@ -432,7 +432,7 @@ func TestSizeTriggeredFlushSurvivesTheRequestEnding(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp.Body.Close()
+		checkClose(t, "response body", resp.Body.Close)
 	}
 
 	// The flush is detached from the request by design, so the test waits for

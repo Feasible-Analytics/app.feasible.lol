@@ -150,7 +150,7 @@ func ReadRates(ctx context.Context, db *sql.DB, quote string) ([]Rate, time.Time
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("goals: read rates: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var (
 		list   []Rate

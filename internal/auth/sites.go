@@ -215,7 +215,7 @@ func (s *Store) SiteByDomain(ctx context.Context, domain string) (*Site, error) 
 // Pinned sites always come first, whatever the sort. A pin is the user saying
 // "this one, every time", and a sort order that could bury it would make the
 // pin useless.
-func (s *Store) ListSites(ctx context.Context, accountID int64, order string) ([]*Site, error) {
+func (s *Store) ListSites(ctx context.Context, accountID int64, order string) (out []*Site, err error) {
 	// The sort is a fixed switch rather than an interpolated column name.
 	// Building an ORDER BY from a query parameter is how a sort control becomes
 	// a SQL injection.
@@ -241,9 +241,7 @@ func (s *Store) ListSites(ctx context.Context, accountID int64, order string) ([
 	if err != nil {
 		return nil, fmt.Errorf("auth: list sites: %w", err)
 	}
-	defer rows.Close()
-
-	var out []*Site
+	defer closeSQLRows(rows, &err, "list sites")
 
 	for rows.Next() {
 		site, err := scanSite(rows)
@@ -392,7 +390,7 @@ func (s *Store) DeleteSite(ctx context.Context, accountID, siteID int64) error {
 }
 
 // ListFolders returns a team's folders in their manual order.
-func (s *Store) ListFolders(ctx context.Context, accountID int64) ([]*Folder, error) {
+func (s *Store) ListFolders(ctx context.Context, accountID int64) (out []*Folder, err error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, team_id, name, position, created_at
 		FROM site_folders WHERE team_id = ?
@@ -401,9 +399,7 @@ func (s *Store) ListFolders(ctx context.Context, accountID int64) ([]*Folder, er
 	if err != nil {
 		return nil, fmt.Errorf("auth: list folders: %w", err)
 	}
-	defer rows.Close()
-
-	var out []*Folder
+	defer closeSQLRows(rows, &err, "list folders")
 
 	for rows.Next() {
 		var f Folder

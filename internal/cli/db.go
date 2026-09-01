@@ -10,6 +10,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -127,12 +128,16 @@ func runDBMigrate(e *env, args []string) int {
 // is opened and closed in turn rather than all at once, because a box with a
 // thousand accounts would otherwise hold a thousand sets of handles open for
 // the length of the run.
-func migrateOne(ctx context.Context, e *env, item target, fresh bool) error {
+func migrateOne(ctx context.Context, e *env, item target, fresh bool) (err error) {
 	db, err := store.OpenDatabase(item.path)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("%s: close database: %w", item.path, closeErr))
+		}
+	}()
 
 	if fresh {
 		if err := migrate.Fresh(ctx, db.Writer()); err != nil {

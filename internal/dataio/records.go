@@ -159,7 +159,7 @@ func ListImports(ctx context.Context, db *sql.DB, siteID int64, limit int) ([]Im
 	if err != nil {
 		return nil, fmt.Errorf("dataio: list imports: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var imports []Import
 
@@ -364,7 +364,7 @@ func ListExports(ctx context.Context, db *sql.DB, siteID int64, limit int) ([]Ex
 	if err != nil {
 		return nil, fmt.Errorf("dataio: list exports: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var exports []Export
 

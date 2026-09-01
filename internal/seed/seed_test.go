@@ -125,7 +125,7 @@ func digest(t *testing.T, dataDir string) string {
 	if err != nil {
 		t.Fatalf("read events: %v", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var (
@@ -299,7 +299,7 @@ func columnCount(db *sql.DB, table string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var count int
 	if rows.Next() {

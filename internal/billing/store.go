@@ -323,7 +323,7 @@ func (s *Store) QuiescenceObjects(ctx context.Context, teamID int64) ([]Quiescen
 	if err != nil {
 		return nil, fmt.Errorf("billing: list quiescence for %d: %w", teamID, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var objects []QuiescenceObject
 	for rows.Next() {
@@ -404,7 +404,7 @@ func (s *Store) AccountCustomers(ctx context.Context, teamID int64) ([]string, e
 	if err != nil {
 		return nil, fmt.Errorf("billing: list customers for %d: %w", teamID, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var customers []string
 	for rows.Next() {
@@ -779,7 +779,7 @@ func (s *Store) CheckoutCleanupSessions(ctx context.Context, teamID int64) ([]st
 	if err != nil {
 		return nil, fmt.Errorf("billing: list checkout cleanup for %d: %w", teamID, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sessions []string
 	for rows.Next() {
@@ -1017,7 +1017,7 @@ func (s *Store) EventPayloads(ctx context.Context, teamID int64, eventTypes []st
 	if err != nil {
 		return nil, fmt.Errorf("billing: event payloads for account %d: %w", teamID, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var payloads [][]byte
 	for rows.Next() {
@@ -1070,7 +1070,7 @@ func (s *Store) RecentEvents(ctx context.Context, teamID int64, limit int) ([]Lo
 	if err != nil {
 		return nil, fmt.Errorf("billing: recent events: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []LoggedEvent
 

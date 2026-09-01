@@ -10,6 +10,8 @@ package ingest
 
 import (
 	"bufio"
+	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -214,7 +216,7 @@ func (f *BotFilter) Sizes() (bots, datacenters, spam int) {
 // readList reads one newline-delimited list file, skipping comments and blanks.
 // A missing file reports absence rather than an error, which is what lets every
 // list be optional.
-func readList(path string) ([]string, bool, error) {
+func readList(path string) (lines []string, found bool, err error) {
 	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -222,9 +224,11 @@ func readList(path string) ([]string, bool, error) {
 		}
 		return nil, false, err
 	}
-	defer file.Close()
-
-	var lines []string
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close list %s: %w", path, closeErr))
+		}
+	}()
 
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)

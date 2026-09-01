@@ -92,15 +92,12 @@ func nullInt64(v sql.NullInt64) int64 {
 	return v.Int64
 }
 
-// unixOrNil converts a timestamp to what the driver should store: a NULL for
-// the zero time, so that "not yet" is a NULL rather than 1970, which sorts
-// wrong and reads as a real date on every screen that shows it.
-func unixOrNil(t time.Time) any {
-	if t.IsZero() {
-		return nil
+// closeSQLRows closes a read cursor and joins any driver cleanup failure to the
+// operation error, preserving both when iteration and cleanup fail together.
+func closeSQLRows(rows *sql.Rows, err *error, operation string) {
+	if closeErr := rows.Close(); closeErr != nil {
+		*err = errors.Join(*err, fmt.Errorf("auth: %s: close rows: %w", operation, closeErr))
 	}
-
-	return t.Unix()
 }
 
 // exists answers a one-row existence query. It is here rather than repeated

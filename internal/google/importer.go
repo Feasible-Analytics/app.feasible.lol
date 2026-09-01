@@ -210,7 +210,7 @@ type ga4Report struct {
 }
 
 // runReport calls the Data API for one shape and one month.
-func (a *App) runReport(ctx context.Context, db *sql.DB, connection *Connection, shape reportShape, month monthRange, now time.Time) (*ga4Report, error) {
+func (a *App) runReport(ctx context.Context, db *sql.DB, connection *Connection, shape reportShape, month monthRange, now time.Time) (report *ga4Report, err error) {
 	token, err := a.AccessToken(ctx, db, connection, now)
 	if err != nil {
 		return nil, err
@@ -251,36 +251,36 @@ func (a *App) runReport(ctx context.Context, db *sql.DB, connection *Connection,
 	if err != nil {
 		return nil, fmt.Errorf("google: the %s report could not be fetched: %w", shape.Name, err)
 	}
-	defer response.Body.Close()
+	defer closeResource(response.Body, &err, shape.Name+" report response")
 
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 64<<20))
 	if err != nil {
 		return nil, fmt.Errorf("google: reading the %s report: %w", shape.Name, err)
 	}
 
-	var report ga4Report
-	if err := json.Unmarshal(raw, &report); err != nil {
+	var found ga4Report
+	if err := json.Unmarshal(raw, &found); err != nil {
 		return nil, fmt.Errorf("google: the %s report was not JSON: %w", shape.Name, err)
 	}
 
-	if report.Error != nil {
-		if report.Error.Code == http.StatusUnauthorized || report.Error.Code == http.StatusForbidden {
+	if found.Error != nil {
+		if found.Error.Code == http.StatusUnauthorized || found.Error.Code == http.StatusForbidden {
 			if markErr := MarkNeedsReconnect(ctx, db, connection.SiteID, connection.Provider,
 				"Google refused the request for this property — reconnect the account and check it can read the property", now); markErr != nil {
 				return nil, markErr
 			}
 
-			return nil, errors.New("Google refused the request for this property — reconnect the account")
+			return nil, errors.New("google refused the request for this property — reconnect the account")
 		}
 
-		return nil, fmt.Errorf("Google answered: %s", report.Error.Message)
+		return nil, fmt.Errorf("google answered: %s", found.Error.Message)
 	}
 
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("google: the %s report answered %d", shape.Name, response.StatusCode)
 	}
 
-	return &report, nil
+	return &found, nil
 }
 
 // SearchConsoleImport reads search queries into their own table.
@@ -334,7 +334,7 @@ type searchResponse struct {
 }
 
 // importSearchDay reads one day of search performance.
-func (a *App) importSearchDay(ctx context.Context, db *sql.DB, siteID int64, connection *Connection, day string, location *time.Location, now time.Time) (int64, error) {
+func (a *App) importSearchDay(ctx context.Context, db *sql.DB, siteID int64, connection *Connection, day string, location *time.Location, now time.Time) (written int64, err error) {
 	token, err := a.AccessToken(ctx, db, connection, now)
 	if err != nil {
 		return 0, err
@@ -364,7 +364,7 @@ func (a *App) importSearchDay(ctx context.Context, db *sql.DB, siteID int64, con
 	if err != nil {
 		return 0, fmt.Errorf("google: Search Console could not be reached: %w", err)
 	}
-	defer response.Body.Close()
+	defer closeResource(response.Body, &err, "Search Console response")
 
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 64<<20))
 	if err != nil {
@@ -377,7 +377,7 @@ func (a *App) importSearchDay(ctx context.Context, db *sql.DB, siteID int64, con
 	}
 
 	if parsed.Error != nil {
-		return 0, fmt.Errorf("Google answered: %s", parsed.Error.Message)
+		return 0, fmt.Errorf("google answered: %s", parsed.Error.Message)
 	}
 
 	timestamp, err := parseISODate(day, location)
@@ -405,9 +405,7 @@ func (a *App) importSearchDay(ctx context.Context, db *sql.DB, siteID int64, con
 	if err != nil {
 		return 0, fmt.Errorf("google: write search rows: %w", err)
 	}
-	defer statement.Close()
-
-	var written int64
+	defer closeResource(statement, &err, "Search Console statement")
 
 	for _, row := range parsed.Rows {
 		keys := make([]string, 4)

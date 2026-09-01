@@ -232,8 +232,8 @@ func firstNonEmpty(values ...string) string {
 func renderTable(metrics, dimensions []string, result *query.Result) string {
 	var out strings.Builder
 
-	out.WriteString(fmt.Sprintf("%s to %s (%s, %s buckets)\n",
-		result.Query.DateRange[0], result.Query.DateRange[1], result.Query.Timezone, result.Meta.Interval))
+	fmt.Fprintf(&out, "%s to %s (%s, %s buckets)\n",
+		result.Query.DateRange[0], result.Query.DateRange[1], result.Query.Timezone, result.Meta.Interval)
 
 	header := append(append([]string{}, dimensions...), metrics...)
 	out.WriteString(strings.Join(header, " | ") + "\n")
@@ -408,9 +408,9 @@ func (s *Server) comparePeriodsTool() *Tool {
 func renderComparison(metrics, dimensions []string, result *query.Result) string {
 	var out strings.Builder
 
-	out.WriteString(fmt.Sprintf("%s to %s, against %s\n",
+	fmt.Fprintf(&out, "%s to %s, against %s\n",
 		result.Query.DateRange[0], result.Query.DateRange[1],
-		strings.Join(result.Meta.ComparisonDateRange, " to ")))
+		strings.Join(result.Meta.ComparisonDateRange, " to "))
 
 	header := append(append([]string{}, dimensions...), []string{"metric", "now", "before", "change"}...)
 	out.WriteString(strings.Join(header, " | ") + "\n")

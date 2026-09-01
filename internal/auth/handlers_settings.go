@@ -485,26 +485,6 @@ func (h *Handler) doDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, "deleted", p, http.StatusOK)
 }
 
-// requireOwner reports whether somebody may change team-wide settings. It is
-// separate from the team read so that a caller cannot accidentally treat "is in
-// the team" as "may change the team".
-func (h *Handler) requireOwner(r *http.Request, teamID int64) bool {
-	user := userFrom(r)
-	if user == nil {
-		return false
-	}
-
-	ok, err := exists(r.Context(), h.Store.DB(),
-		"SELECT 1 FROM team_memberships WHERE team_id = ? AND user_id = ? AND role IN ('owner', 'admin')",
-		teamID, user.ID)
-	if err != nil {
-		h.Log.Warn("could not read the team role", "user", user.ID, "team", teamID, "error", err)
-		return false
-	}
-
-	return ok
-}
-
 // notFound renders the 404 page. It is used wherever a site id in a URL does
 // not belong to the signed-in team, so a guessed id is indistinguishable from
 // one that does not exist.

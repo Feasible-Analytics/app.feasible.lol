@@ -177,7 +177,7 @@ func (x *executor) currenciesInRange(ctx context.Context, r Resolved) ([]string,
 	if err != nil {
 		return nil, fmt.Errorf("query: read revenue currencies: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var found []string
 
@@ -332,7 +332,7 @@ func (e *Engine) storedRates(ctx context.Context, currency string) (map[string]f
 	if err != nil {
 		return nil, fmt.Errorf("query: read exchange rates: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	rates := map[string]float64{}
 

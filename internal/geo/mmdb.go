@@ -93,7 +93,9 @@ func Open(dataDir string) (Locator, error) {
 	city, err := openIfPresent(filepath.Join(dir, CityFileName))
 	if err != nil {
 		if country != nil {
-			country.Close()
+			if closeErr := country.Close(); closeErr != nil {
+				err = errors.Join(err, fmt.Errorf("close country database: %w", closeErr))
+			}
 		}
 		return Unknown{}, err
 	}

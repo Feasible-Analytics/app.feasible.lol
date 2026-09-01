@@ -502,18 +502,18 @@ func (w *Worker) attempt(ctx context.Context, deliveryID int64) error {
 }
 
 // send performs one HTTP POST and returns what came back.
-func (w *Worker) send(ctx context.Context, url, secret string, delivery *Delivery) (int, string, int, error) {
-	body := []byte(delivery.Payload)
+func (w *Worker) send(ctx context.Context, url, secret string, delivery *Delivery) (status int, body string, elapsed int, err error) {
+	payload := []byte(delivery.Payload)
 	now := w.now()
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return 0, "", 0, fmt.Errorf("build request: %w", err)
 	}
 
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("User-Agent", "feasible-webhooks/1")
-	request.Header.Set(SignatureHeader, Sign(secret, body, now))
+	request.Header.Set(SignatureHeader, Sign(secret, payload, now))
 	request.Header.Set(EventHeader, delivery.EventType)
 	request.Header.Set(EventIDHeader, delivery.EventID)
 	request.Header.Set(DeliveryHeader, fmt.Sprint(delivery.ID))
@@ -521,12 +521,16 @@ func (w *Worker) send(ctx context.Context, url, secret string, delivery *Deliver
 	started := time.Now()
 
 	response, err := w.Client.Do(request)
-	elapsed := int(time.Since(started).Milliseconds())
+	elapsed = int(time.Since(started).Milliseconds())
 
 	if err != nil {
 		return 0, "", elapsed, err
 	}
-	defer response.Body.Close()
+	defer func() {
+		if closeErr := response.Body.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close webhook response: %w", closeErr))
+		}
+	}()
 
 	answer, _ := io.ReadAll(io.LimitReader(response.Body, maxResponseBody))
 

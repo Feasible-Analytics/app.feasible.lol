@@ -72,7 +72,11 @@ func TestCSVRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	manager := accounts.NewManager(t.TempDir())
-	defer manager.CloseAll()
+	defer func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close account manager: %v", err)
+		}
+	}()
 
 	account, err := manager.Open(ctx, 1)
 	if err != nil {
@@ -100,7 +104,11 @@ func TestCSVRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeArchive()
+	defer func() {
+		if err := closeArchive(); err != nil {
+			t.Errorf("close uploaded archive: %v", err)
+		}
+	}()
 
 	err = ImportCSV(ctx, account.Writer(), account.Intern, record, sources, time.UTC,
 		func() time.Time { return fixtureNow })
@@ -237,7 +245,11 @@ func assertArchiveShape(t *testing.T, path string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer archive.Close()
+	defer func() {
+		if err := archive.Close(); err != nil {
+			t.Errorf("close export archive: %v", err)
+		}
+	}()
 
 	found := map[string]bool{}
 	for _, entry := range archive.File {
@@ -276,14 +288,14 @@ func TestUnknownColumnIsRefused(t *testing.T) {
 // TestHeaderSpellingsAreTolerated covers the files people actually upload:
 // through a spreadsheet, with a byte order mark, capitals and spaces.
 func TestHeaderSpellingsAreTolerated(t *testing.T) {
-	plan, err := planColumns("imported_pages.csv", []string{"\ufeffDate", "Page", "Page Views"})
+	_, err := planColumns("imported_pages.csv", []string{"\ufeffDate", "Page", "Page Views"})
 	if err == nil {
 		// "Page Views" is not one of ours, so this file is correctly refused —
 		// the point of the case is that the date and page columns were read.
 		t.Fatal("expected the unknown column to be refused")
 	}
 
-	plan, err = planColumns("imported_pages.csv", []string{"\ufeffDate", "Page", "Pageviews"})
+	plan, err := planColumns("imported_pages.csv", []string{"\ufeffDate", "Page", "Pageviews"})
 	if err != nil {
 		t.Fatal(err)
 	}

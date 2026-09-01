@@ -46,7 +46,9 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	if seededTemp != "" {
-		os.RemoveAll(seededTemp)
+		if err := os.RemoveAll(seededTemp); err != nil {
+			code = 1
+		}
 	}
 
 	os.Exit(code)

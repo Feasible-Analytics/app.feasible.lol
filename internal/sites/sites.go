@@ -88,7 +88,7 @@ func (c *Cache) Refresh(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("sites: refresh: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	byDomain := map[string]Site{}
 	now := time.Now().Unix()

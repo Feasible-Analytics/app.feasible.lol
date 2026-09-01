@@ -21,6 +21,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"path"
 	"sort"
@@ -257,7 +258,7 @@ func apply(ctx context.Context, db *sql.DB, migration Migration) error {
 // migrated. It exists for development, where the alternative is deleting files
 // by hand and getting the path wrong; it destroys data and the command that
 // calls it refuses to do so in production.
-func Fresh(ctx context.Context, db *sql.DB) error {
+func Fresh(ctx context.Context, db *sql.DB) (err error) {
 	// The drops have to run on one pinned connection: foreign_keys is a
 	// per-connection setting, and turning it off on whichever connection the
 	// pool happened to hand out would leave the drops enforcing constraints on
@@ -266,7 +267,11 @@ func Fresh(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("fresh: %w", err)
 	}
-	defer conn.Close()
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("fresh: close connection: %w", closeErr))
+		}
+	}()
 
 	// Dropping a parent table before its children fails while foreign keys are
 	// enforced, and there is no ordering that is correct for every schema we
@@ -318,7 +323,7 @@ type object struct {
 // a slice first rather than dropping as it iterates, because dropping while a
 // cursor is open on sqlite_master is exactly the kind of thing that works until
 // the day it does not.
-func listObjects(ctx context.Context, conn *sql.Conn) ([]object, error) {
+func listObjects(ctx context.Context, conn *sql.Conn) (objects []object, err error) {
 	rows, err := conn.QueryContext(ctx, `
 		SELECT type, name
 		FROM sqlite_master
@@ -327,9 +332,11 @@ func listObjects(ctx context.Context, conn *sql.Conn) ([]object, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fresh: read schema: %w", err)
 	}
-	defer rows.Close()
-
-	var objects []object
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("fresh: close schema rows: %w", closeErr))
+		}
+	}()
 
 	for rows.Next() {
 		var found object

@@ -27,6 +27,7 @@ package pathclean
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -150,16 +151,14 @@ func Validate(rule Rule) error {
 }
 
 // List reads a site's rules in order.
-func List(ctx context.Context, db *sql.DB, siteID int64) ([]Rule, error) {
+func List(ctx context.Context, db *sql.DB, siteID int64) (rules []Rule, err error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, site_id, position, pattern, replacement, label, is_enabled
 		FROM path_clean_rules WHERE site_id = ? ORDER BY position`, siteID)
 	if err != nil {
 		return nil, fmt.Errorf("pathclean: read rules: %w", err)
 	}
-	defer rows.Close()
-
-	var rules []Rule
+	defer closePathRows(rows, &err, "read rules")
 
 	for rows.Next() {
 		var rule Rule
@@ -179,6 +178,14 @@ func List(ctx context.Context, db *sql.DB, siteID int64) ([]Rule, error) {
 	}
 
 	return rules, nil
+}
+
+// closePathRows closes a read cursor and joins any driver cleanup failure to
+// the path-cleaning operation that owns it.
+func closePathRows(rows *sql.Rows, err *error, operation string) {
+	if closeErr := rows.Close(); closeErr != nil {
+		*err = errors.Join(*err, fmt.Errorf("pathclean: %s: close rows: %w", operation, closeErr))
+	}
 }
 
 // Ruleset reads and compiles a site's rules in one call, which is what the
@@ -343,7 +350,7 @@ type pathEntry struct {
 // it. The counts come from a grouped read of the site/pathname index rather
 // than from the events themselves, which is what keeps a preview affordable on
 // a site with millions of rows.
-func pathRows(ctx context.Context, db *sql.DB, siteID int64) ([]pathEntry, error) {
+func pathRows(ctx context.Context, db *sql.DB, siteID int64) (entries []pathEntry, err error) {
 	counts := map[int64]int64{}
 
 	rows, err := db.QueryContext(ctx,
@@ -354,18 +361,21 @@ func pathRows(ctx context.Context, db *sql.DB, siteID int64) ([]pathEntry, error
 
 	for rows.Next() {
 		var id, count int64
-		if err := rows.Scan(&id, &count); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("pathclean: count paths: %w", err)
+		if scanErr := rows.Scan(&id, &count); scanErr != nil {
+			err = fmt.Errorf("pathclean: count paths: %w", scanErr)
+			closePathRows(rows, &err, "count paths")
+			return nil, err
 		}
 		counts[id] = count
 	}
 
 	err = rows.Err()
-	rows.Close()
-
 	if err != nil {
-		return nil, fmt.Errorf("pathclean: count paths: %w", err)
+		err = fmt.Errorf("pathclean: count paths: %w", err)
+	}
+	closePathRows(rows, &err, "count paths")
+	if err != nil {
+		return nil, err
 	}
 
 	// Imported history is counted too. A path that only exists in an import is
@@ -382,28 +392,29 @@ func pathRows(ctx context.Context, db *sql.DB, siteID int64) ([]pathEntry, error
 		var id int64
 		var count sql.NullInt64
 
-		if err := imported.Scan(&id, &count); err != nil {
-			imported.Close()
-			return nil, fmt.Errorf("pathclean: count imported paths: %w", err)
+		if scanErr := imported.Scan(&id, &count); scanErr != nil {
+			err = fmt.Errorf("pathclean: count imported paths: %w", scanErr)
+			closePathRows(imported, &err, "count imported paths")
+			return nil, err
 		}
 
 		counts[id] += count.Int64
 	}
 
 	err = imported.Err()
-	imported.Close()
-
 	if err != nil {
-		return nil, fmt.Errorf("pathclean: count imported paths: %w", err)
+		err = fmt.Errorf("pathclean: count imported paths: %w", err)
+	}
+	closePathRows(imported, &err, "count imported paths")
+	if err != nil {
+		return nil, err
 	}
 
 	values, err := db.QueryContext(ctx, "SELECT id, value FROM "+intern.Pathname.Table()+" WHERE id <> 0")
 	if err != nil {
 		return nil, fmt.Errorf("pathclean: read paths: %w", err)
 	}
-	defer values.Close()
-
-	var entries []pathEntry
+	defer closePathRows(values, &err, "read paths")
 
 	for values.Next() {
 		var entry pathEntry

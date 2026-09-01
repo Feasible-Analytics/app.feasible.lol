@@ -475,18 +475,18 @@ func urlEncode(value string) string {
 	escaped := ""
 
 	for _, r := range value {
-		switch {
-		case r == ';':
+		switch r {
+		case ';':
 			escaped += "%3B"
-		case r == '|':
+		case '|':
 			escaped += "%7C"
-		case r == '=':
+		case '=':
 			escaped += "%3D"
-		case r == '~':
+		case '~':
 			escaped += "%7E"
-		case r == '/':
+		case '/':
 			escaped += "%2F"
-		case r == '*':
+		case '*':
 			escaped += "%2A"
 		default:
 			escaped += string(r)

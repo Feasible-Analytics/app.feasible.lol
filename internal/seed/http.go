@@ -13,6 +13,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -171,7 +172,7 @@ func wireBody(domain, path string, person visitor, rng *rand.Rand) ([]byte, erro
 // text/plain because that is what the official trackers send to avoid a CORS
 // preflight, and a wire check that sent application/json would not be checking
 // the path real traffic takes.
-func post(ctx context.Context, client *http.Client, endpoint string, body []byte, person visitor) (int, string, error) {
+func post(ctx context.Context, client *http.Client, endpoint string, body []byte, person visitor) (status int, dropped string, err error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return 0, "", fmt.Errorf("seed http: %w", err)
@@ -190,7 +191,11 @@ func post(ctx context.Context, client *http.Client, endpoint string, body []byte
 	if err != nil {
 		return 0, "", fmt.Errorf("seed http: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		if closeErr := response.Body.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("seed http: close response: %w", closeErr))
+		}
+	}()
 
 	// The body is drained so the connection can be reused. Two hundred events
 	// on two hundred connections is a slower and less realistic check.

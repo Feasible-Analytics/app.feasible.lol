@@ -264,10 +264,10 @@ var dataDomainAttr = regexp.MustCompile(`(?is)data-domain\s*=\s*["']([^"']+)["']
 // arrived cannot tell "you have not deployed yet" from "your CSP is blocking
 // us", and those have completely different fixes — which is exactly the moment
 // somebody gives up and files a support ticket instead.
-func VerifyInstallation(ctx context.Context, client *http.Client, baseURL string, site *Site) VerifyResult {
+func VerifyInstallation(ctx context.Context, client *http.Client, baseURL string, site *Site) (result VerifyResult) {
 	target := "https://" + site.Domain + "/"
 
-	result := VerifyResult{URL: target}
+	result = VerifyResult{URL: target}
 
 	if client == nil {
 		client = &http.Client{Timeout: verifyTimeout}
@@ -293,7 +293,12 @@ func VerifyInstallation(ctx context.Context, client *http.Client, baseURL string
 
 		return result
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			result.Outcome = VerifyUnreachable
+			result.Message = "We loaded " + target + " but could not finish closing the connection."
+		}
+	}()
 
 	result.StatusCode = resp.StatusCode
 	result.CSPHeader = resp.Header.Get("Content-Security-Policy")

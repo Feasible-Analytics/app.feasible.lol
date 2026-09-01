@@ -208,7 +208,7 @@ func topPageShare(ctx context.Context, db *sql.DB, siteID, pageview int64) (floa
 	if err != nil {
 		return 0, fmt.Errorf("seed verify: page share: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var top, total float64
 
@@ -247,7 +247,7 @@ func dailyShape(ctx context.Context, db *sql.DB, siteID int64, start time.Time, 
 	if err != nil {
 		return 0, 0, fmt.Errorf("seed verify: daily shape: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	counts := map[int64]int64{}
 

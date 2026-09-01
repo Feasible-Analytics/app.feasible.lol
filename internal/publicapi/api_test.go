@@ -31,6 +31,21 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/webhooks"
 )
 
+// checkClose runs one test cleanup and reports a failure against the test that
+// owns the resource instead of silently discarding it.
+func checkClose(t testing.TB, name string, close func() error) {
+	t.Helper()
+	if err := close(); err != nil {
+		t.Errorf("close %s: %v", name, err)
+	}
+}
+
+// closeResponse closes a test HTTP response through the shared cleanup check.
+func closeResponse(t testing.TB, response *http.Response) {
+	t.Helper()
+	checkClose(t, "response body", response.Body.Close)
+}
+
 // The harness builds the real thing rather than a set of fakes: a migrated
 // control database, a migrated account database with events in it, and a key
 // created through the same code the CLI uses. The whole promise of this package
@@ -80,7 +95,7 @@ func newHarness(t *testing.T) *harness {
 	seedControl(t, control)
 
 	manager := accounts.NewManager(dir)
-	t.Cleanup(func() { manager.CloseAll() })
+	t.Cleanup(func() { checkClose(t, "account manager", manager.CloseAll) })
 
 	account, err := manager.Open(ctx, teamID)
 	if err != nil {
@@ -297,7 +312,7 @@ func (h *harness) do(t *testing.T, method, path, body, key string) (int, []byte)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer closeResponse(t, response)
 
 	answer, err := io.ReadAll(response.Body)
 	if err != nil {

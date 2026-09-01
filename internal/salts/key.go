@@ -11,6 +11,7 @@ package salts
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -87,10 +88,16 @@ func keyFromFile(path string) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("salt key %s: %w", path, err)
 	}
-	defer file.Close()
-
 	if _, err := file.WriteString(hex.EncodeToString(key)); err != nil {
-		return nil, fmt.Errorf("salt key %s: %w", path, err)
+		writeErr := fmt.Errorf("salt key %s: %w", path, err)
+		if closeErr := file.Close(); closeErr != nil {
+			writeErr = errors.Join(writeErr, fmt.Errorf("salt key %s: close after write failure: %w", path, closeErr))
+		}
+		return nil, writeErr
+	}
+
+	if err := file.Close(); err != nil {
+		return nil, fmt.Errorf("salt key %s: close: %w", path, err)
 	}
 
 	return key, nil

@@ -256,7 +256,8 @@ func TestChannelNamesNeverGoUpstream(t *testing.T) {
 // dashboard, and the initial has to be safe: the name comes from a referrer
 // header and is written straight into an SVG document.
 func TestTileIsStableAndEscaped(t *testing.T) {
-	if string(tile("Reddit")) != string(tile("Reddit")) {
+	first := string(tile("Reddit"))
+	if first != string(tile("Reddit")) {
 		t.Fatal("the same name produced two different tiles")
 	}
 

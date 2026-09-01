@@ -289,7 +289,7 @@ func (s *Service) reconcileLockedWithRecovery(ctx context.Context, lease lifecyc
 		updateApplies := paymentUpdateApplies(selectedUpdate, subscription)
 		terminalPayment := !newSubscription &&
 			(existing.PaymentState == PaymentPaid || existing.PaymentState == PaymentFailed)
-		if updateApplies && !(selectedUpdate.State == PaymentPending && terminalPayment) {
+		if updateApplies && (selectedUpdate.State != PaymentPending || !terminalPayment) {
 			mirror.PaymentState = selectedUpdate.State
 			mirror.EvidenceSourceAt = selectedUpdate.SourceCreated
 			mirror.EvidenceEventAt = selectedUpdate.EventCreated
@@ -757,7 +757,7 @@ func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.Accoun
 			}
 			current := subscriptionByID(subscriptions, existing.SubscriptionID)
 			healthyStatus := current != nil && (current.Status == stripe.StatusActive || current.Status == stripe.StatusTrialing)
-			if current == nil || (!current.Paying() && !(healthyStatus && current.Paused() && recordedSubscription)) {
+			if current == nil || (!current.Paying() && (!healthyStatus || !current.Paused() || !recordedSubscription)) {
 				continue
 			}
 			invoices, err := s.Stripe.Invoices(ctx, currentCustomerID)
