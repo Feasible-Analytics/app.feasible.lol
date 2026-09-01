@@ -48,11 +48,9 @@ type Funnel struct {
 	SiteID int64  `json:"site_id"`
 	Name   string `json:"name"`
 
-	// StrictOrder requires the steps to happen in sequence within one visit.
-	// With it off a visit counts if it did all of them in any order. The two
-	// answer different questions — "did the flow work" and "did they get there
-	// at all" — and neither is a superset of the other, which is why it is a
-	// stored option rather than a default somebody has to argue with.
+	// StrictOrder requires the configured steps to be consecutive events.
+	// With it off they must still happen in sequence, but unrelated activity is
+	// allowed between them.
 	StrictOrder bool `json:"strict_order"`
 
 	CreatedAt int64  `json:"created_at"`
@@ -80,6 +78,9 @@ func CreateFunnel(ctx context.Context, db *sql.DB, funnel Funnel, now time.Time)
 	if len(funnel.Steps) < MinFunnelSteps || len(funnel.Steps) > MaxFunnelSteps {
 		return Funnel{}, invalid("a funnel has between %d and %d steps, not %d",
 			MinFunnelSteps, MaxFunnelSteps, len(funnel.Steps))
+	}
+	if err := validateFunnelSteps(ctx, db, funnel.SiteID, funnel.Steps); err != nil {
+		return Funnel{}, err
 	}
 
 	tx, err := db.BeginTx(ctx, nil)
@@ -126,6 +127,85 @@ func CreateFunnel(ctx context.Context, db *sql.DB, funnel Funnel, now time.Time)
 	}
 
 	return GetFunnel(ctx, db, funnel.ID)
+}
+
+// UpdateFunnel atomically replaces a funnel's name, mode, and ordered steps
+// while preserving its identity and creation time.
+func UpdateFunnel(ctx context.Context, db *sql.DB, funnel Funnel) (Funnel, error) {
+	if funnel.ID < 1 {
+		return Funnel{}, invalid("a funnel update needs an id")
+	}
+	existing, err := GetFunnel(ctx, db, funnel.ID)
+	if err != nil {
+		return Funnel{}, err
+	}
+	if funnel.SiteID != 0 && funnel.SiteID != existing.SiteID {
+		return Funnel{}, ErrNotFound
+	}
+	funnel.SiteID = existing.SiteID
+	funnel.CreatedAt = existing.CreatedAt
+	funnel.Name = strings.TrimSpace(funnel.Name)
+	if funnel.Name == "" || len(funnel.Name) > MaxFunnelName {
+		return Funnel{}, invalid("a funnel needs a name of at most %d characters", MaxFunnelName)
+	}
+	if len(funnel.Steps) < MinFunnelSteps || len(funnel.Steps) > MaxFunnelSteps {
+		return Funnel{}, invalid("a funnel has between %d and %d steps, not %d", MinFunnelSteps, MaxFunnelSteps, len(funnel.Steps))
+	}
+	if err := validateFunnelSteps(ctx, db, funnel.SiteID, funnel.Steps); err != nil {
+		return Funnel{}, err
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return Funnel{}, fmt.Errorf("goals: update funnel: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // a rollback after a successful commit is a no-op
+	if _, err := tx.ExecContext(ctx, "UPDATE funnels SET name = ?, strict_order = ? WHERE id = ? AND site_id = ?",
+		funnel.Name, boolToInt(funnel.StrictOrder), funnel.ID, funnel.SiteID); err != nil {
+		return Funnel{}, fmt.Errorf("goals: update funnel: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM funnel_steps WHERE funnel_id = ?", funnel.ID); err != nil {
+		return Funnel{}, fmt.Errorf("goals: update funnel: %w", err)
+	}
+	for i := range funnel.Steps {
+		funnel.Steps[i].Position = i + 1
+		if _, err := tx.ExecContext(ctx,
+			"INSERT INTO funnel_steps (funnel_id, position, goal_id) VALUES (?,?,?)",
+			funnel.ID, i+1, funnel.Steps[i].GoalID); err != nil {
+			return Funnel{}, fmt.Errorf("goals: update funnel step %d: %w", i+1, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Funnel{}, fmt.Errorf("goals: update funnel: %w", err)
+	}
+	return GetFunnel(ctx, db, funnel.ID)
+}
+
+// validateFunnelSteps ensures every step is a distinct goal belonging to the
+// funnel's site; a repeated goal would make one event satisfy two conceptual
+// stages and a cross-site goal would mix unrelated audiences.
+func validateFunnelSteps(ctx context.Context, db *sql.DB, siteID int64, steps []Step) error {
+	seen := map[int64]bool{}
+	for _, step := range steps {
+		if step.GoalID < 1 {
+			return invalid("every funnel step needs a goal")
+		}
+		if seen[step.GoalID] {
+			return invalid("goal %d appears more than once in this funnel", step.GoalID)
+		}
+		seen[step.GoalID] = true
+		var owner int64
+		if err := db.QueryRowContext(ctx, "SELECT site_id FROM goals WHERE id = ?", step.GoalID).Scan(&owner); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return invalid("goal %d does not exist", step.GoalID)
+			}
+			return fmt.Errorf("goals: validate funnel step: %w", err)
+		}
+		if owner != siteID {
+			return invalid("goal %d belongs to another site", step.GoalID)
+		}
+	}
+	return nil
 }
 
 // DeleteFunnel removes a funnel and its steps. The goals it pointed at stay:
@@ -251,6 +331,8 @@ type FunnelRequest struct {
 	FunnelID  int64
 	DateRange query.DateRange
 	Timezone  string
+	Filters   []query.Filter
+	Exact     bool
 }
 
 // FunnelStep is one step's numbers.
@@ -281,7 +363,7 @@ type FunnelResult struct {
 	Steps  []FunnelStep `json:"steps"`
 
 	// From and To are the window actually measured, which starts at the latest
-	// of the report range and every step goal's creation.
+	// of the report range, funnel creation, and every step goal's creation.
 	From time.Time `json:"from"`
 	To   time.Time `json:"to"`
 
@@ -320,7 +402,7 @@ func RunFunnel(ctx context.Context, db *sql.DB, engine *query.Engine, req Funnel
 	}
 
 	full := NewWindow(resolved.Start, resolved.End)
-	window := full
+	window := full.clampTo(funnel.CreatedAt)
 
 	for _, step := range funnel.Steps {
 		window = window.clampTo(step.Goal.CreatedAt)
@@ -342,7 +424,11 @@ func RunFunnel(ctx context.Context, db *sql.DB, engine *query.Engine, req Funnel
 		return result, nil
 	}
 
-	visits, visitors, err := walkFunnel(ctx, db, funnel, window)
+	filterSQL, filterArgs, err := engine.EventFilterSQL(ctx, []int64{funnel.SiteID}, resolved, req.Filters, "e")
+	if err != nil {
+		return nil, err
+	}
+	visits, visitors, err := walkFunnel(ctx, db, funnel, window, filterSQL, filterArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -369,7 +455,7 @@ func RunFunnel(ctx context.Context, db *sql.DB, engine *query.Engine, req Funnel
 // same event — a wildcard goal and the exact page beneath it — would otherwise
 // be satisfied by a single pageview, and a funnel that can be completed by one
 // event is not measuring a flow.
-func walkFunnel(ctx context.Context, db *sql.DB, funnel Funnel, window Window) (visits, visitors []int64, err error) {
+func walkFunnel(ctx context.Context, db *sql.DB, funnel Funnel, window Window, filterSQL string, filterArgs []any) (visits, visitors []int64, err error) {
 	predicates, err := stepPredicates(ctx, db, funnel)
 	if err != nil {
 		return nil, nil, err
@@ -399,11 +485,30 @@ func walkFunnel(ctx context.Context, db *sql.DB, funnel Funnel, window Window) (
 
 	params := append([]any{}, binds...)
 	params = append(params, args...)
-	params = append(params, binds...)
 
 	statement := "SELECT e.session_id, e.user_id, " + strings.Join(mask, " + ") + " AS reached" +
-		" FROM events e WHERE " + where + " AND (" + strings.Join(matchAny, " OR ") + ")" +
-		" ORDER BY e.session_id, e.timestamp, e.id"
+		" FROM events e WHERE " + where
+	if filterSQL != "" {
+		statement += " AND (" + filterSQL + ")"
+		params = append(params, filterArgs...)
+	}
+	if funnel.StrictOrder {
+		// Strict order must see unrelated visitor actions because any one of
+		// them interrupts an exact-consecutive sequence. Internal engagement
+		// heartbeats are measurements rather than actions and do not interrupt.
+		engagementID, err := eventNameID(ctx, db, ingest.EventEngagement)
+		if err != nil {
+			return nil, nil, err
+		}
+		statement += " AND e.name_id <> ?"
+		params = append(params, engagementID)
+	} else {
+		// Sequential mode can skip unrelated events, so selecting only events
+		// that match at least one step keeps the ordered walk small.
+		statement += " AND (" + strings.Join(matchAny, " OR ") + ")"
+		params = append(params, binds...)
+	}
+	statement += " ORDER BY e.session_id, e.timestamp, e.id"
 
 	rows, err := db.QueryContext(ctx, statement, params...)
 	if err != nil {
@@ -417,11 +522,10 @@ func walkFunnel(ctx context.Context, db *sql.DB, funnel Funnel, window Window) (
 	best := map[int64]int{}
 
 	var (
-		current  int64
-		haveRow  bool
-		user     int64
-		reached  int
-		seenMask int
+		current int64
+		haveRow bool
+		user    int64
+		reached int
 	)
 
 	// finishVisit is the end of one visit: it turns the visit's accumulated
@@ -432,12 +536,6 @@ func walkFunnel(ctx context.Context, db *sql.DB, funnel Funnel, window Window) (
 		}
 
 		got := reached
-		if !funnel.StrictOrder {
-			got = 0
-			for got < steps && seenMask&(1<<uint(got)) != 0 {
-				got++
-			}
-		}
 
 		for i := 0; i < got; i++ {
 			visits[i]++
@@ -462,13 +560,26 @@ func walkFunnel(ctx context.Context, db *sql.DB, funnel Funnel, window Window) (
 		if !haveRow || session != current {
 			finishVisit()
 
-			current, user, reached, seenMask, haveRow = session, owner, 0, 0, true
+			current, user, reached, haveRow = session, owner, 0, true
 		}
 
-		seenMask |= matched
+		if !funnel.StrictOrder {
+			if reached < steps && matched&(1<<uint(reached)) != 0 {
+				reached++
+			}
+			continue
+		}
 
 		if reached < steps && matched&(1<<uint(reached)) != 0 {
 			reached++
+			continue
+		}
+
+		// A mismatch breaks a strict sequence. The same event may immediately
+		// begin a new attempt when it matches the first step.
+		reached = 0
+		if matched&1 != 0 {
+			reached = 1
 		}
 	}
 
@@ -564,10 +675,30 @@ func goalPredicate(ctx context.Context, db *sql.DB, goal Goal, pageviewID int64)
 			return predicate{}, err
 		}
 
-		compiled = predicate{SQL: "e.name_id = ?", Args: []any{id}}
+		ids := []any{id}
+		if goal.EventName == EventFormSubmission {
+			legacy, err := eventNameID(ctx, db, EventFormSubmitLegacy)
+			if err != nil {
+				return predicate{}, err
+			}
+			ids = append(ids, legacy)
+		}
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+		compiled = predicate{SQL: "e.name_id IN (" + placeholders + ")", Args: ids}
+
+	case KindScroll:
+		compiled = predicate{SQL: "e.scroll_depth >= ? AND e.scroll_depth <= 100", Args: []any{goal.ScrollDepth}}
+		if goal.PagePattern != "" {
+			source, err := compilePattern(goal.PagePattern)
+			if err != nil {
+				return predicate{}, err
+			}
+			compiled.SQL += " AND e.pathname_id IN (SELECT id FROM dim_pathname WHERE " + query.MatchFunction + "(?, value, 1))"
+			compiled.Args = append(compiled.Args, source)
+		}
 
 	default:
-		return predicate{}, invalid("a goal is either %q or %q, not %q", KindPage, KindEvent, goal.Kind)
+		return predicate{}, invalid("a goal is %q, %q, or %q, not %q", KindPage, KindEvent, KindScroll, goal.Kind)
 	}
 
 	if len(goal.Properties) == 0 {

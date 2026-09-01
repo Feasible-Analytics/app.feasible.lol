@@ -34,7 +34,7 @@ func buildFunnel(t *testing.T, db *sql.DB, strict bool) Funnel {
 
 	funnel, err := CreateFunnel(context.Background(), db, Funnel{
 		SiteID: siteID, Name: "Checkout", StrictOrder: strict, Steps: steps,
-	}, fixtureNow)
+	}, goalCreated)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,20 +58,17 @@ func runFunnel(t *testing.T, db *sql.DB, engine *query.Engine, funnel Funnel) *F
 	return result
 }
 
-// TestAStrictFunnelCountsTheStepsInOrder is the drop-off test.
-//
-// Four visits reach the cart. Two go on to the checkout, one of those reaches
-// payment and completes. The visit that jumped from the cart straight to the
-// confirmation page counts as one step, and so does the visit that did every
-// page in the wrong order — which is exactly what strict order means.
+// TestAStrictFunnelRequiresConsecutiveSteps checks exact-consecutive mode. One
+// visit has cart immediately followed by checkout; intervening visitor events
+// interrupt every longer sequence in this fixture.
 func TestAStrictFunnelCountsTheStepsInOrder(t *testing.T) {
 	db, engine := newFixture(t)
 
 	result := runFunnel(t, db, engine, buildFunnel(t, db, true))
 
-	wantVisitors := []int64{4, 2, 1, 1}
-	wantDropOff := []int64{0, 2, 1, 0}
-	wantDropRate := []float64{0, 50, 50, 0}
+	wantVisitors := []int64{1, 1, 0, 0}
+	wantDropOff := []int64{0, 0, 1, 0}
+	wantDropRate := []float64{0, 0, 100, 0}
 
 	if len(result.Steps) != len(wantVisitors) {
 		t.Fatalf("funnel has %d steps, want %d", len(result.Steps), len(wantVisitors))
@@ -91,23 +88,20 @@ func TestAStrictFunnelCountsTheStepsInOrder(t *testing.T) {
 		}
 	}
 
-	// The last step against the first is what people mean by "our funnel
-	// converts at": one of the four visitors who reached the cart finished.
-	if got := result.Steps[3].ConversionRate; got != 25 {
-		t.Errorf("funnel conversion rate = %v, want 25", got)
+	if got := result.Steps[3].ConversionRate; got != 0 {
+		t.Errorf("funnel conversion rate = %v, want 0", got)
 	}
 }
 
-// TestALooseFunnelCountsTheStepsInAnyOrder is the other half of the option.
-// The visit that did every page in the wrong order completes a loose funnel
-// and does not complete a strict one, and that difference is the entire reason
-// the flag exists.
+// TestASequentialFunnelAllowsUnrelatedEvents is the other half of the option.
+// Steps still have to be ordered, while unrelated activity between them is
+// ignored.
 func TestALooseFunnelCountsTheStepsInAnyOrder(t *testing.T) {
 	db, engine := newFixture(t)
 
 	result := runFunnel(t, db, engine, buildFunnel(t, db, false))
 
-	wantVisitors := []int64{4, 3, 2, 2}
+	wantVisitors := []int64{4, 2, 1, 1}
 
 	for i, step := range result.Steps {
 		if step.Visitors != wantVisitors[i] {
@@ -125,7 +119,7 @@ func TestFunnelVisitsAndVisitorsAreCountedSeparately(t *testing.T) {
 
 	result := runFunnel(t, db, engine, buildFunnel(t, db, true))
 
-	wantVisits := []int64{4, 2, 1, 1}
+	wantVisits := []int64{1, 1, 0, 0}
 
 	for i, step := range result.Steps {
 		if step.Visits != wantVisits[i] {

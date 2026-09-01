@@ -196,6 +196,14 @@ func (h *Handler) doNewSite(w http.ResponseWriter, r *http.Request) {
 
 	h.Log.Info("site created", "site", site.ID, "team", team.ID, "domain", site.Domain, "timezone", site.Timezone)
 
+	// Account-backed defaults are created before onboarding so the first
+	// dashboard request sees the same automatic goals as every later request.
+	if h.ProvisionSite != nil {
+		if err := h.ProvisionSite(r.Context(), site.AccountID, site.ID, h.Store.Now()); err != nil {
+			h.Log.Error("site defaults could not be provisioned", "site", site.ID, "team", team.ID, "error", err)
+		}
+	}
+
 	// The routing map is updated immediately rather than at the next refresh so
 	// the snippet works the moment it is pasted in this process. Other serving
 	// processes discover the durable control row on their normal refresh.

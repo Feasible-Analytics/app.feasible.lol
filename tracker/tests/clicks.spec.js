@@ -170,7 +170,7 @@ test("a form submission is recorded", async ({ page }) => {
 	await page.click("#plain button");
 	await page.waitForURL("**/basic.html?email=*");
 
-	await settledCount(state, "Form: Submit", 1);
+	await settledCount(state, "Form: Submission", 1);
 });
 
 test("a tagged form reports the name it was tagged with, once", async ({ page }) => {

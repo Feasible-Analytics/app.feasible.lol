@@ -107,10 +107,15 @@ type API struct {
 	// endpoint still exists and answers with a clear "not available yet"
 	// rather than a 404, because a route that vanishes looks like a bug in the
 	// caller's URL and a route that explains itself does not.
-	Goals       GoalStore
-	Funnels     FunnelStore
-	Shields     ShieldStore
-	Annotations AnnotationStore
+	Goals            GoalStore
+	Funnels          FunnelStore
+	CustomProperties CustomPropertyStore
+
+	// ProvisionSite creates account-backed defaults after a site control row is
+	// committed, for both HTTP and MCP provisioning paths.
+	ProvisionSite func(context.Context, int64, int64) error
+	Shields       ShieldStore
+	Annotations   AnnotationStore
 
 	// BaseURL is the URL people actually type. Tracker snippets and shared-link
 	// URLs are built from it, so it has to be the public address rather than
@@ -171,7 +176,12 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/sites", a.handleCreateSite)
 	mux.HandleFunc("GET /api/v1/sites/goals", a.handleListGoals)
 	mux.HandleFunc("PUT /api/v1/sites/goals", a.handleCreateGoal)
+	mux.HandleFunc("PATCH /api/v1/sites/goals/{goal_id}", a.handleUpdateGoal)
 	mux.HandleFunc("DELETE /api/v1/sites/goals/{goal_id}", a.handleDeleteGoal)
+	mux.HandleFunc("GET /api/v1/sites/funnels", a.handleListFunnels)
+	mux.HandleFunc("PUT /api/v1/sites/funnels", a.handleCreateFunnel)
+	mux.HandleFunc("PATCH /api/v1/sites/funnels/{funnel_id}", a.handleUpdateFunnel)
+	mux.HandleFunc("DELETE /api/v1/sites/funnels/{funnel_id}", a.handleDeleteFunnel)
 	mux.HandleFunc("GET /api/v1/sites/shared-links", a.handleListSharedLinks)
 	mux.HandleFunc("PUT /api/v1/sites/shared-links", a.handleCreateSharedLink)
 	mux.HandleFunc("DELETE /api/v1/sites/shared-links/{link_id}", a.handleDeleteSharedLink)

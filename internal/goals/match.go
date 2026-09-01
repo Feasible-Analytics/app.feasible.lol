@@ -146,14 +146,21 @@ func (g Goal) Filters() ([]query.Filter, error) {
 		})
 
 	case KindEvent:
+		names := []string{g.EventName}
+		if g.EventName == EventFormSubmission {
+			names = append(names, EventFormSubmitLegacy)
+		}
 		filters = append(filters, query.Filter{
 			Operator:  query.OpIs,
 			Dimension: "event:name",
-			Values:    []string{g.EventName},
+			Values:    names,
 		})
 
+	case KindScroll:
+		return nil, invalid("scroll goals are counted from engagement depth rather than ordinary event filters")
+
 	default:
-		return nil, invalid("a goal is either %q or %q, not %q", KindPage, KindEvent, g.Kind)
+		return nil, invalid("a goal is %q, %q, or %q, not %q", KindPage, KindEvent, KindScroll, g.Kind)
 	}
 
 	for _, property := range g.Properties {

@@ -14,6 +14,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
@@ -56,6 +58,32 @@ type JourneyRequest struct {
 
 	// Limit is how many steps each list returns.
 	Limit int
+
+	AnchorType string
+	Anchor     string
+	Direction  string
+	Trail      []JourneyAnchor
+	Grouping   string
+	Filters    []query.Filter
+	Exact      bool
+}
+
+// JourneyAnchor identifies a page, custom event, or configured goal in the
+// interactive Explore trail.
+type JourneyAnchor struct {
+	Type   string `json:"type"`
+	Value  string `json:"value"`
+	Label  string `json:"label,omitempty"`
+	GoalID int64  `json:"goal_id,omitempty"`
+}
+
+// ExploreStep is one selectable continuation from the current anchor.
+type ExploreStep struct {
+	Anchor   JourneyAnchor `json:"anchor"`
+	Terminal bool          `json:"terminal,omitempty"`
+	Visitors int64         `json:"visitors"`
+	Visits   int64         `json:"visits"`
+	Events   int64         `json:"events"`
 }
 
 // JourneyStep is one destination or origin.
@@ -94,6 +122,11 @@ type JourneyResult struct {
 
 	From time.Time `json:"from"`
 	To   time.Time `json:"to"`
+
+	Anchor    JourneyAnchor   `json:"anchor"`
+	Direction string          `json:"direction"`
+	Trail     []JourneyAnchor `json:"trail"`
+	Steps     []ExploreStep   `json:"steps"`
 }
 
 // Journey answers the next-page and previous-page breakdowns for one page.
@@ -104,8 +137,26 @@ type JourneyResult struct {
 // about the window — which sites, which range, and the two exclusions — is the
 // same clause the compiler builds, so the totals here reconcile with Top Pages.
 func Journey(ctx context.Context, db *sql.DB, engine *query.Engine, req JourneyRequest) (*JourneyResult, error) {
-	if req.Page == "" {
-		return nil, invalid("a journey needs a page to start from")
+	if req.AnchorType == "" {
+		req.AnchorType = "page"
+	}
+	if req.Anchor == "" {
+		req.Anchor = req.Page
+	}
+	if req.Page == "" && req.AnchorType == "page" {
+		req.Page = req.Anchor
+	}
+	if req.Anchor == "" {
+		return nil, invalid("a journey needs an anchor")
+	}
+	if req.Direction == "" {
+		req.Direction = "forward"
+	}
+	if req.Direction != "forward" && req.Direction != "backward" {
+		return nil, invalid("a journey direction is forward or backward, not %q", req.Direction)
+	}
+	if req.AnchorType != "page" && req.AnchorType != "event" && req.AnchorType != "goal" {
+		return nil, invalid("a journey anchor is page, event, or goal, not %q", req.AnchorType)
 	}
 
 	limit := req.Limit
@@ -123,7 +174,11 @@ func Journey(ctx context.Context, db *sql.DB, engine *query.Engine, req JourneyR
 
 	window := NewWindow(resolved.Start, resolved.End)
 
-	result := &JourneyResult{Page: req.Page, From: resolved.Start, To: resolved.End}
+	result := &JourneyResult{
+		Page: req.Page, From: resolved.Start, To: resolved.End,
+		Anchor:    JourneyAnchor{Type: req.AnchorType, Value: req.Anchor},
+		Direction: req.Direction, Trail: req.Trail, Steps: []ExploreStep{},
+	}
 
 	if window.Empty() {
 		return result, nil
@@ -137,6 +192,15 @@ func Journey(ctx context.Context, db *sql.DB, engine *query.Engine, req JourneyR
 	engagementID, err := eventNameID(ctx, db, ingest.EventEngagement)
 	if err != nil {
 		return nil, err
+	}
+	steps, anchor, err := exploreJourney(ctx, db, engine, req, resolved, window, pageviewID, engagementID, limit)
+	if err != nil {
+		return nil, err
+	}
+	result.Anchor = anchor
+	result.Steps = steps
+	if req.AnchorType != "page" {
+		return result, nil
 	}
 
 	var pathID int64
@@ -179,6 +243,200 @@ func Journey(ctx context.Context, db *sql.DB, engine *query.Engine, req JourneyR
 	}
 
 	return result, nil
+}
+
+// exploreJourney returns one direction of a typed journey. Calling the same
+// endpoint with a selected step as the new anchor supports arbitrary depth
+// while the trail preserves the path the user took.
+func exploreJourney(ctx context.Context, db *sql.DB, engine *query.Engine, req JourneyRequest, resolved query.Resolved, window Window, pageviewID, engagementID int64, limit int) ([]ExploreStep, JourneyAnchor, error) {
+	anchor := JourneyAnchor{Type: req.AnchorType, Value: req.Anchor, Label: req.Anchor}
+	var anchorPredicate predicate
+	switch req.AnchorType {
+	case "page":
+		var pathID int64
+		err := db.QueryRowContext(ctx, "SELECT id FROM dim_pathname WHERE value = ?", req.Anchor).Scan(&pathID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return []ExploreStep{}, anchor, nil
+		}
+		if err != nil {
+			return nil, anchor, fmt.Errorf("goals: explore page anchor: %w", err)
+		}
+		anchorPredicate = predicate{SQL: "e.name_id = ? AND e.pathname_id = ?", Args: []any{pageviewID, pathID}}
+	case "event":
+		nameID, err := eventNameID(ctx, db, req.Anchor)
+		if err != nil {
+			return nil, anchor, err
+		}
+		anchorPredicate = predicate{SQL: "e.name_id = ?", Args: []any{nameID}}
+	case "goal":
+		goalID, err := strconv.ParseInt(req.Anchor, 10, 64)
+		if err != nil || goalID < 1 {
+			return nil, anchor, invalid("a goal journey anchor needs a positive goal id")
+		}
+		goal, err := Get(ctx, db, goalID)
+		if err != nil || goal.SiteID != req.SiteID {
+			return nil, anchor, ErrNotFound
+		}
+		anchorPredicate, err = goalPredicate(ctx, db, goal, pageviewID)
+		if err != nil {
+			return nil, anchor, err
+		}
+		anchor.GoalID, anchor.Label = goal.ID, goal.Label()
+	}
+
+	filterSQL, filterArgs, err := engine.EventFilterSQL(ctx, []int64{req.SiteID}, resolved, req.Filters, "e")
+	if err != nil {
+		return nil, anchor, err
+	}
+	where, args := baseConditions("e", req.SiteID, window)
+	if filterSQL != "" {
+		where += " AND (" + filterSQL + ")"
+		args = append(args, filterArgs...)
+	}
+	args = append(args, engagementID)
+	adjacent := "LEAD"
+	known := "LAG"
+	terminal := ExitStep
+	if req.Direction == "backward" {
+		adjacent, known, terminal = "LAG", "LEAD", EntryStep
+	}
+	var trailColumns []string
+	var trailPredicates []predicate
+	for index := range req.Trail {
+		offset := index + 1
+		prefix := fmt.Sprintf("trail_%d_", offset)
+		trailColumns = append(trailColumns,
+			fmt.Sprintf("%s(e.id, %d) OVER (PARTITION BY e.session_id ORDER BY e.timestamp, e.id) AS %sid", known, offset, prefix),
+			fmt.Sprintf("%s(e.name_id, %d) OVER (PARTITION BY e.session_id ORDER BY e.timestamp, e.id) AS %sname_id", known, offset, prefix),
+			fmt.Sprintf("%s(e.pathname_id, %d) OVER (PARTITION BY e.session_id ORDER BY e.timestamp, e.id) AS %spathname_id", known, offset, prefix),
+			fmt.Sprintf("%s(e.scroll_depth, %d) OVER (PARTITION BY e.session_id ORDER BY e.timestamp, e.id) AS %sscroll_depth", known, offset, prefix))
+		trailAnchor := req.Trail[len(req.Trail)-1-index]
+		compiled, err := journeyAnchorPredicate(ctx, db, req.SiteID, trailAnchor, pageviewID, prefix)
+		if err != nil {
+			return nil, anchor, err
+		}
+		trailPredicates = append(trailPredicates, compiled)
+	}
+	extraColumns := ""
+	if len(trailColumns) > 0 {
+		extraColumns = ", " + strings.Join(trailColumns, ", ")
+	}
+	valueExpression := `(CASE WHEN adjacent_name IS NULL THEN NULL
+		WHEN adjacent_name = ` + strconv.FormatInt(pageviewID, 10) + ` THEN (SELECT value FROM dim_pathname WHERE id = adjacent_path)
+		ELSE (SELECT value FROM dim_event_name WHERE id = adjacent_name) END)`
+	if req.Grouping == "prefix" {
+		valueExpression = `(CASE WHEN adjacent_name IS NULL THEN NULL
+		WHEN adjacent_name = ` + strconv.FormatInt(pageviewID, 10) + ` THEN (
+			SELECT CASE WHEN instr(substr(value, 2), '/') > 0
+				THEN '/' || substr(substr(value, 2), 1, instr(substr(value, 2), '/') - 1) || '/**'
+				ELSE value END FROM dim_pathname WHERE id = adjacent_path)
+		ELSE (SELECT value FROM dim_event_name WHERE id = adjacent_name) END)`
+	}
+	outerConditions := []string{"(" + anchorPredicate.SQL + ")"}
+	args = append(args, anchorPredicate.Args...)
+	for _, compiled := range trailPredicates {
+		outerConditions = append(outerConditions, "("+compiled.SQL+")")
+		args = append(args, compiled.Args...)
+	}
+	statement := `WITH ordered AS (
+		SELECT e.id, e.site_id, e.session_id, e.user_id, e.name_id, e.pathname_id, e.scroll_depth,
+		       ` + adjacent + `(e.name_id) OVER (PARTITION BY e.session_id ORDER BY e.timestamp, e.id) AS adjacent_name,
+		       ` + adjacent + `(e.pathname_id) OVER (PARTITION BY e.session_id ORDER BY e.timestamp, e.id) AS adjacent_path` + extraColumns + `
+		FROM events e WHERE ` + where + ` AND e.name_id <> ?
+	)
+	SELECT adjacent_name, ` + valueExpression + ` AS adjacent_value,
+	       COUNT(DISTINCT user_id), COUNT(DISTINCT session_id), COUNT(*)
+	FROM ordered e WHERE ` + strings.Join(outerConditions, " AND ") + `
+	GROUP BY adjacent_name, adjacent_value ORDER BY 5 DESC LIMIT ?`
+	args = append(args, int64(limit))
+	rows, err := db.QueryContext(ctx, statement, args...)
+	if err != nil {
+		return nil, anchor, fmt.Errorf("goals: explore journey: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	type rawStep struct {
+		name  sql.NullInt64
+		value sql.NullString
+		step  ExploreStep
+	}
+	var raw []rawStep
+	for rows.Next() {
+		var item rawStep
+		if err := rows.Scan(&item.name, &item.value, &item.step.Visitors, &item.step.Visits, &item.step.Events); err != nil {
+			return nil, anchor, fmt.Errorf("goals: explore journey: %w", err)
+		}
+		raw = append(raw, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, anchor, fmt.Errorf("goals: explore journey: %w", err)
+	}
+	steps := make([]ExploreStep, 0, len(raw))
+	for _, item := range raw {
+		if !item.name.Valid {
+			item.step.Anchor = JourneyAnchor{Type: "terminal", Value: terminal, Label: terminal}
+			item.step.Terminal = true
+		} else if item.name.Int64 == pageviewID {
+			value := item.value.String
+			item.step.Anchor = JourneyAnchor{Type: "page", Value: value, Label: value}
+		} else {
+			value := item.value.String
+			item.step.Anchor = JourneyAnchor{Type: "event", Value: value, Label: value}
+		}
+		steps = append(steps, item.step)
+	}
+	return steps, anchor, nil
+}
+
+// journeyAnchorPredicate compiles a typed trail anchor against one set of
+// ordered-event columns, including goal property constraints through event id.
+func journeyAnchorPredicate(ctx context.Context, db *sql.DB, siteID int64, anchor JourneyAnchor, pageviewID int64, prefix string) (predicate, error) {
+	alias := prefix
+	switch anchor.Type {
+	case "page":
+		var pathID int64
+		if err := db.QueryRowContext(ctx, "SELECT id FROM dim_pathname WHERE value = ?", anchor.Value).Scan(&pathID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return predicate{SQL: "0 = 1"}, nil
+			}
+			return predicate{}, err
+		}
+		return predicate{SQL: alias + "name_id = ? AND " + alias + "pathname_id = ?", Args: []any{pageviewID, pathID}}, nil
+	case "event":
+		nameID, err := eventNameID(ctx, db, anchor.Value)
+		if err != nil {
+			return predicate{}, err
+		}
+		return predicate{SQL: alias + "name_id = ?", Args: []any{nameID}}, nil
+	case "goal":
+		goalID := anchor.GoalID
+		if goalID == 0 {
+			goalID, _ = strconv.ParseInt(anchor.Value, 10, 64)
+		}
+		goal, err := Get(ctx, db, goalID)
+		if err != nil || goal.SiteID != siteID {
+			return predicate{}, ErrNotFound
+		}
+		compiled, err := goalPredicate(ctx, db, goal, pageviewID)
+		if err != nil {
+			return predicate{}, err
+		}
+		compiled.SQL = strings.ReplaceAll(compiled.SQL, "e.name_id", alias+"name_id")
+		compiled.SQL = strings.ReplaceAll(compiled.SQL, "e.pathname_id", alias+"pathname_id")
+		compiled.SQL = strings.ReplaceAll(compiled.SQL, "e.scroll_depth", alias+"scroll_depth")
+		compiled.SQL = strings.ReplaceAll(compiled.SQL, "e.id", alias+"id")
+		return compiled, nil
+	default:
+		return predicate{}, invalid("a journey trail anchor is page, event, or goal, not %q", anchor.Type)
+	}
+}
+
+// firstPathSegment groups a path by its first non-empty segment.
+func firstPathSegment(path string) string {
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		return "/"
+	}
+	return "/" + parts[0] + "/**"
 }
 
 // conditionsFor and bindsFor are the base clause split into its two halves, so

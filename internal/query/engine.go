@@ -63,6 +63,13 @@ func New(db *sql.DB) *Engine {
 	}
 }
 
+// Database exposes the engine's read-only handle to feature reports that must
+// preserve event order or inspect numeric facts the grouped query API does not
+// expose. Callers must never write through it.
+func (e *Engine) Database() *sql.DB {
+	return e.db
+}
+
 // now reads the engine's clock.
 func (e *Engine) now() time.Time {
 	if e.Now == nil {
@@ -355,7 +362,7 @@ func (e *Engine) attachComparison(ctx context.Context, q *Query, blueprint *plan
 // this account has never recorded resolves to -1 so it matches no row — id 0 is
 // the empty string, and matching that would count every event with no name.
 func (e *Engine) compileContext(ctx context.Context, q *Query) (compileContext, error) {
-	compile := compileContext{pageviewNameID: -1, engagementNameID: -1, sampleRate: q.SampleRate}
+	compile := compileContext{db: e.db, context: ctx, pageviewNameID: -1, engagementNameID: -1, sampleRate: q.SampleRate}
 	if err := e.db.QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM sqlite_master

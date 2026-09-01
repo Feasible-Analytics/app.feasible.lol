@@ -95,6 +95,11 @@ func (a *API) NewSite(ctx context.Context, key *apikeys.Key, domain, displayName
 	if err != nil {
 		return nil, err
 	}
+	if a.ProvisionSite != nil {
+		if err := a.ProvisionSite(ctx, key.TeamID, site.ID); err != nil {
+			return nil, err
+		}
+	}
 
 	if a.Sites != nil {
 		if err := a.Sites.Refresh(ctx); err != nil && a.Log != nil {
