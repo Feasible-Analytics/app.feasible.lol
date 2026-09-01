@@ -10,6 +10,7 @@ package billing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -667,7 +668,7 @@ func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.Accoun
 			}
 		}
 
-		cleaned, err := s.cleanupCheckoutSessions(ctx, lease, teamID, false)
+		cleaned, err := s.cleanupCheckoutSessions(ctx, lease, teamID, false, "")
 		if err != nil {
 			return fail(err)
 		}
@@ -844,7 +845,7 @@ func settledInvoice(subscriptions []stripe.Subscription, invoices []stripe.Invoi
 // account's metadata plus every late session already recorded locally. A
 // completed orphan blocks a first customer; historical completions are harmless
 // once provider subscription truth says an existing customer is fully terminal.
-func (s *Service) cleanupCheckoutSessions(ctx context.Context, lease lifecycle.AccountLease, teamID int64, blockCompleted bool) (bool, error) {
+func (s *Service) cleanupCheckoutSessions(ctx context.Context, lease lifecycle.AccountLease, teamID int64, blockCompleted bool, verifyCustomerID string) (bool, error) {
 	pending, err := s.Store.CheckoutCleanupSessions(ctx, teamID)
 	if err != nil {
 		return false, err
@@ -880,16 +881,30 @@ func (s *Service) cleanupCheckoutSessions(ctx context.Context, lease lifecycle.A
 			if blockCompleted {
 				return changed, fmt.Errorf("billing: checkout %s completed before it could be recorded locally", id)
 			}
+			if verifyCustomerID != "" {
+				if err := s.verifyCompletedCheckoutIsTerminal(ctx, lease, session, verifyCustomerID); err != nil {
+					return changed, err
+				}
+			}
+			if err := lease.Renew(ctx); err != nil {
+				return changed, err
+			}
 			if err := s.Store.FinishCheckoutCleanup(ctx, id); err != nil {
 				return changed, err
 			}
 			continue
 		}
 		if session.Status == "open" {
+			if err := lease.Renew(ctx); err != nil {
+				return changed, err
+			}
 			if err := s.Stripe.ExpireCheckoutSession(ctx, id, "expire-replaced-"+id); err != nil {
 				return changed, fmt.Errorf("billing: expire checkout %s before replacement: %w", id, err)
 			}
 			changed = true
+		}
+		if err := lease.Renew(ctx); err != nil {
+			return changed, err
 		}
 		if err := s.Store.FinishCheckoutCleanup(ctx, id); err != nil {
 			return changed, err
@@ -897,6 +912,63 @@ func (s *Service) cleanupCheckoutSessions(ctx context.Context, lease lifecycle.A
 	}
 
 	return changed, nil
+}
+
+// verifyCompletedCheckoutIsTerminal closes the completion race between the
+// initial subscription snapshot and checkout cleanup. A replacement is safe
+// only when Stripe can identify the completed session's subscription and every
+// current subscription for that customer is now non-chargeable.
+func (s *Service) verifyCompletedCheckoutIsTerminal(ctx context.Context, lease lifecycle.AccountLease, session *stripe.CheckoutSession, fallbackCustomerID string) error {
+	customerID := session.Customer
+	if customerID == "" {
+		customerID = fallbackCustomerID
+	}
+	if customerID == "" || session.Subscription == "" {
+		return fmt.Errorf("billing: checkout %s completed without stable customer and subscription evidence", session.ID)
+	}
+	if err := lease.Renew(ctx); err != nil {
+		return err
+	}
+
+	subscriptions, err := s.Stripe.Subscriptions(ctx, customerID)
+	if err != nil {
+		return fmt.Errorf("billing: verify completed checkout %s: %w", session.ID, err)
+	}
+	found := false
+	for i := range subscriptions {
+		subscription := &subscriptions[i]
+		found = found || subscription.ID == session.Subscription
+		if subscription.BlocksCheckout() {
+			return fmt.Errorf("billing: checkout %s completed subscription %s in %s; use the billing portal",
+				session.ID, subscription.ID, subscription.Status)
+		}
+	}
+	if !found {
+		return fmt.Errorf("billing: checkout %s completed subscription %s but provider truth is not visible yet",
+			session.ID, session.Subscription)
+	}
+
+	return nil
+}
+
+// retireCheckoutClaim durably queues the provider session before fencing the
+// local claim as expired. Repeated calls are idempotent, and a stale worker
+// cannot touch a newer claim because both the account lease and claim token
+// must still be current.
+func (s *Service) retireCheckoutClaim(ctx context.Context, lease lifecycle.AccountLease, claim CheckoutClaim) error {
+	if err := lease.Renew(ctx); err != nil {
+		return err
+	}
+	if claim.SessionID != "" {
+		if err := s.Store.RememberCheckoutCleanup(ctx, claim.TeamID, claim.SessionID); err != nil {
+			return err
+		}
+	}
+	if err := lease.Renew(ctx); err != nil {
+		return err
+	}
+
+	return s.Store.MarkCheckoutClaimStatus(ctx, claim, "expired")
 }
 
 // Checkout creates or resumes the one hosted checkout allowed for an account.
@@ -963,111 +1035,143 @@ func (s *Service) Checkout(ctx context.Context, teamID int64, planKey, email str
 		case session.Status == "open" && claim.Plan == planKey && claim.PriceID == priceID:
 			return session, nil
 		case session.Status == "open":
-			// A customer who backs out of one plan must be able to choose the
-			// other. Persist the old session before replacing its claim so a
-			// crash cannot leave both subscription checkouts usable.
-			if err := s.Store.RememberCheckoutCleanup(ctx, teamID, claim.SessionID); err != nil {
-				return nil, err
-			}
-			if err := s.Store.MarkCheckoutStatus(ctx, teamID, "expired"); err != nil {
+			if err := s.retireCheckoutClaim(ctx, lease, claim); err != nil {
 				return nil, err
 			}
 			claim.Status = "expired"
 		case session.Status == "complete" || session.Subscription != "":
 			if existing.CustomerID == "" {
-				if err := s.Store.MarkCheckoutStatus(ctx, teamID, "complete"); err != nil {
+				if err := lease.Renew(ctx); err != nil {
+					return nil, err
+				}
+				if err := s.Store.MarkCheckoutClaimStatus(ctx, claim, "complete"); err != nil {
 					return nil, err
 				}
 				return nil, fmt.Errorf("billing: account %d already completed checkout; wait for billing confirmation or use the portal", teamID)
 			}
-			if err := s.Store.MarkCheckoutStatus(ctx, teamID, "expired"); err != nil {
+			if err := s.verifyCompletedCheckoutIsTerminal(ctx, lease, session, existing.CustomerID); err != nil {
+				return nil, err
+			}
+			if err := s.retireCheckoutClaim(ctx, lease, claim); err != nil {
 				return nil, err
 			}
 			claim.Status = "expired"
 		default:
-			if err := s.Store.MarkCheckoutStatus(ctx, teamID, "expired"); err != nil {
+			if err := s.retireCheckoutClaim(ctx, lease, claim); err != nil {
 				return nil, err
 			}
-			found = false
+			claim.Status = "expired"
 		}
 	}
 	if found && claim.Status == "complete" {
 		if existing.CustomerID == "" {
 			return nil, fmt.Errorf("billing: account %d already completed checkout; wait for billing confirmation or use the portal", teamID)
 		}
-		if err := s.Store.MarkCheckoutStatus(ctx, teamID, "expired"); err != nil {
+		if err := s.retireCheckoutClaim(ctx, lease, claim); err != nil {
 			return nil, err
 		}
 		claim.Status = "expired"
 	}
 	if found && claim.Expired(s.now()) {
+		if err := s.retireCheckoutClaim(ctx, lease, claim); err != nil {
+			return nil, err
+		}
 		claim.Status = "expired"
 	}
 	if found && claim.Status == "expired" {
-		if _, err := s.cleanupCheckoutSessions(ctx, lease, teamID, existing.CustomerID == ""); err != nil {
-			return nil, err
-		}
-		if err := s.Store.MarkCheckoutStatus(ctx, teamID, "expired"); err != nil {
+		if _, err := s.cleanupCheckoutSessions(ctx, lease, teamID, existing.CustomerID == "", existing.CustomerID); err != nil {
 			return nil, err
 		}
 	}
 	if !found || claim.Status == "expired" {
+		if err := lease.Renew(ctx); err != nil {
+			return nil, err
+		}
 		claim, err = s.Store.NewCheckoutClaim(ctx, teamID, planKey, priceID, existing.CustomerID, email)
 		if err != nil {
 			return nil, err
 		}
 	}
-	if err := lease.Renew(ctx); err != nil {
-		return nil, err
-	}
 
-	session, err := s.Stripe.CreateCheckoutSession(ctx, stripe.CheckoutParams{
-		TeamID:     teamID,
-		PriceID:    claim.PriceID,
-		CustomerID: claim.CustomerID,
-		Email:      claim.BillingEmail,
-		SuccessURL: s.returnURL("/billing/done", url.Values{
-			"session": {"{CHECKOUT_SESSION_ID}"},
-			"team":    {strconv.FormatInt(teamID, 10)},
-		}),
-		CancelURL: s.returnURL("/pricing", url.Values{
-			"plan": {claim.Plan},
-			"team": {strconv.FormatInt(teamID, 10)},
-		}),
-		IdempotencyKey: claim.IdempotencyKey,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err := lease.Renew(ctx); err != nil {
-		if rememberErr := s.Store.RememberCheckoutCleanup(context.WithoutCancel(ctx), teamID, session.ID); rememberErr != nil {
-			return nil, fmt.Errorf("%w; could not record late session %s: %v", err, session.ID, rememberErr)
+	for {
+		if err := lease.Renew(ctx); err != nil {
+			return nil, err
 		}
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
-		defer cancel()
-		if cleanupErr := s.Stripe.ExpireCheckoutSession(cleanupCtx, session.ID, "expire-replaced-"+session.ID); cleanupErr == nil {
-			_ = s.Store.FinishCheckoutCleanup(cleanupCtx, session.ID)
-		}
-		return nil, err
-	}
 
-	if err := s.Store.SaveCheckoutSession(ctx, claim, session.ID, session.URL, "open"); err != nil {
-		// The claim expired and was replaced while this provider request was in
-		// flight. Its late session must be neutralized so only the replacement can
-		// ever create a subscription.
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
-		defer cancel()
-		cleanupErr := s.Stripe.ExpireCheckoutSession(cleanupCtx, session.ID, "expire-replaced-"+session.ID)
-		if cleanupErr == nil {
-			cleanupErr = s.Store.FinishCheckoutCleanup(cleanupCtx, session.ID)
+		session, err := s.Stripe.CreateCheckoutSession(ctx, stripe.CheckoutParams{
+			TeamID:     teamID,
+			PriceID:    claim.PriceID,
+			CustomerID: claim.CustomerID,
+			Email:      claim.BillingEmail,
+			SuccessURL: s.returnURL("/billing/done", url.Values{
+				"session": {"{CHECKOUT_SESSION_ID}"},
+				"team":    {strconv.FormatInt(teamID, 10)},
+			}),
+			CancelURL: s.returnURL("/pricing", url.Values{
+				"plan": {claim.Plan},
+				"team": {strconv.FormatInt(teamID, 10)},
+			}),
+			IdempotencyKey: claim.IdempotencyKey,
+		})
+		if err != nil {
+			return nil, err
 		}
-		if cleanupErr != nil {
-			return nil, fmt.Errorf("%w; late session %s remains queued for cleanup: %v", err, session.ID, cleanupErr)
+		if err := lease.Renew(ctx); err != nil {
+			if rememberErr := s.Store.RememberCheckoutCleanup(context.WithoutCancel(ctx), teamID, session.ID); rememberErr != nil {
+				return nil, fmt.Errorf("%w; could not record late session %s: %v", err, session.ID, rememberErr)
+			}
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+			defer cancel()
+			if cleanupErr := s.Stripe.ExpireCheckoutSession(cleanupCtx, session.ID, "expire-replaced-"+session.ID); cleanupErr == nil {
+				_ = s.Store.FinishCheckoutCleanup(cleanupCtx, session.ID)
+			}
+			return nil, err
 		}
-		return nil, err
-	}
 
-	return session, nil
+		if err := s.Store.SaveCheckoutSession(ctx, claim, session.ID, session.URL, "open"); err != nil {
+			if !errors.Is(err, ErrCheckoutClaimReplaced) {
+				return nil, err
+			}
+
+			// A replaced claim's late provider response is the one persistence
+			// failure that must be neutralized. Ordinary database failures keep
+			// the stable idempotency result open for the next retry to recover.
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+			defer cancel()
+			cleanupErr := s.Stripe.ExpireCheckoutSession(cleanupCtx, session.ID, "expire-replaced-"+session.ID)
+			if cleanupErr == nil {
+				cleanupErr = s.Store.FinishCheckoutCleanup(cleanupCtx, session.ID)
+			}
+			if cleanupErr != nil {
+				return nil, fmt.Errorf("%w; late session %s remains queued for cleanup: %v", err, session.ID, cleanupErr)
+			}
+			return nil, err
+		}
+
+		claim.SessionID = session.ID
+		claim.SessionURL = session.URL
+		claim.Status = "open"
+		if claim.Plan == planKey && claim.PriceID == priceID {
+			return session, nil
+		}
+
+		// A sessionless crash recovery must first recover the provider's
+		// idempotent result, then retire it before honoring a changed plan or
+		// configured price. Returning the old result would charge the wrong plan.
+		if err := s.retireCheckoutClaim(ctx, lease, claim); err != nil {
+			return nil, err
+		}
+		if _, err := s.cleanupCheckoutSessions(ctx, lease, teamID, existing.CustomerID == "", existing.CustomerID); err != nil {
+			return nil, err
+		}
+		if err := lease.Renew(ctx); err != nil {
+			return nil, err
+		}
+		claim, err = s.Store.NewCheckoutClaim(ctx, teamID, planKey, priceID, existing.CustomerID, email)
+		if err != nil {
+			return nil, err
+		}
+	}
 }
 
 // returnURL preserves explicit account identity through provider-owned pages.

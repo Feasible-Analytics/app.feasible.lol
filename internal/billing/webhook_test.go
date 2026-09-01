@@ -11,6 +11,7 @@ package billing
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -958,7 +959,16 @@ func TestCheckoutRecoversAfterSessionPersistenceFailure(t *testing.T) {
 	requests := 0
 	keys := make(map[string]int)
 	var prices []string
+	expirations := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions/cs_recovered/expire" {
+			providerMu.Lock()
+			expirations++
+			providerMu.Unlock()
+			_, _ = w.Write([]byte(`{"id":"cs_recovered","status":"expired"}`))
+			return
+		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/checkout/sessions" {
 			http.NotFound(w, r)
 			return
@@ -974,7 +984,6 @@ func TestCheckoutRecoversAfterSessionPersistenceFailure(t *testing.T) {
 		prices = append(prices, r.PostForm.Get("line_items[0][price]"))
 		providerMu.Unlock()
 
-		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"cs_recovered","status":"open","url":"https://checkout.example/recovered"}`))
 	}))
 	t.Cleanup(server.Close)
@@ -1012,7 +1021,7 @@ func TestCheckoutRecoversAfterSessionPersistenceFailure(t *testing.T) {
 	restarted := service
 	restarted.Store = NewStore(secondControl)
 	restarted.Store.Now = func() time.Time { return h.now() }
-	session, err := restarted.Checkout(context.Background(), teamID, "yearly", "owner@example.com")
+	session, err := restarted.Checkout(context.Background(), teamID, "monthly", "owner@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1022,11 +1031,103 @@ func TestCheckoutRecoversAfterSessionPersistenceFailure(t *testing.T) {
 
 	providerMu.Lock()
 	defer providerMu.Unlock()
-	if requests != 2 || len(keys) != 1 || keys[""] != 0 {
-		t.Fatalf("provider requests=%d idempotency keys=%v, want two requests with one non-empty key", requests, keys)
+	if requests != 2 || len(keys) != 1 || keys[""] != 0 || expirations != 0 {
+		t.Fatalf("provider requests=%d idempotency keys=%v expirations=%d, want two requests with one non-empty key and no expiration", requests, keys, expirations)
 	}
 	if len(prices) != 2 || prices[0] != "price_monthly" || prices[1] != "price_monthly" {
 		t.Fatalf("live claim changed plans across restart: %v", prices)
+	}
+}
+
+// TestSessionlessCheckoutRecoveryHonorsAChangedPlan proves a restart first
+// recovers Stripe's idempotent response, then expires it before creating the
+// newly requested plan. It must never return the recovered monthly URL to a
+// customer who selected yearly.
+func TestSessionlessCheckoutRecoveryHonorsAChangedPlan(t *testing.T) {
+	h := newHarness(t)
+
+	var providerMu sync.Mutex
+	var prices []string
+	var keys []string
+	expirations := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions":
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			price := r.PostForm.Get("line_items[0][price]")
+			providerMu.Lock()
+			prices = append(prices, price)
+			keys = append(keys, r.Header.Get("Idempotency-Key"))
+			providerMu.Unlock()
+			if price == "price_monthly" {
+				_, _ = w.Write([]byte(`{"id":"cs_recovered_monthly","status":"open","url":"https://checkout.example/monthly"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"cs_replacement_yearly","status":"open","url":"https://checkout.example/yearly"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions":
+			_, _ = w.Write([]byte(`{"data":[{"id":"cs_recovered_monthly","status":"open","metadata":{"feasible_team_id":"1"}}],"has_more":false}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions/cs_recovered_monthly":
+			_, _ = w.Write([]byte(`{"id":"cs_recovered_monthly","status":"open","metadata":{"feasible_team_id":"1"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions/cs_recovered_monthly/expire":
+			providerMu.Lock()
+			expirations++
+			providerMu.Unlock()
+			_, _ = w.Write([]byte(`{"id":"cs_recovered_monthly","status":"expired"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	service := *h.service
+	service.Stripe = stripe.New("sk_test_fake")
+	service.Stripe.BaseURL = server.URL
+	service.Store = NewStore(h.control)
+	service.Store.Now = func() time.Time { return h.now() }
+
+	if _, err := h.control.Exec(`
+		CREATE TRIGGER fail_sessionless_recovery_save
+		BEFORE UPDATE OF status ON billing_checkouts
+		WHEN NEW.status = 'open'
+		BEGIN
+			SELECT RAISE(FAIL, 'simulated checkout persistence failure');
+		END
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Checkout(context.Background(), teamID, "monthly", "owner@example.com"); err == nil {
+		t.Fatal("checkout unexpectedly survived the simulated persistence failure")
+	}
+	if _, err := h.control.Exec(`DROP TRIGGER fail_sessionless_recovery_save`); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := service
+	restarted.Store = NewStore(h.control)
+	restarted.Store.Now = func() time.Time { return h.now() }
+	yearly, err := restarted.Checkout(context.Background(), teamID, "yearly", "owner@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if yearly.ID != "cs_replacement_yearly" || yearly.URL != "https://checkout.example/yearly" {
+		t.Fatalf("changed-plan recovery returned %+v", yearly)
+	}
+
+	providerMu.Lock()
+	defer providerMu.Unlock()
+	if len(prices) != 3 || prices[0] != "price_monthly" || prices[1] != "price_monthly" || prices[2] != "price_yearly" {
+		t.Fatalf("provider prices are %v", prices)
+	}
+	if len(keys) != 3 || keys[0] == "" || keys[0] != keys[1] || keys[2] == "" || keys[2] == keys[0] {
+		t.Fatalf("provider idempotency keys are %v", keys)
+	}
+	if expirations != 1 {
+		t.Fatalf("monthly checkout expired %d times, want 1", expirations)
 	}
 }
 
@@ -1350,6 +1451,125 @@ func TestCompletedCheckoutTruthBlocksOnlyAnUntrackedSubscription(t *testing.T) {
 				t.Fatalf("provider creates=%d, want %d", creates, tc.wantCreate)
 			}
 		})
+	}
+}
+
+// TestPlanSwitchRechecksAConcurrentCheckoutCompletion reproduces the provider
+// race between the initial subscription snapshot and cleanup. A checkout that
+// completes in that window must block the replacement and remain queued until
+// its new subscription becomes terminal.
+func TestPlanSwitchRechecksAConcurrentCheckoutCompletion(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	if err := h.service.Store.Save(ctx, Subscription{
+		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_terminal",
+		Status: stripe.StatusCanceled, Plan: "monthly", PriceID: "price_monthly",
+		PaymentState: PaymentFailed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := h.service.Store.NewCheckoutClaim(ctx, teamID, "monthly", "price_monthly", customerID, "owner@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.Store.SaveCheckoutSession(ctx, claim, "cs_switching", "https://checkout.example/monthly", "open"); err != nil {
+		t.Fatal(err)
+	}
+
+	var providerMu sync.Mutex
+	subscriptionReads := 0
+	sessionReads := 0
+	creates := 0
+	expirations := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/subscriptions":
+			providerMu.Lock()
+			subscriptionReads++
+			read := subscriptionReads
+			providerMu.Unlock()
+			if read == 1 {
+				_, _ = w.Write([]byte(`{"object":"list","has_more":false,"data":[{"id":"sub_terminal","status":"canceled"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"object":"list","has_more":false,"data":[{"id":"sub_terminal","status":"canceled"},{"id":"sub_new","status":"active"}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions":
+			_, _ = w.Write([]byte(`{"object":"list","has_more":false,"data":[{"id":"cs_switching","status":"complete","customer":"cus_test_1","subscription":"sub_new","metadata":{"feasible_team_id":"1"}}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions/cs_switching":
+			providerMu.Lock()
+			sessionReads++
+			read := sessionReads
+			providerMu.Unlock()
+			if read == 1 {
+				_, _ = w.Write([]byte(`{"id":"cs_switching","status":"open","customer":"cus_test_1","url":"https://checkout.example/monthly"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"cs_switching","status":"complete","customer":"cus_test_1","subscription":"sub_new"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions":
+			providerMu.Lock()
+			creates++
+			providerMu.Unlock()
+			_, _ = w.Write([]byte(`{"id":"cs_wrong","status":"open","url":"https://checkout.example/wrong"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions/cs_switching/expire":
+			providerMu.Lock()
+			expirations++
+			providerMu.Unlock()
+			_, _ = w.Write([]byte(`{"id":"cs_switching","status":"expired"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	h.service.Stripe = stripe.New("sk_test_fake")
+	h.service.Stripe.BaseURL = server.URL
+
+	session, err := h.service.Checkout(ctx, teamID, "yearly", "owner@example.com")
+	if err == nil || !strings.Contains(err.Error(), "sub_new") || !strings.Contains(err.Error(), "billing portal") {
+		t.Fatalf("completion race returned session=%+v error=%v", session, err)
+	}
+	var cleanupRows int
+	if err := h.control.QueryRow(`SELECT COUNT(*) FROM billing_checkout_cleanup WHERE session_id = 'cs_switching'`).Scan(&cleanupRows); err != nil {
+		t.Fatal(err)
+	}
+
+	providerMu.Lock()
+	defer providerMu.Unlock()
+	if subscriptionReads < 2 || sessionReads < 2 || creates != 0 || expirations != 0 || cleanupRows != 1 {
+		t.Fatalf("subscriptions=%d sessions=%d creates=%d expirations=%d cleanup=%d",
+			subscriptionReads, sessionReads, creates, expirations, cleanupRows)
+	}
+}
+
+// TestCheckoutClaimStatusRejectsAStaleToken proves claim-token fencing protects
+// a replacement even when an old worker still knows the account id.
+func TestCheckoutClaimStatusRejectsAStaleToken(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	oldClaim, err := h.service.Store.NewCheckoutClaim(ctx, teamID, "monthly", "price_monthly", "", "owner@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.Store.MarkCheckoutClaimStatus(ctx, oldClaim, "expired"); err != nil {
+		t.Fatal(err)
+	}
+	newClaim, err := h.service.Store.NewCheckoutClaim(ctx, teamID, "yearly", "price_yearly", "", "owner@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.service.Store.MarkCheckoutClaimStatus(ctx, oldClaim, "expired"); !errors.Is(err, ErrCheckoutClaimReplaced) {
+		t.Fatalf("stale claim status returned %v", err)
+	}
+	stored, found, err := h.service.Store.CheckoutClaimForAccount(ctx, teamID)
+	if err != nil || !found {
+		t.Fatalf("replacement claim found=%t error=%v", found, err)
+	}
+	if stored.ClaimToken != newClaim.ClaimToken || stored.Status != "creating" || stored.Plan != "yearly" {
+		t.Fatalf("stale update changed replacement: %+v", stored)
 	}
 }
 

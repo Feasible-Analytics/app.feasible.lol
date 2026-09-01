@@ -709,6 +709,36 @@ func (s *Store) MarkCheckoutStatus(ctx context.Context, teamID int64, status str
 	return nil
 }
 
+// MarkCheckoutClaimStatus advances only the checkout intent identified by its
+// unguessable claim token. Account leases serialize healthy workers, while this
+// second fence stops a paused worker whose lease expired from mutating the
+// replacement claim after it resumes.
+func (s *Store) MarkCheckoutClaimStatus(ctx context.Context, claim CheckoutClaim, status string) error {
+	if status != "open" && status != "complete" && status != "expired" {
+		return fmt.Errorf("billing: invalid checkout status %q", status)
+	}
+	if claim.ClaimToken == "" {
+		return fmt.Errorf("billing: checkout claim %d has no claim token", claim.TeamID)
+	}
+
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE billing_checkouts SET status = ?, updated_at = ?
+		WHERE team_id = ? AND claim_token = ?
+	`, status, s.now().Unix(), claim.TeamID, claim.ClaimToken)
+	if err != nil {
+		return fmt.Errorf("billing: mark checkout claim %d %s: %w", claim.TeamID, status, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("billing: mark checkout claim %d %s: affected rows: %w", claim.TeamID, status, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("%w: team %d", ErrCheckoutClaimReplaced, claim.TeamID)
+	}
+
+	return nil
+}
+
 // TeamForCustomer maps a payment-provider customer back to an account. It is
 // the fallback when an event carries no metadata — which is every event created
 // by somebody clicking around the provider's own dashboard.

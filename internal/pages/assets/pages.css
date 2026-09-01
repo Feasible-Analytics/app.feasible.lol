@@ -141,7 +141,7 @@ header.top nav { margin-left: auto; display: flex; gap: 20px; }
 header.top nav a { color: var(--muted); text-decoration: none; font-size: 15px; }
 header.top nav a:hover, header.top nav a.on { color: var(--ink); }
 
-@media (max-width: 380px) {
+@media (max-width: 384px) {
   header.top .wrap {
     align-items: stretch;
     flex-direction: column;
@@ -243,6 +243,11 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .timeline .when { min-width: 190px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .timeline .what { color: var(--muted); }
 .timeline li.now .what { color: var(--body); }
+
+@media (max-width: 480px) {
+  .timeline li { flex-direction: column; gap: 4px; }
+  .timeline .when { min-width: 0; }
+}
 
 /* ── Docs ───────────────────────────────────────────────────────────────── */
 
