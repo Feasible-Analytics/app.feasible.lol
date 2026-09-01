@@ -94,6 +94,11 @@ type Handler struct {
 	// pass their own single-site bootstrap directly to WriteShell.
 	Domains func(*http.Request) []string
 
+	// Resolve supplies authenticated navigation and account-lock context after
+	// the auth middleware has attached the current user. Shared/public callers
+	// pass their own Bootstrap to WriteShell and never invoke this callback.
+	Resolve func(http.ResponseWriter, *http.Request) Bootstrap
+
 	// shellHead and shellTail bracket the bootstrap placeholder, so filling it
 	// in per request is two writes rather than a scan and a copy of the whole
 	// document.
@@ -240,6 +245,16 @@ func (h *Handler) serveAsset(w http.ResponseWriter, r *http.Request, name string
 type Bootstrap struct {
 	Sites []string `json:"sites"`
 
+	// Navigation is present only for an authenticated dashboard. Keeping these
+	// URLs server-authored preserves team/site ids and role decisions instead of
+	// asking the browser to reconstruct authorization from a domain string.
+	Navigation *Navigation `json:"navigation,omitempty"`
+
+	// Lock is present when billing policy blocks report data. The shell still
+	// renders so navigation and recovery actions remain consistent on a fresh
+	// load and in an already-mounted SPA.
+	Lock *Lock `json:"lock,omitempty"`
+
 	// Locale is the tag the server negotiated, for Intl and the plural rules.
 	Locale string `json:"locale"`
 
@@ -255,6 +270,26 @@ type Bootstrap struct {
 	// link or a public dashboard. Its absence is what tells the front end it is
 	// the ordinary authenticated dashboard.
 	Shared *Shared `json:"shared,omitempty"`
+}
+
+// Navigation is the authenticated product map rendered in the dashboard menu.
+type Navigation struct {
+	Name            string `json:"name"`
+	Email           string `json:"email"`
+	SitesURL        string `json:"sites_url"`
+	SiteSettingsURL string `json:"site_settings_url,omitempty"`
+	AccountURL      string `json:"account_url"`
+	BillingURL      string `json:"billing_url,omitempty"`
+	ExportURL       string `json:"export_url,omitempty"`
+	LogoutURL       string `json:"logout_url"`
+	CSRF            string `json:"csrf"`
+	TeamID          int64  `json:"-"`
+}
+
+// Lock is the account-level refusal shown instead of individual failed cards.
+type Lock struct {
+	Reason string `json:"reason"`
+	Error  string `json:"error"`
 }
 
 // Shared is the read-only mode the dashboard runs in behind a share URL.
@@ -315,7 +350,7 @@ func (h *Handler) serveShell(w http.ResponseWriter, r *http.Request) {
 	// iframe — which is the thing this header exists to prevent.
 	w.Header().Set("X-Frame-Options", "DENY")
 
-	h.WriteShell(w, r, h.bootstrap(r))
+	h.WriteShell(w, r, h.bootstrap(w, r))
 }
 
 // WriteShell renders the SPA shell with a caller-supplied bootstrap. It sets
@@ -357,7 +392,14 @@ func (h *Handler) WriteShell(w http.ResponseWriter, r *http.Request, boot Bootst
 // The list is sorted so that two loads of the same install produce the same
 // document, which is what makes the shell diffable and the site picker's order
 // stable rather than following whatever order a map iterated in.
-func (h *Handler) bootstrap(r *http.Request) Bootstrap {
+
+func (h *Handler) bootstrap(w http.ResponseWriter, r *http.Request) Bootstrap {
+	if h.Resolve != nil {
+		boot := h.Resolve(w, r)
+		sort.Strings(boot.Sites)
+		return boot
+	}
+
 	domains := []string{}
 	if h.Domains != nil {
 		domains = h.Domains(r)

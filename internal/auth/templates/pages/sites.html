@@ -36,6 +36,19 @@
     </div>
   </div>
 
+  {{ if .Data.Locked }}
+    <div class="mt-6 rounded-2xl border border-down/30 bg-down/10 p-5 text-sm text-down-ink" role="status">
+      <h2 class="font-semibold">{{ t $.Lang "auth.sites.locked_title" }}</h2>
+      <p class="mt-1">{{ t $.Lang "auth.sites.locked_body" }}</p>
+      {{ if .Data.CanManageBilling }}
+      <div class="mt-4 flex flex-wrap gap-2">
+        <a href="{{ url $.Lang (printf "/billing?team=%d" .Data.TeamID) }}" class="rounded-xl bg-accent px-4 py-2 font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "auth.sites.locked_billing" }}</a>
+        <a href="{{ url $.Lang (printf "/billing/export?team=%d" .Data.TeamID) }}" class="rounded-xl border border-field bg-card px-4 py-2 font-medium text-body hover:bg-hover">{{ t $.Lang "auth.sites.locked_export" }}</a>
+      </div>
+      {{ end }}
+    </div>
+  {{ end }}
+
   {{ if and (not .Data.Sites) (not .Data.Folders) }}
     <div class="mt-10 rounded-2xl border border-dashed border-field bg-card p-12 text-center">
       <h2 class="text-lg font-medium text-heading">{{ t $.Lang "auth.sites.empty_title" }}</h2>

@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { annotations as fetchAnnotations, bootstrap, shared } from "../api/client";
-import type { Annotation, Metric, StatsRequest } from "../api/types";
+import type { Annotation, Bootstrap, Metric, StatsRequest } from "../api/types";
 import type { FilterLabels, FilterState } from "../lib/filters";
 import { toApi, toggle } from "../lib/filters";
 import { t } from "../lib/i18n";
@@ -57,6 +57,18 @@ type IntervalPref = (typeof INTERVALS)[number];
  * this page survivable is to not ask for what nobody is looking at yet.
  */
 export function App() {
+	const boot = bootstrap();
+	const sites = boot.sites.slice().sort();
+
+	if (sites.length === 0) return <NoSites />;
+	if (boot.lock && boot.navigation) return <LockedDashboard boot={boot} />;
+
+	return <AnalyticsDashboard />;
+}
+
+/** AnalyticsDashboard owns every report hook. Keeping it below the lock branch
+ * guarantees a locked account mounts no data-fetching component at all. */
+function AnalyticsDashboard() {
 	const [state, navigate] = useUrlState();
 	const [theme, setTheme] = useTheme();
 	const [sites] = useState(() => bootstrap().sites.slice().sort());
@@ -389,6 +401,7 @@ export function App() {
 					filters={filters}
 					onHelp={() => setHelp(true)}
 					pickCustom={pickCustom}
+					navigation={bootstrap().navigation}
 				/>
 			)}
 
@@ -465,6 +478,50 @@ export function App() {
 			)}
 
 			{help && <ShortcutsModal onClose={() => setHelp(false)} />}
+		</>
+	);
+}
+
+/** LockedDashboard is one account-level recovery state with no report hooks,
+ * retries, annotations, or live-visitor polling behind it. */
+function LockedDashboard({ boot }: { boot: Bootstrap }) {
+	const [state, navigate] = useUrlState();
+	const [theme, setTheme] = useTheme();
+	const sites = boot.sites.slice().sort();
+
+	useEffect(() => {
+		if (state.domain || sites.length === 0) return;
+		navigate({ ...state, domain: sites[0] as string }, "replace");
+	}, [state, sites, navigate]);
+
+	return (
+		<>
+			<TopBar
+				state={state}
+				sites={sites}
+				onNavigate={(next) => navigate(next)}
+				theme={theme}
+				onTheme={setTheme}
+				resolved={undefined}
+				filters={[]}
+				onHelp={() => {}}
+				pickCustom={0}
+				navigation={boot.navigation}
+				locked
+			/>
+			<main className="mx-auto max-w-2xl px-4 py-16 sm:px-5">
+				<section className="rounded-xl border border-line bg-card p-8 text-center shadow-sm">
+					<div className="mx-auto flex size-12 items-center justify-center rounded-full bg-down/10 text-xl text-down">!</div>
+					<h1 className="mt-4 text-xl font-semibold text-body">{t("dashboard.locked.title")}</h1>
+					<p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-muted">{boot.lock?.error}</p>
+					<div className="mt-6 flex flex-wrap justify-center gap-3">
+						{boot.navigation?.billing_url && <a href={boot.navigation.billing_url} className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white dark:text-slate-950">{t("dashboard.locked.billing")}</a>}
+						{boot.navigation?.export_url && <a href={boot.navigation.export_url} className="rounded-md border border-line px-4 py-2 text-sm font-medium text-body hover:bg-hover">{t("dashboard.locked.export")}</a>}
+						<a href={boot.navigation?.sites_url} className="rounded-md border border-line px-4 py-2 text-sm font-medium text-body hover:bg-hover">{t("dashboard.navigation.sites")}</a>
+						<a href={boot.navigation?.account_url} className="rounded-md border border-line px-4 py-2 text-sm font-medium text-body hover:bg-hover">{t("dashboard.navigation.account_settings")}</a>
+					</div>
+				</section>
+			</main>
 		</>
 	);
 }

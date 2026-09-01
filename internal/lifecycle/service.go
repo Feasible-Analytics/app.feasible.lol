@@ -103,6 +103,19 @@ func (s *Service) SignalAt(ctx context.Context, teamID int64, signal Signal, at 
 	}
 	defer lease.Release()
 
+	comped, err := s.Store.IsComped(ctx, teamID)
+	if err != nil {
+		return Transition{}, err
+	}
+	if comped && signal != SignalDeleted {
+		state, loadErr := s.Store.Load(ctx, teamID)
+		if loadErr != nil {
+			return Transition{}, loadErr
+		}
+
+		return Transition{State: state, From: PhaseActive, To: PhaseActive}, nil
+	}
+
 	state, err := s.Store.Load(ctx, teamID)
 	if err != nil {
 		return Transition{}, err

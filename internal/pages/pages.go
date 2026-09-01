@@ -326,6 +326,7 @@ type billingData struct {
 	Plan     planPanel
 	Timeline []timelineRow
 	Growing  bool
+	Comped   bool
 }
 
 // statusBanner is the one message at the top of the billing screen. It is a
@@ -447,14 +448,32 @@ func (h *Handler) billing(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.Lifecycle != nil {
+		data.Comped, err = h.Lifecycle.IsComped(ctx, teamID)
+		if err != nil {
+			h.fail(w, err)
+			return
+		}
+
 		state, err := h.Lifecycle.Load(ctx, teamID)
 		if err != nil {
 			h.fail(w, err)
 			return
 		}
 
-		data.Status = bannerFor(lang, state, now)
-		data.Timeline = timelineFor(lang, state, now)
+		if data.Comped {
+			data.Plan = planPanel{
+				Label:  i18n.T(lang, "pages.billing.plan.comped"),
+				Status: i18n.T(lang, "pages.billing.plan.status_active"),
+			}
+			data.Status = &statusBanner{
+				Tone:    "ok",
+				Heading: i18n.T(lang, "pages.billing.comped.heading"),
+				Detail:  i18n.T(lang, "pages.billing.comped.detail"),
+			}
+		} else {
+			data.Status = bannerFor(lang, state, now)
+			data.Timeline = timelineFor(lang, state, now)
+		}
 	}
 
 	h.render(w, billingPage, data)

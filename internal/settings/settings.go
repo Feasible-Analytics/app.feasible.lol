@@ -186,6 +186,9 @@ func funcs() template.FuncMap {
 		"can": func(role teams.Role, permission string) bool {
 			return teams.Can(role, teams.Permission(permission))
 		},
+		"canBilling": func(role teams.Role) bool {
+			return role == teams.RoleOwner || role == teams.RoleAdmin || role == teams.RoleBilling
+		},
 
 		// A drop reason is translated at render rather than when the panel is
 		// built, because the same panel is also the JSON the API returns, and a
@@ -219,6 +222,7 @@ type Handler struct {
 	// the application's sealing key.
 	CSRF      func(http.ResponseWriter, *http.Request) string
 	CheckCSRF func(http.ResponseWriter, *http.Request) bool
+	Role      func(*http.Request, sites.Site) teams.Role
 
 	// DataDir is where uploads and prepared exports are written.
 	DataDir string
@@ -295,6 +299,7 @@ type page struct {
 	Message string
 	Error   string
 	CSRF    string
+	Role    teams.Role
 
 	// Lang is the language this response is written in. It lives on the page
 	// rather than being resolved inside a template function, because a template
@@ -436,6 +441,11 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, da
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if h.CSRF != nil {
 		data.CSRF = h.CSRF(w, r)
+	}
+	if h.Role != nil {
+		if site, ok := h.Sites.Lookup(data.Domain); ok {
+			data.Role = h.Role(r, site)
+		}
 	}
 
 	if err := template.ExecuteTemplate(w, "layout", data); err != nil && h.Log != nil {

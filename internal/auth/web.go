@@ -92,6 +92,22 @@ type Handler struct {
 	mux   *http.ServeMux
 }
 
+// DashboardNavigation is the permission-aware product map the React shell may
+// expose. It deliberately carries resolved URLs rather than raw ids so locale,
+// team selection, and authorization stay server decisions.
+type DashboardNavigation struct {
+	Name            string
+	Email           string
+	SitesURL        string
+	SiteSettingsURL string
+	AccountURL      string
+	BillingURL      string
+	ExportURL       string
+	LogoutURL       string
+	CSRF            string
+	TeamID          int64
+}
+
 // Options are the inputs to NewHandler.
 type Options struct {
 	Store       *Store
@@ -474,6 +490,7 @@ func (h *Handler) routes() *http.ServeMux {
 	mux.HandleFunc("POST /sites/new", h.require(h.doNewSite))
 	mux.HandleFunc("POST /sites/{id}/pin", h.require(h.doPinSite))
 	mux.HandleFunc("GET /sites/{id}/settings", h.require(h.showSiteSettings))
+	mux.HandleFunc("GET /sites/domain/{domain}/settings", h.require(h.showSiteSettingsByDomain))
 	mux.HandleFunc("POST /sites/{id}/settings", h.require(h.doSiteGeneral))
 	mux.HandleFunc("POST /sites/{id}/domain", h.require(h.doSiteDomain))
 	mux.HandleFunc("POST /sites/{id}/reset", h.require(h.doSiteReset))
@@ -668,6 +685,66 @@ func (h *Handler) GuardDashboard(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	}))
+}
+
+// NavigationForDashboard resolves the current domain and role after
+// GuardDashboard has authenticated the request. A missing domain still gets
+// account-level links while the site picker chooses the first accessible site.
+func (h *Handler) NavigationForDashboard(w http.ResponseWriter, r *http.Request) DashboardNavigation {
+	user := userFrom(r)
+	if user == nil {
+		return DashboardNavigation{}
+	}
+
+	navigation := DashboardNavigation{
+		Name:       user.DisplayName(),
+		Email:      user.Email,
+		SitesURL:   "/sites",
+		AccountURL: "/settings",
+		LogoutURL:  "/logout",
+		CSRF:       h.IssueCSRF(w, r),
+	}
+
+	trimmed := strings.TrimPrefix(r.URL.Path, "/dashboard/")
+	domain, _, _ := strings.Cut(trimmed, "/")
+	site, ok := h.SiteCache.Lookup(domain)
+	if !ok {
+		return navigation
+	}
+
+	role, err := h.Teams.SiteRole(r.Context(), site.ID, user.ID)
+	if err != nil {
+		return navigation
+	}
+
+	navigation.TeamID = site.TeamID
+	navigation.SitesURL = "/sites?team_id=" + strconv.FormatInt(site.TeamID, 10)
+	if teams.Can(role, teams.PermManageSiteSettings) {
+		navigation.SiteSettingsURL = "/sites/" + strconv.FormatInt(site.ID, 10) + "/settings"
+	}
+	if role == teams.RoleOwner || role == teams.RoleAdmin || role == teams.RoleBilling {
+		navigation.BillingURL = "/billing?team=" + strconv.FormatInt(site.TeamID, 10)
+		navigation.ExportURL = "/billing/export?team=" + strconv.FormatInt(site.TeamID, 10)
+	}
+
+	return navigation
+}
+
+// RoleForSite returns the current authenticated role for a separately rendered
+// site screen. The surrounding guard remains the authorization boundary; this
+// value only decides which already-authorized navigation links to draw.
+func (h *Handler) RoleForSite(r *http.Request, siteID int64) teams.Role {
+	user := userFrom(r)
+	if user == nil {
+		return ""
+	}
+
+	role, err := h.Teams.SiteRole(r.Context(), siteID, user.ID)
+	if err != nil {
+		return ""
+	}
+
+	return role
 }
 
 // GuardTeam protects a billing or administration handler with a live team-role

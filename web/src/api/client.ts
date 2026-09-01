@@ -45,6 +45,8 @@ export function bootstrap(): Bootstrap {
 			locale: typeof parsed.locale === "string" ? parsed.locale : "",
 			messages: messages && typeof messages === "object" && !Array.isArray(messages) ? messages : {},
 			shared: parsed.shared,
+			navigation: parsed.navigation,
+			lock: parsed.lock,
 		};
 	} catch {
 		return { sites: [], locale: "", messages: {} };

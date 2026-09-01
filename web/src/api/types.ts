@@ -206,6 +206,8 @@ export interface Shared {
 /** What the server writes into the page before the bundle runs. */
 export interface Bootstrap {
 	sites: string[];
+	navigation?: Navigation;
+	lock?: AccountLock;
 	/** The locale the server negotiated, for Intl and for the plural rules. */
 	locale: string;
 	/** Every string the dashboard can ask for, already merged over English by
@@ -213,6 +215,26 @@ export interface Bootstrap {
 	 *  browser needs no catalogue and no fallback rule of its own. */
 	messages: Record<string, string>;
 	shared?: Shared;
+}
+
+/** Server-authored authenticated destinations. They are absent from every
+ * shared/public view so account identity and CSRF never cross that boundary. */
+export interface Navigation {
+	name: string;
+	email: string;
+	sites_url: string;
+	site_settings_url?: string;
+	account_url: string;
+	billing_url?: string;
+	export_url?: string;
+	logout_url: string;
+	csrf: string;
+}
+
+/** The one account-level refusal rendered in place of every report request. */
+export interface AccountLock {
+	reason: "lifecycle" | "dormant" | "volume";
+	error: string;
 }
 
 /** One dated note rendered as a marker on the main graph. */

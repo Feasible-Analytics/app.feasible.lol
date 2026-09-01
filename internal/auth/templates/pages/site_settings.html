@@ -19,6 +19,10 @@
        and a nav item that needs a site chosen first is a nav item that answers
        "which one?" with a 404. -->
   <div class="mt-4 flex flex-wrap gap-2">
+    <a href="{{ url $.Lang (printf "/dashboard/%s" $site.Domain) }}"
+       class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">
+      {{ t $.Lang "auth.site_row.dashboard" }}
+    </a>
     <a href="{{ url $.Lang (printf "/settings/sites/%s/sharing" $site.Domain) }}"
        class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">
       {{ t $.Lang "auth.site_settings.sharing" }}
@@ -31,6 +35,9 @@
        class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">
       {{ t $.Lang "auth.site_settings.health" }}
     </a>
+    <a href="{{ url $.Lang (printf "/settings/sites/%s/shields" $site.Domain) }}" class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">{{ t $.Lang "auth.shields.title" }}</a>
+    <a href="{{ url $.Lang (printf "/settings/sites/%s/paths" $site.Domain) }}" class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">{{ t $.Lang "auth.paths.title" }}</a>
+    <a href="{{ url $.Lang (printf "/settings/sites/%s/imports" $site.Domain) }}" class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">{{ t $.Lang "auth.imports.title" }}</a>
   </div>
 
   {{ if .Data.DualWrite }}

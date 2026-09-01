@@ -11,6 +11,7 @@ package lifecycle
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -271,6 +272,36 @@ func TestNinetyOneDayTimeline(t *testing.T) {
 	}
 	if !deletedAt.Valid {
 		t.Error("the deletion was never recorded as complete")
+	}
+}
+
+// TestCompedAccountIgnoresBillingSignals proves the durable marker, rather
+// than a synthetic subscription status, is what keeps the lifecycle stopped.
+func TestCompedAccountIgnoresBillingSignals(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+
+	if _, err := h.service.Signal(ctx, 1, SignalTrialStarted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.CompByOwnerEmail(ctx, "owner@example.com"); err != nil {
+		t.Fatal(err)
+	}
+
+	transition, err := h.service.Signal(ctx, 1, SignalPaymentFailed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transition.Changed || transition.To != PhaseActive {
+		t.Fatalf("payment failure changed a comped account: %+v", transition)
+	}
+
+	running, err := h.store.Running(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(running) != 0 {
+		t.Fatalf("comped account remained on the lifecycle clock: %+v", running)
 	}
 }
 
@@ -1450,8 +1481,8 @@ func TestV10UpgradeFinishesLegacyOwnedCleanupWithoutLiveTeam(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 9 || result.To != 10 || len(result.Applied) != 1 || result.Applied[0] != 10 {
-		t.Fatalf("legacy cleanup migration result = %+v, want 9 through [10]", result)
+	if result.From != 9 || result.To != 11 || fmt.Sprint(result.Applied) != "[10 11]" {
+		t.Fatalf("legacy cleanup migration result = %+v, want 9 through [10 11]", result)
 	}
 
 	var completed, controlRemoved, localRemoved, artifactsIndexed, globalRemoved sql.NullInt64
