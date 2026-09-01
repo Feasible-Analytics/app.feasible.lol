@@ -168,6 +168,68 @@ func TestConversionMutationRequiresCSRF(t *testing.T) {
 	}
 }
 
+// TestAutomaticGoalsOnlyAllowSafeRenaming proves the UI and the handler keep
+// tracker-managed matching rules immutable even when a forged form submits them.
+func TestAutomaticGoalsOnlyAllowSafeRenaming(t *testing.T) {
+	handler, manager := newHandler(t)
+	account, err := manager.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	automatic, err := goals.EnsureAutomatic(context.Background(), account.Writer(), 1, handler.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	goal := automatic[0]
+
+	page := get(t, handler, conversionsPath("example.com")).Body.String()
+	start := strings.Index(page, ">"+goal.Label()+"<")
+	if start < 0 {
+		t.Fatalf("automatic goal %q is not rendered", goal.Label())
+	}
+	end := strings.Index(page[start:], "</details>")
+	if end < 0 {
+		t.Fatal("automatic goal card is incomplete")
+	}
+	card := page[start : start+end]
+	if !strings.Contains(card, "You can change only the name shown in reports") {
+		t.Fatal("automatic goal does not explain its safe edit boundary")
+	}
+	for _, forbidden := range []string{"Goal type", "Property constraints", "Revenue goal", "Delete goal"} {
+		if strings.Contains(card, forbidden) {
+			t.Errorf("automatic goal card exposes %q", forbidden)
+		}
+	}
+
+	response := conversionPost(t, handler, conversionsPath("example.com")+"/goals/update", url.Values{
+		"goal_id": {formatID(goal.ID)}, "display_name": {"Missing pages"},
+		"kind": {string(goals.KindPage)}, "page_pattern": {"/forged"},
+		"is_revenue": {"1"}, "currency": {"USD"},
+		"property_name": {"plan"}, "property_value": {"enterprise"},
+	})
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("automatic goal rename answered %d", response.Code)
+	}
+	updated, err := goals.Get(context.Background(), account.Reader(), goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.DisplayName != "Missing pages" || updated.Kind != goal.Kind || updated.EventName != goal.EventName ||
+		updated.PagePattern != goal.PagePattern || updated.IsRevenue != goal.IsRevenue || len(updated.Properties) != 0 {
+		t.Fatalf("automatic goal definition changed through a forged edit: %+v", updated)
+	}
+
+	response = conversionPost(t, handler, conversionsPath("example.com")+"/goals/delete", url.Values{
+		"goal_id": {formatID(goal.ID)},
+	})
+	if response.Code != http.StatusSeeOther || !strings.Contains(response.Header().Get("Location"), "Automatic+goals+cannot+be+deleted") {
+		t.Fatalf("automatic goal delete response = %d %q", response.Code, response.Header().Get("Location"))
+	}
+	if _, err := goals.Get(context.Background(), account.Reader(), goal.ID); err != nil {
+		t.Fatalf("automatic goal was deleted: %v", err)
+	}
+}
+
 // TestUnseenPropertiesDoesNotRescopeConfiguredNames keeps bulk enable additive.
 func TestUnseenPropertiesDoesNotRescopeConfiguredNames(t *testing.T) {
 	result := unseenProperties([]string{"plan", "campaign", "region"}, []goals.Property{

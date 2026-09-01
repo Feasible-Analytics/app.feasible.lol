@@ -128,13 +128,6 @@ func (h *Handler) updateGoal(w http.ResponseWriter, r *http.Request, site sites.
 		return
 	}
 
-	goal, err := goalFromForm(r, site.ID)
-	if err != nil {
-		h.conversionRedirect(w, r, site.Domain, "", err.Error())
-		return
-	}
-	goal.ID = id
-
 	lease, err := h.Accounts.Acquire(r.Context(), site.AccountID)
 	if err != nil {
 		h.conversionError(w, err)
@@ -147,6 +140,22 @@ func (h *Handler) updateGoal(w http.ResponseWriter, r *http.Request, site sites.
 		h.conversionRedirect(w, r, site.Domain, "", "That goal does not belong to this site.")
 		return
 	}
+	if existing.IsAutomatic {
+		if err := goals.Rename(r.Context(), lease.Account.Writer(), id, r.PostFormValue("display_name")); err != nil {
+			h.conversionRedirect(w, r, site.Domain, "", err.Error())
+			return
+		}
+
+		h.conversionRedirect(w, r, site.Domain, "Automatic goal name updated.", "")
+		return
+	}
+
+	goal, err := goalFromForm(r, site.ID)
+	if err != nil {
+		h.conversionRedirect(w, r, site.Domain, "", err.Error())
+		return
+	}
+	goal.ID = id
 
 	if _, err := goals.Update(r.Context(), lease.Account.Writer(), goal); err != nil {
 		h.conversionRedirect(w, r, site.Domain, "", err.Error())
@@ -178,6 +187,10 @@ func (h *Handler) deleteGoal(w http.ResponseWriter, r *http.Request, site sites.
 	goal, err := goals.Get(r.Context(), lease.Account.Reader(), id)
 	if err != nil || goal.SiteID != site.ID {
 		h.conversionRedirect(w, r, site.Domain, "", "That goal does not belong to this site.")
+		return
+	}
+	if goal.IsAutomatic {
+		h.conversionRedirect(w, r, site.Domain, "", "Automatic goals cannot be deleted because Feasible keeps them available for tracker-detected activity.")
 		return
 	}
 
