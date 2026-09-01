@@ -23,7 +23,9 @@ Usage:
 
 The email must belong to the owner of exactly one team. Complimentary access is
 durable: it stops the lifecycle clock and later trial or failed-payment signals
-cannot restart it. Owner-requested account deletion remains available.
+cannot restart it. An active paid subscription must be cancelled first so the
+command can never hide billing controls while a provider keeps charging the
+account. Owner-requested account deletion remains available.
 
 Flags:
 `

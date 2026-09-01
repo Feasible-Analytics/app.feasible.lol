@@ -115,6 +115,19 @@ func (s *Store) CompByOwnerEmail(ctx context.Context, email string) (CompResult,
 	}
 
 	result := matches[0]
+	var activeSubscription string
+	err = tx.QueryRowContext(ctx, `
+		SELECT stripe_subscription_id
+		FROM subscriptions
+		WHERE team_id = ? AND stripe_subscription_id <> '' AND status NOT IN ('canceled', 'none')
+	`, result.TeamID).Scan(&activeSubscription)
+	if err == nil {
+		return CompResult{}, fmt.Errorf("lifecycle: account %d has active subscription %s; cancel it before comping", result.TeamID, activeSubscription)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return CompResult{}, fmt.Errorf("lifecycle: read account %d subscription: %w", result.TeamID, err)
+	}
+
 	var existing int64
 	err = tx.QueryRowContext(ctx, `SELECT comped_at FROM account_comps WHERE team_id = ?`, result.TeamID).Scan(&existing)
 	if err == nil {

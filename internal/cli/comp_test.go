@@ -112,3 +112,40 @@ func TestCompRejectsUnknownAndAmbiguousOwners(t *testing.T) {
 		t.Fatalf("ambiguous owner: code=%d stderr=%q", code, stderr)
 	}
 }
+
+// TestCompRejectsAnActiveSubscription prevents an operator from hiding the
+// billing portal while the payment provider can still charge the account.
+func TestCompRejectsAnActiveSubscription(t *testing.T) {
+	dir := billingDataDir(t)
+	control, err := store.Open(filepath.Join(dir, "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Exec(`
+		INSERT INTO subscriptions
+			(team_id, stripe_subscription_id, status, created_at, updated_at)
+		VALUES (1, 'sub_paying', 'active', 1, 1)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	_ = control.Close()
+
+	code, _, stderr := run(t, "comp", "-data-dir", dir, "--email", "owner@example.com")
+	if code != ExitError || !strings.Contains(stderr, "cancel it before comping") {
+		t.Fatalf("active subscription: code=%d stderr=%q", code, stderr)
+	}
+
+	control, err = store.Open(filepath.Join(dir, "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+
+	var comps int
+	if err := control.QueryRow(`SELECT COUNT(*) FROM account_comps WHERE team_id = 1`).Scan(&comps); err != nil {
+		t.Fatal(err)
+	}
+	if comps != 0 {
+		t.Fatalf("active account has %d comp markers", comps)
+	}
+}
