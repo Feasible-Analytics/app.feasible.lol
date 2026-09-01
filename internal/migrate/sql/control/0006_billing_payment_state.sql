@@ -14,11 +14,22 @@ ALTER TABLE subscriptions ADD COLUMN payment_state TEXT NOT NULL DEFAULT ''
     CHECK (payment_state IN ('', 'pending', 'paid', 'failed'));
 
 -- Before Managed Payments, active/trialing Stripe status was the application's
--- paid-access proof. Preserve that established entitlement during upgrade; a
--- later signed event will replace it with ordered payment evidence.
+-- paid-access proof. Trust that legacy evidence only when no lifecycle clock or
+-- pending deletion audit contradicts it. Contradictory rows remain unknown so
+-- provider reconciliation, rather than migration, decides whether to recover.
 UPDATE subscriptions
 SET payment_state = 'paid'
-WHERE status IN ('active', 'trialing');
+WHERE status IN ('active', 'trialing')
+  AND NOT EXISTS (
+      SELECT 1 FROM account_lifecycle
+      WHERE account_lifecycle.team_id = subscriptions.team_id
+        AND account_lifecycle.trigger <> ''
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM account_deletions
+      WHERE account_deletions.team_id = subscriptions.team_id
+        AND account_deletions.completed_at IS NULL
+  );
 
 -- The first failed event in the current lapse is the contractual day zero.
 -- Keeping it beside the payment state makes delayed delivery and process
@@ -48,12 +59,32 @@ CREATE TABLE billing_account_leases (
 -- account even when the original process died after pausing collection.
 CREATE TABLE billing_quiescence_objects (
     team_id      INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    customer_id  TEXT NOT NULL CHECK (customer_id <> ''),
     object_type  TEXT NOT NULL CHECK (object_type IN ('subscription', 'invoice')),
     stripe_id    TEXT NOT NULL,
     created_at   INTEGER NOT NULL,
 
     PRIMARY KEY (team_id, object_type, stripe_id)
 );
+
+-- Billing truth is account-wide even when a lost or replaced Checkout Session
+-- created more than one customer. Persist every signed or provider-discovered
+-- association so ordinary webhook reconciliation does not depend on the one
+-- customer currently named by the subscription mirror.
+CREATE TABLE billing_account_customers (
+    customer_id TEXT PRIMARY KEY CHECK (customer_id <> ''),
+    team_id     INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+
+CREATE INDEX billing_account_customers_team
+    ON billing_account_customers(team_id, customer_id);
+
+INSERT INTO billing_account_customers (customer_id, team_id, created_at, updated_at)
+SELECT stripe_customer_id, team_id, created_at, updated_at
+FROM subscriptions
+WHERE stripe_customer_id IS NOT NULL AND stripe_customer_id <> '';
 
 -- A checkout claim is written before calling Stripe. Retries reuse the same
 -- idempotency key, including after a crash, so at most one customer/subscription
@@ -143,6 +174,7 @@ ALTER TABLE account_deletions ADD COLUMN local_removed_at INTEGER;
 ALTER TABLE account_deletions ADD COLUMN provider_removed_at INTEGER;
 ALTER TABLE account_deletions ADD COLUMN control_removed_at INTEGER;
 ALTER TABLE account_deletions ADD COLUMN owner_requested INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE account_deletions ADD COLUMN authoritative_at INTEGER;
 
 -- A single account can acquire more than one Stripe customer when an older
 -- Checkout Session completes after a replacement. This no-FK audit survives
@@ -233,6 +265,12 @@ SELECT teams.id, CAST(strftime('%s', 'now') AS INTEGER)
 FROM teams
 LEFT JOIN account_lifecycle ON account_lifecycle.team_id = teams.id
 WHERE account_lifecycle.team_id IS NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM account_deletions
+      WHERE account_deletions.team_id = teams.id
+        AND account_deletions.completed_at IS NULL
+  )
   AND NOT EXISTS (
       SELECT 1
       FROM subscriptions

@@ -469,12 +469,12 @@ func (c *Client) GetSubscription(ctx context.Context, id string) (*Subscription,
 }
 
 // SetSubscriptionCollectionPaused quiesces or restores collection while day-90
-// deletion checks provider truth. The stable idempotency key makes a process
-// retry apply the same transition rather than creating another operation.
-func (c *Client) SetSubscriptionCollectionPaused(ctx context.Context, id string, paused bool, idempotencyKey string) (*Subscription, error) {
+// deletion checks provider truth. Callers select Stripe's documented pause
+// behavior explicitly so reversible preparation never inherits void semantics.
+func (c *Client) SetSubscriptionCollectionPaused(ctx context.Context, id string, paused bool, behavior, idempotencyKey string) (*Subscription, error) {
 	form := url.Values{}
 	if paused {
-		form.Set("pause_collection[behavior]", "void")
+		form.Set("pause_collection[behavior]", behavior)
 	} else {
 		form.Set("pause_collection", "")
 	}

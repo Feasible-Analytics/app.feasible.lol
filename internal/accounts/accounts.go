@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
@@ -46,6 +47,11 @@ const DatabaseName = "analytics.db"
 // is looking at a data directory with a thousand accounts in it.
 const dirWidth = 6
 
+// deletionWatchInterval keeps long-lived cached handles responsive to a
+// cross-process tombstone without turning every open account into a hot stat
+// loop. Permanent deletion waits for the watcher, so this affects latency only.
+const deletionWatchInterval = 100 * time.Millisecond
+
 // Account is one open account database with everything the ingest and query
 // paths need to use it.
 type Account struct {
@@ -59,6 +65,16 @@ type Account struct {
 	// opened. It belongs to the account rather than the process because ids are
 	// only meaningful inside one database.
 	Intern *intern.Cache
+
+	// lifetimeLock is held shared for as long as this handle can use SQLite.
+	// Permanent deletion waits for an exclusive lock before it can report
+	// success, which fences handles cached by every cooperating process.
+	lifetimeLock *os.File
+	stopWatch    chan struct{}
+	watchDone    chan struct{}
+	stopOnce     sync.Once
+	closeOnce    sync.Once
+	closeErr     error
 }
 
 // Writer is the single connection every write goes through. It is exposed as a
@@ -119,6 +135,12 @@ func accountLockPath(dataDir string, id int64) string {
 	return filepath.Join(dataDir, config.AccountDatabaseDir, fmt.Sprintf(".lock-%0*d", dirWidth, id))
 }
 
+// accountLifetimeLockPath names the process-shared lease held by every usable
+// database handle and acquired exclusively by permanent deletion.
+func accountLifetimeLockPath(dataDir string, id int64) string {
+	return filepath.Join(dataDir, config.AccountDatabaseDir, fmt.Sprintf(".lifetime-%0*d", dirWidth, id))
+}
+
 // lockAccount serializes the marker check plus file open/removal across
 // processes. The kernel releases the lock if a process crashes.
 func lockAccount(dataDir string, id int64) (*os.File, error) {
@@ -145,6 +167,71 @@ func unlockAccount(file *os.File) {
 	}
 	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 	_ = file.Close()
+}
+
+// lockAccountLifetime acquires either a shared handle lease or the exclusive
+// deletion fence. The coordination lock prevents a new shared lease from
+// crossing creation of the deletion marker.
+func lockAccountLifetime(dataDir string, id int64, exclusive bool) (*os.File, error) {
+	path := accountLifetimeLockPath(dataDir, id)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return nil, fmt.Errorf("account %d: create lifetime lock directory: %w", id, err)
+	}
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o640)
+	if err != nil {
+		return nil, fmt.Errorf("account %d: open lifetime lock: %w", id, err)
+	}
+	mode := syscall.LOCK_SH
+	if exclusive {
+		mode = syscall.LOCK_EX
+	}
+	if err := syscall.Flock(int(file.Fd()), mode); err != nil {
+		file.Close()
+		return nil, fmt.Errorf("account %d: acquire lifetime lock: %w", id, err)
+	}
+
+	return file, nil
+}
+
+// close stops deletion monitoring, closes SQLite, and releases the lifetime
+// lease exactly once. Waiting for the watcher keeps shutdown from leaking a
+// goroutine that still references the account.
+func (a *Account) close() error {
+	a.stopOnce.Do(func() { close(a.stopWatch) })
+	a.closeResources()
+	<-a.watchDone
+
+	return a.closeErr
+}
+
+// closeResources makes the database unusable before releasing its shared
+// lifetime lease. Delete cannot acquire the exclusive fence until this method
+// has completed in every process.
+func (a *Account) closeResources() {
+	a.closeOnce.Do(func() {
+		a.closeErr = a.DB.Close()
+		unlockAccount(a.lifetimeLock)
+	})
+}
+
+// watchDeletion cooperatively closes a cached handle when another manager or
+// process publishes the durable deletion marker.
+func (a *Account) watchDeletion(marker string) {
+	defer close(a.watchDone)
+	ticker := time.NewTicker(deletionWatchInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-a.stopWatch:
+			return
+		case <-ticker.C:
+			if _, err := os.Stat(marker); err == nil {
+				a.closeResources()
+				return
+			}
+		}
+	}
 }
 
 // Path returns the path this manager would use for an account.
@@ -181,7 +268,7 @@ func (m *Manager) Open(ctx context.Context, id int64) (*Account, error) {
 		// unlinked SQLite file cannot remain usable by later requests here.
 		if account, ok := m.open[id]; ok {
 			delete(m.open, id)
-			_ = account.DB.Close()
+			_ = account.close()
 		}
 		return nil, fmt.Errorf("account %d was permanently deleted", id)
 	} else if !os.IsNotExist(err) {
@@ -191,26 +278,38 @@ func (m *Manager) Open(ctx context.Context, id int64) (*Account, error) {
 		return account, nil
 	}
 
+	lifetimeLock, err := lockAccountLifetime(m.dataDir, id, false)
+	if err != nil {
+		return nil, err
+	}
+
 	path := Path(m.dataDir, id)
 
 	db, err := store.OpenDatabase(path)
 	if err != nil {
+		unlockAccount(lifetimeLock)
 		return nil, err
 	}
 
 	if err := ensureSchema(ctx, db, migrate.Account()); err != nil {
 		db.Close()
+		unlockAccount(lifetimeLock)
 		return nil, fmt.Errorf("account %d: %w", id, err)
 	}
 
 	cache := intern.New(db.Writer())
 	if err := cache.Warm(ctx); err != nil {
 		db.Close()
+		unlockAccount(lifetimeLock)
 		return nil, fmt.Errorf("account %d: %w", id, err)
 	}
 
-	account := &Account{ID: id, DB: db, Intern: cache}
+	account := &Account{
+		ID: id, DB: db, Intern: cache, lifetimeLock: lifetimeLock,
+		stopWatch: make(chan struct{}), watchDone: make(chan struct{}),
+	}
 	m.open[id] = account
+	go account.watchDeletion(DeletedMarker(m.dataDir, id))
 
 	return account, nil
 }
@@ -256,7 +355,7 @@ func (m *Manager) Close(id int64) error {
 		return nil
 	}
 
-	return account.DB.Close()
+	return account.close()
 }
 
 // Delete permanently closes and removes one account while holding the manager
@@ -287,10 +386,15 @@ func (m *Manager) Delete(id int64) error {
 
 	if account, ok := m.open[id]; ok {
 		delete(m.open, id)
-		if err := account.DB.Close(); err != nil {
+		if err := account.close(); err != nil {
 			return err
 		}
 	}
+	lifetimeLock, err := lockAccountLifetime(m.dataDir, id, true)
+	if err != nil {
+		return err
+	}
+	defer unlockAccount(lifetimeLock)
 	if err := os.RemoveAll(Dir(m.dataDir, id)); err != nil {
 		return fmt.Errorf("account %d: remove analytics directory: %w", id, err)
 	}
@@ -314,7 +418,7 @@ func (m *Manager) CloseAll() error {
 	// would leave the rest of the accounts open in a process that is exiting.
 	var firstErr error
 	for _, account := range accounts {
-		if err := account.DB.Close(); err != nil && firstErr == nil {
+		if err := account.close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

@@ -94,8 +94,8 @@ func TestDeleteLeavesAnUnrecreatableAccountTombstone(t *testing.T) {
 }
 
 // TestOpenClosesAHandleCachedBeforeAnotherManagerDeletedTheAccount covers two
-// serving processes with independent caches. The surviving process must inspect
-// the shared marker before returning its stale handle on the next request.
+// serving processes with independent caches. Delete must not return until the
+// already-returned handle is fenced, without requiring another Open call.
 func TestOpenClosesAHandleCachedBeforeAnotherManagerDeletedTheAccount(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
@@ -116,14 +116,17 @@ func TestOpenClosesAHandleCachedBeforeAnotherManagerDeletedTheAccount(t *testing
 	if err := deleting.Delete(1); err != nil {
 		t.Fatal(err)
 	}
+	if err := cached.Reader().PingContext(ctx); err == nil {
+		t.Fatal("cached reader remained usable after deletion returned")
+	}
+	if _, err := cached.Writer().ExecContext(ctx, "INSERT INTO dim_pathname (value) VALUES ('/after-delete')"); err == nil {
+		t.Fatal("cached writer accepted data after deletion returned")
+	}
 	if _, err := stale.Open(ctx, 1); err == nil || !strings.Contains(err.Error(), "permanently deleted") {
 		t.Fatalf("stale manager reopened the deleted account with %v", err)
 	}
 	if stale.OpenCount() != 0 {
 		t.Fatal("stale manager retained the deleted account in its cache")
-	}
-	if err := cached.Writer().PingContext(ctx); err == nil {
-		t.Fatal("cached writer remained usable after the manager observed deletion")
 	}
 }
 

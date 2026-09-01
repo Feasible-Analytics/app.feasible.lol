@@ -172,31 +172,90 @@ func (s *Service) reconcileLockedWithRecovery(ctx context.Context, lease lifecyc
 
 	trigger := update.Trigger
 	triggerEventCreated := update.EventCreated
-	triggerUpdate := update
 
 	existing, err := s.Store.Load(ctx, teamID)
 	if err != nil {
 		return false, err
 	}
 
-	subscriptions, err := s.Stripe.Subscriptions(ctx, customerID)
+	customers, err := s.discoverAccountCustomers(ctx, lease, teamID, existing.CustomerID, customerID)
 	if err != nil {
 		return false, err
 	}
-	subscription := stripe.SelectSubscription(subscriptions)
+	allSubscriptions := make([]stripe.Subscription, 0)
+	subscriptionCustomers := make(map[string]string)
+	providerUpdates := make(map[string]PaymentUpdate)
+	for _, currentCustomerID := range sortedCustomerIDs(customers) {
+		if err := lease.Renew(ctx); err != nil {
+			return false, err
+		}
+		subscriptions, err := s.Stripe.Subscriptions(ctx, currentCustomerID)
+		if err != nil {
+			return false, err
+		}
+		invoices, err := s.Stripe.Invoices(ctx, currentCustomerID)
+		if err != nil {
+			return false, err
+		}
+		for i := range subscriptions {
+			subscriptionCustomers[subscriptions[i].ID] = currentCustomerID
+			allSubscriptions = append(allSubscriptions, subscriptions[i])
+			providerUpdates[subscriptions[i].ID] = providerInvoiceUpdate(&subscriptions[i], invoices)
+		}
+	}
 
-	if update.RequireSubscriptionMatch && (update.SubscriptionID == "" || subscriptionByID(subscriptions, update.SubscriptionID) == nil) {
+	if update.RequireSubscriptionMatch && (update.SubscriptionID == "" || subscriptionByID(allSubscriptions, update.SubscriptionID) == nil) {
 		return false, nil
 	}
 
+	resolvedUpdates := make(map[string]PaymentUpdate, len(allSubscriptions))
+	entitled := make([]stripe.Subscription, 0, len(allSubscriptions))
+	for i := range allSubscriptions {
+		candidate := providerUpdates[allSubscriptions[i].ID]
+		if update.SubscriptionID == allSubscriptions[i].ID && paymentUpdateAfter(update, candidate) {
+			candidate = update
+		}
+		if existing.SubscriptionID == allSubscriptions[i].ID && existing.PaymentState != "" {
+			stored := PaymentUpdate{
+				State: existing.PaymentState, SubscriptionID: existing.SubscriptionID,
+				SourceCreated: existing.EvidenceSourceAt, EventCreated: existing.EvidenceEventAt,
+			}
+			if paymentUpdateAfter(stored, candidate) {
+				candidate = stored
+			}
+		}
+		candidate, err = s.latestPaymentUpdate(ctx, teamID, allSubscriptions[i].ID, candidate)
+		if err != nil {
+			return false, err
+		}
+		resolvedUpdates[allSubscriptions[i].ID] = candidate
+		if allSubscriptions[i].Paying() && candidate.State == PaymentPaid {
+			entitled = append(entitled, allSubscriptions[i])
+		}
+	}
+
+	selection := allSubscriptions
+	if len(entitled) > 0 {
+		selection = entitled
+	}
+	subscription := stripe.SelectSubscription(selection)
+	selectedUpdate := PaymentUpdate{}
+	selectedCustomerID := existing.CustomerID
+	if subscription != nil {
+		selectedCustomerID = subscriptionCustomers[subscription.ID]
+		selectedUpdate = resolvedUpdates[subscription.ID]
+	} else if !customers[selectedCustomerID] {
+		selectedCustomerID = customerID
+	}
+
 	email := ""
-	if customer, err := s.Stripe.GetCustomer(ctx, customerID); err == nil && !customer.Deleted {
+	if customer, err := s.Stripe.GetCustomer(ctx, selectedCustomerID); err == nil && !customer.Deleted {
 		email = customer.Email
 	}
 
 	mirror := Subscription{
 		TeamID:            teamID,
-		CustomerID:        customerID,
+		CustomerID:        selectedCustomerID,
 		Status:            "none",
 		BillingEmail:      email,
 		PaymentState:      existing.PaymentState,
@@ -210,7 +269,6 @@ func (s *Service) reconcileLockedWithRecovery(ctx context.Context, lease lifecyc
 	if subscription != nil {
 		plan := stripe.Describe(subscription.PriceID(), s.Plans.Monthly, s.Plans.Yearly)
 		newSubscription := existing.SubscriptionID != subscription.ID
-
 		mirror.SubscriptionID = subscription.ID
 		mirror.Status = subscription.Status
 		mirror.Plan = plan.Key
@@ -222,27 +280,20 @@ func (s *Service) reconcileLockedWithRecovery(ctx context.Context, lease lifecyc
 		// it active. The checkout or invoice success event supplies that evidence.
 		if newSubscription {
 			mirror.PaymentState = PaymentPending
-		} else if mirror.PaymentState == "" && (existing.Status == stripe.StatusActive || existing.Status == stripe.StatusTrialing) {
-			// Existing subscriptions predate the payment_state column and were
-			// already gated from a paid provider status before this migration.
-			mirror.PaymentState = PaymentPaid
+			mirror.PaymentFailedAt = time.Time{}
+			mirror.EvidenceSourceAt = 0
+			mirror.EvidenceEventAt = 0
+			mirror.EvidenceRank = 0
 		}
 
-		if update.State != "" || newSubscription || mirror.PaymentState == PaymentPending {
-			update, err = s.latestPaymentUpdate(ctx, teamID, subscription.ID, update)
-			if err != nil {
-				return false, err
-			}
-		}
-
-		updateApplies := paymentUpdateApplies(update, subscription)
+		updateApplies := paymentUpdateApplies(selectedUpdate, subscription)
 		terminalPayment := !newSubscription &&
 			(existing.PaymentState == PaymentPaid || existing.PaymentState == PaymentFailed)
-		if updateApplies && !(update.State == PaymentPending && terminalPayment) {
-			mirror.PaymentState = update.State
-			mirror.EvidenceSourceAt = update.SourceCreated
-			mirror.EvidenceEventAt = update.EventCreated
-			mirror.EvidenceRank = paymentEvidenceRank(update.State)
+		if updateApplies && !(selectedUpdate.State == PaymentPending && terminalPayment) {
+			mirror.PaymentState = selectedUpdate.State
+			mirror.EvidenceSourceAt = selectedUpdate.SourceCreated
+			mirror.EvidenceEventAt = selectedUpdate.EventCreated
+			mirror.EvidenceRank = paymentEvidenceRank(selectedUpdate.State)
 		}
 
 		// A paused subscription can still report `active`, which is the exact
@@ -254,8 +305,8 @@ func (s *Service) reconcileLockedWithRecovery(ctx context.Context, lease lifecyc
 			mirror.Status = stripe.StatusPaused
 		}
 
-		pendingCheckout := update.State == PaymentPending && updateApplies
-		confirmedPayment := update.State == PaymentPaid && updateApplies
+		pendingCheckout := selectedUpdate.State == PaymentPending && updateApplies
+		confirmedPayment := selectedUpdate.State == PaymentPaid && updateApplies
 		settling := subscription.Status == stripe.StatusIncomplete && !subscription.Paused()
 		if !subscription.Paying() && !pendingCheckout && !confirmedPayment && !settling {
 			mirror.PaymentState = PaymentFailed
@@ -273,12 +324,13 @@ func (s *Service) reconcileLockedWithRecovery(ctx context.Context, lease lifecyc
 	case PaymentPaid:
 		mirror.PaymentFailedAt = time.Time{}
 	case PaymentFailed:
-		failedAt, err := s.firstFailureInCurrentLapse(ctx, teamID, mirror.SubscriptionID, triggerUpdate)
+		failureEvidence := resolvedUpdates[mirror.SubscriptionID]
+		failedAt, err := s.firstFailureInCurrentLapse(ctx, teamID, mirror.SubscriptionID, failureEvidence)
 		if err != nil {
 			return false, err
 		}
 		if failedAt.IsZero() {
-			failedAt = paymentFailureTime(triggerUpdate)
+			failedAt = paymentFailureTime(failureEvidence)
 		}
 		if mirror.PaymentFailedAt.IsZero() || (!failedAt.IsZero() && failedAt.Before(mirror.PaymentFailedAt)) {
 			mirror.PaymentFailedAt = failedAt
@@ -331,8 +383,8 @@ func (s *Service) reconcileLockedWithRecovery(ctx context.Context, lease lifecyc
 	}
 
 	signalAt := s.now()
-	if signal == lifecycle.SignalPaymentSucceeded && triggerUpdate.EventCreated > 0 {
-		signalAt = time.Unix(triggerUpdate.EventCreated, 0).UTC()
+	if signal == lifecycle.SignalPaymentSucceeded && selectedUpdate.EventCreated > 0 {
+		signalAt = time.Unix(selectedUpdate.EventCreated, 0).UTC()
 	} else if signal == lifecycle.SignalPaymentFailed && !mirror.PaymentFailedAt.IsZero() {
 		signalAt = mirror.PaymentFailedAt
 	}
@@ -350,6 +402,99 @@ func (s *Service) reconcileLockedWithRecovery(ctx context.Context, lease lifecyc
 	}
 
 	return true, nil
+}
+
+// discoverAccountCustomers combines durable ownership with complete provider
+// metadata and Checkout Session scans. Every discovered identity is persisted
+// before its subscriptions can affect account entitlement.
+func (s *Service) discoverAccountCustomers(ctx context.Context, lease lifecycle.AccountLease, teamID int64, seeds ...string) (map[string]bool, error) {
+	customers := make(map[string]bool)
+	remember := func(customerID string) error {
+		if customerID == "" || customers[customerID] {
+			return nil
+		}
+		if err := s.Store.RememberAccountCustomer(ctx, teamID, customerID); err != nil {
+			return err
+		}
+		customers[customerID] = true
+		return nil
+	}
+
+	stored, err := s.Store.AccountCustomers(ctx, teamID)
+	if err != nil {
+		return nil, err
+	}
+	for _, storedCustomerID := range stored {
+		customers[storedCustomerID] = true
+	}
+	for _, seed := range seeds {
+		if err := remember(seed); err != nil {
+			return nil, err
+		}
+	}
+	if err := lease.Renew(ctx); err != nil {
+		return nil, err
+	}
+	providerCustomers, err := s.Stripe.Customers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("billing: discover payment customers for account %d: %w", teamID, err)
+	}
+	for i := range providerCustomers {
+		if !providerCustomers[i].Deleted && providerCustomers[i].Meta.TeamID() == teamID {
+			if err := remember(providerCustomers[i].ID); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := lease.Renew(ctx); err != nil {
+		return nil, err
+	}
+	sessions, err := s.Stripe.CheckoutSessions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("billing: discover checkout customers for account %d: %w", teamID, err)
+	}
+	for i := range sessions {
+		if sessions[i].Metadata.TeamID() == teamID {
+			if err := remember(sessions[i].Customer); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return customers, nil
+}
+
+// providerInvoiceUpdate derives ordered settlement evidence from Stripe's
+// current authenticated invoice state. Active status alone never proves paid.
+func providerInvoiceUpdate(subscription *stripe.Subscription, invoices []stripe.Invoice) PaymentUpdate {
+	best := PaymentUpdate{}
+	for i := range invoices {
+		invoice := &invoices[i]
+		if invoice.SubscriptionID() != subscription.ID {
+			continue
+		}
+		candidate := PaymentUpdate{
+			SubscriptionID: subscription.ID, SourceID: invoice.ID,
+			SourceCreated: invoice.Created, RequireSubscriptionMatch: true,
+		}
+		switch {
+		case (invoice.Paid || invoice.Status == "paid") && invoice.Transitions.PaidAt > 0:
+			candidate.State = PaymentPaid
+			candidate.EventCreated = invoice.Transitions.PaidAt
+			candidate.Trigger = stripe.EventInvoicePaymentSucceed
+		case invoice.Status == "open" && invoice.AttemptCount > 0:
+			candidate.State = PaymentFailed
+			candidate.EventCreated = invoice.Created
+			candidate.Trigger = stripe.EventInvoicePaymentFailed
+		default:
+			continue
+		}
+		if paymentUpdateAfter(candidate, best) {
+			best = candidate
+		}
+	}
+
+	return best
 }
 
 // paymentFailureTime turns Stripe's immutable event creation timestamp into
@@ -562,15 +707,11 @@ func (s *Service) AcquireAccountLease(ctx context.Context, teamID int64) (lifecy
 	return s.Store.AcquireAccountLease(ctx, teamID)
 }
 
-// QuiesceForDeletion closes every payment opportunity before the local deletion
-// claim. Reversible mutations are persisted before Stripe is called; open
-// invoices are voided because disabling automatic retries still leaves manual
-// portal payment possible. Settlement is read both before and after mutation.
+// QuiesceForDeletion prepares or finalizes provider state around a durable
+// deletion claim. Recoverable preparation uses only reversible Stripe changes;
+// irreversible finalization is requested only after lifecycle marks the claim
+// authoritative. Settlement is read before and after reversible preparation.
 func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.AccountLease, teamID int64, customerID string, lapseStarted time.Time, recoverSettlement bool) (lifecycle.PaymentQuiescence, error) {
-	customers := make(map[string]bool)
-	if customerID != "" {
-		customers[customerID] = true
-	}
 	if !s.Stripe.Configured() {
 		if customerID != "" {
 			return lifecycle.PaymentQuiescence{}, fmt.Errorf(
@@ -580,59 +721,94 @@ func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.Accoun
 		}
 		return lifecycle.PaymentQuiescence{CustomerIDs: nil, Restore: func(context.Context) error { return nil }}, nil
 	}
-	restore := func(restoreCtx context.Context) error {
-		return s.restoreQuiescence(restoreCtx, lease, teamID, sortedCustomerIDs(customers))
-	}
-	fail := func(err error) (lifecycle.PaymentQuiescence, error) {
-		_ = restore(context.WithoutCancel(ctx))
+	customers, err := s.discoverAccountCustomers(ctx, lease, teamID, customerID)
+	if err != nil {
 		return lifecycle.PaymentQuiescence{}, err
 	}
-
-	if err := lease.Renew(ctx); err != nil {
+	restore := func(restoreCtx context.Context) error {
+		return s.restoreQuiescence(restoreCtx, lease, teamID)
+	}
+	fail := func(err error) (lifecycle.PaymentQuiescence, error) {
+		if recoverSettlement {
+			_ = restore(context.WithoutCancel(ctx))
+		}
 		return lifecycle.PaymentQuiescence{}, err
 	}
 	existing, err := s.Store.Load(ctx, teamID)
 	if err != nil {
 		return fail(err)
 	}
-	if recoverSettlement && existing.PaymentState == PaymentPaid {
-		paidAt := s.now()
-		if existing.EvidenceEventAt > 0 {
-			paidAt = time.Unix(existing.EvidenceEventAt, 0).UTC()
-		}
-		if err := restore(ctx); err != nil {
-			return lifecycle.PaymentQuiescence{}, err
-		}
-		if s.Lifecycle == nil {
-			return lifecycle.PaymentQuiescence{}, fmt.Errorf("billing: cannot recover account %d without lifecycle service", teamID)
-		}
-		pendingDeletion, err := s.Store.RecoverableScheduledDeletion(ctx, teamID)
+	if recoverSettlement && existing.PaymentState == PaymentPaid && existing.SubscriptionID != "" {
+		recorded, err := s.Store.QuiescenceObjects(ctx, teamID)
 		if err != nil {
-			return lifecycle.PaymentQuiescence{}, err
+			return fail(err)
 		}
-		if !pendingDeletion {
-			if _, err := s.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentSucceeded, paidAt); err != nil {
-				return lifecycle.PaymentQuiescence{}, err
+		recordedSubscription := false
+		for _, object := range recorded {
+			if object.Type == "subscription" && object.ID == existing.SubscriptionID {
+				recordedSubscription = true
+				break
 			}
 		}
-		return lifecycle.PaymentQuiescence{Recovered: true, CustomerIDs: sortedCustomerIDs(customers)}, nil
+		for _, currentCustomerID := range sortedCustomerIDs(customers) {
+			subscriptions, err := s.Stripe.Subscriptions(ctx, currentCustomerID)
+			if err != nil {
+				return fail(err)
+			}
+			current := subscriptionByID(subscriptions, existing.SubscriptionID)
+			healthyStatus := current != nil && (current.Status == stripe.StatusActive || current.Status == stripe.StatusTrialing)
+			if current == nil || (!current.Paying() && !(healthyStatus && current.Paused() && recordedSubscription)) {
+				continue
+			}
+			invoices, err := s.Stripe.Invoices(ctx, currentCustomerID)
+			if err != nil {
+				return fail(err)
+			}
+			providerEvidence := providerInvoiceUpdate(current, invoices)
+			storedEvidence := PaymentUpdate{
+				State: existing.PaymentState, SubscriptionID: existing.SubscriptionID,
+				SourceCreated: existing.EvidenceSourceAt, EventCreated: existing.EvidenceEventAt,
+			}
+			if providerEvidence.State == PaymentFailed && paymentUpdateAfter(providerEvidence, storedEvidence) {
+				continue
+			}
+			if err := restore(ctx); err != nil {
+				return lifecycle.PaymentQuiescence{}, err
+			}
+			if s.Lifecycle == nil {
+				return lifecycle.PaymentQuiescence{}, fmt.Errorf("billing: cannot recover account %d without lifecycle service", teamID)
+			}
+			pendingDeletion, err := s.Store.RecoverableScheduledDeletion(ctx, teamID)
+			if err != nil {
+				return lifecycle.PaymentQuiescence{}, err
+			}
+			if !pendingDeletion {
+				paidAt := s.now()
+				if existing.EvidenceEventAt > 0 {
+					paidAt = time.Unix(existing.EvidenceEventAt, 0).UTC()
+				}
+				if _, err := s.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentSucceeded, paidAt); err != nil {
+					return lifecycle.PaymentQuiescence{}, err
+				}
+			}
+			return lifecycle.PaymentQuiescence{Recovered: true, CustomerIDs: sortedCustomerIDs(customers)}, nil
+		}
+	}
+
+	if err := lease.Renew(ctx); err != nil {
+		return lifecycle.PaymentQuiescence{}, err
 	}
 
 	stable := false
+	irreversible := false
 	for attempt := 0; attempt < 3; attempt++ {
 		beforeCustomers := len(customers)
-		providerCustomers, err := s.Stripe.Customers(ctx)
-		if err != nil {
-			return fail(fmt.Errorf("billing: discover payment customers for account %d: %w", teamID, err))
-		}
-		for i := range providerCustomers {
-			if !providerCustomers[i].Deleted && providerCustomers[i].Meta.TeamID() == teamID {
-				customers[providerCustomers[i].ID] = true
-			}
-		}
-		changed, err := s.cleanupCheckoutSessions(ctx, lease, teamID, false, "", customers)
+		changed, err := s.cleanupCheckoutSessions(ctx, lease, teamID, false, "", customers, !recoverSettlement)
 		if err != nil {
 			return fail(err)
+		}
+		if !recoverSettlement && changed {
+			irreversible = true
 		}
 		changed = changed || len(customers) != beforeCustomers
 
@@ -649,7 +825,7 @@ func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.Accoun
 				return fail(err)
 			}
 			if recoverSettlement {
-				if recovered, err := s.recoverSettlement(ctx, lease, teamID, currentCustomerID, sortedCustomerIDs(customers), lapseStarted,
+				if recovered, err := s.recoverSettlement(ctx, lease, teamID, currentCustomerID, lapseStarted,
 					s.now(), subscriptions, invoices); err != nil || recovered {
 					return lifecycle.PaymentQuiescence{Recovered: recovered, CustomerIDs: sortedCustomerIDs(customers)}, err
 				}
@@ -660,13 +836,13 @@ func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.Accoun
 				if !subscription.BlocksCheckout() || subscription.Paused() {
 					continue
 				}
-				if err := s.Store.RememberQuiescence(ctx, teamID, "subscription", subscription.ID); err != nil {
+				if err := s.Store.RememberQuiescence(ctx, teamID, currentCustomerID, "subscription", subscription.ID); err != nil {
 					return fail(err)
 				}
 				if err := lease.Renew(ctx); err != nil {
 					return lifecycle.PaymentQuiescence{}, err
 				}
-				if _, err := s.Stripe.SetSubscriptionCollectionPaused(ctx, subscription.ID, true,
+				if _, err := s.Stripe.SetSubscriptionCollectionPaused(ctx, subscription.ID, true, "keep_as_draft",
 					fmt.Sprintf("deletion-quiesce-%d-%s", teamID, subscription.ID)); err != nil {
 					return fail(fmt.Errorf("billing: quiesce subscription %s: %w", subscription.ID, err))
 				}
@@ -675,6 +851,23 @@ func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.Accoun
 
 			for i := range invoices {
 				invoice := &invoices[i]
+				if recoverSettlement && (invoice.Status == "draft" || invoice.Status == "open") {
+					if !invoice.AutoAdvance {
+						continue
+					}
+					if err := s.Store.RememberQuiescence(ctx, teamID, currentCustomerID, "invoice", invoice.ID); err != nil {
+						return fail(err)
+					}
+					if err := lease.Renew(ctx); err != nil {
+						return lifecycle.PaymentQuiescence{}, err
+					}
+					if _, err := s.Stripe.SetInvoiceAutoAdvance(ctx, invoice.ID, false,
+						fmt.Sprintf("deletion-quiesce-invoice-%d-%s", teamID, invoice.ID)); err != nil {
+						return fail(fmt.Errorf("billing: quiesce invoice %s: %w", invoice.ID, err))
+					}
+					changed = true
+					continue
+				}
 				switch invoice.Status {
 				case "draft":
 					if err := lease.Renew(ctx); err != nil {
@@ -682,17 +875,9 @@ func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.Accoun
 					}
 					if err := s.Stripe.DeleteDraftInvoice(ctx, invoice.ID,
 						fmt.Sprintf("deletion-delete-draft-%d-%s", teamID, invoice.ID)); err != nil {
-						if recoverSettlement {
-							current, readErr := s.Stripe.Invoices(ctx, currentCustomerID)
-							if readErr == nil {
-								if recovered, recoverErr := s.recoverSettlement(ctx, lease, teamID, currentCustomerID, sortedCustomerIDs(customers),
-									lapseStarted, s.now(), subscriptions, current); recoverErr != nil || recovered {
-									return lifecycle.PaymentQuiescence{Recovered: recovered, CustomerIDs: sortedCustomerIDs(customers)}, recoverErr
-								}
-							}
-						}
 						return fail(fmt.Errorf("billing: delete draft invoice %s before deletion: %w", invoice.ID, err))
 					}
+					irreversible = true
 					changed = true
 
 				case "open":
@@ -701,17 +886,23 @@ func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.Accoun
 					}
 					if _, err := s.Stripe.VoidInvoice(ctx, invoice.ID,
 						fmt.Sprintf("deletion-void-invoice-%d-%s", teamID, invoice.ID)); err != nil {
-						if recoverSettlement {
+						if !recoverSettlement && !irreversible {
 							current, readErr := s.Stripe.Invoices(ctx, currentCustomerID)
 							if readErr == nil {
-								if recovered, recoverErr := s.recoverSettlement(ctx, lease, teamID, currentCustomerID, sortedCustomerIDs(customers),
-									lapseStarted, s.now(), subscriptions, current); recoverErr != nil || recovered {
-									return lifecycle.PaymentQuiescence{Recovered: recovered, CustomerIDs: sortedCustomerIDs(customers)}, recoverErr
+								if paid, _, settleErr := settledInvoice(subscriptions, current, lapseStarted, s.now()); settleErr == nil && paid != nil {
+									if reopenErr := s.Store.ReopenScheduledDeletionForRecovery(ctx, teamID); reopenErr != nil {
+										return lifecycle.PaymentQuiescence{}, reopenErr
+									}
+									if recovered, recoverErr := s.recoverSettlement(ctx, lease, teamID, currentCustomerID,
+										lapseStarted, s.now(), subscriptions, current); recoverErr != nil || recovered {
+										return lifecycle.PaymentQuiescence{Recovered: recovered, CustomerIDs: sortedCustomerIDs(customers)}, recoverErr
+									}
 								}
 							}
 						}
 						return fail(fmt.Errorf("billing: void invoice %s before deletion: %w", invoice.ID, err))
 					}
+					irreversible = true
 					changed = true
 				}
 			}
@@ -745,12 +936,13 @@ func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.Accoun
 			return fail(err)
 		}
 		for i := range invoices {
-			if invoices[i].Status == "open" || invoices[i].Status == "draft" {
+			if (invoices[i].Status == "open" || invoices[i].Status == "draft") &&
+				(!recoverSettlement || invoices[i].AutoAdvance) {
 				return fail(fmt.Errorf("billing: invoice %s remained payable after provider quiescence", invoices[i].ID))
 			}
 		}
 		if recoverSettlement {
-			if recovered, err := s.recoverSettlement(ctx, lease, teamID, currentCustomerID, sortedCustomerIDs(customers), lapseStarted,
+			if recovered, err := s.recoverSettlement(ctx, lease, teamID, currentCustomerID, lapseStarted,
 				quiescedAt, subscriptions, invoices); err != nil || recovered {
 				return lifecycle.PaymentQuiescence{Recovered: recovered, CustomerIDs: sortedCustomerIDs(customers)}, err
 			}
@@ -774,36 +966,13 @@ func sortedCustomerIDs(customers map[string]bool) []string {
 	return ids
 }
 
-// restoreQuiescence restores every reversible provider object recorded before a
-// process crash, then clears the durable list. Terminal invoices are skipped.
-func (s *Service) restoreQuiescence(ctx context.Context, lease lifecycle.AccountLease, teamID int64, customerIDs []string) error {
+// restoreQuiescence restores each durable object under its recorded customer.
+// Rows are removed individually only after successful or idempotent recovery,
+// so a partial provider failure leaves the unfinished suffix retryable.
+func (s *Service) restoreQuiescence(ctx context.Context, lease lifecycle.AccountLease, teamID int64) error {
 	objects, err := s.Store.QuiescenceObjects(ctx, teamID)
 	if err != nil || len(objects) == 0 {
 		return err
-	}
-	if len(customerIDs) == 0 {
-		return fmt.Errorf("billing: account %d has provider quiescence without a customer", teamID)
-	}
-
-	subscriptionByID := make(map[string]*stripe.Subscription)
-	invoiceByID := make(map[string]*stripe.Invoice)
-	for _, customerID := range customerIDs {
-		subscriptions, err := s.Stripe.Subscriptions(ctx, customerID)
-		if err != nil {
-			return err
-		}
-		for i := range subscriptions {
-			subscription := subscriptions[i]
-			subscriptionByID[subscription.ID] = &subscription
-		}
-		invoices, err := s.Stripe.Invoices(ctx, customerID)
-		if err != nil {
-			return err
-		}
-		for i := range invoices {
-			invoice := invoices[i]
-			invoiceByID[invoice.ID] = &invoice
-		}
 	}
 
 	for _, object := range objects {
@@ -812,38 +981,61 @@ func (s *Service) restoreQuiescence(ctx context.Context, lease lifecycle.Account
 		}
 		switch object.Type {
 		case "subscription":
-			subscription := subscriptionByID[object.ID]
-			if subscription == nil || !subscription.Paused() {
-				continue
+			subscriptions, err := s.Stripe.Subscriptions(ctx, object.CustomerID)
+			if err != nil {
+				return fmt.Errorf("billing: inspect subscription %s under customer %s for recovery: %w", object.ID, object.CustomerID, err)
 			}
-			if _, err := s.Stripe.SetSubscriptionCollectionPaused(ctx, object.ID, false,
-				fmt.Sprintf("deletion-restore-%d-%s", teamID, object.ID)); err != nil {
-				return fmt.Errorf("billing: restore subscription %s after deletion check: %w", object.ID, err)
+			subscription := subscriptionByID(subscriptions, object.ID)
+			if subscription == nil {
+				return fmt.Errorf("billing: subscription %s was not found under recorded customer %s", object.ID, object.CustomerID)
+			}
+			if subscription.Paused() {
+				if _, err := s.Stripe.SetSubscriptionCollectionPaused(ctx, object.ID, false, "",
+					fmt.Sprintf("deletion-restore-%d-%s", teamID, object.ID)); err != nil {
+					return fmt.Errorf("billing: restore subscription %s after deletion check: %w", object.ID, err)
+				}
 			}
 		case "invoice":
-			invoice := invoiceByID[object.ID]
-			if invoice == nil || (invoice.Status != "draft" && invoice.Status != "open") || invoice.AutoAdvance {
-				continue
+			invoices, err := s.Stripe.Invoices(ctx, object.CustomerID)
+			if err != nil {
+				return fmt.Errorf("billing: inspect invoice %s under customer %s for recovery: %w", object.ID, object.CustomerID, err)
 			}
-			if _, err := s.Stripe.SetInvoiceAutoAdvance(ctx, object.ID, true,
-				fmt.Sprintf("deletion-restore-invoice-%d-%s", teamID, object.ID)); err != nil {
-				return fmt.Errorf("billing: restore invoice %s after deletion check: %w", object.ID, err)
+			var invoice *stripe.Invoice
+			for i := range invoices {
+				if invoices[i].ID == object.ID {
+					invoice = &invoices[i]
+					break
+				}
 			}
+			if invoice == nil {
+				return fmt.Errorf("billing: invoice %s was not found under recorded customer %s", object.ID, object.CustomerID)
+			}
+			if (invoice.Status == "draft" || invoice.Status == "open") && !invoice.AutoAdvance {
+				if _, err := s.Stripe.SetInvoiceAutoAdvance(ctx, object.ID, true,
+					fmt.Sprintf("deletion-restore-invoice-%d-%s", teamID, object.ID)); err != nil {
+					return fmt.Errorf("billing: restore invoice %s after deletion check: %w", object.ID, err)
+				}
+			}
+		default:
+			return fmt.Errorf("billing: unknown quiescence object type %q", object.Type)
+		}
+		if err := s.Store.ForgetQuiescenceObject(ctx, teamID, object); err != nil {
+			return err
 		}
 	}
 
-	return s.Store.ForgetQuiescence(ctx, teamID)
+	return nil
 }
 
 // recoverSettlement restores provider collection and applies paid_at evidence
 // before any deletion claim. The same account lease fences mirror finalization.
 func (s *Service) recoverSettlement(ctx context.Context, lease lifecycle.AccountLease, teamID int64, customerID string,
-	restoreCustomerIDs []string, lapseStarted, quiescedAt time.Time, subscriptions []stripe.Subscription, invoices []stripe.Invoice) (bool, error) {
+	lapseStarted, quiescedAt time.Time, subscriptions []stripe.Subscription, invoices []stripe.Invoice) (bool, error) {
 	invoice, paidAt, err := settledInvoice(subscriptions, invoices, lapseStarted, quiescedAt)
 	if err != nil || invoice == nil {
 		return false, err
 	}
-	if err := s.restoreQuiescence(ctx, lease, teamID, restoreCustomerIDs); err != nil {
+	if err := s.restoreQuiescence(ctx, lease, teamID); err != nil {
 		return false, err
 	}
 	if s.Lifecycle == nil {
@@ -869,13 +1061,14 @@ func (s *Service) recoverSettlement(ctx context.Context, lease lifecycle.Account
 	return true, nil
 }
 
-// settledInvoice returns the newest paid invoice in the current lapse and its
-// provider settlement time. Paid invoices without that timestamp stop deletion
-// because local receipt time cannot prove whether settlement beat quiescence.
+// settledInvoice returns the newest authoritative paid invoice and its provider
+// settlement time. Evidence from before a false lapse remains eligible only
+// while Stripe still reports that subscription healthy and its paid period is
+// unexpired. A missing paid_at stops deletion rather than inventing ordering.
 func settledInvoice(subscriptions []stripe.Subscription, invoices []stripe.Invoice, lapseStarted, quiescedAt time.Time) (*stripe.Invoice, time.Time, error) {
-	known := make(map[string]bool, len(subscriptions))
+	known := make(map[string]*stripe.Subscription, len(subscriptions))
 	for i := range subscriptions {
-		known[subscriptions[i].ID] = true
+		known[subscriptions[i].ID] = &subscriptions[i]
 	}
 
 	var selected *stripe.Invoice
@@ -885,7 +1078,8 @@ func settledInvoice(subscriptions []stripe.Subscription, invoices []stripe.Invoi
 		if !invoice.Paid && invoice.Status != "paid" {
 			continue
 		}
-		if !known[invoice.SubscriptionID()] {
+		subscription := known[invoice.SubscriptionID()]
+		if subscription == nil {
 			continue
 		}
 		if invoice.Transitions.PaidAt == 0 {
@@ -893,7 +1087,12 @@ func settledInvoice(subscriptions []stripe.Subscription, invoices []stripe.Invoi
 		}
 		paidAt := time.Unix(invoice.Transitions.PaidAt, 0).UTC()
 		if paidAt.Before(lapseStarted.UTC()) {
-			continue
+			// A paid annual or monthly period can legitimately begin before a
+			// stale failure on another customer. Current healthy provider state
+			// plus an unexpired paid period remains valid account entitlement.
+			if !subscription.Paying() || !subscription.PeriodEnd().After(quiescedAt.UTC()) {
+				continue
+			}
 		}
 		if paidAt.After(quiescedAt.UTC()) {
 			return nil, time.Time{}, fmt.Errorf("billing: invoice %s settled after provider quiescence", invoice.ID)
@@ -912,7 +1111,7 @@ func settledInvoice(subscriptions []stripe.Subscription, invoices []stripe.Invoi
 // account's metadata plus every late session already recorded locally. A
 // completed orphan blocks a first customer; historical completions are harmless
 // once provider subscription truth says an existing customer is fully terminal.
-func (s *Service) cleanupCheckoutSessions(ctx context.Context, lease lifecycle.AccountLease, teamID int64, blockCompleted bool, verifyCustomerID string, deletionCustomers map[string]bool) (bool, error) {
+func (s *Service) cleanupCheckoutSessions(ctx context.Context, lease lifecycle.AccountLease, teamID int64, blockCompleted bool, verifyCustomerID string, deletionCustomers map[string]bool, expireOpen bool) (bool, error) {
 	pending, err := s.Store.CheckoutCleanupSessions(ctx, teamID)
 	if err != nil {
 		return false, err
@@ -968,6 +1167,9 @@ func (s *Service) cleanupCheckoutSessions(ctx context.Context, lease lifecycle.A
 			continue
 		}
 		if session.Status == "open" {
+			if !expireOpen {
+				continue
+			}
 			if err := lease.Renew(ctx); err != nil {
 				return changed, err
 			}
@@ -1152,7 +1354,7 @@ func (s *Service) Checkout(ctx context.Context, teamID int64, planKey, email str
 		)
 	}
 	if !found || claim.Status == "expired" {
-		if _, err := s.cleanupCheckoutSessions(ctx, lease, teamID, existing.CustomerID == "", existing.CustomerID, nil); err != nil {
+		if _, err := s.cleanupCheckoutSessions(ctx, lease, teamID, existing.CustomerID == "", existing.CustomerID, nil, true); err != nil {
 			return nil, err
 		}
 	}
@@ -1234,7 +1436,7 @@ func (s *Service) Checkout(ctx context.Context, teamID int64, planKey, email str
 		if err := s.retireCheckoutClaim(ctx, lease, claim); err != nil {
 			return nil, err
 		}
-		if _, err := s.cleanupCheckoutSessions(ctx, lease, teamID, existing.CustomerID == "", existing.CustomerID, nil); err != nil {
+		if _, err := s.cleanupCheckoutSessions(ctx, lease, teamID, existing.CustomerID == "", existing.CustomerID, nil, true); err != nil {
 			return nil, err
 		}
 		if err := lease.Renew(ctx); err != nil {

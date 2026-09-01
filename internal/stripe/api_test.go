@@ -255,3 +255,32 @@ func TestProviderListsPaginateAndVoidInvoiceUsesIdempotency(t *testing.T) {
 		t.Fatalf("draft deletion idempotency=%q", deleteKey)
 	}
 }
+
+// TestSubscriptionPauseUsesExplicitReversibleBehavior pins the Stripe contract
+// used before an authoritative deletion claim: preparation keeps new invoices
+// as drafts, while restoration clears pause_collection entirely.
+func TestSubscriptionPauseUsesExplicitReversibleBehavior(t *testing.T) {
+	var forms []url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parse subscription form: %v", err)
+		}
+		forms = append(forms, r.Form)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"sub_pause","status":"active"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client := New("sk_test_fake")
+	client.BaseURL = server.URL
+	if _, err := client.SetSubscriptionCollectionPaused(context.Background(), "sub_pause", true, "keep_as_draft", "pause-key"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.SetSubscriptionCollectionPaused(context.Background(), "sub_pause", false, "", "restore-key"); err != nil {
+		t.Fatal(err)
+	}
+	if len(forms) != 2 || forms[0].Get("pause_collection[behavior]") != "keep_as_draft" ||
+		!forms[1].Has("pause_collection") || forms[1].Get("pause_collection") != "" {
+		t.Fatalf("subscription pause forms are %+v", forms)
+	}
+}

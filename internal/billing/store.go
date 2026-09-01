@@ -293,17 +293,18 @@ func randomToken() (string, error) {
 // call. The row survives a process crash and is removed only after restoration
 // or the account's team cascade completes deletion.
 type QuiescenceObject struct {
-	Type string
-	ID   string
+	CustomerID string
+	Type       string
+	ID         string
 }
 
 // RememberQuiescence durably records a provider object before mutating it.
-func (s *Store) RememberQuiescence(ctx context.Context, teamID int64, objectType, id string) error {
+func (s *Store) RememberQuiescence(ctx context.Context, teamID int64, customerID, objectType, id string) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO billing_quiescence_objects (team_id, object_type, stripe_id, created_at)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO billing_quiescence_objects (team_id, customer_id, object_type, stripe_id, created_at)
+		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT (team_id, object_type, stripe_id) DO NOTHING
-	`, teamID, objectType, id, s.now().Unix())
+	`, teamID, customerID, objectType, id, s.now().Unix())
 	if err != nil {
 		return fmt.Errorf("billing: remember %s %s quiescence for %d: %w", objectType, id, teamID, err)
 	}
@@ -314,7 +315,7 @@ func (s *Store) RememberQuiescence(ctx context.Context, teamID int64, objectType
 // QuiescenceObjects lists every reversible mutation still owned by an account.
 func (s *Store) QuiescenceObjects(ctx context.Context, teamID int64) ([]QuiescenceObject, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT object_type, stripe_id
+		SELECT customer_id, object_type, stripe_id
 		FROM billing_quiescence_objects
 		WHERE team_id = ?
 		ORDER BY object_type, stripe_id
@@ -327,13 +328,34 @@ func (s *Store) QuiescenceObjects(ctx context.Context, teamID int64) ([]Quiescen
 	var objects []QuiescenceObject
 	for rows.Next() {
 		var object QuiescenceObject
-		if err := rows.Scan(&object.Type, &object.ID); err != nil {
+		if err := rows.Scan(&object.CustomerID, &object.Type, &object.ID); err != nil {
 			return nil, fmt.Errorf("billing: list quiescence for %d: %w", teamID, err)
 		}
 		objects = append(objects, object)
 	}
 
 	return objects, rows.Err()
+}
+
+// ForgetQuiescenceObject removes exactly one successfully restored provider
+// object. Failed and not-yet-visited rows remain durable for the next retry.
+func (s *Store) ForgetQuiescenceObject(ctx context.Context, teamID int64, object QuiescenceObject) error {
+	result, err := s.db.ExecContext(ctx, `
+		DELETE FROM billing_quiescence_objects
+		WHERE team_id = ? AND customer_id = ? AND object_type = ? AND stripe_id = ?
+	`, teamID, object.CustomerID, object.Type, object.ID)
+	if err != nil {
+		return fmt.Errorf("billing: clear %s %s quiescence for %d: %w", object.Type, object.ID, teamID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("billing: clear %s %s quiescence for %d: affected rows: %w", object.Type, object.ID, teamID, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("billing: quiescence object %s %s for %d was not pending", object.Type, object.ID, teamID)
+	}
+
+	return nil
 }
 
 // ForgetQuiescence clears the durable restoration list after every provider
@@ -344,6 +366,56 @@ func (s *Store) ForgetQuiescence(ctx context.Context, teamID int64) error {
 	}
 
 	return nil
+}
+
+// RememberAccountCustomer records one provider identity as belonging to an
+// account without allowing a conflicting webhook to transfer it to another.
+func (s *Store) RememberAccountCustomer(ctx context.Context, teamID int64, customerID string) error {
+	if customerID == "" {
+		return nil
+	}
+	result, err := s.db.ExecContext(ctx, `
+		INSERT INTO billing_account_customers (customer_id, team_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT (customer_id) DO UPDATE SET updated_at = excluded.updated_at
+		WHERE billing_account_customers.team_id = excluded.team_id
+	`, customerID, teamID, s.now().Unix(), s.now().Unix())
+	if err != nil {
+		return fmt.Errorf("billing: remember customer %s for %d: %w", customerID, teamID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("billing: remember customer %s for %d: affected rows: %w", customerID, teamID, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("billing: customer %s is already owned by another account", customerID)
+	}
+
+	return nil
+}
+
+// AccountCustomers returns every durable provider identity tied to one team in
+// deterministic order.
+func (s *Store) AccountCustomers(ctx context.Context, teamID int64) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT customer_id FROM billing_account_customers
+		WHERE team_id = ? ORDER BY customer_id
+	`, teamID)
+	if err != nil {
+		return nil, fmt.Errorf("billing: list customers for %d: %w", teamID, err)
+	}
+	defer rows.Close()
+
+	var customers []string
+	for rows.Next() {
+		var customerID string
+		if err := rows.Scan(&customerID); err != nil {
+			return nil, fmt.Errorf("billing: list customers for %d: %w", teamID, err)
+		}
+		customers = append(customers, customerID)
+	}
+
+	return customers, rows.Err()
 }
 
 // Load reads one account's mirrored billing state. A team with no row has never
@@ -416,12 +488,39 @@ func (s *Store) RecoverableScheduledDeletion(ctx context.Context, teamID int64) 
 			WHERE account_deletions.team_id = ?
 			  AND account_deletions.completed_at IS NULL
 			  AND account_deletions.owner_requested = 0
+			  AND account_deletions.authoritative_at IS NULL
 		)
 	`, teamID).Scan(&exists); err != nil {
 		return false, fmt.Errorf("billing: inspect recoverable deletion %d: %w", teamID, err)
 	}
 
 	return exists == 1, nil
+}
+
+// ReopenScheduledDeletionForRecovery removes the authoritative fence only when
+// no irreversible deletion checkpoint exists. It is used when Stripe rejects
+// the first finalizing operation because the invoice settled instead.
+func (s *Store) ReopenScheduledDeletionForRecovery(ctx context.Context, teamID int64) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE account_deletions
+		SET authoritative_at = NULL
+		WHERE team_id = ? AND completed_at IS NULL AND owner_requested = 0
+		  AND authoritative_at IS NOT NULL
+		  AND local_removed_at IS NULL AND provider_removed_at IS NULL
+		  AND control_removed_at IS NULL
+	`, teamID)
+	if err != nil {
+		return fmt.Errorf("billing: reopen deletion %d for provider settlement: %w", teamID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("billing: reopen deletion %d for provider settlement: affected rows: %w", teamID, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("billing: deletion %d is not safely recoverable", teamID)
+	}
+
+	return nil
 }
 
 // Save writes the mirror back. It is a full overwrite rather than a set of
@@ -463,7 +562,8 @@ func (s *Store) save(ctx context.Context, sub Subscription, ordered bool) (bool,
 	guard := ""
 	if ordered {
 		guard = `
-			WHERE excluded.reconciled_event_created > subscriptions.reconciled_event_created
+			WHERE excluded.stripe_subscription_id IS NOT subscriptions.stripe_subscription_id
+			   OR excluded.reconciled_event_created > subscriptions.reconciled_event_created
 			   OR (excluded.reconciled_event_created = subscriptions.reconciled_event_created
 			       AND (excluded.evidence_source_created > subscriptions.evidence_source_created
 			            OR (excluded.evidence_source_created = subscriptions.evidence_source_created
@@ -776,8 +876,13 @@ func (s *Store) TeamForCustomer(ctx context.Context, customerID string) (int64, 
 	var teamID int64
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT team_id FROM subscriptions WHERE stripe_customer_id = ?
+		SELECT team_id FROM billing_account_customers WHERE customer_id = ?
 	`, customerID).Scan(&teamID)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = s.db.QueryRowContext(ctx, `
+			SELECT team_id FROM subscriptions WHERE stripe_customer_id = ?
+		`, customerID).Scan(&teamID)
+	}
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil

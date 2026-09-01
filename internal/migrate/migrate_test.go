@@ -115,7 +115,7 @@ func TestControlMigratesAFreshDatabase(t *testing.T) {
 		"site_folders", "sites", "guest_memberships", "subscriptions",
 		"usage_counters", "api_keys", "shared_links", "salts", "jobs",
 		"email_verification_codes", "password_reset_tokens",
-		"billing_account_leases", "billing_quiescence_objects", "billing_checkouts",
+		"billing_account_leases", "billing_account_customers", "billing_quiescence_objects", "billing_checkouts",
 		"billing_checkout_cleanup", "lifecycle_account_leases", "lifecycle_outbox",
 		"account_deletion_customers", "team_id_sequence",
 	} {
@@ -491,7 +491,8 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 		INSERT INTO teams (id, name, created_at, updated_at)
 		VALUES
 			(2, 'Paid annual account', 2, 2),
-			(3, 'Unpaid beta account', 3, 3);
+			(3, 'Unpaid beta account', 3, 3),
+			(4, 'Pending deletion account', 4, 4);
 		INSERT INTO team_memberships (team_id, user_id, role, created_at)
 		VALUES (1, 1, 'owner', 1);
 		INSERT INTO subscriptions
@@ -504,6 +505,11 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 			 stripe_price_id, billing_email, created_at, updated_at)
 		VALUES (2, 'cus_annual', 'sub_annual', 'active', 'yearly',
 		        'price_yearly', 'annual@example.com', 2, 2);
+		INSERT INTO subscriptions
+			(team_id, stripe_customer_id, stripe_subscription_id, status, plan,
+			 stripe_price_id, billing_email, created_at, updated_at)
+		VALUES (4, 'cus_pending', 'sub_pending', 'active', 'yearly',
+		        'price_yearly', 'pending@example.com', 4, 4);
 		INSERT INTO account_lifecycle
 			(team_id, trigger, started_at, created_at, updated_at)
 		VALUES (1, 'lapse', 10, 10, 10);
@@ -515,6 +521,10 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 			INSERT INTO stripe_events
 			(event_id, type, team_id, payload, received_at, handled_at, outcome)
 			VALUES ('evt_existing', 'invoice.payment_failed', 1, '{}', 10, 10, 'applied');
+			INSERT INTO account_deletions
+				(team_id, team_name, contact_email, stripe_customer_id,
+				 clock_started_at, started_at, notes)
+			VALUES (4, 'Pending deletion account', 'pending@example.com', 'cus_pending', 11, 80, 'claimed');
 			INSERT INTO account_deletions
 				(team_id, team_name, contact_email, stripe_customer_id,
 				 clock_started_at, started_at, notes)
@@ -544,13 +554,13 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 	`).Scan(&customer, &subscription, &paymentState, &failedAt); err != nil {
 		t.Fatal(err)
 	}
-	if customer != "cus_existing" || subscription != "sub_existing" || paymentState != "paid" || failedAt.Valid {
+	if customer != "cus_existing" || subscription != "sub_existing" || paymentState != "" || failedAt.Valid {
 		t.Fatalf("populated subscription changed to customer=%q subscription=%q payment=%q failed_at=%v",
 			customer, subscription, paymentState, failedAt)
 	}
 
 	for _, table := range []string{
-		"billing_account_leases", "billing_quiescence_objects", "billing_checkouts",
+		"billing_account_leases", "billing_account_customers", "billing_quiescence_objects", "billing_checkouts",
 		"billing_checkout_cleanup", "lifecycle_account_leases", "lifecycle_outbox",
 		"account_deletion_customers", "team_id_sequence",
 	} {
@@ -567,6 +577,25 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 	}
 	if annualPaymentState != "paid" {
 		t.Fatalf("annual subscription payment_state=%q, want paid", annualPaymentState)
+	}
+
+	var pendingPaymentState string
+	if err := db.QueryRowContext(ctx, `
+		SELECT payment_state FROM subscriptions WHERE team_id = 4
+	`).Scan(&pendingPaymentState); err != nil {
+		t.Fatal(err)
+	}
+	if pendingPaymentState != "" {
+		t.Fatalf("pending-deletion subscription payment_state=%q, want terminal evidence preserved", pendingPaymentState)
+	}
+	var pendingClock int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM account_lifecycle WHERE team_id = 4
+	`).Scan(&pendingClock); err != nil {
+		t.Fatal(err)
+	}
+	if pendingClock != 0 {
+		t.Fatalf("pending deletion received %d manufactured lifecycle clocks", pendingClock)
 	}
 
 	var events, clocks, paidClock, betaClock int
