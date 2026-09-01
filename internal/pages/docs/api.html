@@ -101,6 +101,15 @@ address through.</p>
 <p>Only <code>d</code> is required; the page URL falls back to the <code>Referer</code> header. It
 always returns the image, and puts any failure in the same <code>x-feasible-dropped</code> header.</p>
 
+<p>A very large query may return <code>meta.sampling</code>. Its rate applies coherently to the
+primary and comparison periods. The metadata splits estimated repeated reads by events,
+sessions and period, and lists <code>scaled_metrics</code> separately from
+<code>direct_metrics</code>. Additive totals are inverse-rate expanded; rates, averages, minima,
+maxima and percentiles are calculated directly within deterministic event or session row
+buckets and remain estimates that can differ materially under skew. Sparse and empty samples
+are disclosed, and no confidence interval is implied. Send <code>"exact": true</code> to refuse
+automatic sampling.</p>
+
 <h3>Reading numbers back</h3>
 <pre><code>POST /api/v2/query
 Authorization: Bearer feas_…

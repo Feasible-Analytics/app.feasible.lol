@@ -30,6 +30,9 @@ export interface Tab {
 	/** The heading over the label column, in both the card and the drawer. */
 	headingId: string;
 	dimension: string;
+	/** A response enrichment shown alongside the primary dimension. It is not a
+	 *  grouping key, so changing or missing titles cannot split the path row. */
+	companion?: { enrichment: "page_title"; headingId: string };
 	/** Rows whose label is the empty string mean this, rather than nothing. */
 	emptyLabelId?: string;
 	/** Applied on every request for this tab. It is part of what the report
@@ -155,6 +158,7 @@ export const PAGES: CardDef = {
 			labelId: "dashboard.report.pages.title",
 			headingId: "dashboard.dimension.page",
 			dimension: "event:page",
+			companion: { enrichment: "page_title", headingId: "dashboard.dimension.page_title" },
 			nounId: "dashboard.noun.pages",
 		},
 		{
@@ -304,6 +308,21 @@ export const LANGUAGES: CardDef = {
 };
 
 export const CARDS: CardDef[] = [SOURCES, PAGES, LOCATIONS, DEVICES, LANGUAGES];
+
+/** dimensionsOf returns the ordered grouping dimensions for a card or drawer
+ * request. Response enrichments never appear here. */
+export function dimensionsOf(tab: Tab, breakdown = ""): string[] {
+	const dimensions = [tab.dimension];
+	if (breakdown) dimensions.push(breakdown);
+
+	return dimensions;
+}
+
+/** breakdownValueIndex returns where a drawer row stores its optional
+ * breakdown after the primary dimension. */
+export function breakdownValueIndex(_tab: Tab): number {
+	return 1;
+}
 
 /**
  * The secondary dimensions a drawer can break its list down by.

@@ -11,6 +11,7 @@ package query
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -31,6 +32,7 @@ type executor struct {
 	resolved Resolved
 	compile  compileContext
 	warnings *warningSet
+	sampling *Sampling
 
 	spans     []offsetSpan
 	pushDown  bool
@@ -89,6 +91,7 @@ type statement struct {
 	// reuses this renderer. It is a field rather than a second renderer so
 	// that the two paths can never drift in how they order their arguments.
 	nameOverride string
+	indexHint    string
 
 	joins      []string
 	dims       []compiledDim
@@ -104,6 +107,13 @@ type statement struct {
 	// the outer query averages, and the session id is grouped on without ever
 	// being returned.
 	groupExtra []string
+
+	// ungrouped suppresses the GROUP BY that dimensions would otherwise imply.
+	// A numeric property aggregate reads one row per event and aggregates in
+	// the statement wrapped around this one; grouping here would collapse
+	// every event of a page to a single arbitrary value first, and the sum of
+	// a hundred orders would come back as one of them.
+	ungrouped bool
 }
 
 // render turns a statement into SQL and its arguments. The argument order
@@ -137,6 +147,9 @@ func (s statement) render() (string, []any) {
 	}
 
 	b.add(" FROM " + name + " " + s.alias)
+	if s.indexHint != "" {
+		b.add(" " + s.indexHint)
+	}
 
 	for _, join := range s.joins {
 		b.add(" " + join)
@@ -145,14 +158,16 @@ func (s statement) render() (string, []any) {
 	where := and(s.conditions)
 	b.add(" WHERE ").addExpr(where)
 
-	if len(s.dims) > 0 || len(s.groupExtra) > 0 {
+	if !s.ungrouped && (len(s.dims) > 0 || len(s.groupExtra) > 0) {
 		names := make([]string, 0, len(s.dims)+len(s.groupExtra))
 		for _, dimension := range s.dims {
 			names = append(names, dimension.alias)
 		}
 		names = append(names, s.groupExtra...)
 
-		b.add(" GROUP BY " + strings.Join(names, ", "))
+		if len(names) > 0 {
+			b.add(" GROUP BY " + strings.Join(names, ", "))
+		}
 	}
 
 	if s.orderBy != "" {
@@ -164,6 +179,19 @@ func (s statement) render() (string, []any) {
 	}
 
 	return b.String(), b.Args()
+}
+
+// renderStatement applies the one query-plan constraint sampled raw facts
+// require. Without NOT INDEXED SQLite can drive from the full site/time fact
+// index and use sample membership only as a bloom filter. NOT INDEXED leaves
+// INTEGER PRIMARY KEY lookups available, so the bounded membership list drives
+// fact fetches; named rollup/import tables and exact queries remain untouched.
+func (x *executor) renderStatement(st statement) (string, []any) {
+	if st.nameOverride == "" && x.query.SampleRate > 0 && x.query.SampleRate < 1 {
+		st.indexHint = "NOT INDEXED"
+	}
+
+	return st.render()
 }
 
 // zoneSpans returns the timezone offsets in force across this range, computing
@@ -197,7 +225,6 @@ func (x *executor) dimensions(t table, mode dimMode) ([]compiledDim, []string, [
 
 	for i, d := range x.plan.Dimensions {
 		alias := t.alias()
-
 		switch {
 		case d.Time:
 			column := alias + "." + t.timeColumn()
@@ -213,7 +240,7 @@ func (x *executor) dimensions(t table, mode dimMode) ([]compiledDim, []string, [
 			// would put an event that did not repeat the property into its own
 			// group, and the denominator of anything measured against it would
 			// count only the events that happened to mention it.
-			value := sessionPropExpr(d, t.propCorrelation())
+			value := sessionPropExpr(d, t, alias)
 
 			compiled = append(compiled, compiledDim{
 				dim: d, alias: fmt.Sprintf("d%d", i), sql: value,
@@ -233,7 +260,7 @@ func (x *executor) dimensions(t table, mode dimMode) ([]compiledDim, []string, [
 			// single case where a query has to touch it. Events with no such
 			// property are excluded rather than gathered into a null bucket:
 			// a breakdown of "plan" is a list of plans.
-			addJoin("JOIN event_details ed ON ed.event_id = " + alias + ".id")
+			addJoin(detailsJoin(alias))
 			conditions = append(conditions, expr{
 				SQL: "json_extract(ed.props, ?) IS NOT NULL", Args: []any{d.jsonPath()},
 			})
@@ -263,6 +290,14 @@ func (x *executor) dimensions(t table, mode dimMode) ([]compiledDim, []string, [
 			})
 
 		default:
+			if d.EntryEventColumn != "" {
+				compiled = append(compiled, compiledDim{
+					dim: d, alias: fmt.Sprintf("d%d", i),
+					sql: expr{SQL: sessionEntryEventColumn(alias, d.EntryEventColumn, mode, x.compile.sessionFacts)},
+				})
+				break
+			}
+
 			column, err := x.sessionColumn(d, mode)
 			if err != nil {
 				return nil, nil, nil, err
@@ -278,26 +313,40 @@ func (x *executor) dimensions(t table, mode dimMode) ([]compiledDim, []string, [
 	return compiled, joins, conditions, nil
 }
 
-// sessionPropExpr reads a session-scoped property at visit grain: the first
-// value any event of the visit carried.
-//
-// First rather than last because a session-scoped property is declared to have
-// one value per visit, so any event carrying it carries the same one — and
-// where a site breaks that promise, the first value is the one that was true
-// when the visit started, which is what every other visit-grain attribute on
-// the row already is.
-//
-// It is a correlated subquery, so it costs one index probe per row rather than
-// reading a column. That is the price of a property the customer declared to
-// be about the visit, and it is only paid by the queries that name one.
-func sessionPropExpr(d dimension, correlation string) expr {
+// sessionEntryEventColumn reads the first captured event value on the page
+// where a visit entered, or the page where it exited for an exit-grain metric.
+// It is a single indexed probe per session and preserves the event's interned
+// id so normal post-aggregation label resolution still applies.
+func sessionEntryEventColumn(alias, eventColumn string, mode dimMode, materialized bool) string {
+	if materialized && mode == dimEntry && eventColumn == "page_title_id" {
+		return "(SELECT sq.entry_page_title_id FROM session_sampling sq WHERE sq.session_id = " + alias + ".id)"
+	}
+
+	pageColumn := "entry_page_id"
+	order := "ASC"
+	if mode == dimExit {
+		pageColumn = "exit_page_id"
+		order = "DESC"
+	}
+
+	return "(SELECT pe." + eventColumn + " FROM events pe WHERE pe.session_id = " + alias + ".id" +
+		" AND pe.pathname_id = " + alias + "." + pageColumn +
+		" ORDER BY pe.timestamp " + order + ", pe.id " + order + " LIMIT 1)"
+}
+
+// sessionPropExpr reads a declared session property from the bounded sessions
+// representation. A sessions query reads the row directly; an events query
+// performs one primary-key lookup for the event's session. Neither shape walks
+// the potentially unbounded collection of events belonging to that session.
+func sessionPropExpr(d dimension, t table, alias string) expr {
 	path := d.jsonPath()
+	if t == tableSessions {
+		return expr{SQL: "json_extract(" + alias + ".entry_props, ?)", Args: []any{path}}
+	}
 
 	return expr{
-		SQL: "(SELECT json_extract(ped.props, ?) FROM events pe JOIN event_details ped ON ped.event_id = pe.id" +
-			" WHERE pe.session_id = " + correlation + " AND json_extract(ped.props, ?) IS NOT NULL" +
-			" ORDER BY pe.timestamp, pe.id LIMIT 1)",
-		Args: []any{path, path},
+		SQL:  "(SELECT json_extract(sp.entry_props, ?) FROM sessions sp WHERE sp.id = " + alias + ".session_id)",
+		Args: []any{path},
 	}
 }
 
@@ -677,14 +726,14 @@ func (x *executor) keyRestriction(groups *groupSet) map[int][]any {
 
 // scan runs a statement and creates the groups it returns.
 func (x *executor) scan(ctx context.Context, st statement, groups *groupSet, targets []target) (int, error) {
-	sqlText, args := st.render()
+	sqlText, args := x.renderStatement(st)
 
 	return x.readRows(ctx, sqlText, args, len(st.dims), len(st.columns), groups, targets, true)
 }
 
 // merge runs a statement and adds its numbers to groups that already exist.
 func (x *executor) merge(ctx context.Context, st statement, groups *groupSet, targets []target) (int, error) {
-	sqlText, args := st.render()
+	sqlText, args := x.renderStatement(st)
 
 	return x.readRows(ctx, sqlText, args, len(st.dims), len(st.columns), groups, targets, false)
 }
@@ -723,7 +772,7 @@ func (x *executor) readRows(ctx context.Context, sqlText string, args []any, dim
 
 		count++
 
-		key := rowKey(raw)
+		key := x.groupKey(raw)
 
 		row, ok := groups.rows[key]
 		if !ok {
@@ -751,6 +800,22 @@ func (x *executor) readRows(ctx context.Context, sqlText string, args []any, dim
 	}
 
 	return count, nil
+}
+
+// groupKey joins every requested grouping dimension into one stable key.
+func (x *executor) groupKey(raw []any) string {
+	parts := make([]string, 0, len(raw))
+	for _, value := range raw {
+		parts = append(parts, valueString(value))
+	}
+
+	return strings.Join(parts, keySeparator)
+}
+
+// labelKey is groupKey after interned ids have been resolved for comparison
+// matching.
+func (x *executor) labelKey(labels []string) string {
+	return strings.Join(labels, keySeparator)
 }
 
 // canPushDown reports whether the ordering can be done by the database. It can
@@ -887,6 +952,7 @@ func (x *executor) metricValues(row *groupRow) []float64 {
 type finalRow struct {
 	labels []string
 	values []float64
+	raw    []any
 }
 
 // finalise turns the merged groups into the response rows: gap-filled where a
@@ -905,7 +971,7 @@ func (x *executor) finalise(ctx context.Context, groups *groupSet) ([]Row, int, 
 
 	final := make([]finalRow, 0, len(rows))
 	for i, row := range rows {
-		final = append(final, finalRow{labels: labels[i], values: x.metricValues(row)})
+		final = append(final, finalRow{labels: labels[i], values: x.metricValues(row), raw: row.raw})
 	}
 
 	total := len(final)
@@ -933,9 +999,18 @@ func (x *executor) finalise(ctx context.Context, groups *groupSet) ([]Row, int, 
 		}
 	}
 
+	titles, err := x.pageTitleEnrichments(ctx, final)
+	if err != nil {
+		return nil, 0, err
+	}
+
 	out := make([]Row, 0, len(final))
 	for _, row := range final {
-		out = append(out, Row{Metrics: row.values, Dimensions: row.labels})
+		response := Row{Metrics: row.values, Dimensions: row.labels}
+		if title := titles[pathIDFromFinalRow(row, x.plan)]; title != "" {
+			response.Enrichments = map[string]string{"page_title": title}
+		}
+		out = append(out, response)
 	}
 
 	if x.pushDown && x.query.Include.TotalRows {
@@ -951,6 +1026,159 @@ func (x *executor) finalise(ctx context.Context, groups *groupSet) ([]Row, int, 
 	}
 
 	return out, total, nil
+}
+
+// pathIDFromFinalRow returns the interned event:page id carried by a response
+// row. The include validator guarantees that dimension exists when title
+// enrichment is requested; this helper remains defensive for direct callers.
+func pathIDFromFinalRow(row finalRow, blueprint *plan) int64 {
+	for i, dimension := range blueprint.Dimensions {
+		if dimension.Name != "event:page" || i >= len(row.raw) {
+			continue
+		}
+		if id, ok := row.raw[i].(int64); ok {
+			return id
+		}
+	}
+
+	return 0
+}
+
+// pageTitleEnrichmentSQL is one batched statement over displayed path ids.
+// Its correlated operation is a bounded reverse index seek per source path,
+// not a scalar lookup per fact row in the aggregate that produced the report.
+const pageTitleEnrichmentSQL = `
+	WITH wanted(target_id) AS (
+		SELECT CAST(value AS INTEGER) FROM json_each(?)
+	), sites(site_id) AS (
+		SELECT CAST(value AS INTEGER) FROM json_each(?)
+	), sources(site_id, source_id, target_id) AS (
+		SELECT sites.site_id, wanted.target_id, wanted.target_id FROM sites CROSS JOIN wanted
+		UNION
+		SELECT pcm.site_id, pcm.source_id, pcm.target_id
+		FROM path_clean_map pcm JOIN sites ON sites.site_id = pcm.site_id
+		JOIN wanted ON wanted.target_id = pcm.target_id
+	), latest(target_id, event_id) AS (
+		SELECT source.target_id,
+			(SELECT candidate.id FROM events candidate INDEXED BY events_page
+			 WHERE {{candidate_conditions}}
+			 ORDER BY candidate.timestamp DESC, candidate.id DESC LIMIT 1)
+		FROM sources source
+	)
+	SELECT latest.target_id, event.page_title_id, event.timestamp, event.id, event.site_id
+	FROM latest JOIN events event ON event.id = latest.event_id`
+
+// pageTitleEnrichmentQuery encodes trusted integer id sets into two JSON binds.
+// This keeps a 10,000-row response inside SQLite's variable limit while still
+// letting the events_page probe bind site, path and time independently.
+func pageTitleEnrichmentQuery(pathIDs, siteIDs []int64, r Resolved, q *Query, pageviewNameID int64) (string, []any, error) {
+	encodedPaths, err := json.Marshal(pathIDs)
+	if err != nil {
+		return "", nil, fmt.Errorf("query: encode title path ids: %w", err)
+	}
+	encodedSites, err := json.Marshal(siteIDs)
+	if err != nil {
+		return "", nil, fmt.Errorf("query: encode title site ids: %w", err)
+	}
+
+	conditions := []expr{
+		{SQL: "candidate.site_id = source.site_id"},
+		{SQL: "candidate.pathname_id = source.source_id"},
+		{SQL: "candidate.timestamp >= ? AND candidate.timestamp < ?", Args: []any{r.Start.Unix(), r.End.Unix()}},
+		{SQL: "candidate.page_title_id <> 0"},
+		{SQL: "candidate.name_id = ?", Args: []any{pageviewNameID}},
+	}
+	if !q.Include.Bots {
+		conditions = append(conditions, expr{SQL: "candidate.bot_reason_id = 0"})
+	}
+	if !q.Include.Imports {
+		conditions = append(conditions, expr{SQL: "candidate.is_imported = 0"})
+	}
+	if q.SampleRate > 0 && q.SampleRate < 1 {
+		conditions = append(conditions, sampleCondition(tableEvents, "candidate", siteIDs,
+			r.Start.Unix(), r.End.Unix(), q.SampleRate, false))
+	}
+
+	population := and(conditions)
+	sqlText := strings.Replace(pageTitleEnrichmentSQL, "{{candidate_conditions}}", population.SQL, 1)
+	args := []any{string(encodedPaths), string(encodedSites)}
+	args = append(args, population.Args...)
+
+	return sqlText, args, nil
+}
+
+// pageTitleEnrichments performs one batched lookup over the paths that survived
+// ordering and pagination. Each source path uses events_page to seek backward
+// inside the requested time window, and path-cleaning mappings contribute
+// their source ids to the same batch before the latest deterministic title is
+// selected for each displayed target path.
+func (x *executor) pageTitleEnrichments(ctx context.Context, rows []finalRow) (map[int64]string, error) {
+	if !x.query.Include.PageTitles || len(rows) == 0 {
+		return map[int64]string{}, nil
+	}
+
+	pathIDs := make([]int64, 0, len(rows))
+	seen := map[int64]bool{}
+	for _, row := range rows {
+		id := pathIDFromFinalRow(row, x.plan)
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		pathIDs = append(pathIDs, id)
+	}
+	if len(pathIDs) == 0 {
+		return map[int64]string{}, nil
+	}
+
+	titleSQL, args, err := pageTitleEnrichmentQuery(pathIDs, x.query.SiteIDs, x.resolved, x.query, x.compile.pageviewNameID)
+	if err != nil {
+		return nil, err
+	}
+
+	dbRows, err := x.engine.db.QueryContext(ctx, titleSQL, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query: enrich page titles: %w", err)
+	}
+	defer func() { _ = dbRows.Close() }()
+
+	type latestTitle struct {
+		titleID, timestamp, eventID, siteID int64
+	}
+	latest := map[int64]latestTitle{}
+	for dbRows.Next() {
+		var targetID int64
+		var candidate latestTitle
+		if err := dbRows.Scan(&targetID, &candidate.titleID, &candidate.timestamp, &candidate.eventID, &candidate.siteID); err != nil {
+			return nil, fmt.Errorf("query: enrich page titles: %w", err)
+		}
+		current, ok := latest[targetID]
+		if !ok || candidate.timestamp > current.timestamp ||
+			candidate.timestamp == current.timestamp && candidate.eventID > current.eventID ||
+			candidate.timestamp == current.timestamp && candidate.eventID == current.eventID && candidate.siteID > current.siteID {
+			latest[targetID] = candidate
+		}
+	}
+	if err := dbRows.Err(); err != nil {
+		return nil, fmt.Errorf("query: enrich page titles: %w", err)
+	}
+
+	titleIDs := make([]int64, 0, len(latest))
+	for _, title := range latest {
+		titleIDs = append(titleIDs, title.titleID)
+	}
+	dimension, _ := resolveDimension("event:page_title")
+	labels, err := x.lookup(ctx, dimension, titleIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	titles := make(map[int64]string, len(latest))
+	for pathID, title := range latest {
+		titles[pathID] = labels[title.titleID]
+	}
+
+	return titles, nil
 }
 
 // sortRows applies the request's ordering in memory. It is the path taken
@@ -1123,7 +1351,7 @@ func (x *executor) countGroups(ctx context.Context) (int, error) {
 		dims: dims, columns: []expr{{SQL: "COUNT(*)"}}, conditions: conditions,
 	}
 
-	sqlText, args := inner.render()
+	sqlText, args := x.renderStatement(inner)
 
 	var total int
 	if err := x.engine.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM ("+sqlText+")", args...).Scan(&total); err != nil {

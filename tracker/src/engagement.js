@@ -106,15 +106,30 @@ function pause() {
 // reset starts a fresh measurement for a new page. It runs on an SPA navigation
 // and on a bfcache restore, both of which are new pages as far as a reader is
 // concerned even though the document never reloaded.
-export function reset() {
+function clear() {
 	maxScrolled = 0;
 	accumulated = 0;
 	startedAt = 0;
 	sentEngaged = 0;
 	sentDepth = 0;
+}
+
+// reset starts a clean active measurement after a tracked pageview.
+export function reset() {
+	clear();
 
 	measure();
 	resume();
+}
+
+// suspend ends a tracked page without emitting anything further and clears all
+// accumulated activity. An excluded SPA route calls this after the prior
+// public page has flushed, preventing private-route time or scroll depth from
+// being attributed to that public page.
+export function suspend() {
+	pause();
+	clear();
+	page.t = false;
 }
 
 // flush reports what has been measured since the last report, if anything is

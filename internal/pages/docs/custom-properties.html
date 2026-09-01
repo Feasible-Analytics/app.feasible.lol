@@ -79,3 +79,39 @@ hand-written link filters correctly and the pill renders with the property's nam
 <h3>A property is not free, but it is not billed either</h3>
 <p>The custom event carrying it counts towards your monthly volume. The properties themselves add
 nothing — one event with thirty properties is one billable event.</p>
+
+<h3>Aggregating a numeric property</h3>
+<p>A property that holds a number can be summed, averaged and reduced to a percentile, not
+just counted. The metric names are the aggregate in brackets around the property:</p>
+
+<pre><code>"metrics": ["sum(event:props:price)", "avg(event:props:price)", "p95(event:props:load_ms)"]</code></pre>
+
+<p>The aggregates are <code>sum</code>, <code>avg</code>, <code>min</code>, <code>max</code>,
+<code>p50</code>, <code>p75</code>, <code>p90</code>, <code>p95</code> and <code>p99</code>.
+They combine with every filter and every breakdown, so the 95th percentile of a load time per
+page is one query.</p>
+
+<p>The percentiles are nearest-rank: the answer is always a value somebody actually sent,
+never a number interpolated between two real ones. For a load time that matters — an
+interpolated 95th percentile is a duration no visitor experienced.</p>
+
+<h4>What happens when the values are not all numbers</h4>
+<p>Properties are stored as text, because a property is a filter value on a dashboard and a
+column that is sometimes a number and sometimes a word is a column nothing can index. So a
+property that holds <code>19.99</code> on most events and <code>free</code> on a few is a real
+possibility, and the honest thing to do with the word is leave it out — counting it as zero
+would drag an average down with nothing on the screen to say why.</p>
+
+<p>That is what happens, and the response says so. Any aggregate that had to skip a value
+comes back with a <code>not_numeric</code> warning naming both counts: "measured over 412 of
+the 431 values of price — the other 19 are text and were left out rather than counted as
+zero". A property that turned out to hold no numbers at all says that too, rather than
+answering zero and letting you read it as a real zero.</p>
+
+<h4>Scope decides what a sum adds up</h4>
+<p>A property registered as <strong>event</strong>-scoped describes one hit, so a sum adds up
+every event that carried it. A property registered as <strong>session</strong>-scoped has one
+value per visit by declaration, so it is counted once per visit however many pages that visit
+touched. Get that the wrong way round and an order value repeated on six pageviews is summed
+as six orders — a number six times too large that looks perfectly reasonable. This is the whole
+reason a property carries a declared scope.</p>

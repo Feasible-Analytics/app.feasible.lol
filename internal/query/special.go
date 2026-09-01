@@ -37,7 +37,11 @@ func (x *executor) specialPass(ctx context.Context, name string, r Resolved, gro
 		return x.revenue(ctx, r, groups, keys)
 	}
 
-	return nil
+	// Everything else that reached the composite list is a numeric property
+	// aggregate, because those are the only other metrics the planner routes
+	// here. A name that is neither is refused by that pass rather than
+	// silently answering zero.
+	return x.propAggregatePass(ctx, name, r, groups, keys)
 }
 
 // scrollDepth averages how far down the page people got.
@@ -75,7 +79,7 @@ func (x *executor) scrollDepth(ctx context.Context, r Resolved, groups *groupSet
 		conditions: conditions, groupExtra: []string{"e.session_id"},
 	}
 
-	innerSQL, args := inner.render()
+	innerSQL, args := x.renderStatement(inner)
 
 	names := make([]string, 0, len(dims))
 	for i := range dims {
@@ -253,7 +257,7 @@ func (x *executor) visitorDenominator(ctx context.Context, r Resolved, groups *g
 		dims: dims, columns: []expr{{SQL: "COUNT(DISTINCT e.user_id)"}}, conditions: conditions,
 	}
 
-	sqlText, args := st.render()
+	sqlText, args := x.renderStatement(st)
 
 	rows, err := x.engine.db.QueryContext(ctx, sqlText, args...)
 	if err != nil {
@@ -347,7 +351,7 @@ func (x *executor) countSessions(ctx context.Context, r Resolved, extra []expr) 
 		conditions: conditions,
 	}
 
-	sqlText, args := st.render()
+	sqlText, args := x.renderStatement(st)
 
 	var count sql.NullInt64
 	if err := x.engine.db.QueryRowContext(ctx, sqlText, args...).Scan(&count); err != nil {

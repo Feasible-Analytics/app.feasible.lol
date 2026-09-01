@@ -148,6 +148,38 @@ the events. Allowing only <code>script-src</code> gives you a script that loads 
 nothing, which looks exactly like a broken install.</p>
 
 <h3>Failed requests are retried</h3>
-<p>An event that could not be delivered is kept in local storage — at most the ten most recent — and
-replayed on the next pageview. A replay that fails again is dropped rather than kept forever, so an
-ad blocker cannot grow that queue without bound.</p>
+<p>Every event is written to the browser's local outbox before its request starts and is replayed on
+the next pageview with the same permanent event id until a successful response removes it. There is
+no arbitrary event-count eviction. Current consent, Do Not Track, self-exclusion and route-exclusion
+rules are applied again before replay; if storage is unavailable, the tracker keeps an in-page queue
+and logs that durability is memory-only.</p>
+
+<h3>data-vitals</h3>
+<p>Enable Web Vitals as an optional mode of the same tracker script. A bare attribute captures
+every page; a decimal value between 0 and 1 samples that fraction of documents:</p>
+
+<pre><code>&lt;script defer data-domain="example.com" data-vitals="0.1" src="https://feasible.lol/js/script.js"&gt;&lt;/script&gt;</code></pre>
+
+<p>It reports LCP, CLS, INP and TTFB as an event called <strong>Web Vitals</strong>, with
+one numeric property per measurement, so every one of them is a custom property you can
+aggregate, filter and break down by page like any other. Nothing in it reads layout: every
+number comes from the maintained Web Vitals implementation over the browser's Performance API.</p>
+
+<p>The one script tag remains the entire installation. The base tracker stays under 3,328 bytes
+compressed and downloads the maintained Web Vitals module only when this option is enabled;
+sites that leave it off do not pay for the optional collector.</p>
+
+<p>It sends final values when a navigation is hidden. A supported single-page navigation starts
+a fresh set of route-scoped measurements, and restoring a document from the back-forward cache
+starts a fresh observation. Cumulative layout shift and interaction to next paint are not final
+on load, so reporting them earlier would produce a smaller value than the visitor experienced.</p>
+
+<p>Web Vitals are a distribution rather than a total, so a tenth of your traffic estimates the
+curve directly rather than being multiplied by ten. Sampling is never enabled silently:
+<code>data-vitals</code> means every document and <code>data-vitals="0.1"</code> means one in ten.</p>
+<p>The earlier <code>data-vitals data-sample="0.1"</code> spelling remains a compatibility alias;
+new installations should put the rate directly on <code>data-vitals</code>.</p>
+
+<p>The event counts towards your monthly volume like any other custom event, which is the
+other reason it is opt-in. At a sample of one in ten, that is one extra event per ten
+measured navigation lifecycles.</p>

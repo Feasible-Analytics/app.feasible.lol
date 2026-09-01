@@ -183,6 +183,12 @@ func TestTheRouterRefusesEverythingItCannotAnswerExactly(t *testing.T) {
 			rollup: true,
 		},
 		{
+			name: "a page breakdown with response title enrichment",
+			query: Query{SiteIDs: []int64{1}, Metrics: []string{"visitors", "pageviews"},
+				Dimensions: []string{"event:page"}, Include: Include{PageTitles: true}},
+			rollup: true,
+		},
+		{
 			name:   "a daily graph",
 			query:  Query{SiteIDs: []int64{1}, Metrics: []string{"visitors"}, Dimensions: []string{"time:day"}},
 			rollup: true,

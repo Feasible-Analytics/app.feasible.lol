@@ -13,6 +13,8 @@ import (
 	"compress/gzip"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -39,12 +41,36 @@ func get(t *testing.T, h http.Handler, target string) *httptest.ResponseRecorder
 	return recorder
 }
 
-// TestBundleIsUnderBudget is the size check that does not need Node.
+// TestBundlesAreUnderTheirBudgets is the size check that does not need Node.
 //
-// The budget is the whole reason this tracker is written the way it is, and a
-// limit only enforced by a JavaScript build is a limit that stops being
-// enforced the moment somebody edits the bundle without running that build.
-func TestBundleIsUnderBudget(t *testing.T) {
+// The primary contract applies only to bytes every site downloads. Keeping the
+// optional module under its own ceiling prevents either artifact from borrowing
+// budget from the other and hiding a base-size regression.
+func TestBundlesAreUnderTheirBudgets(t *testing.T) {
+	for _, bundle := range []struct {
+		name   string
+		script []byte
+		budget int
+	}{
+		{name: "base", script: Script, budget: BaseSizeBudget},
+		{name: "vitals", script: VitalsScript, budget: VitalsSizeBudget},
+	} {
+		t.Run(bundle.name, func(t *testing.T) {
+			compressed := gzipSize(t, bundle.script)
+			t.Logf("%s bundle: %d bytes raw, %d bytes gzipped, budget %d",
+				bundle.name, len(bundle.script), compressed, bundle.budget)
+			if compressed >= bundle.budget {
+				t.Fatalf("the %s bundle is %d bytes gzipped, not under the %d byte budget",
+					bundle.name, compressed, bundle.budget)
+			}
+		})
+	}
+}
+
+// gzipSize returns one artifact's best-compression wire size.
+func gzipSize(t *testing.T, script []byte) int {
+	t.Helper()
+
 	var buf bytes.Buffer
 
 	writer, err := gzip.NewWriterLevel(&buf, gzip.BestCompression)
@@ -52,29 +78,56 @@ func TestBundleIsUnderBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := writer.Write(Script); err != nil {
+	if _, err := writer.Write(script); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	t.Logf("tracker bundle: %d bytes raw, %d bytes gzipped, budget %d", len(Script), buf.Len(), SizeBudget)
-
-	if buf.Len() > SizeBudget {
-		t.Fatalf("the tracker is %d bytes gzipped, over the %d byte budget", buf.Len(), SizeBudget)
-	}
+	return buf.Len()
 }
 
-// TestBundleIsBuilt guards against an empty or placeholder asset, which would
+// TestBundlesAreBuilt guards against empty or placeholder assets, which would
 // otherwise pass the budget test with flying colours.
-func TestBundleIsBuilt(t *testing.T) {
-	if len(Script) < 1000 {
-		t.Fatalf("the embedded bundle is %d bytes — run `node tracker/build.js`", len(Script))
+func TestBundlesAreBuilt(t *testing.T) {
+	if len(Script) < 1000 || len(VitalsScript) < 1000 {
+		t.Fatalf("embedded bundle sizes are base=%d vitals=%d; run `node tracker/build.js`",
+			len(Script), len(VitalsScript))
 	}
 
 	if !bytes.Contains(Script, []byte("feasible")) {
 		t.Fatal("the embedded bundle does not look like the tracker")
+	}
+	if bytes.Contains(Script, []byte("largest-contentful-paint")) {
+		t.Fatal("the always-loaded base contains the Web Vitals implementation")
+	}
+	if !bytes.Contains(VitalsScript, []byte("largest-contentful-paint")) {
+		t.Fatal("the optional module does not contain the maintained Web Vitals implementation")
+	}
+}
+
+// TestGeneratedArtifactsMatchEmbedded prevents a manual edit to either copy.
+// The browser fixture serves tracker/dist while production serves go:embed, so
+// byte identity is what makes browser proof apply to the shipped binary.
+func TestGeneratedArtifactsMatchEmbedded(t *testing.T) {
+	for _, artifact := range []struct {
+		name     string
+		path     string
+		embedded []byte
+	}{
+		{name: "base", path: "feasible.js", embedded: Script},
+		{name: "vitals", path: "vitals.js", embedded: VitalsScript},
+	} {
+		t.Run(artifact.name, func(t *testing.T) {
+			generated, err := os.ReadFile(filepath.Join("..", "..", "tracker", "dist", artifact.path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(generated, artifact.embedded) {
+				t.Fatalf("tracker/dist/%s differs from the embedded production asset", artifact.path)
+			}
+		})
 	}
 }
 
@@ -94,6 +147,31 @@ func TestLegacyScriptIsServedUnconfigured(t *testing.T) {
 
 	if got := recorder.Header().Get("Content-Type"); !strings.Contains(got, "javascript") {
 		t.Fatalf("content type %q is not JavaScript", got)
+	}
+}
+
+// TestVitalsModuleIsServedAsACacheableModule covers the generated route the
+// base imports. It uses the same cache and CORS contract as the base while
+// carrying no baked site configuration of its own.
+func TestVitalsModuleIsServedAsACacheableModule(t *testing.T) {
+	handler := newHandler("example.com")
+	recorder := get(t, handler, PathVitals)
+
+	if recorder.Code != http.StatusOK || !bytes.Equal(recorder.Body.Bytes(), VitalsScript) {
+		t.Fatalf("vitals response status=%d bytes=%d", recorder.Code, recorder.Body.Len())
+	}
+	if recorder.Header().Get("Cache-Control") != CacheControl || recorder.Header().Get("ETag") == "" {
+		t.Fatalf("vitals cache headers are incomplete: %v", recorder.Header())
+	}
+	if recorder.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("vitals CORS header = %q", recorder.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	request := httptest.NewRequest(http.MethodHead, PathVitals, nil)
+	head := httptest.NewRecorder()
+	handler.ServeHTTP(head, request)
+	if head.Code != http.StatusOK || head.Body.Len() != 0 || head.Header().Get("Content-Length") == "" {
+		t.Fatalf("vitals HEAD status=%d body=%d headers=%v", head.Code, head.Body.Len(), head.Header())
 	}
 }
 
@@ -125,11 +203,11 @@ func TestPerSiteScriptBakesTheDomain(t *testing.T) {
 func TestPerSiteOptionsAreInterpolated(t *testing.T) {
 	handler := newHandler("example.com")
 
-	recorder := get(t, handler, handler.Keyer.Path("example.com")+"?hash=1&exclude=/admin/**&manual=0")
+	recorder := get(t, handler, handler.Keyer.Path("example.com")+"?hash=1&exclude=/admin/**&manual=0&vitals=0.25")
 
 	body := recorder.Body.String()
 
-	for _, want := range []string{`"h":1`, `"x":"/admin/**"`, `"d":"example.com"`} {
+	for _, want := range []string{`"h":1`, `"x":"/admin/**"`, `"d":"example.com"`, `"v":"0.25"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("baked configuration is missing %s: %q", want, body[:min(120, len(body))])
 		}
@@ -137,6 +215,17 @@ func TestPerSiteOptionsAreInterpolated(t *testing.T) {
 
 	if strings.Contains(body, `"m"`) {
 		t.Error("manual=0 must not be baked at all, or it would override a data-manual attribute")
+	}
+}
+
+// TestBareVitalsOptionCapturesEveryDocument verifies the shorthand emitted by
+// a per-site script URL with no explicit sample value.
+func TestBareVitalsOptionCapturesEveryDocument(t *testing.T) {
+	handler := newHandler("example.com")
+	recorder := get(t, handler, handler.Keyer.Path("example.com")+"?vitals")
+
+	if !strings.Contains(recorder.Body.String(), `"v":"1"`) {
+		t.Fatalf("bare vitals option was not enabled: %q", recorder.Body.String()[:min(120, recorder.Body.Len())])
 	}
 }
 

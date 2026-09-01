@@ -120,6 +120,13 @@ type API struct {
 
 	Log *logger.Logger
 
+	// SampleThreshold is how many repeated event and session fact-row reads a
+	// query may be estimated to perform before it is answered from a sample. It
+	// is carried here so the public endpoint and dashboard sample at the same
+	// size — an API that estimated where the dashboard was exact would be two
+	// answers to one question.
+	SampleThreshold int64
+
 	// Now is the clock every date range resolves against, injectable so a test
 	// can ask what "today" returns without waiting for tomorrow.
 	Now func() time.Time
@@ -273,6 +280,7 @@ func (a *API) Query(ctx context.Context, site sites.Site, q query.Query) (*query
 
 	engine := query.New(lease.Account.Reader())
 	engine.Now = a.now
+	engine.SampleThreshold = a.SampleThreshold
 
 	return engine.Run(ctx, q)
 }

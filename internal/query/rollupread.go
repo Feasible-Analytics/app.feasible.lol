@@ -100,7 +100,7 @@ func (x *executor) rollupPass(ctx context.Context, t table, segment Segment, gro
 		st.limit, st.offset, st.limited = x.engine.maxGroups()+1, 0, true
 	}
 
-	sqlText, args := st.render()
+	sqlText, args := x.renderStatement(st)
 
 	rows, err := x.readRows(ctx, sqlText, args, len(dims), len(columns), groups, targets, create)
 	if err != nil {
@@ -179,25 +179,32 @@ func (x *executor) rollupColumns(names []string, t table, read rollupRead) ([]ex
 // group and is not in the sum at all. A query with no time dimension is one
 // group over the whole range, so it has exactly one such bucket.
 func (x *executor) rollupGroupFirsts(read rollupRead) []any {
+	return rollupGroupFirsts(x.resolved, read)
+}
+
+// rollupGroupFirsts calculates the bucket values that begin an output group.
+// It is shared with sampling's seam-cost estimator so the estimator skips a
+// correction in exactly the same cases as the executor.
+func rollupGroupFirsts(resolved Resolved, read rollupRead) []any {
 	if read.perBucket {
 		return nil
 	}
 
-	location := x.resolved.Location
+	location := resolved.Location
 
 	if read.timeIndex < 0 {
-		start := RollupBucketStart(x.resolved.Start, read.grain, location)
+		start := RollupBucketStart(resolved.Start, read.grain, location)
 
 		return []any{RollupLocalUnix(start, location)}
 	}
 
-	buckets := x.resolved.Buckets()
+	buckets := resolved.Buckets()
 	firsts := make([]any, 0, len(buckets))
 
 	for _, at := range buckets {
 		start := at
-		if start.Before(x.resolved.Start) {
-			start = x.resolved.Start
+		if start.Before(resolved.Start) {
+			start = resolved.Start
 		}
 
 		firsts = append(firsts, RollupLocalUnix(RollupBucketStart(start, read.grain, location), location))
@@ -250,21 +257,10 @@ func (x *executor) seamPass(ctx context.Context, partial Resolved, groups *group
 		return nil
 	}
 
-	location := x.resolved.Location
-
-	todayBucket := RollupLocalUnix(RollupBucketStart(partial.Start, read.grain, location), location)
-
-	for _, first := range x.rollupGroupFirsts(read) {
-		if value, ok := first.(int64); ok && value == todayBucket {
-			return nil
-		}
+	previous, label, needed := seamCorrectionWindow(x.resolved, partial, read)
+	if !needed {
+		return nil
 	}
-
-	previous := partial
-	previous.End = partial.Start
-	previous.Start = startOfDay(partial.Start.Add(-time.Second), location)
-
-	label := bucketLabel(bucketStart(partial.Start, x.resolved.Interval, location), x.resolved.Interval)
 
 	for _, name := range x.query.Metrics {
 		t := x.plan.MetricTable[name]
@@ -328,13 +324,6 @@ func (x *executor) seamCorrection(ctx context.Context, name string, slot int, t 
 		return err
 	}
 
-	// A visit can only be counted on both sides if it was live at the boundary,
-	// and there are a handful of those. Naming them turns a scan of two days of
-	// events into an indexed read of one visit's rows each.
-	if name == "visits" && t == tableEvents {
-		conditions = append(conditions, x.crossingVisits(today.Start))
-	}
-
 	side := t.alias() + "." + t.timeColumn() + " >= ?"
 	boundary := today.Start.Unix()
 
@@ -373,19 +362,26 @@ func (x *executor) seamCorrection(ctx context.Context, name string, slot int, t 
 	return err
 }
 
-// crossingVisits narrows an event-grain overlap to the visits that were live at
-// the boundary. A visit that had ended before local midnight, or had not
-// started, cannot have been counted on both sides of it — so the whole
-// correction only ever concerns the few dozen visits that were in progress.
-func (x *executor) crossingVisits(boundary time.Time) expr {
-	sites := inInt64("sx.site_id", x.query.SiteIDs)
+// seamCorrectionWindow returns the preceding complete day scanned beside the
+// current raw segment. It is the single source of truth for whether a carry
+// correction runs, which keeps execution and sampling-cost decisions aligned.
+func seamCorrectionWindow(resolved, partial Resolved, read rollupRead) (Resolved, string, bool) {
+	location := resolved.Location
+	todayBucket := RollupLocalUnix(RollupBucketStart(partial.Start, read.grain, location), location)
 
-	sql := "e.session_id IN (SELECT sx.id FROM sessions sx WHERE " + sites.SQL +
-		" AND sx.started_at < ? AND sx.last_seen_at >= ?)"
+	for _, first := range rollupGroupFirsts(resolved, read) {
+		if value, ok := first.(int64); ok && value == todayBucket {
+			return Resolved{}, "", false
+		}
+	}
 
-	args := append(append([]any{}, sites.Args...), boundary.Unix(), boundary.Unix())
+	previous := partial
+	previous.End = partial.Start
+	previous.Start = startOfDay(partial.Start.Add(-time.Second), location)
 
-	return expr{SQL: sql, Args: args}
+	label := bucketLabel(bucketStart(partial.Start, resolved.Interval, location), resolved.Interval)
+
+	return previous, label, true
 }
 
 // countGroupsIn answers include.total_rows from whichever source produced the
@@ -423,7 +419,7 @@ func (x *executor) countGroupsIn(ctx context.Context) (int, error) {
 		}},
 	}
 
-	sqlText, args := inner.render()
+	sqlText, args := x.renderStatement(inner)
 
 	var total int
 	if err := x.engine.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM ("+sqlText+")", args...).Scan(&total); err != nil {

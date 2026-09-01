@@ -204,6 +204,26 @@ func TestExplainFindsTheSourceThatStopped(t *testing.T) {
 	}
 }
 
+// TestExplainStaysExactUnderTheSamplingThreshold checks the composed MCP shape
+// that has no query meta to carry a sampling disclosure. Every internal query
+// must be exact so its headline and ranked drivers cannot silently mix scaled
+// estimates into numbers presented as counts.
+func TestExplainStaysExactUnderTheSamplingThreshold(t *testing.T) {
+	f := newFixture(t)
+	seedLargeEstimate(t, f)
+	f.API.SampleThreshold = 1
+
+	answer := f.tool(t, "explain_traffic_change", `{"site_id":"example.com","date_range":"7d"}`)
+
+	var explained explanation
+	structured(t, answer, &explained)
+
+	if explained.Current != currentVisitors || explained.Previous != previousVisitors {
+		t.Fatalf("sample threshold changed an exact explanation to %v against %v, want %d against %d",
+			explained.Current, explained.Previous, currentVisitors, previousVisitors)
+	}
+}
+
 // TestExplainCoversTheDimensionsAnAnalystWouldCheck guards the sweep. A tool
 // that only breaks down by source answers "which campaign" and never "which
 // country blocked us".

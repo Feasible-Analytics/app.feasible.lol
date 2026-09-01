@@ -14,6 +14,7 @@ import { bucketLong, bucketShort, compact, metricTitle, metricValue, rangeLabel 
 import { n, t } from "../lib/i18n";
 import { INVERTED } from "../lib/reports";
 import { ChangeChip, Failure, Spinner } from "./atoms";
+import { SampledMark } from "./SampledBadge";
 import { tileLabel, tileLabelLower } from "./TopStats";
 
 /**
@@ -253,6 +254,13 @@ export function MainGraph({ stats, metric, comparing, annotations = [] }: Props)
 			{stats.loading && (
 				<span aria-hidden="true" className="spinner-grace absolute inset-x-0 top-0 z-10 h-0.5 bg-accent/40" />
 			)}
+
+			{/* The graph is a separate response from the totals above it. Its own
+			    mark remains visible while stale sampled points are held during an
+			    exact reload. */}
+			<div className="pointer-events-none absolute top-0 left-12 z-10">
+				<SampledMark sampling={data.meta.sampling} />
+			</div>
 
 			<svg
 				width={width}

@@ -34,6 +34,7 @@ func (a *API) statsHandler() *statsapi.Handler {
 		handler := statsapi.New(a.Sites, a.Accounts, a.Log)
 		handler.Now = a.now
 		handler.Authorize = statsapi.AllowAll
+		handler.SampleThreshold = a.SampleThreshold
 		a.stats = handler
 	})
 

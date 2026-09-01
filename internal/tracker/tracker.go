@@ -1,6 +1,6 @@
 //
 // tracker.go
-// Serving the browser script: one bundle, two delivery modes, per-site paths.
+// Serving the browser script: one base, one optional module, two delivery modes.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -8,12 +8,13 @@
 
 // Package tracker serves the browser tracking script and the noscript pixel.
 //
-// There is one compiled bundle, embedded in the binary, and two ways to ask for
-// it. The legacy-compatible path reads `data-domain` and `data-api` off its own
+// There is one base bundle, embedded in the binary, and two ways to ask for it.
+// The legacy-compatible path reads `data-domain` and `data-api` off its own
 // script tag, so an existing installation migrates by repointing one hostname.
 // The per-site path carries an opaque token instead, and the configuration the
 // bundle would otherwise have read from attributes is written in front of it at
-// serve time.
+// serve time. A separately embedded ES module is requested by that same base
+// only when its one configuration enables Web Vitals.
 //
 // The per-site path exists because filter lists name files individually. A
 // customer proxying the script under one memorable filename loses their traffic
@@ -37,21 +38,34 @@ import (
 	"strings"
 )
 
-// Script is the compiled bundle, written by tracker/build.js. It is embedded
+// Script is the compiled base bundle, written by tracker/build.js. It is embedded
 // rather than read from disk because the whole promise of this product is a
 // single binary with nothing to copy alongside it.
 //
 //go:embed assets/feasible.js
 var Script []byte
 
-// SizeBudget is the largest the gzipped bundle may be, in bytes.
+// VitalsScript is the optional generated module loaded by Script only when the
+// resolved embedded configuration enables Web Vitals.
+//
+//go:embed assets/vitals.js
+var VitalsScript []byte
+
+// BaseSizeBudget is the largest the primary tracker may be over the wire.
+// Stable client event ids and current-policy checks on live and persisted sends
+// add a small fixed cost. The planned 3.25 KiB post-feature ceiling is kept in
+// sync with tracker/build.js by the generated-asset test.
+const BaseSizeBudget = 13 * 256
+
+// VitalsSizeBudget is the separate ceiling for the maintained optional Web
+// Vitals module. Sites that do not enable capture never request these bytes.
+const VitalsSizeBudget = 6 * 1024
+
+// Size budgets are enforced here as well as in tracker/build.js.
 //
 // It is enforced by a test in this package rather than only by the JavaScript
-// build, so that `go test ./...` fails on an over-budget bundle on a machine
-// with no Node installed at all — which is every CI job that only builds Go and
-// every contributor who never touches the tracker. tracker/build.js enforces
-// the same number at build time; the two have to be changed together.
-const SizeBudget = 3 * 1024
+// build, so `go test ./...` catches an over-budget committed artifact even on a
+// machine that is not rebuilding JavaScript.
 
 // Paths the handler answers.
 const (
@@ -63,6 +77,10 @@ const (
 	// the whole point is that a migrating customer changes the hostname and
 	// nothing else.
 	PathLegacy = PathPrefix + "script.js"
+
+	// PathVitals is the generated ES module dynamically imported by either base
+	// delivery mode when its one embedded configuration enables capture.
+	PathVitals = PathPrefix + "vitals.js"
 
 	// sitePrefix and siteSuffix bracket the per-site token.
 	sitePrefix = "fs-"
@@ -118,7 +136,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.URL.Path == PathLegacy {
-		h.serve(w, r, nil)
+		h.serve(w, r, Script, nil)
+		return
+	}
+
+	if r.URL.Path == PathVitals {
+		h.serve(w, r, VitalsScript, nil)
 		return
 	}
 
@@ -137,7 +160,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.serve(w, r, bakedConfig(domain, r))
+	h.serve(w, r, Script, bakedConfig(domain, r))
 }
 
 // siteToken pulls the token out of a per-site path, reporting whether the path
@@ -187,6 +210,17 @@ func bakedConfig(domain string, r *http.Request) map[string]any {
 		}
 	}
 
+	// Vitals is an optional mode of the same bundle. A bare query flag captures
+	// every document, while a value is passed through as the document sample
+	// rate and interpreted by the browser tracker.
+	if query.Has("vitals") {
+		value := strings.TrimSpace(query.Get("vitals"))
+		if value == "" {
+			value = "1"
+		}
+		cfg["v"] = value
+	}
+
 	for key, param := range map[string]string{
 		"m": "manual",
 		"h": "hash",
@@ -222,8 +256,8 @@ func truthy(value string) bool {
 // share a cache entry and a changed option invalidates immediately. Answering
 // the conditional request here rather than leaving it to a CDN means the same
 // behaviour on a self-hosted install with nothing in front of it.
-func (h *Handler) serve(w http.ResponseWriter, r *http.Request, cfg map[string]any) {
-	body := Script
+func (h *Handler) serve(w http.ResponseWriter, r *http.Request, script []byte, cfg map[string]any) {
+	body := script
 
 	if cfg != nil {
 		prefix, err := configPrefix(cfg)
@@ -232,7 +266,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, cfg map[string]a
 			return
 		}
 
-		body = append(prefix, Script...)
+		body = append(prefix, script...)
 	}
 
 	sum := sha256.Sum256(body)

@@ -132,3 +132,39 @@ they are the script telling us how long a page you already paid for was read for
 would be charging you twice. Neither do pageview goals, for the same reason: a pageview goal is a
 saved question about pageviews you already sent.</p>
 <p>Outbound clicks, downloads and form submissions <em>are</em> custom events and do count.</p>
+
+<h3>Core Web Vitals</h3>
+<p>If you have enabled the optional tracker mode — see <a href="/docs/script-options">script
+options</a> — four more measurements arrive as numeric properties on an event called
+<strong>Web Vitals</strong>: <code>lcp</code>, <code>cls</code>, <code>inp</code>,
+and <code>ttfb</code>. They are properties rather than metrics of their own so
+that the same aggregation, filtering and breakdown that works on everything else works on
+them: <code>p75(event:props:lcp)</code> broken down by page is the report you want, and it is
+one query.</p>
+
+<p>Three things about them are worth knowing before you quote one. Each value is measured only
+where the browser provides the Performance API it needs. Final values are reported when a
+navigation is hidden, with supported client-side routes and back-forward cache restorations
+receiving their own observations. And if you set a sample rate on the tracker mode, the numbers
+describe that sample — the count of Web Vitals events beside them is how you see how many page
+loads are behind the figure.</p>
+
+<h3>When a number is an estimate</h3>
+<p>A query over a very large range that cannot be answered from the pre-aggregated summaries —
+a filtered one, or a breakdown by a custom property — may be answered from deterministic event
+or session row buckets instead of every fact row. Additive totals supported by that row grain are
+expanded by the inverse sample rate. Rates, averages, minima, maxima and percentiles are
+calculated directly within selected fact rows: they are not multiplied by the inverse rate, but
+they are still estimates of the full population and can differ materially under skew. Sparse and
+empty samples are disclosed, and no confidence interval is implied. Queries that require every
+event belonging to a visitor or session are refused at a sampled rate and must run exact. Most
+reports never reach the sampling threshold.</p>
+
+<p>When it happens, it is never quiet. The response carries a <code>sampling</code> object
+naming the rate; event and session work; primary and comparison work; the ceiling crossed;
+and which metrics were expanded or calculated directly. Repeated aggregate and coverage
+passes count as repeated fact-row reads. Every metric in the response carries a
+<code>sampled</code> warning, and the dashboard puts a "Sampled" badge on the figures. Send
+<code>"exact": true</code> with the query — or use the badge's own link — to refuse sampling
+and wait for the exact answer instead. A sampled number that looks exact is worse than a slow
+one, because somebody will make a decision on it.</p>

@@ -10,7 +10,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 // The fixture server's port. It is well away from the ports the product uses so
 // that a running development instance and a test run never collide.
-const PORT = 19311;
+const PORT = Number(process.env.PLAYWRIGHT_PORT || 19311);
 
 // Serverless layout checks inject complete rendered documents directly into
 // Chromium and must not open the tracker fixture port.
@@ -28,7 +28,17 @@ export default defineConfig({
 		trace: "retain-on-failure",
 	},
 
-	projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+	projects: [
+		{
+			name: "chromium",
+			use: {
+				...devices["Desktop Chrome"],
+				// The maintained collector supports SPA attribution when Chromium
+				// exposes its still-experimental soft-navigation timing entries.
+				launchOptions: { args: ["--enable-features=SoftNavigationHeuristics"] },
+			},
+		},
+	],
 
 	// Playwright owns the fixture server's lifetime, which is the only way a
 	// test run reliably leaves nothing listening behind it.

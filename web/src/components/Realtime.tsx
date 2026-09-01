@@ -69,12 +69,14 @@ export function Realtime({ domain, filters }: Props) {
 		metrics: ["visitors"],
 		date_range: "5m",
 		filters: [...filters, NOT_ENGAGEMENT],
+		exact: true,
 	};
 
 	const windowBody: StatsRequest = {
 		metrics: ["visitors", "pageviews", "events"],
 		date_range: "realtime",
 		filters: filters.length ? filters : undefined,
+		exact: true,
 	};
 
 	const graphBody: StatsRequest = {
@@ -82,6 +84,7 @@ export function Realtime({ domain, filters }: Props) {
 		date_range: "realtime",
 		dimensions: ["time"],
 		filters: filters.length ? filters : undefined,
+		exact: true,
 	};
 
 	const current = useStats(domain, domain ? currentBody : null);

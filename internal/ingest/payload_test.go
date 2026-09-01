@@ -57,7 +57,7 @@ func TestParsePayloadKeys(t *testing.T) {
 
 // TestInvalidIdempotencyKeyIsRejected keeps arbitrary client text out of the
 // permanent receipt boundary. Legacy payloads may omit the key, but a supplied
-// value must be a complete UUID.
+// value must be a complete RFC 4122 UUID.
 func TestInvalidIdempotencyKeyIsRejected(t *testing.T) {
 	body := `{"k":"not-a-uuid","n":"pageview","u":"https://example.com/","d":"example.com"}`
 	if _, err := ParsePayload([]byte(body)); err == nil {

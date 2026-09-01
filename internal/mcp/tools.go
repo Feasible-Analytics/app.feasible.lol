@@ -105,6 +105,12 @@ type statsArgs struct {
 	IncludeBots    bool            `json:"include_bots"`
 	IncludeImports bool            `json:"include_imported"`
 	TotalRows      bool            `json:"include_total_rows"`
+
+	// Exact refuses the automatic sampling a very large range would otherwise
+	// get. A sampled answer says so in a note on every metric and tells the
+	// reader to ask again exactly — so the argument has to exist here, or that
+	// note is advice a model cannot act on.
+	Exact bool `json:"exact"`
 }
 
 // queryStatsTool is the whole read surface.
@@ -130,6 +136,9 @@ func (s *Server) queryStatsTool() *Tool {
 			"include_bots":       flag("Include traffic classified as automated. Off by default, because bot traffic in a report is simply a wrong number."),
 			"include_imported":   flag("Include data imported from another analytics product."),
 			"include_total_rows": flag("Also report how many groups exist before pagination."),
+			"exact": flag("Refuse sampling and wait for the exact answer. A very wide range is otherwise " +
+				"answered from deterministic event or session row buckets. Additive totals are expanded while rates " +
+				"and distribution statistics are calculated within the sample; every metric is labelled as estimated."),
 		}, "site_id", "metrics"),
 		Handler: s.runStats,
 	}
@@ -165,6 +174,7 @@ func (s *Server) runStats(ctx context.Context, key *apikeys.Key, raw json.RawMes
 		Timezone:   firstNonEmpty(args.Timezone, site.Timezone),
 		OrderBy:    args.OrderBy,
 		Pagination: query.Pagination{Limit: args.Limit, Offset: args.Offset},
+		Exact:      args.Exact,
 		Include: query.Include{
 			Bots:        args.IncludeBots,
 			Imports:     args.IncludeImports,
@@ -264,6 +274,12 @@ func renderTable(metrics, dimensions []string, result *query.Result) string {
 		out.WriteString("(no rows — the range has no matching traffic)\n")
 	}
 
+	// Sampling is stated once for the whole table rather than left to the
+	// per-metric notes below, because those are first-writer-wins: a metric
+	// already carrying a re-scoping caveat would otherwise repeat an estimate
+	// with nothing marking it as one, and a model has no way to tell.
+	out.WriteString(samplingNote(result.Meta.Sampling))
+
 	// Warnings are printed rather than left in the structured payload, because
 	// a re-scoped or partially-covered metric that announces itself is the
 	// difference between a number a model can trust and one it repeats without
@@ -273,6 +289,36 @@ func renderTable(metrics, dimensions []string, result *query.Result) string {
 	}
 
 	return out.String()
+}
+
+// samplingNote renders the whole-answer warning shared by MCP's two tabular
+// result shapes. Keeping it outside the metric warning map is deliberate: that
+// map can hold only one warning per metric, while sampling qualifies every
+// number even when another caveat got there first.
+func samplingNote(sampling *query.Sampling) string {
+	if sampling == nil {
+		return ""
+	}
+
+	methods := make([]string, 0, 2)
+	if len(sampling.ScaledMetrics) > 0 {
+		methods = append(methods, "additive totals expanded by the inverse rate: "+strings.Join(sampling.ScaledMetrics, ", "))
+	}
+	if len(sampling.DirectMetrics) > 0 {
+		methods = append(methods, "calculated directly within selected fact rows, without inverse scaling and potentially sensitive to skew: "+strings.Join(sampling.DirectMetrics, ", "))
+	}
+
+	qualifiers := []string{"sampling error and confidence intervals are not quantified"}
+	if sampling.Sparse {
+		qualifiers = append(qualifiers, "the selected buckets are sparse")
+	}
+	if sampling.ZeroResult {
+		qualifiers = append(qualifiers, "the selected buckets returned no rows")
+	}
+
+	return fmt.Sprintf("note: every number above is an estimate — read from %g%% deterministic buckets at each metric's event or session row grain; %s; %s. "+
+		"Ask again with exact set to true for the slow, exact answer.\n",
+		sampling.Rate*100, strings.Join(methods, "; "), strings.Join(qualifiers, "; "))
 }
 
 // realtimeArgs is the realtime tool's argument.
@@ -305,6 +351,12 @@ func (s *Server) realtimeTool() *Tool {
 				Metrics:   []string{"visitors"},
 				DateRange: query.DateRange{Preset: query.RangeRealtime},
 				Timezone:  site.Timezone,
+
+				// The answer is one sentence with a number in it and no room
+				// for a caveat, and half an hour of traffic is cheap to count
+				// exactly. A shape that cannot say "estimated" must not hold an
+				// estimate.
+				Exact: true,
 			})
 			if err != nil {
 				return queryFailure(err)
@@ -333,6 +385,11 @@ type compareArgs struct {
 	Filters    []query.Filter  `json:"filters"`
 	Compare    string          `json:"compare"`
 	Limit      int             `json:"limit"`
+
+	// Exact refuses automatic sampling for a comparison whose numbers have to
+	// be precise rather than quick. The readable answer points directly to it
+	// whenever the engine chose a sample.
+	Exact bool `json:"exact"`
 }
 
 // comparePeriodsTool puts two periods side by side.
@@ -357,6 +414,9 @@ func (s *Server) comparePeriodsTool() *Tool {
 			"filters":    filtersArg(),
 			"compare":    compareArg(),
 			"limit":      integer("Rows to return. Defaults to 100.", 1, query.MaxLimit),
+			"exact": flag("Refuse sampling and wait for the exact answer. A very wide range is otherwise " +
+				"answered from deterministic event or session row buckets. Additive totals are expanded while rates " +
+				"and distribution statistics are calculated within the sample; every metric is labelled as estimated."),
 		}, "site_id", "metrics"),
 		Handler: func(ctx context.Context, key *apikeys.Key, raw json.RawMessage) (*toolResult, error) {
 			args := &compareArgs{}
@@ -391,6 +451,7 @@ func (s *Server) comparePeriodsTool() *Tool {
 				DateRange:  args.DateRange,
 				Timezone:   site.Timezone,
 				Pagination: query.Pagination{Limit: args.Limit},
+				Exact:      args.Exact,
 				Include:    query.Include{Comparisons: comparison},
 			})
 			if err != nil {
@@ -445,6 +506,8 @@ func renderComparison(metrics, dimensions []string, result *query.Result) string
 			out.WriteString(strings.Join(cells, " | ") + "\n")
 		}
 	}
+
+	out.WriteString(samplingNote(result.Meta.Sampling))
 
 	return out.String()
 }

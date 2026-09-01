@@ -23,6 +23,7 @@ const port = Number(process.env.PORT || 19311);
 // the script's own endpoint defaulting — the origin of its script tag — the
 // thing under test rather than something the fixtures work around.
 const BUNDLE = join(here, "..", "dist", "feasible.js");
+const VITALS_BUNDLE = join(here, "..", "dist", "vitals.js");
 
 const TYPES = {
 	".html": "text/html; charset=utf-8",
@@ -57,6 +58,11 @@ const server = createServer(async (req, res) => {
 
 	if (path === "/js/script.js") {
 		send(res, 200, TYPES[".js"], await readFile(BUNDLE));
+		return;
+	}
+
+	if (path === "/js/vitals.js") {
+		send(res, 200, TYPES[".js"], await readFile(VITALS_BUNDLE));
 		return;
 	}
 

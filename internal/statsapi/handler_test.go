@@ -30,12 +30,25 @@ var endpointNow = time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 // newServer builds the endpoint over a seeded account, mounted exactly as
 // `feasible serve` mounts it so the route pattern is exercised too.
 func newServer(t *testing.T) *httptest.Server {
-	return newServerWithAuthorization(t, AllowAll)
+	return newServerWithOptions(t, AllowAll, 0)
 }
 
 // newServerWithAuthorization builds the endpoint with the requested access
 // decision, including nil to prove the direct handler fails closed.
 func newServerWithAuthorization(t *testing.T, authorize func(*http.Request, sites.Site) (Authorization, error)) *httptest.Server {
+	return newServerWithOptions(t, authorize, 0)
+}
+
+// newServerWithThreshold builds the normal endpoint with an explicit
+// automatic row-work ceiling so recovery contracts can force sampling without
+// fabricating a huge HTTP fixture.
+func newServerWithThreshold(t *testing.T, threshold int64) *httptest.Server {
+	return newServerWithOptions(t, AllowAll, threshold)
+}
+
+// newServerWithOptions builds one fully authorized and sampling-configured
+// endpoint so the access and query recovery contracts are exercised together.
+func newServerWithOptions(t *testing.T, authorize func(*http.Request, sites.Site) (Authorization, error), threshold int64) *httptest.Server {
 	t.Helper()
 
 	manager := accounts.NewManager(t.TempDir())
@@ -58,6 +71,7 @@ func newServerWithAuthorization(t *testing.T, authorize func(*http.Request, site
 	handler := New(cache, manager, nil)
 	handler.Now = func() time.Time { return endpointNow }
 	handler.Authorize = authorize
+	handler.SampleThreshold = threshold
 
 	mux := http.NewServeMux()
 	mux.Handle(Pattern, handler)
@@ -99,6 +113,23 @@ func TestPinnedFiltersAreAppendedServerSide(t *testing.T) {
 	filters := echoed["filters"].([]any)
 	if len(filters) != 2 {
 		t.Fatalf("effective filters = %+v, want pinned and client filters", filters)
+	}
+}
+
+// TestMembershipSamplingRefusalCarriesExactRecoveryCode gives dashboard
+// clients a stable, explicit action without asking them to parse the message or
+// automatically retry an expensive query.
+func TestMembershipSamplingRefusalCarriesExactRecoveryCode(t *testing.T) {
+	server := newServerWithThreshold(t, 1)
+
+	status, body := post(t, server, "example.com", `{"metrics":["visitors","pageviews"],"date_range":"7d"}`)
+	if status != http.StatusBadRequest || body["code"] != "sampling_requires_exact" {
+		t.Fatalf("membership refusal = %d %+v", status, body)
+	}
+
+	status, body = post(t, server, "example.com", `{"metrics":["visitors","pageviews"],"date_range":"7d","exact":true}`)
+	if status != http.StatusOK {
+		t.Fatalf("explicit exact fallback = %d %+v", status, body)
 	}
 }
 
@@ -240,6 +271,38 @@ func TestPresentIndexMarksTheBucketInProgress(t *testing.T) {
 	results := body["results"].([]any)
 	if len(results) != 7 {
 		t.Fatalf("got %d rows, want one per bucket including the empty ones", len(results))
+	}
+}
+
+// TestSamplingMetadataNamesScaledAndDirectMetrics checks the public JSON
+// disclosure. A client must be able to tell that the pageview total was
+// inverse-rate expanded while the rate and numeric average were calculated
+// directly within selected fact rows and remain estimates.
+func TestSamplingMetadataNamesScaledAndDirectMetrics(t *testing.T) {
+	server := newServer(t)
+
+	status, body := post(t, server, "example.com", `{
+		"metrics": ["pageviews", "bounce_rate", "avg(event:props:lcp)"],
+		"date_range": "7d",
+		"sample_rate": 0.5
+	}`)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, body = %+v", status, body)
+	}
+
+	meta := body["meta"].(map[string]any)
+	sampling, ok := meta["sampling"].(map[string]any)
+	if !ok {
+		t.Fatalf("sampling metadata is absent: %+v", meta)
+	}
+
+	scaled := sampling["scaled_metrics"].([]any)
+	direct := sampling["direct_metrics"].([]any)
+	if len(scaled) != 1 || scaled[0] != "pageviews" {
+		t.Fatalf("scaled_metrics = %v, want pageviews", scaled)
+	}
+	if len(direct) != 2 || direct[0] != "bounce_rate" || direct[1] != "avg(event:props:lcp)" {
+		t.Fatalf("direct_metrics = %v", direct)
 	}
 }
 

@@ -179,6 +179,10 @@ func writeVariantVisits(t *testing.T, account *accounts.Account) {
 
 	pageview := id(intern.EventName, "pageview")
 	signup := id(intern.EventName, "Signup")
+	entryProps, err := json.Marshal(map[string]string{"ab_test_group": "treatment"})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Two more visitors, both in the treatment variant, both on the fixture's
 	// last day. One of them signs up.
@@ -194,9 +198,9 @@ func writeVariantVisits(t *testing.T, account *accounts.Account) {
 
 	for _, visit := range visits {
 		if _, err := account.Writer().ExecContext(ctx, `
-			INSERT INTO sessions (id, site_id, user_id, started_at, last_seen_at, duration, is_bounce, pageviews, events)
-			VALUES (?, 1, ?, ?, ?, 30, 0, 2, 2)`,
-			visit.session, visit.user, at(30, 11, 0), at(30, 11, 30)); err != nil {
+			INSERT INTO sessions (id, site_id, user_id, started_at, last_seen_at, duration, is_bounce, pageviews, events, entry_props)
+			VALUES (?, 1, ?, ?, ?, 30, 0, 2, 2, ?)`,
+			visit.session, visit.user, at(30, 11, 0), at(30, 11, 30), string(entryProps)); err != nil {
 			t.Fatal(err)
 		}
 

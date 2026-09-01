@@ -251,6 +251,17 @@ func TestToolsListIsCompleteAndDescribed(t *testing.T) {
 	if len(tools) != len(expected) {
 		t.Errorf("listed %d tools, expected %d", len(tools), len(expected))
 	}
+
+	// A warning that tells a model to retry with exact=true is actionable only
+	// when the tool schema tells the model that argument exists.
+	for _, name := range []string{"query_stats", "compare_periods"} {
+		schema := byName[name]["inputSchema"].(map[string]any)
+		properties := schema["properties"].(map[string]any)
+
+		if _, ok := properties["exact"]; !ok {
+			t.Errorf("%s does not publish its exact argument", name)
+		}
+	}
 }
 
 // TestQueryStatsRoundTrip is the test that matters most: a tool call reaching
@@ -285,6 +296,102 @@ func TestQueryStatsRoundTrip(t *testing.T) {
 	// structured-output handling reads only that.
 	if !strings.Contains(answer.Content[0].Text, "visitors") {
 		t.Errorf("the text rendering does not name the metrics: %q", answer.Content[0].Text)
+	}
+}
+
+// TestSampledStatsAreLabelledAndCanBeRetriedExactly exercises both MCP answer
+// surfaces. Structured content carries meta.sampling, readable content states
+// that every number is estimated, and exact=true reruns the same request on all
+// rows instead of leaving the escape hatch as unactionable prose.
+func TestSampledStatsAreLabelledAndCanBeRetriedExactly(t *testing.T) {
+	f := newFixture(t)
+	seedLargeEstimate(t, f)
+	f.API.SampleThreshold = 20_000
+
+	answer := f.tool(t, "query_stats",
+		`{"site_id":"example.com","metrics":["pageviews"],"date_range":"7d"}`)
+
+	var sampled query.Result
+	structured(t, answer, &sampled)
+
+	if sampled.Meta.Sampling == nil {
+		t.Fatal("the low threshold did not produce a sampled MCP result")
+	}
+
+	if !strings.Contains(answer.Content[0].Text, "every number above is an estimate") {
+		t.Fatalf("the readable result hid sampling: %q", answer.Content[0].Text)
+	}
+	if !strings.Contains(answer.Content[0].Text, "additive totals expanded") {
+		t.Fatalf("the readable result hid its scaling method: %q", answer.Content[0].Text)
+	}
+
+	if !strings.Contains(answer.Content[0].Text, "exact set to true") {
+		t.Fatalf("the readable result did not name the exact retry: %q", answer.Content[0].Text)
+	}
+
+	exactAnswer := f.tool(t, "query_stats",
+		`{"site_id":"example.com","metrics":["pageviews"],"date_range":"7d","exact":true}`)
+
+	var exactResult query.Result
+	structured(t, exactAnswer, &exactResult)
+
+	if exactResult.Meta.Sampling != nil || !exactResult.Query.Exact {
+		t.Fatalf("exact=true was not actionable: meta=%+v query=%+v", exactResult.Meta.Sampling, exactResult.Query)
+	}
+
+	if exactResult.Results[0].Metrics[0] != currentPageviews {
+		t.Fatalf("exact retry returned %v pageviews, want %d", exactResult.Results[0].Metrics[0], currentPageviews)
+	}
+}
+
+// TestSampledComparisonsAreLabelledAndCanBeRetriedExactly protects the second
+// tabular MCP shape. Its custom rendering must carry the same whole-answer
+// warning and its own exact argument must reach the query engine.
+func TestSampledComparisonsAreLabelledAndCanBeRetriedExactly(t *testing.T) {
+	f := newFixture(t)
+	seedLargeEstimate(t, f)
+	f.API.SampleThreshold = 20_000
+
+	answer := f.tool(t, "compare_periods",
+		`{"site_id":"example.com","metrics":["pageviews"],"date_range":"7d"}`)
+
+	var sampled query.Result
+	structured(t, answer, &sampled)
+
+	if sampled.Meta.Sampling == nil || !strings.Contains(answer.Content[0].Text, "every number above is an estimate") {
+		t.Fatalf("the readable comparison hid sampling: meta=%+v text=%q",
+			sampled.Meta.Sampling, answer.Content[0].Text)
+	}
+
+	exactAnswer := f.tool(t, "compare_periods",
+		`{"site_id":"example.com","metrics":["pageviews"],"date_range":"7d","exact":true}`)
+
+	var exactResult query.Result
+	structured(t, exactAnswer, &exactResult)
+
+	if exactResult.Meta.Sampling != nil || !exactResult.Query.Exact {
+		t.Fatalf("comparison exact=true was not actionable: meta=%+v query=%+v",
+			exactResult.Meta.Sampling, exactResult.Query)
+	}
+}
+
+// TestSamplingNoteSeparatesArithmeticMethods prevents the readable MCP surface
+// from claiming an average or percentile was scaled like an additive total.
+func TestSamplingNoteSeparatesArithmeticMethods(t *testing.T) {
+	note := samplingNote(&query.Sampling{
+		Rate:          0.1,
+		ScaledMetrics: []string{"pageviews"},
+		DirectMetrics: []string{"bounce_rate", "p75(event:props:lcp)"},
+	})
+
+	if !strings.Contains(note, "additive totals expanded by the inverse rate: pageviews") {
+		t.Fatalf("note hid total scaling: %q", note)
+	}
+	if !strings.Contains(note, "without inverse scaling and potentially sensitive to skew: bounce_rate, p75(event:props:lcp)") {
+		t.Fatalf("note hid direct sample statistics: %q", note)
+	}
+	if !strings.Contains(note, "confidence intervals are not quantified") {
+		t.Fatalf("note hid unquantified uncertainty: %q", note)
 	}
 }
 
@@ -407,6 +514,28 @@ func TestRealtimeVisitorsAnswersANumber(t *testing.T) {
 
 	if payload.SiteID != "example.com" {
 		t.Errorf("site_id = %q", payload.SiteID)
+	}
+}
+
+// TestRealtimeVisitorsStayExactUnderTheSamplingThreshold checks the MCP shape
+// that returns only a number and a sentence. The live visitor is outside the
+// smallest sample, so this would return zero if the tool stopped forcing an
+// exact query.
+func TestRealtimeVisitorsStayExactUnderTheSamplingThreshold(t *testing.T) {
+	f := newFixture(t)
+	seedLargeEstimate(t, f)
+	seedRealtimeVisitor(t, f)
+	f.API.SampleThreshold = 1
+
+	answer := f.tool(t, "get_realtime_visitors", `{"site_id":"example.com"}`)
+
+	var payload struct {
+		Visitors int64 `json:"visitors"`
+	}
+	structured(t, answer, &payload)
+
+	if payload.Visitors != 1 {
+		t.Fatalf("realtime visitors = %d, want the exact visitor", payload.Visitors)
 	}
 }
 
@@ -854,6 +983,74 @@ func seed(t *testing.T, account *accounts.Account) {
 				t.Fatal(err)
 			}
 		}
+	}
+}
+
+// seedLargeEstimate writes a one-million-row current-day upper bound without
+// adding fake fact rows. The trigger-maintained count source is intentionally
+// range-aware, so old roll-up averages can no longer make a current spike look
+// cheap.
+func seedLargeEstimate(t *testing.T, f *fixture) {
+	t.Helper()
+
+	account, err := f.API.Accounts.Open(context.Background(), teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	day := time.Date(testNow.Year(), testNow.Month(), testNow.Day(), 0, 0, 0, 0, time.UTC).Unix()
+	if _, err := account.Writer().ExecContext(context.Background(), `
+		INSERT INTO sampling_daily_counts (site_id, day, event_rows, session_rows)
+		VALUES (?, ?, 1000000, 0)
+		ON CONFLICT(site_id, day) DO UPDATE SET event_rows = excluded.event_rows`, siteID, day); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// seedRealtimeVisitor writes one visitor inside the live window whose id is
+// excluded by the minimum one-in-a-thousand sample.
+func seedRealtimeVisitor(t *testing.T, f *fixture) {
+	t.Helper()
+
+	ctx := context.Background()
+	account, err := f.API.Accounts.Open(ctx, teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pageview, err := account.Intern.ID(ctx, intern.EventName, ingest.EventPageview)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := account.Intern.ID(ctx, intern.Pathname, "/live")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	source, err := account.Intern.ID(ctx, intern.Source, "Direct")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	at := testNow.Unix() - 60
+	const (
+		userID    = int64(2001)
+		sessionID = int64(10001)
+	)
+
+	if _, err := account.Writer().ExecContext(ctx, `
+		INSERT INTO sessions (id, site_id, user_id, started_at, last_seen_at, duration, is_bounce,
+		                      pageviews, events, entry_page_id, exit_page_id, source_id)
+		VALUES (?, ?, ?, ?, ?, 0, 1, 1, 1, ?, ?, ?)`,
+		sessionID, siteID, userID, at, at, page, page, source); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := account.Writer().ExecContext(ctx, `
+		INSERT INTO events (site_id, timestamp, name_id, user_id, session_id, pathname_id, source_id, scroll_depth)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 255)`, siteID, at, pageview, userID, sessionID, page, source); err != nil {
+		t.Fatal(err)
 	}
 }
 

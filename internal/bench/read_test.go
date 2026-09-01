@@ -94,6 +94,19 @@ func dataset(tb testing.TB) Dataset {
 	return seededSet
 }
 
+// TestReadCasesForceExact guards the benchmark contract before any expensive
+// seed is built. A sampled case would time a fraction of the intended scan and
+// make the result look faster without measuring an actual improvement.
+func TestReadCasesForceExact(t *testing.T) {
+	cases := ReadCases(Dataset{SiteID: 1, Timezone: "UTC"})
+
+	for _, c := range cases {
+		if !c.Query.Exact {
+			t.Errorf("benchmark case %q does not force an exact query", c.Name)
+		}
+	}
+}
+
 // BenchmarkRead times every report in the set against one seeded site, from raw
 // rows and from the summary tables.
 //

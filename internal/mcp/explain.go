@@ -286,13 +286,17 @@ func (s *Server) investigate(ctx context.Context, site sites.Site, metric, mode 
 	// The headline uses the engine's own comparison rather than two queries, so
 	// that a period still in progress is compared against the same elapsed time.
 	// At four in the afternoon, "against yesterday" has to mean sixteen hours
-	// against sixteen hours, and that arithmetic belongs in one place.
+	// against sixteen hours, and that arithmetic belongs in one place. The
+	// composed answer has no query meta of its own, so every contributing query
+	// is exact rather than letting an estimate become indistinguishable inside
+	// the explanation.
 	headline, err := s.API.Query(ctx, site, query.Query{
 		SiteIDs:   []int64{site.ID},
 		Metrics:   headlineMetrics,
 		Filters:   filters,
 		DateRange: requested,
 		Timezone:  site.Timezone,
+		Exact:     true,
 		Include:   query.Include{Comparisons: &query.Comparison{Mode: mode}},
 	})
 	if err != nil {
@@ -353,7 +357,9 @@ func (s *Server) investigate(ctx context.Context, site sites.Site, metric, mode 
 	return answer, nil
 }
 
-// total measures one metric over both periods.
+// total measures one metric over both periods. It stays exact because its
+// result is folded into an explanation shape that has nowhere to carry query
+// sampling metadata.
 func (s *Server) total(ctx context.Context, site sites.Site, metric string,
 	filters []query.Filter, requested query.DateRange, mode string) (headlineChange, error) {
 
@@ -363,6 +369,7 @@ func (s *Server) total(ctx context.Context, site sites.Site, metric string,
 		Filters:   filters,
 		DateRange: requested,
 		Timezone:  site.Timezone,
+		Exact:     true,
 		Include:   query.Include{Comparisons: &query.Comparison{Mode: mode}},
 	})
 	if err != nil {
@@ -460,7 +467,8 @@ func allUnset(movers []movement) bool {
 }
 
 // breakdown pulls one dimension's groups for one window, with the quality
-// metrics where the engine can produce them.
+// metrics where the engine can produce them. Each read is exact because these
+// values are merged into a custom explanation that cannot expose query meta.
 func (s *Server) breakdown(ctx context.Context, site sites.Site, dimension, metric string,
 	filters []query.Filter, window query.DateRange) (map[string]float64, map[string][2]float64, error) {
 
@@ -474,6 +482,7 @@ func (s *Server) breakdown(ctx context.Context, site sites.Site, dimension, metr
 			Timezone:   site.Timezone,
 			OrderBy:    []query.Order{{Key: metric, Descending: true}},
 			Pagination: query.Pagination{Limit: groupsPerDimension},
+			Exact:      true,
 		})
 	}
 

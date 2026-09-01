@@ -8,7 +8,6 @@
 
 import { doc, loc, page } from "./state.js";
 import { send, KEEPALIVE } from "./send.js";
-import { excluded } from "./exclude.js";
 
 // The class prefix that tags an element for tracking.
 const TAG = "feasible-event-";
@@ -91,15 +90,11 @@ function parseTag(el) {
 export function custom(name, options) {
 	const opts = options || {};
 	const callback = opts.callback;
-
-	if (excluded(cfg)) {
-		callback?.({ status: null });
-		return;
-	}
+	const captured = opts.u ? new URL(opts.u, loc.href).href : "";
 
 	const event = {
 		n: name,
-		u: opts.u ? new URL(opts.u, loc.href).href : page.u || loc.href,
+		u: captured || page.u || loc.href,
 		d: page.d,
 	};
 

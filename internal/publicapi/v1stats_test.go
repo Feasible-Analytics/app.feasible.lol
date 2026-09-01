@@ -9,10 +9,13 @@
 package publicapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
 )
 
@@ -81,6 +84,40 @@ func TestAggregateMatchesV2(t *testing.T) {
 
 	if answer.Results["pageviews"].Value != currentPageviews {
 		t.Errorf("pageviews = %v, want %d from the fixture", answer.Results["pageviews"].Value, currentPageviews)
+	}
+}
+
+// TestV1QueriesRemainExactUnderTheSamplingThreshold protects the compatibility
+// response shape. It has no meta object where sampling could be disclosed, so
+// the shared v1 query conversion must force exactness even when v2 would sample
+// the same large estimated scan.
+func TestV1QueriesRemainExactUnderTheSamplingThreshold(t *testing.T) {
+	h := newHarness(t)
+	seedLargeEstimate(t, h)
+	h.API.SampleThreshold = 1
+
+	status, body := h.get(t, "/api/v1/stats/aggregate?site_id=example.com&period=7d&metrics=visitors")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d (%s)", status, body)
+	}
+
+	var answer struct {
+		Results map[string]struct {
+			Value float64 `json:"value"`
+		} `json:"results"`
+	}
+
+	if err := json.Unmarshal(body, &answer); err != nil {
+		t.Fatal(err)
+	}
+
+	if answer.Results["visitors"].Value != currentVisitors {
+		t.Fatalf("v1 returned %v visitors under a sampling threshold, want the exact %d",
+			answer.Results["visitors"].Value, currentVisitors)
+	}
+
+	if keys := decode(t, body); len(keys) != 1 {
+		t.Fatalf("v1 response shape changed while preserving exactness: %v", keys)
 	}
 }
 
@@ -360,6 +397,31 @@ func TestRealtimeVisitorsMatchesV2(t *testing.T) {
 	}
 }
 
+// TestRealtimeVisitorsStayExactUnderTheSamplingThreshold checks the one v1
+// response that is only a number. The seeded visitor is deliberately outside
+// the smallest sample, so a missing Exact flag would turn one visitor into
+// zero with no response field capable of admitting it.
+func TestRealtimeVisitorsStayExactUnderTheSamplingThreshold(t *testing.T) {
+	h := newHarness(t)
+	seedLargeEstimate(t, h)
+	seedRealtimeVisitor(t, h)
+	h.API.SampleThreshold = 1
+
+	status, body := h.get(t, "/api/v1/stats/realtime/visitors?site_id=example.com")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d (%s)", status, body)
+	}
+
+	var visitors int64
+	if err := json.Unmarshal(body, &visitors); err != nil {
+		t.Fatalf("the body must remain a bare integer, got %q", string(body))
+	}
+
+	if visitors != 1 {
+		t.Fatalf("realtime visitors = %d, want the exact visitor", visitors)
+	}
+}
+
 // TestV1FilterSyntaxMatchesTheV2Filter checks the filter grammar an existing
 // integration already has in its configuration.
 func TestV1FilterSyntaxMatchesTheV2Filter(t *testing.T) {
@@ -494,4 +556,69 @@ func urlEncode(value string) string {
 	}
 
 	return escaped
+}
+
+// seedLargeEstimate gives the sampling planner a high daily event rate without
+// marking any range as covered by roll-ups. Queries still read raw events, but
+// a low threshold now has enough history to decide they are large.
+func seedLargeEstimate(t *testing.T, h *harness) {
+	t.Helper()
+
+	account, err := h.API.Accounts.Open(context.Background(), teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := account.Writer().ExecContext(context.Background(), `
+		INSERT INTO rollup_visitors (site_id, grain, bucket, dimension, value_id, events)
+		VALUES (?, 0, ?, 0, 0, 1000000)`, siteID, testNow.AddDate(0, 0, -30).Unix()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// seedRealtimeVisitor writes one visitor inside the live window whose id does
+// not survive the minimum one-in-a-thousand sample.
+func seedRealtimeVisitor(t *testing.T, h *harness) {
+	t.Helper()
+
+	ctx := context.Background()
+	account, err := h.API.Accounts.Open(ctx, teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pageview, err := account.Intern.ID(ctx, intern.EventName, ingest.EventPageview)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := account.Intern.ID(ctx, intern.Pathname, "/live")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	source, err := account.Intern.ID(ctx, intern.Source, "Direct")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	at := testNow.Unix() - 60
+	const (
+		userID    = int64(2001)
+		sessionID = int64(10001)
+	)
+
+	if _, err := account.Writer().ExecContext(ctx, `
+		INSERT INTO sessions (id, site_id, user_id, started_at, last_seen_at, duration, is_bounce,
+		                      pageviews, events, entry_page_id, exit_page_id, source_id)
+		VALUES (?, ?, ?, ?, ?, 0, 1, 1, 1, ?, ?, ?)`,
+		sessionID, siteID, userID, at, at, page, page, source); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := account.Writer().ExecContext(ctx, `
+		INSERT INTO events (site_id, timestamp, name_id, user_id, session_id, pathname_id, source_id, scroll_depth)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 255)`, siteID, at, pageview, userID, sessionID, page, source); err != nil {
+		t.Fatal(err)
+	}
 }

@@ -20,6 +20,8 @@ import {
 	DRAWER_HEADINGS,
 	DRAWER_METRICS,
 	INVERTED,
+	breakdownValueIndex,
+	dimensionsOf,
 	findTab,
 	groupsOf,
 	labelOf,
@@ -29,6 +31,7 @@ import {
 import type { DrawerState } from "../lib/url";
 import { useStats } from "../lib/useStats";
 import { ChangeChip, Empty, Failure, Favicon, Flag, Spinner } from "./atoms";
+import { SampledBadge } from "./SampledBadge";
 
 /**
  * The details view is a drawer rather than a centred modal, and the difference
@@ -98,6 +101,11 @@ export function Drawer({
 	const listing = tableTabs(card);
 	const tab = findTab(listing, state.tab);
 
+	// Whether the reader has refused sampling for this panel. It is local to
+	// the drawer rather than shared with the dashboard behind it, because the
+	// two ask different questions and only one of them is likely to be sampled.
+	const [exactAnswer, setExactAnswer] = useState(false);
+
 	// The search box types faster than a four-second query can answer, so the
 	// input is local and the URL only catches up once typing stops.
 	const [typed, setTyped] = useState(state.search);
@@ -124,7 +132,7 @@ export function Drawer({
 		return list;
 	}, [tab, state.search, applied]);
 
-	const dimensions = state.breakdown ? [tab.dimension, state.breakdown] : [tab.dimension];
+	const dimensions = dimensionsOf(tab, state.breakdown);
 
 	const body: StatsRequest = {
 		metrics: DRAWER_METRICS,
@@ -135,11 +143,13 @@ export function Drawer({
 		pagination: { limit: PAGE, offset: (state.page - 1) * PAGE },
 		include: {
 			total_rows: true,
+			page_titles: tab.companion ? true : undefined,
 			// The earlier period is looked up by the keys already on this page
 			// rather than paginated on its own, so a comparison costs one extra
 			// query and never attaches a number to the wrong row.
 			comparisons: compare === "off" ? undefined : { mode: compare },
 		},
+		exact: exactAnswer || undefined,
 	};
 
 	const stats = useStats(domain, body);
@@ -154,6 +164,7 @@ export function Drawer({
 	const groups = groupsOf(listing);
 	const subTabs = subTabsOf(listing, tab);
 	const breakdown = BREAKDOWNS.find((entry) => entry.id === state.breakdown);
+	const breakdownAt = breakdownValueIndex(tab);
 
 	/** sort flips a column, or switches to it descending first — which is what
 	 *  somebody clicking "Bounce" almost always wants to see. */
@@ -256,6 +267,16 @@ export function Drawer({
 					)}
 				</div>
 
+				{/* Filtering and searching are exactly what takes a report off
+				    the pre-aggregated summaries, so this is the panel where an
+				    answer is most likely to be an estimate. */}
+				<SampledBadge
+					sampling={stats.data?.meta.sampling}
+					exact={exactAnswer}
+					exactFallback={stats.exactFallback}
+					onExact={setExactAnswer}
+				/>
+
 				<div className="scroll-thin min-h-0 flex-1 overflow-auto">
 					{stats.error ? (
 						<div className="h-64">
@@ -310,6 +331,9 @@ export function Drawer({
 								{rows.map((row, index) => {
 									const raw = row.dimensions[0] ?? "";
 									const name = labelOf(tab, raw);
+									const companion = tab.companion
+										? (row.enrichments?.[tab.companion.enrichment] ?? "")
+										: "";
 									const on = selected.has(raw);
 
 									return (
@@ -336,13 +360,24 @@ export function Drawer({
 												>
 													{tab.favicon && <Favicon name={raw || "Direct"} />}
 													<Flag glyph={flagFor(tab.dimension, raw)} />
-													<span
-														className={`truncate transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent ${
-															on ? "font-medium text-accent" : "text-body"
-														}`}
-														title={name}
-													>
-														{name}
+													<span className="flex min-w-0 flex-col justify-center leading-tight">
+														{companion && (
+															<span className="truncate text-xs font-medium text-body" title={companion}>
+																{companion}
+															</span>
+														)}
+														<span
+															className={`truncate transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent ${
+																on
+																	? "font-medium text-accent"
+																	: companion
+																		? "text-[10px] text-muted"
+																		: "text-body"
+															}`}
+															title={name}
+														>
+															{name}
+														</span>
 													</span>
 												</button>
 											</td>
@@ -351,9 +386,9 @@ export function Drawer({
 												<td className="px-3">
 													<span
 														className="block max-w-48 truncate text-muted"
-														title={row.dimensions[1] || t("dashboard.value.unknown")}
+														title={row.dimensions[breakdownAt] || t("dashboard.value.unknown")}
 													>
-														{row.dimensions[1] || t("dashboard.value.unknown")}
+														{row.dimensions[breakdownAt] || t("dashboard.value.unknown")}
 													</span>
 												</td>
 											)}

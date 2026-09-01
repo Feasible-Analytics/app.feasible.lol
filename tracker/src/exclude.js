@@ -47,8 +47,7 @@ function compile(pattern) {
 	return new RegExp("^" + body + "$");
 }
 
-// excluded reports whether the current page is one the site asked us not to
-// count.
+// excluded reports whether a URL is one the site asked us not to count.
 //
 // The match is against `pathname + hash`, not the pathname alone. Matching the
 // pathname only is why `/#/patients/**` never matched anything for the
@@ -59,12 +58,13 @@ function compile(pattern) {
 // only pageviews is a real privacy hole — a customer who excludes `/order/*`
 // to keep order ids out of the dashboard still has every id arrive attached to
 // a custom event's URL.
-export function excluded(cfg) {
+export function excluded(cfg, target) {
 	if (!cfg.x.length) return false;
 
 	if (!patterns) patterns = cfg.x.map(compile);
 
-	const path = loc.pathname + loc.hash;
+	const route = new URL(target, loc.href);
+	const path = route.pathname + route.hash;
 
 	return patterns.some((re) => re.test(path));
 }
@@ -99,19 +99,24 @@ export function ignoreReason(cfg) {
 		// `window.phantom` is deliberately absent because a widely installed
 		// crypto wallet extension injects that global into real visitors' pages.
 		if (win._phantom || win.__nightmare || navigator.webdriver || win.Cypress) {
-			return "automated";
+			return "automated bot";
 		}
 	}
 
-	if (!cfg.l && LOCAL_HOST.test(loc.hostname)) {
+	// Do Not Track can be changed by browser policy while a document is open,
+	// so it is read on every attempted send rather than cached at bootstrap.
+	if (navigator.doNotTrack === "1" || win.doNotTrack === "1") return "excluded by DNT";
+
+	// Consent may be managed through the bootstrap state or the installed
+	// public function. Undefined preserves the install's default behaviour;
+	// an explicit false revokes pending and future sends immediately.
+	if (hatch?.consent === false || win.feasible?.consent === false) return "excluded by consent";
+
+	if (!cfg.l && (loc.protocol === "file:" || LOCAL_HOST.test(loc.hostname))) {
 		return "localhost";
 	}
 
-	// Consent denial, browser DNT and self-exclusion all produce the same
-	// client-side exclusion contract: no request and a dropped callback result.
-	if (hatch?.consent === false || navigator.doNotTrack == 1 || stored() === "true") {
-		return "excluded";
-	}
+	if (stored() === "true") return "excluded";
 
 	return "";
 }

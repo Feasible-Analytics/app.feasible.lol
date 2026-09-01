@@ -27,8 +27,25 @@ test("a pageview carries exactly the documented keys", async ({ page }) => {
 
 	// Absent keys are left out rather than sent as null, which is what keeps a
 	// pageview under two hundred bytes.
-	expect(pageview.k).toMatch(/^[0-9a-f-]{36}$/);
+	expect(pageview.k).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 	expect(Object.keys(pageview).sort()).toEqual(["d", "k", "n", "t", "u", "v"]);
+});
+
+// Some supported Web Crypto implementations have secure randomness but not
+// randomUUID. The compatibility path must still emit the exact UUID contract
+// topology persists as its permanent dedupe key.
+test("event identity falls back to getRandomValues", async ({ page }) => {
+	await page.addInitScript(() => {
+		Object.defineProperty(Crypto.prototype, "randomUUID", { configurable: true, value: undefined });
+	});
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+
+	expect(named(state, "pageview")[0].k).toMatch(
+		/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+	);
 });
 
 // text/plain is not a nicety: application/json is not a simple content type, so
@@ -145,6 +162,9 @@ test("a failed event is kept and retried on the next pageview", async ({ page })
 	);
 
 	expect(await page.evaluate(() => localStorage.getItem("feasible_outbox"))).toBe("[]");
+
+	const attempts = state.events.filter((event) => event.n === "pageview" && event.u.includes("basic.html"));
+	expect(attempts[0].k).toBe(attempts[1].k);
 });
 
 // The hardest retry boundary is a request the server durably accepted whose
