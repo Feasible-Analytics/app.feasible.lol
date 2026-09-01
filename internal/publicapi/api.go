@@ -265,12 +265,13 @@ func (a *API) resolveSite(w http.ResponseWriter, key *apikeys.Key, identifier st
 // many visitors did I have", and no way to tell which one is wrong. It is
 // exported because the MCP server is a second front end onto exactly this.
 func (a *API) Query(ctx context.Context, site sites.Site, q query.Query) (*query.Result, error) {
-	account, err := a.Accounts.Open(ctx, site.AccountID)
+	lease, err := a.Accounts.Acquire(ctx, site.AccountID)
 	if err != nil {
 		return nil, err
 	}
+	defer lease.Release() //nolint:errcheck // query errors are more useful than an unlock error
 
-	engine := query.New(account.Reader())
+	engine := query.New(lease.Account.Reader())
 	engine.Now = a.now
 
 	return engine.Run(ctx, q)

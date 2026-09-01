@@ -1,5 +1,5 @@
-<p>Two APIs: one to send events, one to read numbers back. Both are HTTP and JSON, and both
-are documented here in full — there is no separate paid tier for API access.</p>
+<p>Two APIs: one to send events, one to read numbers back. Both are HTTP and JSON, both are documented
+here in full, and there is no paid tier for API access.</p>
 
 <h3>Sending events</h3>
 <pre><code>POST /api/event
@@ -12,57 +12,241 @@ Content-Type: application/json
   "r": "https://duckduckgo.com/"
 }</code></pre>
 
-<p>The response is <code>202 Accepted</code> as soon as the event is durably buffered, before it
-reaches the database that will hold it. If we could not use the event, the reason is in the
-<code>x-feasible-dropped</code> response header and on your ingestion health panel — a beacon
-cannot act on a status code, so the reason travels in a header instead of a 4xx.</p>
+<p>No authentication: the tracker runs in a browser, so a credential here would be a credential
+published on your website. The site is identified by <code>d</code>, and an event for a domain we do
+not hold is dropped.</p>
 
 <table>
   <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
   <tbody>
-    <tr><td><code>n</code></td><td>Event name. <code>pageview</code>, <code>engagement</code>, or your own.</td></tr>
-    <tr><td><code>d</code></td><td>Domain, matching a registered site.</td></tr>
-    <tr><td><code>u</code></td><td>The page URL.</td></tr>
-    <tr><td><code>r</code></td><td>The referrer, if any.</td></tr>
+    <tr><td><code>n</code></td><td><strong>Required.</strong> Event name — <code>pageview</code>, <code>engagement</code>, or your own.</td></tr>
+    <tr><td><code>d</code></td><td><strong>Required.</strong> Domain, matching a registered site.</td></tr>
+    <tr><td><code>u</code></td><td><strong>Required.</strong> The page URL.</td></tr>
+    <tr><td><code>r</code></td><td>The referrer.</td></tr>
     <tr><td><code>p</code></td><td>Custom properties, as an object.</td></tr>
-    <tr><td><code>$</code></td><td>Revenue, as <code>{"amount": …, "currency": "USD"}</code>.</td></tr>
+    <tr><td><code>t</code></td><td>Page title.</td></tr>
+    <tr><td><code>$</code></td><td>Revenue, as <code>{"amount": 49.00, "currency": "USD"}</code>.</td></tr>
+    <tr><td><code>sd</code></td><td>Scroll depth, 1–100.</td></tr>
+    <tr><td><code>e</code></td><td>Engaged time in milliseconds, as a delta since the last measurement.</td></tr>
+    <tr><td><code>i</code></td><td><code>false</code> marks an event as non-interactive, so it cannot un-bounce a visit. Absent means interactive.</td></tr>
+    <tr><td><code>w</code></td><td>Viewport width in CSS pixels, bucketed into a screen size.</td></tr>
+    <tr><td><code>v</code></td><td>Tracker version.</td></tr>
   </tbody>
 </table>
 
-<p>Only <code>pageview</code> and your own event names are billable. <code>engagement</code> is the
-script's heartbeat and is never counted towards your monthly volume.</p>
+<p><code>application/json</code>, <code>text/plain</code>, <code>application/x-www-form-urlencoded</code>
+and a missing content type are all accepted, and the body is parsed as JSON regardless — the browser
+script sends <code>text/plain</code> deliberately, to avoid a CORS preflight on every pageview. The
+body is capped at 64 KiB.</p>
 
-<h3>Stating attribution for a server-side event</h3>
-<p>An offline or delayed conversion has no referrer of its own and would otherwise be Direct
-forever. Send the attribution explicitly and it is used in place of the referrer.</p>
+<h4>Why it always answers 202</h4>
+<p>The response is <code>202 Accepted</code> as soon as the event enters the process's write buffer,
+before it reaches the database that will hold it — and it is <strong>also</strong> <code>202</code> for an
+event we decided not to count. The buffer flushes every half-second or 250 events and is drained on a
+graceful shutdown, but a successful response is not an fsync guarantee if the process crashes in that
+window. A beacon cannot act on a status code, so a 4xx would only produce a retry that fails
+identically.</p>
+<p>For decisions made before the response, the reason travels in the
+<code>x-feasible-dropped</code> response header. CORS exposes that header, and the browser tracker's
+callback returns it as <code>dropped</code>. Every reason comes from a closed set, so it can be counted
+rather than read:</p>
+<ul>
+  <li><code>unknown_site</code> — the domain is not one we hold.</li>
+  <li><code>account_dormant</code> — collection has stopped for this account.</li>
+  <li><code>site_deleted</code> — the site is gone.</li>
+  <li><code>shield_ip</code> — an address one of your
+      <a href="/docs/shields">shields</a> excludes.</li>
+  <li><code>invalid_payload</code> — properties or revenue that are not the shape the field is for.</li>
+  <li><code>internal_error</code> — our failure, not yours, and counted as such.</li>
+  <li><code>bot</code>, <code>datacenter_ip</code>, <code>referrer_spam</code> — these three are
+      <strong>classifications, not deletions</strong>. The event is stored, with the reason attached,
+      and left out of your reports by default so you can put it back.</li>
+</ul>
+<p>Four more reasons are decided after the response has already gone out, so they are counted on your
+ingestion health screen but can never appear in that header or browser callback. A bare
+<code>202</code> can therefore still become one of these shard-side drops:</p>
+<ul>
+  <li><code>shield_country</code>, <code>shield_page</code> and <code>hostname_not_allowed</code> —
+      applied at the shard that holds your data. See <a href="/docs/shields">excluding traffic</a>.</li>
+  <li><code>no_session_for_engagement</code> — a measurement whose pageview never arrived. It is only
+      established when the orphaned measurement expires, half an hour after we answered it, which is
+      why the counter is the only place you will ever see it.</li>
+</ul>
 
-<h3>Debugging one request</h3>
-<p>Send <code>X-Debug-Request: 1</code> with any event and the response is the fully derived
-event: the address we resolved and where from, the visitor identifier, the geolocation, the
-channel, and every field we would store. It is the fastest way to prove a proxy is passing
-the visitor's address through, and it answers "why did this not count" without a support
-ticket.</p>
+<p>A genuine <code>400</code> is reserved for a body we could not read at all, a payload missing
+<code>n</code>, <code>d</code> or <code>u</code>, and a request arriving straight from a data centre
+with no forwarded address or user agent — with a sentence naming what is missing.</p>
 
-<h3>Reading numbers back</h3>
-<pre><code>POST /api/stats/example.com/query
-Authorization: Bearer &lt;api key&gt;
-
-{
-  "metrics": ["visitors", "pageviews", "bounce_rate"],
-  "date_range": "30d",
-  "dimensions": ["visit:source"],
-  "filters": [["is", "visit:country", ["US"]]]
+<h4>Stating attribution for a server-side event</h4>
+<p>An offline or delayed conversion has no referrer of its own and would otherwise be Direct forever.
+Send the attribution explicitly, as full-length top-level fields, and it is used instead:</p>
+<pre><code>{
+  "n": "Purchase", "d": "example.com", "u": "https://example.com/order/complete",
+  "referrer": "https://news.ycombinator.com/",
+  "utm_source": "hn", "utm_medium": "referral", "utm_campaign": "launch"
 }</code></pre>
 
-<p>Every report in the product is this one request with different metrics and dimensions.
-There is no per-card endpoint and there will not be one: a handler per card is a handler per
-way for the same number to be wrong.</p>
+<h4>Debugging one request</h4>
+<p>Send <code>X-Debug-Request: true</code> with any event — the value has to be <code>true</code>, not
+<code>1</code> — and the response is <code>200</code> with the fully derived event as JSON: the
+address we resolved and which header it came from, whether a trusted proxy is configured, the visitor
+identifier and the salt day, the geolocation, the channel, every field we would store, the drop or bot
+reason, and the tally of anything truncated.</p>
+<p><strong>Nothing is written.</strong> It is answered before the buffer, the counters and the log, so
+it is safe against production, and it is the fastest way to prove a proxy is passing the visitor's
+address through.</p>
 
-<p>API keys are created in your account settings, shown once, and stored only as a hash. They
-carry an hourly rate limit, and the limit is per key so one runaway script cannot starve
-your dashboard.</p>
+<h4>The no-script pixel</h4>
+<pre><code>GET /api/event/pixel.gif?d=example.com[&amp;u=][&amp;n=][&amp;r=][&amp;p=]</code></pre>
+<p>Only <code>d</code> is required; the page URL falls back to the <code>Referer</code> header. It
+always returns the image, and puts any failure in the same <code>x-feasible-dropped</code> header.</p>
 
-<h3>Exporting everything</h3>
-<p>The export gives you every event we hold for an account in a portable format. It works in
-every phase of an account's life, including a locked or dormant one and including the day
-before a scheduled deletion. It is your data.</p>
+<h3>Reading numbers back</h3>
+<pre><code>POST /api/v2/query
+Authorization: Bearer feas_…
+Content-Type: application/json
+
+{
+  "site_id": "example.com",
+  "metrics": ["visitors", "pageviews", "bounce_rate"],
+  "date_range": "28d",
+  "dimensions": ["visit:source"],
+  "filters": [["is", "visit:country", ["US"]]],
+  "order_by": [["visitors", "desc"]],
+  "pagination": { "limit": 100, "offset": 0 },
+  "include": { "comparisons": { "mode": "previous_period" } }
+}</code></pre>
+
+<p>Every report in the product is this one request with different metrics and dimensions. There is no
+per-card endpoint and there will not be one: a handler per card is a handler per way for the same
+number to be wrong.</p>
+<p><strong>An unknown key is a 400, not a shrug.</strong> A typo that is silently ignored is a query
+that answers a question you did not ask.</p>
+
+<h4>Metrics</h4>
+<p><code>visitors</code>, <code>visits</code>, <code>pageviews</code>, <code>events</code>,
+<code>views_per_visit</code>, <code>bounce_rate</code>, <code>visit_duration</code>,
+<code>time_on_page</code>, <code>scroll_depth</code>, <code>exit_rate</code>,
+<code>conversion_rate</code>, <code>group_conversion_rate</code>, <code>total_revenue</code>,
+<code>average_revenue</code>, <code>revenue_per_visitor</code>. What each one means is on
+<a href="/docs/metrics">metric definitions</a>.</p>
+
+<h4>Dimensions</h4>
+<p>Event-scoped: <code>event:name</code>, <code>event:page</code>, <code>event:page_title</code>,
+<code>event:hostname</code>.</p>
+<p>Visit-scoped: <code>visit:source</code>, <code>visit:referrer</code>, <code>visit:channel</code>,
+<code>visit:utm_source</code>, <code>visit:utm_medium</code>, <code>visit:utm_campaign</code>,
+<code>visit:entry_page</code>, <code>visit:exit_page</code>, <code>visit:country</code>,
+<code>visit:region</code>, <code>visit:city</code>, <code>visit:device</code>,
+<code>visit:screen</code>, <code>visit:browser</code>, <code>visit:browser_version</code>,
+<code>visit:os</code>, <code>visit:os_version</code>, <code>visit:language</code>.</p>
+<p>Time: <code>time</code>, <code>time:minute</code>, <code>time:hour</code>, <code>time:day</code>,
+<code>time:week</code>, <code>time:month</code>. Bare <code>time</code> takes whatever width the range
+implies.</p>
+<p>And <code>event:props:&lt;name&gt;</code> for any <a href="/docs/custom-properties">custom
+property</a>. <code>visit:screen_size</code>, <code>visit:device_type</code> and
+<code>event:path</code> are accepted as aliases so an existing integration keeps working.</p>
+
+<h4>Filters</h4>
+<p>Positional arrays. Filters AND together; the values inside one filter OR together.</p>
+<pre><code>["is", "visit:country", ["US", "CA"]]
+["contains", "event:page", ["/blog/"], { "case_sensitive": false }]
+["has_done", ["is", "event:name", ["Signup"]]]</code></pre>
+<p>Operators: <code>is</code>, <code>is_not</code>, <code>contains</code>,
+<code>contains_not</code>, <code>matches</code>, <code>matches_not</code>, and
+<code>has_done</code>, which takes an inner filter and selects the visits that did that thing at some
+point. A time dimension cannot be filtered — narrow the date range instead.</p>
+
+<h4>Date ranges</h4>
+<p>A preset: <code>day</code>, <code>24h</code>, <code>7d</code>, <code>28d</code>,
+<code>91d</code>, <code>month</code>, <code>last_month</code>, <code>year</code>,
+<code>12mo</code>, <code>all</code>, <code>realtime</code> (30 minutes), <code>5m</code>.</p>
+<p>Or a pair of dates, <strong>with the end inclusive</strong> — <code>["2026-08-01",
+"2026-08-31"]</code> covers all of the 31st:</p>
+<p>Buckets are cut in the site's own time zone unless you override <code>timezone</code> with an IANA
+name. Set <code>include.comparisons</code> to <code>previous_period</code>,
+<code>year_over_year</code> or <code>custom</code>; a period still in progress is compared against the
+same elapsed time, not against a whole earlier one.</p>
+
+<h4>Limits</h4>
+<p>Up to 5 dimensions, 32 filters, 1,000 values in one filter, 10,000 rows per page (100 by default),
+and a 1 MiB request body.</p>
+
+<h4>The answer</h4>
+<pre><code>{
+  "results": [
+    { "metrics": [1204, 3310, 41.2], "dimensions": ["Google"],
+      "comparison": { "metrics": [980, 2740, 44.0], "change": [22.9, 20.8, -6.4] } }
+  ],
+  "meta": { "interval": "day", "sources": ["rollup", "raw"], "sample_rate": 1, "present_index": null },
+  "query": { "…": "the query as we resolved it, including the exact date bounds" }
+}</code></pre>
+<p>Two details that save an argument later. <code>change</code> is <strong>null</strong>, not zero and
+not infinity, when the earlier value was zero — there is no percentage change from nothing.
+And <code>meta.sources</code> tells you whether an answer came from raw events, from pre-computed
+summaries, or from both, so "this number moved and nothing changed" has somewhere to start.</p>
+<p><code>meta.metric_warnings</code> is where a metric says it is not telling you the whole truth —
+money left out for want of an exchange rate, groups truncated, a bucket still filling. It is attached
+per metric rather than to the whole query.</p>
+
+<h3>The v1 endpoints</h3>
+<p>If you are migrating from an established analytics API, these take the same query strings you
+already send and are answered by the same engine:</p>
+<ul>
+  <li><code>GET /api/v1/stats/aggregate</code></li>
+  <li><code>GET /api/v1/stats/timeseries</code></li>
+  <li><code>GET /api/v1/stats/breakdown</code></li>
+  <li><code>GET /api/v1/stats/realtime/visitors</code> — answers a bare integer, as that shape does</li>
+</ul>
+<p>They take <code>site_id</code>, <code>metrics</code>, <code>period</code>, <code>date</code>,
+<code>filters</code>, <code>compare</code>, <code>with_bots</code> and <code>with_imported</code>, with
+<code>property</code>, <code>limit</code> and <code>page</code> on breakdown and
+<code>interval</code> on timeseries. The filter grammar is the string one:
+<code>visit:country==US;event:page~/blog/</code>, with <code>==</code>, <code>!=</code>,
+<code>~</code> and <code>!~</code>, clauses separated by <code>;</code> and values by <code>|</code>.
+<code>period</code> accepts <code>30d</code> and <code>6mo</code>, which v2 does not, and they are
+converted to explicit bounds so a migrating dashboard shows the same numbers.</p>
+<p>One difference on purpose: a non-numeric <code>limit</code> or <code>page</code> is a
+<code>400</code> naming the problem, rather than a 500.</p>
+
+<p>Sites, goals, shared links, guests, custom properties, team memberships and the tracker snippet are
+managed under <code>/api/v1/sites/…</code> and <code>/api/v1/teams/…</code>. A site is addressed by
+its domain, not a number. The goals routes exist with their final shapes and answer <code>501</code>
+today — see <a href="/docs/goals-funnels">goals and funnels</a>.</p>
+
+<h3>API keys</h3>
+<p>A key looks like <code>feas_</code> followed by 43 characters. It is shown once, at creation, and
+stored only as a hash — we cannot recover it for you and would not want to be able to.</p>
+<p>Today keys are minted from the command line:</p>
+<pre><code>feasible api-key create --team 1 --user 1 --name "Looker Studio"
+feasible api-key list --team 1
+feasible api-key revoke --team 1 --id &lt;key id&gt;</code></pre>
+<p>The screen for this is not built yet. Revoking keeps the row and marks it revoked; a revoked key
+then behaves exactly as though it never existed.</p>
+<p>Four scopes exist — <code>stats:read</code>, <code>sites:read</code>,
+<code>sites:provision</code>, <code>webhooks:write</code> — and a key created with no scopes carries
+all of them. Using a route your key does not cover is a <code>403</code> naming the scope you need.</p>
+<p>The key goes in <code>Authorization: Bearer …</code> and nowhere else. A key in a query string ends
+up in every proxy log between you and us, so it is not accepted there.</p>
+
+<h3>Rate limits</h3>
+<p>10,000 requests an hour per key by default, and a key can carry its own limit. It is per key rather
+than per account, so one runaway script cannot starve your dashboard.</p>
+<p>Every authenticated response carries <code>X-RateLimit-Limit</code>,
+<code>X-RateLimit-Remaining</code> and <code>X-RateLimit-Reset</code> (Unix seconds) — not only the
+ones that were refused, so you can back off before you are told to. Over the limit is a
+<code>429</code> with <code>Retry-After</code> in seconds.</p>
+<p>The window is a fixed hour rather than a sliding one, which is worth knowing if you are pacing a
+batch job: up to twice the limit can pass across a boundary.</p>
+
+<h3>A locked account</h3>
+<p>If a dashboard is locked for non-payment, the API is locked with it: every
+<code>/api/v1/</code> and <code>/api/v2/</code> route answers <code>402</code> with a reason and what
+to do about it. A key that can still answer "how many visitors did I have" is not a lock.</p>
+<p>Collection never stops for that reason, though — see the timetable on the
+<a href="/pricing">pricing page</a>.</p>
+
+<h3>Getting your data out</h3>
+<p>Export is a screen rather than an API call — <em>Settings → &lt;your site&gt; → Import and
+export</em> prepares a ZIP of the ten roll-up tables plus every raw event, and it works in every
+account state including a locked one. See <a href="/docs/import-export">import and export</a>.</p>

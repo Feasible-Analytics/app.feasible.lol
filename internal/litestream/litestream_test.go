@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 )
@@ -123,26 +122,6 @@ func mustGetwd(t *testing.T) string {
 	return wd
 }
 
-// TestValidateRejectsRetentionShorterThanSnapshots guards the one misconfigured
-// value that produces a replica nobody can restore from, months after it was
-// set and in the middle of an incident.
-func TestValidateRejectsRetentionShorterThanSnapshots(t *testing.T) {
-	opts := Options{
-		DataDir:          t.TempDir(),
-		ReplicaURL:       "s3://bucket/shard-01",
-		SnapshotInterval: 24 * time.Hour,
-		Retention:        time.Hour,
-	}
-
-	err := opts.Validate()
-	if err == nil {
-		t.Fatal("a retention shorter than the snapshot interval was accepted")
-	}
-	if !strings.Contains(err.Error(), "retention") {
-		t.Fatalf("unhelpful message: %v", err)
-	}
-}
-
 // TestValidateRequiresAReplicaURL keeps a shard from believing it is replicated
 // because a variable was never set.
 func TestValidateRequiresAReplicaURL(t *testing.T) {
@@ -173,7 +152,7 @@ func TestRenderIsStable(t *testing.T) {
 		t.Fatal("two renders of the same plan differ")
 	}
 
-	for _, want := range []string{"dbs:", "sync-interval: 1s", "snapshot-interval: 6h", "retention: 72h"} {
+	for _, want := range []string{"retention:\n  enabled: false", "dbs:", "sync-interval: 1s", "snapshot-interval: 6h"} {
 		if !strings.Contains(first, want) {
 			t.Fatalf("the rendered config is missing %q:\n%s", want, first)
 		}
@@ -196,6 +175,26 @@ func TestRenderCarriesNoCredentials(t *testing.T) {
 	for _, forbidden := range []string{"access-key-id", "secret-access-key"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("the rendered config carries %q", forbidden)
+		}
+	}
+}
+
+// TestReplicaDocsDiscloseTheSaltWindowAndSafeRestore keeps the operational
+// runbook aligned with the public bounded re-identification statement.
+func TestReplicaDocsDiscloseTheSaltWindowAndSafeRestore(t *testing.T) {
+	for _, path := range []string{"../../ops/litestream.md", "../../ops/runbooks/salt-rotation.md"} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := strings.ToLower(string(body))
+		for _, want := range []string{"48 hours", "72", "re-identification", "service is stopped", "expired salts"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s does not disclose %q", path, want)
+			}
+		}
+		if strings.Contains(text, "does not break the promise") {
+			t.Errorf("%s still claims replica retention does not bound the guarantee", path)
 		}
 	}
 }

@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -154,6 +155,9 @@ func mustParse(name string) *template.Template {
 // to read a language from. Every call site therefore passes $.Lang.
 func funcs() template.FuncMap {
 	return template.FuncMap{
+		"url": func(locale, target string) string {
+			return i18n.LocalURL(target, locale)
+		},
 		"t": func(locale, id string, args ...any) string {
 			return i18n.T(locale, id, args...)
 		},
@@ -352,6 +356,7 @@ type exportView struct {
 // things first — the domain, the site and the account database — and doing that
 // resolution once is what keeps a new screen to one case.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	i18n.Apply(w, r)
 	path := strings.TrimPrefix(r.URL.Path, SitePrefix)
 
 	// The OAuth callback is the one route that does not name a site in its
@@ -442,15 +447,19 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, da
 // is what stops a reload re-submitting a rule, which is otherwise the fastest
 // way to hit the thirty-rule cap by accident.
 func (h *Handler) redirect(w http.ResponseWriter, r *http.Request, domain, tab, message, failure string) {
-	values := ""
+	values := make(url.Values)
 	if message != "" {
-		values = "?ok=" + template.URLQueryEscaper(message)
+		values.Set("ok", message)
 	}
 	if failure != "" {
-		values = "?err=" + template.URLQueryEscaper(failure)
+		values.Set("err", failure)
 	}
 
-	http.Redirect(w, r, SitePrefix+domain+"/"+tab+values, http.StatusSeeOther)
+	target := SitePrefix + domain + "/" + tab
+	if encoded := values.Encode(); encoded != "" {
+		target += "?" + encoded
+	}
+	http.Redirect(w, r, i18n.LocalURL(target, i18n.Negotiate(r)), http.StatusSeeOther)
 }
 
 // flash reads the message a redirect carried.
@@ -460,11 +469,13 @@ func flash(r *http.Request) (string, string) {
 
 // shields renders the shield rules and the viewer's own address.
 func (h *Handler) shields(w http.ResponseWriter, r *http.Request, site sites.Site) {
-	account, err := h.Accounts.Open(r.Context(), site.AccountID)
+	lease, err := h.Accounts.Acquire(r.Context(), site.AccountID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer lease.Release() //nolint:errcheck // the request result is more useful than an unlock error
+	account := lease.Account
 
 	rules, err := shields.List(r.Context(), account.Reader(), site.ID)
 	if err != nil {
@@ -565,11 +576,13 @@ func (h *Handler) addShield(w http.ResponseWriter, r *http.Request, site sites.S
 		return
 	}
 
-	account, err := h.Accounts.Open(r.Context(), site.AccountID)
+	lease, err := h.Accounts.Acquire(r.Context(), site.AccountID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer lease.Release() //nolint:errcheck // mutation and snapshot refresh share one fence
+	account := lease.Account
 
 	if err := r.ParseForm(); err != nil {
 		h.redirect(w, r, site.Domain, "shields", "", tr(r, "auth.shields.error_unreadable_form"))
@@ -595,11 +608,13 @@ func (h *Handler) deleteShield(w http.ResponseWriter, r *http.Request, site site
 		return
 	}
 
-	account, err := h.Accounts.Open(r.Context(), site.AccountID)
+	lease, err := h.Accounts.Acquire(r.Context(), site.AccountID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer lease.Release() //nolint:errcheck // mutation and snapshot refresh share one fence
+	account := lease.Account
 
 	id, _ := strconv.ParseInt(r.PostFormValue("id"), 10, 64)
 
@@ -666,11 +681,13 @@ func (h *Handler) refreshShields(ctx context.Context, db *sql.DB, siteID int64) 
 
 // paths renders the path cleaning rules, and a preview when one was asked for.
 func (h *Handler) paths(w http.ResponseWriter, r *http.Request, site sites.Site, merges []pathclean.Merge, previewed bool) {
-	account, err := h.Accounts.Open(r.Context(), site.AccountID)
+	lease, err := h.Accounts.Acquire(r.Context(), site.AccountID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer lease.Release() //nolint:errcheck // rendering finishes before deletion can unlink the shard
+	account := lease.Account
 
 	rules, err := pathclean.List(r.Context(), account.Reader(), site.ID)
 	if err != nil {
@@ -709,11 +726,13 @@ func (h *Handler) savePaths(w http.ResponseWriter, r *http.Request, site sites.S
 		return
 	}
 
-	account, err := h.Accounts.Open(r.Context(), site.AccountID)
+	lease, err := h.Accounts.Acquire(r.Context(), site.AccountID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer lease.Release() //nolint:errcheck // all path rewrites share one deletion fence
+	account := lease.Account
 
 	if err := r.ParseForm(); err != nil {
 		h.redirect(w, r, site.Domain, "paths", "", tr(r, "auth.paths.error_unreadable_form"))
@@ -811,11 +830,13 @@ func (h *Handler) toggleTrailingSlash(w http.ResponseWriter, r *http.Request, si
 		return
 	}
 
-	account, err := h.Accounts.Open(r.Context(), site.AccountID)
+	lease, err := h.Accounts.Acquire(r.Context(), site.AccountID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer lease.Release() //nolint:errcheck // all path rewrites share one deletion fence
+	account := lease.Account
 
 	rules, err := pathclean.List(r.Context(), account.Reader(), site.ID)
 	if err != nil {
@@ -866,11 +887,13 @@ func (h *Handler) toggleTrailingSlash(w http.ResponseWriter, r *http.Request, si
 
 // imports renders the import and export screen.
 func (h *Handler) imports(w http.ResponseWriter, r *http.Request, site sites.Site) {
-	account, err := h.Accounts.Open(r.Context(), site.AccountID)
+	lease, err := h.Accounts.Acquire(r.Context(), site.AccountID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer lease.Release() //nolint:errcheck // imported rows remain linked throughout rendering
+	account := lease.Account
 
 	records, err := dataio.ListImports(r.Context(), account.Reader(), site.ID, 25)
 	if err != nil {
@@ -891,7 +914,7 @@ func (h *Handler) imports(w http.ResponseWriter, r *http.Request, site sites.Sit
 		Lang:    i18n.Negotiate(r),
 		Message: message, Error: failure,
 		Imports:               records,
-		Exports:               h.exportViews(site.Domain, exports),
+		Exports:               h.exportViews(site.Domain, i18n.Negotiate(r), exports),
 		SheetNames:            dataio.SheetNames(),
 		GoogleEnabled:         h.Google != nil,
 		SearchConsoleNoticeID: google.SearchConsoleDelayNotice,
@@ -908,7 +931,7 @@ func (h *Handler) imports(w http.ResponseWriter, r *http.Request, site sites.Sit
 // exportViews renders the export list. The download URL is only ever built from
 // a token the caller already holds, which is why a completed export whose token
 // this process did not just mint shows no link.
-func (h *Handler) exportViews(domain string, exports []dataio.Export) []exportView {
+func (h *Handler) exportViews(domain, locale string, exports []dataio.Export) []exportView {
 	now := h.now()
 
 	views := make([]exportView, 0, len(exports))
@@ -925,7 +948,7 @@ func (h *Handler) exportViews(domain string, exports []dataio.Export) []exportVi
 		}
 
 		if token, ok := h.downloadToken(export.ID); ok && export.Status == dataio.StatusCompleted && !view.Expired {
-			view.URL = SitePrefix + domain + "/exports/download/" + token
+			view.URL = i18n.LocalURL(SitePrefix+domain+"/exports/download/"+token, locale)
 		}
 
 		views = append(views, view)
@@ -955,11 +978,13 @@ func (h *Handler) uploadImport(w http.ResponseWriter, r *http.Request, site site
 		return
 	}
 
-	account, err := h.Accounts.Open(r.Context(), site.AccountID)
+	lease, err := h.Accounts.Acquire(r.Context(), site.AccountID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer lease.Release() //nolint:errcheck // upload and enqueue share one deletion fence
+	account := lease.Account
 
 	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		h.redirect(w, r, site.Domain, "imports", "", tr(r, "auth.imports.error_unreadable_upload"))
@@ -984,7 +1009,7 @@ func (h *Handler) uploadImport(w http.ResponseWriter, r *http.Request, site site
 		return
 	}
 
-	destination := dataio.ImportPath(h.DataDir, record.ID, header.Filename)
+	destination := dataio.ImportPath(h.DataDir, site.AccountID, record.ID, header.Filename)
 
 	// Copy, then remove — never rename. The upload's temporary file and the
 	// data directory are routinely on different filesystems, and rename fails
@@ -999,9 +1024,9 @@ func (h *Handler) uploadImport(w http.ResponseWriter, r *http.Request, site site
 		return
 	}
 
-	_, err = h.Jobs.Enqueue(r.Context(), jobs.QueueImports, jobs.KindCSVImport,
+	_, err = h.Jobs.EnqueueOwned(r.Context(), site.AccountID, jobs.QueueImports, jobs.KindCSVImport,
 		dataio.ImportArgs{AccountID: site.AccountID, SiteID: site.ID, ImportID: record.ID},
-		fmt.Sprintf("import-%d", record.ID))
+		fmt.Sprintf("account-%d-import-%d", site.AccountID, record.ID))
 	if err != nil {
 		h.failAndRedirect(w, r, account, site.Domain, record.ID, err.Error())
 		return
@@ -1028,11 +1053,13 @@ func (h *Handler) deleteImport(w http.ResponseWriter, r *http.Request, site site
 		return
 	}
 
-	account, err := h.Accounts.Open(r.Context(), site.AccountID)
+	lease, err := h.Accounts.Acquire(r.Context(), site.AccountID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer lease.Release() //nolint:errcheck // the request result is more useful than an unlock error
+	account := lease.Account
 
 	id, _ := strconv.ParseInt(r.PostFormValue("id"), 10, 64)
 
@@ -1051,11 +1078,13 @@ func (h *Handler) createExport(w http.ResponseWriter, r *http.Request, site site
 		return
 	}
 
-	account, err := h.Accounts.Open(r.Context(), site.AccountID)
+	lease, err := h.Accounts.Acquire(r.Context(), site.AccountID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer lease.Release() //nolint:errcheck // the request result is more useful than an unlock error
+	account := lease.Account
 
 	export, token, err := dataio.CreateExport(r.Context(), account.Writer(), site.ID, h.now())
 	if err != nil {
@@ -1065,9 +1094,9 @@ func (h *Handler) createExport(w http.ResponseWriter, r *http.Request, site site
 
 	h.rememberToken(export.ID, token)
 
-	_, err = h.Jobs.Enqueue(r.Context(), jobs.QueueExports, jobs.KindSiteExport,
+	_, err = h.Jobs.EnqueueOwned(r.Context(), site.AccountID, jobs.QueueExports, jobs.KindSiteExport,
 		dataio.ExportArgs{AccountID: site.AccountID, SiteID: site.ID, ExportID: export.ID},
-		fmt.Sprintf("export-%d", export.ID))
+		fmt.Sprintf("account-%d-export-%d", site.AccountID, export.ID))
 	if err != nil {
 		h.redirect(w, r, site.Domain, "imports", "", err.Error())
 		return
@@ -1078,11 +1107,13 @@ func (h *Handler) createExport(w http.ResponseWriter, r *http.Request, site site
 
 // downloadExport serves a prepared archive.
 func (h *Handler) downloadExport(w http.ResponseWriter, r *http.Request, site sites.Site, token string) {
-	account, err := h.Accounts.Open(r.Context(), site.AccountID)
+	lease, err := h.Accounts.Acquire(r.Context(), site.AccountID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer lease.Release() //nolint:errcheck // ServeContent must finish before deletion can unlink the archive
+	account := lease.Account
 
 	export, err := dataio.ExportByToken(r.Context(), account.Reader(), token)
 	if err != nil {
@@ -1155,11 +1186,13 @@ func (h *Handler) googleDisconnect(w http.ResponseWriter, r *http.Request, site 
 		return
 	}
 
-	account, err := h.Accounts.Open(r.Context(), site.AccountID)
+	lease, err := h.Accounts.Acquire(r.Context(), site.AccountID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer lease.Release() //nolint:errcheck // provider grant mutation shares one deletion fence
+	account := lease.Account
 
 	if err := google.DeleteConnection(r.Context(), account.Writer(), site.ID, r.PostFormValue("provider")); err != nil {
 		h.redirect(w, r, site.Domain, "imports", "", err.Error())
@@ -1190,11 +1223,13 @@ func (h *Handler) googleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	account, err := h.Accounts.Open(r.Context(), site.AccountID)
+	lease, err := h.Accounts.Acquire(r.Context(), site.AccountID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer lease.Release() //nolint:errcheck // token persistence shares one deletion fence
+	account := lease.Account
 
 	token, err := h.Google.Exchange(r.Context(), r.URL.Query().Get("code"), h.now())
 	if err != nil {

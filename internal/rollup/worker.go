@@ -172,10 +172,12 @@ func (w *Worker) Once(ctx context.Context) error {
 // serve, because the day is still filling up and a report drawn from a partial
 // bucket is simply wrong.
 func (w *Worker) buildSite(ctx context.Context, ref SiteRef) error {
-	account, err := w.Accounts.Open(ctx, ref.AccountID)
+	lease, err := w.Accounts.Acquire(ctx, ref.AccountID)
 	if err != nil {
 		return err
 	}
+	defer lease.Release() //nolint:errcheck // the roll-up result is more useful than an unlock error
+	account := lease.Account
 
 	builder := New(account.Writer())
 	builder.Now = w.now

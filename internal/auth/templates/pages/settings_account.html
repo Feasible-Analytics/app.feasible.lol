@@ -12,7 +12,7 @@
   <section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm">
     <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.settings_account.profile" }}</h2>
 
-    <form method="post" action="/settings/profile" class="mt-4 space-y-5">
+    <form method="post" action="{{ url $.Lang "/settings/profile" }}" class="mt-4 space-y-5">
       <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
 
       <div>
@@ -60,7 +60,7 @@
       {{ end }}
     </p>
 
-    <form method="post" action="/settings/password" class="mt-4 space-y-5">
+    <form method="post" action="{{ url $.Lang "/settings/password" }}" class="mt-4 space-y-5">
       <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
 
       <!-- A password manager needs a username beside a password field to know
@@ -97,7 +97,7 @@
       {{ t $.Lang "auth.settings_account.delete_body" }}
     </p>
 
-    <form method="post" action="/settings/delete" class="mt-4 space-y-4"
+    <form method="post" action="{{ url $.Lang "/settings/delete" }}" class="mt-4 space-y-4"
           onsubmit="return confirm('{{ t $.Lang "auth.settings_account.delete_confirm" }}')">
       <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
       <input type="text" name="username" value="{{ .User.Email }}" autocomplete="username" hidden readonly>

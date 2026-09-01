@@ -102,22 +102,22 @@ test("the pageview arrives before the queued events", async ({ page }) => {
 });
 
 // The callback is best effort and documented as such, but when we do get an
-// answer we have to pass it on — a signup form gated on it must not wait out
-// its own timeout on every successful send.
-test("the callback fires with the response status", async ({ page }) => {
-	await collect(page);
+// answer we have to pass both status and an observable inline drop reason on.
+// A shard-side drop happens after this response and therefore remains null.
+test("the callback exposes an inline drop reason", async ({ page }) => {
+	await collect(page, { dropped: "shield_ip" });
 
 	await page.goto("/basic.html");
 
-	const status = await page.evaluate(
+	const result = await page.evaluate(
 		() =>
 			new Promise((resolve) => {
-				window.feasible("Gated", { callback: (result) => resolve(result && result.status) });
+				window.feasible("Gated", { callback: resolve });
 				setTimeout(() => resolve("timed out"), 3000);
 			}),
 	);
 
-	expect(status).toBe(202);
+	expect(result).toEqual({ status: 202, dropped: "shield_ip" });
 });
 
 // No queue behind the endpoint can save an event whose HTTP request never

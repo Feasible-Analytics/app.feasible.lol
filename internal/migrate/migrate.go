@@ -61,11 +61,15 @@ type Migration struct {
 type Set struct {
 	Name       string
 	Migrations []Migration
+
+	// Reserved identifies intentionally unused schema numbers. It is structural
+	// metadata, not SQL and not an applied migration. The runner may step over a
+	// number only when the owning schema declares it here explicitly.
+	Reserved []int
 }
 
 // Version reports the schema version a database is brought to by this set. It
-// is the highest file number rather than a count, so a migration can be
-// reserved or skipped without silently shifting every version after it.
+// is the highest file number rather than a count.
 func (s Set) Version() int {
 	if len(s.Migrations) == 0 {
 		return 0
@@ -80,7 +84,13 @@ func (s Set) Version() int {
 // not pretend it can migrate anything.
 var (
 	controlSet = mustLoad("control", controlDir)
-	accountSet = mustLoad("account", accountDir)
+	accountSet = func() Set {
+		set := mustLoad("account", accountDir)
+		// Account 0006 was intentionally left unused before 0007 shipped. Declare
+		// that historical fact without inventing a migration that never existed.
+		set.Reserved = []int{6}
+		return set
+	}()
 )
 
 // Control returns the migrations for control.db.
@@ -91,6 +101,26 @@ func Control() Set {
 // Account returns the migrations for one account's analytics.db.
 func Account() Set {
 	return accountSet
+}
+
+// UpTo returns the known prefix ending at version. It is useful to construct an
+// older schema for upgrade tests without duplicating embedded migration SQL.
+// The returned set remains subject to Run's contiguous-version validation.
+func UpTo(set Set, version int) Set {
+	prefix := Set{Name: set.Name}
+	for _, migration := range set.Migrations {
+		if migration.Version > version {
+			break
+		}
+		prefix.Migrations = append(prefix.Migrations, migration)
+	}
+	for _, reserved := range set.Reserved {
+		if reserved <= version {
+			prefix.Reserved = append(prefix.Reserved, reserved)
+		}
+	}
+
+	return prefix
 }
 
 // mustLoad parses one embedded directory or dies trying. It exists so the sets
@@ -211,6 +241,33 @@ func Run(ctx context.Context, db *sql.DB, set Set) (Result, error) {
 	}
 	if err := validateContiguous(current, set); err != nil {
 		return result, err
+	}
+
+	// Validate the whole pending sequence before writing anything. A feature
+	// branch may carry a later migration before the branches that own the lower
+	// versions have landed; stamping the later number would make those missing
+	// migrations look applied forever. A database already beyond a gap is safe:
+	// its own version proves another build applied the intervening sequence.
+	reserved := make(map[int]bool, len(set.Reserved))
+	for _, version := range set.Reserved {
+		reserved[version] = true
+	}
+	expected := current + 1
+	for _, migration := range set.Migrations {
+		if migration.Version <= current {
+			continue
+		}
+		for expected < migration.Version && reserved[expected] {
+			expected++
+		}
+		if migration.Version != expected {
+			return result, fmt.Errorf(
+				"%s migration sequence is incomplete: database is at version %d, expected migration %04d next but found %04d_%s",
+				set.Name, current, expected, migration.Version, migration.Name,
+			)
+		}
+
+		expected++
 	}
 
 	for _, migration := range set.Migrations {

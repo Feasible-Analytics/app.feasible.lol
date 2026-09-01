@@ -16,23 +16,17 @@ import (
 )
 
 // The headers we read, in precedence order. They are constants because the
-// order below is the highest-leverage configuration in the whole system: four
-// separate incumbent bugs share this root cause, and every one of them fails
-// silently behind a 202.
+// order below affects fingerprints, geolocation and IP shields, and a wrong
+// result fails silently behind a 202.
 const (
 	// HeaderFeasibleIP is our own override, honoured only from an address on
-	// the trusted-proxy list. The incumbent trusts theirs unconditionally,
-	// which on a directly-exposed instance lets anyone forge their own
-	// geolocation and split their own fingerprint at will.
+	// the trusted-proxy list.
 	HeaderFeasibleIP = "X-Feasible-IP"
 
-	// HeaderCFConnectingIP is Cloudflare's. It is trusted without an allow-list
-	// because a forged value is no worse than a forged X-Forwarded-For, and
-	// requiring configuration would break the most common deployment there is.
+	// HeaderCFConnectingIP is an edge-proxy supplied client address.
 	HeaderCFConnectingIP = "CF-Connecting-IP"
 
-	// HeaderForwardedFor carries the chain. The first entry is the client;
-	// everything after it is a proxy.
+	// HeaderForwardedFor carries the chain appended by each proxy.
 	HeaderForwardedFor = "X-Forwarded-For"
 )
 
@@ -47,10 +41,10 @@ const (
 	SourceNone         = "none"
 )
 
-// TrustedProxies is an allow-list of addresses permitted to set X-Feasible-IP.
-// It is a type rather than a bare slice so the empty case has one obvious
-// meaning: nobody is trusted, which is the safe default for an instance exposed
-// straight to the internet.
+// TrustedProxies is an allow-list of addresses permitted to supply forwarded
+// client-address headers. It is a type rather than a bare slice so the empty
+// case has one obvious meaning: nobody is trusted, which is the safe default
+// for an instance exposed straight to the internet.
 type TrustedProxies struct {
 	prefixes []netip.Prefix
 }
@@ -86,9 +80,9 @@ func ParseTrustedProxies(values []string) (*TrustedProxies, error) {
 	return list, nil
 }
 
-// Contains reports whether an address may set X-Feasible-IP. An invalid address
-// is never trusted, so a socket peer we could not parse cannot accidentally
-// unlock the override.
+// Contains reports whether an address may supply forwarded client-address
+// headers. An invalid address is never trusted, so a socket peer we could not
+// parse cannot accidentally unlock them.
 func (t *TrustedProxies) Contains(addr netip.Addr) bool {
 	if t == nil || !addr.IsValid() {
 		return false
@@ -108,8 +102,8 @@ func (t *TrustedProxies) Contains(addr netip.Addr) bool {
 }
 
 // Empty reports whether anything is trusted at all. The debug endpoint says so
-// explicitly, because "I set X-Feasible-IP and it was ignored" is otherwise
-// indistinguishable from the header not arriving.
+// explicitly, because a forwarded header that was ignored is otherwise
+// indistinguishable from a header that never arrived.
 func (t *TrustedProxies) Empty() bool {
 	return t == nil || len(t.prefixes) == 0
 }
@@ -136,34 +130,27 @@ func (c ClientIP) String() string {
 // ResolveClientIP works out who sent a request. The precedence is explicit and
 // documented because every alternative ordering has cost somebody a day:
 //
-//	X-Feasible-IP (trusted proxies only) → CF-Connecting-IP →
-//	first entry of X-Forwarded-For → socket peer
+//	X-Feasible-IP → CF-Connecting-IP → first untrusted XFF hop →
+//	socket peer
 //
-// Reading the socket peer when a proxy is in front collapses every visitor into
-// one. Reading a forwarded header that a proxy never set shows the customer
-// their own router's LAN address. Neither failure raises an error anywhere,
-// which is why the resolution is reported rather than merely performed.
+// All three headers require a trusted socket peer. X-Forwarded-For is walked
+// from right to left so a trusted appending proxy cannot be tricked by a value
+// a direct client placed at the left of the chain.
 func ResolveClientIP(r *http.Request, trusted *TrustedProxies) ClientIP {
 	peer := parseAddr(hostOnly(r.RemoteAddr))
 
-	// The override is checked against the socket peer, never against a
-	// forwarded header — a header cannot authorise itself.
+	// Trust is checked against the socket peer, never against a forwarded
+	// header: a header cannot authorise itself.
 	if trusted.Contains(peer) {
 		if addr := parseAddr(strings.TrimSpace(r.Header.Get(HeaderFeasibleIP))); addr.IsValid() {
 			return ClientIP{Addr: addr, Source: SourceFeasibleIP}
 		}
-	}
 
-	if addr := parseAddr(strings.TrimSpace(r.Header.Get(HeaderCFConnectingIP))); addr.IsValid() {
-		return ClientIP{Addr: addr, Source: SourceCloudflare}
-	}
+		if addr := parseAddr(strings.TrimSpace(r.Header.Get(HeaderCFConnectingIP))); addr.IsValid() {
+			return ClientIP{Addr: addr, Source: SourceCloudflare}
+		}
 
-	if forwarded := r.Header.Get(HeaderForwardedFor); forwarded != "" {
-		// The first entry is the client. Everything after it is a proxy that
-		// appended itself, so taking the last one — which several frameworks
-		// do — reports the nearest proxy as the visitor.
-		first, _, _ := strings.Cut(forwarded, ",")
-		if addr := parseAddr(strings.TrimSpace(first)); addr.IsValid() {
+		if addr := forwardedClient(r.Header.Get(HeaderForwardedFor), trusted); addr.IsValid() {
 			return ClientIP{Addr: addr, Source: SourceForwardedFor}
 		}
 	}
@@ -173,6 +160,37 @@ func ResolveClientIP(r *http.Request, trusted *TrustedProxies) ClientIP {
 	}
 
 	return ClientIP{Source: SourceNone}
+}
+
+// forwardedClient returns the nearest untrusted address in an X-Forwarded-For
+// chain. A conforming proxy appends the address it received the request from,
+// so reading right to left discards infrastructure hops while retaining the
+// client address the outermost trusted proxy observed.
+func forwardedClient(value string, trusted *TrustedProxies) netip.Addr {
+	parts := strings.Split(value, ",")
+	var leftmost netip.Addr
+
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := strings.TrimSpace(parts[i])
+		if part == "" {
+			continue
+		}
+
+		addr := parseAddr(part)
+		if !addr.IsValid() {
+			// An invalid hop breaks the evidence chain. Continuing farther left
+			// could accept a value supplied by the client before the malformed
+			// address, so fail closed and use the socket peer instead.
+			return netip.Addr{}
+		}
+
+		leftmost = addr
+		if !trusted.Contains(addr) {
+			return addr
+		}
+	}
+
+	return leftmost
 }
 
 // hostOnly strips a port from an address in either family. RemoteAddr always

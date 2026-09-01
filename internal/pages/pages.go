@@ -19,7 +19,7 @@ package pages
 
 import (
 	"embed"
-	"fmt"
+	"errors"
 	"html/template"
 	"net/http"
 	"net/url"
@@ -28,6 +28,8 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/billing"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/stripe"
@@ -47,17 +49,33 @@ var assetFS embed.FS
 // footer — which carries the postal address the law requires — cannot be left
 // off one of them.
 var (
-	pricingPage = mustParse("pricing.html")
-	billingPage = mustParse("billing.html")
-	docsPage    = mustParse("docs.html")
-	docPage     = mustParse("doc.html")
-	messagePage = mustParse("message.html")
+	pricingPage       = mustParse("pricing.html")
+	billingPage       = mustParse("billing.html")
+	docsPage          = mustParse("docs.html")
+	docPage           = mustParse("doc.html")
+	messagePage       = mustParse("message.html")
+	subprocessorsPage = mustParse("subprocessors.html")
 )
 
 // mustParse builds one page template. A broken template is a programmer error
 // caught by the first test run, so panicking is honest.
 func mustParse(name string) *template.Template {
-	return template.Must(template.ParseFS(templateFS, "templates/layout.html", "templates/"+name))
+	return template.Must(template.New(name).Funcs(templateFuncs()).
+		ParseFS(templateFS, "templates/layout.html", "templates/"+name))
+}
+
+// templateFuncs is the one helper these templates may call.
+//
+// The locale is the function's first argument rather than something it closes
+// over, because the templates are parsed once at start-up: there is no request
+// at that moment and there never will be one, so a captured language would be
+// whichever the process happened to boot with, for every reader.
+func templateFuncs() template.FuncMap {
+	return template.FuncMap{
+		"t": func(locale, id string, args ...any) string {
+			return i18n.T(locale, id, args...)
+		},
+	}
 }
 
 // Handler serves the pages. Everything it needs is injected, because each
@@ -71,6 +89,14 @@ type Handler struct {
 
 	// SalesEmail is where the "talk to us about volume" links point.
 	SalesEmail string
+
+	// Hosted and Subprocessors make the legal provider inventory describe the
+	// running deployment rather than guesses embedded in source code.
+	Hosted          bool
+	Subprocessors   []config.Subprocessor
+	OperatorName    string
+	OperatorAddress string
+	OperatorEmail   string
 
 	// Now is injectable so a screenshot or a test can render the billing screen
 	// at a chosen point on the lifecycle clock.
@@ -121,6 +147,7 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /billing/assets/pages.css", h.stylesheet)
 	mux.HandleFunc("GET /docs", h.docs)
 	mux.HandleFunc("GET /docs/{slug}", h.doc)
+	mux.HandleFunc("GET /legal/subprocessors", h.subprocessors)
 	mux.HandleFunc("GET /legal/{slug}", h.legal)
 }
 
@@ -158,17 +185,26 @@ func (h *Handler) protected(next http.HandlerFunc, csrf bool) http.Handler {
 
 // shell is what every template's layout reads.
 type shell struct {
-	Title      string
-	Nav        string
-	SalesEmail string
-	Enabled    bool
-	SignedIn   bool
-	TeamID     int64
-	CSRF       string
+	Title           string
+	Nav             string
+	Lang            string
+	SalesEmail      string
+	Enabled         bool
+	SignedIn        bool
+	TeamID          int64
+	CSRF            string
+	Hosted          bool
+	OperatorName    string
+	OperatorAddress []string
+	OperatorEmail   string
 }
 
 // newShell builds the common part of a page.
-func (h *Handler) newShell(w http.ResponseWriter, r *http.Request, title, nav string, account Account) shell {
+//
+// The title arrives as a catalogue id rather than as text so that a page's tab
+// and its heading cannot end up in two different languages, which is what
+// happens the moment one of them is translated and the other is a literal.
+func (h *Handler) newShell(w http.ResponseWriter, r *http.Request, lang, titleID, nav string, account Account) shell {
 	sales := h.SalesEmail
 	if sales == "" {
 		sales = "sales@feasible.lol"
@@ -180,14 +216,55 @@ func (h *Handler) newShell(w http.ResponseWriter, r *http.Request, title, nav st
 	}
 
 	return shell{
-		Title:      title,
-		Nav:        nav,
-		SalesEmail: sales,
-		Enabled:    h.Billing != nil && h.Billing.Enabled(),
-		SignedIn:   account.ID > 0,
-		TeamID:     account.ID,
-		CSRF:       csrf,
+		Title:           i18n.T(lang, titleID),
+		Nav:             nav,
+		Lang:            lang,
+		SalesEmail:      sales,
+		Enabled:         h.Billing != nil && h.Billing.Enabled(),
+		SignedIn:        account.ID > 0,
+		TeamID:          account.ID,
+		CSRF:            csrf,
+		Hosted:          h.Hosted,
+		OperatorName:    h.OperatorName,
+		OperatorAddress: strings.Split(h.OperatorAddress, "\n"),
+		OperatorEmail:   h.OperatorEmail,
 	}
+}
+
+// titled builds a shell for a page whose title is content rather than an
+// interface string — a documentation page is named by the document, not by the
+// catalogue, and translating it would mean translating the page it names.
+func (h *Handler) titled(w http.ResponseWriter, r *http.Request, lang, title, nav string, account Account) shell {
+	s := h.newShell(w, r, lang, "pages.title.docs", nav, account)
+	s.Title = title
+
+	return s
+}
+
+// language applies an explicit language choice and returns a locale whose page
+// catalogue is complete. A partial translation may fall back string by string,
+// but the document must not label that English fallback as another language.
+func (h *Handler) language(w http.ResponseWriter, r *http.Request) string {
+	requested := i18n.Apply(w, r)
+	if requested == i18n.DefaultLocale {
+		return requested
+	}
+
+	for _, id := range i18n.Default.IDs() {
+		if strings.HasPrefix(id, "pages.") && !i18n.Default.Has(requested, id) {
+			return i18n.DefaultLocale
+		}
+	}
+
+	return requested
+}
+
+// proseLanguage persists the reader's choice but labels embedded documentation
+// and legal prose as English until translated copies of those documents exist.
+func (h *Handler) proseLanguage(w http.ResponseWriter, r *http.Request) string {
+	i18n.Apply(w, r)
+
+	return i18n.DefaultLocale
 }
 
 // stylesheet serves the one CSS file. It is cached for an hour rather than
@@ -209,12 +286,19 @@ func (h *Handler) stylesheet(w http.ResponseWriter, _ *http.Request) {
 type pricingData struct {
 	shell
 	SelectedPlan string
+
+	// Limit is the plan's included volume, formatted. It is read from the
+	// package that enforces it rather than typed into the page, so the number
+	// somebody buys against and the number their meter is measured against
+	// cannot drift apart.
+	Limit string
 }
 
 // pricing renders the plans. It is deliberately reachable without a session:
 // somebody deciding whether to pay should not have to log in to see the price,
 // and somebody whose dashboard is locked has to be able to reach it.
 func (h *Handler) pricing(w http.ResponseWriter, r *http.Request) {
+	lang := h.language(w, r)
 	account, _ := h.account(r)
 	selected := r.URL.Query().Get("plan")
 	if selected != "monthly" && selected != "yearly" {
@@ -222,8 +306,9 @@ func (h *Handler) pricing(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.render(w, pricingPage, pricingData{
-		shell:        h.newShell(w, r, "Pricing", "pricing", account),
+		shell:        h.newShell(w, r, lang, "pages.title.pricing", "pricing", account),
 		SelectedPlan: selected,
+		Limit:        thousands(usage.MonthlyLimit),
 	})
 }
 
@@ -293,6 +378,7 @@ func (h *Handler) billing(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	now := h.now()
 
+	lang := h.language(w, r)
 	account, err := h.account(r)
 	if err != nil {
 		h.fail(w, err)
@@ -300,8 +386,8 @@ func (h *Handler) billing(w http.ResponseWriter, r *http.Request) {
 	}
 	teamID := account.ID
 
-	data := billingData{shell: h.newShell(w, r, "Billing", "billing", account)}
-	data.Account.Name = fmt.Sprintf("Account %d", teamID)
+	data := billingData{shell: h.newShell(w, r, lang, "pages.title.billing", "billing", account)}
+	data.Account.Name = i18n.T(lang, "pages.account.fallback", "id", teamID)
 
 	if h.Lifecycle != nil {
 		if name, _, err := h.Lifecycle.Contact(ctx, teamID); err == nil && name != "" {
@@ -348,8 +434,8 @@ func (h *Handler) billing(w http.ResponseWriter, r *http.Request) {
 		plan := stripe.Describe(mirror.PriceID, h.Billing.Plans.Monthly, h.Billing.Plans.Yearly)
 
 		data.Plan = planPanel{
-			Label:             firstNonEmpty(plan.Label, "No plan"),
-			Status:            firstNonEmpty(mirror.Status, "none"),
+			Label:             firstNonEmpty(plan.Label, i18n.T(lang, "pages.billing.plan.none")),
+			Status:            firstNonEmpty(mirror.Status, i18n.T(lang, "pages.billing.plan.status_none")),
 			PaymentState:      mirror.PaymentState,
 			CancelAtPeriodEnd: mirror.CancelAtPeriodEnd,
 			HasCustomer:       mirror.CustomerID != "",
@@ -367,8 +453,8 @@ func (h *Handler) billing(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		data.Status = bannerFor(state, now)
-		data.Timeline = timelineFor(state, now)
+		data.Status = bannerFor(lang, state, now)
+		data.Timeline = timelineFor(lang, state, now)
 	}
 
 	h.render(w, billingPage, data)
@@ -405,7 +491,7 @@ func meterFor(counts usage.Counts, now time.Time) usageMeter {
 // bannerFor turns the lifecycle state into the one message at the top of the
 // screen. Each phase names the next date, for the same reason every email does:
 // nobody should have to work out when their data disappears.
-func bannerFor(state lifecycle.State, now time.Time) *statusBanner {
+func bannerFor(lang string, state lifecycle.State, now time.Time) *statusBanner {
 	if !state.Running() {
 		return nil
 	}
@@ -418,42 +504,47 @@ func bannerFor(state lifecycle.State, now time.Time) *statusBanner {
 
 	switch state.At(now) {
 	case lifecycle.PhaseGrace:
-		heading := "Your trial ends on " + locks
-		detail := "Everything works normally until then. After that the dashboard locks, but we keep collecting your data until " + stops + " — so upgrading before that date leaves no gap in your history."
-
+		// The two ids are written out rather than assembled from a prefix so
+		// that the completeness check can see them. A message id built by
+		// concatenation is a string no scan can find and no test can prove is
+		// translated.
+		heading, detail := "pages.banner.trial.heading", "pages.banner.trial.detail"
 		if !trial {
-			heading = "We could not charge your card"
-			detail = "Nothing has changed yet. Your dashboard locks on " + locks + ", and we keep collecting until " + stops + ". Updating your card fixes it immediately."
+			heading, detail = "pages.banner.card.heading", "pages.banner.card.detail"
 		}
 
-		return &statusBanner{Tone: "warn", Heading: heading, Detail: detail}
+		return &statusBanner{
+			Tone:    "warn",
+			Heading: i18n.T(lang, heading, "locks", locks),
+			Detail:  i18n.T(lang, detail, "locks", locks, "stops", stops),
+		}
 
 	case lifecycle.PhaseLocked:
 		return &statusBanner{
 			Tone:    "warn",
-			Heading: "Your dashboard is locked — and we are still collecting",
-			Detail:  "Nothing is lost. Every event from your sites is still being recorded, and it all comes back the moment you pay. We stop collecting on " + stops + ", and delete everything on " + deletes + ".",
+			Heading: i18n.T(lang, "pages.banner.locked.heading"),
+			Detail:  i18n.T(lang, "pages.banner.locked.detail", "stops", stops, "deletes", deletes),
 		}
 
 	case lifecycle.PhaseDormant:
 		return &statusBanner{
 			Tone:    "bad",
-			Heading: "We have stopped collecting",
-			Detail:  "Everything already recorded is safe until " + deletes + ", and you can export all of it right now. The days since " + stops + " will show on your graphs as a labelled gap rather than as zeroes.",
+			Heading: i18n.T(lang, "pages.banner.dormant.heading"),
+			Detail:  i18n.T(lang, "pages.banner.dormant.detail", "stops", stops, "deletes", deletes),
 		}
 
 	default:
 		return &statusBanner{
 			Tone:    "bad",
-			Heading: "This account is scheduled for deletion",
-			Detail:  "Everything we hold for this account is deleted on " + deletes + ". Download it below if you want to keep it.",
+			Heading: i18n.T(lang, "pages.banner.deleted.heading"),
+			Detail:  i18n.T(lang, "pages.banner.deleted.detail", "deletes", deletes),
 		}
 	}
 }
 
 // timelineFor lists the three remaining boundaries, marking the phase the
 // account is in now.
-func timelineFor(state lifecycle.State, now time.Time) []timelineRow {
+func timelineFor(lang string, state lifecycle.State, now time.Time) []timelineRow {
 	if !state.Running() {
 		return nil
 	}
@@ -463,17 +554,17 @@ func timelineFor(state lifecycle.State, now time.Time) []timelineRow {
 	return []timelineRow{
 		{
 			When: state.Boundary(lifecycle.PhaseLocked).Format("2 January 2006"),
-			What: "The dashboard locks. We keep collecting everything.",
+			What: i18n.T(lang, "pages.timeline.locked"),
 			Now:  phase == lifecycle.PhaseGrace,
 		},
 		{
 			When: state.Boundary(lifecycle.PhaseDormant).Format("2 January 2006"),
-			What: "We stop collecting. A labelled gap starts on your graphs.",
+			What: i18n.T(lang, "pages.timeline.dormant"),
 			Now:  phase == lifecycle.PhaseLocked,
 		},
 		{
 			When: state.Boundary(lifecycle.PhaseDeleted).Format("2 January 2006"),
-			What: "Everything is permanently deleted. This cannot be undone.",
+			What: i18n.T(lang, "pages.timeline.deleted"),
 			Now:  phase == lifecycle.PhaseDormant,
 		},
 	}
@@ -483,6 +574,7 @@ func timelineFor(state lifecycle.State, now time.Time) []timelineRow {
 // so the browser turns the POST into a GET; a 302 here leaves some clients
 // re-posting the form to the payment provider.
 func (h *Handler) checkout(w http.ResponseWriter, r *http.Request) {
+	lang := h.language(w, r)
 	account, err := h.account(r)
 	if err != nil {
 		h.fail(w, err)
@@ -490,9 +582,9 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.Billing == nil || !h.Billing.Enabled() {
-		h.message(w, r, "Upgrade", "This install cannot take payments",
-			[]string{"No payment provider is configured here. That is the normal state of a self-hosted install, and nothing about the software you are running is limited by it."},
-			[]link{{Label: "Back to billing", URL: accountURL("/billing", account.ID, nil)}})
+		h.message(w, r, lang, "pages.title.upgrade", i18n.T(lang, "pages.pricing.disabled.heading"),
+			[]string{i18n.T(lang, "pages.checkout.disabled.body")},
+			[]link{{Label: i18n.T(lang, "pages.link.back_to_billing"), URL: accountURL("/billing", account.ID, nil)}})
 		return
 	}
 
@@ -508,6 +600,7 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request) {
 // portal redirects to the payment provider's Customer Portal, where card
 // updates, plan switches, invoices and cancellation all live.
 func (h *Handler) portal(w http.ResponseWriter, r *http.Request) {
+	lang := h.language(w, r)
 	account, err := h.account(r)
 	if err != nil {
 		h.fail(w, err)
@@ -515,17 +608,17 @@ func (h *Handler) portal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.Billing == nil || !h.Billing.Enabled() {
-		h.message(w, r, "Billing", "This install cannot take payments",
-			[]string{"No payment provider is configured here, so there is no billing portal to open."},
-			[]link{{Label: "Back to billing", URL: accountURL("/billing", account.ID, nil)}})
+		h.message(w, r, lang, "pages.title.billing", i18n.T(lang, "pages.pricing.disabled.heading"),
+			[]string{i18n.T(lang, "pages.portal.disabled.body")},
+			[]link{{Label: i18n.T(lang, "pages.link.back_to_billing"), URL: accountURL("/billing", account.ID, nil)}})
 		return
 	}
 
 	session, err := h.Billing.Portal(r.Context(), account.ID)
 	if err != nil {
-		h.message(w, r, "Billing", "No billing portal yet",
-			[]string{err.Error(), "A portal exists once an account has been through checkout at least once."},
-			[]link{{Label: "See the plans", URL: accountURL("/pricing", account.ID, nil)}})
+		h.message(w, r, lang, "pages.title.billing", i18n.T(lang, "pages.portal.missing.heading"),
+			[]string{err.Error(), i18n.T(lang, "pages.portal.missing.body")},
+			[]link{{Label: i18n.T(lang, "pages.link.plans"), URL: accountURL("/pricing", account.ID, nil)}})
 		return
 	}
 
@@ -538,6 +631,7 @@ func (h *Handler) portal(w http.ResponseWriter, r *http.Request) {
 // provider's signed payment result, and a return page that also flipped a switch
 // would be a second source of truth reachable by anyone who guessed the URL.
 func (h *Handler) done(w http.ResponseWriter, r *http.Request) {
+	lang := h.language(w, r)
 	account, err := h.account(r)
 	if err != nil {
 		h.fail(w, err)
@@ -584,25 +678,32 @@ func (h *Handler) done(w http.ResponseWriter, r *http.Request) {
 	if status == "unpaid" {
 		links = append(links, link{Label: "Retry checkout", URL: accountURL("/pricing", account.ID, nil)})
 	}
-	h.message(w, r, "Thank you", heading, paragraphs, links)
+	h.message(w, r, lang, "pages.title.thanks", heading, paragraphs, links)
 }
 
-// export is the download-everything page. It is reachable in every phase,
-// including a locked or dormant account and the day before a deletion, because
-// data portability is not something we may switch off for non-payment.
+// export is the page that explains where the export lives. It is reachable in
+// every phase, including a locked or dormant account and the day before a
+// deletion, because data portability is not something we may switch off for
+// non-payment — and because these pages sit outside the lock, this is the one
+// route to it that a locked customer can always find.
 func (h *Handler) export(w http.ResponseWriter, r *http.Request) {
+	lang := h.language(w, r)
 	account, err := h.account(r)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
 
-	h.message(w, r, "Export", "Download everything we hold",
+	h.message(w, r, lang, "pages.title.export", i18n.T(lang, "pages.export.heading"),
 		[]string{
-			"Your export contains every event we have stored for this account, in a portable format you can load somewhere else.",
-			"It works in every state an account can be in — including a locked dashboard, a stopped collection, and the day before a scheduled deletion. It is your data.",
+			i18n.T(lang, "pages.export.contents"),
+			i18n.T(lang, "pages.export.always"),
+			i18n.T(lang, "pages.export.not_yet"),
 		},
-		[]link{{Label: "Billing", URL: accountURL("/billing", account.ID, nil)}, {Label: "How exports work", URL: "/docs/api"}})
+		[]link{
+			{Label: i18n.T(lang, "pages.link.billing"), URL: accountURL("/billing", account.ID, nil)},
+			{Label: i18n.T(lang, "pages.link.export_docs"), URL: "/docs/api"},
+		})
 }
 
 // accountURL carries an already-authorized team through local billing links.
@@ -619,14 +720,17 @@ func accountURL(path string, teamID int64, values url.Values) string {
 
 // docs renders the documentation index.
 func (h *Handler) docs(w http.ResponseWriter, r *http.Request) {
+	lang := h.proseLanguage(w, r)
+
 	h.render(w, docsPage, struct {
 		shell
 		Index []Doc
-	}{shell: h.newShell(w, r, "Documentation", "docs", Account{}), Index: documentation})
+	}{shell: h.newShell(w, r, lang, "pages.title.docs", "docs", Account{}), Index: documentation})
 }
 
 // doc renders one documentation page.
 func (h *Handler) doc(w http.ResponseWriter, r *http.Request) {
+	lang := h.proseLanguage(w, r)
 	page, ok := findDoc(documentation, r.PathValue("slug"))
 	if !ok {
 		http.NotFound(w, r)
@@ -637,22 +741,73 @@ func (h *Handler) doc(w http.ResponseWriter, r *http.Request) {
 		shell
 		Doc   Doc
 		Index []Doc
-	}{shell: h.newShell(w, r, page.Title, "docs", Account{}), Doc: page, Index: documentation})
+	}{shell: h.titled(w, r, lang, page.Title, "docs", Account{}), Doc: page, Index: documentation})
 }
 
 // legal renders one of the three legal documents.
 func (h *Handler) legal(w http.ResponseWriter, r *http.Request) {
+	lang := h.proseLanguage(w, r)
 	page, ok := findDoc(legal, r.PathValue("slug"))
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
 
+	if !h.Hosted && (page.Slug == "privacy" || page.Slug == "dpa") {
+		page = h.selfHostedLegal(page)
+	}
+
 	h.render(w, docPage, struct {
 		shell
 		Doc   Doc
 		Index []Doc
-	}{shell: h.newShell(w, r, page.Title, "legal", Account{}), Doc: page, Index: legal})
+	}{shell: h.titled(w, r, lang, page.Title, "legal", Account{}), Doc: page, Index: legal})
+}
+
+// selfHostedLegal replaces hosted-controller identity with the configured
+// operator while escaping every operator-supplied value. Cloudmanic remains
+// named only where the DPA explains that the software author is not a
+// self-hoster's processor.
+func (h *Handler) selfHostedLegal(page Doc) Doc {
+	name := template.HTMLEscapeString(h.OperatorName)
+	address := template.HTMLEscapeString(h.OperatorAddress)
+	address = strings.ReplaceAll(address, "\n", "<br>\n  ")
+	email := template.HTMLEscapeString(h.OperatorEmail)
+	body := string(page.Body)
+
+	if page.Slug == "privacy" {
+		body = strings.Replace(body,
+			"<strong>Cloudmanic Labs, LLC</strong><br>\n  901 Brutscher Street, D112<br>\n  Newberg, OR 97132<br>\n  United States<br>\n  <a href=\"mailto:privacy@feasible.lol\">privacy@feasible.lol</a>",
+			"<strong>"+name+"</strong><br>\n  "+address+"<br>\n  <a href=\"mailto:"+email+"\">"+email+"</a>", 1)
+		body = strings.ReplaceAll(body, "mailto:privacy@feasible.lol\">privacy@feasible.lol", "mailto:"+email+"\">"+email)
+	}
+	if page.Slug == "dpa" {
+		body = strings.ReplaceAll(body, "mailto:privacy@feasible.lol\">privacy@feasible.lol", "mailto:"+email+"\">"+email)
+		body = strings.Replace(body,
+			"<strong>Processor:</strong> Cloudmanic Labs, LLC<br>\n  901 Brutscher Street, D112<br>\n  Newberg, OR 97132<br>\n  United States",
+			"<strong>Processor:</strong> "+name+"<br>\n  "+address, 1)
+	}
+
+	page.Body = template.HTML(body) //nolint:gosec // operator values were escaped before substitution
+	return page
+}
+
+// subprocessors renders the deployment's configured legal provider inventory.
+// Self-hosted installs identify the operator as responsible for its choices;
+// hosted production cannot reach this handler without the required entries
+// because configuration validation fails first.
+func (h *Handler) subprocessors(w http.ResponseWriter, r *http.Request) {
+	lang := h.proseLanguage(w, r)
+
+	h.render(w, subprocessorsPage, struct {
+		shell
+		Hosted        bool
+		Subprocessors []config.Subprocessor
+	}{
+		shell:         h.titled(w, r, lang, "Subprocessors", "legal", Account{}),
+		Hosted:        h.Hosted,
+		Subprocessors: h.Subprocessors,
+	})
 }
 
 // link is one button on a message page.
@@ -665,7 +820,7 @@ type link struct {
 // checkout, an install with no payment provider, an account with no portal yet —
 // are all "here is what happened and here is where to go next", and giving each
 // its own template would be five templates that drift apart.
-func (h *Handler) message(w http.ResponseWriter, r *http.Request, title, heading string, paragraphs []string, links []link) {
+func (h *Handler) message(w http.ResponseWriter, r *http.Request, lang, titleID, heading string, paragraphs []string, links []link) {
 	account, _ := h.account(r)
 
 	h.render(w, messagePage, struct {
@@ -674,7 +829,7 @@ func (h *Handler) message(w http.ResponseWriter, r *http.Request, title, heading
 		Paragraphs []string
 		Links      []link
 		Extra      template.HTML
-	}{shell: h.newShell(w, r, title, "billing", account), Heading: heading, Paragraphs: paragraphs, Links: links})
+	}{shell: h.newShell(w, r, lang, titleID, "billing", account), Heading: heading, Paragraphs: paragraphs, Links: links})
 }
 
 // render writes one page, or reports the failure rather than sending half a
@@ -701,7 +856,7 @@ func (h *Handler) fail(w http.ResponseWriter, err error) {
 		h.Log.Error("billing page failed", "error", err)
 	}
 
-	http.Error(w, "something went wrong rendering this page", http.StatusInternalServerError)
+	http.Error(w, i18n.T(i18n.DefaultLocale, "pages.error.render"), http.StatusInternalServerError)
 }
 
 // account resolves the authenticated billing identity. The form-value fallback
@@ -713,16 +868,18 @@ func (h *Handler) account(r *http.Request) (Account, error) {
 		return h.CurrentAccount(r)
 	}
 
+	lang := i18n.Negotiate(r)
+
 	if raw := r.FormValue("team"); raw != "" {
 		id, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || id < 1 {
-			return Account{}, fmt.Errorf("%q is not an account id", raw)
+			return Account{}, errors.New(i18n.T(lang, "pages.error.bad_account_id", "value", raw))
 		}
 
 		return Account{ID: id, Email: r.FormValue("email")}, nil
 	}
 
-	return Account{}, fmt.Errorf("no account was named")
+	return Account{}, errors.New(i18n.T(lang, "pages.error.no_account_named"))
 }
 
 // thousands formats a count with separators, because the numbers on this screen

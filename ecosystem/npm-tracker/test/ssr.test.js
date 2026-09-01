@@ -37,8 +37,8 @@ for (const [label, mod] of [
 		assert.equal(typeof tracker.track, "function");
 		assert.equal(typeof tracker.pageview, "function");
 
-		assert.deepEqual(await tracker.track("Signup"), { sent: false, status: null });
-		assert.deepEqual(await tracker.pageview(), { sent: false, status: null });
+		assert.deepEqual(await tracker.track("Signup"), { sent: false, status: null, dropped: null });
+		assert.deepEqual(await tracker.pageview(), { sent: false, status: null, dropped: null });
 
 		assert.equal(tracker.enable(), false);
 		assert.equal(tracker.disable(), false);
@@ -49,9 +49,10 @@ for (const [label, mod] of [
 		assert.deepEqual(await mod.track("Signup", { props: { plan: "annual" } }), {
 			sent: false,
 			status: null,
+			dropped: null,
 		});
 
-		assert.deepEqual(await mod.pageview(), { sent: false, status: null });
+		assert.deepEqual(await mod.pageview(), { sent: false, status: null, dropped: null });
 
 		assert.equal(mod.enable(), false);
 		assert.equal(mod.disable(), false);

@@ -101,6 +101,9 @@ func TestUnknownSiteIsDroppedWithAReason(t *testing.T) {
 	if got := recorder.Header().Get(HeaderDropped); got != ReasonUnknownSite {
 		t.Fatalf("dropped header = %q, want %q", got, ReasonUnknownSite)
 	}
+	if got := recorder.Header().Get("Access-Control-Expose-Headers"); !strings.Contains(strings.ToLower(got), HeaderDropped) {
+		t.Fatalf("CORS expose headers = %q, browser callback cannot read %s", got, HeaderDropped)
+	}
 
 	// And it is counted, because a header nobody reads is not visibility.
 	snapshot := h.service.Counters.Snapshot()

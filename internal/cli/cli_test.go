@@ -10,9 +10,22 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"strings"
 	"testing"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 )
+
+// applyControlMigrations builds the complete merged control schema for command
+// tests that seed records directly before exercising a process boundary.
+func applyControlMigrations(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // run drives the command the way a shell would and hands back both streams. It
 // exists so no test has to build a binary or care which stream a message went
@@ -22,9 +35,23 @@ func run(t *testing.T, args ...string) (int, string, string) {
 
 	var stdout, stderr bytes.Buffer
 
-	code := Run(Options{Args: args, Stdout: &stdout, Stderr: &stderr})
+	code := Run(Options{
+		Args:              args,
+		Stdout:            &stdout,
+		Stderr:            &stderr,
+		ControlMigrations: migrate.Control(),
+	})
 
 	return code, stdout.String(), stderr.String()
+}
+
+// setProductionOperator supplies the legal identity required for production
+// command tests whose subject is a different fail-closed guard.
+func setProductionOperator(t *testing.T) {
+	t.Helper()
+	t.Setenv("FEASIBLE_OPERATOR_NAME", "Example Operator, Inc.")
+	t.Setenv("FEASIBLE_OPERATOR_ADDRESS", "123 Example Street")
+	t.Setenv("FEASIBLE_OPERATOR_EMAIL", "privacy@example.test")
 }
 
 // TestVersionFlag checks --version prints the stamped build line on stdout.

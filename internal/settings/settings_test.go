@@ -206,6 +206,34 @@ func TestScreensRender(t *testing.T) {
 	}
 }
 
+// TestLanguageSurvivesSettingsLinksFormsAndRedirects proves a settings POST
+// keeps validated locale state in both its action and post-redirect-get URL.
+func TestLanguageSurvivesSettingsLinksFormsAndRedirects(t *testing.T) {
+	handler, _ := newHandler(t)
+	body := get(t, handler, "/settings/sites/example.com/paths?lang=de").Body.String()
+
+	for _, want := range []string{
+		`action="/settings/sites/example.com/paths/save?lang=de"`,
+		`href="/settings/sites/example.com/shields?lang=de"`,
+		"Those lost originals cannot be reconstructed",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("localized path settings are missing %q", want)
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/settings/sites/example.com/paths/trailing-slash?lang=de", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("settings POST answered %d", recorder.Code)
+	}
+	if location := recorder.Header().Get("Location"); !strings.Contains(location, "lang=de") || !strings.HasPrefix(location, "/settings/sites/example.com/paths?") {
+		t.Fatalf("settings redirect lost locale: %q", location)
+	}
+}
+
 // TestShieldsPageShowsTheResolvedAddress covers the one-click promise: the page
 // has to show the customer the address their own traffic arrives on, or
 // "block my own traffic" is a hunt through a third-party site.
@@ -225,7 +253,7 @@ func TestShieldsPageShowsTheResolvedAddress(t *testing.T) {
 
 // TestShieldsPageWarnsAboutALANAddress covers the self-hosting trap: behind a
 // proxy that does not forward X-Forwarded-For, the address on this page is the
-// customer's router, and a rule built on it blocks nothing at all.
+// customer's shared proxy, and manually blocking it blocks every visitor.
 func TestShieldsPageWarnsAboutALANAddress(t *testing.T) {
 	handler, _ := newHandler(t)
 
@@ -237,8 +265,11 @@ func TestShieldsPageWarnsAboutALANAddress(t *testing.T) {
 
 	body := recorder.Body.String()
 
-	if !strings.Contains(body, "not your public address") {
+	if !strings.Contains(body, "private or shared proxy address") {
 		t.Fatal("no warning was shown for a private address")
+	}
+	if !strings.Contains(body, "would block everyone") {
+		t.Fatal("the warning does not explain the effect of manually blocking the shared address")
 	}
 
 	if !strings.Contains(body, "X-Forwarded-For") {
@@ -246,7 +277,7 @@ func TestShieldsPageWarnsAboutALANAddress(t *testing.T) {
 	}
 
 	if strings.Contains(body, "Block my own traffic") {
-		t.Fatal("a one-click rule was offered on an address that would block nothing")
+		t.Fatal("a one-click rule was offered for an address shared by every visitor")
 	}
 }
 

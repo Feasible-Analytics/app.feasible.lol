@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
@@ -60,12 +61,13 @@ func runSeed(t *testing.T, seed int64, pageviews int64) (string, *Result) {
 	dir := t.TempDir()
 
 	result, err := Run(context.Background(), Options{
-		DataDir:   dir,
-		Pageviews: pageviews,
-		Days:      14,
-		Sites:     5,
-		Seed:      seed,
-		Now:       fixedNow,
+		DataDir:           dir,
+		Pageviews:         pageviews,
+		Days:              14,
+		Sites:             5,
+		Seed:              seed,
+		Now:               fixedNow,
+		ControlMigrations: migrate.Control(),
 	})
 	if err != nil {
 		t.Fatalf("seed run: %v", err)
@@ -252,12 +254,13 @@ func TestInsertsCoverEveryColumn(t *testing.T) {
 	dir := t.TempDir()
 
 	if _, err := Run(context.Background(), Options{
-		DataDir:   dir,
-		Pageviews: 200,
-		Days:      3,
-		Sites:     1,
-		Seed:      3,
-		Now:       fixedNow,
+		DataDir:           dir,
+		Pageviews:         200,
+		Days:              3,
+		Sites:             1,
+		Seed:              3,
+		Now:               fixedNow,
+		ControlMigrations: migrate.Control(),
 	}); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
@@ -319,12 +322,13 @@ func BenchmarkRun(b *testing.B) {
 		dir := b.TempDir()
 
 		result, err := Run(context.Background(), Options{
-			DataDir:   dir,
-			Pageviews: 25_000,
-			Days:      7,
-			Sites:     1,
-			Seed:      DefaultSeed,
-			Now:       fixedNow,
+			DataDir:           dir,
+			Pageviews:         25_000,
+			Days:              7,
+			Sites:             1,
+			Seed:              DefaultSeed,
+			Now:               fixedNow,
+			ControlMigrations: migrate.Control(),
 		})
 		if err != nil {
 			b.Fatalf("seed run: %v", err)

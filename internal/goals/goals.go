@@ -566,9 +566,12 @@ const (
 
 	// EventOutboundClick, EventFileDownload and EventFormSubmission are the
 	// other three the tracker can detect without the customer writing code.
+	// Each string has to be byte-identical to what the tracker sends, or the
+	// automatic goal matches nothing and reads as "this behaviour never
+	// happened" rather than as a bug.
 	EventOutboundClick  = "Outbound Link: Click"
 	EventFileDownload   = "File Download"
-	EventFormSubmission = "Form: Submission"
+	EventFormSubmission = "Form: Submit"
 )
 
 // automaticGoals is what every new site gets. The 404 goal is the important

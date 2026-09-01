@@ -128,6 +128,27 @@ func TestEveryWarningNamesItsDate(t *testing.T) {
 	}
 }
 
+// TestDeletionWarningsStateLiveReplicaAndProviderTiming prevents one warning
+// from reverting to the false shorthand that everything vanishes at day 90.
+func TestDeletionWarningsStateLiveReplicaAndProviderTiming(t *testing.T) {
+	for _, template := range []string{
+		lifecycle.TemplateDeletionIn15,
+		lifecycle.TemplateDeletionIn5,
+		lifecycle.TemplateDeletionTomorrow,
+	} {
+		content, err := LifecycleContent(noticeFor(template, lifecycle.TriggerLapse, 89))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := strings.ToLower(strings.Join(content.Body, " "))
+		for _, want := range []string{"live", "72 hours", "60 seconds", "being written", "hourly", "payment-provider"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s does not state %q", template, want)
+			}
+		}
+	}
+}
+
 // TestDunningCarriesTheCardLink is the difference between the two voices that
 // actually matters. A lapsed subscription is usually an expired card, and
 // sending somebody to a pricing page to fix that wastes their time.

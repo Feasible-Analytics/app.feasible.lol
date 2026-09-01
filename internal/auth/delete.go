@@ -44,10 +44,9 @@ func NewDeleter(purger PermanentAccountDeleter, log *logger.Logger) *Deleter {
 
 // DeleteAccount removes a team, its owner and every trace of both.
 //
-// It really deletes. A privacy product whose "delete my account" leaves a
-// hidden row and an orphaned database file has no honest answer to "what do you
-// still hold about me", and the answer has to be "nothing" rather than "nothing
-// you can see".
+// It really deletes the account's live data. The durable tombstone is retained
+// after deletion because an old ingest routing snapshot must remain unable to
+// recreate the database in another process.
 func (d *Deleter) DeleteAccount(ctx context.Context, userID, teamID int64) error {
 	if d == nil || d.purger == nil {
 		return fmt.Errorf("auth: permanent deletion is not configured")

@@ -45,6 +45,25 @@ that has not been run, and restoring over it would be the wrong repair.
 
 ## Fix
 
+**0. Refuse restoration of a deleted account.** A replica is disaster recovery,
+not an undelete path. Before downloading anything, check both durable deletion
+records:
+
+```bash
+test ! -e /var/lib/feasible/.account-deletions/account-000042.deleted
+state=$(sqlite3 /var/lib/feasible/control.db \
+  "SELECT CASE
+     WHEN EXISTS (SELECT 1 FROM account_deletions WHERE team_id = 42) THEN 'deleting'
+     WHEN EXISTS (SELECT 1 FROM teams WHERE id = 42) THEN 'live'
+     ELSE 'absent'
+   END;")
+test "$state" = live
+```
+
+Either failure stops the restore. Do not remove a tombstone to make the check
+pass; that marker is what prevents a stale route or restored file from
+recreating deleted data.
+
 **1. Stop the process that would hold the file open.**
 
 ```bash

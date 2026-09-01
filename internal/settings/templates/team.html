@@ -44,7 +44,7 @@
 								{{end}}
 							</td>
 							<td class="border-t border-line py-2.5 pr-0 text-right align-middle">
-				<form class="inline-flex items-center gap-2 align-middle" method="post" action="/settings/members/role">
+				<form class="inline-flex items-center gap-2 align-middle" method="post" action="{{ url $.Lang "/settings/members/role" }}">
 					<input type="hidden" name="csrf_token" value="{{$.CSRF}}" />
 					<input type="hidden" name="team_id" value="{{$.Team.ID}}" />
 					<input type="hidden" name="user_id" value="{{.UserID}}" />
@@ -56,7 +56,7 @@
 									</select>
 									<button type="submit" class="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "common.action.save" }}</button>
 								</form>
-				<form class="inline-flex items-center align-middle" method="post" action="/settings/members/remove">
+				<form class="inline-flex items-center align-middle" method="post" action="{{ url $.Lang "/settings/members/remove" }}">
 					<input type="hidden" name="csrf_token" value="{{$.CSRF}}" />
 					<input type="hidden" name="team_id" value="{{$.Team.ID}}" />
 					<input type="hidden" name="user_id" value="{{.UserID}}" />
@@ -108,7 +108,7 @@
 			<strong class="font-semibold text-heading">{{ t $.Lang "settings.team.invitations_hint_expiry" }}</strong>
 			{{ t $.Lang "settings.team.invitations_hint_after" }}
 		</p>
-		<form method="post" action="/settings/members/invite" class="mb-4 mt-4 flex flex-wrap items-center gap-2">
+		<form method="post" action="{{ url $.Lang "/settings/members/invite" }}" class="mb-4 mt-4 flex flex-wrap items-center gap-2">
 			<input type="hidden" name="csrf_token" value="{{.CSRF}}" />
 			<input type="hidden" name="team_id" value="{{.Team.ID}}" />
 			<input type="email" name="email" placeholder="{{ t $.Lang "settings.team.invite_email_placeholder" }}" required class="grow basis-[220px] rounded-xl border border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
@@ -146,7 +146,7 @@
 									{{end}}
 								</td>
 								<td class="border-t border-line py-2.5 pr-0 text-right align-middle">
-					<form class="inline-flex items-center align-middle" method="post" action="/settings/members/invite/revoke">
+					<form class="inline-flex items-center align-middle" method="post" action="{{ url $.Lang "/settings/members/invite/revoke" }}">
 						<input type="hidden" name="csrf_token" value="{{$.CSRF}}" />
 						<input type="hidden" name="team_id" value="{{$.Team.ID}}" />
 						<input type="hidden" name="invitation_id" value="{{.ID}}" />
@@ -177,7 +177,7 @@
 				<div class="mt-1.5 break-all font-mono text-xs">{{.NewKey}}</div>
 			</div>
 		{{end}}
-		<form method="post" action="/settings/members/api-keys" class="mb-4 mt-4 flex flex-wrap items-center gap-2">
+		<form method="post" action="{{ url $.Lang "/settings/members/api-keys" }}" class="mb-4 mt-4 flex flex-wrap items-center gap-2">
 			<input type="hidden" name="csrf_token" value="{{.CSRF}}" />
 			<input type="hidden" name="team_id" value="{{.Team.ID}}" />
 			<input type="text" name="name" placeholder="{{ t $.Lang "settings.team.api_key_name_placeholder" }}" class="grow basis-[220px] rounded-xl border border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
@@ -210,7 +210,7 @@
 								</td>
 								<td class="border-t border-line py-2.5 pr-0 text-right align-middle">
 									{{if .Active}}
-						<form class="inline-flex items-center align-middle" method="post" action="/settings/members/api-keys/revoke">
+						<form class="inline-flex items-center align-middle" method="post" action="{{ url $.Lang "/settings/members/api-keys/revoke" }}">
 							<input type="hidden" name="csrf_token" value="{{$.CSRF}}" />
 							<input type="hidden" name="team_id" value="{{$.Team.ID}}" />
 							<input type="hidden" name="key_id" value="{{.ID}}" />
@@ -235,7 +235,7 @@
 		<p class="mt-1 text-sm text-muted">
 			{{ t $.Lang "settings.team.ownership_hint" }}
 		</p>
-		<form method="post" action="/settings/members/transfer" class="mt-4 flex flex-wrap items-center gap-2">
+		<form method="post" action="{{ url $.Lang "/settings/members/transfer" }}" class="mt-4 flex flex-wrap items-center gap-2">
 			<input type="hidden" name="csrf_token" value="{{.CSRF}}" />
 			<input type="hidden" name="team_id" value="{{.Team.ID}}" />
 			<select name="user_id" class="rounded-xl border border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">

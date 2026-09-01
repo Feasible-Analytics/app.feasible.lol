@@ -103,7 +103,7 @@ func runDBMigrate(e *env, args []string) int {
 
 	ctx := context.Background()
 
-	targets, err := migrateTargets(e.cfg.App.DataDir)
+	targets, err := migrateTargets(e.cfg.App.DataDir, e.controlMigrations)
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError
@@ -184,10 +184,10 @@ func migrateOne(ctx context.Context, e *env, item target, fresh bool) (err error
 // schema at all. Account databases are only visited where they already exist —
 // an account's database is created with the account, and inventing one here
 // would mean guessing an id.
-func migrateTargets(dataDir string) ([]target, error) {
+func migrateTargets(dataDir string, controlMigrations migrate.Set) ([]target, error) {
 	targets := []target{{
 		path: filepath.Join(dataDir, config.ControlDatabaseName),
-		set:  migrate.Control(),
+		set:  controlMigrations,
 	}}
 
 	ids, err := accounts.Discover(dataDir)

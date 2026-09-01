@@ -12,6 +12,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -240,10 +241,22 @@ func (w *Writer) Write(ctx context.Context, batch []Event) ([]uuid.UUID, error) 
 // writeAccountDurable applies one account batch with SQLite as the authority
 // for UUID ownership, live fold state, and pre-pageview engagement ownership.
 func (w *Writer) writeAccountDurable(ctx context.Context, accountID int64, events []Event) ([]uuid.UUID, error) {
-	account, err := w.accounts.Open(ctx, accountID)
+	lease, err := w.accounts.Acquire(ctx, accountID)
+	if errors.Is(err, accounts.ErrDeleted) {
+		// A buffered event can carry a route captured before deletion. Treat the
+		// tombstone as an intentional drop so the browser drains instead of
+		// retrying forever or recreating deleted account data.
+		committed := make([]uuid.UUID, 0, len(events))
+		for _, event := range events {
+			committed = append(committed, event.UUID)
+		}
+		return committed, nil
+	}
 	if err != nil {
 		return nil, err
 	}
+	defer lease.Release() //nolint:errcheck // the write result is more useful than an unlock error
+	account := lease.Account
 
 	state := w.lockFor(accountID)
 	state.mu.Lock()

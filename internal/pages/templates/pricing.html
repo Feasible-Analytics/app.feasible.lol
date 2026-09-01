@@ -2,18 +2,14 @@
 <div class="wrap">
 
   <div class="hero">
-    <h1>One price. Every feature. No add-ons.</h1>
-    <p>Unlimited sites, unlimited team members, unlimited data retention, and a million
-       pageviews and custom events a month. There is no cheaper tier missing the thing
-       you need, and no enterprise tier hiding it.</p>
+    <h1>{{ t .Lang "pages.pricing.heading" }}</h1>
+    <p>{{ t .Lang "pages.pricing.intro" }}</p>
   </div>
 
   {{ if not .Enabled }}
   <div class="banner warn">
-    <h3>This install cannot take payments</h3>
-    <p>No payment provider is configured here, which is the normal state of a self-hosted
-       install. Everything on this page describes the hosted service at feasible.lol.
-       Nothing about the software you are running is limited.</p>
+    <h3>{{ t .Lang "pages.pricing.disabled.heading" }}</h3>
+    <p>{{ t .Lang "pages.pricing.disabled.body" }}</p>
   </div>
   {{ end }}
 
@@ -21,18 +17,18 @@
     <div class="grid two">
 
       <div class="panel plan">
-        <div class="per">Monthly</div>
+        <div class="per">{{ t .Lang "pages.pricing.monthly.name" }}</div>
         <div class="price">$9.99</div>
-        <div class="per">per month, billed monthly</div>
+        <div class="per">{{ t .Lang "pages.pricing.monthly.per" }}</div>
         <ul>
-          <li>1,000,000 pageviews + custom events a month</li>
-          <li>Unlimited sites</li>
-          <li>Unlimited team members</li>
-          <li>Unlimited retention — we never age your data out</li>
-          <li>Every feature: goals, funnels, custom properties, the API, exports</li>
-          <li>Cancel any time, from your own billing portal</li>
+          <li>{{ t .Lang "pages.plan.volume" "limit" .Limit }}</li>
+          <li>{{ t .Lang "pages.plan.sites" }}</li>
+          <li>{{ t .Lang "pages.plan.members" }}</li>
+          <li>{{ t .Lang "pages.plan.retention" }}</li>
+          <li>{{ t .Lang "pages.plan.features" }}</li>
+          <li>{{ t .Lang "pages.plan.cancel" }}</li>
         </ul>
-        {{ if .SignedIn }}
+		{{ if .SignedIn }}
           <form method="POST" action="/billing/checkout">
             <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
             <input type="hidden" name="team" value="{{ .TeamID }}">
@@ -41,21 +37,21 @@
           </form>
         {{ else }}
           <a class="btn" href="/register?next=%2Fpricing%3Fplan%3Dmonthly">Create an account</a>
-          <p class="per" style="margin-top:10px"><a href="/login?next=%2Fpricing%3Fplan%3Dmonthly">Sign in to upgrade</a></p>
-        {{ end }}
+		  <p class="per" style="margin-top:10px"><a href="/login?next=%2Fpricing%3Fplan%3Dmonthly">Sign in to upgrade</a></p>
+		{{ end }}
       </div>
 
       <div class="panel plan">
-        <div class="per">Yearly <span class="save">2 months free</span></div>
+        <div class="per">{{ t .Lang "pages.pricing.yearly.name" }} <span class="save">{{ t .Lang "pages.pricing.yearly.saving" }}</span></div>
         <div class="price">$100</div>
-        <div class="per">per year — ten months' price for twelve</div>
+        <div class="per">{{ t .Lang "pages.pricing.yearly.per" }}</div>
         <ul>
-          <li>Everything in monthly, at 17% less</li>
-          <li>One invoice a year instead of twelve</li>
-          <li>Our policy gives a pro-rata refund within 30 days if you change your mind</li>
-          <li>Switch to monthly whenever you like — it takes effect at renewal</li>
-          <li>Switching monthly to yearly prorates immediately</li>
-        </ul>
+		  <li>{{ t .Lang "pages.plan.yearly.discount" }}</li>
+		  <li>{{ t .Lang "pages.plan.yearly.invoice" }}</li>
+		  <li>{{ t .Lang "pages.plan.yearly.refund" }}</li>
+		  <li>{{ t .Lang "pages.plan.yearly.switch_down" }}</li>
+		  <li>{{ t .Lang "pages.plan.yearly.switch_up" }}</li>
+		</ul>
         {{ if .SignedIn }}
           <form method="POST" action="/billing/checkout">
             <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
@@ -65,48 +61,40 @@
           </form>
         {{ else }}
           <a class="btn" href="/register?next=%2Fpricing%3Fplan%3Dyearly">Create an account</a>
-          <p class="per" style="margin-top:10px"><a href="/login?next=%2Fpricing%3Fplan%3Dyearly">Sign in to upgrade</a></p>
-        {{ end }}
+		  <p class="per" style="margin-top:10px"><a href="/login?next=%2Fpricing%3Fplan%3Dyearly">Sign in to upgrade</a></p>
+		{{ end }}
       </div>
 
     </div>
   </section>
 
   <section>
-    <h2>What happens if you stop paying</h2>
+    <h2>{{ t .Lang "pages.pricing.lapse.heading" }}</h2>
     <div class="panel">
-      <p>We would rather tell you this before you buy than after. If a trial ends or a card
-         stops working, the same ninety-day sequence runs either way, and you get an email at
-         every step naming the exact date of the next one.</p>
+      <p>{{ t .Lang "pages.pricing.lapse.intro" }}</p>
       <ul class="timeline">
-        <li><span class="when">Days 0 – 30</span><span class="what">Everything works. A banner appears, and we email you at day 23 and day 29.</span></li>
-        <li><span class="when">Days 30 – 60</span><span class="what">The dashboard locks, but <strong>we keep collecting</strong>. Pay before day 60 and your history has no gap in it.</span></li>
-        <li><span class="when">Days 60 – 90</span><span class="what">We stop collecting. Everything already recorded is kept, and the missing days show on your graphs as a labelled gap rather than as zeroes.</span></li>
-        <li><span class="when">Day 90</span><span class="what">We permanently delete the account: the analytics database, the account records and the customer record with our payment provider.</span></li>
+        <li><span class="when">{{ t .Lang "pages.pricing.lapse.grace.when" }}</span><span class="what">{{ t .Lang "pages.pricing.lapse.grace.what" }}</span></li>
+        <li><span class="when">{{ t .Lang "pages.pricing.lapse.locked.when" }}</span><span class="what">{{ t .Lang "pages.pricing.lapse.locked.what" }}</span></li>
+        <li><span class="when">{{ t .Lang "pages.pricing.lapse.dormant.when" }}</span><span class="what">{{ t .Lang "pages.pricing.lapse.dormant.what" }}</span></li>
+        <li><span class="when">{{ t .Lang "pages.pricing.lapse.deleted.when" }}</span><span class="what">{{ t .Lang "pages.pricing.lapse.deleted.what" }}</span></li>
       </ul>
-      <p style="margin-top:16px">Your export works in every one of those phases, including the last day.
-         It is your data, and data portability is not something we switch off for non-payment.</p>
+      <p style="margin-top:16px">{{ t .Lang "pages.pricing.lapse.export" }}</p>
     </div>
   </section>
 
   <section>
-    <h2>Going over a million</h2>
+    <h2>{{ t .Lang "pages.pricing.volume.heading" }}</h2>
     <div class="panel">
-      <p>Nothing breaks and nothing is deleted. We email you at 70%, at 85% and at 100%,
-         and the first of those is the one that matters — it reaches you while there is still
-         a month of runway to have a conversation in.</p>
-      <p>One month over costs you nothing at all. Two consecutive months and we ask you to
-         reply within two weeks so we can move you to something that fits. If nobody replies,
-         the dashboard locks until somebody does — and even then we keep collecting, your
-         settings stay open, and your exports keep working.</p>
-      <p><a href="mailto:{{ .SalesEmail }}">{{ .SalesEmail }}</a> reaches a person.</p>
+      <p>{{ t .Lang "pages.pricing.volume.warned" }}</p>
+      <p>{{ t .Lang "pages.pricing.volume.ladder" }}</p>
+      <a class="btn alt inline" href="mailto:{{ .SalesEmail }}">{{ t .Lang "pages.pricing.volume.cta" "email" .SalesEmail }}</a>
     </div>
   </section>
 
   <section>
-    <h2>Tax and refunds</h2>
+    <h2>{{ t .Lang "pages.pricing.tax.heading" }}</h2>
     <div class="panel">
-      <p>Prices are exclusive of tax. Sales tax, VAT or GST is calculated at checkout from
+	  <p>Prices are exclusive of tax. Sales tax, VAT or GST is calculated at checkout from
          your billing address and shown before you pay. For transactions in jurisdictions
          where Managed Payments is available and labelled “Sold through Link,” Stripe Managed
          Payments is provided by Sold through Link, LLC, which is the merchant of record. It
@@ -117,8 +105,8 @@
          there is no form or retention flow. For a transaction labelled “Sold through Link,”
          you may also request a refund from
          <a href="https://support.link.com/topics/sold-through-link">Link support</a>.
-         Sold through Link, LLC's refund policy controls where it gives you broader rights,
-         and applicable law may give you additional rights.</p>
+		 Sold through Link, LLC's refund policy controls where it gives you broader rights,
+		 and applicable law may give you additional rights.</p>
     </div>
   </section>
 

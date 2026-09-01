@@ -166,12 +166,12 @@ test("an event fired before the script arrives is queued and then replayed", asy
 	// This is what the tracker script does when it loads: replace the stub and
 	// replay whatever the page queued while it was still downloading.
 	globalThis.window.feasible = (name, options) => {
-		if (options && options.callback) options.callback({ status: 202 });
+		if (options && options.callback) options.callback({ status: 202, dropped: null });
 	};
 
 	for (const args of queue) globalThis.window.feasible.apply(null, args);
 
-	assert.deepEqual(await pending, { sent: true, status: 202 });
+	assert.deepEqual(await pending, { sent: true, status: 202, dropped: null });
 });
 
 test("track passes the caller's own callback through and reports the status", async (t) => {
@@ -183,20 +183,20 @@ test("track passes the caller's own callback through and reports the status", as
 
 	init({ domain: "example.com" });
 
-	globalThis.window.feasible = (name, options) => options.callback({ status: 202 });
+	globalThis.window.feasible = (name, options) => options.callback({ status: 202, dropped: "shield_ip" });
 
 	const seen = [];
-	const result = await pageview({ callback: (response) => seen.push(response.status) });
+	const result = await pageview({ callback: (response) => seen.push(response) });
 
-	assert.deepEqual(result, { sent: true, status: 202 });
-	assert.deepEqual(seen, [202]);
+	assert.deepEqual(result, { sent: true, status: 202, dropped: "shield_ip" });
+	assert.deepEqual(seen, [{ status: 202, dropped: "shield_ip" }]);
 });
 
 test("track before init resolves rather than throwing", async (t) => {
 	installDom();
 	t.after(removeDom);
 
-	assert.deepEqual(await track("Signup"), { sent: false, status: null });
+	assert.deepEqual(await track("Signup"), { sent: false, status: null, dropped: null });
 });
 
 test("disable writes the opt-out the script honours, enable clears it", (t) => {

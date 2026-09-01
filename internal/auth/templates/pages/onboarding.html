@@ -19,7 +19,7 @@
       <p class="mt-1 text-sm text-muted">{{ $site.Domain }}</p>
     </div>
 
-    <form method="post" action="/onboarding/{{ $site.ID }}/skip">
+    <form method="post" action="{{ url $.Lang (printf "/onboarding/%d/skip" $site.ID) }}">
       <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
       <button type="submit" class="text-sm font-medium text-muted hover:text-body">
         {{ t $.Lang "auth.onboarding.skip" }}
@@ -109,7 +109,7 @@
           {{ t $.Lang "auth.onboarding.received_body" "site" $site.Label }}
         </p>
 
-        <a href="/sites"
+        <a href="{{ url $.Lang "/sites" }}"
            class="mt-4 inline-block rounded-xl bg-up px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-up/85">
           {{ t $.Lang "auth.onboarding.received_action" }}
         </a>
@@ -146,7 +146,7 @@
       </div>
     {{ end }}
 
-    <form method="post" action="/onboarding/{{ $site.ID }}/verify" class="mt-4">
+    <form method="post" action="{{ url $.Lang (printf "/onboarding/%d/verify" $site.ID) }}" class="mt-4">
       <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
       <button type="submit"
               class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">

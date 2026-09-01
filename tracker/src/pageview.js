@@ -85,14 +85,15 @@ export function pageview(opts) {
 	// fired.
 	if (excluded(cfg)) {
 		warn("not tracking — excluded path");
+		options.callback?.({ status: null });
 		return;
 	}
 
 	const target = options.u ? new URL(options.u, loc.href).href : url();
 
-	page.url = target;
-	page.key = cfg.h ? target : target.split("#")[0];
-	page.tracked = true;
+	page.u = target;
+	page.k = cfg.h ? target : target.split("#")[0];
+	page.t = true;
 
 	engagement.reset();
 
@@ -103,7 +104,7 @@ export function pageview(opts) {
 	const event = {
 		n: "pageview",
 		u: target,
-		d: page.domain,
+		d: page.d,
 		t: doc.title || undefined,
 	};
 
@@ -130,13 +131,13 @@ export function pageview(opts) {
 // pair into the one pageview the visitor actually experienced.
 function navigated() {
 	setTimeout(() => {
-		if (url() === page.key) return;
+		if (url() === page.k) return;
 
 		// The page being left is measured before the new one is announced, or
 		// the reading time lands on the wrong URL.
 		engagement.flush();
 
-		pageview({ r: page.url });
+		pageview({ r: page.u });
 	}, 0);
 }
 
@@ -170,7 +171,7 @@ function patch(name) {
 // deduplicated on the full URL.
 export function start(config) {
 	cfg = config;
-	page.domain = cfg.d;
+	page.d = cfg.d;
 
 	// A bfcache restore is a pageview with no navigation, no load event and no
 	// script execution: without this listener, every visitor who presses Back
@@ -181,9 +182,9 @@ export function start(config) {
 	// would credit the original source with a second arrival. What the visitor
 	// actually came from is another page of this site, which is what is sent.
 	addEventListener("pageshow", (event) => {
-		if (!event.persisted || !page.tracked) return;
+		if (!event.persisted || !page.t) return;
 
-		pageview({ r: page.url });
+		pageview({ r: page.u });
 	});
 
 	// Manual mode still gets everything above. The incumbent's manual variant

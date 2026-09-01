@@ -1498,7 +1498,7 @@ func (s *Service) DeleteCustomer(ctx context.Context, customerID string) error {
 	if customerID == "" {
 		return nil
 	}
-	if s == nil || !s.Stripe.Configured() {
+	if s == nil || s.Stripe == nil || !s.Stripe.Configured() {
 		return fmt.Errorf("billing: cannot delete payment customer %s without Stripe credentials", customerID)
 	}
 

@@ -54,7 +54,7 @@ function storage() {
 // `sent: false` rather than throwing, so the same analytics call can sit in a
 // component that renders on both sides.
 function serverResult() {
-	return Promise.resolve({ sent: false, status: null });
+	return Promise.resolve({ sent: false, status: null, dropped: null });
 }
 
 // serverStub is what init() returns on a server: the same shape as the browser
@@ -181,11 +181,12 @@ export function track(name, options = {}) {
 				finish({
 					sent: true,
 					status: response && typeof response.status === "number" ? response.status : null,
+					dropped: response && typeof response.dropped === "string" ? response.dropped : null,
 				});
 			},
 		};
 
-		timer = setTimeout(() => finish({ sent: true, status: null }), CALLBACK_TIMEOUT);
+		timer = setTimeout(() => finish({ sent: true, status: null, dropped: null }), CALLBACK_TIMEOUT);
 
 		feasible(name, forwarded);
 	});

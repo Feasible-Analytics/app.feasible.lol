@@ -53,6 +53,15 @@ const dirWidth = 6
 // loop. Permanent deletion waits for the watcher, so this affects latency only.
 const deletionWatchInterval = 100 * time.Millisecond
 
+// guardDirectory is outside the removable account directory. Its tombstones
+// must survive account deletion and process restart, and its lock files must be
+// shared by every app and ingest process using the data directory.
+const guardDirectory = ".account-deletions"
+
+// ErrDeleted identifies an account whose durable deletion tombstone is present.
+// Writers treat it as an acknowledged stale route instead of retrying forever.
+var ErrDeleted = errors.New("account permanently deleted")
+
 // Account is one open account database with everything the ingest and query
 // paths need to use it.
 type Account struct {
@@ -76,6 +85,9 @@ type Account struct {
 	stopOnce     sync.Once
 	closeOnce    sync.Once
 	closeErr     error
+	useMu        sync.Mutex
+	activeUses   int
+	closing      bool
 }
 
 // Writer is the single connection every write goes through. It is exposed as a
@@ -103,13 +115,17 @@ type Manager struct {
 	// is the one race worth paying a global lock to avoid.
 	mu   sync.Mutex
 	open map[int64]*Account
+
+	// blocked caches durable tombstones observed or created by this process. The
+	// filesystem remains authoritative across managers and process restarts.
+	blocked map[int64]struct{}
 }
 
 // NewManager builds a manager rooted at a data directory. Nothing is opened or
 // created here, so constructing one is free and a process that never touches an
 // account never touches the disk.
 func NewManager(dataDir string) *Manager {
-	return &Manager{dataDir: dataDir, open: map[int64]*Account{}}
+	return &Manager{dataDir: dataDir, open: map[int64]*Account{}, blocked: map[int64]struct{}{}}
 }
 
 // Dir returns the directory holding one account's database.
@@ -127,7 +143,7 @@ func Path(dataDir string, id int64) string {
 // Team allocation reserves ids recorded by the immutable deletion audit; once
 // present, every process must refuse to recreate the analytics database.
 func DeletedMarker(dataDir string, id int64) string {
-	return filepath.Join(dataDir, config.AccountDatabaseDir, fmt.Sprintf(".deleted-%0*d", dirWidth, id))
+	return TombstonePath(dataDir, id)
 }
 
 // accountLockPath names the advisory lock shared by every process that may open
@@ -206,11 +222,57 @@ func lockAccountLifetime(dataDir string, id int64, exclusive bool) (*os.File, er
 // lease exactly once. Waiting for the watcher keeps shutdown from leaking a
 // goroutine that still references the account.
 func (a *Account) close() error {
-	a.stopOnce.Do(func() { close(a.stopWatch) })
+	if a.stopWatch != nil {
+		a.stopOnce.Do(func() { close(a.stopWatch) })
+	}
+	a.useMu.Lock()
+	a.closing = true
+	a.useMu.Unlock()
 	a.closeResources()
-	<-a.watchDone
+	if a.watchDone != nil {
+		<-a.watchDone
+	}
 
 	return a.closeErr
+}
+
+// beginUse registers one operation before the account can be closed by its
+// deletion watcher. The caller still holds the cross-process shared guard, so
+// a successful registration spans exactly the same operation lifetime.
+func (a *Account) beginUse() error {
+	a.useMu.Lock()
+	defer a.useMu.Unlock()
+
+	if a.closing {
+		return ErrDeleted
+	}
+	a.activeUses++
+	return nil
+}
+
+// endUse releases one operation registration. The deletion watcher observes
+// the zero count on its next pass and then releases the lifetime SQLite fence.
+func (a *Account) endUse() {
+	a.useMu.Lock()
+	if a.activeUses > 0 {
+		a.activeUses--
+	}
+	a.useMu.Unlock()
+}
+
+// closeForDeletion closes an account only after every operation that acquired
+// it has finished. It returns false while a lease is still active so the
+// watcher can retry without interrupting a write already acknowledged in RAM.
+func (a *Account) closeForDeletion() bool {
+	a.useMu.Lock()
+	if a.activeUses > 0 {
+		a.useMu.Unlock()
+		return false
+	}
+	a.closing = true
+	a.useMu.Unlock()
+	a.closeResources()
+	return true
 }
 
 // closeResources makes the database unusable before releasing its shared
@@ -236,8 +298,9 @@ func (a *Account) watchDeletion(marker string) {
 			return
 		case <-ticker.C:
 			if _, err := os.Stat(marker); err == nil {
-				a.closeResources()
-				return
+				if a.closeForDeletion() {
+					return
+				}
 			}
 		}
 	}
@@ -248,7 +311,10 @@ func (m *Manager) Path(id int64) string {
 	return Path(m.dataDir, id)
 }
 
-// Open returns the handle for an account, opening it on first use. The
+// Open returns the handle for an account, opening it on first use. Production
+// operations must use Acquire so their shared deletion fence spans every use
+// of the returned handle; Open remains for setup code and tests that own the
+// manager for the handle's complete lifetime. The
 // directory and file are created if they do not exist, because an account's
 // first event must not fail on a missing file, and a brand-new file is brought
 // up to the current schema immediately.
@@ -263,8 +329,26 @@ func (m *Manager) Open(ctx context.Context, id int64) (*Account, error) {
 		return nil, fmt.Errorf("account id %d is not valid", id)
 	}
 
+	guard, err := m.BeginWrite(id)
+	if err != nil {
+		return nil, err
+	}
+	defer guard.Release() //nolint:errcheck // the operation result is more useful than an unlock error
+
+	return guard.Open(ctx)
+}
+
+// openGuarded returns or creates a handle while the caller holds this account's shared
+// cross-process guard. Keeping the unguarded operation private prevents a new
+// writer path from bypassing the deletion tombstone.
+func (m *Manager) openGuarded(ctx context.Context, id int64) (*Account, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if _, blocked := m.blocked[id]; blocked {
+		return nil, fmt.Errorf("%w for account %d", ErrDeleted, id)
+	}
+
 	lock, err := lockAccount(m.dataDir, id)
 	if err != nil {
 		return nil, err
@@ -279,7 +363,8 @@ func (m *Manager) Open(ctx context.Context, id int64) (*Account, error) {
 			delete(m.open, id)
 			_ = account.close()
 		}
-		return nil, fmt.Errorf("account %d was permanently deleted", id)
+		m.blocked[id] = struct{}{}
+		return nil, fmt.Errorf("%w for account %d", ErrDeleted, id)
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("account %d: inspect deletion marker: %w", id, err)
 	}
@@ -331,6 +416,119 @@ func (m *Manager) Open(ctx context.Context, id int64) (*Account, error) {
 	return account, nil
 }
 
+// WriteGuard holds a shared cross-process lock from the final tombstone check
+// through the account transaction. A deletion takes the exclusive side before
+// removing files, so an already-open writer cannot continue into an unlinked
+// database inode.
+type WriteGuard struct {
+	manager *Manager
+	id      int64
+	file    *os.File
+	account *Account
+}
+
+// Lease keeps the shared deletion fence for the complete lifetime of an
+// account operation. Callers must release it only after their final database
+// read or write; returning the Account while dropping the lock would let a
+// deletion unlink the database underneath a stale SQLite handle.
+type Lease struct {
+	Account *Account
+	guard   *WriteGuard
+}
+
+// Acquire opens an account while retaining its shared cross-process fence.
+// This is the production entry point for jobs and requests whose work extends
+// beyond opening the SQLite handle.
+func (m *Manager) Acquire(ctx context.Context, id int64) (*Lease, error) {
+	guard, err := m.BeginWrite(id)
+	if err != nil {
+		return nil, err
+	}
+
+	account, err := guard.Open(ctx)
+	if err != nil {
+		_ = guard.Release()
+		return nil, err
+	}
+
+	return &Lease{Account: account, guard: guard}, nil
+}
+
+// Release drops an account-use lease. Repeated release is harmless so callers
+// can defer it immediately after Acquire succeeds.
+func (l *Lease) Release() error {
+	if l == nil || l.guard == nil {
+		return nil
+	}
+
+	guard := l.guard
+	l.guard = nil
+	return guard.Release()
+}
+
+// BeginWrite acquires the account's shared lock and checks the durable
+// tombstone after acquisition, closing the race between a pre-lock check and a
+// purge that starts immediately afterwards.
+func (m *Manager) BeginWrite(id int64) (*WriteGuard, error) {
+	if id < 1 {
+		return nil, fmt.Errorf("account id %d is not valid", id)
+	}
+
+	file, err := lock(m.dataDir, id, syscall.LOCK_SH)
+	if err != nil {
+		return nil, err
+	}
+
+	deleted, err := tombstoned(m.dataDir, id)
+	if err != nil {
+		_ = unlock(file)
+		return nil, err
+	}
+	if deleted {
+		_ = unlock(file)
+		m.mu.Lock()
+		account := m.open[id]
+		delete(m.open, id)
+		m.blocked[id] = struct{}{}
+		m.mu.Unlock()
+		if account != nil {
+			_ = account.close()
+		}
+		return nil, fmt.Errorf("%w for account %d", ErrDeleted, id)
+	}
+
+	return &WriteGuard{manager: m, id: id, file: file}, nil
+}
+
+// Open returns the account handle protected by this guard.
+func (g *WriteGuard) Open(ctx context.Context) (*Account, error) {
+	account, err := g.manager.openGuarded(ctx, g.id)
+	if err != nil {
+		return nil, err
+	}
+	if err := account.beginUse(); err != nil {
+		return nil, fmt.Errorf("%w for account %d", err, g.id)
+	}
+	g.account = account
+	return account, nil
+}
+
+// Release drops a shared account guard. Calling it more than once is harmless,
+// which keeps deferred cleanup safe on every return path.
+func (g *WriteGuard) Release() error {
+	if g == nil || g.file == nil {
+		return nil
+	}
+
+	file := g.file
+	g.file = nil
+	if g.account != nil {
+		g.account.endUse()
+		g.account = nil
+	}
+	return unlock(file)
+}
+
 // ensureSchema initialises a new database and refuses an out-of-date one. The
 // split is the whole point: version zero means an empty file this call just
 // created, and anything between that and current means real data that an
@@ -379,41 +577,249 @@ func (m *Manager) Close(id int64) error {
 // lock. The marker is created first and survives directory removal, preventing a
 // concurrent or later Open from recreating a fresh database for the deleted id.
 func (m *Manager) Delete(id int64) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	lock, err := lockAccount(m.dataDir, id)
+	guard, err := m.BeginDeletion(id)
 	if err != nil {
 		return err
 	}
-	defer unlockAccount(lock)
-
-	marker := DeletedMarker(m.dataDir, id)
-	if err := os.MkdirAll(filepath.Dir(marker), 0o750); err != nil {
-		return fmt.Errorf("account %d: create deletion marker directory: %w", id, err)
-	}
-	file, err := os.OpenFile(marker, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
-	if err != nil && !os.IsExist(err) {
-		return fmt.Errorf("account %d: create deletion marker: %w", id, err)
-	}
-	if err == nil {
-		if closeErr := file.Close(); closeErr != nil {
-			return fmt.Errorf("account %d: close deletion marker: %w", id, closeErr)
-		}
-	}
-
-	if account, ok := m.open[id]; ok {
-		delete(m.open, id)
-		if err := account.close(); err != nil {
-			return err
-		}
-	}
-	lifetimeLock, err := lockAccountLifetime(m.dataDir, id, true)
-	if err != nil {
+	defer guard.Release() //nolint:errcheck // an earlier deletion error is more useful
+	if err := guard.CloseAccount(); err != nil {
 		return err
 	}
-	defer unlockAccount(lifetimeLock)
 	if err := os.RemoveAll(Dir(m.dataDir, id)); err != nil {
 		return fmt.Errorf("account %d: remove analytics directory: %w", id, err)
+	}
+
+	return guard.Release()
+}
+
+// Block writes the durable tombstone, drains every guarded writer in every
+// process, and closes this manager's cached handle. Repeating it after a crash
+// is safe and repairs a missing in-memory block from the filesystem marker.
+func (m *Manager) Block(id int64) error {
+	guard, err := m.BeginDeletion(id)
+	if err != nil {
+		return err
+	}
+	return guard.Release()
+}
+
+// DeletionGuard holds the exclusive account fence after a durable tombstone
+// has stopped new users. It must span artifact discovery, account-handle close,
+// shard removal, and global-file removal so no process can continue writing an
+// unlinked SQLite inode.
+type DeletionGuard struct {
+	manager  *Manager
+	id       int64
+	file     *os.File
+	lifetime *os.File
+	account  *Account
+}
+
+// BeginDeletion creates the durable tombstone, drains every shared account
+// lease in every process, and detaches this manager's cached handle. The handle
+// remains available through Account until CloseAccount is called, allowing a
+// purger to inventory shard-owned global artifacts under the exclusive fence.
+func (m *Manager) BeginDeletion(id int64) (*DeletionGuard, error) {
+	if id < 1 {
+		return nil, fmt.Errorf("account id %d is not valid", id)
+	}
+	if err := writeTombstone(m.dataDir, id); err != nil {
+		return nil, err
+	}
+
+	file, err := lock(m.dataDir, id, syscall.LOCK_EX)
+	if err != nil {
+		return nil, err
+	}
+	lifetime, err := lockAccountLifetime(m.dataDir, id, true)
+	if err != nil {
+		_ = unlock(file)
+		return nil, err
+	}
+
+	m.mu.Lock()
+	account := m.open[id]
+	delete(m.open, id)
+	m.blocked[id] = struct{}{}
+	m.mu.Unlock()
+	if account != nil {
+		if err := account.close(); err != nil {
+			unlockAccount(lifetime)
+			_ = unlock(file)
+			return nil, err
+		}
+		account = nil
+	}
+
+	return &DeletionGuard{manager: m, id: id, file: file, lifetime: lifetime, account: account}, nil
+}
+
+// Account returns the detached account handle, when this process had one open.
+// A nil result means the purger should open the on-disk database directly if it
+// needs to inventory legacy artifact paths.
+func (g *DeletionGuard) Account() *Account {
+	if g == nil {
+		return nil
+	}
+	return g.account
+}
+
+// OpenAccount returns the detached handle or opens an existing shard while the
+// exclusive deletion fence is held. It never creates a missing shard: absence
+// means a prior attempt already removed it and artifact discovery must rely on
+// the durable manifest.
+func (g *DeletionGuard) OpenAccount(ctx context.Context) (*Account, error) {
+	if g == nil {
+		return nil, fmt.Errorf("account deletion guard is nil")
+	}
+	if g.account != nil {
+		return g.account, nil
+	}
+	if _, err := os.Stat(Path(g.manager.dataDir, g.id)); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("account %d inspect database: %w", g.id, err)
+	}
+
+	db, err := store.OpenDatabase(Path(g.manager.dataDir, g.id))
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureSchema(ctx, db, migrate.Account()); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("account %d: %w", g.id, err)
+	}
+
+	cache := intern.New(db.Writer())
+	if err := cache.Warm(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("account %d: %w", g.id, err)
+	}
+
+	g.account = &Account{ID: g.id, DB: db, Intern: cache}
+	return g.account, nil
+}
+
+// CloseAccount closes this process's detached SQLite handle before its files
+// are removed. It is idempotent so every checkpoint retry can call it.
+func (g *DeletionGuard) CloseAccount() error {
+	if g == nil || g.account == nil {
+		return nil
+	}
+
+	account := g.account
+	g.account = nil
+	return account.close()
+}
+
+// Release closes any remaining detached handle and drops the exclusive fence.
+// The durable tombstone remains authoritative after release.
+func (g *DeletionGuard) Release() error {
+	if g == nil || g.file == nil {
+		return nil
+	}
+
+	closeErr := g.CloseAccount()
+	file := g.file
+	g.file = nil
+	lifetime := g.lifetime
+	g.lifetime = nil
+	unlockAccount(lifetime)
+	unlockErr := unlock(file)
+	if closeErr != nil {
+		return closeErr
+	}
+	return unlockErr
+}
+
+// TombstonePath returns the durable deletion marker for an account. It is
+// exported for operational checks and tests, not as a path callers should edit.
+func TombstonePath(dataDir string, id int64) string {
+	return filepath.Join(dataDir, guardDirectory, fmt.Sprintf("account-%0*d.deleted", dirWidth, id))
+}
+
+// lockPath returns the advisory-lock file shared by all account managers.
+func lockPath(dataDir string, id int64) string {
+	return filepath.Join(dataDir, guardDirectory, fmt.Sprintf("account-%0*d.lock", dirWidth, id))
+}
+
+// lock opens and acquires one advisory account lock.
+func lock(dataDir string, id int64, how int) (*os.File, error) {
+	dir := filepath.Join(dataDir, guardDirectory)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("account %d guard directory: %w", id, err)
+	}
+
+	file, err := os.OpenFile(lockPath(dataDir, id), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("account %d guard lock: %w", id, err)
+	}
+	if err := syscall.Flock(int(file.Fd()), how); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("account %d guard lock: %w", id, err)
+	}
+
+	return file, nil
+}
+
+// unlock releases and closes one advisory account lock.
+func unlock(file *os.File) error {
+	if file == nil {
+		return nil
+	}
+
+	unlockErr := syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	closeErr := file.Close()
+	if unlockErr != nil {
+		return unlockErr
+	}
+	return closeErr
+}
+
+// tombstoned reports whether persistent deletion has started for an account.
+func tombstoned(dataDir string, id int64) (bool, error) {
+	_, err := os.Stat(TombstonePath(dataDir, id))
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("account %d deletion tombstone: %w", id, err)
+}
+
+// writeTombstone creates and fsyncs the deletion marker before any control or
+// account data is removed. A retry also syncs an existing marker, covering a
+// prior attempt that created the directory entry but failed before its sync.
+// The marker contains no customer data; its filename carries only the internal
+// numeric account id needed to refuse stale writes.
+func writeTombstone(dataDir string, id int64) error {
+	dir := filepath.Join(dataDir, guardDirectory)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("account %d tombstone directory: %w", id, err)
+	}
+
+	file, err := os.OpenFile(TombstonePath(dataDir, id), os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("account %d deletion tombstone: %w", id, err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("account %d sync deletion tombstone: %w", id, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("account %d close deletion tombstone: %w", id, err)
+	}
+
+	directory, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("account %d open tombstone directory: %w", id, err)
+	}
+	defer directory.Close() //nolint:errcheck // sync result is the durability signal
+	if err := directory.Sync(); err != nil {
+		return fmt.Errorf("account %d sync tombstone directory: %w", id, err)
 	}
 
 	return nil

@@ -104,9 +104,10 @@ class Visitor:
 
 
 def resolve_client_ip(headers: Mapping[str, str], remote_addr: Optional[str] = None) -> str:
-    """Resolve the visitor's address with the same precedence the ingest server
-    uses: ``CF-Connecting-IP``, then the FIRST entry of ``X-Forwarded-For``, then
-    the socket address.
+    """Resolve the visitor's address from forwarding headers and the socket.
+
+    This assumes the application edge stripped client-supplied forwarding
+    headers; unlike the ingest service, this helper has no proxy allow-list.
 
     The first entry is the one that matters. Every proxy appends itself to
     ``X-Forwarded-For``, so the last entry is the nearest proxy — taking it, as

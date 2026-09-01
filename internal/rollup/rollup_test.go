@@ -28,6 +28,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/rollup"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/seed"
@@ -628,13 +629,14 @@ func seedDatabase(t *testing.T) (*accounts.Account, rollup.Site, time.Time) {
 	now := time.Date(2026, 8, 30, 19, 30, 0, 0, time.UTC)
 
 	if _, err := seed.Run(context.Background(), seed.Options{
-		DataDir:   dir,
-		Pageviews: 8_000,
-		Days:      9,
-		Sites:     1,
-		Seed:      414243,
-		Now:       func() time.Time { return now },
-		Out:       io.Discard,
+		DataDir:           dir,
+		Pageviews:         8_000,
+		Days:              9,
+		Sites:             1,
+		Seed:              414243,
+		Now:               func() time.Time { return now },
+		Out:               io.Discard,
+		ControlMigrations: migrate.Control(),
 	}); err != nil {
 		t.Fatal(err)
 	}

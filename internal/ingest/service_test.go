@@ -422,9 +422,10 @@ func newHarness(t testing.TB, control *sql.DB, dataDir string, wrap func(Transpo
 	h.setClock(fixtureStart)
 
 	service, err := NewService(context.Background(), control, manager, Options{
-		DataDir: dataDir,
-		SaltKey: fixtureSaltKey,
-		Now:     h.now,
+		DataDir:        dataDir,
+		SaltKey:        fixtureSaltKey,
+		Now:            h.now,
+		TrustedProxies: []string{"192.0.2.0/24"},
 	})
 	if err != nil {
 		t.Fatal(err)

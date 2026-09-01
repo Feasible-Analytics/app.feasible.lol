@@ -30,8 +30,8 @@ import (
 const ExportDir = "exports"
 
 // ExportPath is where one export's archive is written.
-func ExportPath(dataDir string, exportID int64) string {
-	return filepath.Join(dataDir, ExportDir, fmt.Sprintf("export-%06d.zip", exportID))
+func ExportPath(dataDir string, accountID, exportID int64) string {
+	return filepath.Join(AccountArtifactDir(dataDir, ExportDir, accountID), fmt.Sprintf("export-%06d.zip", exportID))
 }
 
 // counters is one day-and-dimension-combination's totals while an export is
@@ -274,16 +274,24 @@ func collect(ctx context.Context, db *sql.DB, siteID int64, location *time.Locat
 		" FROM " + table + " " + strings.Join(joins, " ") +
 		" WHERE e.site_id = ? AND e.is_imported = 0"
 
+	args = append(args, siteID)
+
 	// Bot traffic is left out of an export for the same reason it is left out
 	// of every report: it is not the customer's traffic, and re-importing it
 	// somewhere else would carry a wrong number across the move.
+	//
+	// A session carries no bot column of its own, so it is excluded by the
+	// events that belong to it — the same test the roll-up applies. Without
+	// this arm the entry and exit page sheets, which are session-grain only,
+	// would be the one place in the product where bot traffic is counted.
 	if g == grainEvent {
 		statement += " AND e.bot_reason_id = 0"
+	} else {
+		statement += " AND NOT EXISTS (SELECT 1 FROM events be" +
+			" WHERE be.session_id = e.id AND be.bot_reason_id <> 0)"
 	}
 
 	statement += " GROUP BY " + strings.Join(group, ", ")
-
-	args = append(args, siteID)
 
 	rows, err := db.QueryContext(ctx, statement, args...)
 	if err != nil {
@@ -474,6 +482,8 @@ var rawEventColumns = []string{
 	"device", "screen_size", "browser", "browser_version",
 	"operating_system", "operating_system_version", "language",
 	"scroll_depth", "engagement_time_ms", "bot_reason",
+	"custom_properties_json", "revenue_amount", "revenue_currency",
+	"utm_content", "utm_term", "full_url",
 }
 
 // writeRawEvents streams every event into the archive, one row each.
@@ -502,8 +512,12 @@ func writeRawEvents(ctx context.Context, db *sql.DB, archive *zip.Writer, siteID
 		       COALESCE(co.value, ''), COALESCE(re.value, ''), COALESCE(ci.value, ''),
 		       COALESCE(dt.value, ''), COALESCE(ss.value, ''), COALESCE(br.value, ''), COALESCE(bv.value, ''),
 		       COALESCE(os.value, ''), COALESCE(ov.value, ''), COALESCE(la.value, ''),
-		       e.scroll_depth, e.engagement_time, COALESCE(bt.value, '')
+		       e.scroll_depth, e.engagement_time, COALESCE(bt.value, ''),
+		       COALESCE(ed.props, ''), COALESCE(CAST(ed.revenue_amount AS TEXT), ''),
+		       COALESCE(ed.revenue_currency, ''), COALESCE(ed.utm_content, ''),
+		       COALESCE(ed.utm_term, ''), COALESCE(ed.full_url, '')
 		FROM events e
+		LEFT JOIN event_details ed ON ed.event_id = e.id
 		LEFT JOIN dim_event_name n ON n.id = e.name_id
 		LEFT JOIN dim_hostname h ON h.id = e.hostname_id
 		LEFT JOIN dim_pathname p ON p.id = e.pathname_id
@@ -537,6 +551,7 @@ func writeRawEvents(ctx context.Context, db *sql.DB, archive *zip.Writer, siteID
 			timestamp, userID, sessionID, scrollDepth, engagementTime int64
 			text                                                      [20]string
 			botReason                                                 string
+			details                                                   [6]string
 		)
 
 		scanTo := []any{&timestamp, &text[0], &userID, &sessionID}
@@ -544,6 +559,9 @@ func writeRawEvents(ctx context.Context, db *sql.DB, archive *zip.Writer, siteID
 			scanTo = append(scanTo, &text[i])
 		}
 		scanTo = append(scanTo, &scrollDepth, &engagementTime, &botReason)
+		for i := range details {
+			scanTo = append(scanTo, &details[i])
+		}
 
 		if err := rows.Scan(scanTo...); err != nil {
 			return fmt.Errorf("dataio: read raw events: %w", err)
@@ -561,6 +579,7 @@ func writeRawEvents(ctx context.Context, db *sql.DB, archive *zip.Writer, siteID
 			strconv.FormatInt(engagementTime, 10),
 			botReason,
 		)
+		record = append(record, details[:]...)
 
 		if err := writer.Write(record); err != nil {
 			return fmt.Errorf("dataio: write raw events: %w", err)

@@ -158,6 +158,21 @@ func TestApplyWritesNothingWithoutAChoice(t *testing.T) {
 	}
 }
 
+// TestApplyDoesNotRememberAnUnsupportedChoice prevents an invalid query from
+// writing whichever fallback happened to win through the cookie or browser
+// header. Only a language the reader actually requested may be persisted.
+func TestApplyDoesNotRememberAnUnsupportedChoice(t *testing.T) {
+	w := httptest.NewRecorder()
+	r := request("/?lang=not-a-locale", "de", "fr")
+
+	if got := Apply(w, r); got != "de" {
+		t.Fatalf("Apply resolved to %q, want the supported browser fallback", got)
+	}
+	if cookies := w.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("an unsupported explicit choice set a fallback cookie: %v", cookies)
+	}
+}
+
 // TestTheLanguageCookieIsReadableByTheDashboard documents a deliberate
 // exception. The switcher in the dashboard is JavaScript, and a cookie it
 // cannot read is a switcher that has to round-trip through the server to change
@@ -175,5 +190,30 @@ func TestTheLanguageCookieIsReadableByTheDashboard(t *testing.T) {
 
 	if !cookie.Secure {
 		t.Fatal("the language cookie was not marked Secure over TLS")
+	}
+}
+
+// TestLocalURLPreservesOnlySupportedLocalLanguageState proves query merging is
+// stable and that external or host-like targets never become redirect targets.
+func TestLocalURLPreservesOnlySupportedLocalLanguageState(t *testing.T) {
+	tests := []struct {
+		target string
+		locale string
+		want   string
+	}{
+		{"/login", "de", "/login?lang=de"},
+		{"/login?next=%2Fsites&lang=en", "de", "/login?lang=de&next=%2Fsites"},
+		{"https://example.test/login", "de", "https://example.test/login"},
+		{"//example.test/login", "de", "//example.test/login"},
+		{"/\\example.test/login", "de", "/\\example.test/login"},
+		{"/%5c%5cexample.test/login", "de", "/%5c%5cexample.test/login"},
+		{"/%2f%2fexample.test/login", "de", "/%2f%2fexample.test/login"},
+		{"/login", "not-supported", "/login"},
+	}
+
+	for _, test := range tests {
+		if got := LocalURL(test.target, test.locale); got != test.want {
+			t.Errorf("LocalURL(%q, %q) = %q, want %q", test.target, test.locale, got, test.want)
+		}
 	}
 }

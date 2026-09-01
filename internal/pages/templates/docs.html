@@ -1,9 +1,8 @@
 {{ define "body" }}
 <div class="wrap">
   <div class="hero">
-    <h1>Documentation</h1>
-    <p>How to install it, what every number means, and where the surprising bits are.
-       We would rather write down the confusing parts than let you find them on a dashboard.</p>
+    <h1>{{ t .Lang "pages.docs.heading" }}</h1>
+    <p>{{ t .Lang "pages.docs.intro" }}</p>
   </div>
   <section>
     <div class="grid two">

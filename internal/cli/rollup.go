@@ -145,19 +145,25 @@ func runRollupRebuild(e *env, args []string) int {
 			continue
 		}
 
-		account, err := worker.Accounts.Open(ctx, ref.AccountID)
+		lease, err := worker.Accounts.Acquire(ctx, ref.AccountID)
 		if err != nil {
 			fmt.Fprintf(e.stderr, "%v\n", err)
 			return ExitError
 		}
+		account := lease.Account
 
 		builder := rollup.New(account.Writer())
 
 		for _, grain := range []query.Grain{query.GrainDay, query.GrainHour} {
 			if err := builder.Reset(ctx, ref.Site.ID, grain); err != nil {
+				_ = lease.Release()
 				fmt.Fprintf(e.stderr, "%v\n", err)
 				return ExitError
 			}
+		}
+		if err := lease.Release(); err != nil {
+			fmt.Fprintf(e.stderr, "%v\n", err)
+			return ExitError
 		}
 
 		fmt.Fprintf(e.stdout, "  %s cleared\n", ref.Site.Domain)
@@ -200,17 +206,19 @@ func runRollupStatus(e *env, args []string) int {
 	}
 
 	for _, ref := range refs {
-		account, err := worker.Accounts.Open(ctx, ref.AccountID)
+		lease, err := worker.Accounts.Acquire(ctx, ref.AccountID)
 		if err != nil {
 			fmt.Fprintf(e.stderr, "%v\n", err)
 			return ExitError
 		}
+		account := lease.Account
 
 		builder := rollup.New(account.Writer())
 
 		for _, grain := range []query.Grain{query.GrainDay, query.GrainHour} {
 			coverage, found, err := builder.Coverage(ctx, ref.Site.ID, grain)
 			if err != nil {
+				_ = lease.Release()
 				fmt.Fprintf(e.stderr, "%v\n", err)
 				return ExitError
 			}
@@ -221,6 +229,10 @@ func runRollupStatus(e *env, args []string) int {
 			}
 
 			fmt.Fprintf(e.stdout, "  %-32s %-5s %s\n", ref.Site.Domain, grain, coverage)
+		}
+		if err := lease.Release(); err != nil {
+			fmt.Fprintf(e.stderr, "%v\n", err)
+			return ExitError
 		}
 	}
 

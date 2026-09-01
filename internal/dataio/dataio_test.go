@@ -11,6 +11,8 @@ package dataio
 import (
 	"archive/zip"
 	"context"
+	"encoding/csv"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -419,4 +421,362 @@ func seedSite(t *testing.T, account *accounts.Account, siteID int64) {
 			}
 		}
 	}
+}
+
+// TestBotSessionsAreLeftOutOfAnExport covers a mixed bot/human session beside a
+// human session across every roll-up. Human events from the mixed session stay
+// exportable, but the whole session is excluded from session-grain metrics; the
+// neighboring human session remains present everywhere it applies.
+func TestBotSessionsAreLeftOutOfAnExport(t *testing.T) {
+	ctx := context.Background()
+
+	manager := accounts.NewManager(t.TempDir())
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close account manager: %v", err)
+		}
+	})
+
+	account, err := manager.Open(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seedSite(t, account, 1)
+	seedBotExportVisits(t, account, 1)
+	var detailedEventID int64
+	if err := account.Reader().QueryRow(`
+		SELECT e.id FROM events e
+		JOIN dim_pathname path ON path.id = e.pathname_id
+		WHERE e.site_id = 1 AND path.value = '/neighbor-page'
+	`).Scan(&detailedEventID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := account.Writer().Exec(`
+		INSERT INTO event_details
+			(event_id, props, revenue_amount, revenue_currency, utm_content, utm_term, full_url)
+		VALUES (?, '{"plan":"yearly"}', 1299, 'USD', 'hero', 'privacy analytics',
+		        'https://example.com/neighbor-page?campaign=launch')
+	`, detailedEventID); err != nil {
+		t.Fatal(err)
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "export.zip")
+
+	if _, err := BuildExport(ctx, account.Reader(), 1, time.UTC, archivePath); err != nil {
+		t.Fatal(err)
+	}
+
+	neighborMarkers := map[string]string{
+		"imported_sources":           "Neighbor Source",
+		"imported_pages":             "/neighbor-page",
+		"imported_entry_pages":       "/neighbor-page",
+		"imported_exit_pages":        "/neighbor-page",
+		"imported_locations":         "NZ",
+		"imported_devices":           "Neighbor Device",
+		"imported_browsers":          "Neighbor Browser",
+		"imported_operating_systems": "Neighbor OS",
+		"imported_custom_events":     "Neighbor Goal",
+	}
+
+	for _, sheet := range Sheets {
+		body := sheetBody(t, archivePath, sheet.Name+".csv")
+		if marker := neighborMarkers[sheet.Name]; marker != "" && !strings.Contains(body, marker) {
+			t.Errorf("%s lost the neighboring human session marker %q", sheet.Name, marker)
+		}
+	}
+
+	for _, check := range []struct {
+		sheet string
+		value string
+	}{
+		{sheet: "imported_pages", value: "/mixed-bot-entry"},
+		{sheet: "imported_entry_pages", value: "/mixed-bot-entry"},
+		{sheet: "imported_exit_pages", value: "/mixed-human-event"},
+	} {
+		if body := sheetBody(t, archivePath, check.sheet+".csv"); strings.Contains(body, check.value) {
+			t.Errorf("%s carries mixed session-grain bot data %q", check.sheet, check.value)
+		}
+	}
+
+	for _, check := range []struct {
+		sheet  string
+		marker string
+	}{
+		{sheet: "imported_sources", marker: "Mixed Source"},
+		{sheet: "imported_locations", marker: "MX"},
+		{sheet: "imported_devices", marker: "Mixed Device"},
+		{sheet: "imported_browsers", marker: "Mixed Browser"},
+		{sheet: "imported_operating_systems", marker: "Mixed OS"},
+	} {
+		records := sheetRecords(t, archivePath, check.sheet+".csv")
+		record := recordContaining(t, records, check.marker)
+		if got := recordValue(t, records[0], record, FieldBounces); got != "0" {
+			t.Errorf("%s mixed-session bounces = %s, want 0", check.sheet, got)
+		}
+		if got := recordValue(t, records[0], record, FieldDuration); got != "0" {
+			t.Errorf("%s mixed-session duration = %s, want 0", check.sheet, got)
+		}
+	}
+
+	if body := sheetBody(t, archivePath, "imported_pages.csv"); !strings.Contains(body, "/mixed-human-event") {
+		t.Error("the human event inside the mixed session was removed from the event-grain page sheet")
+	}
+	if body := sheetBody(t, archivePath, "imported_custom_events.csv"); !strings.Contains(body, "Mixed Human Goal") {
+		t.Error("the human event inside the mixed session was removed from the custom-event sheet")
+	}
+
+	totals := sheetRecords(t, archivePath, "imported_visitors.csv")
+	day30 := recordContaining(t, totals, "2026-08-30")
+	for field, want := range map[string]string{
+		FieldVisitors:  "2",
+		FieldVisits:    "2",
+		FieldPageviews: "1",
+		FieldEvents:    "3",
+		FieldBounces:   "0",
+		FieldDuration:  "60",
+	} {
+		if got := recordValue(t, totals[0], day30, field); got != want {
+			t.Errorf("day-30 %s = %s, want %s", field, got, want)
+		}
+	}
+
+	// The raw events file is the deliberate exception: it is everything, with a
+	// bot_reason column so the reader can tell which rows are which.
+	records := sheetRecords(t, archivePath, RawEventsSheet+".csv")
+	pageColumn, botColumn := -1, -1
+	for i, name := range records[0] {
+		switch name {
+		case "page":
+			pageColumn = i
+		case "bot_reason":
+			botColumn = i
+		}
+	}
+	if pageColumn < 0 || botColumn < 0 {
+		t.Fatalf("raw event columns = %v, want page and bot_reason", records[0])
+	}
+	header := records[0]
+	detailed := recordContaining(t, records, "/neighbor-page")
+	for column, want := range map[string]string{
+		"custom_properties_json": `{"plan":"yearly"}`,
+		"revenue_amount":         "1299", "revenue_currency": "USD", "utm_content": "hero",
+		"utm_term": "privacy analytics", "full_url": "https://example.com/neighbor-page?campaign=launch",
+	} {
+		if got := recordValue(t, header, detailed, column); got != want {
+			t.Errorf("raw event %s = %q, want %q", column, got, want)
+		}
+	}
+
+	found := map[string]bool{}
+	for _, record := range records[1:] {
+		page := record[pageColumn]
+		wantReason, ok := map[string]string{
+			"/mixed-bot-entry":   "bot",
+			"/mixed-human-event": "",
+			"/neighbor-page":     "",
+		}[page]
+		if !ok {
+			continue
+		}
+
+		found[page+record[botColumn]] = true
+		if record[botColumn] != wantReason {
+			t.Errorf("raw event %s has bot_reason %q, want %q", page, record[botColumn], wantReason)
+		}
+	}
+	if !found["/mixed-bot-entrybot"] {
+		t.Error("the raw events file dropped a bot event instead of labelling it")
+	}
+	if !found["/mixed-human-event"] || !found["/neighbor-page"] {
+		t.Error("the raw events file lost or mislabeled a human event beside bot traffic")
+	}
+}
+
+// seedBotExportVisits writes one mixed bot/human session and one neighboring
+// human session with unique values for every exported dimension.
+func seedBotExportVisits(t *testing.T, account *accounts.Account, siteID int64) {
+	t.Helper()
+
+	ctx := context.Background()
+
+	id := func(dimension intern.Dimension, value string) int64 {
+		got, err := account.Intern.ID(ctx, dimension, value)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return got
+	}
+
+	host := id(intern.Hostname, "example.com")
+	pageview := id(intern.EventName, "pageview")
+	bot := id(intern.BotReason, "bot")
+
+	type dimensions struct {
+		source, referrer, utmSource, utmMedium, utmCampaign int64
+		country, region, city, device, screen               int64
+		browser, browserVersion, os, osVersion, language    int64
+	}
+
+	// values interns one complete, uniquely named dimension set so every
+	// applicable export sheet can prove which session contributed its row.
+	values := func(prefix, country string) dimensions {
+		return dimensions{
+			source: id(intern.Source, prefix+" Source"), referrer: id(intern.Referrer, "https://"+strings.ToLower(prefix)+".example/start"),
+			utmSource: id(intern.UTMSource, prefix+" UTM Source"), utmMedium: id(intern.UTMMedium, prefix+" UTM Medium"),
+			utmCampaign: id(intern.UTMCampaign, prefix+" Campaign"), country: id(intern.Country, country),
+			region: id(intern.Region, prefix+" Region"), city: id(intern.City, prefix+" City"),
+			device: id(intern.DeviceType, prefix+" Device"), screen: id(intern.ScreenSize, prefix+" Screen"),
+			browser: id(intern.Browser, prefix+" Browser"), browserVersion: id(intern.BrowserVersion, prefix+" Browser Version"),
+			os: id(intern.OS, prefix+" OS"), osVersion: id(intern.OSVersion, prefix+" OS Version"),
+			language: id(intern.Language, strings.ToLower(prefix)),
+		}
+	}
+
+	mixed := values("Mixed", "MX")
+	neighbor := values("Neighbor", "NZ")
+	mixedEntry := id(intern.Pathname, "/mixed-bot-entry")
+	mixedExit := id(intern.Pathname, "/mixed-human-event")
+	neighborPage := id(intern.Pathname, "/neighbor-page")
+
+	// insertSession writes a session carrying the supplied dimension set and
+	// entry/exit paths without relying on the ingest session folder.
+	insertSession := func(sessionID, userID, startedAt, lastSeenAt int64, duration, pageviews, events int, entryPage, exitPage int64, d dimensions) {
+		t.Helper()
+
+		_, err := account.Writer().ExecContext(ctx, `
+		INSERT INTO sessions (id, site_id, user_id, started_at, last_seen_at, duration, is_bounce,
+			pageviews, events, entry_page_id, exit_page_id, entry_hostname_id, exit_hostname_id,
+			referrer_id, source_id, utm_source_id, utm_medium_id, utm_campaign_id,
+			country_id, region_id, city_id, device_type_id, screen_size_id,
+			browser_id, browser_version_id, os_id, os_version_id, language_id)
+		VALUES (?,?,?,?,?,?,0, ?,?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?)`,
+			sessionID, siteID, userID, startedAt, lastSeenAt, duration,
+			pageviews, events, entryPage, exitPage, host, host,
+			d.referrer, d.source, d.utmSource, d.utmMedium, d.utmCampaign,
+			d.country, d.region, d.city, d.device, d.screen,
+			d.browser, d.browserVersion, d.os, d.osVersion, d.language)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// insertEvent writes one raw event whose bot reason and dimensions can be
+	// asserted independently from the session-level export filters.
+	insertEvent := func(eventID, timestamp, userID, sessionID, nameID, pageID, botReason int64, d dimensions) {
+		t.Helper()
+
+		_, err := account.Writer().ExecContext(ctx, `
+		INSERT INTO events (id, site_id, timestamp, name_id, user_id, session_id,
+			hostname_id, pathname_id, referrer_id, source_id, utm_source_id, utm_medium_id, utm_campaign_id,
+			country_id, region_id, city_id, device_type_id, screen_size_id,
+			browser_id, browser_version_id, os_id, os_version_id, language_id,
+			bot_reason_id, scroll_depth, engagement_time)
+		VALUES (?,?,?,?,?,?, ?,?,?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?,0,0)`,
+			eventID, siteID, timestamp, nameID, userID, sessionID,
+			host, pageID, d.referrer, d.source, d.utmSource, d.utmMedium, d.utmCampaign,
+			d.country, d.region, d.city, d.device, d.screen,
+			d.browser, d.browserVersion, d.os, d.osVersion, d.language, botReason)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	insertSession(90, 900, at(30, 10), at(30, 10)+60, 60, 1, 2, mixedEntry, mixedExit, mixed)
+	insertEvent(9000, at(30, 10), 900, 90, pageview, mixedEntry, bot, mixed)
+	insertEvent(9001, at(30, 10)+60, 900, 90, id(intern.EventName, "Mixed Human Goal"), mixedExit, 0, mixed)
+
+	insertSession(91, 901, at(30, 11), at(30, 11)+60, 60, 1, 2, neighborPage, neighborPage, neighbor)
+	insertEvent(9100, at(30, 11), 901, 91, pageview, neighborPage, 0, neighbor)
+	insertEvent(9101, at(30, 11)+60, 901, 91, id(intern.EventName, "Neighbor Goal"), neighborPage, 0, neighbor)
+}
+
+// recordContaining returns the first CSV record carrying a value.
+func recordContaining(t *testing.T, records [][]string, value string) []string {
+	t.Helper()
+
+	for _, record := range records[1:] {
+		for _, field := range record {
+			if field == value {
+				return record
+			}
+		}
+	}
+
+	t.Fatalf("CSV records do not contain %q: %v", value, records)
+
+	return nil
+}
+
+// recordValue reads one named field from a CSV record.
+func recordValue(t *testing.T, header, record []string, name string) string {
+	t.Helper()
+
+	for index, field := range header {
+		if field == name {
+			return record[index]
+		}
+	}
+
+	t.Fatalf("CSV header does not contain %q: %v", name, header)
+
+	return ""
+}
+
+// sheetRecords parses one CSV entry out of an export archive.
+func sheetRecords(t *testing.T, path, name string) [][]string {
+	t.Helper()
+
+	records, err := csv.NewReader(strings.NewReader(sheetBody(t, path, name))).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) == 0 {
+		t.Fatalf("%s is empty", name)
+	}
+
+	return records
+}
+
+// sheetBody reads one entry out of an export archive.
+func sheetBody(t *testing.T, path, name string) string {
+	t.Helper()
+
+	archive, err := zip.OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := archive.Close(); err != nil {
+			t.Errorf("close export archive: %v", err)
+		}
+	}()
+
+	for _, entry := range archive.File {
+		if entry.Name != name {
+			continue
+		}
+
+		file, err := entry.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := file.Close(); err != nil {
+				t.Errorf("close export entry: %v", err)
+			}
+		}()
+
+		body, err := io.ReadAll(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return string(body)
+	}
+
+	t.Fatalf("the export has no %s", name)
+
+	return ""
 }

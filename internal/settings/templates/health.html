@@ -41,7 +41,7 @@
 					<strong class="font-semibold">{{.Title}}</strong>
 					<div class="mt-1">{{.Detail}}</div>
 					{{if eq .Action "allow_hostname"}}
-						<form method="post" action="/settings/sites/{{$.Domain}}/health/allow" class="mt-2">
+						<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/health/allow" $.Domain) }}" class="mt-2">
 							<input type="hidden" name="csrf_token" value="{{$.CSRF}}" />
 							<input type="hidden" name="hostname" value="{{.Hostname}}" />
 							<button type="submit" class="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "settings.health.allow_hostname" "hostname" .Hostname }}</button>
@@ -133,7 +133,7 @@
 			<code class="break-all rounded bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">{{.BaseURL}}/api/event</code>
 			{{ t $.Lang "settings.health.test_hint_after" }}
 		</p>
-		<form method="post" action="/settings/sites/{{.Domain}}/health/test-event" class="mt-4">
+		<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/health/test-event" .Domain) }}" class="mt-4">
 			<input type="hidden" name="csrf_token" value="{{.CSRF}}" />
 			<button type="submit" class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "settings.health.test_submit" }}</button>
 		</form>
@@ -253,7 +253,7 @@
 		{{else}}
 			<p class="mb-2.5 mt-4 text-sm text-muted">{{ t $.Lang "settings.health.allowlist_empty" }}</p>
 		{{end}}
-		<form method="post" action="/settings/sites/{{.Domain}}/health/allow" class="flex flex-wrap items-center gap-2">
+		<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/health/allow" .Domain) }}" class="flex flex-wrap items-center gap-2">
 			<input type="hidden" name="csrf_token" value="{{.CSRF}}" />
 			<input type="text" name="hostname" placeholder="{{ t $.Lang "settings.health.hostname_placeholder" }}" class="rounded-xl border border-field bg-card px-3 py-2 font-mono text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
 			<button type="submit" class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "settings.health.allow_submit" }}</button>

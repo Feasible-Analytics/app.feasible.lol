@@ -16,6 +16,10 @@ export const win = window;
 export const doc = document;
 export const loc = location;
 
+// hatch captures the privacy and test overrides before bootstrap evaluates
+// them, matching the one-time configuration semantics of the tracker.
+export const hatch = win.__feasible;
+
 // The tracker version reported as `v`. It is an integer because the server
 // stores it as one, and it exists so that "which script is this site running"
 // is a support answer rather than a guess — old scripts sit in browser caches
@@ -28,23 +32,23 @@ export const VERSION = 1;
 // belongs to, and an engagement event that reports the URL the visitor has
 // already navigated *to* attributes the reading time to the wrong page.
 export const page = {
-	// url is the URL the current pageview was reported with, not whatever
+	// u is the URL the current pageview was reported with, not whatever
 	// location says right now. During an SPA navigation those differ for the
 	// moment it takes to flush the engagement event for the page being left.
-	url: "",
+	u: "",
 
-	// key is the deduplication key for the current pageview. It is the full URL
+	// k is the deduplication key for the current pageview. It is the full URL
 	// rather than the pathname: deduplicating on the pathname is what silently
 	// swallowed bfcache pageviews and query-string-only navigations.
-	key: "",
+	k: "",
 
-	// tracked records that a pageview has been sent for this document. Manual
+	// t records that a pageview has been sent for this document. Manual
 	// mode depends on it — a bfcache restore must only re-fire a pageview if
 	// the site actually tracked one in the first place.
-	tracked: false,
+	t: false,
 
-	// domain is the site identifier every event carries as `d`. It lives here
+	// d is the site identifier every event carries as `d`. It lives here
 	// so that the modules which only ever send events do not each have to be
 	// handed the whole configuration.
-	domain: "",
+	d: "",
 };

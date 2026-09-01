@@ -9,13 +9,40 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/replica"
 )
+
+// writeReplicaAttestation writes one fresh provider bundle and returns its
+// path, keeping command tests on the same atomic format used in deployment.
+func writeReplicaAttestation(t *testing.T, replicaURL string, policy []byte) string {
+	t.Helper()
+	location, err := replica.ParseLocation(replicaURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(replica.Attestation{
+		Version: replica.AttestationVersion, FetchedAt: time.Now().UTC(), ReplicaURL: replicaURL,
+		Bucket: location.Bucket, Prefix: location.Prefix,
+		BucketLocation: json.RawMessage(`{"LocationConstraint":null}`), Lifecycle: policy,
+		Versioning: json.RawMessage(`{}`), ObjectLock: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "attestation.json")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
 
 // litestreamDataDir builds a data directory with a control database and the
 // account directories named, which is the layout every replication command
@@ -68,6 +95,75 @@ func TestLitestreamConfigRefusesWithoutAReplicaURL(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "FEASIBLE_LITESTREAM_REPLICA_URL") {
 		t.Fatalf("the message does not name the variable to set: %q", stderr)
+	}
+}
+
+// TestLitestreamPolicyRendersTheVersionedProviderRule keeps the bucket-owner
+// action reproducible without granting this command cloud mutation access.
+func TestLitestreamPolicyRendersTheVersionedProviderRule(t *testing.T) {
+	code, stdout, stderr := run(t, "litestream", "policy", "-replica-url", "s3://bucket/shard-01")
+	if code != ExitOK {
+		t.Fatalf("exit code %d, stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, replica.PolicyID) || !strings.Contains(stdout, `"Prefix": "shard-01/"`) {
+		t.Fatalf("rendered policy is incomplete:\n%s", stdout)
+	}
+}
+
+// TestLitestreamLifecycleCheckValidatesProviderExports exercises the read-only
+// command used by deployment gates and scheduled monitoring. It accepts the
+// rendered contract and rejects a provider rule outside the public bound.
+func TestLitestreamLifecycleCheckValidatesProviderExports(t *testing.T) {
+	replicaURL := "s3://bucket/shard-01"
+	policy, err := replica.Render(replicaURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attestationPath := writeReplicaAttestation(t, replicaURL, policy)
+
+	args := []string{
+		"litestream", "lifecycle-check",
+		"-replica-url", replicaURL,
+		"-attestation", attestationPath,
+	}
+	code, stdout, stderr := run(t, args...)
+	if code != ExitOK || !strings.Contains(stdout, replica.PolicyID) {
+		t.Fatalf("valid provider exports = %d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	tooLong := strings.Replace(string(policy), `"Days": 2`, `"Days": 3`, 1)
+	attestationPath = writeReplicaAttestation(t, replicaURL, []byte(tooLong))
+	args[len(args)-1] = attestationPath
+	code, _, stderr = run(t, args...)
+	if code != ExitError || !strings.Contains(stderr, "current-object expiration") {
+		t.Fatalf("overlong provider rule = %d stderr=%q", code, stderr)
+	}
+}
+
+// TestProductionLitestreamConfigRequiresValidatedProviderExports proves the
+// replication watcher fails closed when provider-side retention is unattested.
+func TestProductionLitestreamConfigRequiresValidatedProviderExports(t *testing.T) {
+	dir := litestreamDataDir(t)
+	t.Setenv("FEASIBLE_ENV", "production")
+	setProductionOperator(t)
+	t.Setenv("FEASIBLE_APP_DATA_DIR", dir)
+	t.Setenv("FEASIBLE_LITESTREAM_REPLICA_URL", "s3://bucket/shard-01")
+
+	code, _, stderr := run(t, "litestream", "config", "-print")
+	if code != ExitError || !strings.Contains(stderr, "FEASIBLE_LITESTREAM_ATTESTATION") {
+		t.Fatalf("missing attestation result = %d %q", code, stderr)
+	}
+
+	policy, err := replica.Render("s3://bucket/shard-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FEASIBLE_LITESTREAM_ATTESTATION", writeReplicaAttestation(t, "s3://bucket/shard-01", policy))
+
+	code, stdout, stderr := run(t, "litestream", "config", "-print")
+	if code != ExitOK || !strings.Contains(stdout, "control.db") {
+		t.Fatalf("validated config result = %d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
 

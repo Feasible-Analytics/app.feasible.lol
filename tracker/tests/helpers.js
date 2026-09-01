@@ -22,6 +22,7 @@ export async function collect(page, options = {}) {
 		events: [],
 		requests: [],
 		status: options.status || 202,
+		dropped: options.dropped || "",
 
 		// fail makes the next `count` requests fail, which is how a dropped
 		// connection is simulated without unplugging anything.
@@ -80,7 +81,11 @@ export async function collect(page, options = {}) {
 		await route.fulfill({
 			status: state.status,
 			contentType: "text/plain",
-			headers: { "access-control-allow-origin": "*" },
+			headers: {
+				"access-control-allow-origin": "*",
+				"access-control-expose-headers": "x-feasible-dropped",
+				...(state.dropped ? { "x-feasible-dropped": state.dropped } : {}),
+			},
 			body: "ok",
 		});
 	});

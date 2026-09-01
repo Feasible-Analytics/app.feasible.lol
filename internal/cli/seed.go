@@ -89,14 +89,15 @@ func runSeed(e *env, args []string) int {
 	)
 
 	result, err := seed.Run(ctx, seed.Options{
-		DataDir:   *dataDir,
-		Pageviews: *pageviews,
-		Days:      *days,
-		Sites:     *sites,
-		Seed:      *rngSeed,
-		Fresh:     *fresh,
-		Out:       e.stdout,
-		Log:       e.log,
+		DataDir:           *dataDir,
+		Pageviews:         *pageviews,
+		Days:              *days,
+		Sites:             *sites,
+		Seed:              *rngSeed,
+		Fresh:             *fresh,
+		Out:               e.stdout,
+		Log:               e.log,
+		ControlMigrations: e.controlMigrations,
 	})
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
@@ -148,7 +149,7 @@ func runSeedHTTP(ctx context.Context, e *env, dataDir, url string, events int, r
 	// making somebody generate six weeks of history first would make the quick
 	// check the slow one.
 	if url == "" {
-		if err := seed.EnsureFixture(ctx, dataDir, now); err != nil {
+		if err := seed.EnsureFixtureWithMigrations(ctx, dataDir, now, e.controlMigrations); err != nil {
 			fmt.Fprintf(e.stderr, "%v\n", err)
 			return ExitError
 		}

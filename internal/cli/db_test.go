@@ -217,6 +217,7 @@ func TestMigrateFreshRebuilds(t *testing.T) {
 // reachable on a production box.
 func TestMigrateFreshRefusedInProduction(t *testing.T) {
 	t.Setenv("FEASIBLE_ENV", "production")
+	setProductionOperator(t)
 	t.Setenv("FEASIBLE_APP_DATA_DIR", seedDataDir(t))
 
 	code, _, stderr := run(t, "db", "migrate", "--fresh")

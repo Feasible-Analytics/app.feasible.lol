@@ -13,6 +13,24 @@ session folding, or salt erasure. The deployment should match production: a
 load balancer, at least two event-serving processes over the same data volume,
 and Litestream replication.
 
+## Control migration coordination
+
+This branch owns control `0010_minimise_account_deletions`. Do not reserve or
+stub the missing numbers: rebase it after Stripe `0006`, the control-global
+random salt authority `0007`, and M9 `0008`/`0009`, resolve column/index
+conflicts against those real migrations, then run the full `0001` through
+`0010` upgrade. Until that rebase, the migration runner intentionally refuses
+to stamp a version-5 control database across the gap.
+
+Managed Payments rebase conflicts should stay in `internal/cli/commerce.go`,
+where its provider-backed `CustomerRemover` is attached to the shared purger.
+The authenticated deletion handler deliberately has no separate Stripe client.
+
+A durability guarantee nobody has tested is a durability guess. This is the
+exercise that turns it into a measurement: eight things go wrong deliberately, and
+each one has an observation written down in advance so the person running it
+knows whether it passed.
+
 The acceptance boundary is simple: every HTTP `202` has exactly one permanent
 UUID receipt and its committed fact or committed policy rejection. A `503` is
 not accepted data; the browser must retain and safely replay it.
@@ -86,6 +104,38 @@ path, run `feasible db migrate`, and restart. Replay UUIDs from before and after
 the recovery point. Permanent receipts prevent duplication whenever the receipt
 was included in the restored transaction; report the replica sync window as the
 possible committed-data loss.
+
+## 8. Interrupt an account deletion and inspect replica expiry
+
+**Break it.** On staging, put a fixture account at day 90, keep one stale ingest
+route and buffered batch for it, and make the payment-provider delete call fail.
+Run one lifecycle sweep, kill the app after local removal, restart it, restore the
+provider stub, and run the next sweep.
+
+**Expected observation.** The first sweep creates
+`.account-deletions/account-<id>.deleted` before removing control or account data.
+The stale writer drains without recreating `accounts/<id>/`; the failed provider
+identifier remains only for retry, `completed_at` stays NULL, and restart resumes
+the exact pending work. The second sweep removes any deliberately recreated test
+file again, completes provider deletion, and only then marks completion and sends
+confirmation.
+
+Run `scripts/check-replica-lifecycle.sh`. Inspect representative keys below both
+`account-<id>/` and `control/` with the provider's object metadata API. Their
+lifecycle expiration date must make them eligible no later than 72 hours after
+creation or supersession. Record the eligibility date. Do not record physical
+removal as immediate: provider lifecycle is asynchronous and has no published
+maximum completion time.
+
+**Pass.** No process or restart recreates live account data, deletion completion
+waits for every checkpoint and provider success, the lifecycle checker passes for
+the exact shard prefix, and both the deleted account prefix and old control
+snapshots are covered. Attempting the restore runbook for the deleted id must stop
+at its tombstone check.
+
+---
+
+## After the exercise
 
 ## What is deliberately absent
 

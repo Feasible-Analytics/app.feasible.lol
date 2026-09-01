@@ -65,7 +65,7 @@ func (c *Cache) Refresh(ctx context.Context) error {
 	rulesBySite := map[int64][]Rule{}
 
 	for accountID := range byAccount {
-		account, err := c.accounts.Open(ctx, accountID)
+		lease, err := c.accounts.Acquire(ctx, accountID)
 		if err != nil {
 			// One unreadable account must not blank every other account's
 			// rules. Skipping keeps the previous snapshot's entries for it,
@@ -73,9 +73,13 @@ func (c *Cache) Refresh(ctx context.Context) error {
 			return fmt.Errorf("shields: refresh account %d: %w", accountID, err)
 		}
 
-		rules, err := allRules(ctx, account.Reader())
+		rules, err := allRules(ctx, lease.Account.Reader())
 		if err != nil {
+			_ = lease.Release()
 			return err
+		}
+		if err := lease.Release(); err != nil {
+			return fmt.Errorf("shields: release account %d: %w", accountID, err)
 		}
 
 		for siteID, list := range rules {
@@ -218,7 +222,7 @@ type Viewer struct {
 	// X-Forwarded-For, every visitor resolves to the proxy, and the settings
 	// page would otherwise show the customer their own router's LAN address —
 	// 192.168.178.1 — and cheerfully let them build a rule on it that blocks
-	// nothing at all.
+	// every visitor sharing that proxy address.
 	Private bool
 
 	// Warning names the catalogue string to show when Private is true. It is an

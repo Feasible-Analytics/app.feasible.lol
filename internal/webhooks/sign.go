@@ -35,14 +35,13 @@ const (
 	// the body first.
 	EventHeader = "Feasible-Event"
 
-	// DeliveryHeader is the delivery id, which changes on every retry and every
-	// manual redelivery.
+	// DeliveryHeader is stable across automatic retries of one delivery row. A
+	// manual redelivery creates a new row and therefore a new delivery id.
 	DeliveryHeader = "Feasible-Delivery"
 
-	// EventIDHeader is stable across retries of the same event. It is the value
-	// a receiver keys its own idempotency on: at-least-once delivery means the
-	// same event will arrive twice eventually, and the receiver is the only
-	// place that can decide what to do about it.
+	// EventIDHeader is stable across automatic retries and manual redeliveries of
+	// the same event. It is the broader idempotency key when manual replays must
+	// also be collapsed.
 	EventIDHeader = "Feasible-Event-Id"
 )
 

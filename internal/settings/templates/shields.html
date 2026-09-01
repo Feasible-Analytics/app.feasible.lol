@@ -11,7 +11,7 @@
 		<span class="rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-ink">{{ t $.Lang "auth.shields.seen_via" "source" .Viewer.Source }}</span>
 
 		{{ if not .Viewer.Private }}
-		<form method="post" action="/settings/sites/{{ $.Domain }}/shields/add" class="ml-auto">
+		<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/shields/add" $.Domain) }}" class="ml-auto">
 			<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
 			<input type="hidden" name="kind" value="ip">
 			<input type="hidden" name="value" value="{{ .Viewer.Address }}">
@@ -49,7 +49,7 @@
 					<td class="py-2 pr-3"><code class="rounded bg-subtle px-1 font-mono text-xs text-body">{{ .Hostname }}</code></td>
 					<td class="py-2 pr-3 text-right tabular-nums text-muted">{{ .Events }}</td>
 					<td class="py-2 text-right">
-						<form method="post" action="/settings/sites/{{ $.Domain }}/shields/allow-hostname">
+						<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/shields/allow-hostname" $.Domain) }}">
 							<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
 							<input type="hidden" name="hostname" value="{{ .Hostname }}">
 							<button type="submit" class="text-sm font-semibold text-accent-ink hover:text-accent">{{ t $.Lang "auth.shields.allow_hostname" }}</button>
@@ -84,7 +84,7 @@
 					<td class="py-2 pr-3 align-top"><code class="rounded bg-subtle px-1 font-mono text-xs text-body">{{ .Value }}</code></td>
 					<td class="py-2 pr-3 align-top text-muted">{{ .Note }}</td>
 					<td class="py-2 align-top">
-						<form method="post" action="/settings/sites/{{ $.Domain }}/shields/delete">
+						<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/shields/delete" $.Domain) }}">
 							<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
 							<input type="hidden" name="id" value="{{ .ID }}">
 							<button type="submit" class="text-sm font-medium text-down hover:text-down-ink">{{ t $.Lang "auth.shields.remove" }}</button>
@@ -99,7 +99,7 @@
 	<p class="mt-4 text-sm text-faint">{{ t $.Lang "auth.shields.empty" }}</p>
 	{{ end }}
 
-	<form method="post" action="/settings/sites/{{ $.Domain }}/shields/add" class="mt-5 flex flex-wrap items-end gap-3 border-t border-line pt-5">
+	<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/shields/add" $.Domain) }}" class="mt-5 flex flex-wrap items-end gap-3 border-t border-line pt-5">
 		<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
 		<input type="hidden" name="kind" value="{{ .Kind }}">
 

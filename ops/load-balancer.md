@@ -184,10 +184,17 @@ a supported high-availability shape.
 ## Two things to verify after any load-balancer change
 
 **The visitor's address is still the visitor's address.** The ingest tier reads
-`X-Feasible-IP` (only from an address on `FEASIBLE_INGEST_TRUSTED_PROXIES`), then
-`CF-Connecting-IP`, then the first entry of `X-Forwarded-For`, then the socket
-peer. A load balancer that does not set `X-Forwarded-For` collapses every visitor
-in the world into one address: one country, one fingerprint, no error anywhere.
+`X-Feasible-IP`, then `CF-Connecting-IP`, then `X-Forwarded-For` from right to
+left until the first untrusted hop, and finally the socket peer. All forwarded
+headers are ignored unless the socket peer is on
+`FEASIBLE_INGEST_TRUSTED_PROXIES`. A load balancer omitted from that list, or
+one that does not set a client-address header, collapses every visitor into its
+own address: one country, one fingerprint, no error anywhere.
+Every trusted edge must strip or overwrite client-supplied `X-Feasible-IP` and
+`CF-Connecting-IP`; those headers take precedence and an allow-list cannot tell
+whether the proxy created them or merely passed them through. An edge may append
+`X-Forwarded-For`, because the right-to-left walk ignores spoofed entries before
+the address that edge observed.
 
 ```bash
 curl -s -X POST https://<public-host>/api/event \

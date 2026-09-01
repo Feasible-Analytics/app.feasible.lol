@@ -11,25 +11,41 @@ package pages
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/billing"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/salts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/stripe"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/usage"
 )
 
 // pagesNow is the clock the screens render at.
 var pagesNow = time.Date(2026, time.March, 20, 12, 0, 0, 0, time.UTC)
+
+// applyPagesControlSchema applies the complete merged control chain so page
+// fixtures render against the same M9 and M8 schema as the runtime.
+func applyPagesControlSchema(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // newHandler builds the pages over a real control database with one team.
 func newHandler(t *testing.T) (*Handler, *sql.DB) {
@@ -41,9 +57,7 @@ func newHandler(t *testing.T) (*Handler, *sql.DB) {
 	}
 	t.Cleanup(func() { control.Close() })
 
-	if _, err := migrate.Run(context.Background(), control, migrate.Control()); err != nil {
-		t.Fatal(err)
-	}
+	applyPagesControlSchema(t, control)
 
 	stamp := pagesNow.Unix()
 
@@ -61,6 +75,7 @@ func newHandler(t *testing.T) (*Handler, *sql.DB) {
 		Lifecycle:  lifecycle.NewStore(control),
 		Usage:      usage.NewStore(control),
 		SalesEmail: "sales@feasible.lol",
+		Hosted:     true,
 		Now:        func() time.Time { return pagesNow },
 	}
 
@@ -95,6 +110,7 @@ func TestEveryPageRenders(t *testing.T) {
 		"/legal/privacy",
 		"/legal/terms",
 		"/legal/dpa",
+		"/legal/subprocessors",
 	}
 
 	for _, doc := range documentation {
@@ -141,13 +157,190 @@ func TestLayoutNavigationPreservesTheSelectedTeam(t *testing.T) {
 	}
 }
 
+// TestWritePublicBrowserFixtures renders every public GET page through the real
+// route table for the serverless Chromium matrix. Normal Go test runs skip the
+// artifact write; the browser suite supplies a temporary output directory and
+// removes it after loading the manifest.
+func TestWritePublicBrowserFixtures(t *testing.T) {
+	outputDir := os.Getenv("FEASIBLE_PUBLIC_FIXTURE_DIR")
+	if outputDir == "" {
+		t.Skip("FEASIBLE_PUBLIC_FIXTURE_DIR is only set by the serverless browser suite")
+	}
+	if err := os.MkdirAll(outputDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	handler, _ := newHandler(t)
+	paths := []string{
+		"/pricing",
+		"/billing?team=1",
+		"/billing/upgrade",
+		"/billing/done?team=1",
+		"/billing/export?team=1",
+		"/docs",
+		"/legal/privacy",
+		"/legal/terms",
+		"/legal/dpa",
+		"/legal/subprocessors",
+	}
+	for _, doc := range documentation {
+		paths = append(paths, "/docs/"+doc.Slug)
+	}
+
+	type fixture struct {
+		Path string `json:"path"`
+		File string `json:"file"`
+	}
+	fixtures := make([]fixture, 0, len(paths))
+	for index, path := range paths {
+		response := render(t, handler, path)
+		if response.Code != http.StatusOK {
+			t.Fatalf("render browser fixture %s: status %d", path, response.Code)
+		}
+		name := fmt.Sprintf("%03d.html", index)
+		if err := os.WriteFile(filepath.Join(outputDir, name), response.Body.Bytes(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fixtures = append(fixtures, fixture{Path: path, File: name})
+	}
+
+	manifest, err := json.Marshal(fixtures)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outputDir, "manifest.json"), manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPublicHeaderHasNarrowViewportContainment checks the static layout
+// contract used by browser-capable smoke checks at 320px and 390px.
+func TestPublicHeaderHasNarrowViewportContainment(t *testing.T) {
+	handler, _ := newHandler(t)
+	page := render(t, handler, "/pricing").Body.String()
+	if !strings.Contains(page, `name="viewport" content="width=device-width, initial-scale=1"`) {
+		t.Fatal("public layout is missing its device-width viewport")
+	}
+
+	css := render(t, handler, "/billing/assets/pages.css").Body.String()
+	for _, want := range []string{
+		"header.top .wrap {", "flex-wrap: wrap", "@media (max-width: 520px)",
+		"header.top .brand { flex-basis: 100%; }", "header.top nav { width: 100%",
+	} {
+		if !strings.Contains(css, want) {
+			t.Errorf("narrow header CSS is missing %q", want)
+		}
+	}
+	if strings.Contains(css, "letter-spacing: -") {
+		t.Fatal("public CSS still uses negative letter spacing")
+	}
+}
+
+// TestSubprocessorPageUsesDeploymentConfiguration proves the public legal list
+// names configured entities and does not substitute generic provider labels.
+func TestSubprocessorPageUsesDeploymentConfiguration(t *testing.T) {
+	handler, _ := newHandler(t)
+	handler.Hosted = true
+	handler.Subprocessors = []config.Subprocessor{{
+		Role: "compute", LegalEntity: "Named Compute LLC", Service: "Virtual machines",
+		Data: "Encrypted visitor analytics", Region: "United States",
+	}}
+
+	body := render(t, handler, "/legal/subprocessors").Body.String()
+	for _, want := range []string{"Named Compute LLC", "Virtual machines", "Encrypted visitor analytics", "United States"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("subprocessor page is missing %q", want)
+		}
+	}
+}
+
+// TestLegalPagesIdentifyTheRunningOperator proves hosted pages retain the
+// service entity while self-hosted privacy and DPA pages name the configured
+// operator and never misidentify Cloudmanic as that deployment's processor.
+func TestLegalPagesIdentifyTheRunningOperator(t *testing.T) {
+	handler, _ := newHandler(t)
+	handler.Hosted = false
+	handler.OperatorName = "Example Operator, Inc."
+	handler.OperatorAddress = "123 Example Street\nPortland, OR"
+	handler.OperatorEmail = "privacy@example.test"
+
+	for _, path := range []string{"/legal/privacy", "/legal/dpa"} {
+		body := render(t, handler, path).Body.String()
+		for _, want := range []string{"Example Operator, Inc.", "123 Example Street", "privacy@example.test"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s self-hosted body is missing %q", path, want)
+			}
+		}
+		if strings.Contains(body, "<strong>Processor:</strong> Cloudmanic") || strings.Contains(body, "<strong>Cloudmanic Labs, LLC</strong>") {
+			t.Errorf("%s identifies Cloudmanic as the self-hosted operator", path)
+		}
+	}
+
+	handler.Hosted = true
+	for _, path := range []string{"/legal/privacy", "/legal/dpa"} {
+		body := render(t, handler, path).Body.String()
+		if !strings.Contains(body, "Cloudmanic Labs, LLC") {
+			t.Errorf("%s hosted body lost the service entity", path)
+		}
+	}
+}
+
+// TestWebhookDocsDescribeDecimalInt64DeliveryIDs keeps the public request and
+// header examples aligned with the INTEGER PRIMARY KEY implementation.
+func TestWebhookDocsDescribeDecimalInt64DeliveryIDs(t *testing.T) {
+	body := strings.ToLower(string(mustFind(t, documentation, "webhooks").Body))
+	for _, want := range []string{"feasible-delivery: 1842", "decimal signed 64-bit integer id", "{delivery_id}"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("webhook docs are missing %q", want)
+		}
+	}
+	if strings.Contains(body, "feasible-delivery: 91c4") {
+		t.Fatal("webhook docs still show the delivery id as a hexadecimal or UUID-like value")
+	}
+}
+
+// TestPublicLanguageChoicePersistsWithoutMislabelingFallback proves public
+// handlers use the shared Apply path. German is supported by account screens
+// but the public pages catalogue and embedded prose are English-only, so the
+// preference is remembered while the document truthfully remains lang=en.
+func TestPublicLanguageChoicePersistsWithoutMislabelingFallback(t *testing.T) {
+	handler, _ := newHandler(t)
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	for _, path := range []string{"/pricing?lang=de", "/docs/shields?lang=de", "/legal/privacy?lang=de"} {
+		recorder := httptest.NewRecorder()
+		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s answered %d", path, recorder.Code)
+		}
+		if !strings.Contains(recorder.Body.String(), `<html lang="en">`) {
+			t.Errorf("%s labelled English fallback content as another language", path)
+		}
+
+		cookies := recorder.Result().Cookies()
+		if len(cookies) != 1 || cookies[0].Name != i18n.CookieName || cookies[0].Value != "de" {
+			t.Errorf("%s did not persist the explicit language choice: %v", path, cookies)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/pricing", nil)
+	req.AddCookie(&http.Cookie{Name: i18n.CookieName, Value: "de"})
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, req)
+	if !strings.Contains(recorder.Body.String(), `<html lang="en">`) {
+		t.Fatal("a persisted partial locale mislabeled the next page's English fallback")
+	}
+}
+
 // TestPricingStatesBothPrices is the one thing the page exists to say.
 func TestPricingStatesBothPrices(t *testing.T) {
 	handler, _ := newHandler(t)
 
 	body := render(t, handler, "/pricing").Body.String()
 
-	for _, want := range []string{"$9.99", "$100", "1,000,000 pageviews", "Unlimited sites", "pro-rata refund within 30 days"} {
+	for _, want := range []string{"$9.99", "$100", "1,000,000 pageviews", "Unlimited sites", "Pro-rata refund within 30 days"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the pricing page never says %q", want)
 		}
@@ -339,7 +532,7 @@ func TestPricingPublishesTheLifecycleTimetable(t *testing.T) {
 
 	body := render(t, handler, "/pricing").Body.String()
 
-	for _, want := range []string{"Days 0 – 30", "Days 30 – 60", "Days 60 – 90", "Day 90", "we keep collecting", "permanently delete"} {
+	for _, want := range []string{"Days 0 – 30", "Days 30 – 60", "Days 60 – 90", "Day 90", "we keep collecting", "live systems", "72 hours", "retried hourly"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the pricing page never mentions %q", want)
 		}
@@ -627,7 +820,8 @@ func TestPortalPreservesTheAuthenticatedTeamInItsReturnURL(t *testing.T) {
 func TestDocsCoverEveryRequiredTopic(t *testing.T) {
 	required := []string{
 		"installation", "integrations", "script-options", "proxying",
-		"metrics", "goals-funnels", "custom-properties", "api",
+		"dashboard", "metrics", "goals-funnels", "custom-properties",
+		"shields", "import-export", "api", "webhooks", "mcp", "sdks",
 		"self-hosting", "privacy",
 	}
 
@@ -699,6 +893,90 @@ func TestTheLegalPagesNameTheController(t *testing.T) {
 	}
 }
 
+// TestDeletionCopyMatchesOperationalRetention prevents the legal pages from
+// promising immediate backup erasure or a day-90 state the lifecycle worker
+// cannot guarantee while object retention and provider retries are external.
+func TestDeletionCopyMatchesOperationalRetention(t *testing.T) {
+	for _, page := range []Doc{
+		mustFind(t, documentation, "privacy"),
+		mustFind(t, legal, "privacy"),
+		mustFind(t, legal, "terms"),
+		mustFind(t, legal, "dpa"),
+	} {
+		body := strings.ToLower(strings.Join(strings.Fields(string(page.Body)), " "))
+		if !strings.Contains(body, "72 hours") {
+			t.Errorf("%s does not state the replica retention window", page.Slug)
+		}
+		for _, required := range []string{"immediate", "hourly", "being written", "60 seconds"} {
+			if !strings.Contains(body, required) {
+				t.Errorf("%s does not state day-90 %s behavior", page.Slug, required)
+			}
+		}
+		for _, contradiction := range []string{"no backup", "nothing left to restore"} {
+			if strings.Contains(body, contradiction) {
+				t.Errorf("%s still claims %q during the restorable replica window", page.Slug, contradiction)
+			}
+		}
+	}
+
+	privacy := strings.ToLower(string(mustFind(t, legal, "privacy").Body))
+	for _, want := range []string{"payment-provider customer identifier", "minimal tombstone"} {
+		if !strings.Contains(privacy, want) {
+			t.Errorf("legal privacy copy does not disclose %q", want)
+		}
+	}
+}
+
+// TestPathCleaningDocsDiscloseTheLegacyBoundary keeps the reversible new-write
+// guarantee from becoming an impossible recovery promise for upgraded data.
+func TestPathCleaningDocsDiscloseTheLegacyBoundary(t *testing.T) {
+	body := strings.ToLower(strings.Join(strings.Fields(string(mustFind(t, documentation, "shields").Body)), " "))
+	for _, want := range []string{"new traffic keeps its original", "older versions rewrote paths", "cannot be reconstructed"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("path cleaning docs do not disclose %q", want)
+		}
+	}
+	if strings.Contains(body, "every original path comes back") {
+		t.Fatal("path cleaning docs still promise recovery of already-lost originals")
+	}
+}
+
+// TestDPALinksConfiguredSubprocessors keeps legal copy tied to the deployment
+// inventory while retaining the documented hosted and self-hosted boundaries.
+func TestDPALinksConfiguredSubprocessors(t *testing.T) {
+	body := strings.ToLower(string(mustFind(t, legal, "dpa").Body))
+
+	for _, want := range []string{
+		"/legal/subprocessors",
+		"legal entities",
+		"data category",
+		"tls terminates",
+		"private-network http",
+		"self-hosted operators choose and control",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("DPA does not describe %q", want)
+		}
+	}
+	if strings.Contains(body, "no sub-processor receives visitor analytics") {
+		t.Fatal("DPA still denies the infrastructure subprocessors receive visitor analytics")
+	}
+}
+
+// TestProxyDocsRequireHeaderSanitation makes the trusted-proxy boundary
+// actionable. The allow-list authenticates the socket peer, while the edge
+// still has to remove higher-precedence headers supplied by that peer's client.
+func TestProxyDocsRequireHeaderSanitation(t *testing.T) {
+	for _, slug := range []string{"proxying", "self-hosting"} {
+		body := string(mustFind(t, documentation, slug).Body)
+		for _, want := range []string{"FEASIBLE_INGEST_TRUSTED_PROXIES", "strip or overwrite", "right to left"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s does not state proxy requirement %q", slug, want)
+			}
+		}
+	}
+}
+
 // TestNoCompetitorIsNamed keeps the repository's rule. The docs cover the same
 // topics as the incumbent's and say so in our own words, but naming anybody is
 // off limits.
@@ -716,6 +994,91 @@ func TestNoCompetitorIsNamed(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestTheDocsQuoteTheRealScriptPath is the cheapest guard there is against the
+// commonest kind of documentation rot: a snippet somebody can copy, paste, and
+// get a 404 from. The path is read from the package that serves it rather than
+// written down twice.
+func TestTheDocsQuoteTheRealScriptPath(t *testing.T) {
+	var quoted bool
+
+	for _, doc := range documentation {
+		body := string(doc.Body)
+
+		if strings.Contains(body, tracker.PathLegacy) {
+			quoted = true
+		}
+
+		// Any other filename under the script prefix is a URL the tracker
+		// handler answers with a 404, and a snippet nobody can install.
+		for _, fragment := range []string{"/js/f.js", "/js/script.min.js", "/js/feasible.js"} {
+			if strings.Contains(body, fragment) {
+				t.Errorf("%s tells people to load %s, which is not served", doc.Slug, fragment)
+			}
+		}
+	}
+
+	if !quoted {
+		t.Errorf("no documentation page contains the install snippet's script path %q", tracker.PathLegacy)
+	}
+}
+
+// TestEveryInternalDocLinkResolves walks the cross-references. A link between
+// two pages of a documentation set is exactly the kind of thing that rots
+// silently: renaming a page leaves a 404 that nobody clicks until a customer
+// does.
+func TestEveryInternalDocLinkResolves(t *testing.T) {
+	link := regexp.MustCompile(`href="/(docs|legal)/([a-z0-9-]+)"`)
+
+	for _, set := range [][]Doc{documentation, legal} {
+		for _, doc := range set {
+			for _, match := range link.FindAllStringSubmatch(string(doc.Body), -1) {
+				target := documentation
+				if match[1] == "legal" {
+					if match[2] == "subprocessors" {
+						continue
+					}
+					target = legal
+				}
+
+				if _, ok := findDoc(target, match[2]); !ok {
+					t.Errorf("%s links to /%s/%s, which does not exist", doc.Slug, match[1], match[2])
+				}
+			}
+		}
+	}
+}
+
+// TestThePrivacyDocMatchesTheSaltRetention keeps the one number in the privacy
+// story tied to the code that enforces it. A page claiming a shorter retention
+// than the store actually keeps is a promise we are not keeping.
+func TestThePrivacyDocMatchesTheSaltRetention(t *testing.T) {
+	want := fmt.Sprintf("%d hours", int(salts.Retention.Hours()))
+
+	for _, page := range []Doc{mustFind(t, documentation, "privacy"), mustFind(t, legal, "privacy"), mustFind(t, legal, "dpa")} {
+		if !strings.Contains(string(page.Body), want) {
+			t.Errorf("%s does not state the real salt retention of %s", page.Slug, want)
+		}
+		body := strings.ToLower(string(page.Body))
+		for _, disclosure := range []string{"control", "replica", "72", "restore", "expired salts"} {
+			if !strings.Contains(body, disclosure) {
+				t.Errorf("%s does not disclose salt replica detail %q", page.Slug, disclosure)
+			}
+		}
+	}
+}
+
+// mustFind fetches one page or fails the test naming it.
+func mustFind(t *testing.T, set []Doc, slug string) Doc {
+	t.Helper()
+
+	doc, ok := findDoc(set, slug)
+	if !ok {
+		t.Fatalf("there is no page for %q", slug)
+	}
+
+	return doc
 }
 
 // TestAnUnknownDocIs404 makes sure a bad link produces a 404 rather than an
@@ -743,6 +1106,28 @@ func TestStylesheetIsServed(t *testing.T) {
 	}
 	if got := response.Header().Get("Content-Type"); !strings.Contains(got, "text/css") {
 		t.Errorf("content type is %q", got)
+	}
+}
+
+// TestDocumentationContentHasReusableMobileOverflowRules guards both narrow
+// regressions with the shared prose container: tables scroll inside the article
+// and long inline code may wrap without widening the 390px viewport.
+func TestDocumentationContentHasReusableMobileOverflowRules(t *testing.T) {
+	body, err := assetFS.ReadFile("assets/pages.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	css := string(body)
+	for _, rule := range []string{
+		".docs article { min-width: 0; overflow-wrap: anywhere; }",
+		".docs article table",
+		"overflow-x: auto",
+		"word-break: break-word",
+	} {
+		if !strings.Contains(css, rule) {
+			t.Errorf("documentation stylesheet is missing responsive rule %q", rule)
+		}
 	}
 }
 

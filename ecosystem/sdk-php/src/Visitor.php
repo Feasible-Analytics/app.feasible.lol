@@ -66,9 +66,9 @@ final class Visitor
     }
 
     /**
-     * Resolves the address with the same precedence the ingest server uses:
-     * CF-Connecting-IP, then the first entry of X-Forwarded-For, then the
-     * socket address.
+     * Resolves the address from forwarding headers and then the socket. This
+     * assumes the application edge stripped client-supplied forwarding
+     * headers; unlike the ingest service, this helper has no proxy allow-list.
      *
      * The first entry is the one that matters. X-Forwarded-For is appended to
      * by each hop, so the last entry is the nearest proxy — taking it, as

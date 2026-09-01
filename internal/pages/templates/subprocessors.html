@@ -1,0 +1,42 @@
+<!--
+subprocessors.html
+The configured legal provider inventory for hosted and self-hosted deployments.
+
+Created: 2026-08-31
+Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+{{ define "body" }}
+<div class="wrap">
+  <div class="hero">
+    <h1>Subprocessors</h1>
+    <p>The legal entities that may process data for this deployment.</p>
+  </div>
+  <section>
+    {{ if .Hosted }}
+      <div class="scroll panel">
+        <table>
+          <thead><tr><th>Legal entity</th><th>Service</th><th>Data</th><th>Region</th></tr></thead>
+          <tbody>
+          {{ range .Subprocessors }}
+            <tr>
+              <td><strong>{{ .LegalEntity }}</strong><br><small>{{ .Role }}</small></td>
+              <td>{{ .Service }}</td>
+              <td>{{ .Data }}</td>
+              <td>{{ .Region }}</td>
+            </tr>
+          {{ end }}
+          </tbody>
+        </table>
+      </div>
+      <p>Cloudmanic Labs, LLC gives notice before adding or replacing a hosted-service subprocessor.</p>
+    {{ else }}
+      <article class="panel prose">
+        <h2>Self-hosted deployment</h2>
+        <p>This installation is not Cloudmanic Labs' hosted service. Its operator chooses and controls
+        compute, storage, email, payment, and any other providers. Those providers are the operator's
+        responsibility and do not become Cloudmanic Labs subprocessors because this software can use them.</p>
+      </article>
+    {{ end }}
+  </section>
+</div>
+{{ end }}

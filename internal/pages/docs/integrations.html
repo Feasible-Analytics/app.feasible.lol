@@ -1,39 +1,97 @@
-<p>There is nothing to integrate. The script is a script tag, so anything that lets you add
-one is supported. The list below is the ones people ask about, and the one line each needs.</p>
+<p>The tracker is a script tag, so anything that lets you add one is supported. What follows is the
+list people ask about, and the one step each platform hides. The setup screen inside the product
+carries the same instructions with your own snippet already filled in.</p>
 
 <h3>WordPress</h3>
-<p>Paste the snippet into your theme's header, or into any "header and footer scripts"
-plugin. Do not add it to a caching plugin's "defer JavaScript" list — it is already
-deferred, and deferring it twice can drop the first pageview of a session.</p>
+<p>There is a plugin, <strong>feasible.lol Analytics</strong>. It does more than paste the snippet: it
+serves the script and the events endpoint from your own domain on randomised paths, which is the part
+that actually survives ad blockers, and it adds the two measurements a theme cannot give you —
+site-search terms and 404s.</p>
+<p>Install it, then <em>feasible.lol → Settings</em>, enter your domain exactly as registered, and
+save. Everything else has a working default.</p>
+<p>Without the plugin, paste the snippet into your theme's <code>header.php</code> before
+<code>&lt;/head&gt;</code>, or into any header-scripts plugin. <strong>Use a child theme or a
+plugin</strong> — a snippet pasted into a parent theme is erased by the next theme update and the
+traffic stops with no warning. Do not add the tag to a caching plugin's "defer JavaScript" list; it is
+already deferred, and deferring it twice can lose the first pageview of a session.</p>
 
 <h3>Shopify</h3>
-<p><em>Online Store → Themes → Edit code → theme.liquid</em>, inside <code>&lt;head&gt;</code>. Checkout
-is a separate surface: add the snippet under <em>Settings → Checkout → Order status page
-additional scripts</em> if you want purchases counted.</p>
+<p><em>Online Store → Themes → ⋯ → Edit code</em>, open <code>layout/theme.liquid</code> and paste the
+snippet before <code>&lt;/head&gt;</code>. Check on the live storefront, not the editor.</p>
+<p>On most plans the checkout is a separate surface that will not include your theme's code, so
+checkout pages will not appear in your pages report.</p>
 
-<h3>Next.js, Nuxt, SvelteKit, Astro</h3>
-<p>Put the tag in the root document — <code>app/layout.tsx</code>, <code>app.html</code>,
-<code>Layout.astro</code>. Client-side routing is handled by the script itself; do not also fire
-a manual pageview on route change, or every navigation is counted twice.</p>
+<h3>Next.js</h3>
+<p>App router: the tag goes in <code>app/layout.tsx</code>, inside <code>&lt;head&gt;</code>. Pages
+router: <code>pages/_document.tsx</code>, inside <code>&lt;Head&gt;</code>. <code>next/script</code>
+with <code>strategy="afterInteractive"</code> works too.</p>
+<p>What does not work is a client component that only renders on some routes — you lose every page it
+does not render on, and the report looks like those pages have no traffic rather than no tracking.</p>
 
-<h3>React, Vue and other single-page apps</h3>
-<p>Same rule: one tag in <code>index.html</code>. The script listens for history changes.</p>
+<h3>Nuxt</h3>
+<p><code>nuxt.config.ts</code>, under <code>app.head.script</code>, with <code>defer: true</code>.
+Nuxt renders the head on the server, so the tag is already in the initial HTML — do not <em>also</em>
+add it with <code>useHead</code> on a page, or every pageview is counted twice.</p>
+
+<h3>Astro</h3>
+<p>The layout every page uses, usually <code>src/layouts/Layout.astro</code>, inside
+<code>&lt;head&gt;</code>. Astro processes <code>&lt;script&gt;</code> tags it decides to own; keeping
+the <code>src</code> attribute and adding <code>is:inline</code> is the form that reliably survives a
+build.</p>
+
+<h3>React, Vue, SvelteKit and other single-page apps</h3>
+<p>One tag in the root document. The script listens for history changes itself, so there is nothing to
+call on navigation.</p>
+
+<h3>npm, for a framework that hates raw script tags</h3>
+<p>Install <code>@feasible/tracker</code> and call <code>init</code> once:</p>
+<pre><code>import { init, track } from "@feasible/tracker";
+
+init({ domain: "example.com" });
+await track("Signup", { props: { plan: "annual" } });</code></pre>
+<p>It does not bundle the tracker — it loads the same file from the same host. What it adds is the
+things a hand-rolled tag gets wrong in a modern app: it is safe to import in a server render and does
+nothing there, it installs the queue stub synchronously so an event fired during hydration is replayed
+rather than throwing, <code>init</code> is idempotent so a hot reload cannot double-count, and
+<code>track</code> always settles rather than hanging forever when a blocker eats the request.</p>
 
 <h3>Webflow, Squarespace, Framer, Ghost</h3>
-<p>Each has a "custom code" or "code injection" field in site settings. The head section is
-the right one.</p>
+<p>Each has a custom-code or code-injection field in site settings; the head section is the right one.
+Three things to know:</p>
+<ul>
+  <li><strong>Webflow</strong> custom code needs a paid site plan. On a free <code>.webflow.io</code>
+      site the field saves and nothing is ever published.</li>
+  <li><strong>Squarespace</strong> code injection needs a Business plan or above and does not run in
+      the editor. Check in a private window on the live site.</li>
+  <li><strong>Framer</strong> and <strong>Ghost</strong> custom code runs only on the published site,
+      never in the canvas or preview. Ghost's own portal and checkout overlays render on a different
+      origin and are not covered.</li>
+</ul>
 
 <h3>Google Tag Manager</h3>
-<p>It works, and we would rather you did not. A tag manager is itself the thing most often
-blocked, so loading our script through it turns one blockable request into two. If you must,
-use a Custom HTML tag firing on <em>All Pages — Page View</em>, with "support document.write"
-switched off.</p>
+<p>There is a tag template — search <em>Feasible Analytics</em> in the gallery, or import
+<code>template.tpl</code> under <em>Templates → Tag Templates → New → Import</em>. It gives you two
+tag types: one that loads the script, with fields for the domain, the host, hash routing, manual
+pageviews and counting localhost; and one that sends an event, with a table for properties and fields
+for a revenue amount and currency.</p>
+<p>A Custom HTML tag with the plain snippet on an <em>All Pages</em> trigger also works. Use the
+<code>data-domain</code> form there rather than the per-site path — tag managers rewrite opaque
+paths.</p>
+<p>We would still rather you did not. A tag manager is itself among the most-blocked scripts on the
+web, so loading us through it turns one blockable request into two, and the one you added is the one
+more likely to be blocked.</p>
 
-<h3>Mobile apps and anything without a browser</h3>
-<p>Post to the events endpoint directly. See <a href="/docs/api">the APIs</a>.</p>
+<h3>Looker Studio</h3>
+<p>There is a community connector that reads the query API. You deploy it into your own Apps Script
+project and connect it with a feasible.lol API key carrying <code>stats:read</code> and
+<code>sites:read</code>. It exposes 23 dimensions and 11 metrics, pushes equality and
+contains filters down to us, and caches for five minutes. A chart with two dimensions is not
+supported and says so rather than returning a number that looks right and is not.</p>
+
+<h3>Anything without a browser</h3>
+<p>Mobile apps, background jobs, offline conversions: post to the events endpoint, or use one of the
+five server-side SDKs. See <a href="/docs/sdks">SDKs and integrations</a>.</p>
 
 <h3>Visitors with JavaScript disabled</h3>
-<p>A no-script pixel is available and goes through the identical pipeline — the same
-derivation, the same session rules, the same storage. It is one image tag inside
-<code>&lt;noscript&gt;</code>. It cannot measure time on page or scroll depth, because nothing is
-running to measure them.</p>
+<p>A no-script pixel is available and runs through the identical pipeline. The snippet and its two
+limitations are on the <a href="/docs/installation">installation</a> page.</p>

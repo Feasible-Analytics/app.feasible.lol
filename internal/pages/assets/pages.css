@@ -126,18 +126,21 @@ header.top {
 header.top .wrap {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 22px;
-  height: 60px;
+  min-height: 60px;
+  padding-top: 10px;
+  padding-bottom: 10px;
 }
 
 header.top .brand {
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   text-decoration: none;
   color: var(--ink);
 }
 
-header.top nav { margin-left: auto; display: flex; gap: 20px; }
+header.top nav { margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px 20px; min-width: 0; }
 header.top nav a { color: var(--muted); text-decoration: none; font-size: 15px; }
 header.top nav a:hover, header.top nav a.on { color: var(--ink); }
 
@@ -163,11 +166,11 @@ header.top nav a:hover, header.top nav a.on { color: var(--ink); }
 /* ── Blocks ─────────────────────────────────────────────────────────────── */
 
 .hero { padding: 56px 0 28px; }
-.hero h1 { margin: 0 0 10px; font-size: 34px; line-height: 1.2; letter-spacing: -0.02em; }
+.hero h1 { margin: 0 0 10px; font-size: 34px; line-height: 1.2; letter-spacing: 0; }
 .hero p { margin: 0; color: var(--muted); font-size: 18px; max-width: 60ch; }
 
 section { padding: 8px 0 40px; }
-h2 { font-size: 21px; margin: 34px 0 12px; letter-spacing: -0.01em; }
+h2 { font-size: 21px; margin: 34px 0 12px; letter-spacing: 0; }
 h3 { font-size: 17px; margin: 26px 0 8px; }
 
 .panel {
@@ -184,7 +187,7 @@ h3 { font-size: 17px; margin: 26px 0 8px; }
 /* ── Plans ──────────────────────────────────────────────────────────────── */
 
 .plan { position: relative; display: flex; flex-direction: column; }
-.plan .price { font-size: 34px; font-weight: 700; letter-spacing: -0.02em; margin: 6px 0 2px; }
+.plan .price { font-size: 34px; font-weight: 700; letter-spacing: 0; margin: 6px 0 2px; }
 .plan .per { color: var(--muted); font-size: 15px; }
 .plan ul { list-style: none; padding: 0; margin: 16px 0 22px; }
 .plan li { padding: 5px 0 5px 24px; position: relative; color: var(--body); }
@@ -251,26 +254,45 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* ── Docs ───────────────────────────────────────────────────────────────── */
 
-.docs { display: grid; grid-template-columns: 220px 1fr; gap: 34px; align-items: start; }
+.docs { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 34px; align-items: start; }
 .docs aside { position: sticky; top: 20px; }
 .docs aside ul { list-style: none; margin: 0; padding: 0; }
 .docs aside li { padding: 4px 0; }
 .docs aside a { color: var(--muted); text-decoration: none; font-size: 15px; }
 .docs aside a:hover, .docs aside a.on { color: var(--ink); font-weight: 600; }
+.docs article { min-width: 0; overflow-wrap: anywhere; }
 .docs article > :first-child { margin-top: 0; }
+.docs article table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
 .docs code, .prose code {
   background: var(--subtle); border: 1px solid var(--line); border-radius: 5px;
-  padding: 1px 5px; font-size: 14px;
+  padding: 1px 5px; font-size: 14px; overflow-wrap: anywhere; word-break: break-word;
 }
 pre {
   background: var(--subtle); border: 1px solid var(--line); border-radius: 10px;
   padding: 14px 16px; overflow-x: auto; font-size: 14px; line-height: 1.5;
 }
-pre code { background: none; border: 0; padding: 0; }
+pre code { background: none; border: 0; padding: 0; overflow-wrap: normal; word-break: normal; }
 
 @media (max-width: 760px) {
-  .docs { grid-template-columns: 1fr; }
+  .docs { grid-template-columns: minmax(0, 1fr); }
   .docs aside { position: static; }
+}
+
+@media (max-width: 520px) {
+  .wrap { padding-left: 16px; padding-right: 16px; }
+  header.top .wrap { gap: 4px 16px; }
+  header.top .brand { flex-basis: 100%; }
+  header.top nav { width: 100%; margin-left: 0; justify-content: flex-start; gap: 4px 16px; }
+  header.top nav a { font-size: 14px; line-height: 1.8; }
+  .hero { padding-top: 40px; }
+  .hero h1 { font-size: 30px; }
+  .timeline li { flex-direction: column; gap: 4px; }
+  .timeline .when { min-width: 0; }
 }
 
 /* ── Footer ─────────────────────────────────────────────────────────────── */

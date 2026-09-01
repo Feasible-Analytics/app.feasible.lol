@@ -36,7 +36,6 @@ func newTestStore(t *testing.T) (*Store, *sql.DB) {
 	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
 		t.Fatalf("migrate control database: %v", err)
 	}
-
 	return NewStore(db), db
 }
 

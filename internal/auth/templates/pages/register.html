@@ -27,7 +27,7 @@
     </div>
   {{ end }}
 
-  <form method="post" action="/register" class="{{ if not .GoogleEnabled }}mt-6{{ end }} space-y-4">
+  <form method="post" action="{{ url $.Lang "/register" }}" class="{{ if not .GoogleEnabled }}mt-6{{ end }} space-y-4">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <input type="hidden" name="next" value="{{ .Data.Next }}">
 

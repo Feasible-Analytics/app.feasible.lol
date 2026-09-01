@@ -91,6 +91,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// what actually controls who may call it.
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Headers", "content-type, x-debug-request")
+	w.Header().Set("Access-Control-Expose-Headers", HeaderDropped)
 	w.Header().Set("Access-Control-Max-Age", "86400")
 
 	if r.Method == http.MethodOptions {
@@ -259,9 +260,9 @@ func (h *Handler) drop(w http.ResponseWriter, siteID int64, domain, reason strin
 
 // serverSideCallerProblem returns the message to send a server-side caller that
 // is missing what we need, or the empty string when the request is fine. The
-// check is narrow on purpose: it only fires when the request arrived straight
-// from a datacentre address with no forwarding header at all, which is exactly
-// the shape of an API integration and nothing like a real visitor.
+// check is narrow on purpose: it only fires when the resolved request arrived
+// straight from a datacentre address without a usable forwarded address, which
+// is exactly the shape of a misconfigured API integration.
 func (h *Handler) serverSideCallerProblem(r *http.Request) string {
 	if h.Pipeline == nil || h.Pipeline.Bots == nil {
 		return ""
@@ -277,7 +278,7 @@ func (h *Handler) serverSideCallerProblem(r *http.Request) string {
 	}
 
 	var missing []string
-	if r.Header.Get(HeaderForwardedFor) == "" && r.Header.Get(HeaderCFConnectingIP) == "" {
+	if client.Source == SourceSocket {
 		missing = append(missing, HeaderForwardedFor)
 	}
 	if r.Header.Get("User-Agent") == "" {

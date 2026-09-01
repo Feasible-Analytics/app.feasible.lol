@@ -21,6 +21,11 @@ const cfg = resolve();
 // pageview is an event and giving it a second spelling only creates a second
 // thing to get wrong.
 function api(name, options) {
+	if (reason) {
+		options?.callback?.({ status: null });
+		return;
+	}
+
 	if (name === "pageview") pageview.pageview(options);
 	else clicks.custom(name, options);
 }
@@ -48,18 +53,6 @@ function install(fn) {
 	}
 }
 
-// noop answers every call without sending anything, but still honours the
-// callback.
-//
-// Answering the callback matters more than it looks. The documented contract is
-// that a callback is best effort and may never fire, and callers are told to
-// race it against a timeout — but when *we* are the reason nothing was sent, we
-// know it immediately, and leaving a signup form waiting for a timeout that we
-// could have ended is a page we made worse.
-function noop(_name, options) {
-	options?.callback?.({ status: null });
-}
-
 // One reason string, one warning. A missing domain is the commonest install
 // mistake there is, so it is named as plainly as the rules that suppress a
 // visit on purpose.
@@ -80,4 +73,4 @@ if (reason) {
 
 // The queue is drained last, so an event a site queued before the bundle loaded
 // arrives after the pageview it belongs to rather than before it.
-install(reason ? noop : api);
+install(api);

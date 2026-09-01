@@ -521,14 +521,19 @@ func trackerSnippet(baseURL, domain string, config *TrackerConfig) string {
 	if config.APIEndpoint != "" {
 		attributes = append(attributes, `data-api="`+config.APIEndpoint+`"`)
 	}
+	// Each flag carries an explicit value, and the localhost one carries the
+	// hyphenated name. The script reads a flag with `getAttribute`, which hands
+	// back an empty string for a bare attribute, so a valueless `data-hash` is
+	// indistinguishable from one that is not there at all — a snippet that looks
+	// configured and behaves as though it is not.
 	if config.HashRouting {
-		attributes = append(attributes, `data-hash`)
+		attributes = append(attributes, `data-hash="true"`)
 	}
 	if config.ManualTagging {
-		attributes = append(attributes, `data-manual`)
+		attributes = append(attributes, `data-manual="true"`)
 	}
 	if config.TrackLocalhost {
-		attributes = append(attributes, `data-local`)
+		attributes = append(attributes, `data-capture-on-localhost="true"`)
 	}
 	if config.ExcludedPages != "" {
 		attributes = append(attributes, `data-exclude="`+config.ExcludedPages+`"`)

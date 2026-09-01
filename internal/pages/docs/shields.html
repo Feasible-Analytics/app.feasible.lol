@@ -1,0 +1,95 @@
+<!--
+shields.html
+The shields and path-cleaning documentation body.
+
+Created: 2026-08-31
+Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+<p>Two settings that decide what gets counted and what it is called, at
+<code>/settings/&lt;your domain&gt;/shields</code> and
+<code>/settings/&lt;your domain&gt;/paths</code>.</p>
+
+<h3>Shields — traffic you do not want counted</h3>
+
+<h4>Blocked addresses</h4>
+<p>An address or a CIDR block. Checked in the ingestion tier, which is the only place the raw address
+still exists — after that it has been discarded and there is nothing left to match on.</p>
+<p>The screen shows you the address <em>this request</em> resolved to, using exactly the same header
+precedence the event endpoint uses, with a one-click <strong>Block my own traffic</strong>. That is
+also a free diagnostic: if it shows a private address, your reverse proxy is not passing the visitor's
+address through, every visitor currently resolves to the same one, and a rule built on it would block
+everyone. The one-click action is hidden in that state, but the manual rule form can still add the
+shared address. Fix the proxy before adding it — see <a href="/docs/proxying">proxying</a>.</p>
+
+<h4>Blocked countries</h4>
+<p>Two-letter ISO country codes. Worth it when a country is, for your site, entirely bot traffic.</p>
+
+<h4>Blocked pages</h4>
+<p>A path, or a path ending in <code>*</code> to block everything beneath it. Staging routes, health
+checks and preview builds live here.</p>
+
+<h4>Allowed hostnames</h4>
+<p>This one is an <strong>allow-list, not a block-list</strong>: with no entries everything is
+accepted, and with one or more entries anything not named is dropped. It is the answer to somebody
+else's site sending events with your tracker id — a copied theme, a scraper, a staging clone nobody
+told you about.</p>
+
+<h4>Thirty rules of each kind</h4>
+<p>Per site, per kind. If you are approaching that on blocked pages, a
+<code>/staging*</code> prefix rule is usually what you actually wanted.</p>
+
+<h4>What a shield actually does, and where you see it</h4>
+<p>It stops the event being counted, and the drop is counted rather than silent — but the two halves
+happen in different places, which matters if you are testing a rule with <code>curl</code>:</p>
+<ul>
+  <li><strong>Blocked addresses</strong> are decided in the ingestion tier, before the response, so
+      <code>shield_ip</code> comes straight back in the <code>x-feasible-dropped</code> header.</li>
+  <li><strong>Countries, pages and hostnames</strong> are decided at the shard that holds your data,
+      after the request has already been answered with its <code>202</code>. They are counted as
+      <code>shield_country</code>, <code>shield_page</code> and <code>hostname_not_allowed</code>, and
+      they can never appear in that header. A blocked page still answers exactly like an accepted one;
+      the event simply does not arrive in your reports.</li>
+</ul>
+<p>A change takes effect within about fifteen seconds, and saving from this screen pushes it
+immediately.</p>
+<p>Shields are not retroactive. They change what is collected from now on, and they do not remove
+what is already stored.</p>
+
+<h3>Path cleaning — URLs that are really one page</h3>
+<p><code>/users/3f2a…/settings</code> and ten thousand siblings are one route you think in and ten
+thousand rows on your report. A path cleaning rule merges them:</p>
+
+<table>
+  <thead><tr><th>Pattern</th><th>Replacement</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr><td><code>^/users/[^/]+/settings$</code></td><td><code>/users/:id/settings</code></td><td>one row instead of thousands</td></tr>
+    <tr><td><code>^/blog/([^/]+)/comments/.*$</code></td><td><code>/blog/$1/comments</code></td><td>keeps the post, drops the comment id</td></tr>
+  </tbody>
+</table>
+
+<p>A pattern is a regular expression — a real one, not a glob — and a replacement may refer back to a
+capture group with <code>$1</code>. Rules are tried in order and <strong>the first match wins</strong>;
+they are not chained, so a path is rewritten once. Up to 30 rules per site, and a pattern may be up to
+500 characters. A pattern that will not compile is refused when you save it, naming the rule number
+and the pattern.</p>
+
+<h4>The two things that make it worth using</h4>
+<p><strong>It is retroactive.</strong> Reports apply the current mapping at query time, so saving one
+fixes the history you already have and new events use the same mapping immediately. The screen tells
+you how many stored paths each rule moves before you save it, and again after.</p>
+<p><strong>New traffic keeps its original.</strong> This version stores the original path and gives
+reports a source-to-target mapping. Delete every rule and those retained originals come back. Older
+versions rewrote paths while rules were active; an original already lost that way cannot be
+reconstructed, so removing a rule leaves those legacy cleaned values as they are. Retaining originals
+for all new writes means the path dimension still contains each distinct raw path; the rule controls
+report grouping rather than erasing source data.</p>
+
+<h4>Trailing slashes</h4>
+<p>Most sites serve the same page at <code>/about</code> and <code>/about/</code>, and the two are
+otherwise two permanent rows on every report. There is a one-switch rule for it. It ships
+<strong>off</strong> rather than decided for you, because a few sites genuinely serve different content
+at each and silently merging those would be wrong.</p>
+
+<h4>Preview before you save</h4>
+<p>The preview shows exactly what saving would do and how many stored rows each merge moves. Nothing
+is written until you say so.</p>

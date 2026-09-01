@@ -14,7 +14,11 @@ accepts it. If your procurement process requires a signed copy, write to
 
 <h3>1. Subject matter and duration</h3>
 <p>We process visitor data on your behalf for as long as your account exists, in order to
-provide web analytics. Processing ends when the account is deleted.</p>
+provide web analytics. Live processing ends when the account is deleted. Encrypted
+disaster-recovery replica objects become eligible for provider removal under object-storage lifecycle
+within 72 hours of being written. Replication stops within 60 seconds, so the final object is eligible
+within 72 hours and 60 seconds of live deletion. Physical removal is asynchronous with no published
+maximum completion time.</p>
 
 <h3>2. Nature and purpose</h3>
 <p>Collecting, deriving, storing, aggregating and displaying analytics events from the
@@ -32,8 +36,9 @@ characteristics, and any custom properties you choose to send.</p>
 is then discarded. It is never written to disk and never forwarded. Because it is never
 stored, it is not retained, exported or restorable.</p>
 
-<p>You must not send special-category data as a custom property, and you must not put
-identifiers such as email addresses in page paths.</p>
+<p>You must not send direct personal identifiers or special-category data as custom properties,
+and you must not put identifiers such as names, email addresses, user ids or tokens in page paths or
+full URLs. If prohibited data is sent, you must stop the sender and erase the affected site data.</p>
 
 <h3>5. Our obligations</h3>
 <ul>
@@ -44,40 +49,49 @@ identifiers such as email addresses in page paths.</p>
   <li>We help you respond to data-subject requests, and with your impact assessments.</li>
   <li>We notify you without undue delay, and in any case within 72 hours, if we become aware
       of a personal data breach affecting your data.</li>
-  <li>At the end of the service we delete your data on the published schedule. We keep no
-      backup you could be restored from — that is what makes the deletion real.</li>
+  <li>At the end of the service the hourly lifecycle sweep immediately removes the live account database and records on the published
+      schedule. Replication stops within the watch interval, currently at most 60 seconds, and
+      each encrypted disaster-recovery replica object becomes eligible for provider removal within
+      72 hours of being written. The final object can be written during that stop interval, so it is
+      eligible within 72 hours and 60 seconds of live deletion. Physical removal is asynchronous with no published maximum; replicas can remain
+      operationally restorable while removal is pending and are not used to reactivate the account.
+      Provider deletion is attempted in the same sweep and retried on every hourly sweep until it succeeds.</li>
   <li>We make available what you need to demonstrate compliance and to audit ours.</li>
 </ul>
 
 <h3>6. Sub-processors</h3>
-<p>You give a general authorisation for the sub-processors below. We will give you notice
-before adding another, and you may object.</p>
+<p>You give a general authorisation for the legal entities on the current
+<a href="/legal/subprocessors">hosted-service subprocessor list</a>. That deployment-driven list states
+each entity, service, data category and processing region. We give notice before adding or replacing
+a hosted-service subprocessor, and you may object.</p>
 
-<table>
-  <thead><tr><th>Sub-processor</th><th>Purpose</th><th>Location</th></tr></thead>
-  <tbody>
-    <tr><td>Our hosting provider</td><td>Servers holding the account databases. Named on request.</td><td>United States</td></tr>
-    <tr><td>Our email relay</td><td>Transactional email to account holders. Account addresses only.</td><td>United States</td></tr>
-  </tbody>
-</table>
-
-<p>Our payment provider and email relay do not receive visitor analytics data. It stays on
-our own servers at the hosting provider.</p>
+<p>Self-hosted operators choose and control their own compute, volume, object-storage, email and
+payment providers. Those providers are the operator's responsibility and are not subprocessors of
+Cloudmanic Labs merely because this software can be configured to use them.</p>
 
 <h3>7. International transfers</h3>
-<p>Our servers are in the United States. Transfers of personal data from the EEA, the UK or
-Switzerland rely on the European Commission's Standard Contractual Clauses (module two,
+<p>The processing region for each hosted provider is stated on the
+<a href="/legal/subprocessors">current subprocessor list</a>. Transfers of personal data from the EEA,
+the UK or Switzerland rely on the European Commission's Standard Contractual Clauses (module two,
 controller to processor), which are incorporated into this addendum by reference, together
 with the UK Addendum where the UK GDPR applies.</p>
 
 <h3>8. Security measures</h3>
 <ul>
-  <li>TLS on every connection that carries data.</li>
-  <li>The visitor identifier's salt is encrypted at rest and deleted after 48 hours, which is
-      what makes the identifier irreversible after the fact.</li>
+  <li>For the hosted service, TLS protects public client-to-load-balancer connections. TLS terminates
+      at the managed load balancer; it sends private-network HTTP to app and ingest backends, which
+      are not publicly routable. Self-hosted operators control and are responsible for their own TLS
+      termination and backend transport.</li>
+  <li>The visitor identifier's salt is encrypted at rest with AES-256-GCM under a key held
+      outside the database. Rows are deleted from the live database after 48 hours; encrypted
+      control-database replica objects become eligible for provider removal within 72 hours of being
+      written. Physical removal is asynchronous with no published maximum. Restores occur
+      with service stopped and expired salts are pruned before traffic resumes.</li>
   <li>One database per account, so a query for one customer cannot reach another's data.</li>
+  <li>Encrypted storage volumes for live account databases and encrypted object storage for
+      disaster-recovery replicas.</li>
   <li>Credentials, API keys, invitation tokens and reset tokens are stored only as hashes.</li>
-  <li>The endpoint that serves the salts is bound to loopback and is not routable.</li>
+  <li>Administrative routes listen on loopback only and are not routable from any network.</li>
   <li>Least-privilege access, reviewed, and logged.</li>
 </ul>
 

@@ -1,19 +1,19 @@
 //
 // exclude.js
-// Who we refuse to count: excluded paths, localhost, headless browsers, self-exclusion.
+// Who we refuse to count: consent, DNT, excluded paths, localhost, automation, self-exclusion.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-import { win, loc } from "./state.js";
+import { win, loc, hatch } from "./state.js";
 
 // The localStorage key a person sets to keep their own visits out of the
 // numbers.
 const IGNORE_KEY = "feasible_ignore";
 
-// Hostnames that are somebody's own machine rather than a website. `file:` is
-// handled separately because it has no hostname at all.
+// Hostnames that are somebody's own machine rather than a website. The empty
+// alternative covers `file:`, whose location has no hostname.
 //
 // Documented consequence: a Capacitor, Cordova or Electron shell serves its
 // pages from one of these, so a hybrid app records nothing until
@@ -79,9 +79,7 @@ export function excluded(cfg) {
 function stored() {
 	try {
 		return localStorage.getItem(IGNORE_KEY);
-	} catch {
-		return null;
-	}
+	} catch {}
 }
 
 // ignoreReason reports why this visit will not be counted, or the empty string
@@ -94,21 +92,26 @@ export function ignoreReason(cfg) {
 	// browser under automation sets navigator.webdriver, so without a way to say
 	// "count this on purpose" the headless rule below would make the tracker
 	// untestable in the only environment that tests it honestly.
-	// Headless and automated browsers. The four checks below are the ones that
-	// are safe. `window.phantom` is deliberately absent because a widely used
-	// wallet extension injects that global into real visitors' pages.
-	if (
-		!win.__feasible?.track &&
-		(win._phantom || win.__nightmare || navigator.webdriver || win.Cypress)
-	) {
-		return "automated";
+	if (!hatch?.track) {
+		// Headless and automated browsers. The four checks below are the ones
+		// that are safe.
+		//
+		// `window.phantom` is deliberately absent because a widely installed
+		// crypto wallet extension injects that global into real visitors' pages.
+		if (win._phantom || win.__nightmare || navigator.webdriver || win.Cypress) {
+			return "automated";
+		}
 	}
 
-	if (!cfg.l && (loc.protocol === "file:" || LOCAL_HOST.test(loc.hostname))) {
+	if (!cfg.l && LOCAL_HOST.test(loc.hostname)) {
 		return "localhost";
 	}
 
-	if (stored() === "true") return "excluded";
+	// Consent denial, browser DNT and self-exclusion all produce the same
+	// client-side exclusion contract: no request and a dropped callback result.
+	if (hatch?.consent === false || navigator.doNotTrack == 1 || stored() === "true") {
+		return "excluded";
+	}
 
 	return "";
 }
@@ -116,5 +119,5 @@ export function ignoreReason(cfg) {
 // warn gives every tracker warning one compressed console prefix. Callers name
 // whether tracking stopped or browser durability was reduced.
 export function warn(message) {
-	console.warn("feasible: " + message);
+	console.warn("feasible:", message);
 }

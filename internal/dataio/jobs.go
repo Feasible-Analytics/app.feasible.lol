@@ -101,10 +101,12 @@ func (w *Workers) RunCSVImport(ctx context.Context, job jobs.Job) error {
 		return jobs.PermanentError(fmt.Errorf("import job %d has arguments that cannot be read: %w", job.ID, err))
 	}
 
-	account, err := w.Accounts.Open(ctx, args.AccountID)
+	lease, err := w.Accounts.Acquire(ctx, args.AccountID)
 	if err != nil {
 		return err
 	}
+	defer lease.Release() //nolint:errcheck // the job result is more useful than an unlock error
+	account := lease.Account
 
 	record, err := GetImportByID(ctx, account.Writer(), args.ImportID)
 	if err != nil {
@@ -162,12 +164,14 @@ func (w *Workers) RunExport(ctx context.Context, job jobs.Job) error {
 		return jobs.PermanentError(fmt.Errorf("export job %d has arguments that cannot be read: %w", job.ID, err))
 	}
 
-	account, err := w.Accounts.Open(ctx, args.AccountID)
+	lease, err := w.Accounts.Acquire(ctx, args.AccountID)
 	if err != nil {
 		return err
 	}
+	defer lease.Release() //nolint:errcheck // the job result is more useful than an unlock error
+	account := lease.Account
 
-	destination := ExportPath(w.DataDir, args.ExportID)
+	destination := ExportPath(w.DataDir, args.AccountID, args.ExportID)
 
 	size, err := BuildExport(ctx, account.Reader(), args.SiteID, w.location(args.SiteID), destination)
 	if err != nil {

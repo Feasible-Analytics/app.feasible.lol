@@ -174,6 +174,42 @@ func TestMaterialiseIsReversible(t *testing.T) {
 	}
 }
 
+// TestLegacyCleanedPathsRemainUnrecoverable documents the upgrade boundary. A
+// value rewritten by an older writer contains no original id, so removing all
+// current mappings must leave that legacy value intact rather than inventing a
+// source path that cannot be known.
+func TestLegacyCleanedPathsRemainUnrecoverable(t *testing.T) {
+	ctx := context.Background()
+	account := newAccount(t)
+	now := time.Unix(1_800_000_000, 0)
+
+	seedPages(t, account, map[string]int{"/users/:id": 2})
+	if err := Replace(ctx, account.Writer(), 1, []Rule{{
+		Pattern: `^/users/[^/]+$`, Replacement: "/users/:id", Enabled: true,
+	}}, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Materialise(ctx, account.Writer(), account.Intern, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := Replace(ctx, account.Writer(), 1, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Materialise(ctx, account.Writer(), account.Intern, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	var value string
+	if err := account.Reader().QueryRow(`
+		SELECT p.value FROM events e JOIN dim_pathname p ON p.id = e.pathname_id LIMIT 1
+	`).Scan(&value); err != nil {
+		t.Fatal(err)
+	}
+	if value != "/users/:id" {
+		t.Fatalf("legacy cleaned value became %q, want the only retained value", value)
+	}
+}
+
 // TestValidateRefusesABadPattern keeps an unparseable regular expression out of
 // the store, so the error lands next to the field rather than inside a
 // background job an hour later.

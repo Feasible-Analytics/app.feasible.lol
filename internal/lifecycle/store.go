@@ -548,9 +548,13 @@ func (s *Store) FinishEmail(ctx context.Context, teamID int64, startedAt time.Ti
 	if template == TemplateAccountDeleted {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE account_deletions
-			SET notified_at = ?, notes = notes || '; confirmation ' || ?
+			SET notified_at = ?,
+			    team_name = '',
+			    contact_email = '',
+			    stripe_customer_id = '',
+			    notes = 'live account data removed; deletion confirmation sent'
 			WHERE team_id = ? AND notified_at IS NULL
-		`, now.UTC().Unix(), outcome, teamID); err != nil {
+		`, now.UTC().Unix(), teamID); err != nil {
 			return fmt.Errorf("lifecycle: finish deletion confirmation %d: %w", teamID, err)
 		}
 	}

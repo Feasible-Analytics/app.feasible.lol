@@ -14,7 +14,7 @@
   <h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "auth.site_new.title" }}</h1>
   <p class="mt-1 text-sm text-muted">{{ t $.Lang "auth.site_new.subtitle" }}</p>
 
-  <form method="post" action="/sites/new" class="mt-8 space-y-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+  <form method="post" action="{{ url $.Lang "/sites/new" }}" class="mt-8 space-y-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <input type="hidden" name="team_id" value="{{ .Data.TeamID }}">
 
@@ -69,7 +69,7 @@
               class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
         {{ t $.Lang "auth.site_new.submit" }}
       </button>
-      <a href="/sites?team_id={{ .Data.TeamID }}" class="text-sm font-medium text-muted hover:text-body">{{ t $.Lang "common.action.cancel" }}</a>
+      <a href="{{ url $.Lang (printf "/sites?team_id=%d" .Data.TeamID) }}" class="text-sm font-medium text-muted hover:text-body">{{ t $.Lang "common.action.cancel" }}</a>
     </div>
   </form>
 </div>

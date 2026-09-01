@@ -61,9 +61,9 @@ module Feasible
         new(client_ip: resolve_client_ip(lookup, remote_addr), user_agent: lookup["user-agent"].to_s)
       end
 
-      # Resolves the address with the same precedence the ingest server uses:
-      # CF-Connecting-IP, then the FIRST entry of X-Forwarded-For, then the
-      # socket address.
+      # Resolves the address from forwarding headers and then the socket. This
+      # assumes the application edge stripped client-supplied forwarding
+      # headers; unlike the ingest service, this helper has no proxy allow-list.
       #
       # The first entry is the one that matters. Every proxy appends itself to
       # X-Forwarded-For, so the last entry is the nearest proxy — taking it, as

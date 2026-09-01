@@ -79,6 +79,11 @@ type WriteOptions struct {
 	// once. Zero tracks BufferSize, because production batching requires enough
 	// simultaneous requests to fill a batch while each caller waits for commit.
 	Concurrency int
+
+	// ControlMigrations lets tests select an actual embedded schema prefix when
+	// the benchmark does not exercise later control tables. Zero uses the
+	// production control migration set and retains its gap validation.
+	ControlMigrations migrate.Set
 }
 
 // WriteResult is one load run's numbers.
@@ -168,7 +173,7 @@ func RunWrite(ctx context.Context, opts WriteOptions) (WriteResult, error) {
 		opts.Concurrency = opts.Events
 	}
 
-	control, err := newControl(ctx, opts.DataDir, opts.Accounts)
+	control, err := newControl(ctx, opts.DataDir, opts.Accounts, opts.ControlMigrations)
 	if err != nil {
 		return WriteResult{}, err
 	}
@@ -294,14 +299,18 @@ func countEvents(ctx context.Context, manager *accounts.Manager, count int) (int
 	var total int64
 
 	for i := 0; i < count; i++ {
-		account, err := manager.Open(ctx, int64(i+1))
+		lease, err := manager.Acquire(ctx, int64(i+1))
 		if err != nil {
 			return 0, err
 		}
 
 		var events int64
-		if err := account.Reader().QueryRowContext(ctx, "SELECT COUNT(*) FROM events").Scan(&events); err != nil {
+		if err := lease.Account.Reader().QueryRowContext(ctx, "SELECT COUNT(*) FROM events").Scan(&events); err != nil {
+			_ = lease.Release()
 			return 0, fmt.Errorf("bench: count events: %w", err)
+		}
+		if err := lease.Release(); err != nil {
+			return 0, fmt.Errorf("bench: release account: %w", err)
 		}
 
 		total += events
@@ -346,13 +355,17 @@ func addressFor(visitor int) string {
 // newControl builds the control database the load routes against: one team and
 // one site per account, which is the shape that puts every write on its own
 // database file and its own lock.
-func newControl(ctx context.Context, dataDir string, count int) (*sql.DB, error) {
+func newControl(ctx context.Context, dataDir string, count int, controlMigrations migrate.Set) (*sql.DB, error) {
 	db, err := store.Open(filepath.Join(dataDir, "control.db"))
 	if err != nil {
 		return nil, err
 	}
 
-	if _, err := migrate.Run(ctx, db, migrate.Control()); err != nil {
+	if controlMigrations.Name == "" {
+		controlMigrations = migrate.Control()
+	}
+
+	if _, err := migrate.Run(ctx, db, controlMigrations); err != nil {
 		db.Close()
 		return nil, err
 	}

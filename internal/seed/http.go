@@ -228,13 +228,14 @@ func CountSince(ctx context.Context, dataDir, domain string, since time.Time) (i
 	manager := accounts.NewManager(dataDir)
 	defer manager.CloseAll() //nolint:errcheck // the count is the answer; a close failure on the way out is not
 
-	account, err := manager.Open(ctx, accountID)
+	lease, err := manager.Acquire(ctx, accountID)
 	if err != nil {
 		return 0, err
 	}
+	defer lease.Release() //nolint:errcheck // the query result is more useful than an unlock error
 
 	var count int64
-	if err := account.Reader().QueryRowContext(ctx,
+	if err := lease.Account.Reader().QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM events WHERE site_id = ? AND timestamp >= ?", siteID, since.Unix(),
 	).Scan(&count); err != nil {
 		return 0, fmt.Errorf("seed http: %w", err)
@@ -263,13 +264,20 @@ func PrimaryDomain() string {
 // site that routes before it can send anything, and making somebody run the
 // bulk generator first would make the quick check the slow one.
 func EnsureFixture(ctx context.Context, dataDir string, now time.Time) error {
+	return EnsureFixtureWithMigrations(ctx, dataDir, now, migrate.Control())
+}
+
+// EnsureFixtureWithMigrations creates the HTTP fixture with an explicit set.
+// Tests may select an actual embedded prefix when they do not exercise newer
+// control tables; production keeps the complete embedded set and its gap check.
+func EnsureFixtureWithMigrations(ctx context.Context, dataDir string, now time.Time, controlMigrations migrate.Set) error {
 	control, err := store.Open(filepath.Join(dataDir, config.ControlDatabaseName))
 	if err != nil {
 		return err
 	}
 	defer control.Close()
 
-	if _, err := migrate.Run(ctx, control, migrate.Control()); err != nil {
+	if _, err := migrate.Run(ctx, control, controlMigrations); err != nil {
 		return fmt.Errorf("seed http: %w", err)
 	}
 

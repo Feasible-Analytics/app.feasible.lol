@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/dataio"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
@@ -45,6 +46,16 @@ type harness struct {
 	sent []Notice
 }
 
+// applyLifecycleControlSchema applies the complete merged control chain used
+// by lifecycle fixtures, including M9 topology and M8 cleanup checkpoints.
+func applyLifecycleControlSchema(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+
+	if _, err := migrate.Run(ctx, db, migrate.Control()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // newHarness builds the install and puts one team in it.
 func newHarness(t *testing.T) *harness {
 	t.Helper()
@@ -57,9 +68,7 @@ func newHarness(t *testing.T) *harness {
 	}
 	t.Cleanup(func() { control.Close() })
 
-	if _, err := migrate.Run(context.Background(), control, migrate.Control()); err != nil {
-		t.Fatal(err)
-	}
+	applyLifecycleControlSchema(t, context.Background(), control)
 
 	now := day0.Unix()
 
@@ -825,11 +834,25 @@ func TestPaymentWinsAgainstAStaleDayNinetySnapshot(t *testing.T) {
 func TestDeletionRemovesTheStripeCustomer(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t)
+	importPath := dataio.ImportPath(h.dataDir, 1, 7, "history.zip")
+	exportPath := dataio.ExportPath(h.dataDir, 1, 8)
+	for _, path := range []string{importPath, exportPath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("account data"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	if _, err := h.control.Exec(`
 		INSERT INTO subscriptions (team_id, stripe_customer_id, status, created_at, updated_at)
-		VALUES (1, 'cus_test_123', 'canceled', ?, ?)
-	`, day0.Unix(), day0.Unix()); err != nil {
+		VALUES (1, 'cus_test_123', 'canceled', ?, ?);
+		INSERT INTO jobs (owner_team_id, queue, kind, args, scheduled_at)
+		VALUES (1, 'imports', 'csv_import', '{"account_id":1}', ?);
+		INSERT INTO stripe_events (event_id, type, team_id, payload, received_at)
+		VALUES ('evt_private', 'customer.updated', 1, '{"email":"owner@example.com"}', ?)
+	`, day0.Unix(), day0.Unix(), day0.Unix(), day0.Unix()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -851,6 +874,23 @@ func TestDeletionRemovesTheStripeCustomer(t *testing.T) {
 	}
 	if exists(h.accountFile()) {
 		t.Error("the account database survived")
+	}
+	for _, path := range []string{importPath, exportPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("global account artifact survived at %s: %v", path, err)
+		}
+	}
+	for name, query := range map[string]string{
+		"owned job":       "SELECT COUNT(*) FROM jobs WHERE owner_team_id = 1",
+		"payment payload": "SELECT COUNT(*) FROM stripe_events WHERE team_id = 1",
+	} {
+		var count int
+		if err := h.control.QueryRow(query).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Errorf("%s survived account deletion", name)
+		}
 	}
 }
 
@@ -892,7 +932,8 @@ func TestDeletionSurvivesAFailingPaymentProvider(t *testing.T) {
 	`).Scan(&notes, &completed, &providerRemoved); err != nil {
 		t.Fatal(err)
 	}
-	if notes == "" || !contains(notes, "NOT removed") || completed.Valid || providerRemoved.Valid {
+	if notes == "" || !contains(notes, "removal pending") || contains(notes, "cus_") ||
+		contains(notes, "provider is unreachable") || completed.Valid || providerRemoved.Valid {
 		t.Errorf("provider failure was not left retryable: notes=%q completed=%v provider=%v", notes, completed, providerRemoved)
 	}
 	if len(h.templates()) != len(Sequence)-1 {
@@ -910,6 +951,25 @@ func TestDeletionSurvivesAFailingPaymentProvider(t *testing.T) {
 	}
 	if !completed.Valid || !providerRemoved.Valid || h.templates()[len(h.templates())-1] != TemplateAccountDeleted {
 		t.Fatalf("provider retry completion=%v provider=%v templates=%v", completed, providerRemoved, h.templates())
+	}
+
+	var teamName, contactEmail, customerID, deletionNotes string
+	var customerRows int
+	if err := h.control.QueryRow(`
+		SELECT team_name, contact_email, stripe_customer_id, notes
+		FROM account_deletions WHERE team_id = 1
+	`).Scan(&teamName, &contactEmail, &customerID, &deletionNotes); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.control.QueryRow(`
+		SELECT COUNT(*) FROM account_deletion_customers WHERE team_id = 1
+	`).Scan(&customerRows); err != nil {
+		t.Fatal(err)
+	}
+	if teamName != "" || contactEmail != "" || customerID != "" || customerRows != 0 ||
+		deletionNotes != "live account data removed; deletion confirmation sent" {
+		t.Fatalf("completed deletion retained name=%q email=%q customer=%q rows=%d notes=%q",
+			teamName, contactEmail, customerID, customerRows, deletionNotes)
 	}
 }
 
@@ -1307,6 +1367,273 @@ func TestLegacyCrashAfterTeamRemovalRemainsDiscoverable(t *testing.T) {
 	}
 }
 
+// TestV10UpgradeFinishesLegacyOwnedCleanupWithoutLiveTeam recreates a deletion
+// that an older build marked complete after cascading the team but before M8
+// introduced structural job ownership and global artifact checkpoints. The
+// v10 upgrade must reopen those exact steps, and the ordinary purger must erase
+// only the legacy team's newly discoverable state while an unrelated live
+// team's queue, raw payment evidence, and files remain intact.
+func TestV10UpgradeFinishesLegacyOwnedCleanupWithoutLiveTeam(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	control, err := store.Open(filepath.Join(dataDir, "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := control.Close(); err != nil {
+			t.Errorf("close legacy upgrade control database: %v", err)
+		}
+	})
+
+	throughNine := migrate.UpTo(migrate.Control(), 9)
+	result, err := migrate.Run(ctx, control, throughNine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.To != 9 {
+		t.Fatalf("legacy fixture migrated to %d, want 9", result.To)
+	}
+
+	const (
+		legacyTeam = int64(41)
+		otherTeam  = int64(42)
+	)
+	if _, err := control.Exec(`
+		INSERT INTO teams (id, name, created_at, updated_at)
+		VALUES (42, 'Unrelated Team', 1, 1);
+		INSERT INTO account_deletions
+			(team_id, team_name, contact_email, stripe_customer_id,
+			 clock_started_at, started_at, completed_at, notified_at, notes)
+		VALUES
+			(41, 'Legacy Team', 'legacy@example.test', '', 1, 2, 3, 4,
+			 'account directory removed; payment customer did not exist');
+		INSERT INTO jobs (queue, kind, args, scheduled_at)
+		VALUES
+			('imports', 'csv_import', '{"account_id":41,"import_id":101}', 1),
+			('exports', 'site_export', '{"account_id":41,"export_id":102}', 1),
+			('imports', 'csv_import', '{"account_id":42,"import_id":201}', 1),
+			('exports', 'site_export', '{"account_id":42,"export_id":202}', 1),
+			('imports', 'csv_import', '{"account_id":41,"import_id":303}', 1),
+			('imports', 'csv_import', '{"account_id":42,"import_id":303}', 1),
+			('imports', 'csv_import', '{"account_id":"42","import_id":101}', 1);
+		INSERT INTO stripe_events (event_id, type, team_id, payload, received_at)
+		VALUES
+			('evt_legacy_raw', 'customer.deleted', 41, '{"legacy":"personal payload"}', 1),
+			('evt_other_raw', 'invoice.paid', 42, '{"other":"must remain"}', 1);
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	legacyImport := filepath.Join(dataDir, dataio.UploadDir, "000101-legacy.csv")
+	legacyExport := filepath.Join(dataDir, dataio.ExportDir, "export-000102.zip")
+	otherImport := filepath.Join(dataDir, dataio.UploadDir, "000201-other.csv")
+	otherExport := filepath.Join(dataDir, dataio.ExportDir, "export-000202.zip")
+	ambiguousImport := filepath.Join(dataDir, dataio.UploadDir, "000303-shared.csv")
+	artifactContents := map[string]string{
+		legacyImport:    "legacy import",
+		legacyExport:    "legacy export",
+		otherImport:     "other import",
+		otherExport:     "other export",
+		ambiguousImport: "ambiguous import",
+	}
+	for path, contents := range artifactContents {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err = migrate.Run(ctx, control, migrate.Control())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.From != 9 || result.To != 10 || len(result.Applied) != 1 || result.Applied[0] != 10 {
+		t.Fatalf("legacy cleanup migration result = %+v, want 9 through [10]", result)
+	}
+
+	var completed, controlRemoved, localRemoved, artifactsIndexed, globalRemoved sql.NullInt64
+	if err := control.QueryRow(`
+		SELECT completed_at, control_removed_at, local_removed_at,
+		       artifacts_indexed_at, global_removed_at
+		FROM account_deletions WHERE team_id = ?
+	`, legacyTeam).Scan(&completed, &controlRemoved, &localRemoved, &artifactsIndexed, &globalRemoved); err != nil {
+		t.Fatal(err)
+	}
+	if completed.Valid || controlRemoved.Valid || !localRemoved.Valid || artifactsIndexed.Valid || globalRemoved.Valid {
+		t.Fatalf("v10 inherited unsafe checkpoints completed/control/local/artifacts/global = %v/%v/%v/%v/%v",
+			completed, controlRemoved, localRemoved, artifactsIndexed, globalRemoved)
+	}
+
+	manager := accounts.NewManager(dataDir)
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close legacy upgrade account manager: %v", err)
+		}
+	})
+	purger := &Purger{Store: NewStore(control), Accounts: manager, DataDir: dataDir}
+	pending, err := purger.PendingDeletions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].TeamID != legacyTeam {
+		t.Fatalf("pending upgraded deletions = %+v, want team %d", pending, legacyTeam)
+	}
+
+	failedAt := int64(10)
+	assertRejectedWithoutCleanup := func(name string) {
+		t.Helper()
+		if err := purger.Purge(ctx, pending[0], time.Unix(failedAt, 0).UTC()); err == nil {
+			t.Fatalf("%s: purge accepted unsafe legacy artifact evidence", name)
+		}
+		failedAt++
+		if err := control.QueryRow(`
+			SELECT completed_at, control_removed_at, local_removed_at,
+			       artifacts_indexed_at, global_removed_at
+			FROM account_deletions WHERE team_id = ?
+		`, legacyTeam).Scan(&completed, &controlRemoved, &localRemoved, &artifactsIndexed, &globalRemoved); err != nil {
+			t.Fatal(err)
+		}
+		if completed.Valid || controlRemoved.Valid || !localRemoved.Valid || artifactsIndexed.Valid || globalRemoved.Valid {
+			t.Fatalf("%s: cleanup checkpoints completed/control/local/artifacts/global = %v/%v/%v/%v/%v",
+				name, completed, controlRemoved, localRemoved, artifactsIndexed, globalRemoved)
+		}
+		for path, want := range artifactContents {
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("%s: failed discovery changed %s: %v", name, path, err)
+			}
+			if string(contents) != want {
+				t.Fatalf("%s: failed discovery changed %s to %q, want %q", name, path, contents, want)
+			}
+		}
+	}
+
+	assertRejectedWithoutCleanup("v9 job without a backfilled structural owner")
+	if _, err := control.Exec(`
+		DELETE FROM jobs
+		WHERE owner_team_id IS NULL AND kind = 'csv_import'
+		  AND json_extract(args, '$.import_id') = 101
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	assertRejectedWithoutCleanup("conflicting account-local artifact id")
+	if _, err := control.Exec(`
+		DELETE FROM jobs
+		WHERE owner_team_id = ? AND kind = 'csv_import'
+		  AND json_extract(args, '$.import_id') = 303
+	`, legacyTeam); err != nil {
+		t.Fatal(err)
+	}
+
+	unsafeJobs := []struct {
+		name  string
+		owner any
+		kind  string
+		args  string
+	}{
+		{name: "null structural owner", owner: nil, kind: "csv_import", args: `{"account_id":42,"import_id":101}`},
+		{name: "non-positive structural owner", owner: int64(0), kind: "csv_import", args: `{"account_id":42,"import_id":101}`},
+		{name: "malformed JSON", owner: otherTeam, kind: "csv_import", args: `{"account_id":42`},
+		{name: "duplicate JSON account", owner: otherTeam, kind: "csv_import", args: `{"account_id":41,"account_id":42,"import_id":101}`},
+		{name: "missing JSON account", owner: otherTeam, kind: "csv_import", args: `{"import_id":101}`},
+		{name: "wrong JSON account type", owner: otherTeam, kind: "csv_import", args: `{"account_id":"42","import_id":101}`},
+		{name: "non-positive JSON account", owner: otherTeam, kind: "csv_import", args: `{"account_id":0,"import_id":101}`},
+		{name: "contradictory JSON account", owner: otherTeam, kind: "csv_import", args: `{"account_id":43,"import_id":101}`},
+		{name: "missing artifact id", owner: otherTeam, kind: "csv_import", args: `{"account_id":42}`},
+		{name: "non-positive artifact id", owner: otherTeam, kind: "csv_import", args: `{"account_id":42,"import_id":0}`},
+		{name: "wrong artifact id type", owner: otherTeam, kind: "csv_import", args: `{"account_id":42,"import_id":"101"}`},
+		{name: "wrong artifact id name", owner: otherTeam, kind: "site_export", args: `{"account_id":42,"import_id":102}`},
+		{name: "unknown artifact id name", owner: otherTeam, kind: "csv_import", args: `{"account_id":42,"artifact_id":101}`},
+	}
+	for _, unsafe := range unsafeJobs {
+		result, err := control.Exec(`
+			INSERT INTO jobs (owner_team_id, queue, kind, args, scheduled_at)
+			VALUES (?, 'legacy-regression', ?, ?, 1)
+		`, unsafe.owner, unsafe.kind, unsafe.args)
+		if err != nil {
+			t.Fatalf("%s: insert unsafe job: %v", unsafe.name, err)
+		}
+		jobID, err := result.LastInsertId()
+		if err != nil {
+			t.Fatalf("%s: read unsafe job id: %v", unsafe.name, err)
+		}
+		assertRejectedWithoutCleanup(unsafe.name)
+		if _, err := control.Exec("DELETE FROM jobs WHERE id = ?", jobID); err != nil {
+			t.Fatalf("%s: remove unsafe job: %v", unsafe.name, err)
+		}
+	}
+
+	if err := purger.Purge(ctx, pending[0], time.Unix(failedAt, 0).UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, query := range map[string]string{
+		"legacy jobs":          "SELECT COUNT(*) FROM jobs WHERE owner_team_id = 41",
+		"legacy Stripe events": "SELECT COUNT(*) FROM stripe_events WHERE team_id = 41",
+	} {
+		var count int
+		if err := control.QueryRow(query).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Errorf("%s retained %d rows", name, count)
+		}
+	}
+	for name, check := range map[string]struct {
+		query string
+		want  int
+	}{
+		"unrelated team":          {query: "SELECT COUNT(*) FROM teams WHERE id = 42", want: 1},
+		"unrelated jobs":          {query: "SELECT COUNT(*) FROM jobs WHERE owner_team_id = 42", want: 3},
+		"unrelated Stripe events": {query: "SELECT COUNT(*) FROM stripe_events WHERE team_id = 42", want: 1},
+	} {
+		var count int
+		if err := control.QueryRow(check.query).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != check.want {
+			t.Errorf("%s count = %d, want %d", name, count, check.want)
+		}
+	}
+
+	for _, path := range []string{legacyImport, legacyExport} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("legacy artifact survived at %s: %v", path, err)
+		}
+	}
+	for path, want := range map[string]string{
+		otherImport:     "other import",
+		otherExport:     "other export",
+		ambiguousImport: "ambiguous import",
+	} {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(contents) != want {
+			t.Errorf("unrelated artifact %s = %q, want %q", path, contents, want)
+		}
+	}
+
+	var providerRemoved sql.NullInt64
+	if err := control.QueryRow(`
+		SELECT completed_at, control_removed_at, local_removed_at,
+		       artifacts_indexed_at, global_removed_at, provider_removed_at
+		FROM account_deletions WHERE team_id = ?
+	`, legacyTeam).Scan(&completed, &controlRemoved, &localRemoved, &artifactsIndexed, &globalRemoved, &providerRemoved); err != nil {
+		t.Fatal(err)
+	}
+	if !completed.Valid || !controlRemoved.Valid || !localRemoved.Valid ||
+		!artifactsIndexed.Valid || !globalRemoved.Valid || !providerRemoved.Valid {
+		t.Fatalf("finished checkpoints completed/control/local/artifacts/global/provider = %v/%v/%v/%v/%v/%v",
+			completed, controlRemoved, localRemoved, artifactsIndexed, globalRemoved, providerRemoved)
+	}
+}
+
 // TestUpgradeRetriesLegacyStripeDeletionFailures builds the exact v5 audit
 // shapes that previously stranded provider customers, migrates them, and proves
 // one normal sweep removes both customers before completing either audit.
@@ -1338,9 +1665,7 @@ func TestUpgradeRetriesLegacyStripeDeletionFailures(t *testing.T) {
 	`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := migrate.Run(ctx, control, migrate.Control()); err != nil {
-		t.Fatal(err)
-	}
+	applyLifecycleControlSchema(t, ctx, control)
 
 	var removed []string
 	purger := &Purger{

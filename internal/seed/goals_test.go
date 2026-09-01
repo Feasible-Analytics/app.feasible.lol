@@ -18,6 +18,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/goals"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
@@ -34,12 +35,13 @@ func seededShop(t *testing.T) (*sql.DB, int64) {
 	dir := t.TempDir()
 
 	if _, err := Run(context.Background(), Options{
-		DataDir:   dir,
-		Pageviews: 8000,
-		Days:      14,
-		Sites:     3,
-		Seed:      7,
-		Now:       fixedNow,
+		DataDir:           dir,
+		Pageviews:         8000,
+		Days:              14,
+		Sites:             3,
+		Seed:              7,
+		Now:               fixedNow,
+		ControlMigrations: migrate.Control(),
 	}); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}

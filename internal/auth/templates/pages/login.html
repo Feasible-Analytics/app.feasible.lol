@@ -11,7 +11,7 @@
   <p class="mt-1 text-sm text-muted">{{ t $.Lang "auth.login.subtitle" }}</p>
 
   {{ if .GoogleEnabled }}
-    <a href="/auth/google?next={{ .Data.Next }}"
+    <a href="{{ url $.Lang (printf "/auth/google?next=%s" (.Data.Next | urlquery)) }}"
        class="mt-6 flex w-full items-center justify-center gap-2 rounded-xl border border-field bg-card px-4 py-2.5 text-sm font-medium text-body hover:bg-hover">
       <svg class="h-4 w-4" viewBox="0 0 24 24" aria-hidden="true">
         <path fill="#4285F4" d="M22.5 12.2c0-.7-.1-1.4-.2-2H12v4h6a5 5 0 0 1-2.2 3.3v2.7h3.6c2.1-2 3.1-4.9 3.1-8z"/>
@@ -27,7 +27,7 @@
     </div>
   {{ end }}
 
-  <form method="post" action="/login" class="{{ if not .GoogleEnabled }}mt-6{{ end }} space-y-4">
+  <form method="post" action="{{ url $.Lang "/login" }}" class="{{ if not .GoogleEnabled }}mt-6{{ end }} space-y-4">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <input type="hidden" name="next" value="{{ .Data.Next }}">
 
@@ -41,7 +41,7 @@
     <div>
       <div class="flex items-baseline justify-between">
         <label for="password" class="block text-sm font-medium text-body">{{ t $.Lang "auth.login.password" }}</label>
-        <a href="/forgot-password" class="text-xs font-medium text-accent-ink hover:text-accent">{{ t $.Lang "auth.login.forgot" }}</a>
+        <a href="{{ url $.Lang "/forgot-password" }}" class="text-xs font-medium text-accent-ink hover:text-accent">{{ t $.Lang "auth.login.forgot" }}</a>
       </div>
       <input id="password" name="password" type="password" autocomplete="current-password" required
              class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">

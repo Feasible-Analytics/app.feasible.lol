@@ -48,10 +48,10 @@ visitor = Visitor.from_wsgi(environ)
 client.pageview(url="https://example.com/pricing", **visitor.as_kwargs())
 ```
 
-Both helpers resolve the address exactly the way the ingest server does: `CF-Connecting-IP`, then the
-**first** entry of `X-Forwarded-For`, then the socket address. The first entry is the one that matters
-— every proxy appends itself to that header, so taking the **last** entry, which several frameworks
-do, reports your own load balancer as the visitor and collapses all of your traffic into one visit.
+Both helpers take `CF-Connecting-IP`, then the **first** entry of `X-Forwarded-For`, then the socket
+address. They have no trusted-proxy configuration. Use them only behind an application edge that
+strips client-supplied forwarding headers and writes its own. On a directly exposed app, pass the
+socket address explicitly so a client cannot choose its fingerprint or geolocation.
 
 ## Install
 

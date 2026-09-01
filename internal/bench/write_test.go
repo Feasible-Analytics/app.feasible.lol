@@ -12,6 +12,8 @@ import (
 	"context"
 	"fmt"
 	"testing"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 )
 
 // writeEvents is how many events one load run sends. It is large enough that
@@ -37,10 +39,11 @@ func BenchmarkWrite(b *testing.B) {
 		b.Run(fmt.Sprintf("accounts-%d", count), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				result, err := RunWrite(context.Background(), WriteOptions{
-					DataDir:  b.TempDir(),
-					Accounts: count,
-					Events:   writeEvents,
-					Visitors: 5_000,
+					DataDir:           b.TempDir(),
+					Accounts:          count,
+					Events:            writeEvents,
+					Visitors:          5_000,
+					ControlMigrations: migrate.Control(),
 				})
 				if err != nil {
 					b.Fatal(err)
@@ -69,10 +72,11 @@ func BenchmarkWrite(b *testing.B) {
 // number.
 func TestWriteLoadIsHonest(t *testing.T) {
 	result, err := RunWrite(context.Background(), WriteOptions{
-		DataDir:  t.TempDir(),
-		Accounts: 2,
-		Events:   1_200,
-		Visitors: 100,
+		DataDir:           t.TempDir(),
+		Accounts:          2,
+		Events:            1_200,
+		Visitors:          100,
+		ControlMigrations: migrate.Control(),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -189,6 +189,11 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, p 
 // purpose: logic in a template is logic no test covers.
 func templateFuncs() template.FuncMap {
 	return template.FuncMap{
+		// url carries the current language through an internal link or form.
+		"url": func(locale, target string) string {
+			return i18n.LocalURL(target, locale)
+		},
+
 		// t renders one catalogue string.
 		//
 		// The locale is the first argument rather than something the function

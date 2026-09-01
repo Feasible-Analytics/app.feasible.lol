@@ -28,10 +28,19 @@ const MaxUploadBytes = 200 << 20
 // survives a restart still has its file.
 const UploadDir = "imports"
 
-// ImportPath is where one import's uploaded file lives. The import id is in the
-// name so an orphaned file can be traced back to the row that owns it.
-func ImportPath(dataDir string, importID int64, filename string) string {
-	return filepath.Join(dataDir, UploadDir, fmt.Sprintf("%06d-%s", importID, SafeFilename(filename)))
+// AccountArtifactDir is the durable ownership boundary for one account's
+// global import or export files. The account id is a directory component so a
+// deletion can erase the complete set without relying on a shard that may
+// already have been removed.
+func AccountArtifactDir(dataDir, kind string, accountID int64) string {
+	return filepath.Join(dataDir, kind, fmt.Sprintf("account-%06d", accountID))
+}
+
+// ImportPath is where one import's uploaded file lives. Both owner and import
+// ids are in the path, making orphan discovery and account deletion durable.
+func ImportPath(dataDir string, accountID, importID int64, filename string) string {
+	return filepath.Join(AccountArtifactDir(dataDir, UploadDir, accountID),
+		fmt.Sprintf("%06d-%s", importID, SafeFilename(filename)))
 }
 
 // SafeFilename reduces an uploaded name to something that cannot escape the

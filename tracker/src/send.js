@@ -6,7 +6,7 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-import { win, VERSION } from "./state.js";
+import { hatch, VERSION } from "./state.js";
 import { warn } from "./exclude.js";
 
 // The outbox key. A request whose connection died was never seen by any server,
@@ -28,7 +28,7 @@ let volatileOutbox;
 // otherwise unreachable in a modern browser and would go untested.
 export const KEEPALIVE = (() => {
 	try {
-		return !win.__feasible?.nk && "keepalive" in new Request("");
+		return !hatch?.nk && "keepalive" in new Request("");
 	} catch {
 		return false;
 	}
@@ -103,21 +103,25 @@ export function drain() {
 export function post(body, callback) {
 	// Persistence happens before fetch so cancellation cannot destroy the only
 	// copy. A zero callback marks a replay that is already in the durable queue.
-	if (callback !== 0) writeOutbox(readOutbox().concat(body));
+	if (callback != 0) writeOutbox(readOutbox().concat(body));
 
 	try {
 		fetch(endpoint, {
 			method: "POST",
-			headers: { "Content-Type": "text/plain" },
+			headers: { "content-type": "text/plain" },
 			keepalive: KEEPALIVE,
 			body,
 		}).then(
 			// The server answers 202 for everything it understood, including
-			// events it decided to drop. A 4xx is a real retryable failure.
+			// events it decided to drop, and puts the reason in a header. A
+			// non-success response remains in the durable outbox for replay.
 			(res) => {
 				if (res.ok) {
-					writeOutbox(readOutbox().filter((item) => item !== body));
-					if (callback) callback({ status: res.status });
+					writeOutbox(readOutbox().filter((item) => item != body));
+					callback?.({
+						status: res.status,
+						dropped: res.headers.get("x-feasible-dropped"),
+					});
 				}
 			},
 			() => 0,

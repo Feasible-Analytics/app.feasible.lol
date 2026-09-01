@@ -9,11 +9,56 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/replica"
 )
+
+// setValidReplicaAttestation writes the atomic provider bundle required by
+// production startup. The canonical renderer keeps the fixture aligned with
+// the deployed lifecycle contract.
+func setValidReplicaAttestation(t *testing.T, replicaURL string) {
+	t.Helper()
+
+	policy, err := replica.Render(replicaURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	location, err := replica.ParseLocation(replicaURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := json.Marshal(replica.Attestation{
+		Version: replica.AttestationVersion, FetchedAt: time.Now().UTC(), ReplicaURL: replicaURL,
+		Bucket: location.Bucket, Prefix: location.Prefix,
+		BucketLocation: json.RawMessage(`{"LocationConstraint":null}`),
+		Lifecycle:      policy, Versioning: json.RawMessage(`{}`), ObjectLock: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "replica-attestation.json")
+	if err := os.WriteFile(path, bundle, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FEASIBLE_LITESTREAM_ATTESTATION", path)
+}
+
+// setProductionOperator supplies a concrete self-hosted legal identity to
+// production tests whose subject is unrelated to legal-mode validation.
+func setProductionOperator(t *testing.T) {
+	t.Helper()
+	t.Setenv("FEASIBLE_OPERATOR_NAME", "Example Operator, Inc.")
+	t.Setenv("FEASIBLE_OPERATOR_ADDRESS", "123 Example Street")
+	t.Setenv("FEASIBLE_OPERATOR_EMAIL", "privacy@example.test")
+}
 
 // TestLookupPrefersConfigDir is the Docker-secrets contract from the CLI issue:
 // a file in $CONFIG_DIR beats the environment. If this ever regresses, a
@@ -106,6 +151,91 @@ func TestParseDotenvRejectsGarbage(t *testing.T) {
 	}
 }
 
+// TestLoadFromRejectsUnknownEnvironment prevents a typo from silently taking
+// development defaults on a production host.
+func TestLoadFromRejectsUnknownEnvironment(t *testing.T) {
+	t.Setenv("FEASIBLE_ENV", "prodution")
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "FEASIBLE_ENV") {
+		t.Fatalf("unknown environment error = %v", err)
+	}
+}
+
+// TestLoadFromRejectsMalformedBooleans covers every boolean whose fallback can
+// alter telemetry, legal mode, or SMTP transport security.
+func TestLoadFromRejectsMalformedBooleans(t *testing.T) {
+	for _, name := range []string{"FEASIBLE_TRACE_EVENTS", "FEASIBLE_APP_HOSTED", "FEASIBLE_SMTP_STARTTLS"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, "truthy")
+			loader, err := NewLoader("", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("malformed boolean error = %v", err)
+			}
+		})
+	}
+}
+
+// TestHostedProductionRejectsLogOnlyMail ensures a deployment cannot publish
+// deletion-warning promises while writing every message only to local disk.
+func TestHostedProductionRejectsLogOnlyMail(t *testing.T) {
+	t.Setenv("FEASIBLE_ENV", EnvProduction)
+	t.Setenv("FEASIBLE_APP_HOSTED", "true")
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "log-only") {
+		t.Fatalf("hosted log-mail error = %v", err)
+	}
+}
+
+// TestStripeConfigurationRequiresWebhookSecret makes all-or-none provider
+// configuration include inbound authenticity, not only checkout fields.
+func TestStripeConfigurationRequiresWebhookSecret(t *testing.T) {
+	for name, value := range map[string]string{
+		"FEASIBLE_STRIPE_SECRET_KEY": "sk_test", "FEASIBLE_STRIPE_PUBLISHABLE_KEY": "pk_test",
+		"FEASIBLE_STRIPE_PRODUCT": "prod_test", "FEASIBLE_STRIPE_PRICE_MONTHLY": "price_month",
+		"FEASIBLE_STRIPE_PRICE_YEARLY": "price_year",
+	} {
+		t.Setenv(name, value)
+	}
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "FEASIBLE_STRIPE_WEBHOOK_SECRET") {
+		t.Fatalf("incomplete Stripe error = %v", err)
+	}
+}
+
+// FuzzBoolFailsClosed proves no malformed spelling is silently converted to a
+// fallback. Only values accepted by strconv.ParseBool may load successfully.
+func FuzzBoolFailsClosed(f *testing.F) {
+	for _, value := range []string{"true", "false", "1", "0", "truthy", "", " TRUE "} {
+		f.Add(value)
+	}
+	f.Fuzz(func(t *testing.T, value string) {
+		loader := &Loader{dotenv: map[string]string{"FLAG": value}}
+		_, parseErr := strconv.ParseBool(value)
+		_, err := loader.Bool("FLAG", false)
+		if value == "" {
+			if err != nil {
+				t.Fatalf("empty value should use fallback: %v", err)
+			}
+			return
+		}
+		if (err == nil) != (parseErr == nil) {
+			t.Fatalf("value %q parse error=%v loader error=%v", value, parseErr, err)
+		}
+	})
+}
+
 // TestLoadFromDefaults pins the zero-configuration behaviour: someone who runs
 // the binary with nothing set gets a working loopback process, not an error.
 func TestLoadFromDefaults(t *testing.T) {
@@ -160,9 +290,6 @@ func TestLoadFromReplicationDefaults(t *testing.T) {
 	if cfg.Litestream.SyncInterval != time.Second {
 		t.Errorf("sync interval: got %s, want the one second the durability claim quotes", cfg.Litestream.SyncInterval)
 	}
-	if cfg.Litestream.Retention <= cfg.Litestream.SnapshotInterval {
-		t.Errorf("retention %s does not outlive the snapshot interval %s", cfg.Litestream.Retention, cfg.Litestream.SnapshotInterval)
-	}
 	if cfg.Litestream.WatchInterval <= 0 {
 		t.Errorf("watch interval: got %s — a new account would never be picked up", cfg.Litestream.WatchInterval)
 	}
@@ -174,6 +301,7 @@ func TestLoadFromReplicationDefaults(t *testing.T) {
 // search them.
 func TestLoadFromProductionLoggingDefaults(t *testing.T) {
 	t.Setenv("FEASIBLE_ENV", EnvProduction)
+	setProductionOperator(t)
 
 	loader, err := NewLoader("", "")
 	if err != nil {
@@ -190,6 +318,161 @@ func TestLoadFromProductionLoggingDefaults(t *testing.T) {
 	}
 	if !cfg.IsProduction() {
 		t.Fatal("IsProduction should be true")
+	}
+}
+
+// TestSelfHostedProductionRequiresOperatorIdentity prevents public privacy and
+// DPA pages from booting with a generic URL where a legal operator must appear.
+func TestSelfHostedProductionRequiresOperatorIdentity(t *testing.T) {
+	t.Setenv("FEASIBLE_ENV", EnvProduction)
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "FEASIBLE_OPERATOR_NAME") || !strings.Contains(err.Error(), "FEASIBLE_OPERATOR_ADDRESS") || !strings.Contains(err.Error(), "FEASIBLE_OPERATOR_EMAIL") {
+		t.Fatalf("missing self-hosted operator error = %v", err)
+	}
+
+	setProductionOperator(t)
+	if _, err := LoadFrom(loader); err != nil {
+		t.Fatalf("configured self-hosted operator was rejected: %v", err)
+	}
+}
+
+// TestHostedProductionRequiresConcreteSubprocessors keeps the public legal list
+// from degrading into category placeholders on a real hosted deployment.
+func TestHostedProductionRequiresConcreteSubprocessors(t *testing.T) {
+	t.Setenv("FEASIBLE_ENV", EnvProduction)
+	t.Setenv("FEASIBLE_APP_HOSTED", "true")
+	t.Setenv("FEASIBLE_APP_MAIL_TRANSPORT", MailTransportSMTP)
+	t.Setenv("FEASIBLE_SMTP_HOST", "smtp.example.test")
+
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "compute") {
+		t.Fatalf("missing hosted inventory error = %v", err)
+	}
+
+	t.Setenv("FEASIBLE_HOSTED_SUBPROCESSORS_JSON", `[
+		{"role":"compute","legal_entity":"Compute Corp","service":"Virtual machines","data":"Encrypted visitor analytics","region":"US"},
+		{"role":"object_storage","legal_entity":"Storage Corp","service":"Object storage","data":"Encrypted database replicas","region":"US"},
+		{"role":"email","legal_entity":"Mail Corp","service":"Transactional email","data":"Account addresses and service messages","region":"US"}
+	]`)
+	replicaURL := "s3://replicas/shard-01"
+	t.Setenv("FEASIBLE_LITESTREAM_REPLICA_URL", replicaURL)
+	t.Setenv("FEASIBLE_LITESTREAM_ON_CHANGE", "systemctl restart litestream")
+	setValidReplicaAttestation(t, replicaURL)
+
+	cfg, err := LoadFrom(loader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.App.Subprocessors) != 3 || cfg.App.Subprocessors[1].Role != "object_storage" {
+		t.Fatalf("subprocessors = %+v", cfg.App.Subprocessors)
+	}
+}
+
+// TestHostedProductionRequiresReplicaEnforcement keeps the live legal promise
+// fail-closed when provider retention checks or timely Litestream reloads are
+// absent from a hosted deployment.
+func TestHostedProductionRequiresReplicaEnforcement(t *testing.T) {
+	t.Setenv("FEASIBLE_ENV", EnvProduction)
+	t.Setenv("FEASIBLE_APP_HOSTED", "true")
+	t.Setenv("FEASIBLE_APP_MAIL_TRANSPORT", MailTransportSMTP)
+	t.Setenv("FEASIBLE_SMTP_HOST", "smtp.example.test")
+	t.Setenv("FEASIBLE_HOSTED_SUBPROCESSORS_JSON", `[
+		{"role":"compute","legal_entity":"Compute Corp","service":"Virtual machines","data":"Encrypted visitor analytics","region":"US"},
+		{"role":"object_storage","legal_entity":"Storage Corp","service":"Object storage","data":"Encrypted database replicas","region":"US"},
+		{"role":"email","legal_entity":"Mail Corp","service":"Transactional email","data":"Account addresses and service messages","region":"US"}
+	]`)
+
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "REPLICA_URL") {
+		t.Fatalf("missing replica configuration error = %v", err)
+	}
+
+	t.Setenv("FEASIBLE_LITESTREAM_REPLICA_URL", "s3://replicas/shard-01")
+	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "ON_CHANGE") {
+		t.Fatalf("missing reload command error = %v", err)
+	}
+
+	t.Setenv("FEASIBLE_LITESTREAM_ON_CHANGE", "systemctl restart litestream")
+	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "ATTESTATION") {
+		t.Fatalf("missing provider attestation error = %v", err)
+	}
+
+	setValidReplicaAttestation(t, "s3://replicas/shard-01")
+	t.Setenv("FEASIBLE_LITESTREAM_WATCH_SECONDS", "61")
+	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "within 60 seconds") {
+		t.Fatalf("slow replica watch error = %v", err)
+	}
+}
+
+// TestProductionRejectsInvalidReplicaAttestation proves application startup is
+// itself fail-closed when a provider export is unreadable or no longer proves
+// the public expiry bound; a separate scheduled check is not the only guard.
+func TestProductionRejectsInvalidReplicaAttestation(t *testing.T) {
+	t.Setenv("FEASIBLE_ENV", EnvProduction)
+	setProductionOperator(t)
+	replicaURL := "s3://replicas/shard-01"
+	t.Setenv("FEASIBLE_LITESTREAM_REPLICA_URL", replicaURL)
+	t.Setenv("FEASIBLE_LITESTREAM_ATTESTATION", filepath.Join(t.TempDir(), "missing.json"))
+
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "read provider evidence") {
+		t.Fatalf("unreadable attestation error = %v", err)
+	}
+
+	setValidReplicaAttestation(t, replicaURL)
+	path := os.Getenv("FEASIBLE_LITESTREAM_ATTESTATION")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var evidence replica.Attestation
+	if err := json.Unmarshal(body, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	evidence.Versioning = json.RawMessage(`{"Status":"Enabled"}`)
+	body, err = json.Marshal(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "versioning") {
+		t.Fatalf("noncompliant attestation error = %v", err)
+	}
+}
+
+// TestHostedProductionRejectsSampleSubprocessors prevents the visibly local
+// sample from being copied into a hosted production environment unchanged.
+func TestHostedProductionRejectsSampleSubprocessors(t *testing.T) {
+	t.Setenv("FEASIBLE_ENV", EnvProduction)
+	t.Setenv("FEASIBLE_APP_HOSTED", "true")
+	t.Setenv("FEASIBLE_APP_MAIL_TRANSPORT", MailTransportSMTP)
+	t.Setenv("FEASIBLE_SMTP_HOST", "smtp.example.test")
+	t.Setenv("FEASIBLE_HOSTED_SUBPROCESSORS_JSON", `[
+		{"role":"compute","legal_entity":"LOCAL PLACEHOLDER","service":"VM","data":"data","region":"US"},
+		{"role":"object_storage","legal_entity":"Storage Corp","service":"objects","data":"replicas","region":"US"},
+		{"role":"email","legal_entity":"Mail Corp","service":"mail","data":"addresses","region":"US"}
+	]`)
+
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "placeholder") {
+		t.Fatalf("sample hosted inventory error = %v", err)
 	}
 }
 
@@ -311,6 +594,7 @@ func TestLoadIgnoresDotenvInProduction(t *testing.T) {
 
 	chdir(t, dir)
 	t.Setenv("FEASIBLE_ENV", EnvProduction)
+	setProductionOperator(t)
 
 	cfg, err := Load()
 	if err != nil {

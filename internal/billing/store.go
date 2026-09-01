@@ -953,6 +953,16 @@ func (s *Store) ClaimEvent(ctx context.Context, eventID, eventType string, teamI
 	if rows == 1 {
 		return EventClaim{Claimed: true, StartedAt: now}, nil
 	}
+	// A prior delivery may have arrived before its customer could be routed.
+	// Persist ownership learned now even if that delivery is already handled so
+	// account deletion can erase its verbatim payload.
+	if teamID > 0 {
+		if _, err := s.db.ExecContext(ctx, `
+			UPDATE stripe_events SET team_id = COALESCE(team_id, ?) WHERE event_id = ?
+		`, teamID, eventID); err != nil {
+			return EventClaim{}, fmt.Errorf("billing: bind event %s to team: %w", eventID, err)
+		}
+	}
 
 	var outcome string
 	if err := s.db.QueryRowContext(ctx, `SELECT outcome FROM stripe_events WHERE event_id = ?`, eventID).Scan(&outcome); err != nil {

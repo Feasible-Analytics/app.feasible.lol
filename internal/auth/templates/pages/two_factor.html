@@ -14,7 +14,7 @@
   <h1 class="text-xl font-semibold text-heading">{{ t $.Lang "auth.two_factor.title" }}</h1>
   <p class="mt-1 text-sm text-muted">{{ t $.Lang "auth.two_factor.subtitle" }}</p>
 
-  <form method="post" action="/login/2fa" class="mt-6 space-y-4">
+  <form method="post" action="{{ url $.Lang "/login/2fa" }}" class="mt-6 space-y-4">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
 
     <div>
@@ -31,7 +31,7 @@
   </form>
 
   <p class="mt-6 text-center text-sm">
-    <a href="/login" class="text-muted hover:text-body">{{ t $.Lang "auth.two_factor.start_over" }}</a>
+    <a href="{{ url $.Lang "/login" }}" class="text-muted hover:text-body">{{ t $.Lang "auth.two_factor.start_over" }}</a>
   </p>
 </div>
 {{ end }}

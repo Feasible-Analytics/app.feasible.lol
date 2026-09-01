@@ -849,7 +849,7 @@ func (h *Handler) doTwoFactorChallenge(w http.ResponseWriter, r *http.Request) {
 func safeNext(next string) string {
 	parsed, err := url.Parse(next)
 	if err != nil || next == "" || parsed.IsAbs() || parsed.Host != "" ||
-		!strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") ||
+		parsed.Path == "" || !strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") ||
 		strings.Contains(parsed.Path, "\\") {
 		return "/sites"
 	}

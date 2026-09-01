@@ -14,7 +14,7 @@
 		<p class="mt-1 text-sm text-muted">
 			{{ t $.Lang "settings.sharing.public_hint" }}
 		</p>
-		<form method="post" action="/settings/sites/{{.Domain}}/sharing/public" class="mt-4 flex flex-wrap items-center gap-3">
+		<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/sharing/public" .Domain) }}" class="mt-4 flex flex-wrap items-center gap-3">
 			<input type="hidden" name="csrf_token" value="{{.CSRF}}" />
 			<input type="hidden" name="public" value="{{if .IsPublic}}0{{else}}1{{end}}" />
 			{{if .IsPublic}}
@@ -34,7 +34,7 @@
 			{{ t $.Lang "settings.sharing.links_hint" }}
 		</p>
 
-		<form method="post" action="/settings/sites/{{.Domain}}/sharing/links" class="mb-4 mt-4 flex flex-wrap items-center gap-2">
+		<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/sharing/links" .Domain) }}" class="mb-4 mt-4 flex flex-wrap items-center gap-2">
 			<input type="hidden" name="csrf_token" value="{{.CSRF}}" />
 			<input type="text" name="name" placeholder="{{ t $.Lang "settings.sharing.link_name_placeholder" }}" class="grow basis-[200px] rounded-xl border border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
 			<input type="password" name="password" placeholder="{{ t $.Lang "settings.sharing.link_password_placeholder" }}" autocomplete="new-password" class="rounded-xl border border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
@@ -73,7 +73,7 @@
 									{{end}}
 								</td>
 								<td class="border-t border-line py-2.5 pr-0 text-right align-middle">
-									<form class="inline-flex items-center align-middle" method="post" action="/settings/sites/{{$.Domain}}/sharing/links/revoke">
+									<form class="inline-flex items-center align-middle" method="post" action="{{ url $.Lang (printf "/settings/sites/%s/sharing/links/revoke" $.Domain) }}">
 										<input type="hidden" name="csrf_token" value="{{$.CSRF}}" />
 										<input type="hidden" name="link_id" value="{{.ID}}" />
 										<button type="submit" class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">{{ t $.Lang "settings.sharing.revoke" }}</button>

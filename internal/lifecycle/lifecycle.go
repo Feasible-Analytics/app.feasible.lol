@@ -356,9 +356,9 @@ func Apply(state State, signal Signal, now time.Time) (Transition, error) {
 		return Transition{State: next, From: from, To: next.At(now), Changed: true, StartEmails: true}, nil
 
 	case SignalPaymentSucceeded:
-		// Paying at any point before day 90 restores everything instantly. This
-		// is the branch that does it, and it is why the machine stores an
-		// instant rather than a phase: there is no unwinding to do.
+		// Paying before the durable deletion claim restores everything instantly.
+		// This includes the day-90 instant when the sweep has not claimed deletion
+		// yet; the store's CAS decides which concurrent operation won.
 		if !state.Running() {
 			return Transition{State: state, From: from, To: from}, nil
 		}

@@ -1,57 +1,136 @@
-<p>One binary and one directory. No Docker, no external database, no queue, and no feature
-that only exists in the hosted version. The software is AGPL-3.0-or-later.</p>
+<p>One binary and one directory. No Docker, no external database, no queue, and no feature that only
+exists in the hosted version. The software is AGPL-3.0-or-later.</p>
 
 <pre><code>./feasible db migrate
 ./feasible serve</code></pre>
 
 <p>That is the whole deployment. <code>serve</code> runs the dashboard, the API, the tracker and
-ingestion in one process, which is what almost every self-hoster should run.</p>
+ingestion in one process, which is what almost every self-hoster should run. The other commands are
+<code>ingest</code> (a standalone collector; see its current limitation below), <code>db backup</code>,
+<code>litestream</code>, <code>rollup</code>, <code>seed</code>, <code>api-key</code>,
+<code>mcp</code> and <code>billing</code>.</p>
 
 <h3>The data directory</h3>
 <p>Everything lives under <code>FEASIBLE_APP_DATA_DIR</code>: <code>control.db</code>, one SQLite
-database per account, the geolocation data, the refreshed bot lists and the salt key. Back
-up that directory and you have backed up the entire install.</p>
-
+database per account, the geolocation files, the bot and spam lists, and the two keys. Back up that
+directory and you have backed up the entire install.</p>
 <p>Use <code>./feasible db backup</code> rather than copying files. It takes a proper consistent
-snapshot; copying a SQLite file that is being written to gives you a file that looks fine
-and is not.</p>
+snapshot; copying a SQLite file that is being written to gives you a file that looks fine and is
+not.</p>
 
 <h3>Migrations never run on boot</h3>
-<p>Two processes racing a migration is a classic self-hosting failure, and with one database
-per account the operation is slow enough that it has to be deliberate and observable. A
-binary that is newer than its databases refuses to start and tells you to run
-<code>db migrate</code>.</p>
+<p>Two processes racing a migration is a classic self-hosting failure, and with one database per
+account the operation is slow enough that it has to be deliberate and observable. A binary newer than
+its databases refuses to start and tells you to run <code>db migrate</code>.</p>
 
 <h3>Configuration</h3>
-<p>Every variable is documented in <code>.env.sample</code>, with a comment and a default. A
-variable that is not in that file does not exist — the build fails if the source reads one
-that is missing. Values resolve from <code>$CONFIG_DIR/&lt;NAME&gt;</code> (for Docker and systemd
-secrets), then the environment, then <code>.env</code> outside production.</p>
+<p>Every variable is documented in <code>.env.sample</code>, with a comment and a default. A variable
+that is not in that file does not exist — the build fails if the source reads one that is missing.
+Values resolve from <code>$CONFIG_DIR/&lt;NAME&gt;</code> (for Docker and systemd secrets), then the
+environment, then <code>.env</code> outside production.</p>
+
+<h3>Two keys, generated for you</h3>
+<p><code>FEASIBLE_SALT_KEY</code> encrypts the visitor-fingerprint salts, and
+<code>FEASIBLE_APP_SECRET_KEY</code> encrypts two-factor secrets and signs the short-lived cookies.
+Leave either unset and one is generated on first run into <code>salt.key</code> or
+<code>app.key</code> in the data directory, mode <code>0600</code>. That is what makes "encrypted at
+rest" true by default rather than only when somebody remembered to set it.</p>
+<p>Treat the salt key as being as sensitive as raw address logs: the key plus the stored hashes is
+enough to brute-force a visitor's address and user agent back out for as long as a salt row survives.
+Lose the app key and every enrolled authenticator app stops working.</p>
 
 <h3>Email</h3>
 <p>Set <code>FEASIBLE_APP_MAIL_TRANSPORT=smtp</code> and point it at a relay. The default
 <code>log</code> transport writes rendered messages to <code>tmp/mail/</code> and sends nothing, which
-is what makes local development need no mail service at all.</p>
+is what makes local development need no mail service at all. An unknown transport name is an error
+rather than a silent fallback — a box that quietly stopped sending would look healthy while nobody
+could reset a password.</p>
+<p>Set <code>FEASIBLE_APP_MAIL_FROM</code> to an address your relay is allowed to send as. A relay
+rejecting a From address it does not own is the most common reason a self-hoster's mail silently stops
+arriving.</p>
 
-<p>Set <code>FEASIBLE_APP_MAIL_FROM</code> to an address your relay is allowed to send as. A
-relay rejecting a From address it does not own is the most common reason a self-hoster's mail
-silently stops.</p>
+<h3>Geolocation</h3>
+<p>Geolocation reads <a href="https://db-ip.com/db/lite.php">DB-IP Lite</a> databases, which are
+CC-BY-4.0 and redistributable, from the data directory:</p>
+<pre><code>$FEASIBLE_APP_DATA_DIR/geoip/dbip-country-lite.mmdb
+$FEASIBLE_APP_DATA_DIR/geoip/dbip-city-lite.mmdb</code></pre>
+<p>Put either, both or neither there. With the city file present it is used on its own, because it
+carries the country too. With neither, every visitor's country is simply unknown — a missing database
+degrades the report and never fails an event or stops the process. A file that is present but
+unreadable is logged as a warning at start-up and then treated as a missing one — the process comes
+up and collects, and every country reads as unknown until you fix the file, so check the first lines
+of the log after you drop one in.</p>
+<p>Nothing is downloaded automatically in this build, and no license key is read from anywhere. If you
+want geolocation, fetch the files and drop them in. City-level data is never a paid feature here; it
+is just a bigger file.</p>
+<p>A lookup never makes a network call. Private, loopback and link-local addresses are skipped without
+one. Traffic classified as coming from a data centre is not geolocated at all and is bucketed as
+<em>Anonymous VPN Service</em>, because a commercial VPN exit would otherwise report its own country
+with total confidence.</p>
 
-<h3>Billing on a self-hosted install</h3>
-<p>There is none, and nothing is limited because of it. With no payment provider configured
-the billing screens say so, the lifecycle clock is never started, and no account is ever
-locked or deleted for non-payment. The account lifecycle exists to manage the hosted
-service's own subscriptions, not to enforce anything on you.</p>
+<h3>Bot and spam lists</h3>
+<p>A baseline of bot user-agent substrings and spam referrer domains is compiled into the binary. You
+can replace either, and supply the datacentre ranges that have no baseline at all, with newline files
+in the data directory:</p>
+<pre><code>$FEASIBLE_APP_DATA_DIR/lists/bots.txt
+$FEASIBLE_APP_DATA_DIR/lists/datacenters.txt      # CIDR blocks or bare addresses
+$FEASIBLE_APP_DATA_DIR/lists/referrer-spam.txt</code></pre>
+<p>Blank lines and <code>#</code> comments are ignored. A file that is present <strong>replaces</strong>
+the built-in list rather than adding to it, and the files are read once at start-up — change one and
+restart. There is no automatic refresh in this build.</p>
+<p>All three are classifications rather than deletions: the event is stored with its reason and left
+out of reports by default, so a wrongly-classified human visitor can be recovered.</p>
 
 <h3>Behind a reverse proxy</h3>
-<p>Set <code>FEASIBLE_INGEST_TRUSTED_PROXIES</code> to your load balancer and nothing else. The
-default is empty — nobody — because an unconditionally trusted address header lets any
-visitor forge their own geolocation and split their own fingerprint.</p>
+<p>Set <code>FEASIBLE_INGEST_TRUSTED_PROXIES</code> to the addresses or CIDR ranges of your load
+balancer and edge proxies. Only connections from that list may supply <code>X-Feasible-IP</code>,
+<code>CF-Connecting-IP</code> or <code>X-Forwarded-For</code>. The list is empty by default, so direct
+clients cannot forge the address used for fingerprints, geolocation and IP shields.</p>
+<p><code>X-Feasible-IP</code> takes precedence, followed by <code>CF-Connecting-IP</code>. An
+<code>X-Forwarded-For</code> chain is read from right to left and the nearest untrusted address is the
+visitor. That handles proxies which append to an existing chain without accepting a value placed at
+the left by a direct client. Configure every trusted edge to strip or overwrite client-supplied
+<code>X-Feasible-IP</code> and <code>CF-Connecting-IP</code>; an allow-list cannot distinguish a header
+the proxy created from one it passed through unchanged.</p>
+<p>Keep <code>FEASIBLE_APP_INTERNAL_LISTEN</code> on loopback, and the ingest tier's
+<code>FEASIBLE_INGEST_INTERNAL_LISTEN</code> with it. Every process runs a second, private listener
+beside its public one, and <code>/metrics</code> is on it. Nothing there is customer data — the series
+deliberately carry no site, domain, path or country — but your event rate, error rate and account
+count are not the internet's business, and no operator should have to firewall a path. It must not be
+routable from anywhere, including a private tailnet.</p>
+<p>The metrics are Prometheus-shaped: accepted, dropped, classified and written events, flush counts
+and durations, roll-up and query timings, HTTP request counts and latencies, plus gauges sampled at
+scrape time for the ingest buffer, live sessions, routed sites, open database handles, queued jobs and
+database and WAL sizes.</p>
 
-<p>Keep <code>FEASIBLE_APP_INTERNAL_LISTEN</code> on loopback. It serves the salts that can turn a
-visitor identifier back into an address, and it must not be routable from anywhere.</p>
+<h3>Health probes</h3>
+<p>Two, on both listeners, because they answer different questions and conflating them either restarts
+a process that was merely busy or sends traffic to one that is draining.</p>
+<ul>
+  <li><code>GET /health/live</code> — is this process alive. True from the moment the listener is up
+      until it exits. This is what a supervisor restarts on.</li>
+  <li><code>GET /health/ready</code> — may this process take traffic. It goes false the instant a
+      shutdown begins, so a load balancer drains the process before the listener closes. This is what
+      a load balancer polls. It answers a component-by-component report, and a 503 when it is not
+      ready, so "not ready" always says which part.</li>
+</ul>
 
-<h3>City-level geolocation</h3>
-<p>Country-level data is embedded in the binary, so geolocation works out of the box with
-nothing to download. City-level data is a larger, differently licensed file that is fetched
-on first run when you supply a key. It is not a paid feature; it is an extra file.</p>
+<h3>Running the ingest tier separately</h3>
+<p>Do not split it in this build. <code>FEASIBLE_APP_TRANSPORT=direct</code> runs ingestion inside
+<code>serve</code>, and that is the supported deployment shape. The standalone <code>ingest</code>
+command exists, but it currently opens the account databases in its own data directory and writes
+through the same direct transport. <code>FEASIBLE_INGEST_SHARDS</code>,
+<code>FEASIBLE_INGEST_BUFFER_PATH</code> and <code>FEASIBLE_INTERNAL_KEYS</code> are parsed and reported
+by <code>ingest --check</code>, but the SQLite outbox and remote shard forwarding are not wired yet.</p>
+
+<h3>Billing on a self-hosted install</h3>
+<p>There is none, and nothing is limited because of it. With no payment provider configured the
+billing screens say so, the lifecycle clock is never started, and no account is ever locked or deleted
+for non-payment. The account lifecycle exists to manage the hosted service's own subscriptions, not to
+enforce anything on you.</p>
+
+<h3>API keys</h3>
+<p>Mint them from the command line — <code>feasible api-key create --team 1 --user 1</code>. The
+per-key hourly limit defaults to <code>FEASIBLE_API_RATE_LIMIT</code>, which is 10,000 and is a
+setting rather than a constant precisely because a limit you cannot change on your own hardware is not
+a limit, it is an inconvenience.</p>

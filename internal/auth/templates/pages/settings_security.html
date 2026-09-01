@@ -30,7 +30,7 @@
       <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.settings_security.recovery_heading" }}</h2>
       <p class="mt-1 text-sm text-muted">{{ t $.Lang "auth.settings_security.recovery_help" }}</p>
 
-      <form method="post" action="/settings/security/2fa/recovery" class="mt-4 flex flex-wrap items-end gap-3">
+      <form method="post" action="{{ url $.Lang "/settings/security/2fa/recovery" }}" class="mt-4 flex flex-wrap items-end gap-3">
         <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
         <input type="text" name="username" value="{{ .User.Email }}" autocomplete="username" hidden readonly>
 
@@ -55,7 +55,7 @@
         {{ t $.Lang "auth.settings_security.disable_help" }}
       </p>
 
-      <form method="post" action="/settings/security/2fa/disable" class="mt-4 flex flex-wrap items-end gap-3">
+      <form method="post" action="{{ url $.Lang "/settings/security/2fa/disable" }}" class="mt-4 flex flex-wrap items-end gap-3">
         <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
         <input type="text" name="username" value="{{ .User.Email }}" autocomplete="username" hidden readonly>
 
@@ -91,7 +91,7 @@
             {{ .Data.Secret }}
           </p>
 
-          <form method="post" action="/settings/security/2fa/enable" class="mt-6 space-y-4">
+          <form method="post" action="{{ url $.Lang "/settings/security/2fa/enable" }}" class="mt-6 space-y-4">
             <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
 
             <div>
@@ -117,7 +117,7 @@
         {{ t $.Lang "auth.settings_security.off_help" }}
       </p>
 
-      <form method="post" action="/settings/security/2fa/start" class="mt-4">
+      <form method="post" action="{{ url $.Lang "/settings/security/2fa/start" }}" class="mt-4">
         <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
         <button type="submit"
                 class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">

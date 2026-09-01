@@ -130,7 +130,7 @@ export function reset() {
 // so the server can sum them. `i: false` marks it as a measurement rather than
 // an interaction, which is what keeps it out of the bounce rule.
 export function flush() {
-	if (!page.tracked) return;
+	if (!page.t) return;
 
 	const reached = depth();
 	const total = engagedMs();
@@ -144,8 +144,8 @@ export function flush() {
 
 	send({
 		n: "engagement",
-		u: page.url,
-		d: page.domain,
+		u: page.u,
+		d: page.d,
 		sd: reached,
 		e: delta,
 		i: false,
