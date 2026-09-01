@@ -404,9 +404,9 @@ func (h *Handler) doTeamSettings(w http.ResponseWriter, r *http.Request) {
 
 	user := userFrom(r)
 
-	team, err := h.Store.TeamForUser(r.Context(), user.ID)
+	team, err := h.Store.OwnedTeamForUser(r.Context(), user.ID)
 	if err != nil {
-		h.fail(w, r, err)
+		h.notFound(w, r)
 		return
 	}
 
@@ -441,9 +441,9 @@ func (h *Handler) doDeleteAccount(w http.ResponseWriter, r *http.Request) {
 
 	user := userFrom(r)
 
-	team, err := h.Store.TeamForUser(r.Context(), user.ID)
+	team, err := h.Store.OwnedTeamForUser(r.Context(), user.ID)
 	if err != nil {
-		h.fail(w, r, err)
+		h.notFound(w, r)
 		return
 	}
 

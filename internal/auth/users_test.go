@@ -11,6 +11,8 @@ package auth
 import (
 	"context"
 	"testing"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 )
 
 // TestCreateUserMakesATeam checks that signing up produces a person, an account
@@ -41,6 +43,31 @@ func TestCreateUserMakesATeam(t *testing.T) {
 
 	if role != "owner" {
 		t.Errorf("the person who signed up should own the team, got %q", role)
+	}
+}
+
+// TestCreateUserNeverReusesADeletedTeamID protects a permanent analytics
+// tombstone from being mistaken for a later signup after the durable settings
+// deletion path completes its audit.
+func TestCreateUserNeverReusesADeletedTeamID(t *testing.T) {
+	s, db := newTestStore(t)
+	ctx := context.Background()
+
+	user, deleted, err := s.CreateUser(ctx, "deleted@example.com", "Deleted", "hash", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	purger := &lifecycle.Purger{Store: lifecycle.NewStore(db), DataDir: t.TempDir()}
+	if err := purger.DeleteNow(ctx, user.ID, deleted.ID, s.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	_, replacement, err := s.CreateUser(ctx, "replacement@example.com", "Replacement", "hash", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.ID <= deleted.ID {
+		t.Fatalf("replacement team id is %d, want greater than deleted id %d", replacement.ID, deleted.ID)
 	}
 }
 
@@ -142,7 +169,8 @@ func TestDeleteTeamRemovesEverything(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
-	if err := s.DeleteTeamRows(ctx, team.ID, user.ID); err != nil {
+	purger := &lifecycle.Purger{Store: lifecycle.NewStore(db), DataDir: t.TempDir()}
+	if err := purger.DeleteNow(ctx, user.ID, team.ID, s.Now()); err != nil {
 		t.Fatalf("delete team: %v", err)
 	}
 

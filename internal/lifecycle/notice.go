@@ -22,6 +22,11 @@ type Notice struct {
 	TeamID   int64
 	TeamName string
 
+	// MessageKey is stable across leased outbox retries. Mail transports expose
+	// it as Message-ID where possible; SMTP still has an unavoidable accepted-
+	// before-ack crash window, but retries at least carry the same identity.
+	MessageKey string
+
 	// To is the billing contact. It is resolved before the notice is built,
 	// because a deletion warning with no recipient is a bug that must fail
 	// loudly rather than send nothing quietly.

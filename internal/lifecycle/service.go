@@ -33,21 +33,26 @@ type Links struct {
 	BaseURL string
 }
 
-// Upgrade is the one-click upgrade link.
-func (l Links) Upgrade() string {
-	return l.BaseURL + "/billing/upgrade"
+// Upgrade is the one-click upgrade link for an explicit account. A zero id is
+// used only by the post-deletion "start again" message.
+func (l Links) Upgrade(teamID int64) string {
+	if teamID < 1 {
+		return l.BaseURL + "/billing/upgrade"
+	}
+
+	return fmt.Sprintf("%s/billing/upgrade?team=%d", l.BaseURL, teamID)
 }
 
-// Portal is the payment provider's card-update page, reached through a
-// redirect that creates the session. It is only put in front of somebody on the
-// dunning path, where updating a card is the actual fix.
-func (l Links) Portal() string {
-	return l.BaseURL + "/billing/portal"
+// Portal is the safe billing page. The email link performs no provider-side
+// action; the signed-in person explicitly submits the CSRF-protected portal
+// form from there.
+func (l Links) Portal(teamID int64) string {
+	return fmt.Sprintf("%s/billing?team=%d", l.BaseURL, teamID)
 }
 
 // Export is the download-everything link, which works in every phase.
-func (l Links) Export() string {
-	return l.BaseURL + "/billing/export"
+func (l Links) Export(teamID int64) string {
+	return fmt.Sprintf("%s/billing/export?team=%d", l.BaseURL, teamID)
 }
 
 // Service drives the machine: it applies signals from the outside world, and it
@@ -85,24 +90,66 @@ func (s *Service) now() time.Time {
 // the webhook handler, the signup path and the support commands all come
 // through here, so there is exactly one place where a phase can change.
 func (s *Service) Signal(ctx context.Context, teamID int64, signal Signal) (Transition, error) {
+	return s.SignalAt(ctx, teamID, signal, s.now())
+}
+
+// SignalAt applies an outside event at the instant it actually happened. Stripe
+// failure events use their signed creation time so delayed delivery cannot move
+// the contractual day-zero date to local processing time.
+func (s *Service) SignalAt(ctx context.Context, teamID int64, signal Signal, at time.Time) (Transition, error) {
+	lease, err := s.Store.AcquireTransitionLease(ctx, teamID)
+	if err != nil {
+		return Transition{}, err
+	}
+	defer lease.Release()
+
 	state, err := s.Store.Load(ctx, teamID)
 	if err != nil {
 		return Transition{}, err
 	}
 
-	now := s.now()
+	at = at.UTC()
+	if at.IsZero() {
+		at = s.now()
+	}
 
-	transition, err := Apply(state, signal, now)
+	transition, err := Apply(state, signal, at)
 	if err != nil {
 		return transition, err
 	}
 
+	// Out-of-order delivery can reveal that the first failure happened before
+	// the failure that originally started the clock. Correct only within the
+	// same uninterrupted lapse; a successful payment clears the old clock.
+	if !transition.Changed && signal == SignalPaymentFailed && state.Trigger == TriggerLapse &&
+		state.DeletedAt.IsZero() && !state.StartedAt.IsZero() && at.Before(state.StartedAt) {
+		transition.State.StartedAt = at
+		transition.From = state.At(s.now())
+		transition.To = transition.State.At(s.now())
+		transition.Changed = true
+	}
+
 	if !transition.Changed {
+		if signal == SignalPaymentSucceeded && transition.To == PhaseActive {
+			if err := s.finalizeActive(ctx, teamID, s.now()); err != nil {
+				return transition, err
+			}
+		}
+
 		return transition, nil
 	}
 
-	if err := s.Store.Save(ctx, teamID, transition.State); err != nil {
+	saved, err := s.Store.SaveIfState(ctx, teamID, state, transition.State)
+	if err != nil {
 		return transition, err
+	}
+	if !saved {
+		latest, loadErr := s.Store.Load(ctx, teamID)
+		if loadErr != nil {
+			return transition, loadErr
+		}
+
+		return Transition{State: latest, From: latest.At(s.now()), To: latest.At(s.now())}, nil
 	}
 
 	// Returning to Active cancels every pending email in the same breath as the
@@ -110,18 +157,8 @@ func (s *Service) Signal(ctx context.Context, teamID int64, signal Signal) (Tran
 	// your account tomorrow", and the only way to be sure is to do it here
 	// rather than to check at send time.
 	if transition.CancelEmails {
-		cancelled, err := s.Store.CancelPending(ctx, teamID)
-		if err != nil {
+		if err := s.finalizeActive(ctx, teamID, s.now()); err != nil {
 			return transition, err
-		}
-
-		if err := s.Store.CloseGap(ctx, teamID, now); err != nil {
-			return transition, err
-		}
-
-		if s.Log != nil {
-			s.Log.Info("account returned to active",
-				"team", teamID, "from", string(transition.From), "cancelled_emails", cancelled)
 		}
 
 		return transition, nil
@@ -138,6 +175,26 @@ func (s *Service) Signal(ctx context.Context, teamID int64, signal Signal) (Tran
 	return transition, nil
 }
 
+// finalizeActive repairs every side effect owed by a successful payment even
+// when the lifecycle row is already active. That makes a crash after the state
+// commit recoverable by replaying the same signed event.
+func (s *Service) finalizeActive(ctx context.Context, teamID int64, at time.Time) error {
+	cancelled, err := s.Store.CancelPending(ctx, teamID)
+	if err != nil {
+		return err
+	}
+
+	if err := s.Store.CloseGap(ctx, teamID, at); err != nil {
+		return err
+	}
+
+	if s.Log != nil {
+		s.Log.Info("account returned to active", "team", teamID, "cancelled_emails", cancelled)
+	}
+
+	return nil
+}
+
 // Sweep advances every running clock once. It returns how many accounts it
 // looked at, and it never stops at the first failure: one account with an
 // unreadable contact must not stop another account's deletion happening on the
@@ -147,13 +204,27 @@ func (s *Service) Sweep(ctx context.Context) (int, error) {
 	defer s.mu.Unlock()
 
 	now := s.now()
+	var firstErr error
+
+	// The immutable audit is the recovery index for a process that died during
+	// deletion. It is consulted before the live-team join so even a legacy crash
+	// after team removal remains finishable.
+	if s.Purger != nil {
+		pending, err := s.Purger.PendingDeletions(ctx)
+		if err != nil {
+			return 0, err
+		}
+		for _, account := range pending {
+			if err := s.Purger.Purge(ctx, account, now); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
 
 	running, err := s.Store.Running(ctx)
 	if err != nil {
 		return 0, err
 	}
-
-	var firstErr error
 
 	for _, account := range running {
 		if err := s.advance(ctx, account, now); err != nil {
@@ -169,7 +240,7 @@ func (s *Service) Sweep(ctx context.Context) (int, error) {
 	// Confirmations are sent after the walk so that a mail relay being down
 	// never delays a deletion. The data is destroyed on the promised day either
 	// way; the email catches up when the relay comes back.
-	if err := s.sendConfirmations(ctx, now); err != nil && firstErr == nil {
+	if err := s.sendConfirmations(ctx); err != nil && firstErr == nil {
 		firstErr = err
 	}
 
@@ -179,6 +250,14 @@ func (s *Service) Sweep(ctx context.Context) (int, error) {
 // advance moves one account: open a collection gap the moment it goes dormant,
 // send every email that has come due, and destroy it if it has reached day 90.
 func (s *Service) advance(ctx context.Context, account Account, now time.Time) error {
+	if account.State.Deleted() {
+		if s.Purger == nil {
+			return fmt.Errorf("lifecycle: account %d has an unfinished deletion but no purger is configured", account.TeamID)
+		}
+
+		return s.Purger.Purge(ctx, account, now)
+	}
+
 	phase := account.State.At(now)
 
 	// The gap is recorded at the moment collection stops rather than when
@@ -215,6 +294,20 @@ func (s *Service) sendDue(ctx context.Context, account Account, now time.Time) e
 	if len(due) == 0 {
 		return nil
 	}
+	lease, err := s.Store.AcquireTransitionLease(ctx, account.TeamID)
+	if err != nil {
+		return err
+	}
+	defer lease.Release()
+
+	current, err := s.Store.Load(ctx, account.TeamID)
+	if err != nil {
+		return err
+	}
+	if current.Trigger != account.State.Trigger || !current.StartedAt.Equal(account.State.StartedAt) ||
+		!current.DeletedAt.Equal(account.State.DeletedAt) || !current.Running() {
+		return nil
+	}
 
 	sent, err := s.Store.SentEmails(ctx, account.TeamID, account.State.StartedAt)
 	if err != nil {
@@ -237,25 +330,30 @@ func (s *Service) sendDue(ctx context.Context, account Account, now time.Time) e
 			return fmt.Errorf("lifecycle: account %d has no billing contact and is due %s", account.TeamID, entry.Template)
 		}
 
-		claimed, err := s.Store.ClaimEmail(ctx, account.TeamID, account.State.StartedAt, entry.Template, account.Email, now)
+		notice := s.notice(account, entry, now)
+		claim, claimed, err := s.Store.ClaimNotice(ctx, account.State.StartedAt, notice, s.now())
 		if err != nil {
 			return err
 		}
 		if !claimed {
 			continue
 		}
-
-		outcome, err := s.Notify.Notify(ctx, s.notice(account, entry, now))
-
-		// The outcome is recorded whether the send worked or not. A row with a
-		// failed outcome is how somebody later answers "were they warned", and
-		// silently discarding it would leave the row claiming a warning that
-		// never arrived.
-		if recordErr := s.Store.RecordOutcome(ctx, account.TeamID, account.State.StartedAt, entry.Template, outcomeText(outcome, err)); recordErr != nil {
-			return recordErr
+		if err := lease.Renew(ctx); err != nil {
+			return err
 		}
 
+		claim.Notice.MessageKey = claim.MessageKey
+		outcome, err := s.Notify.Notify(ctx, claim.Notice)
+
 		if err != nil {
+			if recordErr := s.Store.FailEmail(ctx, account.TeamID, account.State.StartedAt,
+				entry.Template, claim, outcomeText(outcome, err), s.now()); recordErr != nil {
+				return recordErr
+			}
+			return err
+		}
+		if err := s.Store.FinishEmail(ctx, account.TeamID, account.State.StartedAt,
+			entry.Template, claim, outcomeText(outcome, nil), s.now()); err != nil {
 			return err
 		}
 
@@ -286,15 +384,15 @@ func (s *Service) notice(account Account, entry Scheduled, now time.Time) Notice
 		StopsAt:    account.State.Boundary(PhaseDormant),
 		DeletesAt:  account.State.Boundary(PhaseDeleted),
 		Announced:  account.State.Announced(entry),
-		UpgradeURL: s.Links.Upgrade(),
-		ExportURL:  s.Links.Export(),
+		UpgradeURL: s.Links.Upgrade(account.TeamID),
+		ExportURL:  s.Links.Export(account.TeamID),
 	}
 
 	// The card-update link only makes sense for somebody who has a card. On the
 	// trial path there is no customer at the payment provider at all, so the
 	// link would lead to an error page.
 	if account.State.Trigger == TriggerLapse {
-		notice.PortalURL = s.Links.Portal()
+		notice.PortalURL = s.Links.Portal(account.TeamID)
 	}
 
 	return notice
@@ -302,7 +400,7 @@ func (s *Service) notice(account Account, entry Scheduled, now time.Time) Notice
 
 // sendConfirmations sends the day-90 "we deleted your account" email for every
 // completed deletion that has not had one.
-func (s *Service) sendConfirmations(ctx context.Context, now time.Time) error {
+func (s *Service) sendConfirmations(ctx context.Context) error {
 	if s.Purger == nil {
 		return nil
 	}
@@ -315,24 +413,37 @@ func (s *Service) sendConfirmations(ctx context.Context, now time.Time) error {
 	var firstErr error
 
 	for _, deletion := range pending {
-		outcome, err := s.Notify.Notify(ctx, Notice{
-			TeamID:     deletion.TeamID,
-			TeamName:   deletion.TeamName,
-			To:         deletion.Email,
-			Template:   TemplateAccountDeleted,
-			Trigger:    TriggerNone,
-			Phase:      PhaseDeleted,
-			Day:        DeletionDays,
-			UpgradeURL: s.Links.Upgrade(),
-		})
+		notice := Notice{
+			TeamID: deletion.TeamID, TeamName: deletion.TeamName, To: deletion.Email,
+			Template: TemplateAccountDeleted, Trigger: TriggerNone, Phase: PhaseDeleted,
+			Day: DeletionDays, UpgradeURL: s.Links.Upgrade(0),
+		}
+		claim, claimed, err := s.Store.ClaimNotice(ctx, deletion.StartedAt, notice, s.now())
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
+		if !claimed {
+			continue
+		}
 
-		if err := s.Purger.MarkNotified(ctx, deletion.TeamID, now, outcomeText(outcome, nil)); err != nil && firstErr == nil {
+		claim.Notice.MessageKey = claim.MessageKey
+		outcome, err := s.Notify.Notify(ctx, claim.Notice)
+		if err != nil {
+			if recordErr := s.Store.FailEmail(ctx, deletion.TeamID, deletion.StartedAt,
+				TemplateAccountDeleted, claim, outcomeText(outcome, err), s.now()); recordErr != nil && firstErr == nil {
+				firstErr = recordErr
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+
+		if err := s.Store.FinishEmail(ctx, deletion.TeamID, deletion.StartedAt,
+			TemplateAccountDeleted, claim, outcomeText(outcome, nil), s.now()); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

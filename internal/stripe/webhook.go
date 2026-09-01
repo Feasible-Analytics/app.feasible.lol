@@ -23,14 +23,17 @@ import (
 // ignored: Stripe sends dozens of types, and a handler that grew a branch per
 // type would be a handler nobody could reason about.
 const (
-	EventCheckoutCompleted     = "checkout.session.completed"
-	EventSubscriptionCreated   = "customer.subscription.created"
-	EventSubscriptionUpdated   = "customer.subscription.updated"
-	EventSubscriptionDeleted   = "customer.subscription.deleted"
-	EventSubscriptionPaused    = "customer.subscription.paused"
-	EventSubscriptionResumed   = "customer.subscription.resumed"
-	EventInvoicePaymentSucceed = "invoice.payment_succeeded"
-	EventInvoicePaymentFailed  = "invoice.payment_failed"
+	EventCheckoutCompleted             = "checkout.session.completed"
+	EventCheckoutAsyncPaymentSucceeded = "checkout.session.async_payment_succeeded"
+	EventCheckoutAsyncPaymentFailed    = "checkout.session.async_payment_failed"
+	EventSubscriptionCreated           = "customer.subscription.created"
+	EventSubscriptionUpdated           = "customer.subscription.updated"
+	EventSubscriptionDeleted           = "customer.subscription.deleted"
+	EventSubscriptionPaused            = "customer.subscription.paused"
+	EventSubscriptionResumed           = "customer.subscription.resumed"
+	EventInvoicePaymentSucceed         = "invoice.payment_succeeded"
+	EventInvoicePaymentFailed          = "invoice.payment_failed"
+	EventInvoiceFinalizationFailed     = "invoice.finalization_failed"
 )
 
 // SignatureTolerance is how far a webhook's timestamp may be from ours. Five
@@ -112,17 +115,78 @@ func (e *Event) CustomerID() string {
 	return object.Customer
 }
 
+// SubscriptionID reads the subscription from a checkout or invoice, or the id
+// of a subscription event itself. It lets payment evidence be attached to the
+// subscription it actually describes when a customer has more than one.
+func (e *Event) SubscriptionID() string {
+	var object struct {
+		ID           string `json:"id"`
+		Object       string `json:"object"`
+		Subscription string `json:"subscription"`
+	}
+
+	if err := decodeJSON(e.Data.Object, &object); err != nil {
+		return ""
+	}
+
+	if object.Object == "subscription" {
+		return object.ID
+	}
+	if object.Object == "invoice" {
+		invoice, err := e.Invoice()
+		if err != nil {
+			return ""
+		}
+
+		return invoice.SubscriptionID()
+	}
+
+	return object.Subscription
+}
+
 // TeamID reads the account id out of the object's metadata, if it has any.
 func (e *Event) TeamID() int64 {
 	var object struct {
-		Metadata Meta `json:"metadata"`
+		Object   string `json:"object"`
+		Metadata Meta   `json:"metadata"`
 	}
 
 	if err := decodeJSON(e.Data.Object, &object); err != nil {
 		return 0
 	}
 
-	return object.Metadata.TeamID()
+	if teamID := object.Metadata.TeamID(); teamID > 0 {
+		return teamID
+	}
+
+	if object.Object == "invoice" {
+		invoice, err := e.Invoice()
+		if err != nil {
+			return 0
+		}
+
+		return invoice.TeamID()
+	}
+
+	return 0
+}
+
+// DecodeEvent decodes a Stripe event without verifying a delivery signature.
+// It is used only for events already stored after ParseWebhook authenticated
+// them, allowing durable source timestamps to be compared after a restart.
+func DecodeEvent(payload []byte) (*Event, error) {
+	var event Event
+	if err := decodeJSON(payload, &event); err != nil {
+		return nil, err
+	}
+
+	if event.ID == "" {
+		return nil, fmt.Errorf("stripe: webhook has no event id")
+	}
+
+	event.Raw = payload
+
+	return &event, nil
 }
 
 // ParseWebhook verifies a delivery's signature and decodes it.
@@ -176,18 +240,7 @@ func ParseWebhook(payload []byte, header, secret string, now time.Time) (*Event,
 		return nil, fmt.Errorf("stripe: webhook signature does not match")
 	}
 
-	var event Event
-	if err := decodeJSON(payload, &event); err != nil {
-		return nil, err
-	}
-
-	if event.ID == "" {
-		return nil, fmt.Errorf("stripe: webhook has no event id")
-	}
-
-	event.Raw = payload
-
-	return &event, nil
+	return DecodeEvent(payload)
 }
 
 // parseSignatureHeader splits Stripe-Signature into its timestamp and its v1

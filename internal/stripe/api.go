@@ -43,6 +43,7 @@ const TeamMetadataKey = "feasible_team_id"
 // deliveries could disagree about.
 type Subscription struct {
 	ID                 string  `json:"id"`
+	Created            int64   `json:"created"`
 	Customer           string  `json:"customer"`
 	Status             string  `json:"status"`
 	CurrentPeriodEnd   int64   `json:"current_period_end"`
@@ -83,12 +84,16 @@ type Item struct {
 
 // Price is a Stripe price.
 type Price struct {
-	ID         string     `json:"id"`
-	Product    string     `json:"product"`
-	Nickname   string     `json:"nickname"`
-	UnitAmount int64      `json:"unit_amount"`
-	Currency   string     `json:"currency"`
-	Recurring  *Recurring `json:"recurring"`
+	ID          string     `json:"id"`
+	Product     string     `json:"product"`
+	Nickname    string     `json:"nickname"`
+	UnitAmount  int64      `json:"unit_amount"`
+	Currency    string     `json:"currency"`
+	Recurring   *Recurring `json:"recurring"`
+	Active      bool       `json:"active"`
+	LiveMode    bool       `json:"livemode"`
+	Type        string     `json:"type"`
+	TaxBehavior string     `json:"tax_behavior"`
 }
 
 // Recurring is a price's billing interval.
@@ -152,6 +157,23 @@ func (s *Subscription) Paying() bool {
 	}
 }
 
+// BlocksCheckout reports whether a subscription can still charge, retry, or
+// settle. Only Stripe's terminal states are safe beside a replacement;
+// unknown future states fail closed so a new status cannot create a second
+// chargeable subscription by surprise.
+func (s *Subscription) BlocksCheckout() bool {
+	if s == nil {
+		return false
+	}
+
+	switch s.Status {
+	case StatusCanceled, StatusIncompleteExpired:
+		return false
+	default:
+		return true
+	}
+}
+
 // PeriodEnd is when the current paid period runs out.
 func (s *Subscription) PeriodEnd() time.Time {
 	if s == nil || s.CurrentPeriodEnd == 0 {
@@ -170,19 +192,40 @@ type Customer struct {
 	Meta    Meta   `json:"metadata"`
 }
 
+// Product is the Stripe catalogue object the two configured prices must share.
+type Product struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	TaxCode   string `json:"tax_code"`
+	Active    bool   `json:"active"`
+	LiveMode  bool   `json:"livemode"`
+	Shippable *bool  `json:"shippable"`
+}
+
 // CheckoutSession is the object a checkout produces.
 type CheckoutSession struct {
-	ID           string `json:"id"`
-	URL          string `json:"url"`
-	Customer     string `json:"customer"`
-	Subscription string `json:"subscription"`
-	Status       string `json:"status"`
-	Mode         string `json:"mode"`
-	Metadata     Meta   `json:"metadata"`
+	ID            string `json:"id"`
+	Created       int64  `json:"created"`
+	URL           string `json:"url"`
+	Customer      string `json:"customer"`
+	Subscription  string `json:"subscription"`
+	Status        string `json:"status"`
+	PaymentStatus string `json:"payment_status"`
+	Mode          string `json:"mode"`
+	Metadata      Meta   `json:"metadata"`
 
 	// CustomerEmail is what they typed at checkout, and is the address every
 	// lifecycle email goes to when the account has no other billing contact.
 	CustomerEmail string `json:"customer_email"`
+}
+
+// WebhookEndpoint is one Stripe destination and the events sent to it.
+type WebhookEndpoint struct {
+	ID            string   `json:"id"`
+	APIVersion    string   `json:"api_version"`
+	URL           string   `json:"url"`
+	Status        string   `json:"status"`
+	EnabledEvents []string `json:"enabled_events"`
 }
 
 // PortalSession is a Customer Portal link.
@@ -193,15 +236,80 @@ type PortalSession struct {
 
 // Invoice is the part of an invoice the webhook path reads.
 type Invoice struct {
-	ID           string `json:"id"`
-	Customer     string `json:"customer"`
+	ID           string                   `json:"id"`
+	Created      int64                    `json:"created"`
+	Customer     string                   `json:"customer"`
+	Subscription string                   `json:"subscription"`
+	Parent       *InvoiceParent           `json:"parent"`
+	Status       string                   `json:"status"`
+	AutoAdvance  bool                     `json:"auto_advance"`
+	AttemptCount int                      `json:"attempt_count"`
+	Total        int64                    `json:"total"`
+	Currency     string                   `json:"currency"`
+	HostedURL    string                   `json:"hosted_invoice_url"`
+	Metadata     Meta                     `json:"metadata"`
+	Paid         bool                     `json:"paid"`
+	Transitions  InvoiceStatusTransitions `json:"status_transitions"`
+}
+
+// InvoiceStatusTransitions carries provider evidence timestamps. PaidAt is
+// Stripe's durable settlement instant and is used instead of webhook receipt
+// time when day-90 deletion races a delayed payment event.
+type InvoiceStatusTransitions struct {
+	PaidAt int64 `json:"paid_at"`
+}
+
+// InvoiceParent is the Basil location of the object that generated an invoice.
+// Stripe removed the top-level subscription fields in 2025-03-31.basil, so a
+// subscription invoice is identified only when the parent type agrees with the
+// nested details.
+type InvoiceParent struct {
+	Type                string                      `json:"type"`
+	SubscriptionDetails *InvoiceSubscriptionDetails `json:"subscription_details"`
+}
+
+// InvoiceSubscriptionDetails identifies the subscription that generated an
+// invoice and carries the immutable metadata snapshot Stripe puts on it.
+type InvoiceSubscriptionDetails struct {
 	Subscription string `json:"subscription"`
-	Status       string `json:"status"`
-	AttemptCount int    `json:"attempt_count"`
-	Total        int64  `json:"total"`
-	Currency     string `json:"currency"`
-	HostedURL    string `json:"hosted_invoice_url"`
 	Metadata     Meta   `json:"metadata"`
+}
+
+// SubscriptionID returns the Basil subscription parent. The top-level fallback
+// is retained only for stored events rendered before Basil; once parent exists,
+// its type and nested id must be valid rather than falling back ambiguously.
+func (i *Invoice) SubscriptionID() string {
+	if i == nil {
+		return ""
+	}
+
+	if i.Parent != nil {
+		if i.Parent.Type != "subscription_details" || i.Parent.SubscriptionDetails == nil {
+			return ""
+		}
+
+		return i.Parent.SubscriptionDetails.Subscription
+	}
+
+	return i.Subscription
+}
+
+// TeamID returns the invoice metadata account id, including the Basil parent
+// snapshot used when the invoice itself has no metadata.
+func (i *Invoice) TeamID() int64 {
+	if i == nil {
+		return 0
+	}
+
+	if teamID := i.Metadata.TeamID(); teamID > 0 {
+		return teamID
+	}
+
+	if i.Parent != nil && i.Parent.Type == "subscription_details" && i.Parent.SubscriptionDetails != nil {
+		return i.Parent.SubscriptionDetails.Metadata.TeamID()
+	}
+
+	return 0
 }
 
 // list is Stripe's paginated envelope.
@@ -231,12 +339,9 @@ type CheckoutParams struct {
 	IdempotencyKey string
 }
 
-// CreateCheckoutSession starts a subscription checkout with tax enabled.
-//
-// automatic_tax and the address collection that goes with it are not optional:
-// we are the merchant of record, so Stripe Tax calculates and collects but the
-// registrations and the remittance are ours, and a session created without an
-// address produces an invoice we cannot correctly tax after the fact.
+// CreateCheckoutSession starts a subscription checkout through Stripe Managed
+// Payments. Sold through Link, LLC is merchant of record for supported
+// transactions; the seller retains tax duties outside that supported scope.
 func (c *Client) CreateCheckoutSession(ctx context.Context, params CheckoutParams) (*CheckoutSession, error) {
 	form := url.Values{}
 	form.Set("mode", "subscription")
@@ -244,24 +349,21 @@ func (c *Client) CreateCheckoutSession(ctx context.Context, params CheckoutParam
 	form.Set("line_items[0][quantity]", "1")
 	form.Set("success_url", params.SuccessURL)
 	form.Set("cancel_url", params.CancelURL)
-	form.Set("automatic_tax[enabled]", "true")
 	form.Set("billing_address_collection", "required")
-	form.Set("tax_id_collection[enabled]", "true")
 	form.Set("allow_promotion_codes", "true")
 
-	// We are the merchant of record. Stripe's Managed Payments would make
-	// Stripe the seller of record instead, which is a different business
-	// arrangement from the one this product is built on: Stripe Tax calculates
-	// and collects, and the registrations and remittance are ours. It is on by
-	// default on newer accounts, so it is switched off explicitly here rather
-	// than left to whatever the dashboard happens to be set to.
-	form.Set("managed_payments[enabled]", "false")
+	// The business arrangement must not depend on an account-level dashboard
+	// default. Managed Payments makes Sold through Link, LLC merchant of record
+	// for supported transactions and is deliberately enabled on every checkout.
+	form.Set("managed_payments[enabled]", "true")
 
 	// The account id goes on the session, the subscription and the customer.
 	// Any one of the three can be the only thing a webhook carries, and an
 	// event we cannot route to an account is an event we cannot act on.
-	form.Set("metadata["+TeamMetadataKey+"]", strconv.FormatInt(params.TeamID, 10))
-	form.Set("subscription_data[metadata]["+TeamMetadataKey+"]", strconv.FormatInt(params.TeamID, 10))
+	if params.TeamID > 0 {
+		form.Set("metadata["+TeamMetadataKey+"]", strconv.FormatInt(params.TeamID, 10))
+		form.Set("subscription_data[metadata]["+TeamMetadataKey+"]", strconv.FormatInt(params.TeamID, 10))
+	}
 
 	// A subscription checkout always creates a customer, so there is nothing to
 	// ask for here — only whether to reuse one we already have. An account that
@@ -271,23 +373,67 @@ func (c *Client) CreateCheckoutSession(ctx context.Context, params CheckoutParam
 	case params.CustomerID != "":
 		form.Set("customer", params.CustomerID)
 
-		// Stripe Tax needs the address on the customer, and the customer is
-		// ours rather than the checkout's. Without these the address collected
-		// at checkout is used for this invoice and then forgotten, and the next
-		// renewal is taxed from a stale one.
-		form.Set("customer_update[address]", "auto")
-		form.Set("customer_update[name]", "auto")
-
 	case params.Email != "":
 		form.Set("customer_email", params.Email)
 	}
 
 	var session CheckoutSession
-	if err := c.post(ctx, "/v1/checkout/sessions", form, params.IdempotencyKey, &session); err != nil {
+	if err := c.postWithVersion(ctx, "/v1/checkout/sessions", form, params.IdempotencyKey, ManagedPaymentsAPIVersion, &session); err != nil {
 		return nil, err
 	}
 
 	return &session, nil
+}
+
+// CheckoutSessions reads every provider session. Metadata filtering happens
+// locally because Stripe does not expose metadata as a list filter; completed
+// sessions matter too because an orphan may already have created a customer and
+// subscription before its id reached control.db.
+func (c *Client) CheckoutSessions(ctx context.Context) ([]CheckoutSession, error) {
+	form := url.Values{}
+	form.Set("limit", "100")
+
+	var sessions []CheckoutSession
+	for {
+		var page list[CheckoutSession]
+		if err := c.getWithVersion(ctx, "/v1/checkout/sessions", form, ManagedPaymentsAPIVersion, &page); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, page.Data...)
+		if !page.HasMore {
+			return sessions, nil
+		}
+		if len(page.Data) == 0 {
+			return nil, fmt.Errorf("stripe: checkout sessions page said has_more without any data")
+		}
+		form.Set("starting_after", page.Data[len(page.Data)-1].ID)
+	}
+}
+
+// Customers reads every provider customer so permanent deletion can discover
+// duplicate records created by a lost Checkout response or an old integration.
+// Stripe's customer list has no metadata filter, and deletion is rare enough
+// that a complete paginated scan is preferable to an eventually consistent
+// search that could leave a chargeable record behind.
+func (c *Client) Customers(ctx context.Context) ([]Customer, error) {
+	form := url.Values{}
+	form.Set("limit", "100")
+
+	var customers []Customer
+	for {
+		var page list[Customer]
+		if err := c.get(ctx, "/v1/customers", form, &page); err != nil {
+			return nil, err
+		}
+		customers = append(customers, page.Data...)
+		if !page.HasMore {
+			return customers, nil
+		}
+		if len(page.Data) == 0 {
+			return nil, fmt.Errorf("stripe: customers page said has_more without any data")
+		}
+		form.Set("starting_after", page.Data[len(page.Data)-1].ID)
+	}
 }
 
 // CreatePortalSession returns a Customer Portal link. Card updates, plan
@@ -322,6 +468,62 @@ func (c *Client) GetSubscription(ctx context.Context, id string) (*Subscription,
 	return &subscription, nil
 }
 
+// SetSubscriptionCollectionPaused quiesces or restores collection while day-90
+// deletion checks provider truth. Callers select Stripe's documented pause
+// behavior explicitly so reversible preparation never inherits void semantics.
+func (c *Client) SetSubscriptionCollectionPaused(ctx context.Context, id string, paused bool, behavior, idempotencyKey string) (*Subscription, error) {
+	form := url.Values{}
+	if paused {
+		form.Set("pause_collection[behavior]", behavior)
+	} else {
+		form.Set("pause_collection", "")
+	}
+
+	var subscription Subscription
+	if err := c.post(ctx, "/v1/subscriptions/"+url.PathEscape(id), form, idempotencyKey, &subscription); err != nil {
+		return nil, err
+	}
+
+	return &subscription, nil
+}
+
+// SetInvoiceAutoAdvance disables or restores Stripe's automatic finalization,
+// reminders, reconciliation, and payment retries for one draft or open invoice.
+// Day-90 deletion uses it because pausing a subscription does not affect an
+// invoice that was created before the pause.
+func (c *Client) SetInvoiceAutoAdvance(ctx context.Context, id string, enabled bool, idempotencyKey string) (*Invoice, error) {
+	form := url.Values{}
+	form.Set("auto_advance", strconv.FormatBool(enabled))
+
+	var invoice Invoice
+	if err := c.post(ctx, "/v1/invoices/"+url.PathEscape(id), form, idempotencyKey, &invoice); err != nil {
+		return nil, err
+	}
+
+	return &invoice, nil
+}
+
+// VoidInvoice irreversibly removes the manual and portal payment opportunity
+// from an already-open invoice. Disabling auto_advance only stops automatic
+// retries, so day-90 deletion must void open invoices before its final read.
+func (c *Client) VoidInvoice(ctx context.Context, id, idempotencyKey string) (*Invoice, error) {
+	var invoice Invoice
+	if err := c.post(ctx, "/v1/invoices/"+url.PathEscape(id)+"/void", nil, idempotencyKey, &invoice); err != nil {
+		return nil, err
+	}
+
+	return &invoice, nil
+}
+
+// DeleteDraftInvoice removes an invoice that is not payable yet but could be
+// manually finalized after the day-90 final read. Draft deletion is the only
+// way to make that provider transition impossible.
+func (c *Client) DeleteDraftInvoice(ctx context.Context, id, idempotencyKey string) error {
+	var invoice Invoice
+
+	return c.delWithKey(ctx, "/v1/invoices/"+url.PathEscape(id), idempotencyKey, &invoice)
+}
+
 // GetCustomer reads a customer. A customer Stripe has deleted comes back with
 // `deleted: true` rather than a 404, and treating that as a live customer is
 // how an account ends up linked to a record nothing can charge.
@@ -345,43 +547,161 @@ func (c *Client) GetCheckoutSession(ctx context.Context, id string) (*CheckoutSe
 	return &session, nil
 }
 
-// ActiveSubscription finds the subscription a customer is actually paying on.
-//
-// It reads every subscription rather than trusting the id an event carried,
-// because a customer who cancelled and resubscribed has two, and acting on the
-// dead one would leave a paying customer's account marked as lapsed. A customer
-// with no live subscription returns nil, which is not an error — it is the
-// normal state of somebody who cancelled.
-func (c *Client) ActiveSubscription(ctx context.Context, customerID string) (*Subscription, error) {
-	form := url.Values{}
-	form.Set("customer", customerID)
-	form.Set("status", "all")
-	form.Set("limit", "20")
-	form.Set("expand[]", "data.items.data.price")
+// ExpireCheckoutSession closes an unused checkout so nobody can complete it.
+// Deployment smoke tests call this immediately after Stripe accepts a session.
+func (c *Client) ExpireCheckoutSession(ctx context.Context, id, idempotencyKey string) error {
+	var session CheckoutSession
 
-	var page list[Subscription]
-	if err := c.get(ctx, "/v1/subscriptions", form, &page); err != nil {
+	return c.postWithVersion(ctx, "/v1/checkout/sessions/"+url.PathEscape(id)+"/expire", nil, idempotencyKey, ManagedPaymentsAPIVersion, &session)
+}
+
+// GetProduct reads the configured catalogue product for deployment checks.
+func (c *Client) GetProduct(ctx context.Context, id string) (*Product, error) {
+	var product Product
+	if err := c.getWithVersion(ctx, "/v1/products/"+url.PathEscape(id), nil, ManagedPaymentsAPIVersion, &product); err != nil {
 		return nil, err
 	}
 
-	// A paying subscription wins outright. Otherwise the most recently ended
-	// one is returned so the caller can mirror its plan and status rather than
-	// showing a customer nothing at all.
-	var fallback *Subscription
+	return &product, nil
+}
 
-	for i := range page.Data {
-		candidate := &page.Data[i]
+// GetPrice reads one configured recurring price for deployment checks.
+func (c *Client) GetPrice(ctx context.Context, id string) (*Price, error) {
+	var price Price
+	if err := c.getWithVersion(ctx, "/v1/prices/"+url.PathEscape(id), nil, ManagedPaymentsAPIVersion, &price); err != nil {
+		return nil, err
+	}
 
-		if candidate.Paying() {
-			return candidate, nil
+	return &price, nil
+}
+
+// ListWebhookEndpoints reads every endpoint Stripe can return in one page. The
+// API's maximum page size is 100, far above the number one deployment uses.
+func (c *Client) ListWebhookEndpoints(ctx context.Context) ([]WebhookEndpoint, error) {
+	form := url.Values{}
+	form.Set("limit", "100")
+
+	var page list[WebhookEndpoint]
+	if err := c.getWithVersion(ctx, "/v1/webhook_endpoints", form, ManagedPaymentsAPIVersion, &page); err != nil {
+		return nil, err
+	}
+
+	return page.Data, nil
+}
+
+// Subscriptions reads every page of a customer's subscription history. Callers
+// need the whole set both to detect any chargeable state and to keep evidence
+// attached to the subscription that produced it.
+func (c *Client) Subscriptions(ctx context.Context, customerID string) ([]Subscription, error) {
+	form := url.Values{}
+	form.Set("customer", customerID)
+	form.Set("status", "all")
+	form.Set("limit", "100")
+	form.Set("expand[]", "data.items.data.price")
+
+	var subscriptions []Subscription
+
+	for {
+		var page list[Subscription]
+		if err := c.get(ctx, "/v1/subscriptions", form, &page); err != nil {
+			return nil, err
+		}
+		subscriptions = append(subscriptions, page.Data...)
+
+		if !page.HasMore {
+			return subscriptions, nil
+		}
+		if len(page.Data) == 0 {
+			return nil, fmt.Errorf("stripe: subscriptions page said has_more without any data")
 		}
 
-		if fallback == nil || candidate.CurrentPeriodEnd > fallback.CurrentPeriodEnd {
-			fallback = candidate
+		form.Set("starting_after", page.Data[len(page.Data)-1].ID)
+	}
+}
+
+// SelectSubscription chooses the deterministic row displayed and reconciled.
+// Healthy subscriptions outrank settling ones, settling ones outrank terminal
+// history, and recency uses creation time before period end and id. This keeps
+// an older canceled annual plan from hiding a newer monthly subscription.
+func SelectSubscription(subscriptions []Subscription) *Subscription {
+	var selected *Subscription
+
+	for i := range subscriptions {
+		candidate := &subscriptions[i]
+		if selected == nil || subscriptionAfter(candidate, selected) {
+			copy := *candidate
+			selected = &copy
 		}
 	}
 
-	return fallback, nil
+	return selected
+}
+
+// subscriptionAfter applies the deterministic display precedence.
+func subscriptionAfter(candidate, current *Subscription) bool {
+	candidateRank := subscriptionDisplayRank(candidate)
+	currentRank := subscriptionDisplayRank(current)
+	if candidateRank != currentRank {
+		return candidateRank > currentRank
+	}
+	if candidate.Created != current.Created {
+		return candidate.Created > current.Created
+	}
+	if candidate.CurrentPeriodEnd != current.CurrentPeriodEnd {
+		return candidate.CurrentPeriodEnd > current.CurrentPeriodEnd
+	}
+
+	return candidate.ID > current.ID
+}
+
+// subscriptionDisplayRank keeps useful live truth ahead of terminal history.
+func subscriptionDisplayRank(subscription *Subscription) int {
+	if subscription.Paying() {
+		return 3
+	}
+	if subscription.BlocksCheckout() {
+		return 2
+	}
+
+	return 1
+}
+
+// ActiveSubscription remains the single-row compatibility helper. It now
+// delegates to the complete set and deterministic selection; billing decisions
+// that need blocking truth consume Subscriptions directly.
+func (c *Client) ActiveSubscription(ctx context.Context, customerID string) (*Subscription, error) {
+	subscriptions, err := c.Subscriptions(ctx, customerID)
+	if err != nil {
+		return nil, err
+	}
+
+	return SelectSubscription(subscriptions), nil
+}
+
+// Invoices reads every invoice for one customer, including historical paid
+// evidence needed to close the day-90 webhook delay window.
+func (c *Client) Invoices(ctx context.Context, customerID string) ([]Invoice, error) {
+	form := url.Values{}
+	form.Set("customer", customerID)
+	form.Set("limit", "100")
+
+	var invoices []Invoice
+	for {
+		var page list[Invoice]
+		if err := c.get(ctx, "/v1/invoices", form, &page); err != nil {
+			return nil, err
+		}
+		invoices = append(invoices, page.Data...)
+
+		if !page.HasMore {
+			return invoices, nil
+		}
+		if len(page.Data) == 0 {
+			return nil, fmt.Errorf("stripe: invoices page said has_more without any data")
+		}
+
+		form.Set("starting_after", page.Data[len(page.Data)-1].ID)
+	}
 }
 
 // DeleteCustomer removes a customer and everything Stripe holds against them,

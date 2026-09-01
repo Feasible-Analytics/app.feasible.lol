@@ -93,12 +93,16 @@ func (h *Webhook) Handle(ctx context.Context, event *stripe.Event) (string, erro
 		return "", err
 	}
 
-	fresh, err := h.Service.Store.ClaimEvent(ctx, event.ID, event.Type, teamID, event.Raw)
+	claim, err := h.Service.Store.ClaimEvent(ctx, event.ID, event.Type, teamID, event.Raw)
 	if err != nil {
 		return "", err
 	}
 
-	if !fresh {
+	if !claim.Claimed {
+		if claim.Processing {
+			return "", fmt.Errorf("billing: stripe event %s is already processing", event.ID)
+		}
+
 		if h.Log != nil {
 			h.Log.Debug("stripe webhook already applied", "event", event.ID, "type", event.Type, "team", teamID)
 		}
@@ -108,7 +112,7 @@ func (h *Webhook) Handle(ctx context.Context, event *stripe.Event) (string, erro
 
 	outcome, handlerErr := h.apply(ctx, event, teamID)
 
-	if err := h.Service.Store.FinishEvent(ctx, event.ID, outcome, teamID, handlerErr); err != nil {
+	if err := h.Service.Store.FinishEvent(ctx, event.ID, claim, outcome, teamID, handlerErr); err != nil {
 		return outcome, err
 	}
 
@@ -132,13 +136,16 @@ func (h *Webhook) Handle(ctx context.Context, event *stripe.Event) (string, erro
 func (h *Webhook) apply(ctx context.Context, event *stripe.Event, teamID int64) (string, error) {
 	switch event.Type {
 	case stripe.EventCheckoutCompleted,
+		stripe.EventCheckoutAsyncPaymentSucceeded,
+		stripe.EventCheckoutAsyncPaymentFailed,
 		stripe.EventSubscriptionCreated,
 		stripe.EventSubscriptionUpdated,
 		stripe.EventSubscriptionDeleted,
 		stripe.EventSubscriptionPaused,
 		stripe.EventSubscriptionResumed,
 		stripe.EventInvoicePaymentSucceed,
-		stripe.EventInvoicePaymentFailed:
+		stripe.EventInvoicePaymentFailed,
+		stripe.EventInvoiceFinalizationFailed:
 
 		if teamID < 1 {
 			// An event we cannot route to an account is recorded and left
@@ -153,14 +160,99 @@ func (h *Webhook) apply(ctx context.Context, event *stripe.Event, teamID int64) 
 			return OutcomeIgnored, nil
 		}
 
-		if err := h.Service.Reconcile(ctx, teamID, customerID); err != nil {
+		update, err := paymentUpdate(event)
+		if err != nil {
 			return OutcomeError, err
+		}
+		if update.RequireSubscriptionMatch && update.SubscriptionID == "" {
+			return OutcomeIgnored, nil
+		}
+
+		applied, err := h.Service.Reconcile(ctx, teamID, customerID, update)
+		if err != nil {
+			return OutcomeError, err
+		}
+		if !applied {
+			return OutcomeIgnored, nil
 		}
 
 		return OutcomeApplied, nil
 
 	default:
 		return OutcomeIgnored, nil
+	}
+}
+
+// paymentUpdate separates conclusive payment evidence from subscription state.
+// A completed Checkout Session with payment_status=unpaid is only pending; the
+// later async success or failure event is what may change account access.
+func paymentUpdate(event *stripe.Event) (PaymentUpdate, error) {
+	update := PaymentUpdate{
+		SubscriptionID: event.SubscriptionID(),
+		EventCreated:   event.Created,
+		Trigger:        event.Type,
+	}
+
+	switch event.Type {
+	case stripe.EventCheckoutCompleted,
+		stripe.EventCheckoutAsyncPaymentSucceeded,
+		stripe.EventCheckoutAsyncPaymentFailed:
+		session, err := event.CheckoutSession()
+		if err != nil {
+			return PaymentUpdate{}, err
+		}
+		update.SubscriptionID = session.Subscription
+		update.SourceID = session.ID
+		update.SourceCreated = session.Created
+		update.RequireSubscriptionMatch = true
+
+		switch event.Type {
+		case stripe.EventCheckoutAsyncPaymentSucceeded:
+			update.State = PaymentPaid
+		case stripe.EventCheckoutAsyncPaymentFailed:
+			update.State = PaymentFailed
+		default:
+			switch session.PaymentStatus {
+			case "paid", "no_payment_required":
+				update.State = PaymentPaid
+			default:
+				update.State = PaymentPending
+			}
+		}
+
+	case stripe.EventInvoicePaymentSucceed,
+		stripe.EventInvoicePaymentFailed,
+		stripe.EventInvoiceFinalizationFailed:
+		invoice, err := event.Invoice()
+		if err != nil {
+			return PaymentUpdate{}, err
+		}
+		update.SubscriptionID = invoice.SubscriptionID()
+		update.SourceID = invoice.ID
+		update.SourceCreated = invoice.Created
+		update.RequireSubscriptionMatch = true
+
+		if event.Type == stripe.EventInvoicePaymentSucceed {
+			update.State = PaymentPaid
+		} else {
+			update.State = PaymentFailed
+		}
+	}
+
+	return update, nil
+}
+
+// paymentEvidenceEventTypes lists the signed event objects that can establish a
+// pending, paid, or failed payment state. Subscription lifecycle events are not
+// settlement evidence and therefore never appear here.
+func paymentEvidenceEventTypes() []string {
+	return []string{
+		stripe.EventCheckoutCompleted,
+		stripe.EventCheckoutAsyncPaymentSucceeded,
+		stripe.EventCheckoutAsyncPaymentFailed,
+		stripe.EventInvoicePaymentSucceed,
+		stripe.EventInvoicePaymentFailed,
+		stripe.EventInvoiceFinalizationFailed,
 	}
 }
 

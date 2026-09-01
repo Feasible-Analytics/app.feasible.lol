@@ -32,11 +32,17 @@
           <li>Every feature: goals, funnels, custom properties, the API, exports</li>
           <li>Cancel any time, from your own billing portal</li>
         </ul>
-        <form method="POST" action="/billing/checkout">
-          <input type="hidden" name="plan" value="monthly">
-          {{ if .TeamID }}<input type="hidden" name="team" value="{{ .TeamID }}">{{ end }}
-          <button class="btn" type="submit" {{ if not .Enabled }}disabled{{ end }}>Start monthly</button>
-        </form>
+        {{ if .SignedIn }}
+          <form method="POST" action="/billing/checkout">
+            <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+            <input type="hidden" name="team" value="{{ .TeamID }}">
+            <input type="hidden" name="plan" value="monthly">
+            <button class="btn" type="submit" {{ if not .Enabled }}disabled{{ end }}>{{ if eq .SelectedPlan "monthly" }}Continue monthly{{ else }}Start monthly{{ end }}</button>
+          </form>
+        {{ else }}
+          <a class="btn" href="/register?next=%2Fpricing%3Fplan%3Dmonthly">Create an account</a>
+          <p class="per" style="margin-top:10px"><a href="/login?next=%2Fpricing%3Fplan%3Dmonthly">Sign in to upgrade</a></p>
+        {{ end }}
       </div>
 
       <div class="panel plan">
@@ -46,15 +52,21 @@
         <ul>
           <li>Everything in monthly, at 17% less</li>
           <li>One invoice a year instead of twelve</li>
-          <li>Pro-rata refund within 30 days if you change your mind</li>
+          <li>Our policy gives a pro-rata refund within 30 days if you change your mind</li>
           <li>Switch to monthly whenever you like — it takes effect at renewal</li>
           <li>Switching monthly to yearly prorates immediately</li>
         </ul>
-        <form method="POST" action="/billing/checkout">
-          <input type="hidden" name="plan" value="yearly">
-          {{ if .TeamID }}<input type="hidden" name="team" value="{{ .TeamID }}">{{ end }}
-          <button class="btn" type="submit" {{ if not .Enabled }}disabled{{ end }}>Start yearly</button>
-        </form>
+        {{ if .SignedIn }}
+          <form method="POST" action="/billing/checkout">
+            <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+            <input type="hidden" name="team" value="{{ .TeamID }}">
+            <input type="hidden" name="plan" value="yearly">
+            <button class="btn" type="submit" {{ if not .Enabled }}disabled{{ end }}>{{ if eq .SelectedPlan "yearly" }}Continue yearly{{ else }}Start yearly{{ end }}</button>
+          </form>
+        {{ else }}
+          <a class="btn" href="/register?next=%2Fpricing%3Fplan%3Dyearly">Create an account</a>
+          <p class="per" style="margin-top:10px"><a href="/login?next=%2Fpricing%3Fplan%3Dyearly">Sign in to upgrade</a></p>
+        {{ end }}
       </div>
 
     </div>
@@ -95,10 +107,18 @@
     <h2>Tax and refunds</h2>
     <div class="panel">
       <p>Prices are exclusive of tax. Sales tax, VAT or GST is calculated at checkout from
-         your billing address and shown before you pay. We are the merchant of record, and
-         Cloudmanic Labs, LLC appears on your invoice and your card statement.</p>
-      <p>Yearly plans are refunded pro rata within 30 days of purchase. Write to us and we
-         will do it — there is no form and no retention flow.</p>
+         your billing address and shown before you pay. For transactions in jurisdictions
+         where Managed Payments is available and labelled “Sold through Link,” Stripe Managed
+         Payments is provided by Sold through Link, LLC, which is the merchant of record. It
+         handles indirect tax in the countries and transactions Managed Payments supports.
+         Cloudmanic Labs, LLC remains the seller of the service and is responsible for domestic
+         or other seller taxes where Managed Payments does not handle them.</p>
+      <p>Our policy refunds yearly plans pro rata within 30 days of purchase; write to us and
+         there is no form or retention flow. For a transaction labelled “Sold through Link,”
+         you may also request a refund from
+         <a href="https://support.link.com/topics/sold-through-link">Link support</a>.
+         Sold through Link, LLC's refund policy controls where it gives you broader rights,
+         and applicable law may give you additional rights.</p>
     </div>
   </section>
 

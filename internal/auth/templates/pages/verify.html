@@ -15,6 +15,7 @@
 
   <form method="post" action="/verify-email" class="mt-6 space-y-4">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+    <input type="hidden" name="next" value="{{ .Data.Next }}">
 
     <div>
       <label for="code" class="block text-sm font-medium text-body">{{ t $.Lang "auth.verify.code_label" }}</label>
@@ -31,6 +32,7 @@
 
   <form method="post" action="/verify-email/resend" class="mt-4 text-center">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+    <input type="hidden" name="next" value="{{ .Data.Next }}">
     <button type="submit" class="text-sm font-medium text-accent-ink hover:text-accent">{{ t $.Lang "auth.verify.resend" }}</button>
   </form>
 

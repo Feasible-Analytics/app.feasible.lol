@@ -11,7 +11,7 @@
   <p class="mt-1 text-sm text-muted">{{ t $.Lang "auth.register.subtitle" }}</p>
 
   {{ if .GoogleEnabled }}
-    <a href="/auth/google"
+    <a href="/auth/google?next={{ .Data.Next }}"
        class="mt-6 flex w-full items-center justify-center gap-2 rounded-xl border border-field bg-card px-4 py-2.5 text-sm font-medium text-body hover:bg-hover">
       <svg class="h-4 w-4" viewBox="0 0 24 24" aria-hidden="true">
         <path fill="#4285F4" d="M22.5 12.2c0-.7-.1-1.4-.2-2H12v4h6a5 5 0 0 1-2.2 3.3v2.7h3.6c2.1-2 3.1-4.9 3.1-8z"/>
@@ -29,6 +29,7 @@
 
   <form method="post" action="/register" class="{{ if not .GoogleEnabled }}mt-6{{ end }} space-y-4">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+    <input type="hidden" name="next" value="{{ .Data.Next }}">
 
     <div>
       <label for="name" class="block text-sm font-medium text-body">{{ t $.Lang "auth.register.name" }} <span class="text-faint">{{ t $.Lang "auth.register.optional" }}</span></label>
@@ -56,7 +57,7 @@
   </form>
 
   <p class="mt-6 text-center text-sm text-muted">
-    {{ t $.Lang "auth.register.have_account" }} <a href="/login" class="font-medium text-accent-ink hover:text-accent">{{ t $.Lang "auth.register.sign_in" }}</a>
+    {{ t $.Lang "auth.register.have_account" }} <a href="/login?next={{ .Data.Next }}" class="font-medium text-accent-ink hover:text-accent">{{ t $.Lang "auth.register.sign_in" }}</a>
   </p>
 </div>
 {{ end }}

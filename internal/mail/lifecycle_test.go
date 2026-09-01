@@ -245,16 +245,23 @@ func TestNotifyReportsTheTransportResult(t *testing.T) {
 // TestNotifyPassesTheTransportDetailBack checks the success path records what
 // the transport said, which is what makes "were they warned" answerable later.
 func TestNotifyPassesTheTransportDetailBack(t *testing.T) {
-	mailer := NewLifecycleMailer(senderFunc(func(context.Context, Message) (Result, error) {
+	var messageID string
+	mailer := NewLifecycleMailer(senderFunc(func(_ context.Context, message Message) (Result, error) {
+		messageID = message.MessageID
 		return Result{Transport: "smtp", Accepted: true, Detail: "accepted by relay:587"}, nil
 	}))
 
-	outcome, err := mailer.Notify(context.Background(), noticeFor(lifecycle.TemplateEndingSoon, lifecycle.TriggerTrial, 23))
+	notice := noticeFor(lifecycle.TemplateEndingSoon, lifecycle.TriggerTrial, 23)
+	notice.MessageKey = "lifecycle-1-1772538000-ending_soon"
+	outcome, err := mailer.Notify(context.Background(), notice)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(outcome, "accepted by relay:587") {
 		t.Errorf("the outcome is %q", outcome)
+	}
+	if messageID != notice.MessageKey {
+		t.Errorf("transport Message-ID is %q, want %q", messageID, notice.MessageKey)
 	}
 }
 

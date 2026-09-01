@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/billing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/stripe"
 
 	volume "github.com/Feasible-Analytics/app.feasible.lol/internal/usage"
 )
@@ -29,6 +31,7 @@ Commands:
   sweep             Advance every running clock once, and run the volume ladder.
   replied <team>    Record that somebody replied about their volume, and unlock.
   events [<team>]   The last payment-provider webhooks, and what each one did.
+  preflight         Verify Stripe product, prices, webhooks and Managed Payments.
 
 Flags:
 `
@@ -57,7 +60,7 @@ func runBilling(e *env, args []string) int {
 	// with the help rather than with an error about a database — which is a
 	// confusing thing to be told when the problem is a missing letter.
 	switch rest[0] {
-	case "status", "trial", "sweep", "replied", "events":
+	case "status", "trial", "sweep", "replied", "events", "preflight":
 	default:
 		fmt.Fprintf(e.stderr, "unknown billing command %q\n\n", rest[0])
 		fmt.Fprint(e.stderr, billingHelp)
@@ -65,6 +68,9 @@ func runBilling(e *env, args []string) int {
 	}
 
 	ctx := context.Background()
+	if rest[0] == "preflight" {
+		return billingPreflight(ctx, e, rest[1:])
+	}
 
 	control, err := openControl(ctx, e.cfg.App.DataDir)
 	if err != nil {
@@ -100,6 +106,63 @@ func runBilling(e *env, args []string) int {
 	default:
 		return billingEvents(ctx, e, com, rest[1:])
 	}
+}
+
+const billingPreflightHelp = `feasible billing preflight — verify Stripe before customers reach checkout.
+
+Usage:
+  feasible billing preflight [--checkout-smoke]
+
+The default performs read-only API checks but remains not-ready because Stripe
+does not expose Managed Payments activation, accepted terms, or tax-code
+eligibility as readable fields. --checkout-smoke creates no customer or charge;
+it creates a Checkout Session with the production parameters and immediately
+expires it.
+
+Flags:
+`
+
+// billingPreflight runs without opening control.db, so it can gate a deployment
+// before migrations, process startup, or customer traffic.
+func billingPreflight(ctx context.Context, e *env, args []string) int {
+	fs := newFlagSet("billing preflight", e, billingPreflightHelp)
+	smoke := fs.Bool("checkout-smoke", false, "create and immediately expire a customerless Managed Payments Checkout Session")
+
+	if code, ok := parseFlags(fs, args); !ok {
+		return code
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(e.stderr, "unexpected billing preflight argument %q\n", fs.Arg(0))
+		return ExitUsage
+	}
+
+	service := &billing.Service{
+		Stripe: stripe.New(e.cfg.App.Stripe.SecretKey),
+		Plans: billing.Plans{
+			Product: e.cfg.App.Stripe.Product,
+			Monthly: e.cfg.App.Stripe.PriceMonthly,
+			Yearly:  e.cfg.App.Stripe.PriceYearly,
+		},
+		WebhookSecret: e.cfg.App.Stripe.WebhookSecret,
+		BaseURL:       e.cfg.App.BaseURL,
+	}
+
+	report := service.Preflight(ctx, *smoke)
+	w := tabwriter.NewWriter(e.stdout, 0, 0, 2, ' ', 0)
+	for _, check := range report.Checks {
+		fmt.Fprintf(w, "%s\t%s\t%s\n", check.Status, check.Name, check.Detail)
+	}
+	if code := flush(e, w); code != ExitOK {
+		return code
+	}
+
+	if !report.Ready() {
+		fmt.Fprintln(e.stderr, "Stripe Managed Payments preflight is not ready")
+		return ExitError
+	}
+
+	fmt.Fprintln(e.stdout, "Stripe Managed Payments preflight passed")
+	return ExitOK
 }
 
 // billingStatus prints one account's whole commercial position, or every
@@ -186,6 +249,7 @@ func billingStatus(ctx context.Context, e *env, com *commerce, args []string) in
 
 	fmt.Fprintf(w, "plan\t%s\n", orNone(mirror.Plan))
 	fmt.Fprintf(w, "provider status\t%s\n", orNone(mirror.Status))
+	fmt.Fprintf(w, "payment state\t%s\n", orNone(mirror.PaymentState))
 	fmt.Fprintf(w, "customer\t%s\n", orNone(mirror.CustomerID))
 
 	// The resolved contact rather than the stored billing address, because that

@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,11 +37,17 @@ import (
 // configuration change rather than a code change.
 const APIBase = "https://api.stripe.com"
 
-// APIVersion pins the shape of every response. Without it Stripe uses whatever
-// version the account was created with, which means the same binary can see
-// different fields on two different deployments — and the first sign of that is
-// a subscription status this code has never heard of.
-const APIVersion = "2024-06-20"
+const (
+	// APIVersion pins the existing calls' response shapes. Without it Stripe
+	// uses whatever version the account was created with, which means the same
+	// binary can see different fields on two deployments.
+	APIVersion = "2024-06-20"
+
+	// ManagedPaymentsAPIVersion is the oldest API contract that supports Managed
+	// Payments. It is scoped to checkout creation so enabling
+	// Managed Payments cannot silently change subscription or invoice fields.
+	ManagedPaymentsAPIVersion = "2025-03-31.basil"
+)
 
 // requestTimeout bounds a call. A webhook handler that reconciles against
 // Stripe must not hold an HTTP connection open indefinitely because Stripe's
@@ -102,15 +109,20 @@ type errorEnvelope struct {
 	Error *Error `json:"error"`
 }
 
-// call performs one request and decodes the result. Every method in this
-// package goes through it, so authentication, the pinned API version, the
+// call performs one request with the package's default API version.
+func (c *Client) call(ctx context.Context, method, path string, form url.Values, idempotencyKey string, out any) error {
+	return c.callWithVersion(ctx, method, path, form, idempotencyKey, APIVersion, out)
+}
+
+// callWithVersion performs one request and decodes the result. Every method in
+// this package goes through it, so authentication, the pinned API version, the
 // idempotency key and error decoding cannot be forgotten on a new call.
 //
 // The idempotency key is not optional for writes. A create-checkout-session
 // call that times out and is retried without one produces two sessions, and in
 // the payment path a retry that creates a second object is the difference
 // between a customer paying once and paying twice.
-func (c *Client) call(ctx context.Context, method, path string, form url.Values, idempotencyKey string, out any) error {
+func (c *Client) callWithVersion(ctx context.Context, method, path string, form url.Values, idempotencyKey, apiVersion string, out any) error {
 	if !c.Configured() {
 		return fmt.Errorf("stripe: no secret key configured")
 	}
@@ -136,7 +148,7 @@ func (c *Client) call(ctx context.Context, method, path string, form url.Values,
 	}
 
 	req.SetBasicAuth(c.SecretKey, "")
-	req.Header.Set("Stripe-Version", APIVersion)
+	req.Header.Set("Stripe-Version", apiVersion)
 
 	if method != http.MethodGet {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -187,15 +199,33 @@ func (c *Client) post(ctx context.Context, path string, form url.Values, idempot
 	return c.call(ctx, http.MethodPost, path, form, idempotencyKey, out)
 }
 
+// postWithVersion is a write against an endpoint that requires a newer API
+// contract than the rest of the client.
+func (c *Client) postWithVersion(ctx context.Context, path string, form url.Values, idempotencyKey, apiVersion string, out any) error {
+	return c.callWithVersion(ctx, http.MethodPost, path, form, idempotencyKey, apiVersion, out)
+}
+
 // get is a read. Reads need no idempotency key because repeating one changes
 // nothing.
 func (c *Client) get(ctx context.Context, path string, form url.Values, out any) error {
 	return c.call(ctx, http.MethodGet, path, form, "", out)
 }
 
+// getWithVersion is a read against an endpoint whose response must use a newer
+// API contract than the rest of the client.
+func (c *Client) getWithVersion(ctx context.Context, path string, form url.Values, apiVersion string, out any) error {
+	return c.callWithVersion(ctx, http.MethodGet, path, form, "", apiVersion, out)
+}
+
 // del removes an object.
 func (c *Client) del(ctx context.Context, path string, out any) error {
-	return c.call(ctx, http.MethodDelete, path, nil, "", out)
+	return c.delWithKey(ctx, path, "", out)
+}
+
+// delWithKey removes an object with a stable retry identity when the caller is
+// performing a crash-recoverable provider transition.
+func (c *Client) delWithKey(ctx context.Context, path, idempotencyKey string, out any) error {
+	return c.call(ctx, http.MethodDelete, path, nil, idempotencyKey, out)
 }
 
 // decodeJSON is used by the webhook parser, which has a raw body rather than a
@@ -205,6 +235,13 @@ func decodeJSON(raw []byte, out any) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	if err := decoder.Decode(out); err != nil {
 		return fmt.Errorf("stripe: decode: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return fmt.Errorf("stripe: decode: trailing JSON value")
+		}
+		return fmt.Errorf("stripe: decode: trailing content: %w", err)
 	}
 
 	return nil

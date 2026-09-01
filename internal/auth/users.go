@@ -144,15 +144,26 @@ func (s *Store) CreateUser(ctx context.Context, email, name, passwordHash, googl
 
 	trialEnds := now.AddDate(0, 0, TrialDays)
 
-	teamResult, err := tx.ExecContext(ctx, `
-		INSERT INTO teams (name, trial_ends_at, accept_traffic_until, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?)
-	`, teamName, trialEnds.Unix(), trialEnds.AddDate(0, 0, 30).Unix(), now.Unix(), now.Unix())
-	if err != nil {
-		return nil, nil, fmt.Errorf("auth: create team: %w", err)
+	// SQLite may reuse the largest deleted INTEGER PRIMARY KEY. The sequence is
+	// independent of team rows, so every deletion path permanently reserves ids.
+	var teamID int64
+	if err := tx.QueryRowContext(ctx, `
+		UPDATE team_id_sequence
+		SET last_id = MAX(
+			last_id,
+			COALESCE((SELECT MAX(id) FROM teams), 0),
+			COALESCE((SELECT MAX(team_id) FROM account_deletions), 0)
+		) + 1
+		WHERE singleton = 1
+		RETURNING last_id
+	`).Scan(&teamID); err != nil {
+		return nil, nil, fmt.Errorf("auth: allocate team id: %w", err)
 	}
 
-	teamID, err := teamResult.LastInsertId()
+	_, err = tx.ExecContext(ctx, `
+			INSERT INTO teams (id, name, trial_ends_at, accept_traffic_until, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, teamID, teamName, trialEnds.Unix(), trialEnds.AddDate(0, 0, 30).Unix(), now.Unix(), now.Unix())
 	if err != nil {
 		return nil, nil, fmt.Errorf("auth: create team: %w", err)
 	}
@@ -349,6 +360,80 @@ func (s *Store) TeamForUser(ctx context.Context, userID int64) (*Team, error) {
 	return &t, nil
 }
 
+// OwnedTeamForUser returns only an account the user currently owns. Destructive
+// settings use this narrower lookup so losing or deleting one owned team can
+// never make an ordinary membership in somebody else's team become deletable.
+func (s *Store) OwnedTeamForUser(ctx context.Context, userID int64) (*Team, error) {
+	var (
+		t          Team
+		trialEnds  sql.NullInt64
+		acceptTill sql.NullInt64
+	)
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT teams.id, teams.name, teams.trial_ends_at, teams.accept_traffic_until,
+		       teams.require_2fa, teams.created_at, teams.updated_at
+		FROM teams
+		JOIN team_memberships ON team_memberships.team_id = teams.id
+		WHERE team_memberships.user_id = ? AND team_memberships.role = 'owner'
+		ORDER BY teams.id
+		LIMIT 1
+	`, userID).Scan(&t.ID, &t.Name, &trialEnds, &acceptTill, &t.Require2FA, &t.CreatedAt, &t.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("auth: read owned team: %w", err)
+	}
+
+	t.TrialEndsAt = nullInt64(trialEnds)
+	t.AcceptTrafficUntil = nullInt64(acceptTill)
+
+	return &t, nil
+}
+
+// BillingTeamForUser returns an account on which the user may view or change
+// billing. A requested id is honored only through the membership row; zero
+// selects the user's preferred owner, admin, or billing membership.
+func (s *Store) BillingTeamForUser(ctx context.Context, userID, requestedTeamID int64) (*Team, string, error) {
+	var (
+		t          Team
+		role       string
+		trialEnds  sql.NullInt64
+		acceptTill sql.NullInt64
+	)
+
+	query := `
+		SELECT teams.id, teams.name, teams.trial_ends_at, teams.accept_traffic_until,
+		       teams.require_2fa, teams.created_at, teams.updated_at, team_memberships.role
+		FROM teams
+		JOIN team_memberships ON team_memberships.team_id = teams.id
+		WHERE team_memberships.user_id = ?
+		  AND team_memberships.role IN ('owner', 'admin', 'billing')
+	`
+	args := []any{userID}
+	if requestedTeamID > 0 {
+		query += " AND teams.id = ?"
+		args = append(args, requestedTeamID)
+	}
+	query += " ORDER BY CASE team_memberships.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, teams.id LIMIT 1"
+
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(
+		&t.ID, &t.Name, &trialEnds, &acceptTill, &t.Require2FA, &t.CreatedAt, &t.UpdatedAt, &role,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, "", ErrNotFound
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("auth: read billing team: %w", err)
+	}
+
+	t.TrialEndsAt = nullInt64(trialEnds)
+	t.AcceptTrafficUntil = nullInt64(acceptTill)
+
+	return &t, role, nil
+}
+
 // SetRequire2FA flips the team-wide two-factor policy. Turning it on does not
 // enrol anybody: it makes the next page load of every member who has not
 // enrolled land on the enrolment screen, which is the only version of this that
@@ -369,63 +454,6 @@ func (s *Store) UpdateTeamName(ctx context.Context, teamID int64, name string) e
 		UPDATE teams SET name = ?, updated_at = ? WHERE id = ?
 	`, name, s.now().Unix(), teamID); err != nil {
 		return fmt.Errorf("auth: rename team: %w", err)
-	}
-
-	return nil
-}
-
-// StripeCustomerID reads the billing mirror for a team. It returns an empty
-// string when there is no subscription row rather than an error, because most
-// teams on a trial have never touched the payment provider at all.
-func (s *Store) StripeCustomerID(ctx context.Context, teamID int64) (string, error) {
-	var id sql.NullString
-
-	err := s.db.QueryRowContext(ctx,
-		"SELECT stripe_customer_id FROM subscriptions WHERE team_id = ?", teamID).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("auth: read subscription: %w", err)
-	}
-
-	return id.String, nil
-}
-
-// DeleteTeamRows removes a team and everything that cascades from it, plus the
-// user if this was the only team they belonged to.
-//
-// It deletes rather than flagging. A privacy product that answers "delete my
-// account" with a hidden row has no answer at all when somebody asks what it
-// still holds, and the account database file is deleted by the caller for the
-// same reason.
-func (s *Store) DeleteTeamRows(ctx context.Context, teamID, userID int64) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("auth: delete account: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck // a rollback after commit is a no-op
-
-	// Foreign keys are on for every connection this project opens, so sites,
-	// folders, memberships, invitations, api keys, shared links, usage counters
-	// and the subscription all go with the team.
-	if _, err := tx.ExecContext(ctx, "DELETE FROM teams WHERE id = ?", teamID); err != nil {
-		return fmt.Errorf("auth: delete team: %w", err)
-	}
-
-	// The user is only removed once they belong to nothing. Someone who was
-	// also a guest on a client's site still has an account to sign in to.
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM users
-		WHERE id = ?
-		  AND NOT EXISTS (SELECT 1 FROM team_memberships WHERE user_id = users.id)
-		  AND NOT EXISTS (SELECT 1 FROM guest_memberships WHERE user_id = users.id)
-	`, userID); err != nil {
-		return fmt.Errorf("auth: delete user: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("auth: delete account: %w", err)
 	}
 
 	return nil

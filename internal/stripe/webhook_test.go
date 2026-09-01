@@ -25,8 +25,9 @@ const payload = `{
   "id": "evt_test_1",
   "type": "invoice.payment_failed",
   "created": 1772539200,
-  "data": {"object": {"id": "in_1", "object": "invoice", "customer": "cus_1", "subscription": "sub_1",
-                      "metadata": {"feasible_team_id": "7"}}}
+  "data": {"object": {"id": "in_1", "object": "invoice", "customer": "cus_1",
+                      "parent": {"type": "subscription_details", "subscription_details": {
+                        "subscription": "sub_1", "metadata": {"feasible_team_id": "7"}}}}}
 }`
 
 // TestValidSignatureIsAccepted is the happy path, exercised through the real
@@ -159,16 +160,38 @@ func TestAnEventWithNoIDIsRejected(t *testing.T) {
 	}
 }
 
+// TestEventJSONRequiresEOF accepts insignificant trailing whitespace but
+// rejects a second document or garbage after the authenticated event. Stored
+// historical payloads use the same decoder, so neither path can accept a valid
+// prefix and silently ignore what follows it.
+func TestEventJSONRequiresEOF(t *testing.T) {
+	whitespace := payload + " \n\t"
+	if _, err := ParseWebhook([]byte(whitespace), SignPayload([]byte(whitespace), secret, sentAt), secret, sentAt); err != nil {
+		t.Fatalf("trailing whitespace was rejected: %v", err)
+	}
+
+	for _, suffix := range []string{` {"id":"evt_second"}`, ` trailing-garbage`} {
+		body := payload + suffix
+		if _, err := ParseWebhook([]byte(body), SignPayload([]byte(body), secret, sentAt), secret, sentAt); err == nil {
+			t.Errorf("signed payload with suffix %q was accepted", suffix)
+		}
+		if _, err := DecodeEvent([]byte(body)); err == nil {
+			t.Errorf("stored payload with suffix %q was accepted", suffix)
+		}
+	}
+}
+
 // TestCustomerIDIsFoundOnEveryObjectShape checks the routing fallback. Each of
 // the object types this product acts on puts the customer somewhere slightly
 // different, and an event we cannot route is an event we cannot act on.
 func TestCustomerIDIsFoundOnEveryObjectShape(t *testing.T) {
 	cases := map[string]string{
-		`{"id":"evt_1","type":"customer.subscription.updated","data":{"object":{"id":"sub_1","object":"subscription","customer":"cus_a"}}}`: "cus_a",
-		`{"id":"evt_2","type":"invoice.payment_succeeded","data":{"object":{"id":"in_1","object":"invoice","customer":"cus_b"}}}`:           "cus_b",
-		`{"id":"evt_3","type":"checkout.session.completed","data":{"object":{"id":"cs_1","object":"checkout.session","customer":"cus_c"}}}`: "cus_c",
-		`{"id":"evt_4","type":"customer.deleted","data":{"object":{"id":"cus_d","object":"customer"}}}`:                                     "cus_d",
-		`{"id":"evt_5","type":"customer.subscription.deleted","data":{"object":{"id":"sub_2","object":"subscription","customer":"cus_e"}}}`: "cus_e",
+		`{"id":"evt_1","type":"customer.subscription.updated","data":{"object":{"id":"sub_1","object":"subscription","customer":"cus_a"}}}`:            "cus_a",
+		`{"id":"evt_2","type":"invoice.payment_succeeded","data":{"object":{"id":"in_1","object":"invoice","customer":"cus_b"}}}`:                      "cus_b",
+		`{"id":"evt_3","type":"checkout.session.completed","data":{"object":{"id":"cs_1","object":"checkout.session","customer":"cus_c"}}}`:            "cus_c",
+		`{"id":"evt_4","type":"customer.deleted","data":{"object":{"id":"cus_d","object":"customer"}}}`:                                                "cus_d",
+		`{"id":"evt_5","type":"customer.subscription.deleted","data":{"object":{"id":"sub_2","object":"subscription","customer":"cus_e"}}}`:            "cus_e",
+		`{"id":"evt_6","type":"checkout.session.async_payment_failed","data":{"object":{"id":"cs_2","object":"checkout.session","customer":"cus_f"}}}`: "cus_f",
 	}
 
 	for body, want := range cases {
@@ -181,6 +204,29 @@ func TestCustomerIDIsFoundOnEveryObjectShape(t *testing.T) {
 
 		if got := event.CustomerID(); got != want {
 			t.Errorf("customer for %s is %q, want %q", event.Type, got, want)
+		}
+	}
+}
+
+// TestSubscriptionIDReadsEveryBillingObject keeps payment evidence attached to
+// the subscription an event actually describes.
+func TestSubscriptionIDReadsEveryBillingObject(t *testing.T) {
+	cases := map[string]string{
+		`{"id":"evt_1","data":{"object":{"id":"sub_1","object":"subscription"}}}`:                                                                                    "sub_1",
+		`{"id":"evt_2","data":{"object":{"id":"in_1","object":"invoice","parent":{"type":"subscription_details","subscription_details":{"subscription":"sub_2"}}}}}`: "sub_2",
+		`{"id":"evt_3","data":{"object":{"id":"cs_1","object":"checkout.session","subscription":"sub_3"}}}`:                                                          "sub_3",
+		`{"id":"evt_4","data":{"object":{"id":"in_2","object":"invoice","subscription":"sub_legacy"}}}`:                                                              "sub_legacy",
+		`{"id":"evt_5","data":{"object":{"id":"in_3","object":"invoice","subscription":"sub_wrong","parent":{"type":"quote_details"}}}}`:                             "",
+	}
+
+	for body, want := range cases {
+		header := SignPayload([]byte(body), secret, sentAt)
+		event, err := ParseWebhook([]byte(body), header, secret, sentAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := event.SubscriptionID(); got != want {
+			t.Errorf("subscription id is %q, want %q", got, want)
 		}
 	}
 }

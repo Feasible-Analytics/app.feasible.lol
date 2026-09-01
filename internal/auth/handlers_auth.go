@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 )
@@ -27,12 +28,15 @@ const pendingTwoFactorCookie = "feasible_2fa"
 
 // showRegister renders the sign-up form.
 func (h *Handler) showRegister(w http.ResponseWriter, r *http.Request) {
+	next := safeNext(r.URL.Query().Get("next"))
 	if userFrom(r) != nil {
-		http.Redirect(w, r, "/sites", http.StatusFound)
+		http.Redirect(w, r, next, http.StatusFound)
 		return
 	}
 
-	h.render(w, r, "register", h.newPage(r, tr(r, "auth.title.register"), ""), http.StatusOK)
+	p := h.newPage(r, tr(r, "auth.title.register"), "")
+	p.Data["Next"] = next
+	h.render(w, r, "register", p, http.StatusOK)
 }
 
 // doRegister creates an account and sends the verification email.
@@ -49,10 +53,12 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 	email := NormaliseEmail(r.PostFormValue("email"))
 	name := strings.TrimSpace(r.PostFormValue("name"))
 	password := r.PostFormValue("password")
+	next := safeNext(r.PostFormValue("next"))
 
 	p := h.newPage(r, tr(r, "auth.title.register"), "")
 	p.Data["Email"] = email
 	p.Data["Name"] = name
+	p.Data["Next"] = next
 
 	fail := func(message string) {
 		p.Error = message
@@ -95,10 +101,10 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 
 	h.Log.Info("account created", "user", user.ID, "team", team.ID)
 
-	h.sendVerification(r, user)
+	h.sendVerification(r, user, next)
 	h.startSession(w, r, user)
 
-	http.Redirect(w, r, "/verify-email", http.StatusFound)
+	http.Redirect(w, r, verificationPath(next), http.StatusFound)
 }
 
 // sendVerification issues a code and a link and emails both.
@@ -107,7 +113,7 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 // screen offers a resend button, so a person whose first email bounced off a
 // greylist has an obvious next move; failing the whole registration would leave
 // them with an account they cannot reach and no way to try again.
-func (h *Handler) sendVerification(r *http.Request, user *User) {
+func (h *Handler) sendVerification(r *http.Request, user *User, next string) {
 	code, linkToken, err := h.Store.CreateVerification(r.Context(), user.ID)
 	if err != nil {
 		h.Log.Error("could not create a verification code", "user", user.ID, "error", err)
@@ -115,6 +121,9 @@ func (h *Handler) sendVerification(r *http.Request, user *User) {
 	}
 
 	link := h.BaseURL + "/verify-email/confirm?token=" + url.QueryEscape(linkToken)
+	if safeNext(next) != "/sites" {
+		link += "&next=" + url.QueryEscape(safeNext(next))
+	}
 
 	if err := h.Mailer.SendVerification(r.Context(), user.Email, user.Name, code, link); err != nil {
 		h.Log.Error("could not send the verification email", "user", user.ID, "error", err)
@@ -248,7 +257,7 @@ func (h *Handler) doLogin(w http.ResponseWriter, r *http.Request) {
 	h.startSession(w, r, user)
 
 	if !user.Verified() {
-		http.Redirect(w, r, "/verify-email", http.StatusFound)
+		http.Redirect(w, r, verificationPath(next), http.StatusFound)
 		return
 	}
 
@@ -274,19 +283,21 @@ func (h *Handler) doLogout(w http.ResponseWriter, r *http.Request) {
 
 // showVerify renders the code-entry screen.
 func (h *Handler) showVerify(w http.ResponseWriter, r *http.Request) {
+	next := safeNext(r.URL.Query().Get("next"))
 	user := userFrom(r)
 	if user == nil {
-		http.Redirect(w, r, "/login", http.StatusFound)
+		http.Redirect(w, r, loginPath(next), http.StatusFound)
 		return
 	}
 
 	if user.Verified() {
-		http.Redirect(w, r, "/sites", http.StatusFound)
+		http.Redirect(w, r, next, http.StatusFound)
 		return
 	}
 
 	p := h.newPage(r, tr(r, "auth.title.verify"), "")
 	p.Data["Digits"] = VerificationCodeDigits
+	p.Data["Next"] = next
 
 	if r.URL.Query().Get("sent") == "1" {
 		p.Flash = i18n.T(p.Lang, "auth.flash.code_sent", "email", user.Email)
@@ -302,8 +313,9 @@ func (h *Handler) doVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user := userFrom(r)
+	next := safeNext(r.PostFormValue("next"))
 	if user == nil {
-		http.Redirect(w, r, "/login", http.StatusFound)
+		http.Redirect(w, r, loginPath(next), http.StatusFound)
 		return
 	}
 
@@ -312,6 +324,7 @@ func (h *Handler) doVerify(w http.ResponseWriter, r *http.Request) {
 	if !h.Limiter.Allow(SubjectKey(fmt.Sprint(user.ID), "verify"), TwoFactorAttempts, TwoFactorWindow) {
 		p := h.newPage(r, tr(r, "auth.title.verify"), "")
 		p.Data["Digits"] = VerificationCodeDigits
+		p.Data["Next"] = next
 		p.Error = i18n.T(p.Lang, "auth.error.too_many_attempts")
 
 		h.render(w, r, "verify", p, http.StatusTooManyRequests)
@@ -324,13 +337,14 @@ func (h *Handler) doVerify(w http.ResponseWriter, r *http.Request) {
 	err := h.Store.ConsumeVerification(r.Context(), user.ID, code, "")
 	if err == nil {
 		h.Log.Info("email verified", "user", user.ID)
-		http.Redirect(w, r, "/sites?welcome=1", http.StatusFound)
+		http.Redirect(w, r, afterVerification(next), http.StatusFound)
 
 		return
 	}
 
 	p := h.newPage(r, tr(r, "auth.title.verify"), "")
 	p.Data["Digits"] = VerificationCodeDigits
+	p.Data["Next"] = next
 
 	switch {
 	case errors.Is(err, ErrTokenExpired):
@@ -356,20 +370,25 @@ func (h *Handler) doResendVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user := userFrom(r)
+	next := safeNext(r.PostFormValue("next"))
 	if user == nil {
-		http.Redirect(w, r, "/login", http.StatusFound)
+		http.Redirect(w, r, loginPath(next), http.StatusFound)
 		return
 	}
 
 	// Resends are limited per account. An unlimited resend button is a way to
 	// send someone else's mailbox one email per click.
 	if !h.Limiter.Allow(SubjectKey(fmt.Sprint(user.ID), "verify-resend"), ResetAttempts, ResetWindowLimit) {
-		http.Redirect(w, r, "/verify-email", http.StatusFound)
+		http.Redirect(w, r, verificationPath(next), http.StatusFound)
 		return
 	}
 
-	h.sendVerification(r, user)
-	http.Redirect(w, r, "/verify-email?sent=1", http.StatusFound)
+	h.sendVerification(r, user, next)
+	location := "/verify-email?sent=1"
+	if next != "/sites" {
+		location += "&next=" + url.QueryEscape(next)
+	}
+	http.Redirect(w, r, location, http.StatusFound)
 }
 
 // doVerifyLink consumes the one-tap link from the email.
@@ -379,6 +398,7 @@ func (h *Handler) doResendVerify(w http.ResponseWriter, r *http.Request) {
 // the link exists beside the code.
 func (h *Handler) doVerifyLink(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
+	next := safeNext(r.URL.Query().Get("next"))
 
 	userID, err := h.Store.UserIDForVerificationLink(r.Context(), token)
 	if err != nil {
@@ -412,7 +432,7 @@ func (h *Handler) doVerifyLink(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	http.Redirect(w, r, "/sites?welcome=1", http.StatusFound)
+	http.Redirect(w, r, afterVerification(next), http.StatusFound)
 }
 
 // showForgot renders the password reset request form.
@@ -693,8 +713,49 @@ func (h *Handler) doTwoFactorChallenge(w http.ResponseWriter, r *http.Request) {
 // sign-in page into an open redirect, which is how a phishing link gets to
 // carry our domain in front of somebody else's login form.
 func safeNext(next string) string {
-	if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
+	parsed, err := url.Parse(next)
+	if err != nil || next == "" || parsed.IsAbs() || parsed.Host != "" ||
+		!strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") ||
+		strings.Contains(parsed.Path, "\\") {
 		return "/sites"
+	}
+	for _, r := range next {
+		if unicode.IsControl(r) {
+			return "/sites"
+		}
+	}
+
+	return next
+}
+
+// verificationPath carries a non-default destination through email proof while
+// preserving the long-standing clean URL for ordinary registrations.
+func verificationPath(next string) string {
+	next = safeNext(next)
+	if next == "/sites" {
+		return "/verify-email"
+	}
+
+	return "/verify-email?next=" + url.QueryEscape(next)
+}
+
+// loginPath carries a non-default destination through sign-in without adding a
+// redundant next parameter to the ordinary login route.
+func loginPath(next string) string {
+	next = safeNext(next)
+	if next == "/sites" {
+		return "/login"
+	}
+
+	return "/login?next=" + url.QueryEscape(next)
+}
+
+// afterVerification retains the welcome marker for ordinary signup while a
+// purchase intent goes directly back to its selected plan.
+func afterVerification(next string) string {
+	next = safeNext(next)
+	if next == "/sites" {
+		return "/sites?welcome=1"
 	}
 
 	return next

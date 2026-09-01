@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
@@ -66,6 +67,120 @@ func TestOpenCreatesTheDatabaseOnFirstUse(t *testing.T) {
 	// dimension table ships with.
 	if got := account.Intern.Size(intern.Pathname); got != 1 {
 		t.Fatalf("the dimension cache holds %d values, want the seeded empty string", got)
+	}
+}
+
+// TestDeleteLeavesAnUnrecreatableAccountTombstone races the permanent lifecycle
+// operation against the manager's ordinary open behavior. The removed id must
+// remain refused even though Open normally creates a missing database.
+func TestDeleteLeavesAnUnrecreatableAccountTombstone(t *testing.T) {
+	ctx := context.Background()
+	manager := newManager(t)
+	if _, err := manager.Open(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Delete(1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(DeletedMarker(manager.dataDir, 1)); err != nil {
+		t.Fatalf("deletion marker is missing: %v", err)
+	}
+	if _, err := manager.Open(ctx, 1); err == nil || !strings.Contains(err.Error(), "permanently deleted") {
+		t.Fatalf("deleted account reopened with %v", err)
+	}
+	if _, err := os.Stat(manager.Path(1)); !os.IsNotExist(err) {
+		t.Fatalf("deleted database was recreated: %v", err)
+	}
+}
+
+// TestOpenClosesAHandleCachedBeforeAnotherManagerDeletedTheAccount covers two
+// serving processes with independent caches. Delete must not return until the
+// already-returned handle is fenced, without requiring another Open call.
+func TestOpenClosesAHandleCachedBeforeAnotherManagerDeletedTheAccount(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	deleting := NewManager(dataDir)
+	stale := NewManager(dataDir)
+	t.Cleanup(func() {
+		deleting.CloseAll()
+		stale.CloseAll()
+	})
+
+	if _, err := deleting.Open(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	cached, err := stale.Open(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deleting.Delete(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := cached.Reader().PingContext(ctx); err == nil {
+		t.Fatal("cached reader remained usable after deletion returned")
+	}
+	if _, err := cached.Writer().ExecContext(ctx, "INSERT INTO dim_pathname (value) VALUES ('/after-delete')"); err == nil {
+		t.Fatal("cached writer accepted data after deletion returned")
+	}
+	if _, err := stale.Open(ctx, 1); err == nil || !strings.Contains(err.Error(), "permanently deleted") {
+		t.Fatalf("stale manager reopened the deleted account with %v", err)
+	}
+	if stale.OpenCount() != 0 {
+		t.Fatal("stale manager retained the deleted account in its cache")
+	}
+}
+
+// TestOpenCannotCrossTheDeletionMarkerCriticalSection deterministically pauses
+// an opener behind the same filesystem lock deletion holds. Once the marker is
+// committed, that opener must refuse rather than recreate a fresh database.
+func TestOpenCannotCrossTheDeletionMarkerCriticalSection(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	manager := NewManager(dataDir)
+	t.Cleanup(func() { manager.CloseAll() })
+
+	lock, err := lockAccount(dataDir, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		_, openErr := manager.Open(ctx, 1)
+		result <- openErr
+	}()
+	<-started
+
+	select {
+	case err := <-result:
+		unlockAccount(lock)
+		t.Fatalf("open crossed the held deletion lock with %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	marker := DeletedMarker(dataDir, 1)
+	file, err := os.OpenFile(marker, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
+	if err != nil {
+		unlockAccount(lock)
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		unlockAccount(lock)
+		t.Fatal(err)
+	}
+	unlockAccount(lock)
+
+	select {
+	case err := <-result:
+		if err == nil || !strings.Contains(err.Error(), "permanently deleted") {
+			t.Fatalf("blocked open resumed with %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocked open did not resume after deletion released its lock")
+	}
+	if _, err := os.Stat(manager.Path(1)); !os.IsNotExist(err) {
+		t.Fatalf("blocked open recreated the database: %v", err)
 	}
 }
 

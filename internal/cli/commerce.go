@@ -15,6 +15,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/access"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/auth"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/billing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
@@ -83,6 +84,7 @@ func buildCommerce(e *env, control *sql.DB, manager *accounts.Manager, siteCache
 		Accounts:  manager,
 		DataDir:   e.cfg.App.DataDir,
 		Customers: billingService,
+		Payments:  billingService,
 		Log:       e.log,
 	}
 
@@ -175,9 +177,20 @@ func buildMailer(e *env) (*mail.Mailer, error) {
 	})
 }
 
-// Routes adds the commercial surface to the mux: the pages, and the one
-// endpoint the payment provider talks to.
-func (c *commerce) Routes(mux *http.ServeMux) {
+// Routes adds the commercial surface to the mux: authenticated account pages,
+// public pricing and documentation, and the provider webhook. Authentication
+// is injected here so pages remains usable without importing auth.
+func (c *commerce) Routes(mux *http.ServeMux, app *auth.Handler) {
+	c.Pages.OptionalAccount = app.OptionalAccount
+	c.Pages.RequireAccount = app.RequireAccount
+	c.Pages.CurrentAccount = func(r *http.Request) (pages.Account, error) {
+		teamID, email, err := app.CurrentAccount(r)
+
+		return pages.Account{ID: teamID, Email: email}, err
+	}
+	c.Pages.FormToken = app.FormToken
+	c.Pages.ValidateForm = app.ValidateForm
+
 	c.Pages.Routes(mux)
 	mux.Handle(billing.WebhookPath, c.Webhook)
 }

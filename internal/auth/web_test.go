@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
@@ -76,6 +77,12 @@ func newTestApp(t *testing.T) *testApp {
 	mailer := mail.NewWithTransport(sender, "feasible <no-reply@example.com>", "http://localhost:19312")
 
 	log := logger.New(logger.Options{Level: "error", Output: os.Stderr})
+	purger := &lifecycle.Purger{
+		Store:    lifecycle.NewStore(db),
+		Accounts: manager,
+		DataDir:  dataDir,
+		Log:      log,
+	}
 
 	handler, err := NewHandler(Options{
 		Store:     store,
@@ -83,7 +90,7 @@ func newTestApp(t *testing.T) *testApp {
 		Mailer:    mailer,
 		Sealer:    newTestSealer(t),
 		Google:    NewGoogle("", "", "http://localhost:19312"),
-		Deleter:   NewDeleter(store, manager, dataDir, NewStripe("", log), log),
+		Deleter:   NewDeleter(purger, log),
 		SiteCache: sites.New(db),
 		BaseURL:   "http://localhost:19312",
 		Log:       log,
@@ -302,6 +309,135 @@ func extractCode(t *testing.T, body string) string {
 	return ""
 }
 
+// extractVerificationLink returns the one-tap URL from a captured plain-text
+// message so a test can open it in a different browser session.
+func extractVerificationLink(t *testing.T, body string) string {
+	t.Helper()
+
+	for _, field := range strings.Fields(body) {
+		candidate := strings.TrimSpace(field)
+		if strings.HasPrefix(candidate, "http") && strings.Contains(candidate, "/verify-email/confirm?") {
+			return candidate
+		}
+	}
+
+	t.Fatalf("no verification link in the email:\n%s", body)
+	return ""
+}
+
+// TestAccountMiddlewareRequiresVerificationRolesAndMembership exercises the
+// billing boundary with explicit team selection and real membership roles.
+func TestAccountMiddlewareRequiresVerificationRolesAndMembership(t *testing.T) {
+	app := newTestApp(t)
+	app.mux.Handle("GET /commerce-probe", app.RequireAccount(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		teamID, email, err := app.CurrentAccount(r)
+		if err != nil {
+			t.Errorf("resolve authenticated account: %v", err)
+			http.Error(w, "missing account", http.StatusInternalServerError)
+			return
+		}
+
+		_, _ = w.Write([]byte(strconv.FormatInt(teamID, 10) + "|" + email))
+	})))
+	app.mux.Handle("GET /commerce-optional", app.OptionalAccount(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		teamID, _, err := app.CurrentAccount(r)
+		if err != nil {
+			_, _ = w.Write([]byte("public"))
+			return
+		}
+		_, _ = w.Write([]byte(strconv.FormatInt(teamID, 10)))
+	})))
+
+	c := newClient(t, app)
+	selectedSignedOut := c.get("/commerce-optional?team=2")
+	selectedSignedOut.Body.Close()
+	if selectedSignedOut.StatusCode != http.StatusFound || selectedSignedOut.Header.Get("Location") != "/login?next=%2Fcommerce-optional%3Fteam%3D2" {
+		t.Fatalf("selected signed-out route answered %d at %q", selectedSignedOut.StatusCode, selectedSignedOut.Header.Get("Location"))
+	}
+
+	signedOut := c.get("/commerce-probe?team=999")
+	signedOut.Body.Close()
+	if signedOut.StatusCode != http.StatusFound || !strings.HasPrefix(signedOut.Header.Get("Location"), "/login?next=") {
+		t.Fatalf("signed-out account route answered %d and redirected to %q", signedOut.StatusCode, signedOut.Header.Get("Location"))
+	}
+
+	registered := c.post("/register", url.Values{
+		"email":    {"billing-owner@example.com"},
+		"password": {"a long enough password"},
+		"name":     {"Billing Owner"},
+	})
+	registered.Body.Close()
+
+	unverified := c.get("/commerce-probe?team=999")
+	unverified.Body.Close()
+	if unverified.StatusCode != http.StatusFound || unverified.Header.Get("Location") != "/verify-email" {
+		t.Fatalf("unverified account route answered %d and redirected to %q", unverified.StatusCode, unverified.Header.Get("Location"))
+	}
+
+	code := extractCode(t, app.sent.last(t).Text)
+	verified := c.post("/verify-email", url.Values{"code": {code}})
+	verified.Body.Close()
+
+	forged := c.get("/commerce-probe?team=999")
+	forged.Body.Close()
+	if forged.StatusCode != http.StatusNotFound {
+		t.Fatalf("forged account selector answered %d, want 404", forged.StatusCode)
+	}
+
+	body := c.body("/commerce-probe")
+	if body != "1|billing-owner@example.com" {
+		t.Fatalf("commerce resolved %q, want the authenticated account and email", body)
+	}
+
+	now := app.store.Now().Unix()
+	if _, err := app.store.DB().Exec(`
+		INSERT INTO teams (id, name, created_at, updated_at) VALUES
+			(2, 'Billing team', ?, ?),
+			(3, 'Viewer team', ?, ?),
+			(4, 'Editor team', ?, ?),
+			(5, 'Admin team', ?, ?);
+		INSERT INTO team_memberships (team_id, user_id, role, created_at) VALUES
+			(2, 1, 'billing', ?),
+			(3, 1, 'viewer', ?),
+			(4, 1, 'editor', ?),
+			(5, 1, 'admin', ?);
+	`, now, now, now, now, now, now, now, now, now, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, allowed := range []string{"2", "5"} {
+		if got := c.body("/commerce-probe?team=" + allowed); got != allowed+"|billing-owner@example.com" {
+			t.Errorf("authorized team %s resolved %q", allowed, got)
+		}
+	}
+	if got := c.body("/commerce-optional?team=2"); got != "2" {
+		t.Fatalf("optional selected team resolved %q", got)
+	}
+	for _, denied := range []string{"3", "4"} {
+		response := c.get("/commerce-probe?team=" + denied)
+		response.Body.Close()
+		if response.StatusCode != http.StatusNotFound {
+			t.Errorf("non-billing team %s answered %d, want 404", denied, response.StatusCode)
+		}
+	}
+	if _, err := app.store.DB().Exec(`DELETE FROM team_memberships WHERE team_id = 2 AND user_id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	removed := c.get("/commerce-probe?team=2")
+	removed.Body.Close()
+	if removed.StatusCode != http.StatusNotFound {
+		t.Fatalf("removed billing membership answered %d, want 404", removed.StatusCode)
+	}
+	removedOptional := c.get("/commerce-optional?team=2")
+	removedOptional.Body.Close()
+	if removedOptional.StatusCode != http.StatusNotFound {
+		t.Fatalf("removed optional membership answered %d, want 404", removedOptional.StatusCode)
+	}
+	if got := c.body("/commerce-probe"); got != "1|billing-owner@example.com" {
+		t.Fatalf("removed selected membership fell back as %q", got)
+	}
+}
+
 // TestRegisterVerifyAndCreateASite walks the whole first-run path end to end,
 // which is the sequence every new customer takes and the one worth having a
 // single test for.
@@ -351,6 +487,97 @@ func TestRegisterVerifyAndCreateASite(t *testing.T) {
 	if !strings.Contains(list, "Marketing site") {
 		t.Error("the sites list should show the display name")
 	}
+}
+
+// TestPurchaseIntentSurvivesAuthentication covers both email-proof routes and
+// ordinary login. Monthly/yearly choice remains a same-origin path throughout,
+// while an external next target is reduced to the normal sites destination.
+func TestPurchaseIntentSurvivesAuthentication(t *testing.T) {
+	t.Run("typed verification", func(t *testing.T) {
+		app := newTestApp(t)
+		c := newClient(t, app)
+		next := "/pricing?plan=monthly&team=1"
+
+		registered := c.post("/register", url.Values{
+			"email":    {"monthly@example.com"},
+			"password": {"a long enough password"},
+			"next":     {next},
+		})
+		registered.Body.Close()
+		if got := registered.Header.Get("Location"); got != "/verify-email?next=%2Fpricing%3Fplan%3Dmonthly%26team%3D1" {
+			t.Fatalf("registration intent redirected to %q", got)
+		}
+
+		verified := c.post("/verify-email", url.Values{
+			"code": {extractCode(t, app.sent.last(t).Text)},
+			"next": {next},
+		})
+		verified.Body.Close()
+		if got := verified.Header.Get("Location"); got != next {
+			t.Fatalf("typed verification redirected to %q, want %q", got, next)
+		}
+	})
+
+	t.Run("one tap link in another browser", func(t *testing.T) {
+		app := newTestApp(t)
+		registering := newClient(t, app)
+		next := "/pricing?plan=yearly&team=1"
+
+		registered := registering.post("/register", url.Values{
+			"email":    {"yearly@example.com"},
+			"password": {"a long enough password"},
+			"next":     {next},
+		})
+		registered.Body.Close()
+
+		link, err := url.Parse(extractVerificationLink(t, app.sent.last(t).Text))
+		if err != nil {
+			t.Fatal(err)
+		}
+		verifying := newClient(t, app)
+		verified := verifying.get(link.RequestURI())
+		verified.Body.Close()
+		if got := verified.Header.Get("Location"); got != next {
+			t.Fatalf("one-tap verification redirected to %q, want %q", got, next)
+		}
+		if body := verifying.body("/sites"); strings.Contains(body, "Sign in") {
+			t.Fatal("one-tap verification did not sign in the second browser")
+		}
+	})
+
+	t.Run("login and open redirect defense", func(t *testing.T) {
+		app := newTestApp(t)
+		_ = registerAndVerify(t, app)
+		fresh := newClient(t, app)
+
+		loggedIn := fresh.post("/login", url.Values{
+			"email":    {"person@example.com"},
+			"password": {"a long enough password"},
+			"next":     {"/pricing?plan=monthly&team=1"},
+		})
+		loggedIn.Body.Close()
+		if got := loggedIn.Header.Get("Location"); got != "/pricing?plan=monthly&team=1" {
+			t.Fatalf("login redirected to %q", got)
+		}
+
+		for _, hostile := range []string{
+			"https://attacker.example/steal",
+			"//attacker.example/steal",
+			"/\\attacker.example/steal",
+			"/%5c%5cattacker.example/steal",
+		} {
+			another := newClient(t, app)
+			rejected := another.post("/login", url.Values{
+				"email":    {"person@example.com"},
+				"password": {"a long enough password"},
+				"next":     {hostile},
+			})
+			rejected.Body.Close()
+			if got := rejected.Header.Get("Location"); got != "/sites" {
+				t.Errorf("hostile next target %q redirected to %q", hostile, got)
+			}
+		}
+	})
 }
 
 // TestALockedAccountGetsTheSitesListWithoutItsNumbers is the last place a
@@ -679,6 +906,7 @@ func TestTwoFactorSetupAndChallenge(t *testing.T) {
 	resp = fresh.post("/login", url.Values{
 		"email":    {"person@example.com"},
 		"password": {"a long enough password"},
+		"next":     {"/pricing?plan=yearly&team=1"},
 	})
 	resp.Body.Close()
 
@@ -698,6 +926,9 @@ func TestTwoFactorSetupAndChallenge(t *testing.T) {
 
 	if resp.StatusCode != http.StatusFound {
 		t.Errorf("the right code should complete the sign-in, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Location"); got != "/pricing?plan=yearly&team=1" {
+		t.Errorf("two-factor sign-in lost purchase intent and redirected to %q", got)
 	}
 }
 
@@ -825,6 +1056,76 @@ func TestAnotherTeamsSiteIs404(t *testing.T) {
 
 	if page.StatusCode != http.StatusNotFound {
 		t.Errorf("another team's site should be a 404, got %d", page.StatusCode)
+	}
+}
+
+// TestDeletingAnOwnedTeamDoesNotPromoteAnotherMembership proves a surviving
+// admin membership cannot become implicit ownership after the user's own team
+// is gone. Team name, team-wide 2FA, and permanent deletion stay owner-only.
+func TestDeletingAnOwnedTeamDoesNotPromoteAnotherMembership(t *testing.T) {
+	app := newTestApp(t)
+	owner := registerAndVerify(t, app)
+	ctx := context.Background()
+
+	member, err := app.store.UserByEmail(ctx, "person@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, otherTeam, err := app.store.CreateUser(ctx, "other-owner@example.com", "Other Owner", "unused hash", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.store.DB().Exec(`
+		INSERT INTO team_memberships (team_id, user_id, role, created_at)
+		VALUES (?, ?, 'admin', ?)
+	`, otherTeam.ID, member.ID, app.store.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted := owner.post("/settings/delete", url.Values{
+		"confirm":  {"DELETE"},
+		"password": {"a long enough password"},
+	})
+	deleted.Body.Close()
+	if deleted.StatusCode != http.StatusOK {
+		t.Fatalf("owned team deletion answered %d", deleted.StatusCode)
+	}
+
+	remaining := newClient(t, app)
+	loggedIn := remaining.post("/login", url.Values{
+		"email":    {"person@example.com"},
+		"password": {"a long enough password"},
+	})
+	loggedIn.Body.Close()
+	if loggedIn.StatusCode != http.StatusFound {
+		t.Fatalf("surviving member could not sign back in: %d", loggedIn.StatusCode)
+	}
+
+	renamed := remaining.post("/settings/team", url.Values{
+		"name":        {"Hijacked name"},
+		"require_2fa": {"1"},
+	})
+	renamed.Body.Close()
+	if renamed.StatusCode != http.StatusNotFound {
+		t.Fatalf("non-owner team mutation answered %d, want 404", renamed.StatusCode)
+	}
+
+	removed := remaining.post("/settings/delete", url.Values{
+		"confirm":  {"DELETE"},
+		"password": {"a long enough password"},
+	})
+	removed.Body.Close()
+	if removed.StatusCode != http.StatusNotFound {
+		t.Fatalf("non-owner account deletion answered %d, want 404", removed.StatusCode)
+	}
+
+	var name string
+	var require2FA bool
+	if err := app.store.DB().QueryRow(`SELECT name, require_2fa FROM teams WHERE id = ?`, otherTeam.ID).Scan(&name, &require2FA); err != nil {
+		t.Fatal(err)
+	}
+	if name != "Other Owner" || require2FA {
+		t.Fatalf("another team was changed to name=%q require_2fa=%t", name, require2FA)
 	}
 }
 

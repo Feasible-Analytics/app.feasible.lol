@@ -13,6 +13,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
@@ -49,6 +50,48 @@ func tableExists(t *testing.T, db *sql.DB, name string) bool {
 	return count > 0
 }
 
+// assertTrialEnrollment verifies the lifecycle source and both hot-path team
+// mirrors use the same signup instant and the state machine's exact boundaries.
+func assertTrialEnrollment(t *testing.T, db *sql.DB, teamID, startedAt int64) {
+	t.Helper()
+
+	var (
+		trigger            string
+		clockStarted       int64
+		clockCreated       int64
+		clockUpdated       int64
+		trialEnds          int64
+		acceptTrafficUntil int64
+	)
+
+	if err := db.QueryRowContext(context.Background(), `
+		SELECT account_lifecycle.trigger,
+		       account_lifecycle.started_at,
+		       account_lifecycle.created_at,
+		       account_lifecycle.updated_at,
+		       teams.trial_ends_at,
+		       teams.accept_traffic_until
+		FROM account_lifecycle
+		JOIN teams ON teams.id = account_lifecycle.team_id
+		WHERE account_lifecycle.team_id = ?
+	`, teamID).Scan(&trigger, &clockStarted, &clockCreated, &clockUpdated,
+		&trialEnds, &acceptTrafficUntil); err != nil {
+		t.Fatalf("read team %d trial enrollment: %v", teamID, err)
+	}
+
+	if trigger != "trial" || clockStarted != startedAt || clockCreated != startedAt || clockUpdated != startedAt {
+		t.Errorf("team %d lifecycle is trigger=%q started=%d created=%d updated=%d, want trial at %d",
+			teamID, trigger, clockStarted, clockCreated, clockUpdated, startedAt)
+	}
+
+	wantTrialEnds := startedAt + int64(30*24*time.Hour/time.Second)
+	wantAcceptUntil := startedAt + int64(60*24*time.Hour/time.Second)
+	if trialEnds != wantTrialEnds || acceptTrafficUntil != wantAcceptUntil {
+		t.Errorf("team %d mirrors are trial=%d accept=%d, want %d and %d",
+			teamID, trialEnds, acceptTrafficUntil, wantTrialEnds, wantAcceptUntil)
+	}
+}
+
 // TestControlMigratesAFreshDatabase is the first command a new install runs. If
 // this does not produce a complete control schema, nobody can even sign up.
 func TestControlMigratesAFreshDatabase(t *testing.T) {
@@ -72,6 +115,9 @@ func TestControlMigratesAFreshDatabase(t *testing.T) {
 		"site_folders", "sites", "guest_memberships", "subscriptions",
 		"usage_counters", "api_keys", "shared_links", "salts", "jobs",
 		"email_verification_codes", "password_reset_tokens",
+		"billing_account_leases", "billing_account_customers", "billing_quiescence_objects", "billing_checkouts",
+		"billing_checkout_cleanup", "lifecycle_account_leases", "lifecycle_outbox",
+		"account_deletion_customers", "team_id_sequence",
 	} {
 		if !tableExists(t, db, table) {
 			t.Errorf("control schema is missing %s", table)
@@ -84,6 +130,545 @@ func TestControlMigratesAFreshDatabase(t *testing.T) {
 	}
 	if version != Control().Version() {
 		t.Fatalf("schema version is %d, want %d", version, Control().Version())
+	}
+}
+
+// TestControlDeletionCustomerAuditSurvivesTeamCascade proves every discovered
+// Stripe customer remains independently retryable after local account rows are
+// gone, while malformed and duplicate customer identities are rejected.
+func TestControlDeletionCustomerAuditSurvivesTeamCascade(t *testing.T) {
+	ctx := context.Background()
+	db := newDatabase(t)
+	if _, err := Run(ctx, db, Control()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO teams (id, name, created_at, updated_at)
+		VALUES (42, 'Deletion audit', 100, 100);
+		INSERT INTO account_deletion_customers (team_id, customer_id, created_at)
+		VALUES (42, 'cus_first', 101), (42, 'cus_second', 102);
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO account_deletion_customers (team_id, customer_id, created_at)
+		VALUES (42, '', 103)
+	`); err == nil {
+		t.Fatal("deletion customer audit accepted an empty customer id")
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO account_deletion_customers (team_id, customer_id, created_at)
+		VALUES (42, 'cus_first', 104)
+	`); err == nil {
+		t.Fatal("deletion customer audit accepted a duplicate team/customer key")
+	}
+
+	if _, err := db.ExecContext(ctx, "DELETE FROM teams WHERE id = 42"); err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		customers int
+		pending   int
+		errors    int
+		indexes   int
+	)
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM account_deletion_customers WHERE team_id = 42").Scan(&customers); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM account_deletion_customers WHERE team_id = 42 AND removed_at IS NULL").Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM account_deletion_customers WHERE team_id = 42 AND last_error = ''").Scan(&errors); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'index' AND name = 'account_deletion_customers_pending'
+		  AND sql LIKE '%WHERE removed_at IS NULL%'
+	`).Scan(&indexes); err != nil {
+		t.Fatal(err)
+	}
+
+	if customers != 2 || pending != 2 || errors != 2 {
+		t.Fatalf("surviving audit has customers=%d pending=%d default-errors=%d, want 2 each",
+			customers, pending, errors)
+	}
+	if indexes != 1 {
+		t.Fatal("account deletion customers are missing their partial pending index")
+	}
+}
+
+// TestControlEnrollsEveryNewTeamAtomically proves password registration,
+// Google registration, and a direct future team insert all receive the same
+// trial clock without a caller making a separate lifecycle request.
+func TestControlEnrollsEveryNewTeamAtomically(t *testing.T) {
+	ctx := context.Background()
+	fixed := time.Date(2026, time.August, 31, 15, 4, 5, 0, time.UTC)
+
+	for _, path := range []string{"password registration", "Google registration", "general team insert"} {
+		t.Run(path, func(t *testing.T) {
+			db := newDatabase(t)
+			if _, err := Run(ctx, db, Control()); err != nil {
+				t.Fatal(err)
+			}
+
+			var teamID int64
+			switch path {
+			case "password registration":
+				result, err := db.ExecContext(ctx, `
+						INSERT INTO users
+							(email, name, password_hash, created_at, updated_at)
+						VALUES ('password@example.test', 'Password', 'password-hash', ?, ?)
+					`, fixed.Unix(), fixed.Unix())
+				if err != nil {
+					t.Fatal(err)
+				}
+				userID, err := result.LastInsertId()
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err = db.ExecContext(ctx, `
+						INSERT INTO teams
+							(name, trial_ends_at, accept_traffic_until, created_at, updated_at)
+						VALUES ('Password', ?, ?, ?, ?)
+					`, fixed.Add(30*24*time.Hour).Unix(), fixed.Add(60*24*time.Hour).Unix(),
+					fixed.Unix(), fixed.Unix())
+				if err != nil {
+					t.Fatal(err)
+				}
+				teamID, err = result.LastInsertId()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.ExecContext(ctx, `
+						INSERT INTO team_memberships (team_id, user_id, role, created_at)
+						VALUES (?, ?, 'owner', ?)
+					`, teamID, userID, fixed.Unix()); err != nil {
+					t.Fatal(err)
+				}
+
+			case "Google registration":
+				result, err := db.ExecContext(ctx, `
+						INSERT INTO users
+							(email, name, google_sub, email_verified_at, created_at, updated_at)
+						VALUES ('google@example.test', 'Google', 'google-subject', ?, ?, ?)
+					`, fixed.Unix(), fixed.Unix(), fixed.Unix())
+				if err != nil {
+					t.Fatal(err)
+				}
+				userID, err := result.LastInsertId()
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err = db.ExecContext(ctx, `
+						INSERT INTO teams
+							(name, trial_ends_at, accept_traffic_until, created_at, updated_at)
+						VALUES ('Google', ?, ?, ?, ?)
+					`, fixed.Add(30*24*time.Hour).Unix(), fixed.Add(60*24*time.Hour).Unix(),
+					fixed.Unix(), fixed.Unix())
+				if err != nil {
+					t.Fatal(err)
+				}
+				teamID, err = result.LastInsertId()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.ExecContext(ctx, `
+						INSERT INTO team_memberships (team_id, user_id, role, created_at)
+						VALUES (?, ?, 'owner', ?)
+					`, teamID, userID, fixed.Unix()); err != nil {
+					t.Fatal(err)
+				}
+
+			case "general team insert":
+				result, err := db.ExecContext(ctx, `
+					INSERT INTO teams
+						(name, trial_ends_at, accept_traffic_until, created_at, updated_at)
+					VALUES ('General', 1, 2, ?, ?)
+				`, fixed.Unix(), fixed.Unix())
+				if err != nil {
+					t.Fatal(err)
+				}
+				teamID, err = result.LastInsertId()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			assertTrialEnrollment(t, db, teamID, fixed.Unix())
+		})
+	}
+}
+
+// TestControlRollsBackTeamCreationWhenEnrollmentFails proves the trigger's
+// lifecycle write and the outer team insert are one SQLite atomic statement.
+func TestControlRollsBackTeamCreationWhenEnrollmentFails(t *testing.T) {
+	ctx := context.Background()
+	db := newDatabase(t)
+	if _, err := Run(ctx, db, Control()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		CREATE TRIGGER reject_trial_enrollment
+		BEFORE INSERT ON account_lifecycle
+		BEGIN
+			SELECT RAISE(ABORT, 'injected lifecycle failure');
+		END;
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO teams (id, name, created_at, updated_at)
+		VALUES (77, 'Must roll back', 100, 100)
+	`); err == nil {
+		t.Fatal("team insert succeeded despite lifecycle enrollment failure")
+	}
+
+	var teams int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM teams WHERE id = 77").Scan(&teams); err != nil {
+		t.Fatal(err)
+	}
+	if teams != 0 {
+		t.Fatalf("failed enrollment left %d team rows", teams)
+	}
+}
+
+// TestControlBackfillsMissingLifecycleAtUpgradeTime starts old beta accounts
+// fresh while proving existing paid and lapse clocks and mirrors are unchanged.
+func TestControlBackfillsMissingLifecycleAtUpgradeTime(t *testing.T) {
+	ctx := context.Background()
+	db := newDatabase(t)
+
+	throughFive := Set{Name: "control"}
+	for _, migration := range Control().Migrations {
+		if migration.Version <= 5 {
+			throughFive.Migrations = append(throughFive.Migrations, migration)
+		}
+	}
+	if _, err := Run(ctx, db, throughFive); err != nil {
+		t.Fatal(err)
+	}
+
+	lapseStarted := int64(300)
+	lapseTrialEnds := lapseStarted + int64(30*24*time.Hour/time.Second)
+	lapseAcceptUntil := lapseStarted + int64(60*24*time.Hour/time.Second)
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO teams (id, name, trial_ends_at, accept_traffic_until, created_at, updated_at)
+		VALUES
+			(1, 'Beta without clock', 11, 12, 1, 1),
+			(2, 'Paid', NULL, NULL, 2, 2),
+			(3, 'Lapsed', ?, ?, 3, 3)
+	`, lapseTrialEnds, lapseAcceptUntil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO subscriptions
+			(team_id, stripe_customer_id, stripe_subscription_id, status, plan,
+			 stripe_price_id, billing_email, created_at, updated_at)
+		VALUES (2, 'cus_paid', 'sub_paid', 'active', 'monthly', 'price_monthly',
+		        'paid@example.test', 2, 2)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO account_lifecycle
+			(team_id, trigger, started_at, deleted_at, created_at, updated_at)
+		VALUES
+			(2, '', NULL, NULL, 20, 21),
+			(3, 'lapse', ?, NULL, 30, 31)
+	`, lapseStarted); err != nil {
+		t.Fatal(err)
+	}
+
+	before := time.Now().UTC().Unix()
+	result, err := Run(ctx, db, Control())
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now().UTC().Unix()
+	if len(result.Applied) != 1 || result.Applied[0] != 6 {
+		t.Fatalf("upgrade applied %v, want only migration 6", result.Applied)
+	}
+
+	var backfilledStarted int64
+	if err := db.QueryRowContext(ctx,
+		"SELECT started_at FROM account_lifecycle WHERE team_id = 1 AND trigger = 'trial'").
+		Scan(&backfilledStarted); err != nil {
+		t.Fatal(err)
+	}
+	if backfilledStarted < before || backfilledStarted > after || backfilledStarted == 1 {
+		t.Fatalf("backfill started at %d, want migration time between %d and %d", backfilledStarted, before, after)
+	}
+	assertTrialEnrollment(t, db, 1, backfilledStarted)
+
+	var (
+		paidTrigger                   string
+		paidStarted                   sql.NullInt64
+		paidTrial, paidAccept         sql.NullInt64
+		paidCreated, paidUpdated      int64
+		lapseTrigger                  string
+		gotLapseStarted               int64
+		gotLapseTrial, gotLapseAccept int64
+		lapseCreated, lapseUpdated    int64
+	)
+	if err := db.QueryRowContext(ctx, `
+		SELECT account_lifecycle.trigger, account_lifecycle.started_at,
+		       account_lifecycle.created_at, account_lifecycle.updated_at,
+		       teams.trial_ends_at, teams.accept_traffic_until
+		FROM account_lifecycle JOIN teams ON teams.id = account_lifecycle.team_id
+		WHERE account_lifecycle.team_id = 2
+	`).Scan(&paidTrigger, &paidStarted, &paidCreated, &paidUpdated, &paidTrial, &paidAccept); err != nil {
+		t.Fatal(err)
+	}
+	if paidTrigger != "" || paidStarted.Valid || paidTrial.Valid || paidAccept.Valid || paidCreated != 20 || paidUpdated != 21 {
+		t.Fatalf("paid lifecycle changed to trigger=%q started=%v mirrors=%v/%v created=%d updated=%d",
+			paidTrigger, paidStarted, paidTrial, paidAccept, paidCreated, paidUpdated)
+	}
+
+	if err := db.QueryRowContext(ctx, `
+		SELECT account_lifecycle.trigger, account_lifecycle.started_at,
+		       account_lifecycle.created_at, account_lifecycle.updated_at,
+		       teams.trial_ends_at, teams.accept_traffic_until
+		FROM account_lifecycle JOIN teams ON teams.id = account_lifecycle.team_id
+		WHERE account_lifecycle.team_id = 3
+	`).Scan(&lapseTrigger, &gotLapseStarted, &lapseCreated, &lapseUpdated,
+		&gotLapseTrial, &gotLapseAccept); err != nil {
+		t.Fatal(err)
+	}
+	if lapseTrigger != "lapse" || gotLapseStarted != lapseStarted ||
+		gotLapseTrial != lapseTrialEnds || gotLapseAccept != lapseAcceptUntil ||
+		lapseCreated != 30 || lapseUpdated != 31 {
+		t.Fatalf("lapse lifecycle changed to trigger=%q started=%d mirrors=%d/%d created=%d updated=%d",
+			lapseTrigger, gotLapseStarted, gotLapseTrial, gotLapseAccept, lapseCreated, lapseUpdated)
+	}
+
+	second, err := Run(ctx, db, Control())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Changed() {
+		t.Fatalf("second migration run applied %v", second.Applied)
+	}
+	var secondStarted int64
+	if err := db.QueryRowContext(ctx, "SELECT started_at FROM account_lifecycle WHERE team_id = 1").Scan(&secondStarted); err != nil {
+		t.Fatal(err)
+	}
+	if secondStarted != backfilledStarted {
+		t.Fatalf("second migration moved backfill from %d to %d", backfilledStarted, secondStarted)
+	}
+}
+
+// TestControlUpgradesPopulatedBillingFromFiveToSix proves the production shape
+// keeps existing customer, subscription, lifecycle, and event data while the
+// durable payment-ordering tables and defaults are added.
+func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
+	ctx := context.Background()
+	db := newDatabase(t)
+
+	throughFive := Set{Name: "control"}
+	for _, migration := range Control().Migrations {
+		if migration.Version <= 5 {
+			throughFive.Migrations = append(throughFive.Migrations, migration)
+		}
+	}
+	if _, err := Run(ctx, db, throughFive); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO users (id, email, created_at, updated_at)
+		VALUES (1, 'owner@example.com', 1, 1);
+		INSERT INTO teams (id, name, created_at, updated_at)
+		VALUES (1, 'Existing account', 1, 1);
+		INSERT INTO teams (id, name, created_at, updated_at)
+		VALUES
+			(2, 'Paid annual account', 2, 2),
+			(3, 'Unpaid beta account', 3, 3),
+			(4, 'Pending deletion account', 4, 4);
+		INSERT INTO team_memberships (team_id, user_id, role, created_at)
+		VALUES (1, 1, 'owner', 1);
+		INSERT INTO subscriptions
+			(team_id, stripe_customer_id, stripe_subscription_id, status, plan,
+			 stripe_price_id, billing_email, created_at, updated_at)
+		VALUES (1, 'cus_existing', 'sub_existing', 'active', 'monthly',
+		        'price_monthly', 'billing@example.com', 1, 1);
+		INSERT INTO subscriptions
+			(team_id, stripe_customer_id, stripe_subscription_id, status, plan,
+			 stripe_price_id, billing_email, created_at, updated_at)
+		VALUES (2, 'cus_annual', 'sub_annual', 'active', 'yearly',
+		        'price_yearly', 'annual@example.com', 2, 2);
+		INSERT INTO subscriptions
+			(team_id, stripe_customer_id, stripe_subscription_id, status, plan,
+			 stripe_price_id, billing_email, created_at, updated_at)
+		VALUES (4, 'cus_pending', 'sub_pending', 'active', 'yearly',
+		        'price_yearly', 'pending@example.com', 4, 4);
+		INSERT INTO account_lifecycle
+			(team_id, trigger, started_at, created_at, updated_at)
+		VALUES (1, 'lapse', 10, 10, 10);
+		INSERT INTO lifecycle_emails
+			(team_id, started_at, template, recipient, outcome, sent_at)
+		VALUES
+			(1, 10, 'ending_soon', 'billing@example.com', 'smtp/accepted: queued', 20),
+			(1, 10, 'ending_tomorrow', 'billing@example.com', 'failed: relay down', 21);
+			INSERT INTO stripe_events
+			(event_id, type, team_id, payload, received_at, handled_at, outcome)
+			VALUES ('evt_existing', 'invoice.payment_failed', 1, '{}', 10, 10, 'applied');
+			INSERT INTO account_deletions
+				(team_id, team_name, contact_email, stripe_customer_id,
+				 clock_started_at, started_at, notes)
+			VALUES (4, 'Pending deletion account', 'pending@example.com', 'cus_pending', 11, 80, 'claimed');
+			INSERT INTO account_deletions
+				(team_id, team_name, contact_email, stripe_customer_id,
+				 clock_started_at, started_at, notes)
+			VALUES (99, 'Historical deletion', 'old@example.com', 'cus_old', 1, 91, 'claimed');
+			INSERT INTO account_deletions
+				(team_id, team_name, contact_email, stripe_customer_id,
+				 clock_started_at, started_at, completed_at, notified_at, notes)
+			VALUES (100, 'Failed provider deletion', 'failed@example.com', 'cus_failed',
+			        2, 92, 93, 94, 'payment customer NOT removed: provider unavailable; control rows removed');
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Run(ctx, db, Control())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Applied) != 1 || result.Applied[0] != 6 {
+		t.Fatalf("upgrade applied %v, want only migration 6", result.Applied)
+	}
+
+	var customer, subscription, paymentState string
+	var failedAt sql.NullInt64
+	if err := db.QueryRowContext(ctx, `
+		SELECT stripe_customer_id, stripe_subscription_id, payment_state, payment_failed_at
+		FROM subscriptions WHERE team_id = 1
+	`).Scan(&customer, &subscription, &paymentState, &failedAt); err != nil {
+		t.Fatal(err)
+	}
+	if customer != "cus_existing" || subscription != "sub_existing" || paymentState != "" || failedAt.Valid {
+		t.Fatalf("populated subscription changed to customer=%q subscription=%q payment=%q failed_at=%v",
+			customer, subscription, paymentState, failedAt)
+	}
+
+	for _, table := range []string{
+		"billing_account_leases", "billing_account_customers", "billing_quiescence_objects", "billing_checkouts",
+		"billing_checkout_cleanup", "lifecycle_account_leases", "lifecycle_outbox",
+		"account_deletion_customers", "team_id_sequence",
+	} {
+		if !tableExists(t, db, table) {
+			t.Errorf("upgraded control schema is missing %s", table)
+		}
+	}
+
+	var annualPaymentState string
+	if err := db.QueryRowContext(ctx, `
+		SELECT payment_state FROM subscriptions WHERE team_id = 2
+	`).Scan(&annualPaymentState); err != nil {
+		t.Fatal(err)
+	}
+	if annualPaymentState != "paid" {
+		t.Fatalf("annual subscription payment_state=%q, want paid", annualPaymentState)
+	}
+
+	var pendingPaymentState string
+	if err := db.QueryRowContext(ctx, `
+		SELECT payment_state FROM subscriptions WHERE team_id = 4
+	`).Scan(&pendingPaymentState); err != nil {
+		t.Fatal(err)
+	}
+	if pendingPaymentState != "" {
+		t.Fatalf("pending-deletion subscription payment_state=%q, want terminal evidence preserved", pendingPaymentState)
+	}
+	var pendingClock int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM account_lifecycle WHERE team_id = 4
+	`).Scan(&pendingClock); err != nil {
+		t.Fatal(err)
+	}
+	if pendingClock != 0 {
+		t.Fatalf("pending deletion received %d manufactured lifecycle clocks", pendingClock)
+	}
+
+	var events, clocks, paidClock, betaClock int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM stripe_events WHERE event_id = 'evt_existing'").Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM account_lifecycle WHERE team_id = 1").Scan(&clocks); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM account_lifecycle WHERE team_id = 2").Scan(&paidClock); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM account_lifecycle
+		WHERE team_id = 3 AND trigger = 'trial' AND started_at > 0
+	`).Scan(&betaClock); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 || clocks != 1 || paidClock != 0 || betaClock != 1 {
+		t.Fatalf("upgrade retained events=%d existing_clocks=%d paid_clocks=%d beta_clocks=%d",
+			events, clocks, paidClock, betaClock)
+	}
+
+	var completed, retryable int
+	if err := db.QueryRowContext(ctx, `
+		SELECT
+			SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END),
+			SUM(CASE WHEN completed_at IS NULL AND lease_expires_at = 0 THEN 1 ELSE 0 END)
+		FROM lifecycle_outbox WHERE team_id = 1
+	`).Scan(&completed, &retryable); err != nil {
+		t.Fatal(err)
+	}
+	if completed != 1 || retryable != 1 {
+		t.Fatalf("upgraded outbox has completed=%d retryable=%d, want one each", completed, retryable)
+	}
+
+	var localRemoved, providerRemoved, controlRemoved sql.NullInt64
+	if err := db.QueryRowContext(ctx, `
+		SELECT local_removed_at, provider_removed_at, control_removed_at
+		FROM account_deletions WHERE team_id = 99
+	`).Scan(&localRemoved, &providerRemoved, &controlRemoved); err != nil {
+		t.Fatal(err)
+	}
+	if localRemoved.Valid || providerRemoved.Valid || controlRemoved.Valid {
+		t.Fatalf("historical deletion checkpoints are local=%v provider=%v control=%v",
+			localRemoved, providerRemoved, controlRemoved)
+	}
+
+	var pendingLegacyCustomers, reopenedFailures int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM account_deletion_customers
+		WHERE (team_id = 99 AND customer_id = 'cus_old')
+		   OR (team_id = 100 AND customer_id = 'cus_failed')
+	`).Scan(&pendingLegacyCustomers); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM account_deletions
+		WHERE team_id = 100 AND completed_at IS NULL AND notified_at = 94
+	`).Scan(&reopenedFailures); err != nil {
+		t.Fatal(err)
+	}
+	if pendingLegacyCustomers != 2 || reopenedFailures != 1 {
+		t.Fatalf("legacy provider recovery has customers=%d reopened=%d, want 2 and 1",
+			pendingLegacyCustomers, reopenedFailures)
+	}
+
+	var lastTeamID int64
+	if err := db.QueryRowContext(ctx, `SELECT last_id FROM team_id_sequence WHERE singleton = 1`).Scan(&lastTeamID); err != nil {
+		t.Fatal(err)
+	}
+	if lastTeamID != 100 {
+		t.Fatalf("team id sequence started at %d, want historical maximum 100", lastTeamID)
 	}
 }
 

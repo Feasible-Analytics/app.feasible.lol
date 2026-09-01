@@ -10,11 +10,22 @@ package lifecycle
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 )
+
+// emailLeaseDuration bounds how long a worker owns one outbox message. A crash
+// before transport acceptance becomes retryable after this interval.
+const emailLeaseDuration = 5 * time.Minute
+
+// lifecycleLeasePoll keeps payment and warning workers responsive without
+// spinning while another process holds the same account transition lease.
+const lifecycleLeasePoll = 20 * time.Millisecond
 
 // Store is every read and write the lifecycle makes against control.db.
 //
@@ -38,6 +49,86 @@ func NewStore(db *sql.DB) *Store {
 // need to run their own statements in the same database.
 func (s *Store) DB() *sql.DB {
 	return s.db
+}
+
+// TransitionLease serializes payment transitions, warning sends, and the local
+// deletion claim for one account across processes.
+type TransitionLease struct {
+	store  *Store
+	teamID int64
+	token  string
+}
+
+// Renew fences the next side effect and extends a lease that is still live.
+func (l *TransitionLease) Renew(ctx context.Context) error {
+	if l == nil || l.store == nil || l.token == "" {
+		return nil
+	}
+	now := time.Now().UTC()
+	result, err := l.store.db.ExecContext(ctx, `
+		UPDATE lifecycle_account_leases
+		SET expires_at = ?, updated_at = ?
+		WHERE team_id = ? AND token = ? AND expires_at > ?
+	`, now.Add(emailLeaseDuration).Unix(), now.Unix(), l.teamID, l.token, now.Unix())
+	if err != nil {
+		return fmt.Errorf("lifecycle: renew account %d lease: %w", l.teamID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("lifecycle: renew account %d lease: %w", l.teamID, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("lifecycle: account %d lease expired or was replaced", l.teamID)
+	}
+
+	return nil
+}
+
+// Release removes only this worker's transition lease.
+func (l *TransitionLease) Release() {
+	if l == nil || l.store == nil || l.token == "" {
+		return
+	}
+	_, _ = l.store.db.Exec(`DELETE FROM lifecycle_account_leases WHERE team_id = ? AND token = ?`, l.teamID, l.token)
+}
+
+// AcquireTransitionLease waits for exclusive lifecycle work on one live team.
+func (s *Store) AcquireTransitionLease(ctx context.Context, teamID int64) (*TransitionLease, error) {
+	token, err := emailToken()
+	if err != nil {
+		return nil, err
+	}
+	ticker := time.NewTicker(lifecycleLeasePoll)
+	defer ticker.Stop()
+
+	for {
+		now := time.Now().UTC()
+		result, err := s.db.ExecContext(ctx, `
+			INSERT INTO lifecycle_account_leases (team_id, token, expires_at, updated_at)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT (team_id) DO UPDATE SET
+				token = excluded.token,
+				expires_at = excluded.expires_at,
+				updated_at = excluded.updated_at
+			WHERE lifecycle_account_leases.expires_at <= ?
+		`, teamID, token, now.Add(emailLeaseDuration).Unix(), now.Unix(), now.Unix())
+		if err != nil {
+			return nil, fmt.Errorf("lifecycle: acquire account %d lease: %w", teamID, err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("lifecycle: acquire account %d lease: %w", teamID, err)
+		}
+		if rows == 1 {
+			return &TransitionLease{store: s, teamID: teamID, token: token}, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("lifecycle: acquire account %d lease: %w", teamID, ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 // Account is one account as the sweeper sees it: its clock, who to write to,
@@ -138,6 +229,61 @@ func (s *Store) Save(ctx context.Context, teamID int64, state State) error {
 	return nil
 }
 
+// SaveIfState applies a lifecycle transition only when the row still matches
+// the state the caller read. Payment and day-90 deletion therefore have one
+// database winner instead of both acting on stale snapshots.
+func (s *Store) SaveIfState(ctx context.Context, teamID int64, previous, next State) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("lifecycle: compare-and-swap %d: %w", teamID, err)
+	}
+	defer tx.Rollback() //nolint:errcheck // a rollback after a successful commit is a no-op
+
+	now := time.Now().UTC().Unix()
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO account_lifecycle (team_id, trigger, started_at, deleted_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT (team_id) DO UPDATE SET
+			trigger = excluded.trigger,
+			started_at = excluded.started_at,
+			deleted_at = excluded.deleted_at,
+			updated_at = excluded.updated_at
+		WHERE account_lifecycle.trigger = ?
+		  AND account_lifecycle.started_at IS ?
+		  AND account_lifecycle.deleted_at IS ?
+	`, teamID, string(next.Trigger), toUnix(next.StartedAt), toUnix(next.DeletedAt), now, now,
+		string(previous.Trigger), toUnix(previous.StartedAt), toUnix(previous.DeletedAt))
+	if err != nil {
+		return false, fmt.Errorf("lifecycle: compare-and-swap %d: %w", teamID, err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("lifecycle: compare-and-swap %d: affected rows: %w", teamID, err)
+	}
+	if rows != 1 {
+		return false, nil
+	}
+
+	var trialEnds, acceptUntil any
+	if next.Running() {
+		trialEnds = next.Boundary(PhaseLocked).Unix()
+		acceptUntil = next.Boundary(PhaseDormant).Unix()
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE teams SET trial_ends_at = ?, accept_traffic_until = ?, updated_at = ? WHERE id = ?
+	`, trialEnds, acceptUntil, now, teamID); err != nil {
+		return false, fmt.Errorf("lifecycle: compare-and-swap mirror %d: %w", teamID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("lifecycle: compare-and-swap %d: %w", teamID, err)
+	}
+
+	return true, nil
+}
+
 // Running lists every account whose clock is ticking. It is the only set the
 // sweeper walks: an account that is paying has nothing to advance and reading
 // it every hour would be pure cost.
@@ -154,7 +300,11 @@ func (s *Store) Running(ctx context.Context) ([]Account, error) {
 		FROM account_lifecycle l
 		JOIN teams t ON t.id = l.team_id
 		LEFT JOIN subscriptions s ON s.team_id = l.team_id
-		WHERE l.started_at IS NOT NULL AND l.deleted_at IS NULL
+		WHERE l.started_at IS NOT NULL
+		  AND (l.deleted_at IS NULL OR EXISTS (
+		      SELECT 1 FROM account_deletions d
+		      WHERE d.team_id = l.team_id AND d.completed_at IS NULL
+		  ))
 		ORDER BY l.team_id
 	`)
 	if err != nil {
@@ -187,6 +337,43 @@ func (s *Store) Running(ctx context.Context) ([]Account, error) {
 	}
 
 	return out, rows.Err()
+}
+
+// AccountForDeletion resolves the immutable facts an owner-requested deletion
+// must capture before the team cascade removes them. The lifecycle state is
+// loaded separately so the claim transaction can compare-and-swap the exact
+// clock the requester observed.
+func (s *Store) AccountForDeletion(ctx context.Context, teamID int64) (Account, error) {
+	var account Account
+	var email sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT t.id, COALESCE(t.name, ''),
+		       COALESCE(NULLIF(subscriptions.billing_email, ''), (
+		           SELECT u.email FROM team_memberships m
+		           JOIN users u ON u.id = m.user_id
+		           WHERE m.team_id = t.id AND m.role = 'owner'
+		           ORDER BY m.id LIMIT 1
+		       ), ''),
+		       COALESCE(subscriptions.stripe_customer_id, '')
+		FROM teams t
+		LEFT JOIN subscriptions ON subscriptions.team_id = t.id
+		WHERE t.id = ?
+	`, teamID).Scan(&account.TeamID, &account.TeamName, &email, &account.CustomerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Account{}, fmt.Errorf("lifecycle: account %d does not exist", teamID)
+	}
+	if err != nil {
+		return Account{}, fmt.Errorf("lifecycle: load account %d for deletion: %w", teamID, err)
+	}
+
+	state, err := s.Load(ctx, teamID)
+	if err != nil {
+		return Account{}, err
+	}
+	account.State = state
+	account.Email = email.String
+
+	return account, nil
 }
 
 // Contact resolves one account's billing contact and display name, which is
@@ -226,7 +413,8 @@ func (s *Store) Contact(ctx context.Context, teamID int64) (string, string, erro
 // skipped.
 func (s *Store) SentEmails(ctx context.Context, teamID int64, startedAt time.Time) (map[string]bool, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT template FROM lifecycle_emails WHERE team_id = ? AND started_at = ?
+		SELECT template FROM lifecycle_outbox
+		WHERE team_id = ? AND started_at = ? AND completed_at IS NOT NULL
 	`, teamID, startedAt.UTC().Unix())
 	if err != nil {
 		return nil, fmt.Errorf("lifecycle: sent emails %d: %w", teamID, err)
@@ -247,49 +435,166 @@ func (s *Store) SentEmails(ctx context.Context, teamID int64, startedAt time.Tim
 	return sent, rows.Err()
 }
 
-// ClaimEmail reserves the right to send one message, returning false when
-// somebody else already has it.
-//
-// The claim is taken before the message is rendered and sent, which is the only
-// ordering that makes a double send impossible. The alternative — send, then
-// record — has a window in which a process that dies between the two sends the
-// same deletion warning twice, and a customer who receives "we delete your
-// account tomorrow" twice has every reason to distrust the first one.
-//
-// The cost is that a send which fails after the claim is not retried. That is
-// the right trade for these ten messages, and the failure is recorded on the
-// row and logged at error level rather than being swallowed.
-func (s *Store) ClaimEmail(ctx context.Context, teamID int64, startedAt time.Time, template, recipient string, now time.Time) (bool, error) {
-	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO lifecycle_emails (team_id, started_at, template, recipient, sent_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT (team_id, started_at, template) DO NOTHING
-	`, teamID, startedAt.UTC().Unix(), template, recipient, now.UTC().Unix())
+// EmailClaim is one worker's leased ownership of an outbox row. MessageKey is
+// stable across attempts and becomes the mail Message-ID where supported.
+type EmailClaim struct {
+	Token      string
+	MessageKey string
+	Notice     Notice
+}
+
+// ClaimEmail leases one incomplete message. A live lease excludes concurrent
+// workers; an expired lease is replaced so a crash before send cannot strand
+// the warning forever.
+func (s *Store) ClaimEmail(ctx context.Context, teamID int64, startedAt time.Time, template, recipient string, now time.Time) (EmailClaim, bool, error) {
+	return s.claimEmail(ctx, teamID, startedAt, template, recipient, Notice{
+		TeamID: teamID, To: recipient, Template: template,
+	}, now)
+}
+
+// ClaimNotice persists the complete immutable notice on its first attempt. A
+// retry uses the original recipient, dates, copy inputs, and URLs under the same
+// Message-ID even when account data or the wall clock has since changed.
+func (s *Store) ClaimNotice(ctx context.Context, startedAt time.Time, notice Notice, now time.Time) (EmailClaim, bool, error) {
+	return s.claimEmail(ctx, notice.TeamID, startedAt, notice.Template, notice.To, notice, now)
+}
+
+// claimEmail implements the leased insert/reclaim shared by production notices
+// and lower-level outbox tests.
+func (s *Store) claimEmail(ctx context.Context, teamID int64, startedAt time.Time, template, recipient string, notice Notice, now time.Time) (EmailClaim, bool, error) {
+	token, err := emailToken()
 	if err != nil {
-		return false, fmt.Errorf("lifecycle: claim %s for %d: %w", template, teamID, err)
+		return EmailClaim{}, false, err
+	}
+
+	started := startedAt.UTC().Unix()
+	stamp := now.UTC().Unix()
+	messageKey := fmt.Sprintf("lifecycle-%d-%d-%s", teamID, started, template)
+	payload, err := json.Marshal(notice)
+	if err != nil {
+		return EmailClaim{}, false, fmt.Errorf("lifecycle: encode %s for %d: %w", template, teamID, err)
+	}
+	result, err := s.db.ExecContext(ctx, `
+		INSERT INTO lifecycle_outbox
+			(team_id, started_at, template, recipient, message_key, payload, lease_token,
+			 lease_expires_at, attempts, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+		ON CONFLICT (team_id, started_at, template) DO UPDATE SET
+			lease_token = excluded.lease_token,
+			lease_expires_at = excluded.lease_expires_at,
+			attempts = lifecycle_outbox.attempts + 1,
+			payload = CASE WHEN lifecycle_outbox.payload = '' THEN excluded.payload ELSE lifecycle_outbox.payload END,
+			updated_at = excluded.updated_at
+		WHERE lifecycle_outbox.completed_at IS NULL
+		  AND lifecycle_outbox.lease_expires_at <= ?
+	`, teamID, started, template, recipient, messageKey, string(payload), token,
+		now.UTC().Add(emailLeaseDuration).Unix(), stamp, stamp, stamp)
+	if err != nil {
+		return EmailClaim{}, false, fmt.Errorf("lifecycle: claim %s for %d: %w", template, teamID, err)
 	}
 
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return false, fmt.Errorf("lifecycle: claim %s for %d: %w", template, teamID, err)
+		return EmailClaim{}, false, fmt.Errorf("lifecycle: claim %s for %d: %w", template, teamID, err)
 	}
 
-	return affected > 0, nil
+	if affected == 0 {
+		return EmailClaim{}, false, nil
+	}
+
+	claim := EmailClaim{Token: token, MessageKey: messageKey}
+	var storedPayload string
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT message_key, payload FROM lifecycle_outbox
+		WHERE team_id = ? AND started_at = ? AND template = ? AND lease_token = ?
+	`, teamID, started, template, token).Scan(&claim.MessageKey, &storedPayload); err != nil {
+		return EmailClaim{}, false, fmt.Errorf("lifecycle: read claimed %s for %d: %w", template, teamID, err)
+	}
+	if err := json.Unmarshal([]byte(storedPayload), &claim.Notice); err != nil {
+		return EmailClaim{}, false, fmt.Errorf("lifecycle: decode claimed %s for %d: %w", template, teamID, err)
+	}
+
+	return claim, true, nil
 }
 
-// RecordOutcome writes what the transport actually said about a claimed
-// message. It is separate from the claim so the row exists even when the send
-// fails, which is what turns "we think they were warned" into an auditable
-// record of whether they were.
-func (s *Store) RecordOutcome(ctx context.Context, teamID int64, startedAt time.Time, template, outcome string) error {
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE lifecycle_emails SET outcome = ? WHERE team_id = ? AND started_at = ? AND template = ?
-	`, outcome, teamID, startedAt.UTC().Unix(), template)
+// FinishEmail durably completes an accepted message while the caller still
+// owns its lease. The deletion confirmation also marks its immutable audit row
+// in the same transaction, so a crash cannot leave those two records split.
+func (s *Store) FinishEmail(ctx context.Context, teamID int64, startedAt time.Time, template string, claim EmailClaim, outcome string, now time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("lifecycle: record outcome %s for %d: %w", template, teamID, err)
+		return fmt.Errorf("lifecycle: finish %s for %d: %w", template, teamID, err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is harmless
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE lifecycle_outbox
+		SET completed_at = ?, outcome = ?, lease_token = '', lease_expires_at = 0, updated_at = ?
+		WHERE team_id = ? AND started_at = ? AND template = ?
+		  AND completed_at IS NULL AND lease_token = ?
+	`, now.UTC().Unix(), outcome, now.UTC().Unix(), teamID, startedAt.UTC().Unix(), template, claim.Token)
+	if err != nil {
+		return fmt.Errorf("lifecycle: finish %s for %d: %w", template, teamID, err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("lifecycle: finish %s for %d: %w", template, teamID, err)
+	}
+	if affected != 1 {
+		return fmt.Errorf("lifecycle: finish %s for %d: email lease was replaced", template, teamID)
+	}
+
+	if template == TemplateAccountDeleted {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE account_deletions
+			SET notified_at = ?, notes = notes || '; confirmation ' || ?
+			WHERE team_id = ? AND notified_at IS NULL
+		`, now.UTC().Unix(), outcome, teamID); err != nil {
+			return fmt.Errorf("lifecycle: finish deletion confirmation %d: %w", teamID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("lifecycle: finish %s for %d: %w", template, teamID, err)
 	}
 
 	return nil
+}
+
+// FailEmail records a failed attempt and releases its lease immediately. The
+// row remains incomplete, so the next sweep retries without waiting five
+// minutes for a failure the worker already observed.
+func (s *Store) FailEmail(ctx context.Context, teamID int64, startedAt time.Time, template string, claim EmailClaim, outcome string, now time.Time) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE lifecycle_outbox
+		SET outcome = ?, lease_token = '', lease_expires_at = 0, updated_at = ?
+		WHERE team_id = ? AND started_at = ? AND template = ?
+		  AND completed_at IS NULL AND lease_token = ?
+	`, outcome, now.UTC().Unix(), teamID, startedAt.UTC().Unix(), template, claim.Token)
+	if err != nil {
+		return fmt.Errorf("lifecycle: fail %s for %d: %w", template, teamID, err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("lifecycle: fail %s for %d: %w", template, teamID, err)
+	}
+	if affected != 1 {
+		return fmt.Errorf("lifecycle: fail %s for %d: email lease was replaced", template, teamID)
+	}
+
+	return nil
+}
+
+// emailToken returns an opaque outbox lease token.
+func emailToken() (string, error) {
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("lifecycle: generate email lease: %w", err)
+	}
+
+	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
 // CancelPending removes every unsent email for an account. It runs the instant
@@ -301,7 +606,7 @@ func (s *Store) RecordOutcome(ctx context.Context, teamID int64, startedAt time.
 // they genuinely received.
 func (s *Store) CancelPending(ctx context.Context, teamID int64) (int64, error) {
 	result, err := s.db.ExecContext(ctx, `
-		DELETE FROM lifecycle_emails WHERE team_id = ? AND outcome = ''
+		DELETE FROM lifecycle_outbox WHERE team_id = ? AND completed_at IS NULL
 	`, teamID)
 	if err != nil {
 		return 0, fmt.Errorf("lifecycle: cancel pending %d: %w", teamID, err)

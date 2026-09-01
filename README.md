@@ -73,6 +73,19 @@ The internal listeners stay on `127.0.0.1` in every mode.
   stripe listen --forward-to localhost:19301/webhooks/stripe
   ```
 
+  Before a hosted deployment takes traffic, verify the configured product,
+  prices, webhook event subscriptions, Managed Payments activation, accepted
+  terms and tax-code eligibility with:
+
+  ```bash
+  feasible billing preflight --checkout-smoke
+  ```
+
+  The smoke creates no customer or charge and immediately expires monthly and
+  yearly Checkout Sessions. The read-only form, without `--checkout-smoke`,
+  reports the Stripe Dashboard-only checks as required and exits non-zero rather
+  than claiming the deployment is ready.
+
 ## What it needs to run
 
 One binary, one directory, no Docker and no database server. These are measured
