@@ -115,6 +115,35 @@ export function metricValue(metric: Metric, value: number): string {
 	}
 }
 
+/** metricAxisValue renders graph ticks in the metric's unit while keeping
+ *  ratio labels compact enough for the chart's fixed left margin. Tooltips use
+ *  metricValue and metricTitle because they have room for more precision. */
+export function metricAxisValue(metric: Metric, value: number): string {
+	switch (metric) {
+		case "bounce_rate":
+		case "exit_rate":
+		case "conversion_rate":
+		case "scroll_depth":
+			return `${trimDecimal(value)}%`;
+
+		case "visit_duration":
+		case "time_on_page":
+			return duration(value);
+
+		case "views_per_visit":
+			return trimDecimal(value);
+
+		default:
+			return compact(value);
+	}
+}
+
+/** trimDecimal keeps as much as two decimal places but removes zeroes that
+ *  only make an axis noisier, turning 2.00 into 2 and 2.50 into 2.5. */
+function trimDecimal(value: number): string {
+	return value.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+}
+
 /** metricTitle is the full-precision form for a tooltip. */
 export function metricTitle(metric: Metric, value: number): string {
 	switch (metric) {

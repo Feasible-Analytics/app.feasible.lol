@@ -50,9 +50,10 @@ export function tileLabelLower(metric: string): string {
 	return tileLabel(metric).toLocaleLowerCase(formatterLocale());
 }
 
-/** Metrics the graph can draw. A ratio over a whole visit has no honest value
- *  per hour, so the three session ratios are read on a tile and not plotted. */
-export const GRAPHABLE: ReadonlySet<string> = new Set(["visitors", "visits", "pageviews"]);
+/** Metrics the graph can draw. Session-scoped metrics are aggregated inside
+ *  each time bucket by the query engine, so every headline metric can drive the
+ *  chart without changing the population represented by its tile. */
+export const GRAPHABLE: ReadonlySet<string> = new Set(TILE_METRICS);
 
 interface Props {
 	stats: { data: StatsResponse | null; loading: boolean; error: string | null; reload: () => void };
@@ -104,27 +105,21 @@ export function TopStats({ stats, selected, onSelect, comparing }: Props) {
 				TILE_METRICS.map((metric, index) => {
 					const value = row?.metrics[index] ?? 0;
 					const change = row?.comparison?.change[index];
-					const graphable = GRAPHABLE.has(metric);
 					const active = metric === selected;
 
 					return (
 						<button
 							key={metric}
 							type="button"
-							disabled={!graphable}
 							aria-pressed={active}
-							onClick={() => graphable && onSelect(metric)}
-							title={
-								graphable
-									? t("dashboard.tile.draw", { metric: tileLabelLower(metric) })
-									: t("dashboard.tile.not_plotted", { metric: tileLabel(metric) })
-							}
+							onClick={() => onSelect(metric)}
+							title={t("dashboard.tile.draw", { metric: tileLabelLower(metric) })}
 							className={[
 								"group relative flex flex-col items-start gap-1 border-line px-5 py-4 text-left",
 								"transition-colors duration-150 ease-[var(--ease-ui)]",
 								"border-r border-b last:border-r-0 sm:[&:nth-child(3n)]:border-r-0 lg:[&:nth-child(3n)]:border-r",
 								"lg:border-b-0 lg:[&:nth-child(6n)]:border-r-0",
-								graphable ? "cursor-pointer hover:bg-hover" : "cursor-default",
+								"cursor-pointer hover:bg-hover",
 								active ? "bg-hover" : "",
 							].join(" ")}
 						>

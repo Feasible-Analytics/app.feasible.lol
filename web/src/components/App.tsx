@@ -31,10 +31,9 @@ import { TopBar } from "./TopBar";
 import { SampledBadge, exactResponsesReady } from "./SampledBadge";
 import { TILE_METRICS, TopStats } from "./TopStats";
 
-/** The metrics the graph can draw. The three session ratios on the tile row are
- *  read as a single figure over the period and have no honest per-bucket value,
- *  so they are not in this list. */
-const GRAPH_METRICS: Metric[] = ["visitors", "visits", "pageviews"];
+/** Every headline metric has a time-bucketed query representation and may be
+ *  restored as the selected chart when a reader returns to the dashboard. */
+const GRAPH_METRICS: Metric[] = TILE_METRICS;
 
 /**
  * The bucket widths the `i` key cycles through.
