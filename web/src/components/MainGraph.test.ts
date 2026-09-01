@@ -10,12 +10,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Annotation } from "../api/types";
+import { metricAxisValue } from "../lib/format";
 import {
 	annotationTooltipReducer,
 	placeMarkers,
 	visibleAnnotationTooltip,
 	type AnnotationTooltipState,
 } from "./MainGraph";
+import { GRAPHABLE, TILE_METRICS } from "./TopStats";
 
 /** annotation builds the complete wire shape around one local date. */
 function annotation(id: number, shownOn: string): Annotation {
@@ -112,4 +114,13 @@ test("Escape and an outside pointer dismiss every tooltip interaction", () => {
 		state = annotationTooltipReducer(state, { type: reason });
 		assert.equal(visibleAnnotationTooltip(state), null, reason);
 	}
+});
+
+test("every headline metric can drive the main graph", () => {
+	assert.deepEqual([...GRAPHABLE], TILE_METRICS);
+});
+
+test("engagement graph axes retain their units", () => {
+	assert.equal(metricAxisValue("views_per_visit", 2.5), "2.5");
+	assert.equal(metricAxisValue("bounce_rate", 57.25), "57.25%");
 });

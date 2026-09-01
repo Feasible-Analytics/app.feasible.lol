@@ -10,7 +10,7 @@ import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react"
 
 import type { Annotation, Metric, StatsResponse } from "../api/types";
 import { changePercent, comparisonSeries, previousBucketLabel } from "../lib/compare";
-import { bucketLong, bucketShort, compact, metricTitle, metricValue, rangeLabel } from "../lib/format";
+import { bucketLong, bucketShort, metricAxisValue, metricTitle, metricValue, rangeLabel } from "../lib/format";
 import { n, t } from "../lib/i18n";
 import { INVERTED } from "../lib/reports";
 import { ChangeChip, Failure, Spinner } from "./atoms";
@@ -28,9 +28,9 @@ import { tileLabel, tileLabelLower } from "./TopStats";
  * is what lets the screenshots and the dark theme be exactly right.
  */
 
-/** The plot area's margins. Left is wide enough for a five-character y label,
- *  bottom for one line of dates. */
-const PAD = { top: 16, right: 14, bottom: 26, left: 46 };
+/** The plot area's margins. Left is wide enough for a duration such as 16m 40s,
+ *  and bottom has room for one line of dates. */
+const PAD = { top: 16, right: 14, bottom: 26, left: 60 };
 
 /** The graph's height, from the design system. */
 const HEIGHT = 368;
@@ -303,7 +303,7 @@ export function MainGraph({ stats, metric, comparing, annotations = [] }: Props)
 							textAnchor="end"
 							className="tnum fill-[var(--fs-muted)] text-[11px]"
 						>
-							{compact(tick)}
+							{metricAxisValue(metric, tick)}
 						</text>
 					</g>
 				))}

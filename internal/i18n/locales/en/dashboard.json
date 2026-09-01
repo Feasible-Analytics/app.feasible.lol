@@ -225,7 +225,6 @@
   "dashboard.theme.system": "system",
   "dashboard.tile.draw": "Draw {metric} on the graph",
   "dashboard.tile.loading": "Loading {metric}",
-  "dashboard.tile.not_plotted": "{metric} describes a whole visit, so it is not plotted over time",
   "dashboard.topbar.apply": "Apply",
   "dashboard.topbar.current_visitors.help": "Visitors seen in the last 30 minutes — the window a visit stays open for",
   "dashboard.topbar.current_visitors_one": "current visitor",
