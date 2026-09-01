@@ -265,14 +265,21 @@ func (h *Handler) allowAllProperties(w http.ResponseWriter, r *http.Request, sit
 		return
 	}
 
-	for _, name := range seen {
+	allowed, err := goals.Allowed(r.Context(), lease.Account.Reader(), site.ID)
+	if err != nil {
+		h.conversionRedirect(w, r, site.Domain, "", err.Error())
+		return
+	}
+	newNames := unseenProperties(seen, allowed)
+
+	for _, name := range newNames {
 		if _, err := goals.Allow(r.Context(), lease.Account.Writer(), site.ID, name, goals.ScopeEvent, h.now()); err != nil {
 			h.conversionRedirect(w, r, site.Domain, "", err.Error())
 			return
 		}
 	}
 
-	h.conversionRedirect(w, r, site.Domain, strconv.Itoa(len(seen))+" recently seen properties enabled as event properties.", "")
+	h.conversionRedirect(w, r, site.Domain, strconv.Itoa(len(newNames))+" recently seen properties enabled as event properties.", "")
 }
 
 // deleteProperty disables one property without deleting values already stored on events.

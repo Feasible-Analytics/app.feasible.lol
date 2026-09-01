@@ -159,6 +159,18 @@ func TestConversionMutationRequiresCSRF(t *testing.T) {
 	}
 }
 
+// TestUnseenPropertiesDoesNotRescopeConfiguredNames keeps bulk enable additive.
+func TestUnseenPropertiesDoesNotRescopeConfiguredNames(t *testing.T) {
+	result := unseenProperties([]string{"plan", "campaign", "region"}, []goals.Property{
+		{Name: "plan", Scope: goals.ScopeSession},
+		{Name: "region", Scope: goals.ScopeEvent},
+	})
+
+	if len(result) != 1 || result[0] != "campaign" {
+		t.Fatalf("unseen properties = %v, want only campaign", result)
+	}
+}
+
 // formatID renders a database identifier for an HTML form value.
 func formatID(id int64) string {
 	return strconv.FormatInt(id, 10)
