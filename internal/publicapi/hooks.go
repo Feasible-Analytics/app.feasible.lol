@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/webhooks"
 )
 
@@ -25,6 +26,9 @@ func (a *API) requireWebhooks(w http.ResponseWriter, r *http.Request) (int64, bo
 	}
 
 	if !a.requireScope(w, key, apikeys.ScopeWebhooks) {
+		return 0, false
+	}
+	if !a.requirePermission(w, key, teams.PermManageSiteSettings) {
 		return 0, false
 	}
 

@@ -87,6 +87,27 @@ func TestSparklineBucketsBySiteDay(t *testing.T) {
 	}
 }
 
+// TestSparklinesForSitesPreservesTransferredHistory checks a current team page
+// can render sites whose analytics remain in different former-owner accounts.
+func TestSparklinesForSitesPreservesTransferredHistory(t *testing.T) {
+	traffic, manager := newTestTraffic(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+
+	first := &Site{ID: 7, AccountID: 1, Domain: "first.example", Timezone: "UTC"}
+	transferred := &Site{ID: 8, AccountID: 2, TeamID: 1, Domain: "transferred.example", Timezone: "UTC"}
+
+	insertSession(t, manager, first.AccountID, first.ID, now.Unix())
+	insertSession(t, manager, transferred.AccountID, transferred.ID, now.Unix())
+
+	if err := traffic.SparklinesForSites(ctx, []*Site{first, transferred}, now); err != nil {
+		t.Fatal(err)
+	}
+	if first.Visitors != 1 || transferred.Visitors != 1 {
+		t.Fatalf("visitor totals = %d/%d, want 1/1", first.Visitors, transferred.Visitors)
+	}
+}
+
 // TestFirstEventAtIsTheOnboardingPoll checks the query the waiting screen runs:
 // zero until traffic arrives, then the moment it did.
 func TestFirstEventAtIsTheOnboardingPoll(t *testing.T) {

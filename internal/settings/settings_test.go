@@ -13,12 +13,14 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/dataio"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/google"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
@@ -73,14 +75,16 @@ func newHandler(t *testing.T) (*Handler, *accounts.Manager) {
 	shieldCache.Rejections = shields.NewRejections(manager)
 
 	return &Handler{
-		Sites:    siteCache,
-		Accounts: manager,
-		Jobs:     jobs.NewClient(control),
-		DataDir:  dataDir,
-		Trusted:  trusted,
-		Shields:  shieldCache,
-		Paths:    pathclean.New(siteCache, manager),
-		Now:      func() time.Time { return time.Unix(1_800_000_000, 0) },
+		Sites:     siteCache,
+		Accounts:  manager,
+		Jobs:      jobs.NewClient(control),
+		DataDir:   dataDir,
+		Trusted:   trusted,
+		Shields:   shieldCache,
+		Paths:     pathclean.New(siteCache, manager),
+		Now:       func() time.Time { return time.Unix(1_800_000_000, 0) },
+		CSRF:      func(http.ResponseWriter, *http.Request) string { return "test-csrf" },
+		CheckCSRF: func(http.ResponseWriter, *http.Request) bool { return true },
 	}, manager
 }
 
@@ -99,7 +103,7 @@ func TestRejectedHostnameCanBeAllowedFromTheShieldsPage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	response := get(t, handler, "/settings/example.com/shields")
+	response := get(t, handler, "/settings/sites/example.com/shields")
 	if response.Code != http.StatusOK {
 		t.Fatalf("shields page answered %d", response.Code)
 	}
@@ -107,7 +111,7 @@ func TestRejectedHostnameCanBeAllowedFromTheShieldsPage(t *testing.T) {
 		t.Fatal("the rejected hostname does not have a one-click Allow action")
 	}
 
-	request := httptest.NewRequest(http.MethodPost, "/settings/example.com/shields/allow-hostname",
+	request := httptest.NewRequest(http.MethodPost, "/settings/sites/example.com/shields/allow-hostname",
 		strings.NewReader("hostname=preview.example.net"))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	recorder := httptest.NewRecorder()
@@ -150,6 +154,35 @@ func get(t *testing.T, handler *Handler, path string) *httptest.ResponseRecorder
 	return recorder
 }
 
+// TestUnsafeRoutesRequireCSRF proves the shared guard runs before every legacy
+// settings mutation while accepting the exact token supplied by its verifier.
+func TestUnsafeRoutesRequireCSRF(t *testing.T) {
+	handler, _ := newHandler(t)
+	handler.CheckCSRF = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.PostFormValue("csrf_token") == "valid" {
+			return true
+		}
+
+		http.Error(w, "bad token", http.StatusForbidden)
+		return false
+	}
+
+	for _, token := range []string{"", "bad", "valid"} {
+		body := strings.NewReader("csrf_token=" + token + "&kind=ip&value=203.0.113.9")
+		request := httptest.NewRequest(http.MethodPost, "/settings/sites/example.com/shields/add", body)
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+
+		if token == "valid" && response.Code != http.StatusSeeOther {
+			t.Fatalf("valid token status = %d, want redirect", response.Code)
+		}
+		if token != "valid" && response.Code != http.StatusForbidden {
+			t.Fatalf("token %q status = %d, want forbidden", token, response.Code)
+		}
+	}
+}
+
 // TestScreensRender checks each page comes back whole. The templates are parsed
 // at start-up, so a broken one is a panic in this test rather than a blank page
 // somebody discovers in production.
@@ -157,9 +190,9 @@ func TestScreensRender(t *testing.T) {
 	handler, _ := newHandler(t)
 
 	for _, tc := range []struct{ path, want string }{
-		{"/settings/example.com/shields", "Blocked addresses"},
-		{"/settings/example.com/paths", "Path cleaning"},
-		{"/settings/example.com/imports", "Import &amp; export"},
+		{"/settings/sites/example.com/shields", "Blocked addresses"},
+		{"/settings/sites/example.com/paths", "Path cleaning"},
+		{"/settings/sites/example.com/imports", "Import &amp; export"},
 	} {
 		response := get(t, handler, tc.path)
 
@@ -179,7 +212,7 @@ func TestScreensRender(t *testing.T) {
 func TestShieldsPageShowsTheResolvedAddress(t *testing.T) {
 	handler, _ := newHandler(t)
 
-	body := get(t, handler, "/settings/example.com/shields").Body.String()
+	body := get(t, handler, "/settings/sites/example.com/shields").Body.String()
 
 	if !strings.Contains(body, "203.0.113.14") {
 		t.Fatal("the resolved address is not on the page")
@@ -196,7 +229,7 @@ func TestShieldsPageShowsTheResolvedAddress(t *testing.T) {
 func TestShieldsPageWarnsAboutALANAddress(t *testing.T) {
 	handler, _ := newHandler(t)
 
-	request := httptest.NewRequest(http.MethodGet, "/settings/example.com/shields", nil)
+	request := httptest.NewRequest(http.MethodGet, "/settings/sites/example.com/shields", nil)
 	request.RemoteAddr = "192.168.178.1:41234"
 
 	recorder := httptest.NewRecorder()
@@ -223,7 +256,7 @@ func TestShieldsPageWarnsAboutALANAddress(t *testing.T) {
 func TestGoogleSectionHidesItself(t *testing.T) {
 	handler, _ := newHandler(t)
 
-	body := get(t, handler, "/settings/example.com/imports").Body.String()
+	body := get(t, handler, "/settings/sites/example.com/imports").Body.String()
 
 	if strings.Contains(body, "Connect Analytics") {
 		t.Fatal("the Google section is offered on an install with no OAuth client")
@@ -235,7 +268,7 @@ func TestGoogleSectionHidesItself(t *testing.T) {
 	}
 	handler.Google = app
 
-	body = get(t, handler, "/settings/example.com/imports").Body.String()
+	body = get(t, handler, "/settings/sites/example.com/imports").Body.String()
 
 	if !strings.Contains(body, "Connect Analytics") {
 		t.Fatal("the Google section is hidden on an install that has credentials")
@@ -248,6 +281,58 @@ func TestGoogleSectionHidesItself(t *testing.T) {
 	}
 }
 
+// TestCompletedExportLinkUsesAndReachesTheRegisteredRoute checks the rendered
+// URL and the handler behind it as one workflow. A link can look plausible in
+// HTML while missing the /sites segment that scopes every actual export route.
+func TestCompletedExportLinkUsesAndReachesTheRegisteredRoute(t *testing.T) {
+	handler, manager := newHandler(t)
+	ctx := context.Background()
+
+	account, err := manager.Open(ctx, 1)
+	if err != nil {
+		t.Fatalf("open account: %v", err)
+	}
+
+	now := handler.now()
+	record, token, err := dataio.CreateExport(ctx, account.Writer(), 1, now)
+	if err != nil {
+		t.Fatalf("create export: %v", err)
+	}
+	handler.rememberToken(record.ID, token)
+
+	archive := filepath.Join(t.TempDir(), "completed-export.zip")
+	contents := []byte("prepared archive")
+	if err := os.WriteFile(archive, contents, 0o600); err != nil {
+		t.Fatalf("write archive: %v", err)
+	}
+	if err := dataio.CompleteExport(ctx, account.Writer(), record.ID, archive, int64(len(contents)), now); err != nil {
+		t.Fatalf("complete export: %v", err)
+	}
+
+	want := "/settings/sites/example.com/exports/download/" + token
+	page := get(t, handler, "/settings/sites/example.com/imports")
+	if page.Code != http.StatusOK {
+		t.Fatalf("imports page answered %d", page.Code)
+	}
+	if !strings.Contains(page.Body.String(), `href="`+want+`"`) {
+		t.Fatalf("completed export did not link to %s", want)
+	}
+	if strings.Contains(page.Body.String(), `href="/settings/example.com/exports/download/`) {
+		t.Fatal("completed export still uses the unroutable path without /sites")
+	}
+
+	download := get(t, handler, want)
+	if download.Code != http.StatusOK {
+		t.Fatalf("download route answered %d: %s", download.Code, download.Body.String())
+	}
+	if download.Header().Get("Content-Type") != "application/zip" {
+		t.Fatalf("download content type = %q", download.Header().Get("Content-Type"))
+	}
+	if download.Body.String() != string(contents) {
+		t.Fatalf("download body = %q, want prepared archive", download.Body.String())
+	}
+}
+
 // TestPathPreviewDoesNotSave checks the preview button. A regular expression
 // that eats half a site's URLs has to be visible before it is stored, not
 // after.
@@ -256,7 +341,7 @@ func TestPathPreviewDoesNotSave(t *testing.T) {
 
 	form := "action=preview&pattern=%5E%2Fusers%2F%5B%5E%2F%5D%2B%24&replacement=%2Fusers%2F%3Aid&label=Users&enabled-0=on"
 
-	request := httptest.NewRequest(http.MethodPost, "/settings/example.com/paths/save", strings.NewReader(form))
+	request := httptest.NewRequest(http.MethodPost, "/settings/sites/example.com/paths/save", strings.NewReader(form))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	recorder := httptest.NewRecorder()
@@ -317,19 +402,19 @@ func TestPatternsDoNotShadowTheAccountScreens(t *testing.T) {
 		{"/settings/team", "account"},
 		{"/sites/1/settings", "account"},
 
-		{"/settings/example.com/shields", "site"},
-		{"/settings/example.com/shields/add", "site"},
-		{"/settings/example.com/shields/delete", "site"},
-		{"/settings/example.com/paths", "site"},
-		{"/settings/example.com/paths/save", "site"},
-		{"/settings/example.com/paths/trailing-slash", "site"},
-		{"/settings/example.com/imports", "site"},
-		{"/settings/example.com/imports/upload", "site"},
-		{"/settings/example.com/imports/delete", "site"},
-		{"/settings/example.com/exports/create", "site"},
-		{"/settings/example.com/exports/download/a-token", "site"},
-		{"/settings/example.com/google/connect", "site"},
-		{"/settings/example.com/google/disconnect", "site"},
+		{"/settings/sites/example.com/shields", "site"},
+		{"/settings/sites/example.com/shields/add", "site"},
+		{"/settings/sites/example.com/shields/delete", "site"},
+		{"/settings/sites/example.com/paths", "site"},
+		{"/settings/sites/example.com/paths/save", "site"},
+		{"/settings/sites/example.com/paths/trailing-slash", "site"},
+		{"/settings/sites/example.com/imports", "site"},
+		{"/settings/sites/example.com/imports/upload", "site"},
+		{"/settings/sites/example.com/imports/delete", "site"},
+		{"/settings/sites/example.com/exports/create", "site"},
+		{"/settings/sites/example.com/exports/download/a-token", "site"},
+		{"/settings/sites/example.com/google/connect", "site"},
+		{"/settings/sites/example.com/google/disconnect", "site"},
 		{"/settings/google/callback", "site"},
 	} {
 		recorder := httptest.NewRecorder()
@@ -357,10 +442,10 @@ func TestDomainOfNamesTheSiteEveryRouteExcept(t *testing.T) {
 	}
 
 	for path, want := range map[string]string{
-		"/settings/example.com/shields":             "example.com",
-		"/settings/example.com/imports/upload":      "example.com",
-		"/settings/example.com/exports/download/xy": "example.com",
-		"/settings/google/callback":                 "",
+		"/settings/sites/example.com/shields":             "example.com",
+		"/settings/sites/example.com/imports/upload":      "example.com",
+		"/settings/sites/example.com/exports/download/xy": "example.com",
+		"/settings/google/callback":                       "",
 	} {
 		mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
 

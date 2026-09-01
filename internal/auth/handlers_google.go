@@ -56,7 +56,7 @@ func (h *Handler) finishGoogle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.URL.Query().Get("state") != state {
-		h.Log.Warn("google callback state did not match", "path", r.URL.Path)
+		h.Log.Warn("google callback state did not match", "path", requestLogPath(r))
 		h.googleError(w, r, tr(r, "auth.error.google_state"))
 
 		return

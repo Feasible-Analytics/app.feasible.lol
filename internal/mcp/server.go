@@ -20,6 +20,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/publicapi"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
 // Tool is one callable this server offers.
@@ -43,7 +44,41 @@ type Tool struct {
 	// either an unwanted prompt on every read or a silent write.
 	ReadOnly bool
 
+	// Permission is the role capability needed to call the tool. An empty
+	// value defaults to dashboard reads for read-only tools and site settings
+	// management for writes.
+	Permission teams.Permission
+
 	Handler func(ctx context.Context, key *apikeys.Key, args json.RawMessage) (*toolResult, error)
+}
+
+// toolScopes is the auditable authorization policy for the complete MCP tool
+// surface. Registration rejects an unclassified tool, making scope review a
+// required part of adding one rather than a convention a new handler can miss.
+var toolScopes = map[string]string{
+	"list_sites":             apikeys.ScopeSitesRead,
+	"query_stats":            apikeys.ScopeStatsRead,
+	"get_realtime_visitors":  apikeys.ScopeStatsRead,
+	"compare_periods":        apikeys.ScopeStatsRead,
+	"create_site":            apikeys.ScopeSitesProvision,
+	"update_site":            apikeys.ScopeSitesProvision,
+	"list_goals":             apikeys.ScopeSitesRead,
+	"create_goal":            apikeys.ScopeSitesProvision,
+	"list_funnels":           apikeys.ScopeStatsRead,
+	"get_funnel":             apikeys.ScopeStatsRead,
+	"explain_traffic_change": apikeys.ScopeStatsRead,
+	"list_shields":           apikeys.ScopeSitesRead,
+	"add_shield_rule":        apikeys.ScopeSitesProvision,
+	"create_annotation":      apikeys.ScopeSitesProvision,
+}
+
+// resourceScopes classifies every MCP resource method. Resource templates and
+// schemas expose site configuration rather than analytics observations, so
+// they use the site-read scope.
+var resourceScopes = map[string]string{
+	"resources/list":           apikeys.ScopeSitesRead,
+	"resources/templates/list": apikeys.ScopeSitesRead,
+	"resources/read":           apikeys.ScopeSitesRead,
 }
 
 // Server answers MCP calls over whichever transport carried them.
@@ -77,6 +112,10 @@ func New(api *publicapi.API, log *logger.Logger) *Server {
 // cached and makes a diff of two sessions unreadable.
 func (s *Server) register(tools ...*Tool) {
 	for _, tool := range tools {
+		if _, ok := toolScopes[tool.Name]; !ok {
+			panic("mcp: tool " + tool.Name + " has no scope classification")
+		}
+
 		s.tools[tool.Name] = tool
 		s.order = append(s.order, tool.Name)
 	}
@@ -147,6 +186,10 @@ func (s *Server) dispatch(ctx context.Context, key *apikeys.Key, request *rpcReq
 		return s.listResources(ctx, key, request)
 
 	case "resources/templates/list":
+		if refusal := authorizeScope(key, resourceScopes[request.Method], teams.PermViewDashboard); refusal != "" {
+			return failure(request.ID, codeUnauthorized, "%s", refusal)
+		}
+
 		return result(request.ID, map[string]any{"resourceTemplates": resourceTemplates()})
 
 	case "resources/read":
@@ -243,6 +286,20 @@ func (s *Server) callTool(ctx context.Context, key *apikeys.Key, request *rpcReq
 		return failure(request.ID, codeUnauthorized, "this connection is not authenticated")
 	}
 
+	permission := tool.Permission
+	if permission == "" {
+		permission = teams.PermManageSiteSettings
+		if tool.ReadOnly {
+			permission = teams.PermViewDashboard
+		}
+	}
+	if !publicapi.KeyCan(key, permission) {
+		return result(request.ID, toolFailure("this credential's current team role does not permit %s", permission))
+	}
+	if !key.Allows(toolScopes[tool.Name]) {
+		return result(request.ID, toolFailure("this credential does not grant the %s scope", toolScopes[tool.Name]))
+	}
+
 	answer, err := tool.Handler(ctx, key, params.Arguments)
 	if err != nil {
 		if s.Log != nil {
@@ -256,6 +313,22 @@ func (s *Server) callTool(ctx context.Context, key *apikeys.Key, request *rpcReq
 	}
 
 	return result(request.ID, answer)
+}
+
+// authorizeScope applies both layers every MCP resource needs: the scope on
+// the API key and OAuth grant, and the current live team role.
+func authorizeScope(key *apikeys.Key, scope string, permission teams.Permission) string {
+	if key == nil {
+		return "this connection is not authenticated"
+	}
+	if !key.Allows(scope) {
+		return "this credential does not grant the " + scope + " scope"
+	}
+	if !publicapi.KeyCan(key, permission) {
+		return "this credential's current team role does not permit " + string(permission)
+	}
+
+	return ""
 }
 
 // readableError turns an internal failure into something safe and useful to put

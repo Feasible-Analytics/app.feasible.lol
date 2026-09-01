@@ -209,6 +209,9 @@ func Run(ctx context.Context, db *sql.DB, set Set) (Result, error) {
 	if current > set.Version() {
 		return result, fmt.Errorf("database is at schema version %d but this build only knows %s migrations up to %d", current, set.Name, set.Version())
 	}
+	if err := validateContiguous(current, set); err != nil {
+		return result, err
+	}
 
 	for _, migration := range set.Migrations {
 		if migration.Version <= current {
@@ -224,6 +227,33 @@ func Run(ctx context.Context, db *sql.DB, set Set) (Result, error) {
 	}
 
 	return result, nil
+}
+
+// validateContiguous preflights every pending migration before any SQL runs.
+// A reserved lower version supplied by another branch must be present before a
+// later migration can stamp past it; failing before the first write preserves
+// both the database and its truthful version history.
+func validateContiguous(current int, set Set) error {
+	expected := current + 1
+	for _, migration := range set.Migrations {
+		if migration.Version <= current {
+			continue
+		}
+		// Account version 0006 was intentionally left unused before the deployed
+		// M10 0007 schema. Preserve that established topology while still failing
+		// closed for every newly introduced or accidentally omitted version.
+		if set.Name == "account" && expected == 6 && migration.Version == 7 {
+			expected++
+		}
+		if migration.Version != expected {
+			return fmt.Errorf(
+				"%s schema is at version %d: migration %04d is missing before %04d_%s; merge the reserved lower migration before upgrading",
+				set.Name, current, expected, migration.Version, migration.Name)
+		}
+		expected++
+	}
+
+	return nil
 }
 
 // apply runs one migration and its version stamp in a single transaction.

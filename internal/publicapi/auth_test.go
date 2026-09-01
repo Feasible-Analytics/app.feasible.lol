@@ -92,6 +92,100 @@ func TestRevokedKeyStopsWorking(t *testing.T) {
 	}
 }
 
+// TestLeavingTheTeamStopsThePublicAPIKey checks the assembled API boundary,
+// not only the key store. A key owned by a departed member must fail on the
+// very next HTTP request even though its row has not been explicitly revoked.
+func TestLeavingTheTeamStopsThePublicAPIKey(t *testing.T) {
+	h := newHarness(t)
+
+	if status, body := h.get(t, "/api/v1/sites"); status != http.StatusOK {
+		t.Fatalf("key did not work before leaving: %d (%s)", status, body)
+	}
+
+	if _, err := h.Control.Exec(`DELETE FROM team_memberships WHERE team_id = ? AND user_id = 1`, teamID); err != nil {
+		t.Fatal(err)
+	}
+
+	if status, body := h.get(t, "/api/v1/sites"); status != http.StatusUnauthorized {
+		t.Fatalf("departed member's key answered %d, want 401 (%s)", status, body)
+	}
+}
+
+// TestCurrentMembershipRoleRestrictsPublicAPIKey proves every HTTP request
+// reloads the key owner's role and applies the dashboard permission matrix.
+// Scope alone must never turn an editor or billing key into an administrator.
+func TestCurrentMembershipRoleRestrictsPublicAPIKey(t *testing.T) {
+	h := newHarness(t)
+
+	tests := []struct {
+		name   string
+		role   string
+		method string
+		path   string
+		body   string
+		want   int
+	}{
+		{"viewer reads stats", "viewer", http.MethodPost, "/api/v2/query", `{"site_id":"example.com","metrics":["visitors"],"date_range":"7d"}`, http.StatusOK},
+		{"viewer cannot edit a site", "viewer", http.MethodPut, "/api/v1/sites/example.com", `{"display_name":"Changed"}`, http.StatusForbidden},
+		{"billing reads the site list", "billing", http.MethodGet, "/api/v1/sites", "", http.StatusOK},
+		{"billing cannot read tracker settings", "billing", http.MethodGet, "/api/v1/sites/example.com/tracker", "", http.StatusForbidden},
+		{"billing cannot create a site", "billing", http.MethodPost, "/api/v1/sites", `{"domain":"billing.example.com"}`, http.StatusForbidden},
+		{"editor can edit a site", "editor", http.MethodPut, "/api/v1/sites/example.com", `{"display_name":"Editor changed"}`, http.StatusOK},
+		{"editor cannot create a site", "editor", http.MethodPost, "/api/v1/sites", `{"domain":"editor.example.com"}`, http.StatusForbidden},
+		{"editor cannot list members", "editor", http.MethodGet, "/api/v1/teams/memberships", "", http.StatusForbidden},
+		{"admin can list members", "admin", http.MethodGet, "/api/v1/teams/memberships", "", http.StatusOK},
+		{"admin can create a site", "admin", http.MethodPost, "/api/v1/sites", `{"domain":"admin.example.com"}`, http.StatusCreated},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := h.Control.Exec(`
+				UPDATE team_memberships SET role = ? WHERE team_id = ? AND user_id = 1
+			`, tc.role, teamID); err != nil {
+				t.Fatal(err)
+			}
+
+			status, body := h.do(t, tc.method, tc.path, tc.body, h.Key)
+			if status != tc.want {
+				t.Fatalf("status = %d, want %d (%s)", status, tc.want, body)
+			}
+		})
+	}
+}
+
+// TestAdminKeyCannotGrantOrRemoveOwner checks hierarchy at the direct HTTP
+// boundary, where crafted JSON and membership ids bypass every dashboard form.
+func TestAdminKeyCannotGrantOrRemoveOwner(t *testing.T) {
+	h := newHarness(t)
+
+	if _, err := h.Control.Exec(`
+		UPDATE team_memberships SET role = 'admin' WHERE team_id = ? AND user_id = 1;
+		INSERT INTO team_memberships (team_id, user_id, role, created_at)
+		VALUES (?, 3, 'owner', ?)
+	`, teamID, teamID, testNow.Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	status, body := h.do(t, http.MethodPut, "/api/v1/teams/memberships",
+		`{"email":"guest@example.test","role":"owner"}`, h.Key)
+	if status != http.StatusForbidden {
+		t.Fatalf("admin owner grant answered %d, want 403 (%s)", status, body)
+	}
+
+	var ownerMembershipID int64
+	if err := h.Control.QueryRow(`
+		SELECT id FROM team_memberships WHERE team_id = ? AND user_id = 3
+	`, teamID).Scan(&ownerMembershipID); err != nil {
+		t.Fatal(err)
+	}
+
+	status, body = h.do(t, http.MethodDelete,
+		"/api/v1/teams/memberships/"+strconv.FormatInt(ownerMembershipID, 10), "", h.Key)
+	if status != http.StatusForbidden {
+		t.Fatalf("admin owner removal answered %d, want 403 (%s)", status, body)
+	}
+}
+
 // TestAnotherTeamsSiteIsNotFound checks that authorisation failure looks exactly
 // like a site that does not exist. Distinguishing the two turns the API into an
 // oracle for which domains are registered with us, which is a fact about
@@ -241,6 +335,40 @@ func TestScopedKeyIsRefusedOutsideItsScope(t *testing.T) {
 		`{"site_id":"example.com","metrics":["visitors"],"date_range":"7d"}`, readOnly)
 	if status != http.StatusOK {
 		t.Fatalf("a stats:read key was refused the stats API: %d", status)
+	}
+}
+
+// TestGuestInvitationRequiresProvisioningScopeAndSiteCapability verifies the
+// compatibility route is still bounded by both the key grant and the actor's
+// live permission on the named site.
+func TestGuestInvitationRequiresProvisioningScopeAndSiteCapability(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	keys := apikeys.NewStore(h.Control)
+	body := `{"site_id":"example.com","email":"invitee@example.test","role":"guest_viewer"}`
+
+	_, readOnly, err := keys.Create(ctx, teamID, 1, "read only", []string{apikeys.ScopeStatsRead}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, response := h.do(t, http.MethodPut, "/api/v1/sites/guests", body, readOnly); status != http.StatusForbidden {
+		t.Fatalf("read-only guest invitation answered %d, want 403 (%s)", status, response)
+	}
+	if status, response := h.do(t, http.MethodPut, "/api/v1/sites/guests", body, h.Other); status != http.StatusNotFound {
+		t.Fatalf("other-team guest invitation answered %d, want 404 (%s)", status, response)
+	}
+
+	if _, err := h.Control.Exec(`UPDATE team_memberships SET role = 'billing' WHERE team_id = ? AND user_id = 1`, teamID); err != nil {
+		t.Fatal(err)
+	}
+	if status, response := h.do(t, http.MethodPut, "/api/v1/sites/guests", body, h.Key); status != http.StatusForbidden {
+		t.Fatalf("billing guest invitation answered %d, want 403 (%s)", status, response)
+	}
+	if _, err := h.Control.Exec(`UPDATE team_memberships SET role = 'editor' WHERE team_id = ? AND user_id = 1`, teamID); err != nil {
+		t.Fatal(err)
+	}
+	if status, response := h.do(t, http.MethodPut, "/api/v1/sites/guests", body, h.Key); status != http.StatusCreated {
+		t.Fatalf("site editor guest invitation answered %d, want 201 (%s)", status, response)
 	}
 }
 

@@ -243,7 +243,7 @@ func (g *Gate) Protect(next http.Handler) http.Handler {
 			return
 		}
 
-		reason, locked := g.Locked(site.AccountID)
+		reason, locked := g.Locked(site.TeamID)
 		if !locked {
 			next.ServeHTTP(w, r)
 			return

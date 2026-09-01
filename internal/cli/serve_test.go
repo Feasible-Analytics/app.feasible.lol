@@ -26,6 +26,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
 )
@@ -209,8 +210,14 @@ func newStack(t *testing.T) *stack {
 		t.Fatal(err)
 	}
 
+	// The team, sharing, report and health screens are part of the assembled
+	// route table, so they are built here too. A stack that left them out would
+	// let this file's enumeration pass while the process it describes served
+	// paths nobody had checked.
+	extra := buildServices(e, control, manager, service, mailer)
+
 	return &stack{
-		routes:       serveRoutes(e, service, manager, secret, dir, app, public, com, data.settings),
+		routes:       serveRoutes(e, service, manager, secret, dir, app, public, com, data.settings, extra),
 		gate:         com.Gate,
 		key:          key,
 		dataDir:      dir,
@@ -245,7 +252,10 @@ func seedLapsedAccount(t *testing.T, dir string) {
 		{`INSERT INTO users (id, email, name, email_verified_at, created_at, updated_at) VALUES (1, 'owner@example.com', 'Owner', ?, ?, ?)`, []any{now, now, now}},
 		{`INSERT INTO teams (id, name, created_at, updated_at) VALUES (?, 'Example Co', ?, ?)`, []any{lockedTeam, now, now}},
 		{`INSERT INTO team_memberships (team_id, user_id, role, created_at) VALUES (?, 1, 'owner', ?)`, []any{lockedTeam, now}},
-		{`INSERT INTO sites (id, account_id, domain, timezone, created_at, updated_at) VALUES (1, ?, 'example.com', 'UTC', ?, ?)`, []any{lockedTeam, now, now}},
+		// Published, so the fixture covers the public dashboard as well as the
+		// signed-in one. They are two doors onto the same numbers and the lock
+		// has to mean the same thing at both.
+		{`INSERT INTO sites (id, account_id, domain, timezone, is_public, created_at, updated_at) VALUES (1, ?, 'example.com', 'UTC', 1, ?, ?)`, []any{lockedTeam, now, now}},
 	} {
 		if _, err := control.Exec(statement.sql, statement.args...); err != nil {
 			t.Fatalf("%s: %v", statement.sql, err)
@@ -441,6 +451,71 @@ func TestALockedAccountIsRefusedEveryReadPath(t *testing.T) {
 	}
 }
 
+// TestTheTeamScreensNeedASession is the check that stops the administration
+// surface being open.
+//
+// These screens transfer an account's ownership, mint API keys and publish a
+// site's traffic. They live in their own package, and a package that answered
+// them without a session would hand all three to anybody who could reach the
+// port — with no error anywhere, because from the server's side it looks like
+// an ordinary request.
+func TestTheTeamScreensNeedASession(t *testing.T) {
+	s := newStack(t)
+
+	for _, path := range []string{
+		"/settings/members",
+		"/settings/sites/example.com/sharing",
+		"/settings/sites/example.com/reports",
+		"/settings/sites/example.com/health",
+	} {
+		t.Run(path, func(t *testing.T) {
+			response := s.send(t, http.MethodGet, path, "", nil)
+
+			if response.Code == http.StatusNotFound {
+				t.Fatalf("%s is not a route this process answers", path)
+			}
+
+			if response.Code != http.StatusFound {
+				t.Fatalf("a signed-out request was answered %d, want a redirect to sign in: %s",
+					response.Code, response.Body.String())
+			}
+
+			if location := response.Header().Get("Location"); !strings.HasPrefix(location, "/login") {
+				t.Fatalf("a signed-out request was sent to %q rather than to sign in", location)
+			}
+		})
+	}
+}
+
+// TestALockedAccountsSharedDashboardCarriesNoNumbers covers the door a public
+// dashboard opens.
+//
+// The shell itself is not refused: it is a page a stranger may have bookmarked,
+// and answering them with this account's billing state would say more about the
+// account than the account's owner asked us to. What it must not do is carry the
+// numbers, and it does not — every figure on that page comes from the stats
+// endpoint, which is gated on the same account.
+//
+// The assertion is on the stats endpoint reached through the shared page's own
+// origin, because "the shell rendered" and "the numbers were served" are the two
+// facts that have to differ here, and only one of them is visible in the HTML.
+func TestALockedAccountsSharedDashboardCarriesNoNumbers(t *testing.T) {
+	s := newStack(t)
+	s.lock(t)
+
+	if code := s.send(t, http.MethodGet, "/public/example.com", "", nil).Code; code == http.StatusNotFound {
+		t.Fatal("/public/{domain} is not a route this process answers")
+	}
+
+	query := `{"metrics":["visitors"],"date_range":"7d"}`
+
+	response := s.send(t, http.MethodPost, "/api/stats/example.com/query", query, nil)
+	if response.Code != http.StatusPaymentRequired {
+		t.Fatalf("a locked account's public dashboard was served numbers: %d (%s)",
+			response.Code, response.Body.String())
+	}
+}
+
 // TestALockedAccountIsRefusedTheMCPEndpoint is the same refusal over the other
 // protocol. It is asserted separately because JSON-RPC carries its failure in
 // the body rather than in the status, so a status check alone would pass
@@ -495,6 +570,129 @@ func TestALockedAccountIsStillCollected(t *testing.T) {
 	}
 }
 
+// TestSensitiveDataEndpointsRefuseDirectUnsignedRequests checks the assembled
+// mux rather than only the inner handlers, because a missing wrapper is the
+// bypass this test is meant to catch.
+func TestSensitiveDataEndpointsRefuseDirectUnsignedRequests(t *testing.T) {
+	s := newStack(t)
+
+	cases := []struct {
+		method, path, body string
+	}{
+		{http.MethodPost, "/api/stats/example.com/query", `{"metrics":["visitors"],"date_range":"7d"}`},
+		{http.MethodGet, "/api/sites/example.com/annotations", ""},
+		{http.MethodPost, "/api/sites/example.com/annotations", `{"shown_on":"2026-08-31","body":"x"}`},
+		{http.MethodGet, "/api/sites/example.com/health", ""},
+		{http.MethodPost, "/api/sites/example.com/health/allow-hostname", `{"hostname":"evil.example"}`},
+	}
+
+	for _, tc := range cases {
+		response := s.send(t, tc.method, tc.path, tc.body, map[string]string{"Content-Type": "application/json"})
+		if response.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s answered %d, want 401: %s", tc.method, tc.path, response.Code, response.Body.String())
+		}
+	}
+}
+
+// TestStatsCapabilitiesAreRevalidatedThroughTheAssembledRoute proves that the
+// real stats mount cannot keep reading after a public toggle or link revocation,
+// and that knowing a protected link's bearer slug is insufficient by itself.
+func TestStatsCapabilitiesAreRevalidatedThroughTheAssembledRoute(t *testing.T) {
+	s := newStack(t)
+	s.pay(t)
+
+	control, err := store.Open(filepath.Join(s.dataDir, "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+
+	ctx := context.Background()
+	shares := sharing.NewStore(control)
+	body := `{"metrics":["visitors"],"date_range":"7d"}`
+
+	response := s.send(t, http.MethodPost, "/api/stats/example.com/query", body, map[string]string{
+		"Content-Type":       "application/json",
+		sharing.HeaderPublic: "public",
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("published site stats answered %d: %s", response.Code, response.Body.String())
+	}
+
+	if err := shares.SetPublic(ctx, 1, false); err != nil {
+		t.Fatal(err)
+	}
+	response = s.send(t, http.MethodPost, "/api/stats/example.com/query", body, map[string]string{
+		"Content-Type":       "application/json",
+		sharing.HeaderPublic: "public",
+	})
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("private site direct stats answered %d, want 404: %s", response.Code, response.Body.String())
+	}
+
+	link, err := shares.CreateLink(ctx, 1, "temporary", "", 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = s.send(t, http.MethodPost, "/api/stats/example.com/query", body, map[string]string{
+		"Content-Type":      "application/json",
+		sharing.HeaderShare: link.Slug,
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("live shared stats answered %d: %s", response.Code, response.Body.String())
+	}
+
+	if err := shares.RevokeLink(ctx, 1, link.ID); err != nil {
+		t.Fatal(err)
+	}
+	response = s.send(t, http.MethodPost, "/api/stats/example.com/query", body, map[string]string{
+		"Content-Type":      "application/json",
+		sharing.HeaderShare: link.Slug,
+	})
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("revoked link direct stats answered %d, want 404: %s", response.Code, response.Body.String())
+	}
+
+	protected, err := shares.CreateLink(ctx, 1, "protected", "hunter2", 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = s.send(t, http.MethodPost, "/api/stats/example.com/query", body, map[string]string{
+		"Content-Type":      "application/json",
+		sharing.HeaderShare: protected.Slug,
+	})
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("password-protected direct stats answered %d, want 401: %s", response.Code, response.Body.String())
+	}
+}
+
+// TestBillingRoutesRejectCallerSelectedTeamsWithoutASession is the assembled
+// regression for the commerce mount. Query and form values are attacker input;
+// neither may select an account before the authentication and role guard runs.
+func TestBillingRoutesRejectCallerSelectedTeamsWithoutASession(t *testing.T) {
+	s := newStack(t)
+
+	for _, tc := range []struct {
+		method, path, body string
+	}{
+		{http.MethodGet, "/billing?team=1&team_id=1", ""},
+		{http.MethodGet, "/billing/upgrade?team=1&team_id=1", ""},
+		{http.MethodGet, "/billing/export?team=1&team_id=1", ""},
+		{http.MethodPost, "/billing/checkout", "team=1&team_id=1&plan=monthly"},
+		{http.MethodPost, "/billing/portal", "team=1&team_id=1"},
+	} {
+		response := s.send(t, tc.method, tc.path, tc.body,
+			map[string]string{"Content-Type": "application/x-www-form-urlencoded"})
+		if response.Code != http.StatusFound {
+			t.Errorf("%s %s answered %d, want sign-in redirect: %s", tc.method, tc.path, response.Code, response.Body.String())
+			continue
+		}
+		if location := response.Header().Get("Location"); !strings.HasPrefix(location, "/login") {
+			t.Errorf("%s %s redirected to %q, want login", tc.method, tc.path, location)
+		}
+	}
+}
+
 // TestALockedAccountCanStillReachEverythingItNeedsToPay enumerates what stays
 // open, and is the test that matters most here.
 //
@@ -533,10 +731,10 @@ func TestALockedAccountCanStillReachEverythingItNeedsToPay(t *testing.T) {
 		// sign-in here rather than a page, which is enough for both things this
 		// test asks — that the route exists, and that the payment gate is not
 		// what is standing in front of it.
-		{"the shield rules", http.MethodGet, "/settings/example.com/shields", ""},
-		{"the path cleaning rules", http.MethodGet, "/settings/example.com/paths", ""},
-		{"the import and export screen", http.MethodGet, "/settings/example.com/imports", ""},
-		{"preparing a site export", http.MethodPost, "/settings/example.com/exports/create", ""},
+		{"the shield rules", http.MethodGet, "/settings/sites/example.com/shields", ""},
+		{"the path cleaning rules", http.MethodGet, "/settings/sites/example.com/paths", ""},
+		{"the import and export screen", http.MethodGet, "/settings/sites/example.com/imports", ""},
+		{"preparing a site export", http.MethodPost, "/settings/sites/example.com/exports/create", ""},
 	}
 
 	for _, tc := range cases {

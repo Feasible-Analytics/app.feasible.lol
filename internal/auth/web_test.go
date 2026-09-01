@@ -10,6 +10,9 @@ package auth
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -19,10 +22,12 @@ import (
 	"testing"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/destructive"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 	"github.com/pquerna/otp/totp"
 )
 
@@ -85,15 +90,17 @@ func newTestApp(t *testing.T) *testApp {
 	}
 
 	handler, err := NewHandler(Options{
-		Store:     store,
-		Traffic:   NewTraffic(manager),
-		Mailer:    mailer,
-		Sealer:    newTestSealer(t),
-		Google:    NewGoogle("", "", "http://localhost:19312"),
-		Deleter:   NewDeleter(purger, log),
-		SiteCache: sites.New(db),
-		BaseURL:   "http://localhost:19312",
-		Log:       log,
+		Store:       store,
+		Teams:       teams.NewStore(db),
+		Traffic:     NewTraffic(manager),
+		Mailer:      mailer,
+		Sealer:      newTestSealer(t),
+		Google:      NewGoogle("", "", "http://localhost:19312"),
+		Deleter:     NewDeleter(purger, log),
+		Destructive: &destructive.Service{DB: db, Accounts: manager},
+		SiteCache:   sites.New(db),
+		BaseURL:     "http://localhost:19312",
+		Log:         log,
 	})
 	if err != nil {
 		t.Fatalf("build handler: %v", err)
@@ -282,6 +289,631 @@ func registerAndVerify(t *testing.T, app *testApp) *client {
 	}
 
 	return c
+}
+
+// signedClientFor creates a browser session for a seeded verified user. Tests
+// that compare roles use it so every request crosses the real session guard.
+func signedClientFor(t *testing.T, app *testApp, userID int64) *client {
+	t.Helper()
+
+	c := newClient(t, app)
+	token, _, err := app.store.CreateSession(context.Background(), userID, "Test browser")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	c.http.Jar.SetCookies(&url.URL{Scheme: "http", Host: "test"}, []*http.Cookie{{
+		Name: SessionCookieName, Value: token, Path: "/",
+	}})
+
+	return c
+}
+
+// TestInvitationLinkRedeemsThroughSignupAndVerification drives the bearer link
+// through the public route, recipient-bound signup, verification and final
+// membership grant rather than calling the team store directly.
+func TestInvitationLinkRedeemsThroughSignupAndVerification(t *testing.T) {
+	app := newTestApp(t)
+	registerAndVerify(t, app)
+
+	owner, err := app.store.UserByEmail(context.Background(), "person@example.com")
+	if err != nil {
+		t.Fatalf("read owner: %v", err)
+	}
+	team, err := app.store.TeamForUser(context.Background(), owner.ID)
+	if err != nil {
+		t.Fatalf("read team: %v", err)
+	}
+
+	teamStore := teams.NewStore(app.store.DB())
+	token, _, err := teamStore.Invite(context.Background(), owner.ID, teams.Invitation{
+		TeamID: team.ID, Email: "invited@example.com", Role: teams.RoleEditor,
+	})
+	if err != nil {
+		t.Fatalf("create invitation: %v", err)
+	}
+
+	invited := newClient(t, app)
+	resp := invited.get("/invitations/" + token)
+	closeResponseBody(t, resp)
+	if location := resp.Header.Get("Location"); location != "/login?next=/invitations/accept" {
+		t.Fatalf("new recipient should reach the neutral auth path, got %q", location)
+	}
+
+	resp = invited.post("/register", url.Values{
+		"email":    {"attacker@example.com"},
+		"password": {"a long enough password"},
+		"name":     {"Invited"},
+	})
+	closeResponseBody(t, resp)
+
+	user, err := app.store.UserByEmail(context.Background(), "invited@example.com")
+	if err != nil {
+		t.Fatalf("signup was not bound to recipient: %v", err)
+	}
+	if _, err := app.store.UserByEmail(context.Background(), "attacker@example.com"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("signup accepted a substituted invitation email: %v", err)
+	}
+
+	code := extractCode(t, app.sent.last(t).Text)
+	resp = invited.post("/verify-email", url.Values{"code": {code}})
+	closeResponseBody(t, resp)
+	if location := resp.Header.Get("Location"); location != "/invitations/accept" {
+		t.Fatalf("verification did not resume invitation, got %q", location)
+	}
+
+	resp = invited.get("/invitations/accept")
+	closeResponseBody(t, resp)
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("accept status = %d", resp.StatusCode)
+	}
+
+	role, err := teamStore.RoleOf(context.Background(), team.ID, user.ID)
+	if err != nil || role != teams.RoleEditor {
+		t.Fatalf("accepted role = %q, %v; want editor", role, err)
+	}
+}
+
+// TestInvitationEntryIsNonEnumeratingAndRejectsTerminalTokens checks that valid
+// existing/new recipients receive identical responses while recipient binding,
+// expiry and revocation remain enforced.
+func TestInvitationEntryIsNonEnumeratingAndRejectsTerminalTokens(t *testing.T) {
+	app := newTestApp(t)
+	ownerClient := registerAndVerify(t, app)
+	owner, err := app.store.UserByEmail(context.Background(), "person@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	team, err := app.store.TeamForUser(context.Background(), owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	teamStore := teams.NewStore(app.store.DB())
+
+	locations := []string{}
+	for _, email := range []string{"person@example.com", "new-recipient@example.com"} {
+		token, _, err := teamStore.Invite(context.Background(), owner.ID, teams.Invitation{
+			TeamID: team.ID, Email: email, Role: teams.RoleEditor,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		anonymous := newClient(t, app)
+		resp := anonymous.get("/invitations/" + token)
+		locations = append(locations, resp.Header.Get("Location"))
+		closeResponseBody(t, resp)
+	}
+	if locations[0] != locations[1] || locations[0] != "/login?next=/invitations/accept" {
+		t.Fatalf("existing/new invitation redirects = %q/%q", locations[0], locations[1])
+	}
+
+	wrongToken, _, err := teamStore.Invite(context.Background(), owner.ID, teams.Invitation{
+		TeamID: team.ID, Email: "somebody-else@example.com", Role: teams.RoleViewer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := ownerClient.get("/invitations/" + wrongToken)
+	closeResponseBody(t, resp)
+	resp = ownerClient.get("/invitations/accept")
+	closeResponseBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("wrong recipient acceptance = %d, want 403", resp.StatusCode)
+	}
+
+	expiredToken, expired, err := teamStore.Invite(context.Background(), owner.ID, teams.Invitation{
+		TeamID: team.ID, Email: "expired@example.com", Role: teams.RoleViewer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.store.DB().Exec(`UPDATE team_invitations SET expires_at = 0 WHERE id = ?`, expired.ID); err != nil {
+		t.Fatal(err)
+	}
+	resp = newClient(t, app).get("/invitations/" + expiredToken)
+	closeResponseBody(t, resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expired invitation entry = %d, want 404", resp.StatusCode)
+	}
+
+	revokedToken, revoked, err := teamStore.Invite(context.Background(), owner.ID, teams.Invitation{
+		TeamID: team.ID, Email: "revoked@example.com", Role: teams.RoleViewer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := teamStore.RevokeInvitation(context.Background(), owner.ID, team.ID, revoked.ID); err != nil {
+		t.Fatal(err)
+	}
+	resp = newClient(t, app).get("/invitations/" + revokedToken)
+	closeResponseBody(t, resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("revoked invitation entry = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestDashboardAndSiteRoutesEnforceEveryRole drives the HTTP authorization
+// boundaries for all five team roles and both per-site guest roles. Store-level
+// matrix tests alone cannot catch a route mounted with the wrong permission.
+func TestDashboardAndSiteRoutesEnforceEveryRole(t *testing.T) {
+	app := newTestApp(t)
+	registerAndVerify(t, app)
+	ctx := context.Background()
+
+	owner, err := app.store.UserByEmail(ctx, "person@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	team, err := app.store.TeamForUser(ctx, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err := app.store.CreateSite(ctx, team.ID, "roles.example", "Roles", "UTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	teamStore := teams.NewStore(app.store.DB())
+	stamp := app.store.Now().Unix()
+	clients := map[teams.Role]*client{}
+
+	for index, role := range []teams.Role{
+		teams.RoleAdmin, teams.RoleEditor, teams.RoleBilling, teams.RoleViewer,
+		teams.RoleGuestEditor, teams.RoleGuestViewer,
+	} {
+		result, err := app.store.DB().ExecContext(ctx, `
+			INSERT INTO users (email, name, email_verified_at, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?)
+		`, fmt.Sprintf("role-%d@example.com", index), teams.Label(role), stamp, stamp, stamp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		userID, _ := result.LastInsertId()
+
+		if teams.IsGuestRole(role) {
+			if _, err := app.store.DB().ExecContext(ctx, `
+				INSERT INTO guest_memberships (site_id, user_id, role, created_at) VALUES (?, ?, ?, ?)
+			`, site.ID, userID, role, stamp); err != nil {
+				t.Fatal(err)
+			}
+		} else if _, err := app.store.DB().ExecContext(ctx, `
+			INSERT INTO team_memberships (team_id, user_id, role, created_at) VALUES (?, ?, ?, ?)
+		`, team.ID, userID, role, stamp); err != nil {
+			t.Fatal(err)
+		}
+
+		clients[role] = signedClientFor(t, app, userID)
+	}
+
+	if err := app.SiteCache.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	dashboard := httptest.NewServer(app.GuardDashboard(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})))
+	t.Cleanup(dashboard.Close)
+
+	for role, c := range clients {
+		response, err := c.http.Get(dashboard.URL + "/dashboard/roles.example")
+		if err != nil {
+			t.Fatalf("%s dashboard: %v", role, err)
+		}
+		closeResponseBody(t, response)
+		if response.StatusCode != http.StatusNoContent {
+			t.Errorf("%s dashboard answered %d, want 204", role, response.StatusCode)
+		}
+	}
+
+	settingsPath := "/sites/" + strconv.FormatInt(site.ID, 10) + "/settings"
+	for role, want := range map[teams.Role]int{
+		teams.RoleAdmin:       http.StatusOK,
+		teams.RoleEditor:      http.StatusOK,
+		teams.RoleBilling:     http.StatusNotFound,
+		teams.RoleViewer:      http.StatusNotFound,
+		teams.RoleGuestEditor: http.StatusOK,
+		teams.RoleGuestViewer: http.StatusNotFound,
+	} {
+		response := clients[role].get(settingsPath)
+		closeResponseBody(t, response)
+		if response.StatusCode != want {
+			t.Errorf("%s site settings answered %d, want %d", role, response.StatusCode, want)
+		}
+	}
+
+	for _, role := range []teams.Role{teams.RoleEditor, teams.RoleGuestEditor} {
+		response := clients[role].post("/sites/"+strconv.FormatInt(site.ID, 10)+"/delete",
+			url.Values{"confirm": {site.Domain}})
+		closeResponseBody(t, response)
+		if response.StatusCode != http.StatusNotFound {
+			t.Errorf("%s deleted a site: status %d", role, response.StatusCode)
+		}
+	}
+
+	if _, err := teamStore.AuthoriseSite(ctx, site.ID, owner.ID, teams.PermViewDashboard); err != nil {
+		t.Fatalf("role checks changed the site unexpectedly: %v", err)
+	}
+}
+
+// TestBillingGuardRejectsTeamSpoofingAndMissingCSRF covers the commerce mount's
+// exact security contract: session, explicit team, Billing permission and the
+// application's form token are all required before account-specific handlers.
+func TestBillingGuardRejectsTeamSpoofingAndMissingCSRF(t *testing.T) {
+	app := newTestApp(t)
+	ownerClient := registerAndVerify(t, app)
+	ctx := context.Background()
+	owner, _ := app.store.UserByEmail(ctx, "person@example.com")
+	team, _ := app.store.TeamForUser(ctx, owner.ID)
+
+	protected := app.GuardTeam(teams.PermManageBilling, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		teamID, err := app.AuthoriseTeamRequest(r, teams.PermManageBilling)
+		if err != nil || teamID != team.ID {
+			http.Error(w, "wrong team", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	server := httptest.NewServer(protected)
+	t.Cleanup(server.Close)
+
+	public := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := public.Get(server.URL + "/billing?team=" + strconv.FormatInt(team.ID, 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeResponseBody(t, response)
+	if response.StatusCode != http.StatusFound || !strings.HasPrefix(response.Header.Get("Location"), "/login") {
+		t.Fatalf("unsigned caller-selected billing team answered %d at %q", response.StatusCode, response.Header.Get("Location"))
+	}
+
+	response, err = ownerClient.http.Get(server.URL + "/billing?team_id=" + strconv.FormatInt(team.ID, 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeResponseBody(t, response)
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("owner billing GET answered %d", response.StatusCode)
+	}
+
+	if _, err := app.store.DB().ExecContext(ctx, `UPDATE team_memberships SET role = 'viewer' WHERE team_id = ? AND user_id = ?`, team.ID, owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	response, err = ownerClient.http.Get(server.URL + "/billing?team_id=" + strconv.FormatInt(team.ID, 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeResponseBody(t, response)
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("viewer billing GET answered %d, want 403", response.StatusCode)
+	}
+
+	if _, err := app.store.DB().ExecContext(ctx, `UPDATE team_memberships SET role = 'billing' WHERE team_id = ? AND user_id = ?`, team.ID, owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	response, err = ownerClient.http.PostForm(server.URL+"/billing/checkout", url.Values{
+		"team_id": {strconv.FormatInt(team.ID, 10)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeResponseBody(t, response)
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("billing POST without CSRF answered %d, want 403", response.StatusCode)
+	}
+
+	response, err = ownerClient.http.PostForm(server.URL+"/billing/checkout", url.Values{
+		"team_id":    {strconv.FormatInt(team.ID, 10)},
+		"csrf_token": {ownerClient.csrfToken()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeResponseBody(t, response)
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("billing POST with CSRF answered %d", response.StatusCode)
+	}
+}
+
+// TestSiteAPIGuardRejectsMissingCSRF proves session-authenticated JSON writes
+// cannot be driven cross-site even when the browser carries a valid session.
+func TestSiteAPIGuardRejectsMissingCSRF(t *testing.T) {
+	app := newTestApp(t)
+	c := registerAndVerify(t, app)
+	ctx := context.Background()
+	user, _ := app.store.UserByEmail(ctx, "person@example.com")
+	team, _ := app.store.TeamForUser(ctx, user.ID)
+	site, err := app.store.CreateSite(ctx, team.ID, "api-guard.example", "", "UTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.SiteCache.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	guarded := app.GuardSiteAPI(func(*http.Request) string { return site.Domain },
+		func(*http.Request) teams.Permission { return teams.PermManageSiteSettings },
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	server := httptest.NewServer(guarded)
+	t.Cleanup(server.Close)
+
+	response, err := c.http.Post(server.URL+"/api/sites/api-guard.example/annotations", "application/json", strings.NewReader(`{"shown_on":"2026-08-31","body":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeResponseBody(t, response)
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("site API write without CSRF answered %d, want 403", response.StatusCode)
+	}
+
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/api/sites/api-guard.example/annotations",
+		strings.NewReader(`{"shown_on":"2026-08-31","body":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(csrfHeader, c.csrfToken())
+	response, err = c.http.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeResponseBody(t, response)
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("site API write with CSRF answered %d", response.StatusCode)
+	}
+}
+
+// TestMultiTeamRequestsRequireExplicitContext proves a user with two eligible
+// teams is never silently assigned whichever membership SQLite returns first.
+func TestMultiTeamRequestsRequireExplicitContext(t *testing.T) {
+	app := newTestApp(t)
+	c := registerAndVerify(t, app)
+	ctx := context.Background()
+	owner, _ := app.store.UserByEmail(ctx, "person@example.com")
+	first, _ := app.store.TeamForUser(ctx, owner.ID)
+	stamp := app.store.Now().Unix()
+
+	result, err := app.store.DB().ExecContext(ctx, `INSERT INTO teams (name, created_at, updated_at) VALUES ('Second', ?, ?)`, stamp, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _ := result.LastInsertId()
+	if _, err := app.store.DB().ExecContext(ctx, `
+		INSERT INTO team_memberships (team_id, user_id, role, created_at) VALUES (?, ?, 'owner', ?)
+	`, second, owner.ID, stamp); err != nil {
+		t.Fatal(err)
+	}
+
+	response := c.get("/sites")
+	closeResponseBody(t, response)
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("ambiguous sites request answered %d, want 400", response.StatusCode)
+	}
+
+	response = c.get("/sites?team_id=" + strconv.FormatInt(first.ID, 10))
+	closeResponseBody(t, response)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("explicit first team answered %d", response.StatusCode)
+	}
+	response = c.get("/sites?team_id=" + strconv.FormatInt(second, 10))
+	closeResponseBody(t, response)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("explicit second team answered %d", response.StatusCode)
+	}
+}
+
+// TestSiteContextUsesTheLiveOwnerAfterTransfer proves that authorization and
+// team selection change in the same request as a transfer, without waiting for
+// the routing cache's next refresh interval.
+func TestSiteContextUsesTheLiveOwnerAfterTransfer(t *testing.T) {
+	app := newTestApp(t)
+	c := registerAndVerify(t, app)
+	ctx := context.Background()
+	owner, _ := app.store.UserByEmail(ctx, "person@example.com")
+	first, _ := app.store.TeamForUser(ctx, owner.ID)
+	stamp := app.store.Now().Unix()
+
+	result, err := app.store.DB().ExecContext(ctx,
+		`INSERT INTO teams (name, created_at, updated_at) VALUES ('Destination', ?, ?)`, stamp, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _ := result.LastInsertId()
+	if _, err := app.store.DB().ExecContext(ctx, `
+		INSERT INTO team_memberships (team_id, user_id, role, created_at) VALUES (?, ?, 'owner', ?)
+	`, second, owner.ID, stamp); err != nil {
+		t.Fatal(err)
+	}
+
+	site, err := app.store.CreateSite(ctx, first.ID, "transferred.example", "", "UTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.SiteCache.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Teams.TransferSite(ctx, owner.ID, site.ID, second); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("GET /settings/sites/{domain}/sharing", app.Protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, teamID, err := app.Identify(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		_, _ = fmt.Fprint(w, teamID)
+	})))
+	mux.Handle("GET /settings/members", app.Protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, teamID, err := app.Identify(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		_, _ = fmt.Fprint(w, teamID)
+	})))
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	for _, path := range []string{
+		"/settings/sites/transferred.example/sharing",
+		"/settings/members?site_context=transferred.example",
+	} {
+		response, err := c.http.Get(server.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(response.Body)
+		closeResponseBody(t, response)
+		if response.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != strconv.FormatInt(second, 10) {
+			t.Fatalf("%s answered %d %q, want live team %d", path, response.StatusCode, body, second)
+		}
+	}
+}
+
+// TestSiteTransferRoutesExerciseTheProductionWorkflow checks the responsive
+// form, CSRF boundary, direct browser route, stale API compare-and-swap, and an
+// unauthorized destination through the mounted application handler.
+func TestSiteTransferRoutesExerciseTheProductionWorkflow(t *testing.T) {
+	app := newTestApp(t)
+	c := registerAndVerify(t, app)
+	ctx := context.Background()
+	owner, _ := app.store.UserByEmail(ctx, "person@example.com")
+	source, _ := app.store.TeamForUser(ctx, owner.ID)
+	stamp := app.store.Now().Unix()
+
+	result, err := app.store.DB().ExecContext(ctx,
+		`INSERT INTO teams (name, created_at, updated_at) VALUES ('Destination', ?, ?)`, stamp, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination, _ := result.LastInsertId()
+	if _, err := app.store.DB().ExecContext(ctx, `
+		INSERT INTO team_memberships (team_id, user_id, role, created_at) VALUES (?, ?, 'owner', ?)
+	`, destination, owner.ID, stamp); err != nil {
+		t.Fatal(err)
+	}
+	result, err = app.store.DB().ExecContext(ctx, `
+		INSERT INTO users (email, name, email_verified_at, created_at, updated_at)
+		VALUES ('outside@example.test', 'Outside', ?, ?, ?)
+	`, stamp, stamp, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outsider, _ := result.LastInsertId()
+	result, err = app.store.DB().ExecContext(ctx,
+		`INSERT INTO teams (name, created_at, updated_at) VALUES ('Unavailable', ?, ?)`, stamp, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unavailable, _ := result.LastInsertId()
+	if _, err := app.store.DB().ExecContext(ctx, `
+		INSERT INTO team_memberships (team_id, user_id, role, created_at) VALUES (?, ?, 'owner', ?)
+	`, unavailable, outsider, stamp); err != nil {
+		t.Fatal(err)
+	}
+
+	site, err := app.store.CreateSite(ctx, source.ID, "move.example", "", "UTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := "/sites/" + itoa(site.ID) + "/settings"
+	body := c.body(settingsPath)
+	for _, want := range []string{
+		"Transfer site", `action="/sites/` + itoa(site.ID) + `/transfer"`,
+		`name="csrf_token"`, "grid-cols-1", "sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("transfer form is missing %q", want)
+		}
+	}
+
+	apiPath := "/api/sites/" + itoa(site.ID) + "/transfer"
+	request, err := http.NewRequest(http.MethodPost, c.server.URL+apiPath,
+		strings.NewReader(fmt.Sprintf(`{"from_team_id":%d,"to_team_id":%d,"confirm":"move.example"}`, source.ID, destination)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := c.http.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeResponseBody(t, response)
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("transfer API without CSRF answered %d, want 403", response.StatusCode)
+	}
+
+	response = c.post("/sites/"+itoa(site.ID)+"/transfer", url.Values{
+		"from_team_id": {itoa(source.ID)}, "to_team_id": {itoa(destination)}, "confirm": {site.Domain},
+	})
+	closeResponseBody(t, response)
+	if response.StatusCode != http.StatusFound ||
+		response.Header.Get("Location") != "/sites?team_id="+itoa(destination)+"&transferred=1" {
+		t.Fatalf("browser transfer answered %d location %q", response.StatusCode, response.Header.Get("Location"))
+	}
+
+	// The user owns the destination and is therefore still an eligible source
+	// actor, but the old from_team_id is stale.
+	request, _ = http.NewRequest(http.MethodPost, c.server.URL+apiPath,
+		strings.NewReader(fmt.Sprintf(`{"from_team_id":%d,"to_team_id":%d,"confirm":"move.example"}`, source.ID, destination)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(csrfHeader, c.csrfToken())
+	response, err = c.http.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeResponseBody(t, response)
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("stale transfer API answered %d, want 409", response.StatusCode)
+	}
+
+	request, _ = http.NewRequest(http.MethodPost, c.server.URL+apiPath,
+		strings.NewReader(fmt.Sprintf(`{"from_team_id":%d,"to_team_id":%d,"confirm":"move.example"}`, destination, unavailable)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(csrfHeader, c.csrfToken())
+	response, err = c.http.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeResponseBody(t, response)
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown destination membership answered %d, want 404", response.StatusCode)
+	}
+}
+
+// TestRequestLogPathRedactsInvitationBearer checks that even an invalid token
+// cannot reach application logs through an error or template-rendering path.
+func TestRequestLogPathRedactsInvitationBearer(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/invitations/super-secret-token", nil)
+	if got := requestLogPath(request); got != "/invitations/[redacted]" {
+		t.Fatalf("logged invitation path = %q", got)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/invitations/accept", nil)
+	if got := requestLogPath(request); got != "/invitations/accept" {
+		t.Fatalf("tokenless acceptance path = %q", got)
+	}
 }
 
 // extractCode pulls the digit run out of a rendered verification email.
@@ -1106,8 +1738,8 @@ func TestDeletingAnOwnedTeamDoesNotPromoteAnotherMembership(t *testing.T) {
 		"require_2fa": {"1"},
 	})
 	closeResponseBody(t, renamed)
-	if renamed.StatusCode != http.StatusNotFound {
-		t.Fatalf("non-owner team mutation answered %d, want 404", renamed.StatusCode)
+	if renamed.StatusCode != http.StatusBadRequest {
+		t.Fatalf("team mutation without explicit context answered %d, want 400", renamed.StatusCode)
 	}
 
 	removed := remaining.post("/settings/delete", url.Values{
@@ -1115,8 +1747,8 @@ func TestDeletingAnOwnedTeamDoesNotPromoteAnotherMembership(t *testing.T) {
 		"password": {"a long enough password"},
 	})
 	closeResponseBody(t, removed)
-	if removed.StatusCode != http.StatusNotFound {
-		t.Fatalf("non-owner account deletion answered %d, want 404", removed.StatusCode)
+	if removed.StatusCode != http.StatusBadRequest {
+		t.Fatalf("account deletion without explicit context answered %d, want 400", removed.StatusCode)
 	}
 
 	var name string

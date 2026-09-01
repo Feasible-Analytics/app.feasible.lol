@@ -8,14 +8,38 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { shared } from "../api/client";
 import type { DateRange, Preset } from "../api/types";
 import type { CompareMode } from "./compare";
 import type { FilterLabels, FilterState } from "./filters";
 import { readFilters, readLabels, writeFilters } from "./filters";
 
-/** The path the SPA is mounted under. It is a constant so the router and every
- *  link it builds cannot drift apart from the Go handler's prefix. */
-export const BASE = "/dashboard";
+/** DEFAULT_BASE is where the authenticated dashboard is mounted. */
+export const DEFAULT_BASE = "/dashboard";
+
+/**
+ * base is the path prefix every URL this app builds must keep.
+ *
+ * On the authenticated dashboard it is /dashboard. Behind a shared link it is
+ * /share/<token>, and behind a public dashboard it is /public/<domain>, both
+ * handed to us by the server.
+ *
+ * This function is the whole fix for a real, reproducible bug. The incumbent's
+ * shared dashboard built its URLs against its own dashboard path, so the moment
+ * a reader applied a filter the /share/<token> segment was dropped — the new
+ * URL pointed at a dashboard the reader had no account for, which redirected to
+ * a login, which redirected back. Copying the URL after filtering produced a
+ * link that was simply broken.
+ *
+ * Nothing in this file may hard-code the prefix. Every href goes through here.
+ */
+export function base(): string {
+	return shared()?.base ?? DEFAULT_BASE;
+}
+
+/** BASE is the authenticated prefix, kept for the parse fallback below. Prefer
+ *  base() everywhere a URL is constructed. */
+export const BASE = DEFAULT_BASE;
 
 const PRESETS: Preset[] = [
 	"realtime",
@@ -83,8 +107,13 @@ export function dateRange(state: UrlState): DateRange {
  *  falls back to a default rather than erroring: a hand-edited or truncated link
  *  should still open a working dashboard. */
 export function parse(url: URL): UrlState {
-	const path = url.pathname.startsWith(BASE) ? url.pathname.slice(BASE.length) : url.pathname;
-	const domain = decodeURIComponent(path.replace(/^\/+|\/+$/g, "").split("/")[0] ?? "");
+	const prefix = base();
+	const path = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : url.pathname;
+
+	// Behind a share link the prefix already names the site, so the path after
+	// it is empty and the domain comes from the bootstrap instead.
+	const fromPath = decodeURIComponent(path.replace(/^\/+|\/+$/g, "").split("/")[0] ?? "");
+	const domain = fromPath || (shared()?.domain ?? "");
 
 	const params = url.searchParams;
 	const raw = params.get("period") ?? "";
@@ -167,7 +196,14 @@ export function href(state: UrlState): string {
 
 	const search = params.toString();
 
-	return `${BASE}/${encodeURIComponent(state.domain)}${search ? `?${search}` : ""}`;
+	// Behind a share link the prefix already identifies the site, so appending
+	// the domain would produce /share/<token>/example.com — a path the server
+	// serves but nobody can read, and one that would break the moment the link
+	// were revoked and reissued.
+	const prefix = base();
+	const path = shared() ? prefix : `${prefix}/${encodeURIComponent(state.domain)}`;
+
+	return `${path}${search ? `?${search}` : ""}`;
 }
 
 /**

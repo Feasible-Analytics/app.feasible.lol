@@ -8,8 +8,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { bootstrap } from "../api/client";
-import type { Metric, StatsRequest } from "../api/types";
+import { annotations as fetchAnnotations, bootstrap, shared } from "../api/client";
+import type { Annotation, Metric, StatsRequest } from "../api/types";
 import type { FilterLabels, FilterState } from "../lib/filters";
 import { toApi, toggle } from "../lib/filters";
 import { t } from "../lib/i18n";
@@ -22,7 +22,7 @@ import { dateRange, useUrlState } from "../lib/url";
 import { useStats } from "../lib/useStats";
 import { Drawer } from "./Drawer";
 import { FilterBar } from "./FilterBar";
-import { MainGraph } from "./MainGraph";
+import { MARKER_ATTRIBUTE, MainGraph } from "./MainGraph";
 import { Realtime } from "./Realtime";
 import { ReportCard } from "./ReportCard";
 import type { ShortcutActions } from "./Shortcuts";
@@ -60,6 +60,13 @@ export function App() {
 	const [theme, setTheme] = useTheme();
 	const [sites] = useState(() => bootstrap().sites.slice().sort());
 	const [help, setHelp] = useState(false);
+
+	// The share mode this page was served in. It is read from the bootstrap
+	// rather than from the URL because the embed parameters are documented as
+	// applying to a share URL only, and reading them here would quietly make
+	// them work on the authenticated dashboard too.
+	const [view] = useState(() => shared());
+	const embedded = view?.embed === true;
 
 	// Which metric the graph draws, and how wide its buckets are, are personal
 	// preferences and belong in localStorage — putting them in the URL would
@@ -171,6 +178,57 @@ export function App() {
 		[state, navigate],
 	);
 
+	// The markers ride the graph's own resolved query rather than resolving a
+	// range of their own. That query is the filtered one — built from the same
+	// converted list every other query on this page uses — so the line and its
+	// markers are always describing the same population over the same days. A
+	// second range resolved here would be a second answer to "which days is
+	// this", and the two would eventually differ by one.
+	//
+	// It has to be the resolved range rather than the requested one because a
+	// preset such as 28d is only two dates once the server has worked it out.
+	const resolved = graph.data?.query.date_range;
+	const markerRange = resolved ? `${resolved[0] ?? ""}|${resolved[1] ?? ""}` : "";
+	const [notes, setNotes] = useState<Annotation[]>([]);
+
+	useEffect(() => {
+		// The live view draws no graph, so there are no buckets to hang a
+		// marker on and the previous range's notes must not survive into it.
+		if (!state.domain || !markerRange) {
+			setNotes([]);
+
+			return;
+		}
+
+		const controller = new AbortController();
+		const [from = "", to = ""] = markerRange.split("|");
+
+		let current = true;
+
+		fetchAnnotations(state.domain, from.slice(0, 10), to.slice(0, 10), controller.signal).then((found) => {
+			// An abandoned read answers with an empty list rather than an
+			// error, so without this the one being cancelled can land last and
+			// wipe the markers the new range has already drawn.
+			if (current) setNotes(found);
+		});
+
+		return () => {
+			current = false;
+			controller.abort();
+		};
+	}, [state.domain, markerRange]);
+
+	// An embed paints the colour the parent page asked for, so the frame does
+	// not sit as a white rectangle on a dark page. The value has already been
+	// validated server-side as a hex colour or "transparent"; anything else
+	// arrived as an empty string and is ignored here.
+	useEffect(() => {
+		if (!view?.background) return;
+
+		document.documentElement.style.background = view.background;
+		document.body.style.background = view.background;
+	}, [view]);
+
 	/** openDetails pushes the drawer into the URL. Pushing rather than replacing
 	 *  is what makes Back close it, which is the gesture everybody tries first,
 	 *  and what makes the open drawer a link worth sending. */
@@ -245,6 +303,14 @@ export function App() {
 			setIntervalPref(INTERVALS[(at + 1) % INTERVALS.length] as IntervalPref);
 		},
 
+		onAnnotations: () => {
+			// The markers are focusable, so Tab reaches them on its own once
+			// you are near them. This is the way in from anywhere on the page,
+			// which on a year of daily buckets is the difference between one
+			// keystroke and eighty.
+			document.querySelector<SVGGElement>(`[${MARKER_ATTRIBUTE}]`)?.focus();
+		},
+
 		onSearch: () => {
 			// Whichever search box is on screen: the drawer's while it is open,
 			// and the filter editor's otherwise. There is never more than one.
@@ -293,19 +359,29 @@ export function App() {
 
 	return (
 		<>
-			<TopBar
-				state={state}
-				sites={sites}
-				onNavigate={(next) => navigate(next)}
-				theme={theme}
-				onTheme={setTheme}
-				resolved={totals.data?.query.date_range}
-				filters={filters}
-				onHelp={() => setHelp(true)}
-				pickCustom={pickCustom}
-			/>
+			{/* An embed is a component on somebody else's page, so it has no
+			    site picker, no theme switch and no date controls — they would be
+			    chrome the host page did not ask for. A shared link that is not
+			    embedded keeps them: it is a page in its own right. */}
+			{!embedded && (
+				<TopBar
+					state={state}
+					sites={sites}
+					onNavigate={(next) => navigate(next)}
+					theme={theme}
+					onTheme={setTheme}
+					resolved={totals.data?.query.date_range}
+					filters={filters}
+					onHelp={() => setHelp(true)}
+					pickCustom={pickCustom}
+				/>
+			)}
 
 			<main className="mx-auto max-w-shell px-4 py-5 sm:px-5">
+				{/* The pills stay in an embed even though the editor is chrome:
+				    they are the record of what the numbers exclude, and a
+				    filtered figure with nothing saying so is the one that gets
+				    quoted as the whole picture. */}
 				<div className="mb-3">
 					<FilterBar
 						domain={state.domain}
@@ -322,7 +398,7 @@ export function App() {
 					<section className="overflow-hidden rounded-md border border-line bg-card shadow-sm">
 						<TopStats stats={totals} selected={metric} onSelect={setMetric} comparing={comparing} />
 						<div className="p-4 sm:p-5">
-							<MainGraph stats={graph} metric={metric} comparing={comparing} />
+							<MainGraph stats={graph} metric={metric} comparing={comparing} annotations={notes} />
 						</div>
 					</section>
 				)}

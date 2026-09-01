@@ -83,6 +83,46 @@ var (
 	})
 )
 
+// The recurring scheduler has no labels: every value is process-wide, which
+// keeps the series set fixed no matter how many job kinds or customers exist.
+var (
+	SchedulerRuns = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace, Subsystem: "scheduler", Name: "runs_total",
+		Help: "Recurring scheduler enqueue passes attempted.",
+	})
+
+	SchedulerFailures = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace, Subsystem: "scheduler", Name: "failures_total",
+		Help: "Recurring scheduler enqueue passes that returned an error.",
+	})
+
+	SchedulerCatchUpSlots = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace, Subsystem: "scheduler", Name: "catch_up_slots_total",
+		Help: "Missed durable scheduling buckets examined during bounded catch-up.",
+	})
+
+	SchedulerCatchUpJobs = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace, Subsystem: "scheduler", Name: "catch_up_jobs_total",
+		Help: "Jobs created for missed durable scheduling buckets.",
+	})
+
+	SchedulerCreatedJobs = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace, Subsystem: "scheduler", Name: "created_jobs_total",
+		Help: "Recurring jobs created, including current and catch-up buckets.",
+	})
+
+	SchedulerDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Namespace: namespace, Subsystem: "scheduler", Name: "duration_seconds",
+		Help:    "How long one recurring scheduler enqueue pass took.",
+		Buckets: prometheus.ExponentialBuckets(0.001, 3, 10),
+	})
+
+	SchedulerLastSuccess = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: namespace, Subsystem: "scheduler", Name: "last_success_timestamp_seconds",
+		Help: "Scheduled time of the latest successful enqueue pass, as unix seconds.",
+	})
+)
+
 // The write buffer: accepted events wait here, and a buffer that only grows is
 // a transport that has stopped accepting.
 var (

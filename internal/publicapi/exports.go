@@ -15,6 +15,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
 // The MCP server is a second front end onto this API, not a second
@@ -30,17 +31,25 @@ var ErrForbidden = errors.New("this key cannot see that site")
 
 // SitesFor lists the sites a key may read, in domain order.
 func (a *API) SitesFor(key *apikeys.Key) []sites.Site {
+	if !KeyCan(key, teams.PermViewDashboard) {
+		return nil
+	}
+
 	return a.authorisedSites(key)
 }
 
 // SiteFor resolves one site a key may read.
 func (a *API) SiteFor(key *apikeys.Key, identifier string) (sites.Site, error) {
+	if !KeyCan(key, teams.PermViewDashboard) {
+		return sites.Site{}, ErrForbidden
+	}
+
 	if identifier == "" {
 		return sites.Site{}, errors.New("site_id is required — pass the site's domain")
 	}
 
 	site, ok := a.Sites.Lookup(identifier)
-	if !ok || site.AccountID != key.TeamID {
+	if !ok || site.TeamID != key.TeamID {
 		return sites.Site{}, ErrForbidden
 	}
 
@@ -65,6 +74,10 @@ func Location(site sites.Site) *time.Location {
 // identical to a script creating one, or an agency's automation fires for half
 // their sites.
 func (a *API) NewSite(ctx context.Context, key *apikeys.Key, domain, displayName, timezone string) (*Site, error) {
+	if !KeyCan(key, teams.PermManageSites) {
+		return nil, ErrForbidden
+	}
+
 	clean, err := validateDomain(domain)
 	if err != nil {
 		return nil, err
@@ -108,6 +121,10 @@ func (a *API) publishEvent(ctx context.Context, teamID int64, site *Site) {
 
 // EditSite changes a site on behalf of a key.
 func (a *API) EditSite(ctx context.Context, key *apikeys.Key, site sites.Site, domain, displayName, timezone *string, isPublic *bool) (*Site, error) {
+	if !KeyCan(key, teams.PermManageSiteSettings) {
+		return nil, ErrForbidden
+	}
+
 	if domain != nil {
 		clean, err := validateDomain(*domain)
 		if err != nil {

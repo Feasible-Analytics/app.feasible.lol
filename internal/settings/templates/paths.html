@@ -6,7 +6,8 @@
 	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.paths.rules" }}</h2>
 	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang "auth.paths.rules_help" }}</p>
 
-	<form method="post" action="/settings/{{ .Domain }}/paths/save">
+	<form method="post" action="/settings/sites/{{ .Domain }}/paths/save">
+		<input type="hidden" name="csrf_token" value="{{.CSRF}}">
 		<div class="mt-4 overflow-x-auto">
 			<table class="w-full text-sm">
 				<thead>
@@ -50,7 +51,8 @@
 	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.paths.trailing_slash" }}</h2>
 	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang "auth.paths.trailing_slash_help" }}</p>
 
-	<form method="post" action="/settings/{{ .Domain }}/paths/trailing-slash" class="mt-4">
+	<form method="post" action="/settings/sites/{{ .Domain }}/paths/trailing-slash" class="mt-4">
+		<input type="hidden" name="csrf_token" value="{{.CSRF}}">
 		<button type="submit" class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">
 			{{ if .TrailingSlashOn }}{{ t $.Lang "auth.paths.stop_merging_slashes" }}{{ else }}{{ t $.Lang "auth.paths.merge_slashes" }}{{ end }}
 		</button>

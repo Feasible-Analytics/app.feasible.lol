@@ -160,6 +160,13 @@ type App struct {
 	// rather than only when somebody remembered to set a variable.
 	SecretKey string
 
+	// Worker decides whether this process drains the background queue. It is a
+	// switch rather than always-on because a deployment with several app
+	// replicas wants the scheduled reports and alerts running somewhere
+	// specific, and because a developer poking at the dashboard should not have
+	// a customer's report email going out from their laptop.
+	Worker bool
+
 	SMTP   SMTP
 	Google GoogleOAuth
 	Stripe Stripe
@@ -546,6 +553,7 @@ func LoadFrom(l *Loader) (*Config, error) {
 			MailFrom:       l.String("FEASIBLE_APP_MAIL_FROM", DefaultAppMailFrom),
 			SalesEmail:     l.String("FEASIBLE_APP_SALES_EMAIL", DefaultAppSalesEmail),
 			SecretKey:      strings.TrimSpace(l.String("FEASIBLE_APP_SECRET_KEY", "")),
+			Worker:         l.Bool("FEASIBLE_APP_WORKER", true),
 			SMTP: SMTP{
 				Host:     strings.TrimSpace(l.String("FEASIBLE_SMTP_HOST", "")),
 				Port:     l.Int("FEASIBLE_SMTP_PORT", DefaultSMTPPort),

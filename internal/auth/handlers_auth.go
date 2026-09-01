@@ -19,6 +19,7 @@ import (
 	"unicode"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
 // pendingTwoFactorCookie carries the half-finished sign-in between the password
@@ -26,6 +27,10 @@ import (
 // because it is not a session: it grants nothing, expires in minutes, and a
 // table of abandoned half-logins is a table that only ever needs cleaning.
 const pendingTwoFactorCookie = "feasible_2fa"
+
+// pendingInvitationCookie carries a bearer invitation only until a verified
+// session can redeem it. It is HTTP-only so frontend code cannot expose it.
+const pendingInvitationCookie = "feasible_invitation"
 
 // showRegister renders the sign-up form.
 func (h *Handler) showRegister(w http.ResponseWriter, r *http.Request) {
@@ -37,6 +42,11 @@ func (h *Handler) showRegister(w http.ResponseWriter, r *http.Request) {
 
 	p := h.newPage(r, tr(r, "auth.title.register"), "")
 	p.Data["Next"] = next
+	if invitation, ok := h.pendingInvitation(r); ok {
+		p.Data["Email"] = invitation.Email
+		p.Data["Next"] = "/invitations/accept"
+	}
+
 	h.render(w, r, "register", p, http.StatusOK)
 }
 
@@ -52,6 +62,9 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	email := NormaliseEmail(r.PostFormValue("email"))
+	if invitation, ok := h.pendingInvitation(r); ok {
+		email = invitation.Email
+	}
 	name := strings.TrimSpace(r.PostFormValue("name"))
 	password := r.PostFormValue("password")
 	next := safeNext(r.PostFormValue("next"))
@@ -172,6 +185,9 @@ func (h *Handler) showLogin(w http.ResponseWriter, r *http.Request) {
 
 	p := h.newPage(r, tr(r, "auth.title.login"), "")
 	p.Data["Next"] = safeNext(r.URL.Query().Get("next"))
+	if invitation, ok := h.pendingInvitation(r); ok {
+		p.Data["Email"] = invitation.Email
+	}
 
 	if r.URL.Query().Get("reset") == "1" {
 		p.Flash = i18n.T(p.Lang, "auth.flash.password_reset")
@@ -338,7 +354,7 @@ func (h *Handler) doVerify(w http.ResponseWriter, r *http.Request) {
 	err := h.Store.ConsumeVerification(r.Context(), user.ID, code, "")
 	if err == nil {
 		h.Log.Info("email verified", "user", user.ID)
-		http.Redirect(w, r, afterVerification(next), http.StatusFound)
+		http.Redirect(w, r, h.afterVerification(r, next), http.StatusFound)
 
 		return
 	}
@@ -433,7 +449,119 @@ func (h *Handler) doVerifyLink(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	http.Redirect(w, r, afterVerification(next), http.StatusFound)
+	http.Redirect(w, r, h.afterVerification(r, next), http.StatusFound)
+}
+
+// beginInvitation validates a bearer token, moves it into an HTTP-only cookie,
+// and redirects to a tokenless authentication path. The token is deliberately
+// absent from every application log statement in this flow.
+func (h *Handler) beginInvitation(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(r.PathValue("token"))
+	invitation, err := h.Teams.InvitationByToken(r.Context(), token)
+	if err != nil {
+		h.notFound(w, r)
+
+		return
+	}
+
+	maxAge := int(time.Until(time.Unix(invitation.ExpiresAt, 0)).Seconds())
+	if maxAge < 1 {
+		h.notFound(w, r)
+
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     pendingInvitationCookie,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   strings.HasPrefix(h.BaseURL, "https://"),
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   maxAge,
+	})
+
+	if user := userFrom(r); user != nil {
+		if user.Verified() {
+			http.Redirect(w, r, "/invitations/accept", http.StatusFound)
+		} else {
+			http.Redirect(w, r, "/verify-email", http.StatusFound)
+		}
+
+		return
+	}
+
+	// Every valid signed-out invitation takes the same path. The login screen
+	// links to registration and the pending cookie carries the invitation
+	// through either flow, without revealing whether this address has an account.
+	http.Redirect(w, r, "/login?next=/invitations/accept", http.StatusFound)
+}
+
+// acceptInvitation redeems the cookie against the verified session. The store
+// performs the recipient-email comparison in the same transaction as the
+// membership grant, so neither this route nor another caller can bypass it.
+func (h *Handler) acceptInvitation(w http.ResponseWriter, r *http.Request) {
+	user := userFrom(r)
+	cookie, err := r.Cookie(pendingInvitationCookie)
+	if user == nil || err != nil || cookie.Value == "" {
+		h.notFound(w, r)
+
+		return
+	}
+
+	invitation, err := h.Teams.Accept(r.Context(), cookie.Value, user.ID)
+	if err != nil {
+		if errors.Is(err, teams.ErrWrongRecipient) {
+			http.Error(w, "Sign in with the email address that received this invitation.", http.StatusForbidden)
+
+			return
+		}
+
+		h.clearInvitation(w)
+		h.notFound(w, r)
+
+		return
+	}
+
+	h.clearInvitation(w)
+	h.Log.Info("invitation accepted", "invitation", invitation.ID, "team", invitation.TeamID, "user", user.ID)
+	http.Redirect(w, r, "/sites?team_id="+strconv.FormatInt(invitation.TeamID, 10), http.StatusFound)
+}
+
+// pendingInvitation resolves the cookie without consuming it. Invalid and
+// expired cookies are treated as absent so auth forms remain usable.
+func (h *Handler) pendingInvitation(r *http.Request) (teams.Invitation, bool) {
+	cookie, err := r.Cookie(pendingInvitationCookie)
+	if err != nil || cookie.Value == "" || h.Teams == nil {
+		return teams.Invitation{}, false
+	}
+
+	invitation, err := h.Teams.InvitationByToken(r.Context(), cookie.Value)
+
+	return invitation, err == nil
+}
+
+// afterVerification sends an invited signup into redemption and every other
+// signup to the ordinary welcome screen.
+func (h *Handler) afterVerification(r *http.Request, next string) string {
+	if _, ok := h.pendingInvitation(r); ok {
+		return "/invitations/accept"
+	}
+
+	return afterVerification(next)
+}
+
+// clearInvitation removes the bearer after redemption or terminal failure.
+func (h *Handler) clearInvitation(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     pendingInvitationCookie,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   strings.HasPrefix(h.BaseURL, "https://"),
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
 }
 
 // showForgot renders the password reset request form.
@@ -773,7 +901,7 @@ func afterVerification(next string) string {
 // the log, because a database error rendered into a page is a description of
 // our schema handed to whoever triggered it.
 func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
-	h.Log.Error("request failed", "path", r.URL.Path, "error", err)
+	h.Log.Error("request failed", "path", requestLogPath(r), "error", err)
 
 	p := h.newPage(r, tr(r, "auth.title.error"), "")
 	p.Error = i18n.T(p.Lang, "auth.error.internal")

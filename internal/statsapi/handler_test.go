@@ -20,6 +20,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 )
 
@@ -29,6 +30,12 @@ var endpointNow = time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 // newServer builds the endpoint over a seeded account, mounted exactly as
 // `feasible serve` mounts it so the route pattern is exercised too.
 func newServer(t *testing.T) *httptest.Server {
+	return newServerWithAuthorization(t, AllowAll)
+}
+
+// newServerWithAuthorization builds the endpoint with the requested access
+// decision, including nil to prove the direct handler fails closed.
+func newServerWithAuthorization(t *testing.T, authorize func(*http.Request, sites.Site) (Authorization, error)) *httptest.Server {
 	t.Helper()
 
 	manager := accounts.NewManager(t.TempDir())
@@ -50,6 +57,7 @@ func newServer(t *testing.T) *httptest.Server {
 
 	handler := New(cache, manager, nil)
 	handler.Now = func() time.Time { return endpointNow }
+	handler.Authorize = authorize
 
 	mux := http.NewServeMux()
 	mux.Handle(Pattern, handler)
@@ -58,6 +66,40 @@ func newServer(t *testing.T) *httptest.Server {
 	t.Cleanup(server.Close)
 
 	return server
+}
+
+// TestDirectStatsRequestWithoutAuthorizationIsDenied checks the handler itself,
+// so a future route-table mistake cannot reopen every site's numbers.
+func TestDirectStatsRequestWithoutAuthorizationIsDenied(t *testing.T) {
+	server := newServerWithAuthorization(t, nil)
+
+	status, body := post(t, server, "example.com", `{"metrics":["visitors"],"date_range":"7d"}`)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("direct request status = %d, body = %+v", status, body)
+	}
+}
+
+// TestPinnedFiltersAreAppendedServerSide checks that client filters can narrow
+// a shared segment but cannot omit or replace it.
+func TestPinnedFiltersAreAppendedServerSide(t *testing.T) {
+	pinned := query.Filter{Operator: "is", Dimension: "event:page", Values: []string{"/home"}}
+	server := newServerWithAuthorization(t, func(*http.Request, sites.Site) (Authorization, error) {
+		return Authorization{PinnedFilters: []query.Filter{pinned}, CacheKey: "segment:1"}, nil
+	})
+
+	status, body := post(t, server, "example.com", `{
+		"metrics":["visitors"],"date_range":"7d",
+		"filters":[["is","visit:country",["US"]]]
+	}`)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, body = %+v", status, body)
+	}
+
+	echoed := body["query"].(map[string]any)
+	filters := echoed["filters"].([]any)
+	if len(filters) != 2 {
+		t.Fatalf("effective filters = %+v, want pinned and client filters", filters)
+	}
 }
 
 // seed writes two pageviews and one visit, which is enough for the endpoint's

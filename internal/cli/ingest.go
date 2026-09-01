@@ -74,6 +74,13 @@ func runIngest(e *env, args []string) int {
 		return ExitError
 	}
 
+	// The standalone topology owns the public ingest handler and the final
+	// writer, so it must own the same durable recorder as direct mode. Without
+	// this attachment its customer-facing health tables stay empty even while
+	// the process accepts and stores traffic normally.
+	recorder := health.NewRecorder(manager, service.Sites, e.log)
+	attachIngestRecorder(service, recorder)
+
 	// An ingestor with an empty routing map answers 202 to everything and drops
 	// it all, so it is not ready until the map holds something. This is where
 	// the two process shapes genuinely differ: an app with no sites is a fresh
@@ -94,5 +101,8 @@ func runIngest(e *env, args []string) int {
 	// from here would put a second process on the account's write lock. The rule
 	// refresh loops go through the shared background hook so that shutdown waits
 	// for them rather than cancelling a refresh mid-read.
-	return serveUntilSignalWith(e, server, internal, service, nil, rules.background(e), manager.CloseAll, control.Close)
+	return serveUntilSignalWith(e, server, internal, service, nil,
+		backgroundLoops(rules.background(e), func(ctx context.Context, run func(func())) {
+			run(func() { recorder.Run(ctx) })
+		}), manager.CloseAll, control.Close)
 }

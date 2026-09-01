@@ -18,6 +18,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/statsapi"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
 // stats builds the internal query handler once, and hands the same instance to
@@ -32,6 +33,7 @@ func (a *API) statsHandler() *statsapi.Handler {
 	a.statsOnce.Do(func() {
 		handler := statsapi.New(a.Sites, a.Accounts, a.Log)
 		handler.Now = a.now
+		handler.Authorize = statsapi.AllowAll
 		a.stats = handler
 	})
 
@@ -61,6 +63,9 @@ func (a *API) handleQueryV2(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !a.requireScope(w, key, apikeys.ScopeStatsRead) {
+		return
+	}
+	if !a.requirePermission(w, key, teams.PermViewDashboard) {
 		return
 	}
 
@@ -100,7 +105,7 @@ func (a *API) authorisedSites(key *apikeys.Key) []sites.Site {
 
 	for _, domain := range a.Sites.Domains() {
 		site, ok := a.Sites.Lookup(domain)
-		if ok && site.AccountID == key.TeamID {
+		if ok && site.TeamID == key.TeamID {
 			owned = append(owned, site)
 		}
 	}

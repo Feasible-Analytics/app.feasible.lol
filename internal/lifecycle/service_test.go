@@ -998,7 +998,7 @@ func TestOwnerDeletionIntentPrecedesProviderQuiescence(t *testing.T) {
 		INSERT INTO users (id, email, name, created_at, updated_at)
 		VALUES (2, 'second-owner@example.com', 'Second Owner', ?, ?);
 		INSERT INTO team_memberships (team_id, user_id, role, created_at)
-		VALUES (1, 2, 'owner', ?)
+		VALUES (1, 2, 'admin', ?)
 	`, day0.Unix(), day0.Unix(), day0.Unix()); err != nil {
 		t.Fatal(err)
 	}
@@ -1030,7 +1030,10 @@ func TestOwnerDeletionIntentPrecedesProviderQuiescence(t *testing.T) {
 				t.Fatalf("provider mutation preceded authorization: audits=%d deleted=%d owner=%d",
 					audits, deleted, ownerRequested)
 			}
-			if _, err := h.control.Exec(`DELETE FROM team_memberships WHERE team_id = 1 AND user_id = 1`); err != nil {
+			if _, err := h.control.Exec(`
+				UPDATE team_memberships SET role = 'admin' WHERE team_id = 1 AND user_id = 1;
+				UPDATE team_memberships SET role = 'owner' WHERE team_id = 1 AND user_id = 2;
+			`); err != nil {
 				t.Fatal(err)
 			}
 			quiesced = true

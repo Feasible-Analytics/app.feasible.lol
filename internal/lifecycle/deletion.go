@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 )
@@ -75,6 +77,14 @@ type Purger struct {
 
 	Log *logger.Logger
 }
+
+// ErrTransferredSiteStorage means the requested purge would either destroy a
+// transferred site's historical database or orphan storage owned by the team.
+var ErrTransferredSiteStorage = errors.New("lifecycle: this account participates in a site transfer and cannot be purged")
+
+// ErrAccountOwnerRequired means an immediate deletion lost its owner
+// authorization before the durable control transaction committed.
+var ErrAccountOwnerRequired = errors.New("lifecycle: account deletion requires the current owner")
 
 // Purge destroys everything belonging to one account.
 //
@@ -483,6 +493,19 @@ func (p *Purger) removeControl(ctx context.Context, teamID int64, now time.Time)
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback after commit is harmless
 
+	// Reserve control.db's writer before validating the topology. Transfers
+	// consult the same operation row, so one side wins before either can change
+	// ownership or remove the team.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE destructive_operations SET updated_at = updated_at
+		WHERE resource_type = 'team' AND resource_id = ?
+	`, teamID); err != nil {
+		return fmt.Errorf("lifecycle: fence control deletion %d: %w", teamID, err)
+	}
+	if err := validateTransferTopologyTx(ctx, tx, teamID); err != nil {
+		return err
+	}
+
 	// Remove identities whose only remaining membership is this account. Users
 	// who belong to or are guests of another team survive with that access intact.
 	if _, err := tx.ExecContext(ctx, `
@@ -505,6 +528,12 @@ func (p *Purger) removeControl(ctx context.Context, teamID int64, now time.Time)
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM teams WHERE id = ?`, teamID); err != nil {
 		return fmt.Errorf("lifecycle: delete team %d: %w", teamID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM destructive_operations
+		WHERE resource_type = 'team' AND resource_id = ?
+	`, teamID); err != nil {
+		return fmt.Errorf("lifecycle: clear deletion fence %d: %w", teamID, err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE account_deletions
@@ -715,6 +744,16 @@ func (p *Purger) claim(ctx context.Context, account Account, now time.Time, cust
 	}
 	defer tx.Rollback() //nolint:errcheck // a rollback after a successful commit is a no-op
 
+	// Acquire SQLite's writer reservation before topology validation. A site
+	// transfer and a deletion claim therefore serialize on control.db instead of
+	// both authorizing from stale reads.
+	if _, err := tx.ExecContext(ctx, `UPDATE destructive_operations SET updated_at = updated_at WHERE resource_id = -1`); err != nil {
+		return false, fmt.Errorf("lifecycle: fence deletion %d: %w", account.TeamID, err)
+	}
+	if err := validateTransferTopologyTx(ctx, tx, account.TeamID); err != nil {
+		return false, err
+	}
+
 	// A clock already marked deleted with an unfinished audit row is a crash
 	// recovery, not a new claim. Provider discovery may have happened after an
 	// explicit intent was recorded, so merge those customer IDs before resuming.
@@ -731,6 +770,9 @@ func (p *Purger) claim(ctx context.Context, account Account, now time.Time, cust
 			return false, nil
 		}
 		if err := p.recordPaymentCustomers(ctx, tx, account, customerIDs, now); err != nil {
+			return false, err
+		}
+		if err := claimTeamOperationTx(ctx, tx, account.TeamID, force, now); err != nil {
 			return false, err
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -779,7 +821,24 @@ func (p *Purger) claim(ctx context.Context, account Account, now time.Time, cust
 		return false, fmt.Errorf("lifecycle: claim deletion %d: affected rows: %w", account.TeamID, err)
 	}
 	if rows != 1 {
+		if force {
+			var owner int
+			if err := tx.QueryRowContext(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM team_memberships
+					WHERE team_id = ? AND user_id = ? AND role = 'owner'
+				)
+			`, account.TeamID, userID).Scan(&owner); err != nil {
+				return false, fmt.Errorf("lifecycle: revalidate deletion owner %d: %w", account.TeamID, err)
+			}
+			if owner == 0 {
+				return false, ErrAccountOwnerRequired
+			}
+		}
 		return false, nil
+	}
+	if err := claimTeamOperationTx(ctx, tx, account.TeamID, force, now); err != nil {
+		return false, err
 	}
 
 	ownerRequested := 0
@@ -805,6 +864,54 @@ func (p *Purger) claim(ctx context.Context, account Account, now time.Time, cust
 	}
 
 	return true, nil
+}
+
+// claimTeamOperationTx publishes the durable team fence in the same transaction
+// that makes deletion authoritative. Transfers see this row before they can
+// change ownership, including after a process crash and during provider work.
+func claimTeamOperationTx(ctx context.Context, tx *sql.Tx, teamID int64, ownerRequested bool, now time.Time) error {
+	kind := "account_purge"
+	if ownerRequested {
+		kind = "account_delete"
+	}
+	stamp := now.UTC().Unix()
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO destructive_operations
+			(resource_type, resource_id, kind, owner_team_id, storage_account_id,
+			 state, lease_token, lease_until, created_at, updated_at)
+		VALUES ('team', ?, ?, ?, ?, 'claimed', ?, ?, ?, ?)
+		ON CONFLICT (resource_type, resource_id) DO UPDATE SET
+			kind = excluded.kind,
+			owner_team_id = excluded.owner_team_id,
+			storage_account_id = excluded.storage_account_id,
+			state = 'claimed',
+			lease_token = excluded.lease_token,
+			lease_until = excluded.lease_until,
+			updated_at = excluded.updated_at
+	`, teamID, kind, teamID, teamID, uuid.NewString(), now.Add(5*time.Minute).Unix(), stamp, stamp)
+	if err != nil {
+		return fmt.Errorf("lifecycle: claim destructive operation %d: %w", teamID, err)
+	}
+
+	return nil
+}
+
+// validateTransferTopologyTx refuses either side of a cross-account site
+// transfer while the caller holds control.db's writer reservation.
+func validateTransferTopologyTx(ctx context.Context, tx *sql.Tx, teamID int64) error {
+	var transferred int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM sites
+		WHERE account_id <> COALESCE(owner_team_id, account_id)
+		  AND (account_id = ? OR owner_team_id = ?)
+	`, teamID, teamID).Scan(&transferred); err != nil {
+		return fmt.Errorf("lifecycle: check transferred site storage: %w", err)
+	}
+	if transferred > 0 {
+		return ErrTransferredSiteStorage
+	}
+
+	return nil
 }
 
 // recordPaymentCustomers merges every provider identity discovered before or

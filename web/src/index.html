@@ -30,17 +30,31 @@
 			then flips to slate a frame later, and that flash is the single most
 			noticeable defect a dark-mode dashboard can ship with.
 		-->
+		<!--
+			The storage read is wrapped on its own, not together with the
+			matchMedia call below it. In a third-party frame with storage
+			blocked — Brave by default, and any browser with third-party cookies
+			off — touching localStorage *throws* rather than returning null, and
+			it throws on the property access itself. A single try around both
+			would swallow the system-theme fallback with it and leave an embed
+			painting the wrong theme, which is the mild version of the bug that
+			blanked an incumbent's entire embedded dashboard.
+		-->
 		<script>
 			(function () {
+				var saved = null;
+
 				try {
-					var saved = localStorage.getItem("feasible.theme");
-					var dark =
-						saved === "dark" ||
-						(saved !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
-					if (dark) document.documentElement.classList.add("dark");
+					saved = localStorage.getItem("feasible.theme");
 				} catch (e) {
-					/* A browser with storage disabled still gets the system theme. */
+					/* Storage is unavailable; fall through to the system theme. */
 				}
+
+				var dark =
+					saved === "dark" ||
+					(saved !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+
+				if (dark) document.documentElement.classList.add("dark");
 			})();
 		</script>
 

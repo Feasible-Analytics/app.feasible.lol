@@ -6,8 +6,17 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-// Package settings is the site configuration surface: the shield rules, the
-// path cleaning rules and their preview, and the import and export screens.
+// Package settings owns the whole /settings/ surface: the shield rules, the
+// path cleaning rules and their preview, the import and export screens, the
+// team screen, sharing, scheduled reports and the ingestion health panel.
+//
+// It is one package because it is one surface. The screens are served by two
+// handlers, because two of them ask genuinely different permission questions —
+// "does this person own this site" and "what may this person do in this team" —
+// but they share one layout, one navigation, one flash convention and one route
+// table. Two packages under one URL segment is how a tab bar ends up leading
+// somewhere its own shell cannot render, and how a pattern in one of them
+// silently takes a screen in the other off the air. See routes.go.
 //
 // It is server-rendered Go templates rather than React. The dashboard is the
 // only part of this product that needs a client-side application; a settings
@@ -33,6 +42,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dataio"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/google"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
@@ -40,10 +50,22 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/pathclean"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/shields"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
-// PathPrefix is where these pages are mounted.
+// PathPrefix is the segment the whole settings surface hangs off.
 const PathPrefix = "/settings/"
+
+// SitePrefix is where every per-site screen lives, on both handlers.
+//
+// The literal `sites` segment is the whole reason a site screen can never
+// collide with an account screen. A pattern of /settings/{domain}/shields
+// claims the entire second segment, so `members`, `team` and `security` are all
+// legal domains as far as the mux is concerned — and /settings/members/shields
+// then matches two patterns with neither more specific than the other, which is
+// a start-up panic rather than a route. Reserving one literal segment for sites
+// removes the overlap instead of arguing about precedence within it.
+const SitePrefix = PathPrefix + "sites/"
 
 // actions are the routes one site's screens answer, relative to its domain.
 var actions = []string{
@@ -63,10 +85,11 @@ var actions = []string{
 	"google/disconnect",
 }
 
-// Patterns lists the routes these screens own, as ServeMux patterns.
+// Patterns lists the routes the site configuration screens own, as ServeMux
+// patterns. Routes() in routes.go joins them to the rest of the surface.
 //
-// They are enumerated rather than mounted as one "/settings/" prefix because
-// the account screens already own /settings/sessions, /settings/security and
+// They are enumerated rather than mounted as one prefix because the account
+// screens already own /settings/sessions, /settings/security and
 // /settings/team. A prefix registration would swallow all three and Go's mux
 // would report no conflict at all — the account screens would simply stop
 // answering, with nothing anywhere to say why.
@@ -78,7 +101,7 @@ func Patterns() []string {
 	patterns = append(patterns, google.CallbackPath)
 
 	for _, action := range actions {
-		patterns = append(patterns, PathPrefix+"{domain}/"+action)
+		patterns = append(patterns, SitePrefix+"{domain}/"+action)
 	}
 
 	return patterns
@@ -138,6 +161,33 @@ func funcs() template.FuncMap {
 		"n": func(locale, id string, count int, args ...any) string {
 			return i18n.N(locale, id, count, args...)
 		},
+
+		// The shared layout sets dir on the html element, so every screen on
+		// this surface needs this whether or not its own body does.
+		"rtl": func(locale string) bool {
+			for _, l := range i18n.Locales() {
+				if l.Tag == locale {
+					return l.RTL
+				}
+			}
+
+			return false
+		},
+
+		// The permission model is read from the templates rather than
+		// precomputed into the page, which is what keeps it one reviewable
+		// table in the teams package instead of half a table and a handful of
+		// booleans assembled per screen.
+		"label": func(role teams.Role) string { return teams.Label(role) },
+		"can": func(role teams.Role, permission string) bool {
+			return teams.Can(role, teams.Permission(permission))
+		},
+
+		// A drop reason is translated at render rather than when the panel is
+		// built, because the same panel is also the JSON the API returns, and a
+		// payload whose wording moved with the reader's language is a payload
+		// nobody could match on.
+		"explain": func(locale, reason string) string { return health.ExplainIn(locale, reason) },
 	}
 }
 
@@ -159,6 +209,12 @@ type Handler struct {
 	Accounts *accounts.Manager
 	Jobs     *jobs.Client
 	Log      *logger.Logger
+
+	// CSRF mints the signed-in application's form token and CheckCSRF verifies
+	// it. They are callbacks because this package owns settings, not sessions or
+	// the application's sealing key.
+	CSRF      func(http.ResponseWriter, *http.Request) string
+	CheckCSRF func(http.ResponseWriter, *http.Request) bool
 
 	// DataDir is where uploads and prepared exports are written.
 	DataDir string
@@ -234,6 +290,7 @@ type page struct {
 	Domain  string
 	Message string
 	Error   string
+	CSRF    string
 
 	// Lang is the language this response is written in. It lives on the page
 	// rather than being resolved inside a template function, because a template
@@ -295,19 +352,28 @@ type exportView struct {
 // things first — the domain, the site and the account database — and doing that
 // resolution once is what keeps a new screen to one case.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, PathPrefix)
+	path := strings.TrimPrefix(r.URL.Path, SitePrefix)
 
 	// The OAuth callback is the one route that does not name a site in its
 	// path: Google will only redirect to one registered URI, so the site
 	// travels in the state parameter instead.
-	if path == strings.TrimPrefix(google.CallbackPath, PathPrefix) {
+	if r.URL.Path == google.CallbackPath {
 		h.googleCallback(w, r)
 		return
 	}
 
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+		if h.CheckCSRF == nil || !h.CheckCSRF(w, r) {
+			if h.CheckCSRF == nil {
+				http.Error(w, "form token verification is unavailable", http.StatusForbidden)
+			}
+			return
+		}
+	}
+
 	domain, action, _ := strings.Cut(path, "/")
 	if domain == "" {
-		http.Error(w, "the URL must name a site, as /settings/<domain>/shields", http.StatusBadRequest)
+		http.Error(w, "the URL must name a site, as /settings/sites/<domain>/shields", http.StatusBadRequest)
 		return
 	}
 
@@ -355,7 +421,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // render writes one screen.
-func (h *Handler) render(w http.ResponseWriter, name string, data page) {
+func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, data page) {
 	template, ok := pages[name]
 	if !ok {
 		http.Error(w, "unknown settings page", http.StatusNotFound)
@@ -363,6 +429,9 @@ func (h *Handler) render(w http.ResponseWriter, name string, data page) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if h.CSRF != nil {
+		data.CSRF = h.CSRF(w, r)
+	}
 
 	if err := template.ExecuteTemplate(w, "layout", data); err != nil && h.Log != nil {
 		h.Log.Error("settings page could not be rendered", "page", name, "error", err)
@@ -381,7 +450,7 @@ func (h *Handler) redirect(w http.ResponseWriter, r *http.Request, domain, tab, 
 		values = "?err=" + template.URLQueryEscaper(failure)
 	}
 
-	http.Redirect(w, r, PathPrefix+domain+"/"+tab+values, http.StatusSeeOther)
+	http.Redirect(w, r, SitePrefix+domain+"/"+tab+values, http.StatusSeeOther)
 }
 
 // flash reads the message a redirect carried.
@@ -425,7 +494,7 @@ func (h *Handler) shields(w http.ResponseWriter, r *http.Request, site sites.Sit
 		RejectedHostnames: rejected,
 	}
 
-	h.render(w, "shields", data)
+	h.render(w, r, "shields", data)
 }
 
 // allowableRejections removes aggregate and already-allowed hostnames from the
@@ -611,7 +680,7 @@ func (h *Handler) paths(w http.ResponseWriter, r *http.Request, site sites.Site,
 
 	message, failure := flash(r)
 
-	h.render(w, "paths", page{
+	h.render(w, r, "paths", page{
 		TitleID: "auth.title.paths", Tab: "paths", Domain: site.Domain,
 		Lang:    i18n.Negotiate(r),
 		Message: message, Error: failure,
@@ -833,7 +902,7 @@ func (h *Handler) imports(w http.ResponseWriter, r *http.Request, site sites.Sit
 		data.SearchConsole, _ = google.GetConnection(r.Context(), account.Reader(), site.ID, google.ProviderSearchConsole)
 	}
 
-	h.render(w, "imports", data)
+	h.render(w, r, "imports", data)
 }
 
 // exportViews renders the export list. The download URL is only ever built from
@@ -856,7 +925,7 @@ func (h *Handler) exportViews(domain string, exports []dataio.Export) []exportVi
 		}
 
 		if token, ok := h.downloadToken(export.ID); ok && export.Status == dataio.StatusCompleted && !view.Expired {
-			view.URL = PathPrefix + domain + "/exports/download/" + token
+			view.URL = SitePrefix + domain + "/exports/download/" + token
 		}
 
 		views = append(views, view)

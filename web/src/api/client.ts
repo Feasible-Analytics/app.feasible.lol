@@ -7,7 +7,7 @@
 //
 
 import { t } from "../lib/i18n";
-import type { Bootstrap, StatsRequest, StatsResponse } from "./types";
+import type { Annotation, Bootstrap, Shared, StatsRequest, StatsResponse } from "./types";
 
 /** QueryError carries the server's own sentence. The endpoint answers a caller
  *  mistake with a message written for the person holding the failing request,
@@ -42,9 +42,54 @@ export function bootstrap(): Bootstrap {
 			sites: Array.isArray(parsed.sites) ? parsed.sites : [],
 			locale: typeof parsed.locale === "string" ? parsed.locale : "",
 			messages: messages && typeof messages === "object" && !Array.isArray(messages) ? messages : {},
+			shared: parsed.shared,
 		};
 	} catch {
 		return { sites: [], locale: "", messages: {} };
+	}
+}
+
+/** The share mode this page was served in, read once at module load.
+ *
+ *  It is read once rather than per call because it cannot change without a
+ *  navigation, and because every consumer of it — the router's base path, the
+ *  preference store's kill switch, the chrome — has to agree. Two reads that
+ *  disagreed would mean an embed that hides its top bar and then tries to write
+ *  to localStorage anyway. */
+let sharedMode: Shared | undefined;
+
+/** shared returns the share mode, or undefined on the authenticated dashboard. */
+export function shared(): Shared | undefined {
+	if (sharedMode === undefined) sharedMode = bootstrap().shared;
+
+	return sharedMode;
+}
+
+/** annotations reads the dated notes for a site over a range.
+ *
+ *  A failure is an empty list rather than an error. Markers are an annotation
+ *  on a graph: losing them costs context, and letting that cost the graph
+ *  itself would be a strange trade. */
+export async function annotations(
+	domain: string,
+	from: string,
+	to: string,
+	signal?: AbortSignal,
+): Promise<Annotation[]> {
+	try {
+		const params = new URLSearchParams({ from, to });
+		const response = await fetch(
+			`/api/sites/${encodeURIComponent(domain)}/annotations?${params.toString()}`,
+			{ signal },
+		);
+
+		if (!response.ok) return [];
+
+		const body = (await response.json()) as { annotations?: Annotation[] };
+
+		return Array.isArray(body.annotations) ? body.annotations : [];
+	} catch {
+		return [];
 	}
 }
 
@@ -82,7 +127,7 @@ export async function query(
 ): Promise<StatsResponse> {
 	const response = await fetch(`/api/stats/${encodeURIComponent(domain)}/query`, {
 		method: "POST",
-		headers: { "Content-Type": "application/json" },
+		headers: { "Content-Type": "application/json", ...capabilityHeaders() },
 		body: JSON.stringify(strip(body)),
 		signal,
 	});
@@ -105,4 +150,17 @@ export async function query(
 	}
 
 	return (await response.json()) as StatsResponse;
+}
+
+/** capabilityHeaders carries the public/shared capability on every stats
+ * request. Navigation only changes the URL beneath the stable share base, so
+ * this value remains attached while filters, periods and drawers change. */
+function capabilityHeaders(): Record<string, string> {
+	const view = shared();
+	if (!view) return {};
+
+	if (view.mode === "share") return { "X-Feasible-Share": view.capability };
+	if (view.mode === "public") return { "X-Feasible-Public": view.capability };
+
+	return {};
 }

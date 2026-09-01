@@ -128,8 +128,10 @@ func (h *Handler) newPage(r *http.Request, title, nav string) *page {
 	}
 
 	if p.User != nil {
-		if team, err := h.Store.TeamForUser(r.Context(), p.User.ID); err == nil {
-			p.Team = team
+		if _, teamID, err := h.Identify(r); err == nil {
+			if team, err := h.Store.TeamByID(r.Context(), teamID); err == nil {
+				p.Team = team
+			}
 		}
 	}
 
@@ -152,7 +154,7 @@ func tr(r *http.Request, id string, args ...any) string {
 func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, p *page, status int) {
 	tpl, ok := h.views.pages[name]
 	if !ok {
-		h.Log.Error("no such template", "template", name, "path", r.URL.Path)
+		h.Log.Error("no such template", "template", name, "path", requestLogPath(r))
 		http.Error(w, "internal error", http.StatusInternalServerError)
 
 		return
@@ -161,7 +163,7 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, p 
 	var buf bytes.Buffer
 
 	if err := tpl.ExecuteTemplate(&buf, "layout.html", p); err != nil {
-		h.Log.Error("template failed", "template", name, "path", r.URL.Path, "error", err)
+		h.Log.Error("template failed", "template", name, "path", requestLogPath(r), "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 
 		return

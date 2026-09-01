@@ -55,6 +55,45 @@ func TestInitializeAnnouncesEverythingItHas(t *testing.T) {
 	}
 }
 
+// TestEveryToolAndResourceHasAnEnforcedScope makes the centralized policy
+// table complete and exercises each tool category before its handler runs.
+func TestEveryToolAndResourceHasAnEnforcedScope(t *testing.T) {
+	f := newFixture(t)
+	if len(toolScopes) != len(f.Server.tools) {
+		t.Fatalf("scope policy has %d tools, server registered %d", len(toolScopes), len(f.Server.tools))
+	}
+
+	for name, required := range toolScopes {
+		t.Run(name, func(t *testing.T) {
+			wrong := apikeys.ScopeStatsRead
+			if required == wrong {
+				wrong = apikeys.ScopeSitesRead
+			}
+			key := *f.Key
+			key.Scopes = []string{wrong}
+			body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + name + `","arguments":{}}}`
+			response := f.Server.Handle(context.Background(), &key, []byte(body))
+			answer, ok := response.Result.(*toolResult)
+			if !ok || !answer.IsError || len(answer.Content) == 0 || !strings.Contains(answer.Content[0].Text, required) {
+				t.Fatalf("tool scope refusal = %+v, want %s", response, required)
+			}
+		})
+	}
+
+	key := *f.Key
+	key.Scopes = []string{apikeys.ScopeStatsRead}
+	for method := range resourceScopes {
+		request := `{"jsonrpc":"2.0","id":1,"method":"` + method + `"}`
+		if method == "resources/read" {
+			request = `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"feasible://site/example.com/schema"}}`
+		}
+		response := f.Server.Handle(context.Background(), &key, []byte(request))
+		if response.Error == nil || !strings.Contains(response.Error.Message, apikeys.ScopeSitesRead) {
+			t.Fatalf("resource method %s scope refusal = %+v", method, response)
+		}
+	}
+}
+
 // TestUnknownMethodIsAProtocolError checks that a mistyped method is refused
 // with the specification's own code rather than silently ignored.
 func TestUnknownMethodIsAProtocolError(t *testing.T) {
@@ -674,6 +713,7 @@ func newFixture(t *testing.T) *fixture {
 		{`INSERT INTO teams (id, name, created_at, updated_at) VALUES (?, 'Test', ?, ?)`, []any{teamID, stamp, stamp}},
 		{`INSERT INTO teams (id, name, created_at, updated_at) VALUES (8, 'Other', ?, ?)`, []any{stamp, stamp}},
 		{`INSERT INTO users (id, email, created_at, updated_at) VALUES (1, 'a@example.test', ?, ?)`, []any{stamp, stamp}},
+		{`INSERT INTO team_memberships (team_id, user_id, role, created_at) VALUES (?, 1, 'owner', ?)`, []any{teamID, stamp}},
 		{`INSERT INTO sites (id, account_id, domain, display_name, timezone, created_at, updated_at)
 		  VALUES (?, ?, 'example.com', 'Example', 'UTC', ?, ?)`, []any{siteID, teamID, stamp, stamp}},
 		{`INSERT INTO sites (id, account_id, domain, timezone, created_at, updated_at)

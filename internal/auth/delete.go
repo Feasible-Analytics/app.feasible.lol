@@ -13,8 +13,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 )
+
+// ErrTransferredSiteStorage prevents account deletion from destroying or
+// orphaning a transferred site's immutable analytics database.
+var ErrTransferredSiteStorage = lifecycle.ErrTransferredSiteStorage
 
 // PermanentAccountDeleter is the durable lifecycle purger used by both the
 // scheduled day-90 path and an owner's immediate settings request.

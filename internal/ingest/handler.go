@@ -51,6 +51,35 @@ type Handler struct {
 	// Durable makes a successful response wait for the account transaction. A
 	// 202 is a durability acknowledgement, not merely a parsing acknowledgement.
 	Durable bool
+
+	// Observer, when set, is handed the derived view of every request. It is
+	// what turns the counters into a health panel that can name the hostname,
+	// the header and the tracker version behind a number. A nil Observer costs
+	// one comparison per event.
+	Observer Observer
+}
+
+// observe hands one request to the health observer, if there is one. It is a
+// method rather than an inline call because every exit path in ServeHTTP has to
+// report — an observation only emitted on the happy path would produce a health
+// panel that is blind to exactly the requests somebody opens it to explain.
+func (h *Handler) observe(payload *Payload, result Result, userAgent string, accepted, pending bool) {
+	if h.Observer == nil {
+		return
+	}
+
+	h.Observer.Observe(Observation{
+		SiteID:         result.Debug.SiteID,
+		AccountID:      result.Debug.AccountID,
+		ReceivedAt:     result.Debug.Timestamp,
+		Debug:          result.Debug,
+		DropReason:     result.Debug.DropReason,
+		Accepted:       accepted,
+		Pending:        pending,
+		UserAgent:      userAgent,
+		TrackerVersion: payload.TrackerVersion(),
+		Truncation:     result.Truncation,
+	})
 }
 
 // ServeHTTP accepts one event. Policy drops answer 202 because retrying cannot
@@ -157,6 +186,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			reason = ReasonInternalError
 		}
 
+		result.Debug.DropReason = reason
+		h.observe(payload, result, r.Header.Get("User-Agent"), false, false)
+
 		h.drop(w, result.Debug.SiteID, payload.Domain, reason)
 		return
 	}
@@ -184,6 +216,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.Counters.Dropped(event.SiteID, event.BotReason)
 	}
 	h.Counters.Accepted(event.SiteID)
+	h.observe(payload, result, r.Header.Get("User-Agent"), false, true)
 
 	if h.Log != nil {
 		h.Log.EventReceived(payload.Domain, itoa(event.SiteID), itoa(int64(event.Shard)), event.BotReason)

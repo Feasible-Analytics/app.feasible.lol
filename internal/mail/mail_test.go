@@ -121,6 +121,30 @@ func TestEveryMessageRenders(t *testing.T) {
 	}
 }
 
+// TestInvitationCarriesRecipientRoleExpiryAndBearerLink checks the message the
+// team screen relies on instead of exposing an invitation secret in the UI.
+func TestInvitationCarriesRecipientRoleExpiryAndBearerLink(t *testing.T) {
+	mailer, sender := newTestMailer(t)
+	expires := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+
+	err := mailer.SendInvitation(context.Background(), "new@example.com", "Acme", "Sam",
+		"Editor", "https://example.com/invitations/bearer-secret", expires)
+	if err != nil {
+		t.Fatalf("send invitation: %v", err)
+	}
+
+	if len(sender.messages) != 1 {
+		t.Fatalf("want one message, got %d", len(sender.messages))
+	}
+
+	message := sender.messages[0]
+	for _, fragment := range []string{"Acme", "Sam", "Editor", "bearer-secret", expires.Format(DateFormat)} {
+		if !strings.Contains(message.HTML, fragment) || !strings.Contains(message.Text, fragment) {
+			t.Errorf("invitation is missing %q", fragment)
+		}
+	}
+}
+
 // TestLogTransportNamesTheRecipientInTheFilename checks the transport that
 // makes local development and a first-run self-hoster work with no SMTP service
 // at all — a verification email that cannot be sent would make the first screen

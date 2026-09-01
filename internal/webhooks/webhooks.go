@@ -281,12 +281,30 @@ func (s *Store) Create(ctx context.Context, teamID int64, siteID *int64, rawURL,
 
 	now := s.now().Unix()
 
-	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO webhook_endpoints (team_id, site_id, url, description, event_types, secret, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-		teamID, siteID, strings.TrimSpace(rawURL), description, string(encoded), secret, now, now)
+	var result sql.Result
+	if siteID == nil {
+		result, err = s.db.ExecContext(ctx, `
+			INSERT INTO webhook_endpoints (team_id, site_id, url, description, event_types, secret, enabled, created_at, updated_at)
+			VALUES (?, NULL, ?, ?, ?, ?, 1, ?, ?)`,
+			teamID, strings.TrimSpace(rawURL), description, string(encoded), secret, now, now)
+	} else {
+		// The ownership predicate and insert are one SQLite statement. A transfer
+		// therefore either deletes this endpoint or commits first and prevents it.
+		result, err = s.db.ExecContext(ctx, `
+			INSERT INTO webhook_endpoints (team_id, site_id, url, description, event_types, secret, enabled, created_at, updated_at)
+			SELECT ?, id, ?, ?, ?, ?, 1, ?, ? FROM sites
+			WHERE id = ? AND COALESCE(owner_team_id, account_id) = ?`,
+			teamID, strings.TrimSpace(rawURL), description, string(encoded), secret, now, now, *siteID, teamID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("webhooks: create: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("webhooks: create: %w", err)
+	}
+	if affected != 1 {
+		return nil, ErrNotFound
 	}
 
 	id, err := result.LastInsertId()

@@ -55,6 +55,11 @@ type Handler struct {
 
 	Log *logger.Logger
 
+	// Authorize proves the caller may read the resolved site and may return
+	// filters that must be ANDed into every query, as a pinned shared segment.
+	// Nil denies: a newly-mounted handler cannot accidentally become public.
+	Authorize func(*http.Request, sites.Site) (Authorization, error)
+
 	// Now is the clock every date range is resolved against, injectable so a
 	// test can ask what "today" returns without waiting for tomorrow.
 	Now func() time.Time
@@ -63,6 +68,35 @@ type Handler struct {
 	// period is never held: it cannot change, and it is already answered from
 	// the summary tables in single-digit milliseconds.
 	live *cache
+}
+
+// Authorization is what the access layer contributes to a query.
+type Authorization struct {
+	PinnedFilters []query.Filter
+	CacheKey      string
+}
+
+// AuthorizationError is a refusal the caller can act on. Internal failures
+// remain ordinary errors and are logged without exposing database detail.
+type AuthorizationError struct {
+	Status  int
+	Message string
+}
+
+// Error implements error.
+func (e *AuthorizationError) Error() string {
+	return e.Message
+}
+
+// Refuse builds a typed authorization failure for a serving-layer callback.
+func Refuse(status int, message string) error {
+	return &AuthorizationError{Status: status, Message: message}
+}
+
+// AllowAll is for a caller that has already authenticated and authorized the
+// site before delegating, such as the public API's team-scoped key handler.
+func AllowAll(*http.Request, sites.Site) (Authorization, error) {
+	return Authorization{}, nil
 }
 
 // New builds a handler over the site cache and the account manager.
@@ -109,12 +143,9 @@ type errorBody struct {
 
 // ServeHTTP answers one query.
 //
-// This handler carries no authentication of its own. The public API mounts this
-// exact instance behind an API key as POST /api/v2/query, resolving the site and
-// checking the key's team before delegating — which is why the public endpoint
-// can never disagree with the dashboard about a number. On its own path it is
-// still open, so anybody who can reach the port can read any site's stats: the
-// dashboard's session check belongs in front of it.
+// This handler fails closed unless Authorize proves a session, API key, public
+// site or shared-link capability. The public API delegates after its own key
+// check; the direct dashboard path supplies a session/share callback.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		h.fail(w, http.StatusMethodNotAllowed, "POST a query to this endpoint")
@@ -133,6 +164,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// in front of it yet, and once it does, the answer for a site somebody
 		// may not read should be the same as for one that does not exist.
 		h.fail(w, http.StatusNotFound, "no site is registered for "+domain)
+		return
+	}
+
+	if h.Authorize == nil {
+		h.fail(w, http.StatusUnauthorized, "an authenticated session or validated sharing capability is required")
+		return
+	}
+
+	authorization, err := h.Authorize(r, site)
+	if err != nil {
+		var refusal *AuthorizationError
+		if errors.As(err, &refusal) {
+			h.fail(w, refusal.Status, refusal.Message)
+			return
+		}
+
+		h.internal(w, "authorize", err)
 		return
 	}
 
@@ -156,9 +204,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Pinned filters are appended after decoding and can therefore never be
+	// removed or replaced by JSON supplied by the browser. Query filters AND
+	// together, so reader-selected filters may narrow a shared segment further
+	// but may not widen it.
+	parsed.Filters = append(append([]query.Filter(nil), authorization.PinnedFilters...), parsed.Filters...)
+
+	effectiveBody, err := json.Marshal(parsed)
+	if err != nil {
+		h.internal(w, "encode authorized query", err)
+		return
+	}
+
 	// A dashboard refreshes itself and is left open, so the same handful of
 	// live reports arrive over and over with a few new events between them.
-	key := cacheKey(sites.Normalise(domain), body)
+	cacheBody := append([]byte(authorization.CacheKey+"\x00"), effectiveBody...)
+	key := cacheKey(sites.Normalise(domain), cacheBody)
 
 	if held, ok := h.live.get(key); ok {
 		h.writeBody(w, http.StatusOK, held)

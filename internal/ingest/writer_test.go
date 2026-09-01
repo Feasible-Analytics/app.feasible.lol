@@ -94,6 +94,15 @@ func writerEvent(accountID int64, name string, timestamp int64, path string) Eve
 	return e
 }
 
+// rejectingShardShield blocks one path so a test can distinguish a final
+// shard-side drop from an event the writer actually commits.
+type rejectingShardShield struct{}
+
+// Allowed rejects only /blocked with the same closed reason production uses.
+func (rejectingShardShield) Allowed(_ int64, _ string, pathname, _ string) (bool, string) {
+	return pathname != "/blocked", ReasonShieldPage
+}
+
 // TestCityIsInternedLikeEveryOtherPlace pins the column the geolocation fix
 // depends on. The database we ship carries city names and no ids, so a city
 // that did not reach dim_city would be a permanently empty column on every
@@ -480,6 +489,58 @@ func TestShardAllowsAHostnameNewlyValidAfterIngest(t *testing.T) {
 	}
 	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM hostname_rejections"); got != 0 {
 		t.Fatalf("newly valid hostname produced %d durable rejections", got)
+	}
+}
+
+// TestWriterReportsOnlyFinalOutcomes checks the recorder-facing contract at
+// the point that knows the truth: stored rows are accepted, classified rows
+// are accepted with a reason, and a live shard shield is a drop.
+func TestWriterReportsOnlyFinalOutcomes(t *testing.T) {
+	writer, manager := newWriter(t)
+	writer.Shield = rejectingShardShield{}
+
+	var outcomes []Observation
+	writer.Observer = ObserverFunc(func(observation Observation) {
+		outcomes = append(outcomes, observation)
+	})
+
+	plain := writerEvent(1, EventPageview, fixtureStart.Unix(), "/")
+	classified := writerEvent(1, EventPageview, fixtureStart.Unix()+1, "/bot")
+	classified.BotReason = ReasonBot
+	blocked := writerEvent(1, EventPageview, fixtureStart.Unix()+2, "/blocked")
+
+	committed, err := writer.Write(context.Background(), []Event{plain, classified, blocked})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if len(committed) != 3 {
+		t.Fatalf("acknowledged %d outcomes, want 3", len(committed))
+	}
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events"); got != 2 {
+		t.Fatalf("stored %d events, want 2", got)
+	}
+
+	accepted := 0
+	classifiedAccepted := 0
+	shielded := 0
+
+	for _, outcome := range outcomes {
+		if !outcome.OutcomeOnly || outcome.Pending {
+			t.Fatalf("writer emitted a non-final observation: %+v", outcome)
+		}
+
+		switch {
+		case outcome.Accepted && outcome.DropReason == "":
+			accepted++
+		case outcome.Accepted && outcome.DropReason == ReasonBot:
+			classifiedAccepted++
+		case !outcome.Accepted && outcome.DropReason == ReasonShieldPage:
+			shielded++
+		}
+	}
+
+	if accepted != 1 || classifiedAccepted != 1 || shielded != 1 {
+		t.Fatalf("final outcomes plain=%d classified=%d shielded=%d", accepted, classifiedAccepted, shielded)
 	}
 }
 

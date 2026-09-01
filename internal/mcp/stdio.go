@@ -37,6 +37,11 @@ type StdioOptions struct {
 
 	// Key is the credential every call on this pipe runs as.
 	Key *apikeys.Key
+
+	// Validate rechecks a long-lived session's key before every message. The
+	// CLI supplies the membership-aware key store so revocation and leaving the
+	// team take effect without restarting the assistant.
+	Validate func(context.Context, *apikeys.Key) error
 }
 
 // ServeStdio runs a session until the input closes or the context is cancelled.
@@ -66,6 +71,11 @@ func ServeStdio(ctx context.Context, server *Server, opts StdioOptions) error {
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
+		}
+		if opts.Validate != nil {
+			if err := opts.Validate(ctx, opts.Key); err != nil {
+				return fmt.Errorf("mcp: API key is no longer valid: %w", err)
+			}
 		}
 
 		response := server.Handle(ctx, opts.Key, line)

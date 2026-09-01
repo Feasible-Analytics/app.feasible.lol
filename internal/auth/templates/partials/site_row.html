@@ -6,7 +6,7 @@
   Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 -->
 <li class="flex items-center gap-4 px-5 py-4 hover:bg-hover"
-    draggable="true" data-site="{{ .Site.ID }}"
+    {{ if .CanManage }}draggable="true"{{ end }} data-site="{{ .Site.ID }}"
     @dragstart="startSiteDrag($event, {{ .Site.ID }})"
     @dragover.prevent
     @drop="dropSite($event, {{ .Site.ID }})">
@@ -15,7 +15,7 @@
 
   <div class="min-w-0 flex-1">
     <div class="flex items-center gap-2">
-      <a href="/sites/{{ .Site.ID }}/settings" class="truncate text-sm font-semibold text-heading hover:text-accent-ink">
+      <a href="{{ if .CanConfigure }}/sites/{{ .Site.ID }}/settings{{ else }}/dashboard/{{ .Site.Domain }}{{ end }}" class="truncate text-sm font-semibold text-heading hover:text-accent-ink">
         {{ .Site.Label }}
       </a>
 
@@ -23,7 +23,7 @@
         <span class="rounded-md bg-warn/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-warn-ink">{{ t $.Lang "auth.site_row.pinned" }}</span>
       {{ end }}
 
-      {{ if eq .Site.OnboardedAt 0 }}
+      {{ if and .CanConfigure (eq .Site.OnboardedAt 0) }}
         <a href="/onboarding/{{ .Site.ID }}"
            class="rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-ink">
           {{ t $.Lang "auth.site_row.finish_setup" }}
@@ -52,6 +52,7 @@
     </div>
   {{ end }}
 
+  {{ if .CanConfigure }}
   <form method="post" action="/sites/{{ .Site.ID }}/pin" class="shrink-0">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <button type="submit"
@@ -64,4 +65,5 @@
   <a href="/sites/{{ .Site.ID }}/settings" class="shrink-0 text-xs font-medium text-muted hover:text-heading">
     {{ t $.Lang "auth.site_row.settings" }}
   </a>
+  {{ end }}
 </li>

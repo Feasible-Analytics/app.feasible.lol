@@ -111,8 +111,8 @@ func (c *ControlStore) CreateSite(ctx context.Context, teamID int64, domain, dis
 	}
 
 	result, err := c.db.ExecContext(ctx, `
-		INSERT INTO sites (account_id, domain, display_name, timezone, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)`, teamID, normalised, displayName, timezone, now, now)
+		INSERT INTO sites (account_id, owner_team_id, domain, display_name, timezone, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, teamID, teamID, normalised, displayName, timezone, now, now)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, fmt.Errorf("%w: %s is already registered", ErrConflict, normalised)
@@ -145,7 +145,7 @@ func isUniqueViolation(err error) bool {
 // GetSite reads one site belonging to a team.
 func (c *ControlStore) GetSite(ctx context.Context, teamID int64, domain string) (*Site, error) {
 	row := c.db.QueryRowContext(ctx,
-		`SELECT `+siteColumns+` FROM sites WHERE account_id = ? AND domain = ?`, teamID, sites.Normalise(domain))
+		`SELECT `+siteColumns+` FROM sites WHERE COALESCE(owner_team_id, account_id) = ? AND domain = ?`, teamID, sites.Normalise(domain))
 
 	site, err := scanSite(row.Scan)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -163,12 +163,12 @@ func (c *ControlStore) GetSite(ctx context.Context, teamID int64, domain string)
 // not the rest of the first.
 func (c *ControlStore) ListSites(ctx context.Context, teamID int64, limit, offset int) ([]*Site, int, error) {
 	var total int
-	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sites WHERE account_id = ?`, teamID).Scan(&total); err != nil {
+	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sites WHERE COALESCE(owner_team_id, account_id) = ?`, teamID).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("publicapi: list sites: %w", err)
 	}
 
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT `+siteColumns+` FROM sites WHERE account_id = ? ORDER BY domain LIMIT ? OFFSET ?`,
+		`SELECT `+siteColumns+` FROM sites WHERE COALESCE(owner_team_id, account_id) = ? ORDER BY domain LIMIT ? OFFSET ?`,
 		teamID, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("publicapi: list sites: %w", err)
@@ -223,7 +223,7 @@ func (c *ControlStore) UpdateSite(ctx context.Context, teamID, siteID int64, dom
 	args = append(args, siteID, teamID)
 
 	result, err := c.db.ExecContext(ctx,
-		`UPDATE sites SET `+strings.Join(sets, ", ")+` WHERE id = ? AND account_id = ?`, args...)
+		`UPDATE sites SET `+strings.Join(sets, ", ")+` WHERE id = ? AND COALESCE(owner_team_id, account_id) = ?`, args...)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, fmt.Errorf("%w: that domain is already registered", ErrConflict)
@@ -249,30 +249,6 @@ func (c *ControlStore) UpdateSite(ctx context.Context, teamID, siteID int64, dom
 	}
 
 	return site, nil
-}
-
-// DeleteSite removes a site's index row.
-//
-// It does not touch the account's analytics database. The events stay where
-// they are: deleting a site is usually a mistake somebody wants undone within
-// the hour, and a scheduled job that reclaims the space later can be told to
-// stop, where a synchronous delete cannot be taken back.
-func (c *ControlStore) DeleteSite(ctx context.Context, teamID, siteID int64) error {
-	result, err := c.db.ExecContext(ctx, `DELETE FROM sites WHERE id = ? AND account_id = ?`, siteID, teamID)
-	if err != nil {
-		return fmt.Errorf("publicapi: delete site: %w", err)
-	}
-
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("publicapi: delete site: %w", err)
-	}
-
-	if affected == 0 {
-		return ErrNotFound
-	}
-
-	return nil
 }
 
 // TrackerConfig is the per-site script configuration.
@@ -455,27 +431,6 @@ func (c *ControlStore) SharedLinks(ctx context.Context, siteID int64) ([]SharedL
 	return links, rows.Err()
 }
 
-// CreateSharedLink mints a link. The caller supplies the slug and the password
-// hash, because minting a slug and hashing a password are decisions that belong
-// where the crypto helpers live rather than in a SQL wrapper.
-func (c *ControlStore) CreateSharedLink(ctx context.Context, siteID int64, name, slug, passwordHash string) (*SharedLink, error) {
-	now := c.now().Unix()
-
-	result, err := c.db.ExecContext(ctx,
-		`INSERT INTO shared_links (site_id, name, slug, password_hash, created_at) VALUES (?, ?, ?, ?, ?)`,
-		siteID, name, slug, passwordHash, now)
-	if err != nil {
-		return nil, fmt.Errorf("publicapi: create shared link: %w", err)
-	}
-
-	id, err := result.LastInsertId()
-	if err != nil {
-		return nil, fmt.Errorf("publicapi: create shared link: %w", err)
-	}
-
-	return &SharedLink{ID: id, Name: name, Slug: slug, HasPassword: passwordHash != "", CreatedAt: now}, nil
-}
-
 // DeleteSharedLink revokes a link.
 func (c *ControlStore) DeleteSharedLink(ctx context.Context, siteID, id int64) error {
 	return c.deleteScoped(ctx, "shared_links", "site_id", siteID, id)
@@ -512,34 +467,6 @@ func (c *ControlStore) Guests(ctx context.Context, siteID int64) ([]Guest, error
 	}
 
 	return guests, rows.Err()
-}
-
-// AddGuest gives an existing account access to one site.
-func (c *ControlStore) AddGuest(ctx context.Context, siteID int64, email, role string) (*Guest, error) {
-	userID, err := c.userByEmail(ctx, email)
-	if err != nil {
-		return nil, err
-	}
-
-	now := c.now().Unix()
-
-	result, err := c.db.ExecContext(ctx,
-		`INSERT INTO guest_memberships (site_id, user_id, role, created_at) VALUES (?, ?, ?, ?)`,
-		siteID, userID, role, now)
-	if err != nil {
-		if isUniqueViolation(err) {
-			return nil, fmt.Errorf("%w: %s is already a guest on this site", ErrConflict, email)
-		}
-
-		return nil, fmt.Errorf("publicapi: add guest: %w", err)
-	}
-
-	id, err := result.LastInsertId()
-	if err != nil {
-		return nil, fmt.Errorf("publicapi: add guest: %w", err)
-	}
-
-	return &Guest{ID: id, Email: email, Role: role, CreatedAt: now}, nil
 }
 
 // DeleteGuest removes a guest's access.
@@ -581,83 +508,23 @@ func (c *ControlStore) Members(ctx context.Context, teamID int64) ([]Member, err
 	return members, rows.Err()
 }
 
-// AddMember puts an existing account into a team.
-func (c *ControlStore) AddMember(ctx context.Context, teamID int64, email, role string) (*Member, error) {
-	userID, err := c.userByEmail(ctx, email)
-	if err != nil {
-		return nil, err
-	}
-
-	now := c.now().Unix()
-
-	result, err := c.db.ExecContext(ctx,
-		`INSERT INTO team_memberships (team_id, user_id, role, created_at) VALUES (?, ?, ?, ?)`,
-		teamID, userID, role, now)
-	if err != nil {
-		if isUniqueViolation(err) {
-			return nil, fmt.Errorf("%w: %s is already in this team", ErrConflict, email)
-		}
-
-		return nil, fmt.Errorf("publicapi: add member: %w", err)
-	}
-
-	id, err := result.LastInsertId()
-	if err != nil {
-		return nil, fmt.Errorf("publicapi: add member: %w", err)
-	}
-
-	return &Member{ID: id, Email: email, Role: role, CreatedAt: now}, nil
-}
-
-// RemoveMember takes somebody out of a team.
-//
-// The last owner cannot be removed. A team with no owner is a team nobody can
-// administer, billing included, and the only recovery is a support ticket to us.
-func (c *ControlStore) RemoveMember(ctx context.Context, teamID, id int64) error {
+// MembershipTarget reads the target user and role for a team-scoped membership
+// id. The HTTP layer uses the role for a clear refusal, while the teams store
+// repeats hierarchy and last-owner enforcement for the user inside its API.
+func (c *ControlStore) MembershipTarget(ctx context.Context, teamID, id int64) (int64, string, error) {
+	var userID int64
 	var role string
 
 	err := c.db.QueryRowContext(ctx,
-		`SELECT role FROM team_memberships WHERE id = ? AND team_id = ?`, id, teamID).Scan(&role)
+		`SELECT user_id, role FROM team_memberships WHERE id = ? AND team_id = ?`, id, teamID).Scan(&userID, &role)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ErrNotFound
+		return 0, "", ErrNotFound
 	}
 	if err != nil {
-		return fmt.Errorf("publicapi: remove member: %w", err)
+		return 0, "", fmt.Errorf("publicapi: read membership target: %w", err)
 	}
 
-	if role == "owner" {
-		var owners int
-		if err := c.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM team_memberships WHERE team_id = ? AND role = 'owner'`, teamID).Scan(&owners); err != nil {
-			return fmt.Errorf("publicapi: remove member: %w", err)
-		}
-
-		if owners <= 1 {
-			return errors.New("this is the team's only owner — promote somebody else first")
-		}
-	}
-
-	return c.deleteScoped(ctx, "team_memberships", "team_id", teamID, id)
-}
-
-// userByEmail resolves an address to an account.
-//
-// A person who has no account yet cannot be added here. Creating one as a side
-// effect of an API call would mint a passwordless account somebody else named,
-// and sending an invitation is the sign-up flow's job rather than this
-// endpoint's.
-func (c *ControlStore) userByEmail(ctx context.Context, email string) (int64, error) {
-	var id int64
-
-	err := c.db.QueryRowContext(ctx, `SELECT id FROM users WHERE email = ?`, email).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("%w: no account is registered for %s — invite them to sign up first", ErrNotFound, email)
-	}
-	if err != nil {
-		return 0, fmt.Errorf("publicapi: look up user: %w", err)
-	}
-
-	return id, nil
+	return userID, role, nil
 }
 
 // deleteScoped removes one row by id, but only when it belongs to the scope the

@@ -40,8 +40,11 @@ const SparklineDays = 30
 // routing index — everything site-scoped that is not routing lives in the
 // account database.
 type Site struct {
-	ID                  int64
-	AccountID           int64
+	ID int64
+	// AccountID is the immutable analytics database that holds the history.
+	AccountID int64
+	// TeamID is the current owner used for every access decision.
+	TeamID              int64
 	Domain              string
 	DisplayName         string
 	Timezone            string
@@ -104,7 +107,7 @@ type Folder struct {
 }
 
 // siteColumns is the shared select list, so a new column is added once.
-const siteColumns = `id, account_id, domain, display_name, timezone, is_public, folder_id,
+const siteColumns = `id, account_id, COALESCE(owner_team_id, account_id), domain, display_name, timezone, is_public, folder_id,
 	stats_start_date, position, pinned_at, previous_domain, previous_domain_until,
 	onboarded_at, created_at, updated_at`
 
@@ -119,7 +122,7 @@ func scanSite(row interface{ Scan(...any) error }) (*Site, error) {
 		onboarded  sql.NullInt64
 	)
 
-	err := row.Scan(&s.ID, &s.AccountID, &s.Domain, &s.DisplayName, &s.Timezone, &s.IsPublic,
+	err := row.Scan(&s.ID, &s.AccountID, &s.TeamID, &s.Domain, &s.DisplayName, &s.Timezone, &s.IsPublic,
 		&folderID, &statsStart, &s.Position, &pinnedAt, &s.PreviousDomain, &prevUntil,
 		&onboarded, &s.CreatedAt, &s.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -169,14 +172,14 @@ func (s *Store) CreateSite(ctx context.Context, accountID int64, domain, display
 	// instead of renumbering the whole list.
 	var maxPosition sql.NullInt64
 	if err := s.db.QueryRowContext(ctx,
-		"SELECT MAX(position) FROM sites WHERE account_id = ?", accountID).Scan(&maxPosition); err != nil {
+		"SELECT MAX(position) FROM sites WHERE COALESCE(owner_team_id, account_id) = ?", accountID).Scan(&maxPosition); err != nil {
 		return nil, fmt.Errorf("auth: create site: %w", err)
 	}
 
 	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO sites (account_id, domain, display_name, timezone, position, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, accountID, domain, strings.TrimSpace(displayName), timezone,
+		INSERT INTO sites (account_id, owner_team_id, domain, display_name, timezone, position, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, accountID, accountID, domain, strings.TrimSpace(displayName), timezone,
 		nullInt64(maxPosition)+1000, now.Unix(), now.Unix())
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -199,7 +202,15 @@ func (s *Store) CreateSite(ctx context.Context, accountID int64, domain, display
 // forgotten by a handler.
 func (s *Store) SiteByID(ctx context.Context, accountID, siteID int64) (*Site, error) {
 	return scanSite(s.db.QueryRowContext(ctx,
-		"SELECT "+siteColumns+" FROM sites WHERE id = ? AND account_id = ?", siteID, accountID))
+		"SELECT "+siteColumns+" FROM sites WHERE id = ? AND COALESCE(owner_team_id, account_id) = ?", siteID, accountID))
+}
+
+// SiteByIDAny reads a site before the caller checks its live team or guest
+// relationship. It belongs only in authorization paths that immediately call
+// teams.AuthoriseSite; ordinary store callers should use SiteByID.
+func (s *Store) SiteByIDAny(ctx context.Context, siteID int64) (*Site, error) {
+	return scanSite(s.db.QueryRowContext(ctx,
+		"SELECT "+siteColumns+" FROM sites WHERE id = ?", siteID))
 }
 
 // SiteByDomain finds a site by its current domain across all accounts, which is
@@ -236,7 +247,7 @@ func (s *Store) ListSites(ctx context.Context, accountID int64, order string) (o
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT "+siteColumns+" FROM sites WHERE account_id = ? ORDER BY "+
+		"SELECT "+siteColumns+" FROM sites WHERE COALESCE(owner_team_id, account_id) = ? ORDER BY "+
 			"CASE WHEN pinned_at IS NULL THEN 1 ELSE 0 END, "+clause, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("auth: list sites: %w", err)
@@ -270,7 +281,7 @@ func (s *Store) UpdateSiteGeneral(ctx context.Context, accountID, siteID int64, 
 
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE sites SET display_name = ?, timezone = ?, is_public = ?, updated_at = ?
-		WHERE id = ? AND account_id = ?
+		WHERE id = ? AND COALESCE(owner_team_id, account_id) = ?
 	`, strings.TrimSpace(displayName), timezone, isPublic, s.now().Unix(), siteID, accountID); err != nil {
 		return fmt.Errorf("auth: update site: %w", err)
 	}
@@ -307,7 +318,7 @@ func (s *Store) ChangeDomain(ctx context.Context, accountID, siteID int64, newDo
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE sites
 		SET domain = ?, previous_domain = ?, previous_domain_until = ?, updated_at = ?
-		WHERE id = ? AND account_id = ?
+		WHERE id = ? AND COALESCE(owner_team_id, account_id) = ?
 	`, newDomain, site.Domain, now.Add(DualWriteWindow).Unix(), now.Unix(), siteID, accountID)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -327,7 +338,7 @@ func (s *Store) SetPinned(ctx context.Context, accountID, siteID int64, pinned b
 	}
 
 	if _, err := s.db.ExecContext(ctx,
-		"UPDATE sites SET pinned_at = ?, updated_at = ? WHERE id = ? AND account_id = ?",
+		"UPDATE sites SET pinned_at = ?, updated_at = ? WHERE id = ? AND COALESCE(owner_team_id, account_id) = ?",
 		at, s.now().Unix(), siteID, accountID); err != nil {
 		return fmt.Errorf("auth: pin site: %w", err)
 	}
@@ -355,7 +366,7 @@ func (s *Store) MoveSite(ctx context.Context, accountID, siteID, folderID, posit
 	}
 
 	if _, err := s.db.ExecContext(ctx,
-		"UPDATE sites SET folder_id = ?, position = ?, updated_at = ? WHERE id = ? AND account_id = ?",
+		"UPDATE sites SET folder_id = ?, position = ?, updated_at = ? WHERE id = ? AND COALESCE(owner_team_id, account_id) = ?",
 		folder, position, s.now().Unix(), siteID, accountID); err != nil {
 		return fmt.Errorf("auth: move site: %w", err)
 	}
@@ -369,7 +380,7 @@ func (s *Store) MoveSite(ctx context.Context, accountID, siteID, folderID, posit
 // as clearly as somebody who finished.
 func (s *Store) MarkOnboarded(ctx context.Context, accountID, siteID int64) error {
 	if _, err := s.db.ExecContext(ctx,
-		"UPDATE sites SET onboarded_at = ?, updated_at = ? WHERE id = ? AND account_id = ?",
+		"UPDATE sites SET onboarded_at = ?, updated_at = ? WHERE id = ? AND COALESCE(owner_team_id, account_id) = ?",
 		s.now().Unix(), s.now().Unix(), siteID, accountID); err != nil {
 		return fmt.Errorf("auth: mark onboarded: %w", err)
 	}
@@ -382,7 +393,7 @@ func (s *Store) MarkOnboarded(ctx context.Context, accountID, siteID int64) erro
 // stops new traffic being routed.
 func (s *Store) DeleteSite(ctx context.Context, accountID, siteID int64) error {
 	if _, err := s.db.ExecContext(ctx,
-		"DELETE FROM sites WHERE id = ? AND account_id = ?", siteID, accountID); err != nil {
+		"DELETE FROM sites WHERE id = ? AND COALESCE(owner_team_id, account_id) = ?", siteID, accountID); err != nil {
 		return fmt.Errorf("auth: delete site: %w", err)
 	}
 
@@ -518,7 +529,7 @@ func (s *Store) ReorderSites(ctx context.Context, accountID, folderID int64, ids
 
 	for i, id := range ids {
 		if _, err := tx.ExecContext(ctx,
-			"UPDATE sites SET folder_id = ?, position = ?, updated_at = ? WHERE id = ? AND account_id = ?",
+			"UPDATE sites SET folder_id = ?, position = ?, updated_at = ? WHERE id = ? AND COALESCE(owner_team_id, account_id) = ?",
 			folder, int64(i+1)*1000, s.now().Unix(), id, accountID); err != nil {
 			return fmt.Errorf("auth: reorder sites: %w", err)
 		}

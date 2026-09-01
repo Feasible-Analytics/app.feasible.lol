@@ -48,6 +48,10 @@ func testStore(t *testing.T) (*Store, *sql.DB) {
 		t.Fatal(err)
 	}
 
+	if _, err := db.Exec(`INSERT INTO team_memberships (team_id, user_id, role, created_at) VALUES (1, 1, 'owner', ?)`, stamp); err != nil {
+		t.Fatal(err)
+	}
+
 	keys := NewStore(db)
 	keys.Now = func() time.Time { return now }
 
@@ -92,6 +96,9 @@ func TestKeyRoundTrips(t *testing.T) {
 
 	if authenticated.TeamID != 1 || authenticated.ID != key.ID {
 		t.Errorf("authenticated as %+v", authenticated)
+	}
+	if authenticated.Role != "owner" {
+		t.Errorf("authenticated role = %q, want owner", authenticated.Role)
 	}
 }
 
@@ -161,6 +168,59 @@ func TestRevokedKeyLooksLikeItNeverExisted(t *testing.T) {
 
 	if len(list) != 1 || list[0].RevokedAt.IsZero() {
 		t.Fatalf("list = %+v, want the revoked key with its timestamp", list)
+	}
+}
+
+// TestKeyStopsAuthenticatingWhenItsOwnerLeavesTheTeam proves the canonical
+// authenticator enforces live membership. Every public API and MCP transport
+// calls this store, so this direct check covers the boundary they share.
+func TestKeyStopsAuthenticatingWhenItsOwnerLeavesTheTeam(t *testing.T) {
+	keys, db := testStore(t)
+	ctx := context.Background()
+
+	key, plaintext, err := keys.Create(ctx, 1, 1, "departing member", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := keys.Authenticate(ctx, plaintext); err != nil {
+		t.Fatalf("key did not authenticate before membership removal: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, `DELETE FROM team_memberships WHERE team_id = 1 AND user_id = 1`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := keys.Authenticate(ctx, plaintext); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("key authenticated after its owner left the team: %v", err)
+	}
+	if err := keys.Validate(ctx, key); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("resolved key remained valid after its owner left the team: %v", err)
+	}
+}
+
+// TestValidateRefreshesRole proves a long-lived transport cannot retain the
+// permissions its owner had before an administrator demoted them.
+func TestValidateRefreshesRole(t *testing.T) {
+	keys, db := testStore(t)
+	ctx := context.Background()
+
+	key, _, err := keys.Create(ctx, 1, 1, "role changes", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		UPDATE team_memberships SET role = 'billing' WHERE team_id = 1 AND user_id = 1
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := keys.Validate(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if key.Role != "billing" {
+		t.Fatalf("role = %q, want billing", key.Role)
 	}
 }
 

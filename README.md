@@ -140,6 +140,23 @@ this system to leak. Drop counts by reason, write-buffer depth, roll-up freshnes
 and report latency are all there; per-site numbers belong to the customer and
 live on their own ingestion-health panel.
 
+### Team membership API
+
+`PUT /api/v1/teams/memberships` creates a revocable invitation that expires in
+48 hours; it never inserts a membership directly. The response includes the
+invitation id, normalized email, role, expiry, and one-time invitation token,
+with the same status and shape whether or not the address already has an
+account. `owner` is not an invitational role: ownership changes only through the
+ownership-transfer workflow. The verified recipient must accept the invitation
+before gaining access.
+
+`PUT /api/v1/sites/guests` follows the same rule for site-only access. It
+creates a revocable 48-hour `guest_viewer` or `guest_editor` invitation for any
+email address and returns the same response shape for existing and unknown
+accounts. No `guest_memberships` row exists until the verified recipient
+accepts. `DELETE /api/v1/sites/guest-invitations/{invitation_id}?site_id=...`
+revokes an outstanding site invitation.
+
 ### When it goes wrong
 
 [`ops/`](ops/) holds the operational half: continuous replication with

@@ -89,6 +89,11 @@ type Handler struct {
 	// one.
 	Sites DomainSource
 
+	// Domains replaces the global site list for an authenticated request. The
+	// serving process supplies a membership-aware resolver; shared/public shells
+	// pass their own single-site bootstrap directly to WriteShell.
+	Domains func(*http.Request) []string
+
 	// shellHead and shellTail bracket the bootstrap placeholder, so filling it
 	// in per request is two writes rather than a scan and a copy of the whole
 	// document.
@@ -228,21 +233,112 @@ func (h *Handler) serveAsset(w http.ResponseWriter, r *http.Request, name string
 	}
 }
 
+// Bootstrap is what the shell boots from. It is a type rather than an inline
+// struct because the shared-link and public-dashboard handlers render the same
+// shell with a different one, and two independent literals of the same shape
+// would drift the moment either grew a field.
+type Bootstrap struct {
+	Sites []string `json:"sites"`
+
+	// Locale is the tag the server negotiated, for Intl and the plural rules.
+	Locale string `json:"locale"`
+
+	// Messages is every string the dashboard can ask for, already merged over
+	// English. They travel with the page for the same reason the site list
+	// does: they are needed before the first paint, and fetching them would put
+	// a frame of untranslated interface in front of every load. Arriving merged
+	// is what stops the dashboard and the server-rendered screens growing two
+	// different answers to "what does this locale say".
+	Messages map[string]string `json:"messages"`
+
+	// Shared is present only when the page is being served through a shared
+	// link or a public dashboard. Its absence is what tells the front end it is
+	// the ordinary authenticated dashboard.
+	Shared *Shared `json:"shared,omitempty"`
+}
+
+// Shared is the read-only mode the dashboard runs in behind a share URL.
+type Shared struct {
+	// Mode is "share" or "public".
+	Mode string `json:"mode"`
+
+	// Base is the path prefix every URL the front end builds must keep.
+	//
+	// This field is the whole fix for a real bug: the incumbent's shared
+	// dashboard dropped its /share/<token> segment as soon as a filter was
+	// applied, so copying the URL after filtering produced a link that
+	// redirected to a login and back forever. Handing the front end its base
+	// path, rather than letting it assume /dashboard, makes that impossible.
+	Base string `json:"base"`
+
+	Domain string `json:"domain"`
+
+	// Capability is sent on each stats request. For a shared link it is the
+	// unguessable slug; for a public dashboard it is the literal word public.
+	// The stats endpoint revalidates the backing row on every request.
+	Capability string `json:"capability"`
+
+	// Embed is set when the page is being rendered for an iframe. The front
+	// end reads it to strip the chrome — and, more importantly, to stop
+	// touching browser storage at all.
+	Embed bool `json:"embed"`
+
+	// Theme and Background are the embed parameters. They are applied by the
+	// server rather than read from the URL by the client so that they only ever
+	// take effect on a share URL, which is where they are documented to work.
+	Theme      string `json:"theme,omitempty"`
+	Background string `json:"background,omitempty"`
+
+	// Storage says whether the front end may use localStorage.
+	//
+	// It is false in an embed, and that is not a preference. A third-party
+	// iframe in Brave, or in any browser with third-party cookies blocked, does
+	// not return null from a storage accessor — it *throws*. The incumbent's
+	// unguarded read of localStorage killed their entire embedded dashboard for
+	// those users, showing a blank frame with an exception nobody but the
+	// visitor could see.
+	Storage bool `json:"storage"`
+
+	// SegmentID pins the view to one saved segment, or zero for the whole site.
+	SegmentID int64 `json:"segment_id,omitempty"`
+}
+
 // serveShell writes the HTML with this instance's site list in it.
 func (h *Handler) serveShell(w http.ResponseWriter, r *http.Request) {
-	// The language is resolved before anything is written, because resolving it
-	// can set the cookie that remembers an explicit ?lang= choice, and a
-	// Set-Cookie after the status line is a header nobody receives.
-	locale := i18n.Apply(w, r)
-	payload := h.bootstrap(locale)
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", shellCacheControl)
-
 	// The dashboard reads one account's traffic and must not be framed by
 	// another site: a clickjacked dashboard is a way to make somebody delete a
 	// site they meant to keep.
+	//
+	// It is also why the embed parameters do nothing here. They are documented
+	// as working on a share URL only, and an authenticated dashboard that
+	// honoured them would be an authenticated dashboard somebody had put in an
+	// iframe — which is the thing this header exists to prevent.
 	w.Header().Set("X-Frame-Options", "DENY")
+
+	h.WriteShell(w, r, h.bootstrap(r))
+}
+
+// WriteShell renders the SPA shell with a caller-supplied bootstrap. It sets
+// every header except the framing policy, which is the one decision that
+// differs between the authenticated dashboard and an embeddable share link and
+// so belongs to whichever handler knows the answer.
+//
+// The language is resolved here rather than by the caller, and before anything
+// is written, because resolving it can set the cookie that remembers an
+// explicit ?lang= choice, and a Set-Cookie after the status line is a header
+// nobody receives. A caller that already filled the field keeps it, so a shared
+// link can pin a locale the way it pins a theme.
+func (h *Handler) WriteShell(w http.ResponseWriter, r *http.Request, boot Bootstrap) {
+	if boot.Locale == "" {
+		boot.Locale = i18n.Apply(w, r)
+	}
+
+	if boot.Messages == nil {
+		boot.Messages = i18n.Messages(boot.Locale)
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", shellCacheControl)
 	w.Header().Set("Referrer-Policy", "same-origin")
 
 	w.WriteHeader(http.StatusOK)
@@ -252,39 +348,42 @@ func (h *Handler) serveShell(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, _ = w.Write(h.shellHead)
-	_, _ = w.Write(payload)
+	_, _ = w.Write(encodeBootstrap(boot))
 	_, _ = w.Write(h.shellTail)
 }
 
-// bootstrap renders the site list and the message catalogue the shell boots
-// from.
+// bootstrap builds the site list the authenticated shell boots from.
 //
 // The list is sorted so that two loads of the same install produce the same
 // document, which is what makes the shell diffable and the site picker's order
 // stable rather than following whatever order a map iterated in.
-//
-// The strings travel with the page for the same reason the site list does: they
-// are needed before the first paint, and fetching them would put a frame of
-// untranslated interface in front of every load. They arrive already merged over
-// English, so the client needs no fallback logic of its own — which is what
-// stops the dashboard and the server-rendered screens from growing two
-// different answers to "what does this locale say".
-func (h *Handler) bootstrap(locale string) []byte {
+func (h *Handler) bootstrap(r *http.Request) Bootstrap {
 	domains := []string{}
-	if h.Sites != nil {
+	if h.Domains != nil {
+		domains = h.Domains(r)
+	} else if h.Sites != nil {
 		domains = h.Sites.Domains()
 	}
 
 	sort.Strings(domains)
 
-	body, err := json.Marshal(struct {
-		Sites    []string          `json:"sites"`
-		Locale   string            `json:"locale"`
-		Messages map[string]string `json:"messages"`
-	}{Sites: domains, Locale: locale, Messages: i18n.Messages(locale)})
+	return Bootstrap{Sites: domains}
+}
+
+// encodeBootstrap renders the boot blob written into the shell.
+func encodeBootstrap(boot Bootstrap) []byte {
+	if boot.Sites == nil {
+		boot.Sites = []string{}
+	}
+
+	if boot.Messages == nil {
+		boot.Messages = map[string]string{}
+	}
+
+	body, err := json.Marshal(boot)
 	if err != nil {
-		// The values being encoded are strings and a map of strings, so this
-		// cannot fail; answering with an empty payload rather than a 500 means a
+		// Everything being encoded is strings, bools and ints, so this cannot
+		// fail; answering with an empty payload rather than a 500 means a
 		// hypothetical failure costs the site picker and the translations, not
 		// the page.
 		return []byte(`{"sites":[],"locale":"` + i18n.DefaultLocale + `","messages":{}}`)

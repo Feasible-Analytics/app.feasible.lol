@@ -52,6 +52,13 @@ func TestNoSeriesNamesACustomer(t *testing.T) {
 	QueryFailures.WithLabelValues("caller").Inc()
 	HTTPRequests.WithLabelValues(HandlerEvent, "2xx").Inc()
 	HTTPDuration.WithLabelValues(HandlerEvent).Observe(0.01)
+	SchedulerRuns.Inc()
+	SchedulerFailures.Inc()
+	SchedulerCatchUpSlots.Inc()
+	SchedulerCatchUpJobs.Inc()
+	SchedulerCreatedJobs.Inc()
+	SchedulerDuration.Observe(0.01)
+	SchedulerLastSuccess.Set(1)
 
 	families, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
@@ -102,7 +109,13 @@ func TestHandlerServesTheTextFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, want := range []string{"feasible_ingest_events_accepted_total", "go_goroutines"} {
+	for _, want := range []string{
+		"feasible_ingest_events_accepted_total", "go_goroutines",
+		"feasible_scheduler_runs_total", "feasible_scheduler_failures_total",
+		"feasible_scheduler_catch_up_slots_total", "feasible_scheduler_catch_up_jobs_total",
+		"feasible_scheduler_created_jobs_total", "feasible_scheduler_duration_seconds",
+		"feasible_scheduler_last_success_timestamp_seconds",
+	} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("the scrape does not include %s", want)
 		}
