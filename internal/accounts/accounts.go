@@ -28,7 +28,6 @@ import (
 	"sort"
 	"strconv"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
@@ -169,7 +168,7 @@ func lockAccount(dataDir string, id int64) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("account %d: open lock: %w", id, err)
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockFile(file, lockExclusive); err != nil {
 		closeErr := file.Close()
 		lockErr := fmt.Errorf("account %d: lock: %w", id, err)
 		if closeErr != nil {
@@ -186,7 +185,7 @@ func unlockAccount(file *os.File) {
 	if file == nil {
 		return
 	}
-	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	_ = unlockFile(file)
 	_ = file.Close()
 }
 
@@ -202,11 +201,11 @@ func lockAccountLifetime(dataDir string, id int64, exclusive bool) (*os.File, er
 	if err != nil {
 		return nil, fmt.Errorf("account %d: open lifetime lock: %w", id, err)
 	}
-	mode := syscall.LOCK_SH
+	mode := lockShared
 	if exclusive {
-		mode = syscall.LOCK_EX
+		mode = lockExclusive
 	}
-	if err := syscall.Flock(int(file.Fd()), mode); err != nil {
+	if err := lockFile(file, mode); err != nil {
 		closeErr := file.Close()
 		lockErr := fmt.Errorf("account %d: acquire lifetime lock: %w", id, err)
 		if closeErr != nil {
@@ -474,7 +473,7 @@ func (m *Manager) BeginWrite(id int64) (*WriteGuard, error) {
 		return nil, fmt.Errorf("account id %d is not valid", id)
 	}
 
-	file, err := lock(m.dataDir, id, syscall.LOCK_SH)
+	file, err := lock(m.dataDir, id, lockShared)
 	if err != nil {
 		return nil, err
 	}
@@ -627,7 +626,7 @@ func (m *Manager) BeginDeletion(id int64) (*DeletionGuard, error) {
 		return nil, err
 	}
 
-	file, err := lock(m.dataDir, id, syscall.LOCK_EX)
+	file, err := lock(m.dataDir, id, lockExclusive)
 	if err != nil {
 		return nil, err
 	}
@@ -745,7 +744,7 @@ func lockPath(dataDir string, id int64) string {
 }
 
 // lock opens and acquires one advisory account lock.
-func lock(dataDir string, id int64, how int) (*os.File, error) {
+func lock(dataDir string, id int64, how lockMode) (*os.File, error) {
 	dir := filepath.Join(dataDir, guardDirectory)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("account %d guard directory: %w", id, err)
@@ -755,7 +754,7 @@ func lock(dataDir string, id int64, how int) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("account %d guard lock: %w", id, err)
 	}
-	if err := syscall.Flock(int(file.Fd()), how); err != nil {
+	if err := lockFile(file, how); err != nil {
 		_ = file.Close()
 		return nil, fmt.Errorf("account %d guard lock: %w", id, err)
 	}
@@ -769,7 +768,7 @@ func unlock(file *os.File) error {
 		return nil
 	}
 
-	unlockErr := syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	unlockErr := unlockFile(file)
 	closeErr := file.Close()
 	if unlockErr != nil {
 		return unlockErr

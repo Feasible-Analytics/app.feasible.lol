@@ -1,0 +1,169 @@
+#
+# release.yml
+# Manually tag main, build cross-platform binaries and publish a GitHub Release.
+#
+# Created: 2026-09-01
+# Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+#
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional version or tag (for example 1.2.3 or v1.2.3)"
+        required: false
+        type: string
+
+# The release command creates both a tag and a GitHub Release.
+permissions:
+  contents: write
+
+# Automatic patch selection must be serialized so two manual runs cannot choose
+# the same next version while neither tag exists yet.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    steps:
+      # A release always snapshots current main, even if the workflow was opened
+      # from another branch in GitHub's manual-run dialog. Full history supplies
+      # every prior tag to the automatic patch-version calculation.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      # The compiler version follows go.mod, matching CI and local builds.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # An explicit input accepts either x.y.z or vx.y.z. Without one, the
+      # highest semantic release tag is incremented; an empty history starts at
+      # 0.0.1. Other tag shapes are deliberately ignored.
+      - name: Resolve release version
+        id: release
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          requested="${REQUESTED_VERSION//[[:space:]]/}"
+          if [[ -n "$requested" ]]; then
+            version="${requested#refs/tags/}"
+            version="${version#v}"
+          else
+            latest="$({ git tag --list || true; } \
+              | sed -nE 's/^v?([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' \
+              | sort -V \
+              | tail -n 1)"
+            if [[ -z "$latest" ]]; then
+              version="0.0.1"
+            else
+              IFS=. read -r major minor patch <<< "$latest"
+              version="${major}.${minor}.$((patch + 1))"
+            fi
+          fi
+
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Version must use x.y.z semantic versioning; received: ${version}" >&2
+            exit 1
+          fi
+
+          tag="v${version}"
+          if git show-ref --tags --verify --quiet "refs/tags/${tag}" \
+            || git show-ref --tags --verify --quiet "refs/tags/${version}"; then
+            echo "Release ${version} already has a tag" >&2
+            exit 1
+          fi
+
+          {
+            echo "version=${version}"
+            echo "tag=${tag}"
+            echo "sha=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+      # Cross-compilation keeps every asset tied to the exact same source,
+      # version stamp and build time. macOS ships both Intel and Apple Silicon;
+      # Linux and Windows ship amd64 and arm64 as well.
+      - name: Build release archives
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package="github.com/Feasible-Analytics/app.feasible.lol"
+          commit="$(git rev-parse --short=12 "$RELEASE_SHA")"
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ldflags="-s -w -X ${package}/internal/build.Version=v${RELEASE_VERSION} -X ${package}/internal/build.Commit=${commit} -X ${package}/internal/build.Date=${build_date}"
+          targets=(
+            "linux amd64"
+            "linux arm64"
+            "windows amd64"
+            "windows arm64"
+            "darwin amd64"
+            "darwin arm64"
+          )
+
+          mkdir -p dist
+          for target in "${targets[@]}"; do
+            read -r goos goarch <<< "$target"
+            archive="feasible_${RELEASE_VERSION}_${goos}_${goarch}"
+            staging="$(mktemp -d)"
+            binary="feasible"
+            if [[ "$goos" == "windows" ]]; then
+              binary="feasible.exe"
+            fi
+
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags "$ldflags" \
+              -o "${staging}/${binary}" ./cmd/feasible
+
+            if [[ "$goos" == "windows" ]]; then
+              (cd "$staging" && zip -q "${GITHUB_WORKSPACE}/dist/${archive}.zip" "$binary")
+            else
+              tar -C "$staging" -czf "dist/${archive}.tar.gz" "$binary"
+            fi
+            rm -rf "$staging"
+          done
+
+          (cd dist && sha256sum ./* > SHA256SUMS)
+
+      # The native Linux archive gets a smoke test before anything is published.
+      - name: Verify Linux binary
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          staging="$(mktemp -d)"
+          tar -C "$staging" -xzf "dist/feasible_${RELEASE_VERSION}_linux_amd64.tar.gz"
+          "$staging/feasible" --version | grep -F "feasible v${RELEASE_VERSION}"
+          rm -rf "$staging"
+
+      # gh creates the tag at the checked-out main commit and publishes every
+      # archive plus its checksum manifest as one GitHub Release.
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh release create "$RELEASE_TAG" dist/* \
+            --target "$RELEASE_SHA" \
+            --title "$RELEASE_TAG" \
+            --generate-notes
