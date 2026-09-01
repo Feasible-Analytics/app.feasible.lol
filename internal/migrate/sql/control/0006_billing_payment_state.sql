@@ -136,6 +136,27 @@ ALTER TABLE account_deletions ADD COLUMN local_removed_at INTEGER;
 ALTER TABLE account_deletions ADD COLUMN provider_removed_at INTEGER;
 ALTER TABLE account_deletions ADD COLUMN control_removed_at INTEGER;
 
+-- A single account can acquire more than one Stripe customer when an older
+-- Checkout Session completes after a replacement. This no-FK audit survives
+-- the teams cascade and gives each discovered customer its own resumable
+-- provider-deletion checkpoint instead of losing all but the mirrored one.
+CREATE TABLE account_deletion_customers (
+    team_id    INTEGER NOT NULL,
+    customer_id TEXT NOT NULL CHECK (customer_id <> ''),
+    created_at INTEGER NOT NULL,
+    removed_at INTEGER,
+    last_error TEXT NOT NULL DEFAULT '',
+
+    PRIMARY KEY (team_id, customer_id)
+);
+
+-- Purge retries ask for one team's unfinished provider objects. Keeping only
+-- pending rows in this index prevents completed deletion history from making
+-- that lookup grow forever.
+CREATE INDEX account_deletion_customers_pending
+    ON account_deletion_customers(team_id, customer_id)
+    WHERE removed_at IS NULL;
+
 -- SQLite reuses a deleted maximum INTEGER PRIMARY KEY unless AUTOINCREMENT is
 -- present. Rebuilding the heavily referenced teams table would be destructive,
 -- so this one-row sequence permanently reserves every assigned team id instead.
@@ -149,3 +170,58 @@ SELECT 1, MAX(
     COALESCE((SELECT MAX(id) FROM teams), 0),
     COALESCE((SELECT MAX(team_id) FROM account_deletions), 0)
 );
+
+-- Team creation is lifecycle enrollment. Keeping this as a database trigger
+-- makes password signup, Google signup, imports, and future team creation paths
+-- share one atomic invariant instead of relying on every caller to remember a
+-- second write. The mirrors use the lifecycle state machine's exact 30-day
+-- Locked and 60-day Dormant boundaries.
+CREATE TRIGGER teams_enroll_trial_after_insert
+AFTER INSERT ON teams
+BEGIN
+    INSERT INTO account_lifecycle
+        (team_id, trigger, started_at, deleted_at, created_at, updated_at)
+    VALUES
+        (NEW.id, 'trial', NEW.created_at, NULL, NEW.created_at, NEW.created_at);
+
+    UPDATE teams
+    SET trial_ends_at = NEW.created_at + (30 * 24 * 60 * 60),
+        accept_traffic_until = NEW.created_at + (60 * 24 * 60 * 60)
+    WHERE id = NEW.id;
+END;
+
+-- Existing beta accounts had no lifecycle row because enrollment used to be a
+-- caller responsibility. Start those accounts at migration time, rather than
+-- deriving day zero from an old signup date and immediately locking or deleting
+-- them. A staging table gives every backfilled clock and mirror the same exact
+-- timestamp while leaving existing paid, trial, and lapse rows untouched.
+CREATE TEMP TABLE migration_0006_trial_backfill (
+    team_id    INTEGER PRIMARY KEY,
+    started_at INTEGER NOT NULL
+);
+
+INSERT INTO migration_0006_trial_backfill (team_id, started_at)
+SELECT teams.id, CAST(strftime('%s', 'now') AS INTEGER)
+FROM teams
+LEFT JOIN account_lifecycle ON account_lifecycle.team_id = teams.id
+WHERE account_lifecycle.team_id IS NULL;
+
+INSERT INTO account_lifecycle
+    (team_id, trigger, started_at, deleted_at, created_at, updated_at)
+SELECT team_id, 'trial', started_at, NULL, started_at, started_at
+FROM migration_0006_trial_backfill;
+
+UPDATE teams
+SET trial_ends_at = (
+        SELECT started_at + (30 * 24 * 60 * 60)
+        FROM migration_0006_trial_backfill
+        WHERE team_id = teams.id
+    ),
+    accept_traffic_until = (
+        SELECT started_at + (60 * 24 * 60 * 60)
+        FROM migration_0006_trial_backfill
+        WHERE team_id = teams.id
+    )
+WHERE id IN (SELECT team_id FROM migration_0006_trial_backfill);
+
+DROP TABLE migration_0006_trial_backfill;

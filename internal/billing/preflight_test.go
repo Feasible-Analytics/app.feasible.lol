@@ -22,10 +22,10 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/stripe"
 )
 
-// TestPreflightRequiresAndRunsCheckoutSmoke proves the default is read-only and
-// deliberately not green, while the opt-in smoke uses the real Managed Payments
-// parameters and expires its customerless session.
-func TestPreflightRequiresAndRunsCheckoutSmoke(t *testing.T) {
+// TestPreflightRequestsUseTheBasilMinimumHeaderAndRunCheckoutSmoke proves every
+// request keeps Stripe's compatible Managed Payments header, while the default
+// remains read-only and the opt-in smoke expires its customerless sessions.
+func TestPreflightRequestsUseTheBasilMinimumHeaderAndRunCheckoutSmoke(t *testing.T) {
 	var mu sync.Mutex
 	var posts []string
 	var checkoutForms []url.Values
@@ -191,25 +191,69 @@ func TestPreflightRequiresTheExactManagedPaymentsTaxCode(t *testing.T) {
 	}
 }
 
-// TestPreflightRejectsWebhookAPIVersion pins the endpoint's event rendering to
-// the same Basil shape the invoice decoder expects.
-func TestPreflightRejectsWebhookAPIVersion(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"data":[{"url":"https://feasible.lol/webhooks/stripe","status":"enabled","api_version":"2024-06-20","enabled_events":["*"]}]}`)
-	}))
-	t.Cleanup(server.Close)
+// TestPreflightAcceptsTheMinimumAndLaterDatedWebhookVersions covers Stripe's
+// stable and preview channels while rejecting older or malformed API versions.
+func TestPreflightAcceptsTheMinimumAndLaterDatedWebhookVersions(t *testing.T) {
+	tests := []struct {
+		name       string
+		apiVersion string
+		compatible bool
+	}{
+		{name: "exact Basil minimum", apiVersion: "2025-03-31.basil", compatible: true},
+		{name: "preview on minimum date", apiVersion: "2025-03-31.preview", compatible: true},
+		{name: "later stable channel", apiVersion: "2025-09-30.clover", compatible: true},
+		{name: "later preview channel", apiVersion: "2026-03-04.preview", compatible: true},
+		{name: "valid future leap day", apiVersion: "2028-02-29.future", compatible: true},
+		{name: "older date-only version", apiVersion: "2024-06-20", compatible: false},
+		{name: "older stable channel", apiVersion: "2025-03-30.basil", compatible: false},
+		{name: "older preview channel", apiVersion: "2025-03-30.preview", compatible: false},
+		{name: "minimum date without channel", apiVersion: "2025-03-31", compatible: false},
+		{name: "empty channel", apiVersion: "2025-03-31.", compatible: false},
+		{name: "invalid calendar date", apiVersion: "2025-02-30.basil", compatible: false},
+		{name: "un-padded date", apiVersion: "2025-3-31.basil", compatible: false},
+		{name: "uppercase channel", apiVersion: "2025-09-30.Clover", compatible: false},
+		{name: "numeric channel", apiVersion: "2025-09-30.2026", compatible: false},
+		{name: "multiple channel suffixes", apiVersion: "2025-09-30.clover.preview", compatible: false},
+		{name: "surrounding whitespace", apiVersion: " 2025-09-30.clover ", compatible: false},
+		{name: "undated alias", apiVersion: "latest", compatible: false},
+		{name: "empty version", apiVersion: "", compatible: false},
+	}
 
-	client := stripe.New("sk_test_fake")
-	client.BaseURL = server.URL
-	service := &Service{Stripe: client, BaseURL: "https://feasible.lol"}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"data":[{"url":"https://feasible.lol/webhooks/stripe","status":"enabled","api_version":%q,"enabled_events":["*"]}]}`, test.apiVersion)
+			}))
+			t.Cleanup(server.Close)
 
-	var report PreflightReport
-	service.preflightWebhook(context.Background(), &report)
+			client := stripe.New("sk_test_fake")
+			client.BaseURL = server.URL
+			service := &Service{Stripe: client, BaseURL: "https://feasible.lol"}
 
-	detail := preflightDetail(report, "Webhook endpoint")
-	if !strings.Contains(detail, `"2024-06-20"`) || !strings.Contains(detail, `"`+stripe.ManagedPaymentsAPIVersion+`"`) {
-		t.Fatalf("version mismatch is not explicit: %q", detail)
+			var report PreflightReport
+			service.preflightWebhook(context.Background(), &report)
+
+			if len(report.Checks) != 1 {
+				t.Fatalf("webhook preflight produced %d checks: %+v", len(report.Checks), report.Checks)
+			}
+			wantStatus := PreflightFail
+			if test.compatible {
+				wantStatus = PreflightPass
+			}
+			if report.Checks[0].Status != wantStatus {
+				t.Fatalf("version %q status is %s, want %s: %s",
+					test.apiVersion, report.Checks[0].Status, wantStatus, report.Checks[0].Detail)
+			}
+			if !test.compatible {
+				detail := report.Checks[0].Detail
+				if !strings.Contains(detail, fmt.Sprintf("%q", test.apiVersion)) ||
+					!strings.Contains(detail, stripe.ManagedPaymentsAPIVersion) ||
+					!strings.Contains(detail, "later dated stable/preview") {
+					t.Fatalf("version mismatch is not explicit: %q", detail)
+				}
+			}
+		})
 	}
 }
 

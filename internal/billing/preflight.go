@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/stripe"
 )
@@ -212,9 +213,10 @@ func (s *Service) preflightWebhook(ctx context.Context, report *PreflightReport)
 			report.add(PreflightFail, "Webhook endpoint", fmt.Sprintf("%s is %s", wantURL, endpoint.Status))
 			return
 		}
-		if endpoint.APIVersion != stripe.ManagedPaymentsAPIVersion {
+		if !managedPaymentsWebhookVersionCompatible(endpoint.APIVersion) {
 			report.add(PreflightFail, "Webhook endpoint",
-				fmt.Sprintf("%s renders events as %q, want %q", wantURL, endpoint.APIVersion, stripe.ManagedPaymentsAPIVersion))
+				fmt.Sprintf("%s renders events as %q, want %q or a later dated stable/preview version",
+					wantURL, endpoint.APIVersion, stripe.ManagedPaymentsAPIVersion))
 			return
 		}
 
@@ -229,6 +231,48 @@ func (s *Service) preflightWebhook(ctx context.Context, report *PreflightReport)
 	}
 
 	report.add(PreflightFail, "Webhook endpoint", "no enabled Stripe webhook matches "+wantURL)
+}
+
+// managedPaymentsWebhookVersionCompatible reports whether Stripe will render
+// webhook events with the Managed Payments minimum contract or a newer dated
+// stable/preview contract. The channel is intentionally not compared by name:
+// Stripe advances botanical stable names and the literal preview name without
+// giving either one an ordering independent of its release date.
+func managedPaymentsWebhookVersionCompatible(version string) bool {
+	versionDate, channel, found := strings.Cut(version, ".")
+	if !found || !validStripeAPIVersionChannel(channel) {
+		return false
+	}
+
+	parsed, err := time.Parse("2006-01-02", versionDate)
+	if err != nil {
+		return false
+	}
+
+	minimumDate, _, _ := strings.Cut(stripe.ManagedPaymentsAPIVersion, ".")
+	minimum, err := time.Parse("2006-01-02", minimumDate)
+	if err != nil {
+		return false
+	}
+
+	return !parsed.Before(minimum)
+}
+
+// validStripeAPIVersionChannel accepts Stripe's lowercase release codenames
+// and the lowercase preview channel while rejecting empty, numeric, uppercase,
+// punctuated, or multi-channel suffixes that Stripe cannot interpret.
+func validStripeAPIVersionChannel(channel string) bool {
+	if channel == "" {
+		return false
+	}
+
+	for _, character := range channel {
+		if character < 'a' || character > 'z' {
+			return false
+		}
+	}
+
+	return true
 }
 
 // missingWebhookEvents returns the subscriptions absent from one endpoint.
