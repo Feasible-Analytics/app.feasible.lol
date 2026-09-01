@@ -187,10 +187,11 @@ export interface StatsResponse {
 export interface Goal {
 	id: number;
 	site_id: number;
-	kind: "page" | "event";
+	kind: "page" | "event" | "scroll";
 	display_name: string;
 	page_pattern?: string;
 	event_name?: string;
+	scroll_depth?: number;
 	is_revenue: boolean;
 	currency?: string;
 	is_automatic: boolean;
@@ -218,6 +219,109 @@ export interface GoalReport {
 	rows: GoalReportRow[];
 	visitors: number;
 	visits: number;
+	from: string;
+	to: string;
+}
+
+/** A custom property that has been enabled for analysis. Raw event data may
+ * contain other names; this list is the deliberate, scoped reporting surface. */
+export interface Property {
+	id: number;
+	site_id: number;
+	name: string;
+	scope: "event" | "session";
+	created_at: number;
+}
+
+/** One custom-property value and its three useful counting grains. */
+export interface PropertyReportRow {
+	value: string;
+	missing?: boolean;
+	visitors: number;
+	visits: number;
+	events: number;
+}
+
+/** A property breakdown over the dashboard's active population. */
+export interface PropertyReport {
+	property: Property;
+	rows: PropertyReportRow[];
+	from: string;
+	to: string;
+}
+
+/** One configured step in a funnel. */
+export interface FunnelDefinitionStep {
+	position: number;
+	goal_id: number;
+	goal: Goal;
+}
+
+/** A reusable ordered conversion funnel. */
+export interface Funnel {
+	id: number;
+	site_id: number;
+	name: string;
+	strict_order: boolean;
+	created_at: number;
+	steps: FunnelDefinitionStep[];
+}
+
+/** One measured funnel step, including losses from the preceding step. */
+export interface FunnelReportStep {
+	position: number;
+	label: string;
+	goal: Goal;
+	visitors: number;
+	visits: number;
+	drop_off: number;
+	drop_off_rate: number;
+	conversion_rate: number;
+}
+
+/** Funnel progress over the dashboard's active date range and filters. */
+export interface FunnelReport {
+	funnel: Funnel;
+	steps: FunnelReportStep[];
+	from: string;
+	to: string;
+	partial: boolean;
+}
+
+/** One page, custom event, entrance, or exit adjacent to an explored page. */
+export type JourneyAnchorType = "page" | "event" | "goal";
+
+/** A typed node in an exploratory journey. Goal ids travel as strings because
+ * selectors and URL parameters share one value representation. */
+export interface JourneyAnchor {
+	type: JourneyAnchorType;
+	value: string;
+	label?: string;
+	goal_id?: number;
+}
+
+export interface JourneyStep {
+	anchor: JourneyAnchor;
+	terminal?: boolean;
+	visitors: number;
+	visits: number;
+	events: number;
+}
+
+/** The immediate paths and actions surrounding one exact page. */
+export interface JourneyReport {
+	anchor: JourneyAnchor;
+	direction: "forward" | "backward";
+	trail: JourneyAnchor[];
+	steps: JourneyStep[];
+	/** Legacy page-neighbor fields remain during the API transition. */
+	page?: string;
+	next_pages: JourneyStep[];
+	previous_pages: JourneyStep[];
+	next_events: JourneyStep[];
+	previous_events: JourneyStep[];
+	views: number;
+	visitors: number;
 	from: string;
 	to: string;
 }

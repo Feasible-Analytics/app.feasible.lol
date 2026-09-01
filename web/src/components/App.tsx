@@ -458,7 +458,7 @@ function AnalyticsDashboard() {
 							exact={exact}
 						/>
 					))}
-					<GoalsCard domain={state.domain} range={range} filters={filters} exact={exact} />
+					<GoalsCard domain={state.domain} range={range} filters={filters} exact={exact} onFilter={applyFilter} />
 				</div>
 			</main>
 

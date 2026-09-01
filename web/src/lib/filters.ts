@@ -215,6 +215,12 @@ export const FILTERABLE: DimensionDef[] = [
 		labelId: "dashboard.dimension.event_name",
 		groupId: "dashboard.filter.group.behaviour",
 	},
+	{
+		alias: "goal",
+		dimension: "event:goal",
+		labelId: "dashboard.column.goal",
+		groupId: "dashboard.filter.group.behaviour",
+	},
 ];
 
 const BY_ALIAS = new Map(FILTERABLE.map((entry) => [entry.alias, entry]));
