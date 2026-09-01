@@ -47,6 +47,10 @@ const (
 
 	// KindEvent matches custom events by name.
 	KindEvent Kind = "event"
+
+	// KindScroll matches a visit whose deepest engagement ping reaches a
+	// configured percentage, optionally on pages matching PagePattern.
+	KindScroll Kind = "scroll"
 )
 
 // Limits on one goal. Both are product decisions rather than storage ones,
@@ -99,6 +103,10 @@ type Goal struct {
 	// EventName is the custom event name for an event goal, already trimmed.
 	EventName string `json:"event_name,omitempty"`
 
+	// ScrollDepth is the percentage threshold of a scroll goal. PagePattern is
+	// optional for scroll goals and narrows the threshold to matching pages.
+	ScrollDepth int `json:"scroll_depth,omitempty"`
+
 	// IsRevenue marks a goal that carries money, and Currency is the currency
 	// it is set up in.
 	IsRevenue bool   `json:"is_revenue"`
@@ -126,6 +134,9 @@ func (g Goal) Label() string {
 
 	if g.Kind == KindPage {
 		return "Visit " + g.PagePattern
+	}
+	if g.Kind == KindScroll {
+		return fmt.Sprintf("Scroll %d%%", g.ScrollDepth)
 	}
 
 	return g.EventName
@@ -179,6 +190,9 @@ func (g *Goal) Normalise() {
 		g.EventName = ""
 	case KindEvent:
 		g.PagePattern = ""
+		g.ScrollDepth = 0
+	case KindScroll:
+		g.EventName = ""
 	}
 
 	for i := range g.Properties {
@@ -222,8 +236,21 @@ func (g *Goal) Validate() error {
 			return invalid("an event name may be at most %d characters", MaxEventName)
 		}
 
+	case KindScroll:
+		if g.ScrollDepth < 1 || g.ScrollDepth > 100 {
+			return invalid("a scroll goal's depth must be between 1 and 100, not %d", g.ScrollDepth)
+		}
+		if g.PagePattern != "" {
+			if !strings.HasPrefix(g.PagePattern, "/") {
+				return invalid("a scroll goal's path must start with /, not %q", g.PagePattern)
+			}
+			if _, err := compilePattern(g.PagePattern); err != nil {
+				return err
+			}
+		}
+
 	default:
-		return invalid("a goal is either %q or %q, not %q", KindPage, KindEvent, g.Kind)
+		return invalid("a goal is %q, %q, or %q, not %q", KindPage, KindEvent, KindScroll, g.Kind)
 	}
 
 	if len(g.DisplayName) > MaxDisplayName {
@@ -285,11 +312,11 @@ func Create(ctx context.Context, db *sql.DB, goal Goal, now time.Time) (Goal, er
 	// then read back, so a caller that creates the automatic goals on every
 	// site refresh does not have to know which ones it made last time.
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO goals (site_id, kind, display_name, page_pattern, event_name,
+		INSERT INTO goals (site_id, kind, display_name, page_pattern, event_name, scroll_depth,
 			is_revenue, currency, is_automatic, created_at, signature)
-		VALUES (?,?,?,?,?,?,?,?,?,?)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(site_id, signature) DO NOTHING`,
-		goal.SiteID, string(goal.Kind), goal.DisplayName, goal.PagePattern, goal.EventName,
+		goal.SiteID, string(goal.Kind), goal.DisplayName, goal.PagePattern, goal.EventName, goal.ScrollDepth,
 		boolToInt(goal.IsRevenue), goal.Currency, boolToInt(goal.IsAutomatic), goal.CreatedAt, signature,
 	); err != nil {
 		return Goal{}, fmt.Errorf("goals: create: %w", err)
@@ -337,6 +364,76 @@ func Create(ctx context.Context, db *sql.DB, goal Goal, now time.Time) (Goal, er
 	return goal, nil
 }
 
+// Update atomically replaces a goal's editable definition and property
+// constraints while preserving its identity, creation time, site, and
+// automatic provenance.
+func Update(ctx context.Context, db *sql.DB, goal Goal) (Goal, error) {
+	if goal.ID < 1 {
+		return Goal{}, invalid("a goal update needs an id")
+	}
+
+	existing, err := Get(ctx, db, goal.ID)
+	if err != nil {
+		return Goal{}, err
+	}
+	if goal.SiteID != 0 && goal.SiteID != existing.SiteID {
+		return Goal{}, ErrNotFound
+	}
+
+	goal.SiteID = existing.SiteID
+	goal.CreatedAt = existing.CreatedAt
+	goal.IsAutomatic = existing.IsAutomatic
+	goal.Normalise()
+	if err := goal.Validate(); err != nil {
+		return Goal{}, err
+	}
+	if existing.IsAutomatic && goal.signature() != existing.signature() {
+		return Goal{}, invalid("an automatic goal's matching definition cannot be changed")
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return Goal{}, fmt.Errorf("goals: update: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // a rollback after a successful commit is a no-op
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE goals SET kind = ?, display_name = ?, page_pattern = ?, event_name = ?, scroll_depth = ?,
+			is_revenue = ?, currency = ?, signature = ?
+		WHERE id = ? AND site_id = ?`,
+		string(goal.Kind), goal.DisplayName, goal.PagePattern, goal.EventName, goal.ScrollDepth,
+		boolToInt(goal.IsRevenue), goal.Currency, goal.signature(), goal.ID, goal.SiteID)
+	if err != nil {
+		if strings.Contains(strings.ToUpper(err.Error()), "UNIQUE") {
+			return Goal{}, invalid("an identical goal already exists")
+		}
+		return Goal{}, fmt.Errorf("goals: update: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Goal{}, fmt.Errorf("goals: update: %w", err)
+	}
+	if affected == 0 {
+		return Goal{}, ErrNotFound
+	}
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM goal_properties WHERE goal_id = ?", goal.ID); err != nil {
+		return Goal{}, fmt.Errorf("goals: update properties: %w", err)
+	}
+	for _, property := range goal.Properties {
+		if _, err := tx.ExecContext(ctx,
+			"INSERT INTO goal_properties (goal_id, name, value) VALUES (?,?,?)",
+			goal.ID, property.Name, property.Value); err != nil {
+			return Goal{}, fmt.Errorf("goals: update properties: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Goal{}, fmt.Errorf("goals: update: %w", err)
+	}
+	return goal, nil
+}
+
 // signature renders everything that decides which events a goal matches.
 //
 // It exists because two goals on the same event with different property
@@ -349,8 +446,14 @@ func Create(ctx context.Context, db *sql.DB, goal Goal, now time.Time) (Goal, er
 // different order is the same goal, rather than a duplicate that quietly
 // doubles a number.
 func (g Goal) signature() string {
-	parts := make([]string, 0, len(g.Properties)+3)
-	parts = append(parts, string(g.Kind), g.PagePattern, g.EventName)
+	parts := make([]string, 0, len(g.Properties)+4)
+	parts = append(parts, string(g.Kind), g.PagePattern, g.EventName, fmt.Sprint(g.ScrollDepth))
+	if g.Kind != KindScroll {
+		// Page and event signatures shipped before scroll goals. Keeping their
+		// exact byte representation prevents an existing definition being
+		// duplicated after the scroll_depth column is added.
+		parts = parts[:3]
+	}
 
 	constraints := make([]string, 0, len(g.Properties))
 	for _, property := range g.Properties {
@@ -400,6 +503,13 @@ func Rename(ctx context.Context, db *sql.DB, id int64, name string) error {
 // deliberate: deleting a goal out from under a funnel would leave a chart with
 // a step nobody could explain.
 func Delete(ctx context.Context, db *sql.DB, id int64) error {
+	existing, err := Get(ctx, db, id)
+	if err != nil {
+		return err
+	}
+	if existing.IsAutomatic {
+		return invalid("automatic goals cannot be deleted")
+	}
 	var steps int
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM funnel_steps WHERE goal_id = ?", id).Scan(&steps); err != nil {
 		return fmt.Errorf("goals: delete: %w", err)
@@ -435,7 +545,7 @@ func Delete(ctx context.Context, db *sql.DB, id int64) error {
 // customer already has in their head.
 func List(ctx context.Context, db *sql.DB, siteID int64) ([]Goal, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, site_id, kind, display_name, page_pattern, event_name,
+		SELECT id, site_id, kind, display_name, page_pattern, event_name, scroll_depth,
 		       is_revenue, currency, is_automatic, created_at
 		FROM goals
 		WHERE site_id = ?
@@ -454,7 +564,7 @@ func List(ctx context.Context, db *sql.DB, siteID int64) ([]Goal, error) {
 		)
 
 		if err := rows.Scan(&goal.ID, &goal.SiteID, &kind, &goal.DisplayName,
-			&goal.PagePattern, &goal.EventName, &goal.IsRevenue, &goal.Currency,
+			&goal.PagePattern, &goal.EventName, &goal.ScrollDepth, &goal.IsRevenue, &goal.Currency,
 			&goal.IsAutomatic, &goal.CreatedAt); err != nil {
 			return nil, fmt.Errorf("goals: list: %w", err)
 		}
@@ -519,11 +629,11 @@ func Get(ctx context.Context, db *sql.DB, id int64) (Goal, error) {
 	)
 
 	if err := db.QueryRowContext(ctx, `
-		SELECT id, site_id, kind, display_name, page_pattern, event_name,
+		SELECT id, site_id, kind, display_name, page_pattern, event_name, scroll_depth,
 		       is_revenue, currency, is_automatic, created_at
 		FROM goals WHERE id = ?`, id,
 	).Scan(&goal.ID, &goal.SiteID, &kind, &goal.DisplayName, &goal.PagePattern,
-		&goal.EventName, &goal.IsRevenue, &goal.Currency, &goal.IsAutomatic, &goal.CreatedAt); err != nil {
+		&goal.EventName, &goal.ScrollDepth, &goal.IsRevenue, &goal.Currency, &goal.IsAutomatic, &goal.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Goal{}, ErrNotFound
 		}
@@ -571,7 +681,11 @@ const (
 	// happened" rather than as a bug.
 	EventOutboundClick  = "Outbound Link: Click"
 	EventFileDownload   = "File Download"
-	EventFormSubmission = "Form: Submit"
+	EventFormSubmission = "Form: Submission"
+
+	// EventFormSubmitLegacy is accepted so upgrades retain conversions sent by
+	// tracker releases that used the earlier event name.
+	EventFormSubmitLegacy = "Form: Submit"
 )
 
 // automaticGoals is what every new site gets. The 404 goal is the important
@@ -597,6 +711,24 @@ var automaticGoals = []struct {
 // arrives, because a goal that does not exist until the traffic does would
 // start counting after the thing the customer was trying to measure.
 func EnsureAutomatic(ctx context.Context, db *sql.DB, siteID int64, now time.Time) ([]Goal, error) {
+	// Upgrade the old automatic form definition in place. Its report continues
+	// to match both wire names, but settings and newly installed trackers now
+	// consistently present Plausible's established Form: Submission name.
+	var legacyID int64
+	err := db.QueryRowContext(ctx, `
+		SELECT id FROM goals WHERE site_id = ? AND event_name = ? AND is_automatic = 1`,
+		siteID, EventFormSubmitLegacy).Scan(&legacyID)
+	if err == nil {
+		updated := Goal{Kind: KindEvent, EventName: EventFormSubmission}
+		if _, err := db.ExecContext(ctx,
+			"UPDATE goals SET event_name = ?, signature = ? WHERE id = ?",
+			EventFormSubmission, updated.signature(), legacyID); err != nil {
+			return nil, fmt.Errorf("goals: upgrade automatic form goal: %w", err)
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("goals: find automatic form goal: %w", err)
+	}
+
 	created := make([]Goal, 0, len(automaticGoals))
 
 	for _, automatic := range automaticGoals {

@@ -9,6 +9,8 @@
 package query
 
 import (
+	"context"
+	"database/sql"
 	"math"
 	"sort"
 )
@@ -50,6 +52,9 @@ type expr struct {
 // look up twice: the interned ids of the two event names the metric
 // definitions key off, and the sampling rate.
 type compileContext struct {
+	db      *sql.DB
+	context context.Context
+
 	// pageviewNameID and engagementNameID are the dim_event_name ids for
 	// "pageview" and "engagement". They are -1 on a database that has never
 	// seen one, which matches no row rather than matching id 0 — the empty

@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -449,6 +450,21 @@ func (f *Filter) validate(nested bool) error {
 	case OpIs, OpIsNot, OpContains, OpContainsNot, OpMatches, OpMatchesNot:
 	default:
 		return invalid("unknown filter operator %q", f.Operator)
+	}
+	if f.Dimension == "event:goal" {
+		if f.Operator != OpIs && f.Operator != OpIsNot {
+			return invalid("event:goal supports only is and is_not")
+		}
+		if len(f.Values) == 0 {
+			return invalid("event:goal needs at least one configured goal id")
+		}
+		for _, value := range f.Values {
+			id, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || id < 1 {
+				return invalid("event:goal values must be positive goal ids, not %q", value)
+			}
+		}
+		return nil
 	}
 
 	dimension, err := resolveDimension(f.Dimension)

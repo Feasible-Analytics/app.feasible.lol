@@ -22,8 +22,17 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 )
 
-// ReportPattern is the read-only route the dashboard uses for conversions.
-const ReportPattern = "GET /api/sites/{domain}/goals/report"
+// Dashboard route patterns expose conversions, properties, funnels, and
+// journey exploration over one authorization and query-string vocabulary.
+const (
+	ReportPattern         = "GET /api/sites/{domain}/goals/report"
+	GoalsPattern          = "GET /api/sites/{domain}/goals"
+	PropertiesPattern     = "GET /api/sites/{domain}/properties"
+	PropertyReportPattern = "GET /api/sites/{domain}/properties/{property}/report"
+	FunnelsPattern        = "GET /api/sites/{domain}/funnels"
+	FunnelReportPattern   = "GET /api/sites/{domain}/funnels/{funnel_id}/report"
+	JourneyPattern        = "GET /api/sites/{domain}/journey"
+)
 
 // Handler answers goal reports from the same account database and query engine
 // that power every other dashboard number.
@@ -66,7 +75,7 @@ func NewHandler(cache *sites.Cache, manager *accounts.Manager, log *logger.Logge
 	return &Handler{Sites: cache, Accounts: manager, Log: log}
 }
 
-// ServeHTTP validates, authorizes, and answers one goal report.
+// ServeHTTP validates, authorizes, and answers one conversion-platform read.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		h.fail(w, http.StatusMethodNotAllowed, "GET a goals report from this endpoint")
@@ -102,21 +111,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	request, err := decodeReportRequest(r)
-	if err != nil {
-		h.fail(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	request.Filters = append(append([]query.Filter(nil), authorization.PinnedFilters...), request.Filters...)
-	request.SiteID = site.ID
-	// The dashboard is also where a new site learns which automatic goals it
-	// has. A configured automatic goal is therefore a zero row, while an empty
-	// rows array unambiguously means the site has no goal definitions at all.
-	request.IncludeEmptyAutomatic = true
-	if request.Timezone == "" {
-		request.Timezone = site.Timezone
-	}
-
 	lease, err := h.Accounts.Acquire(r.Context(), site.AccountID)
 	if err != nil {
 		h.internal(w, "open account", err)
@@ -129,20 +123,118 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		engine.Now = h.Now
 	}
 
-	result, err := Report(r.Context(), lease.Account.Reader(), engine, request)
-	if err != nil {
+	if err := h.serveRead(w, r, site, authorization, lease, engine); err != nil {
 		var callerError *query.Error
 		var goalError *Error
-		if errors.As(err, &callerError) || errors.As(err, &goalError) {
+		switch {
+		case errors.Is(err, ErrNotFound):
+			h.fail(w, http.StatusNotFound, "the requested conversion resource does not exist")
+		case errors.As(err, &callerError) || errors.As(err, &goalError):
 			h.fail(w, http.StatusBadRequest, err.Error())
-			return
+		default:
+			h.internal(w, "read conversion dashboard", err)
 		}
+	}
+}
 
-		h.internal(w, "run report", err)
-		return
+// serveRead dispatches one already-authorized site request.
+func (h *Handler) serveRead(w http.ResponseWriter, r *http.Request, site sites.Site, authorization Authorization, lease *accounts.Lease, engine *query.Engine) error {
+	common, err := decodeReportRequest(r)
+	if err != nil {
+		return err
+	}
+	common.SiteID = site.ID
+	common.Filters = append(append([]query.Filter(nil), authorization.PinnedFilters...), common.Filters...)
+	if common.Timezone == "" {
+		common.Timezone = site.Timezone
 	}
 
-	h.write(w, http.StatusOK, result)
+	path := r.URL.Path
+	switch {
+	case strings.HasSuffix(path, "/goals/report"):
+		common.IncludeEmptyAutomatic = true
+		result, err := Report(r.Context(), lease.Account.Reader(), engine, common)
+		if err != nil {
+			return err
+		}
+		h.write(w, http.StatusOK, result)
+
+	case strings.HasSuffix(path, "/goals"):
+		list, err := List(r.Context(), lease.Account.Reader(), site.ID)
+		if err != nil {
+			return err
+		}
+		h.write(w, http.StatusOK, map[string]any{"goals": list})
+
+	case strings.HasSuffix(path, "/properties"):
+		list, err := Allowed(r.Context(), lease.Account.Reader(), site.ID)
+		if err != nil {
+			return err
+		}
+		h.write(w, http.StatusOK, map[string]any{"properties": list})
+
+	case strings.Contains(path, "/properties/") && strings.HasSuffix(path, "/report"):
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		result, err := PropertyReport(r.Context(), lease.Account.Reader(), engine, PropertyReportRequest{
+			SiteID: site.ID, Name: r.PathValue("property"), DateRange: common.DateRange,
+			Timezone: common.Timezone, Filters: common.Filters, Exact: common.Exact, Limit: limit,
+		})
+		if err != nil {
+			return err
+		}
+		h.write(w, http.StatusOK, result)
+
+	case strings.HasSuffix(path, "/funnels"):
+		list, err := ListFunnels(r.Context(), lease.Account.Reader(), site.ID)
+		if err != nil {
+			return err
+		}
+		h.write(w, http.StatusOK, map[string]any{"funnels": list})
+
+	case strings.Contains(path, "/funnels/") && strings.HasSuffix(path, "/report"):
+		id, err := strconv.ParseInt(r.PathValue("funnel_id"), 10, 64)
+		if err != nil || id < 1 {
+			return invalid("a funnel id must be a positive whole number")
+		}
+		result, err := RunFunnel(r.Context(), lease.Account.Reader(), engine, FunnelRequest{
+			FunnelID: id, DateRange: common.DateRange, Timezone: common.Timezone,
+			Filters: common.Filters, Exact: common.Exact,
+		})
+		if err != nil {
+			return err
+		}
+		if result.Funnel.SiteID != site.ID {
+			return ErrNotFound
+		}
+		h.write(w, http.StatusOK, result)
+
+	case strings.HasSuffix(path, "/journey"):
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		var trail []JourneyAnchor
+		if raw := strings.TrimSpace(r.URL.Query().Get("trail")); raw != "" {
+			if err := json.Unmarshal([]byte(raw), &trail); err != nil {
+				return invalid("trail must be a JSON array of anchors")
+			}
+		}
+		anchor := r.URL.Query().Get("anchor")
+		if anchor == "" {
+			anchor = r.URL.Query().Get("page")
+		}
+		result, err := Journey(r.Context(), lease.Account.Reader(), engine, JourneyRequest{
+			SiteID: site.ID, DateRange: common.DateRange, Timezone: common.Timezone,
+			Page: r.URL.Query().Get("page"), Limit: limit, AnchorType: r.URL.Query().Get("anchor_type"),
+			Anchor: anchor, Direction: r.URL.Query().Get("direction"), Trail: trail,
+			Grouping: r.URL.Query().Get("grouping"), Filters: common.Filters, Exact: common.Exact,
+		})
+		if err != nil {
+			return err
+		}
+		h.write(w, http.StatusOK, result)
+
+	default:
+		return ErrNotFound
+	}
+	return nil
 }
 
 // decodeReportRequest reads the compact query-string wire form. The date range

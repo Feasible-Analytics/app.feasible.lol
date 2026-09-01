@@ -458,7 +458,15 @@ function AnalyticsDashboard() {
 							exact={exact}
 						/>
 					))}
-					<GoalsCard domain={state.domain} range={range} filters={filters} exact={exact} />
+					<GoalsCard
+						domain={state.domain}
+						range={range}
+						filters={filters}
+						exact={exact}
+						onFilter={applyFilter}
+						behavior={state.behavior}
+						onBehaviorChange={(behavior) => navigate({ ...state, behavior, drawer: null })}
+					/>
 				</div>
 			</main>
 

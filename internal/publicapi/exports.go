@@ -95,6 +95,11 @@ func (a *API) NewSite(ctx context.Context, key *apikeys.Key, domain, displayName
 	if err != nil {
 		return nil, err
 	}
+	if a.ProvisionSite != nil {
+		if err := a.ProvisionSite(ctx, key.TeamID, site.ID); err != nil {
+			return nil, err
+		}
+	}
 
 	if a.Sites != nil {
 		if err := a.Sites.Refresh(ctx); err != nil && a.Log != nil {
@@ -156,7 +161,20 @@ func (a *API) EditSite(ctx context.Context, key *apikeys.Key, site sites.Site, d
 // AllowedProperties lists a site's custom property allow list, which is part of
 // what the MCP schema resource tells a model it may ask for.
 func (a *API) AllowedProperties(ctx context.Context, siteID int64) ([]CustomProperty, error) {
+	if a.CustomProperties != nil {
+		return a.CustomProperties.ListProperties(ctx, siteID)
+	}
 	return a.Control.CustomProperties(ctx, siteID)
+}
+
+// ValidateGoalDefinition checks the complete goal shape used by MCP and other
+// typed clients.
+func ValidateGoalDefinition(goal Goal) (*Goal, error) {
+	return validateGoal(goalRequest{
+		Kind: goal.Kind, DisplayName: goal.DisplayName, EventName: goal.EventName,
+		PagePath: goal.PagePath, ScrollDepth: goal.ScrollDepth, Currency: goal.Currency,
+		Properties: goal.Properties,
+	})
 }
 
 // ValidateGoalRequest checks a goal body without needing the goals feature to

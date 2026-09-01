@@ -8,7 +8,42 @@
 
 package query
 
-import "encoding/json"
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
+)
+
+// EventFilterSQL compiles dashboard filters into a parameterised predicate on
+// an events-table alias. Ordered reports such as funnels and journeys use it
+// so their raw sequence scans select exactly the same audience as Engine.Run.
+func (e *Engine) EventFilterSQL(ctx context.Context, siteIDs []int64, resolved Resolved, filters []Filter, alias string) (string, []any, error) {
+	if len(filters) == 0 {
+		return "", nil, nil
+	}
+	q := Query{SiteIDs: siteIDs, Filters: filters, Exact: true}
+	compile, err := e.compileContext(ctx, &q)
+	if err != nil {
+		return "", nil, err
+	}
+	scopes, err := e.propertyScopes(ctx, siteIDs)
+	if err != nil {
+		return "", nil, err
+	}
+	builder := newWhereBuilder(tableEvents, compile, scopes, siteIDs, resolved)
+	builder.alias = alias
+	conditions, err := builder.compile(filters)
+	if err != nil {
+		return "", nil, err
+	}
+	compiled := and(conditions)
+	return compiled.SQL, compiled.Args, nil
+}
 
 // whereBuilder compiles a query's filters for one fact table. It exists per
 // table rather than once per query because the same filter means different SQL
@@ -124,6 +159,9 @@ func (b *whereBuilder) one(f Filter) (expr, error) {
 	if f.Operator == OpHasDone {
 		return b.hasDone(f)
 	}
+	if f.Dimension == "event:goal" {
+		return b.goal(f)
+	}
 
 	resolved, err := resolveDimension(f.Dimension)
 	if err != nil {
@@ -135,6 +173,119 @@ func (b *whereBuilder) one(f Filter) (expr, error) {
 	}
 
 	return b.interned(f, resolved)
+}
+
+// goal compiles configured goal ids into their exact event predicates.
+func (b *whereBuilder) goal(f Filter) (expr, error) {
+	var alternatives []expr
+	alias := b.alias
+	if b.table == tableSessions {
+		alias = "e2"
+	}
+	for _, raw := range f.Values {
+		id, _ := strconv.ParseInt(raw, 10, 64)
+		definition, err := b.goalDefinition(id, alias)
+		if err != nil {
+			return expr{}, err
+		}
+		alternatives = append(alternatives, definition)
+	}
+	condition := or(alternatives)
+	if b.table == tableSessions {
+		condition = b.visitsWith(condition)
+	}
+	return negate(condition, f.Negated()), nil
+}
+
+// goalDefinition reads and compiles one site-owned definition against the
+// builder's event alias.
+func (b *whereBuilder) goalDefinition(id int64, alias string) (expr, error) {
+	var kind, page, event string
+	var depth int
+	sites := inInt64("site_id", b.sites)
+	args := append([]any{id}, sites.Args...)
+	err := b.ctx.db.QueryRowContext(b.ctx.context,
+		"SELECT kind, page_pattern, event_name, scroll_depth FROM goals WHERE id = ? AND "+sites.SQL,
+		args...).Scan(&kind, &page, &event, &depth)
+	if errors.Is(err, sql.ErrNoRows) {
+		return expr{}, invalid("goal %d does not exist on the requested site", id)
+	}
+	if err != nil {
+		return expr{}, fmt.Errorf("query: read goal %d: %w", id, err)
+	}
+
+	var condition expr
+	switch kind {
+	case "page":
+		path := expr{SQL: alias + ".pathname_id IN (SELECT id FROM dim_pathname WHERE value = ?)", Args: []any{page}}
+		if strings.Contains(page, "*") {
+			path = expr{SQL: alias + ".pathname_id IN (SELECT id FROM dim_pathname WHERE " + MatchFunction + "(?, value, 1))", Args: []any{goalPattern(page)}}
+		}
+		condition = and([]expr{{SQL: alias + ".name_id = ?", Args: []any{b.ctx.pageviewNameID}}, path})
+	case "event":
+		names := []any{event}
+		if event == "Form: Submission" {
+			names = append(names, "Form: Submit")
+		}
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(names)), ",")
+		condition = expr{SQL: alias + ".name_id IN (SELECT id FROM dim_event_name WHERE value IN (" + placeholders + "))", Args: names}
+	case "scroll":
+		condition = expr{SQL: alias + ".scroll_depth >= ? AND " + alias + ".scroll_depth <= 100", Args: []any{depth}}
+		if page != "" {
+			condition = and([]expr{condition, {SQL: alias + ".pathname_id IN (SELECT id FROM dim_pathname WHERE " + MatchFunction + "(?, value, 1))", Args: []any{goalPattern(page)}}})
+		}
+	default:
+		return expr{}, invalid("goal %d has unsupported kind %q", id, kind)
+	}
+
+	rows, err := b.ctx.db.QueryContext(b.ctx.context,
+		"SELECT name, value FROM goal_properties WHERE goal_id = ? ORDER BY id", id)
+	if err != nil {
+		return expr{}, fmt.Errorf("query: read goal %d properties: %w", id, err)
+	}
+	defer func() { _ = rows.Close() }()
+	parts := []expr{condition}
+	for rows.Next() {
+		var name, value string
+		if err := rows.Scan(&name, &value); err != nil {
+			return expr{}, fmt.Errorf("query: read goal %d properties: %w", id, err)
+		}
+		parts = append(parts, expr{
+			SQL:  "EXISTS (SELECT 1 FROM event_details gp WHERE gp.event_id = " + alias + ".id AND json_extract(gp.props, ?) = ?)",
+			Args: []any{`$."` + name + `"`, value},
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return expr{}, fmt.Errorf("query: read goal %d properties: %w", id, err)
+	}
+	return and(parts), nil
+}
+
+// goalPattern converts stored star syntax into an anchored regular expression.
+func goalPattern(pattern string) string {
+	var out strings.Builder
+	out.WriteByte('^')
+	for i := 0; i < len(pattern); {
+		if pattern[i] != '*' {
+			next := strings.IndexByte(pattern[i:], '*')
+			if next < 0 {
+				out.WriteString(regexp.QuoteMeta(pattern[i:]))
+				break
+			}
+			out.WriteString(regexp.QuoteMeta(pattern[i : i+next]))
+			i += next
+			continue
+		}
+		if strings.HasPrefix(pattern[i:], "**") {
+			out.WriteString(".*")
+			i += 2
+		} else {
+			out.WriteString("[^/]*")
+			i++
+		}
+	}
+	out.WriteByte('$')
+	return out.String()
 }
 
 // interned compiles a filter on a dimension whose values live in a dim_* table.

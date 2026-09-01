@@ -339,6 +339,7 @@ func boolToInt(value bool) int {
 type CustomProperty struct {
 	ID        int64  `json:"id"`
 	Key       string `json:"key"`
+	Scope     string `json:"scope,omitempty"`
 	CreatedAt int64  `json:"created_at"`
 }
 

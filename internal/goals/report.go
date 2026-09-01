@@ -57,10 +57,9 @@ type ReportRow struct {
 	// package's own label prevents every client from reimplementing that rule.
 	Label string `json:"label"`
 
-	// UniqueConversions counts each visit at most once. Clicking a tracked
-	// button twice in one visit is one unique conversion and two total ones,
-	// and both columns are shown because somebody testing a new goal by
-	// clicking it repeatedly always concludes it is broken otherwise.
+	// UniqueConversions counts each visitor at most once. Clicking a tracked
+	// button in two visits is still one unique conversion and every matching
+	// event remains visible in TotalConversions.
 	UniqueConversions int64 `json:"unique_conversions"`
 
 	// TotalConversions counts every matching event.
@@ -225,17 +224,19 @@ func periodFor(ctx context.Context, engine *query.Engine, req ReportRequest, win
 // countGoal fills in one row's conversions, and its money when the goal
 // carries any.
 func countGoal(ctx context.Context, engine *query.Engine, req ReportRequest, goal Goal, window Window, loc *time.Location, row *ReportRow) error {
+	if goal.Kind == KindScroll {
+		return countScrollGoal(ctx, engine, req, goal, window, loc, row)
+	}
 	filters, err := goal.Filters()
 	if err != nil {
 		return err
 	}
 	filters = append(filters, req.Filters...)
 
-	// A visit is the unit of a unique conversion, which is why "visits" is the
-	// metric: on the events table it counts the distinct sessions a matching
-	// event happened in, so a goal converts at most once per visit however
-	// many times it fires.
-	metrics := []string{"visits", "events", "visitors"}
+	// A visitor is the unit of a unique conversion. The same person converting
+	// in two sessions is one unique conversion, while every matching event is
+	// still included in total conversions.
+	metrics := []string{"visitors", "events"}
 
 	if goal.IsRevenue {
 		metrics = append(metrics, "total_revenue", "average_revenue")
@@ -264,14 +265,45 @@ func countGoal(ctx context.Context, engine *query.Engine, req ReportRequest, goa
 
 	row.UniqueConversions = int64(values[0])
 	row.TotalConversions = int64(values[1])
-	row.ConvertedVisitors = int64(values[2])
+	row.ConvertedVisitors = row.UniqueConversions
 
-	if goal.IsRevenue && len(values) >= 5 {
-		row.Revenue = int64(values[3])
-		row.AverageRevenue = int64(values[4])
+	if goal.IsRevenue && len(values) >= 4 {
+		row.Revenue = int64(values[2])
+		row.AverageRevenue = int64(values[3])
 		row.Currency = reportCurrency(req, goal)
 	}
 
+	return nil
+}
+
+// countScrollGoal counts visitors whose engagement measurement reached the
+// configured threshold. Scroll depth is a numeric fact column rather than a
+// query dimension, so this small ordered-report escape hatch still compiles
+// the dashboard's filters through the canonical query filter compiler.
+func countScrollGoal(ctx context.Context, engine *query.Engine, req ReportRequest, goal Goal, window Window, loc *time.Location, row *ReportRow) error {
+	predicate, err := goalPredicate(ctx, engine.Database(), goal, -1)
+	if err != nil {
+		return err
+	}
+	resolved := query.Resolved{
+		Preset: query.RangeCustom, Location: loc,
+		Start: time.Unix(window.Start, 0).In(loc), End: time.Unix(window.End, 0).In(loc),
+	}
+	filterSQL, filterArgs, err := engine.EventFilterSQL(ctx, []int64{req.SiteID}, resolved, req.Filters, "e")
+	if err != nil {
+		return err
+	}
+	where, baseArgs := baseConditions("e", req.SiteID, window)
+	statement := "SELECT COUNT(DISTINCT e.user_id), COUNT(*) FROM events e WHERE " + where + " AND (" + predicate.SQL + ")"
+	args := append(baseArgs, predicate.Args...)
+	if filterSQL != "" {
+		statement += " AND (" + filterSQL + ")"
+		args = append(args, filterArgs...)
+	}
+	if err := engine.Database().QueryRowContext(ctx, statement, args...).Scan(&row.UniqueConversions, &row.TotalConversions); err != nil {
+		return fmt.Errorf("goals: count scroll goal: %w", err)
+	}
+	row.ConvertedVisitors = row.UniqueConversions
 	return nil
 }
 

@@ -67,6 +67,16 @@ func newReportHandler(t *testing.T) (*Handler, *accounts.Manager, string, int64)
 	handler := NewHandler(cache, manager, nil)
 	handler.Now = func() time.Time { return now }
 	handler.Authorize = func(*http.Request, sites.Site) (Authorization, error) { return Authorization{}, nil }
+	lease, err := manager.Acquire(context.Background(), teamID)
+	if err != nil {
+		t.Fatalf("open account: %v", err)
+	}
+	if _, err := EnsureAutomatic(context.Background(), lease.Account.Writer(), siteID, now); err != nil {
+		t.Fatalf("provision automatic goals: %v", err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatalf("release account: %v", err)
+	}
 
 	return handler, manager, domain, siteID
 }
@@ -91,8 +101,8 @@ func TestTheReportEndpointKeepsItsCardVisibleWithAndWithoutGoals(t *testing.T) {
 	if empty.Code != http.StatusOK {
 		t.Fatalf("empty report answered %d: %s", empty.Code, empty.Body.String())
 	}
-	if !json.Valid(empty.Body.Bytes()) || !contains(empty.Body.String(), `"rows":[]`) {
-		t.Fatalf("empty report = %s, want an empty rows array", empty.Body.String())
+	if !json.Valid(empty.Body.Bytes()) || !contains(empty.Body.String(), `"Form: Submission"`) {
+		t.Fatalf("empty report = %s, want provisioned automatic goals", empty.Body.String())
 	}
 
 	lease, err := manager.Acquire(context.Background(), 1)
@@ -118,8 +128,32 @@ func TestTheReportEndpointKeepsItsCardVisibleWithAndWithoutGoals(t *testing.T) {
 	if err := json.Unmarshal(configured.Body.Bytes(), &report); err != nil {
 		t.Fatalf("decode report: %v", err)
 	}
-	if len(report.Rows) != 1 || report.Rows[0].Label != "Signed up" || report.Rows[0].TotalConversions != 0 {
+	if len(report.Rows) != 5 || report.Rows[0].Label != "Signed up" || report.Rows[0].TotalConversions != 0 {
 		t.Fatalf("configured report = %+v", report.Rows)
+	}
+}
+
+// TestJourneyEndpointDecodesTypedContinuation verifies the dashboard's full
+// Explore wire contract reaches the typed journey engine with shared filters.
+func TestJourneyEndpointDecodesTypedContinuation(t *testing.T) {
+	handler, _, domain, _ := newReportHandler(t)
+	request := httptest.NewRequest(http.MethodGet,
+		"/api/sites/"+domain+`/journey?anchor_type=event&anchor=Signup&direction=backward&grouping=prefix&trail=%5B%7B%22type%22%3A%22page%22%2C%22value%22%3A%22%2Fpricing%22%7D%5D&filters=%5B%5D&exact=true`, nil)
+	request.SetPathValue("domain", domain)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("journey answered %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var result JourneyResult
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Anchor.Type != "event" || result.Anchor.Value != "Signup" || result.Direction != "backward" {
+		t.Fatalf("typed anchor = %+v direction %q", result.Anchor, result.Direction)
+	}
+	if len(result.Trail) != 1 || result.Trail[0].Value != "/pricing" || result.Steps == nil {
+		t.Fatalf("journey continuation = trail %+v steps %+v", result.Trail, result.Steps)
 	}
 }
 

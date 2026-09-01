@@ -409,6 +409,37 @@ func TestAutomaticGoalsExistOnEveryNewSite(t *testing.T) {
 	}
 }
 
+// TestAutomaticGoalsCannotBeDeleted pins the domain invariant shared by the
+// browser settings page, public API, and MCP. A successful delete followed by
+// automatic provisioning recreating the row would make deletion dishonest.
+func TestAutomaticGoalsCannotBeDeleted(t *testing.T) {
+	db, _ := newFixture(t)
+	created, err := EnsureAutomatic(context.Background(), db, siteID, fixtureNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Delete(context.Background(), db, created[0].ID); err == nil {
+		t.Fatal("deleting an automatic goal succeeded")
+	}
+	if _, err := Get(context.Background(), db, created[0].ID); err != nil {
+		t.Fatalf("automatic goal disappeared after refused delete: %v", err)
+	}
+}
+
+// TestExistingGoalSignaturesStayByteCompatible protects the uniqueness key
+// written before scroll goals existed. Changing these bytes would let Create
+// add a duplicate page or event definition beside an existing database row.
+func TestExistingGoalSignaturesStayByteCompatible(t *testing.T) {
+	page := Goal{Kind: KindPage, PagePattern: "/thanks"}
+	event := Goal{Kind: KindEvent, EventName: "Signup"}
+	if got, want := page.signature(), "page\x1f/thanks\x1f"; got != want {
+		t.Errorf("page signature = %q, want legacy %q", got, want)
+	}
+	if got, want := event.signature(), "event\x1f\x1fSignup"; got != want {
+		t.Errorf("event signature = %q, want legacy %q", got, want)
+	}
+}
+
 // TestAGoalNeedsSomethingToMatch checks the refusals. Every one of these would
 // otherwise be a goal that silently counts nothing.
 func TestAGoalNeedsSomethingToMatch(t *testing.T) {

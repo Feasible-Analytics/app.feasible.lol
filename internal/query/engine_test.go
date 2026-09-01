@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -550,6 +551,44 @@ func baseQuery(metrics ...string) Query {
 		Metrics:   metrics,
 		DateRange: DateRange{Preset: RangeLast7Days},
 		Timezone:  "UTC",
+	}
+}
+
+// TestGoalFilterResolvesTheStoredDefinition ensures a dashboard goal click is
+// one canonical predicate rather than a lossy frontend approximation.
+func TestGoalFilterResolvesTheStoredDefinition(t *testing.T) {
+	engine, account := newEngineWithAccount(t)
+	ctx := context.Background()
+	result, err := account.Writer().ExecContext(ctx, `
+		INSERT INTO goals (site_id, kind, page_pattern, created_at, signature)
+		VALUES (1, 'page', '/pricing', 0, 'pricing')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	goalID, _ := result.LastInsertId()
+
+	q := baseQuery("visitors", "visits", "events")
+	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:goal", Values: []string{strconv.FormatInt(goalID, 10)}}}
+	report := run(t, engine, q)
+	if got := report.Results[0].Metrics; got[0] != 2 || got[1] != 2 || got[2] != 3 {
+		t.Fatalf("page goal filter metrics = %v, want 2 visitors, 2 visits, and 3 pageviews", got)
+	}
+
+	result, err = account.Writer().ExecContext(ctx, `
+		INSERT INTO goals (site_id, kind, event_name, created_at, signature)
+		VALUES (1, 'event', 'Signup', 0, 'signup-pro')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	propertyGoalID, _ := result.LastInsertId()
+	if _, err := account.Writer().ExecContext(ctx,
+		"INSERT INTO goal_properties (goal_id, name, value) VALUES (?, 'plan', 'pro')", propertyGoalID); err != nil {
+		t.Fatal(err)
+	}
+	q.Filters[0].Values = []string{strconv.FormatInt(propertyGoalID, 10)}
+	report = run(t, engine, q)
+	if got := report.Results[0].Metrics; got[0] != 1 || got[1] != 1 || got[2] != 1 {
+		t.Fatalf("property goal filter metrics = %v, want one matching signup", got)
 	}
 }
 

@@ -1,14 +1,9 @@
-<p><strong>Availability.</strong> The counting engine described here is built and its behaviour is
-final, and the API routes exist with their final shapes. What is not wired up yet is the screen you
-would manage goals from, and the handlers behind
-<code>/api/v1/sites/goals</code> and the funnel tools — they answer <code>501</code> today, naming
-the feature rather than pretending the URL is wrong. This page describes how they count, so that when
-they arrive nothing about the numbers is a surprise. Everything else in these docs describes something
-you can use now.</p>
+<p><strong>Availability.</strong> Goals, properties and funnels are managed in site settings and
+reported together at the bottom of the dashboard. The Explore tab turns the same events into an
+open-ended journey report. The management API uses the same definitions as the screens.</p>
 
 <h3>Goals</h3>
-<p>A goal is one of exactly two things: a page somebody reached, or a custom event they sent. There is
-no third kind and there is not going to be one.</p>
+<p>A goal is a page somebody reached, a custom event they sent, or a scroll depth reached on a page.</p>
 
 <p>A <strong>pageview goal</strong> matches a path, optionally with wildcards:
 <code>/checkout/thank-you</code>, or <code>/blog/**</code>. <code>*</code> stays inside one path
@@ -23,7 +18,11 @@ feasible('Purchase', { revenue: { amount: 49.00, currency: 'USD' } })</code></pr
 <p>Custom events do count towards your monthly volume, because each one is an event we received and
 stored.</p>
 
-<p>Either kind can be narrowed by up to <strong>three property constraints</strong>, and those are
+<p>A <strong>scroll goal</strong> matches a percentage threshold reached on a page. The tracker sends
+scroll measurements automatically, and the goal definition decides which page and depth count as a
+conversion.</p>
+
+<p>Any goal can be narrowed by up to <strong>three property constraints</strong>, and those are
 plain equality — <code>plan = yearly</code>, not <code>plan contains y</code>. If you find yourself
 wanting an operator there, the thing you want is a filter on the report, not a different goal.</p>
 
@@ -33,8 +32,9 @@ wanting an operator there, the thing you want is a filter on the report, not a d
   <li><code>404</code> — <strong>404 pages</strong></li>
   <li><code>Outbound Link: Click</code> — <strong>Outbound link clicks</strong></li>
   <li><code>File Download</code> — <strong>File downloads</strong></li>
-  <li><code>Form: Submit</code> — <strong>Form submissions</strong></li>
+  <li><code>Form: Submission</code> — <strong>Form submissions</strong></li>
 </ul>
+<p>The earlier <code>Form: Submit</code> event name is still accepted for existing integrations.</p>
 <p>They are created with the site rather than when the first matching event arrives, because a goal
 that springs into being with the traffic would start counting after the thing you were trying to
 measure. They stay hidden from the report until they have at least one conversion, so a site that
@@ -53,7 +53,7 @@ moves it.</p>
 
 <h3>What a goal report shows</h3>
 <ul>
-  <li><strong>Unique conversions</strong> — once per visit, however many times it happened.</li>
+  <li><strong>Unique conversions</strong> — once per visitor, however many times it happened.</li>
   <li><strong>Total conversions</strong> — every matching event.</li>
   <li><strong>Converted visitors</strong>, and the <strong>conversion rate</strong>: converted
       visitors over all visitors in the period.</li>
@@ -69,28 +69,27 @@ moves it.</p>
   <li><strong>A funnel is scoped to one visit.</strong> Somebody who signs up on Monday and buys on
       Thursday is two visits and completes nothing. Measure that with a pair of goals rather than a
       funnel.</li>
-  <li><strong>Order is a setting, not a law.</strong> With strict order on, the steps have to happen
-      in sequence and skipping one means leaving the funnel. With it off, a visit counts if it did all
-      of them in any order. Pick deliberately: a checkout is strict, a "did they do all three of these
-      things" is not.</li>
+  <li><strong>Order has two modes.</strong> A sequential funnel requires the steps in order but permits
+      unrelated pages and events between them. Strict order requires the configured steps to be exact
+      consecutive actions. Pick deliberately: most acquisition funnels are sequential, while a tightly
+      controlled checkout may benefit from strict order.</li>
   <li><strong>One event advances at most one step.</strong> A wildcard goal and the exact page beneath
       it cannot both be satisfied by the same pageview, which is what stops a funnel completing itself
       on a single load.</li>
 </ul>
 <p>Each step reports visitors, visits, drop-off against the step before it, and conversion rate
-against the first step. A funnel's measured window starts at the creation date of its
-<em>newest</em> goal, and it says so — otherwise adding a step to an old funnel would render as a
-cliff that never happened.</p>
+against the first step. A funnel's measured window starts at the later of the funnel's own creation
+and its <em>newest</em> goal, and it says so — otherwise a newly configured funnel or a newly added
+step would render old traffic as a cliff that never happened.</p>
 
-<h3>Journeys</h3>
-<p>For one page, a journey report answers "what happens either side of this". It lists the pages and
-the events that immediately preceded and immediately followed it within the same visit, up to twenty
-each way, with the page's own views and visitors alongside so every percentage has its denominator in
-the same answer.</p>
-<p>Two things are deliberate. Visits that started or ended on the page appear as rows called
-<code>(entry)</code> and <code>(exit)</code> rather than being left out, because "most people leave
-here" is the most useful thing such a report can tell you. And trailing slashes are not normalised:
-<code>/about/</code> and <code>/about</code> stay two rows, matching what Top Pages shows you.</p>
+<h3>Explore user journeys</h3>
+<p>Explore starts from any page, event or configured goal and shows what visitors did immediately
+before or after it in the same visit. Choose a result to extend the trail one step at a time, or reverse
+the direction to discover which paths led to a conversion. Dashboard filters apply to every step.</p>
+<p>Pages can be grouped by their first directory to surface patterns, then switched to exact paths for
+detail. Visits with no next or previous action remain visible as <code>No further action</code>, because
+drop-off is often the most useful result in the report. Trailing slashes are not normalised:
+<code>/about/</code> and <code>/about</code> stay distinct in exact mode, matching Top Pages.</p>
 
 <h3>Revenue</h3>
 <p>Revenue rides on a custom event, as an amount and an ISO 4217 currency:</p>

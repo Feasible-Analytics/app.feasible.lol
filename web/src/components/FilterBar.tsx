@@ -8,10 +8,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { DateRange, StatsRequest } from "../api/types";
+import { properties as fetchProperties } from "../api/client";
+import type { DateRange, Property, StatsRequest } from "../api/types";
 import type { FilterLabels, FilterState, Operator } from "../lib/filters";
 import { FILTERABLE, OPERATORS, dimensionLabel, pillMessage, remove, replace, valueOf } from "../lib/filters";
-import { compact } from "../lib/format";
+import { compact, exact } from "../lib/format";
 import { t } from "../lib/i18n";
 import { flagFor } from "../lib/labels";
 import { useStats } from "../lib/useStats";
@@ -91,6 +92,22 @@ export function FilterBar({ domain, range, filters, labels, onChange }: Props) {
 	const [editing, setEditing] = useState<Editing | null>(null);
 	const [expanded, setExpanded] = useState(false);
 	const wrap = useRef<HTMLDivElement>(null);
+	const [customProperties, setCustomProperties] = useState<Property[]>([]);
+
+	// The filter dimension menu is driven by the same enabled-property registry
+	// as the Properties report. A raw property seen once is not silently exposed
+	// until the site owner has chosen its scope and enabled it for analysis.
+	useEffect(() => {
+		if (!domain) return;
+		const controller = new AbortController();
+		let live = true;
+
+		fetchProperties(domain, controller.signal)
+			.then((found) => { if (live) setCustomProperties(found); })
+			.catch(() => { if (live) setCustomProperties([]); });
+
+		return () => { live = false; controller.abort(); };
+	}, [domain]);
 
 	useDismiss(wrap, open || editing !== null, () => {
 		setOpen(false);
@@ -131,7 +148,7 @@ export function FilterBar({ domain, range, filters, labels, onChange }: Props) {
 					key={`${filter.dimension}-${filter.operator}-${index}`}
 					filter={filter}
 					labels={labels}
-					onEdit={() =>
+					onEdit={filter.dimension === "event:goal" ? undefined : () =>
 						setEditing({
 							index,
 							dimension: filter.dimension,
@@ -160,7 +177,6 @@ export function FilterBar({ domain, range, filters, labels, onChange }: Props) {
 			<button
 				type="button"
 				aria-expanded={open || editing !== null}
-				aria-haspopup="dialog"
 				onClick={() => {
 					setEditing(null);
 					setOpen((was) => !was);
@@ -182,6 +198,7 @@ export function FilterBar({ domain, range, filters, labels, onChange }: Props) {
 
 			{open && (
 				<DimensionMenu
+					properties={customProperties}
 					onPick={(dimension) => {
 						setOpen(false);
 						setEditing({ index: null, dimension, operator: "is", values: [] });
@@ -218,7 +235,7 @@ function Pill({
 }: {
 	filter: FilterState;
 	labels: FilterLabels;
-	onEdit: () => void;
+	onEdit?: () => void;
 	onRemove: () => void;
 }) {
 	const text = describe(filter, labels);
@@ -226,18 +243,18 @@ function Pill({
 
 	return (
 		<span className="flex h-control items-center rounded-full border border-line bg-subtle pr-0.5 pl-2.5 text-xs">
-			<button
-				type="button"
-				onClick={onEdit}
-				title={t("dashboard.filter.edit_hint", {
-					dimension: nameOf(filter.dimension),
-					values: fullValues(filter, labels),
-				})}
-				className="flex max-w-56 items-center gap-1.5 truncate font-medium text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent"
-			>
-				<Flag glyph={glyph} />
-				<span className="truncate">{text}</span>
-			</button>
+			{onEdit ? (
+				<button
+					type="button"
+					onClick={onEdit}
+					title={t("dashboard.filter.edit_hint", { dimension: nameOf(filter.dimension), values: fullValues(filter, labels) })}
+					className="flex max-w-56 items-center gap-1.5 truncate font-medium text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent"
+				>
+					<Flag glyph={glyph} /><span className="truncate">{text}</span>
+				</button>
+			) : (
+				<span className="flex max-w-56 items-center gap-1.5 truncate font-medium text-body" title={fullValues(filter, labels)}><Flag glyph={glyph} /><span className="truncate">{text}</span></span>
+			)}
 
 			<button
 				type="button"
@@ -254,11 +271,12 @@ function Pill({
 /** DimensionMenu lists everything that can be filtered, under the headings the
  *  cards already use, so somebody looking for "Browser" hunts in the same place
  *  they read it. */
-function DimensionMenu({ onPick }: { onPick: (dimension: string) => void }) {
+function DimensionMenu({ onPick, properties }: { onPick: (dimension: string) => void; properties: Property[] }) {
 	const groups = useMemo(() => {
 		const seen: string[] = [];
 
 		for (const entry of FILTERABLE) {
+			if (entry.menu === false) continue;
 			if (!seen.includes(entry.groupId)) seen.push(entry.groupId);
 		}
 
@@ -277,7 +295,7 @@ function DimensionMenu({ onPick }: { onPick: (dimension: string) => void }) {
 						{t(group)}
 					</p>
 
-					{FILTERABLE.filter((entry) => entry.groupId === group).map((entry) => (
+					{FILTERABLE.filter((entry) => entry.menu !== false && entry.groupId === group).map((entry) => (
 						<button
 							key={entry.alias}
 							type="button"
@@ -285,6 +303,18 @@ function DimensionMenu({ onPick }: { onPick: (dimension: string) => void }) {
 							className="w-full rounded-sm px-2.5 py-1.5 text-left text-sm text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
 						>
 							{t(entry.labelId)}
+						</button>
+					))}
+
+					{group === "dashboard.filter.group.behaviour" && properties.map((property) => (
+						<button
+							key={`property:${property.id}`}
+							type="button"
+							onClick={() => onPick(`event:props:${property.name}`)}
+							className="flex w-full items-center gap-2 rounded-sm px-2.5 py-1.5 text-left text-sm text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
+						>
+							<span className="min-w-0 flex-1 truncate">{property.name}</span>
+							<span className="text-[10px] text-muted">{property.scope}</span>
 						</button>
 					))}
 				</div>
@@ -457,7 +487,7 @@ function ValueEditor({
 									<span className="min-w-0 flex-1 truncate">
 										{readable(editing.dimension, value, labels)}
 									</span>
-									<span className="tnum shrink-0 text-xs text-muted">{compact(row.metrics[0] ?? 0)}</span>
+									<span className="tnum shrink-0 text-xs text-muted"><span className="sr-only">{exact(row.metrics[0] ?? 0)}</span><span aria-hidden="true">{compact(row.metrics[0] ?? 0)}</span></span>
 								</button>
 							);
 						})

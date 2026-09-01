@@ -6,7 +6,8 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-import { useId, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { t } from "../lib/i18n";
 
@@ -70,6 +71,9 @@ export function ChangeChip({ change, invert = false }: { change: number | null |
  */
 export function InfoDot({ text }: { text: string | string[] }) {
 	const [open, setOpen] = useState(false);
+	const [position, setPosition] = useState({ left: 0, top: 0, ready: false });
+	const trigger = useRef<HTMLButtonElement>(null);
+	const tooltip = useRef<HTMLSpanElement>(null);
 	const id = useId();
 
 	// A tab can add a caveat of its own on top of the card's — "cities are
@@ -77,9 +81,50 @@ export function InfoDot({ text }: { text: string | string[] }) {
 	// note is a list of paragraphs rather than one string.
 	const paragraphs = (Array.isArray(text) ? text : [text]).filter(Boolean);
 
+	// The tooltip lives in a portal so an intentionally clipped report card can
+	// never cut it off. Its final size is needed before choosing above or below,
+	// hence the layout effect after the portal has painted once.
+	useLayoutEffect(() => {
+		if (!open || !trigger.current || !tooltip.current) return;
+
+		const anchor = trigger.current.getBoundingClientRect();
+		const bubble = tooltip.current.getBoundingClientRect();
+		const gutter = 8;
+		const left = Math.min(
+			window.innerWidth - bubble.width - gutter,
+			Math.max(gutter, anchor.left + anchor.width / 2 - bubble.width / 2),
+		);
+		const below = anchor.bottom + gutter;
+		const top = below + bubble.height <= window.innerHeight - gutter ? below : anchor.top - bubble.height - gutter;
+
+		setPosition({ left, top: Math.max(gutter, top), ready: true });
+	}, [open, paragraphs.join("\n")]);
+
+	// Escape dismisses a click-opened explanation without moving focus, while a
+	// viewport move closes it before its fixed position can become stale.
+	useEffect(() => {
+		if (!open) return;
+
+		const closeOnEscape = (event: KeyboardEvent) => {
+			if (event.key === "Escape") setOpen(false);
+		};
+		const closeOnMove = () => setOpen(false);
+
+		document.addEventListener("keydown", closeOnEscape);
+		window.addEventListener("resize", closeOnMove);
+		window.addEventListener("scroll", closeOnMove, true);
+
+		return () => {
+			document.removeEventListener("keydown", closeOnEscape);
+			window.removeEventListener("resize", closeOnMove);
+			window.removeEventListener("scroll", closeOnMove, true);
+		};
+	}, [open]);
+
 	return (
 		<span className="relative inline-flex">
 			<button
+				ref={trigger}
 				type="button"
 				aria-label={t("dashboard.infodot.label")}
 				aria-describedby={open ? id : undefined}
@@ -96,17 +141,21 @@ export function InfoDot({ text }: { text: string | string[] }) {
 				?
 			</button>
 
-			{open && (
-				<span
-					id={id}
-					role="tooltip"
-					className="absolute top-6 left-1/2 z-30 flex w-64 -translate-x-1/2 flex-col gap-2 rounded-md border border-line bg-card p-3 text-xs leading-relaxed font-normal text-body shadow-lg"
-				>
-					{paragraphs.map((paragraph) => (
-						<span key={paragraph}>{paragraph}</span>
-					))}
-				</span>
-			)}
+			{open &&
+				createPortal(
+					<span
+						ref={tooltip}
+						id={id}
+						role="tooltip"
+						style={{ left: position.left, top: position.top, visibility: position.ready ? "visible" : "hidden" }}
+						className="fixed z-[100] flex w-64 max-w-[calc(100vw-1rem)] flex-col gap-2 rounded-md border border-line bg-card p-3 text-xs leading-relaxed font-normal text-body shadow-lg"
+					>
+						{paragraphs.map((paragraph) => (
+							<span key={paragraph}>{paragraph}</span>
+						))}
+					</span>,
+					document.body,
+				)}
 		</span>
 	);
 }

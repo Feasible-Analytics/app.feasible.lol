@@ -55,16 +55,16 @@
 
 <header class="border-b border-line bg-card">
 	<div class="mx-auto flex max-w-5xl items-center gap-3 px-6 py-4">
-		<a href="{{ if .Domain }}{{ url .Lang (printf "/sites?site_context=%s" (.Domain | urlquery)) }}{{ else }}{{ url .Lang "/sites" }}{{ end }}" class="flex items-center gap-2 font-semibold text-heading">
+		<a href="{{ if .Domain }}{{ url .Lang (printf "/sites?team_id=%d&site_context=%s" .TeamID (.Domain | urlquery)) }}{{ else }}{{ url .Lang "/sites" }}{{ end }}" class="flex items-center gap-2 font-semibold text-heading">
 			<span class="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-sm font-bold text-fill-fg">f</span>
 			feasible.lol
 		</a>
 		{{ if .Domain }}<span class="text-sm text-muted">{{ .Domain }}</span>{{ end }}
 		<nav class="ml-auto flex flex-wrap items-center gap-3 text-sm" aria-label="Account">
-			<a href="{{ url .Lang "/dashboard/" }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.dashboard" }}</a>
-			<a href="{{ url .Lang "/sites" }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.sites" }}</a>
-			<a href="{{ url .Lang "/settings" }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.account" }}</a>
-			{{ if canBilling .Role }}<a href="{{ url .Lang "/billing" }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.billing" }}</a>{{ end }}
+			<a href="{{ if .Domain }}{{ url .Lang (printf "/dashboard/%s" .Domain) }}{{ else }}{{ url .Lang "/dashboard/" }}{{ end }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.dashboard" }}</a>
+			<a href="{{ if .Domain }}{{ url .Lang (printf "/sites?team_id=%d&site_context=%s" .TeamID (.Domain | urlquery)) }}{{ else }}{{ url .Lang "/sites" }}{{ end }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.sites" }}</a>
+			<a href="{{ if .TeamID }}{{ url .Lang (printf "/settings?team_id=%d" .TeamID) }}{{ else }}{{ url .Lang "/settings" }}{{ end }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.account" }}</a>
+			{{ if canBilling .Role }}<a href="{{ if .TeamID }}{{ url .Lang (printf "/billing?team=%d" .TeamID) }}{{ else }}{{ url .Lang "/billing" }}{{ end }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.billing" }}</a>{{ end }}
 			<form method="post" action="{{ url .Lang "/logout" }}">
 				<input type="hidden" name="csrf_token" value="{{ .CSRF }}">
 				<button type="submit" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.sign_out" }}</button>
@@ -82,6 +82,7 @@
 
 		{{ if .Domain }}
 			<a href="{{ url .Lang (printf "/sites/domain/%s/settings" .Domain) }}" class="-mb-px border-b-2 border-transparent px-3 py-3 text-sm font-medium text-muted hover:text-heading">{{ t .Lang "auth.site_settings.general" }}</a>
+			<a href="{{ url .Lang (printf "/settings/sites/%s/conversions" .Domain) }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "conversions" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">Conversions</a>
 			<a href="{{ url .Lang (printf "/settings/sites/%s/sharing" .Domain) }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "sharing" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.sharing" }}</a>
 			<a href="{{ url .Lang (printf "/settings/sites/%s/reports" .Domain) }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "reports" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.reports" }}</a>
 			<a href="{{ url .Lang (printf "/settings/sites/%s/health" .Domain) }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "health" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.health" }}</a>

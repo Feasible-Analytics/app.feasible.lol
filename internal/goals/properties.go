@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
 )
 
 // Scope is what a property describes. It is the one decision the incumbent
@@ -259,6 +260,75 @@ type PropertyRow struct {
 	Visitors int64 `json:"visitors"`
 	Visits   int64 `json:"visits"`
 	Events   int64 `json:"events"`
+}
+
+// PropertyReportRequest asks for one property's dashboard breakdown with the
+// same range and audience filters as the rest of the dashboard.
+type PropertyReportRequest struct {
+	SiteID    int64
+	Name      string
+	DateRange query.DateRange
+	Timezone  string
+	Filters   []query.Filter
+	Exact     bool
+	Limit     int
+}
+
+// PropertyReportResult is one filtered property card and its resolved window.
+type PropertyReportResult struct {
+	Property Property      `json:"property"`
+	Rows     []PropertyRow `json:"rows"`
+	From     time.Time     `json:"from"`
+	To       time.Time     `json:"to"`
+}
+
+// PropertyReport answers a custom-property breakdown through the canonical
+// query engine so dashboard filters, scope, exactness, and visitor semantics
+// stay aligned with every other card.
+func PropertyReport(ctx context.Context, db *sql.DB, engine *query.Engine, req PropertyReportRequest) (*PropertyReportResult, error) {
+	name := strings.TrimSpace(req.Name)
+	allowed, err := Allowed(ctx, db, req.SiteID)
+	if err != nil {
+		return nil, err
+	}
+	var property Property
+	for _, candidate := range allowed {
+		if candidate.Name == name {
+			property = candidate
+			break
+		}
+	}
+	if property.ID == 0 {
+		return nil, ErrNotFound
+	}
+	resolved, err := resolveRange(ctx, db, engine, req.SiteID, req.DateRange, req.Timezone)
+	if err != nil {
+		return nil, err
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = DefaultPropertyRows
+	}
+	result, err := engine.Run(ctx, query.Query{
+		SiteIDs: []int64{req.SiteID}, Metrics: []string{"visitors", "visits", "events"},
+		Dimensions: []string{"event:props:" + name}, Filters: req.Filters,
+		DateRange: req.DateRange, Timezone: req.Timezone, Exact: req.Exact,
+		Pagination: query.Pagination{Limit: limit},
+	})
+	if err != nil {
+		return nil, err
+	}
+	answer := &PropertyReportResult{Property: property, Rows: []PropertyRow{}, From: resolved.Start, To: resolved.End}
+	for _, item := range result.Results {
+		if len(item.Dimensions) == 0 || len(item.Metrics) < 3 {
+			continue
+		}
+		answer.Rows = append(answer.Rows, PropertyRow{
+			Value: item.Dimensions[0], Visitors: int64(item.Metrics[0]),
+			Visits: int64(item.Metrics[1]), Events: int64(item.Metrics[2]),
+		})
+	}
+	return answer, nil
 }
 
 // Values answers the property report card.

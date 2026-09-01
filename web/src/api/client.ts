@@ -7,7 +7,22 @@
 //
 
 import { t } from "../lib/i18n";
-import type { Annotation, Bootstrap, DateRange, Filter, GoalReport, Shared, StatsRequest, StatsResponse } from "./types";
+import type {
+	Annotation,
+	Bootstrap,
+	DateRange,
+	Filter,
+	Funnel,
+	FunnelReport,
+	GoalReport,
+	JourneyAnchor,
+	JourneyReport,
+	Property,
+	PropertyReport,
+	Shared,
+	StatsRequest,
+	StatsResponse,
+} from "./types";
 
 /** QueryError carries the server's own sentence. The endpoint answers a caller
  *  mistake with a message written for the person holding the failing request,
@@ -193,6 +208,132 @@ export async function goalsReport(
 	report.rows = Array.isArray(report.rows) ? report.rows : [];
 
 	return report;
+}
+
+/** properties lists the site's deliberately enabled custom-property
+ * dimensions. It is separate from their value reports so switching dashboard
+ * tabs does not scan the cold event-details table merely to populate a menu. */
+export async function properties(domain: string, signal?: AbortSignal): Promise<Property[]> {
+	const response = await dashboardGet(`/api/sites/${encodeURIComponent(domain)}/properties`, signal);
+	const body = (await response.json()) as { properties?: Property[] };
+
+	return Array.isArray(body.properties) ? body.properties : [];
+}
+
+/** propertyReport reads one selected custom property's values over the same
+ * population as the surrounding dashboard. */
+export async function propertyReport(
+	domain: string,
+	name: string,
+	request: DashboardReportRequest,
+	signal?: AbortSignal,
+): Promise<PropertyReport> {
+	const params = reportParams(request);
+	const response = await dashboardGet(
+		`/api/sites/${encodeURIComponent(domain)}/properties/${encodeURIComponent(name)}/report?${params.toString()}`,
+		signal,
+	);
+	const report = (await response.json()) as PropertyReport;
+	report.rows = Array.isArray(report.rows) ? report.rows : [];
+
+	return report;
+}
+
+/** funnels lists reusable funnel definitions without running any of them. */
+export async function funnels(domain: string, signal?: AbortSignal): Promise<Funnel[]> {
+	const response = await dashboardGet(`/api/sites/${encodeURIComponent(domain)}/funnels`, signal);
+	const body = (await response.json()) as { funnels?: Funnel[] };
+
+	return Array.isArray(body.funnels) ? body.funnels : [];
+}
+
+/** funnelReport measures one selected funnel over the dashboard population. */
+export async function funnelReport(
+	domain: string,
+	id: number,
+	request: DashboardReportRequest,
+	signal?: AbortSignal,
+): Promise<FunnelReport> {
+	const params = reportParams(request);
+	const response = await dashboardGet(
+		`/api/sites/${encodeURIComponent(domain)}/funnels/${id}/report?${params.toString()}`,
+		signal,
+	);
+	const report = (await response.json()) as FunnelReport;
+	report.steps = Array.isArray(report.steps) ? report.steps : [];
+
+	return report;
+}
+
+/** journeyReport reads the actions immediately before and after an exact page.
+ * The current page is sent separately because clicking a neighboring page is
+ * how the Explore view continues through a journey. */
+export async function journeyReport(
+	domain: string,
+	anchor: JourneyAnchor,
+	direction: "forward" | "backward",
+	grouping: "exact" | "prefix",
+	trail: JourneyAnchor[],
+	request: DashboardReportRequest,
+	signal?: AbortSignal,
+): Promise<JourneyReport> {
+	const params = reportParams(request);
+	params.set("anchor_type", anchor.type);
+	params.set("anchor", anchor.value);
+	params.set("direction", direction);
+	params.set("trail", JSON.stringify(trail));
+	params.set("grouping", grouping);
+	const response = await dashboardGet(
+		`/api/sites/${encodeURIComponent(domain)}/journey?${params.toString()}`,
+		signal,
+	);
+	const report = (await response.json()) as JourneyReport;
+	report.steps = Array.isArray(report.steps) ? report.steps : [];
+	report.trail = Array.isArray(report.trail) ? report.trail : [];
+	report.anchor = report.anchor ?? anchor;
+	report.direction = report.direction === "backward" ? "backward" : "forward";
+	report.next_pages = Array.isArray(report.next_pages) ? report.next_pages : [];
+	report.previous_pages = Array.isArray(report.previous_pages) ? report.previous_pages : [];
+	report.next_events = Array.isArray(report.next_events) ? report.next_events : [];
+	report.previous_events = Array.isArray(report.previous_events) ? report.previous_events : [];
+
+	return report;
+}
+
+interface DashboardReportRequest {
+	dateRange: DateRange;
+	filters?: Filter[];
+	timezone?: string;
+	exact?: boolean;
+}
+
+/** reportParams keeps every behavior report on one query-string contract. */
+function reportParams(request: DashboardReportRequest): URLSearchParams {
+	const params = new URLSearchParams({ date_range: JSON.stringify(request.dateRange) });
+	if (request.filters?.length) params.set("filters", JSON.stringify(request.filters));
+	if (request.timezone) params.set("timezone", request.timezone);
+	if (request.exact) params.set("exact", "true");
+
+	return params;
+}
+
+/** dashboardGet applies capability headers and turns the shared error envelope
+ * into the same QueryError every other dashboard report uses. */
+async function dashboardGet(path: string, signal?: AbortSignal): Promise<Response> {
+	const response = await fetch(path, { headers: capabilityHeaders(), signal });
+
+	if (response.ok) return response;
+
+	let message = t("dashboard.error.query_status", { status: response.status });
+
+	try {
+		const failure = (await response.json()) as { error?: string };
+		if (failure?.error) message = failure.error;
+	} catch {
+		/* Keep the status-based message. */
+	}
+
+	throw new QueryError(response.status, message);
 }
 
 /** capabilityHeaders carries the public/shared capability on every stats

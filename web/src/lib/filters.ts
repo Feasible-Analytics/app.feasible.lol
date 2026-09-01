@@ -76,6 +76,9 @@ export interface DimensionDef {
 	labelId: string;
 	/** The heading this dimension sits under in the filter menu. */
 	groupId: string;
+	/** False keeps a server-resolved filter readable and round-trippable while
+	 * preventing the generic breakdown editor from offering an invalid query. */
+	menu?: boolean;
 }
 
 export const FILTERABLE: DimensionDef[] = [
@@ -215,6 +218,13 @@ export const FILTERABLE: DimensionDef[] = [
 		labelId: "dashboard.dimension.event_name",
 		groupId: "dashboard.filter.group.behaviour",
 	},
+	{
+		alias: "goal",
+		dimension: "event:goal",
+		labelId: "dashboard.column.goal",
+		groupId: "dashboard.filter.group.behaviour",
+		menu: false,
+	},
 ];
 
 const BY_ALIAS = new Map(FILTERABLE.map((entry) => [entry.alias, entry]));
@@ -321,8 +331,10 @@ export function decodeFilter(raw: string): FilterState | null {
 
 	if (!OPERATOR_IDS.has(operator)) return null;
 	if (!alias) return null;
+	const dimension = dimensionOf(alias);
+	if (dimension === "event:goal" && operator !== "is" && operator !== "is_not") return null;
 
-	return { operator: operator as Operator, dimension: dimensionOf(alias), values };
+	return { operator: operator as Operator, dimension, values };
 }
 
 /** encodeLabel renders one `l=` pair. */

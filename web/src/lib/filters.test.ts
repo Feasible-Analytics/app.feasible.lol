@@ -11,6 +11,7 @@ import { test } from "node:test";
 
 import type { FilterState } from "./filters";
 import {
+	FILTERABLE,
 	aliasOf,
 	decodeFilter,
 	decodeLabel,
@@ -48,6 +49,20 @@ test("the short alias in the URL expands to the API dimension", () => {
 	assert.equal(dimensionOf("page"), "event:page");
 	assert.equal(dimensionOf("source"), "visit:source");
 	assert.equal(dimensionOf("screen"), "visit:screen");
+	assert.equal(aliasOf("event:goal"), "goal");
+	assert.equal(dimensionOf("goal"), "event:goal");
+});
+
+test("goal filters round trip but stay out of the generic breakdown menu", () => {
+	const goal = FILTERABLE.find((entry) => entry.dimension === "event:goal");
+
+	assert.equal(goal?.menu, false);
+	assert.deepEqual(roundTrip({ operator: "is", dimension: "event:goal", values: ["42"] }), {
+		operator: "is",
+		dimension: "event:goal",
+		values: ["42"],
+	});
+	assert.equal(decodeFilter("contains,goal,42"), null);
 });
 
 test("a dimension with no alias travels spelled out", () => {

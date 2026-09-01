@@ -307,6 +307,9 @@ func (d *dataStack) background() func(context.Context, func(func())) {
 // names the file — and so a test can build the same handler over a temporary
 // database.
 func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *ingest.Service, secret []byte, mailer *mail.Mailer, gate *access.Gate, purger auth.PermanentAccountDeleter) (*auth.Handler, error) {
+	if err := provisionExistingSites(context.Background(), control, manager, time.Now().UTC()); err != nil {
+		return nil, err
+	}
 	key, err := auth.LoadKey(e.cfg.App.DataDir, e.cfg.App.SecretKey)
 	if err != nil {
 		return nil, err
@@ -329,9 +332,18 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 		Destructive: &destructive.Service{DB: control, Accounts: manager},
 		Keyer:       tracker.NewKeyer(secret, service.Sites),
 		SiteCache:   service.Sites,
-		Access:      gate.Blocked,
-		BaseURL:     e.cfg.App.BaseURL,
-		Log:         e.log,
+		ProvisionSite: func(ctx context.Context, accountID, siteID int64, now time.Time) error {
+			lease, err := manager.Acquire(ctx, accountID)
+			if err != nil {
+				return err
+			}
+			defer lease.Release() //nolint:errcheck // the provisioning error is more actionable than an unlock error
+			_, err = goals.EnsureAutomatic(ctx, lease.Account.Writer(), siteID, now)
+			return err
+		},
+		Access:  gate.Blocked,
+		BaseURL: e.cfg.App.BaseURL,
+		Log:     e.log,
 	})
 }
 
@@ -503,6 +515,12 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 		return goals.Authorization{PinnedFilters: authorized.PinnedFilters}, nil
 	}
 	mux.Handle(goals.ReportPattern, com.Gate.Protect(goalReport))
+	mux.Handle(goals.GoalsPattern, com.Gate.Protect(goalReport))
+	mux.Handle(goals.PropertiesPattern, com.Gate.Protect(goalReport))
+	mux.Handle(goals.PropertyReportPattern, com.Gate.Protect(goalReport))
+	mux.Handle(goals.FunnelsPattern, com.Gate.Protect(goalReport))
+	mux.Handle(goals.FunnelReportPattern, com.Gate.Protect(goalReport))
+	mux.Handle(goals.JourneyPattern, com.Gate.Protect(goalReport))
 
 	// The compiled React dashboard, served out of the binary. It reads the site
 	// snapshot only to render the site picker; every number on it comes from
@@ -526,7 +544,8 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 			Sites: domains,
 			Navigation: &dashboard.Navigation{
 				Name: nav.Name, Email: nav.Email, SitesURL: nav.SitesURL,
-				SiteSettingsURL: nav.SiteSettingsURL, AccountURL: nav.AccountURL,
+				SiteSettingsURL: nav.SiteSettingsURL, ConversionsURL: nav.ConversionsURL,
+				AccountURL: nav.AccountURL,
 				BillingURL: nav.BillingURL, ExportURL: nav.ExportURL,
 				LogoutURL: nav.LogoutURL, CSRF: nav.CSRF, TeamID: nav.TeamID,
 			},

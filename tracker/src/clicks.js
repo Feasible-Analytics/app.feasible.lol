@@ -191,7 +191,7 @@ function onSubmit(event) {
 	if (form.__fs) return;
 
 	const parsed = parseTag(tagFor(event.submitter || form) || form);
-	const name = parsed ? parsed[0] : "Form: Submit";
+	const name = parsed ? parsed[0] : "Form: Submission";
 	const props = parsed ? parsed[1] : {};
 
 	if (KEEPALIVE) {

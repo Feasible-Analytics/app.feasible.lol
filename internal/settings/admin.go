@@ -125,8 +125,9 @@ type screen struct {
 	// looked up per helper because the layout needs it for the html element's
 	// lang and dir attributes as well, and two negotiations of the same request
 	// could disagree.
-	Lang string
-	CSRF string
+	Lang   string
+	CSRF   string
+	TeamID int64
 
 	// BaseURL is what the share links and the embed snippet are built from.
 	BaseURL string
@@ -244,6 +245,7 @@ func (h *TeamHandler) render(w http.ResponseWriter, r *http.Request, name string
 	data.BaseURL = h.BaseURL
 	data.Lang = i18n.Negotiate(r)
 	if identity, err := h.Identify(r); err == nil {
+		data.TeamID = identity.TeamID
 		if role, roleErr := h.Teams.RoleOf(r.Context(), identity.TeamID, identity.UserID); roleErr == nil {
 			data.Role = role
 		}

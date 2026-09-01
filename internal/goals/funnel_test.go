@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
 )
 
@@ -34,7 +35,7 @@ func buildFunnel(t *testing.T, db *sql.DB, strict bool) Funnel {
 
 	funnel, err := CreateFunnel(context.Background(), db, Funnel{
 		SiteID: siteID, Name: "Checkout", StrictOrder: strict, Steps: steps,
-	}, fixtureNow)
+	}, goalCreated)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,12 +59,10 @@ func runFunnel(t *testing.T, db *sql.DB, engine *query.Engine, funnel Funnel) *F
 	return result
 }
 
-// TestAStrictFunnelCountsTheStepsInOrder is the drop-off test.
-//
-// Four visits reach the cart. Two go on to the checkout, one of those reaches
-// payment and completes. The visit that jumped from the cart straight to the
-// confirmation page counts as one step, and so does the visit that did every
-// page in the wrong order — which is exactly what strict order means.
+// TestAStrictFunnelRequiresConsecutiveSteps checks exact-consecutive mode. A
+// later unrelated event cannot erase a sequence that already completed; the
+// fixture's complete checkout is therefore retained even though Purchase
+// follows its final page.
 func TestAStrictFunnelCountsTheStepsInOrder(t *testing.T) {
 	db, engine := newFixture(t)
 
@@ -91,23 +90,20 @@ func TestAStrictFunnelCountsTheStepsInOrder(t *testing.T) {
 		}
 	}
 
-	// The last step against the first is what people mean by "our funnel
-	// converts at": one of the four visitors who reached the cart finished.
 	if got := result.Steps[3].ConversionRate; got != 25 {
 		t.Errorf("funnel conversion rate = %v, want 25", got)
 	}
 }
 
-// TestALooseFunnelCountsTheStepsInAnyOrder is the other half of the option.
-// The visit that did every page in the wrong order completes a loose funnel
-// and does not complete a strict one, and that difference is the entire reason
-// the flag exists.
+// TestASequentialFunnelAllowsUnrelatedEvents is the other half of the option.
+// Steps still have to be ordered, while unrelated activity between them is
+// ignored.
 func TestALooseFunnelCountsTheStepsInAnyOrder(t *testing.T) {
 	db, engine := newFixture(t)
 
 	result := runFunnel(t, db, engine, buildFunnel(t, db, false))
 
-	wantVisitors := []int64{4, 3, 2, 2}
+	wantVisitors := []int64{4, 2, 1, 1}
 
 	for i, step := range result.Steps {
 		if step.Visitors != wantVisitors[i] {
@@ -131,6 +127,47 @@ func TestFunnelVisitsAndVisitorsAreCountedSeparately(t *testing.T) {
 		if step.Visits != wantVisits[i] {
 			t.Errorf("step %d visits = %d, want %d", i+1, step.Visits, wantVisits[i])
 		}
+	}
+}
+
+// TestScrollStepsWorkInBothFunnelModes ensures engagement measurements that
+// satisfy a scroll goal remain visible to the ordered walk while ordinary
+// heartbeat pings do not interrupt a strict funnel.
+func TestScrollStepsWorkInBothFunnelModes(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		t.Run(map[bool]string{false: "sequential", true: "strict"}[strict], func(t *testing.T) {
+			db, engine := newFixture(t)
+			writeScrollMeasurement(t, db)
+			page := mustCreate(t, db, Goal{SiteID: siteID, Kind: KindPage, PagePattern: "/pricing"})
+			scroll := mustCreate(t, db, Goal{SiteID: siteID, Kind: KindScroll, PagePattern: "/pricing", ScrollDepth: 50})
+			funnel, err := CreateFunnel(context.Background(), db, Funnel{
+				SiteID: siteID, Name: "Read pricing", StrictOrder: strict,
+				Steps: []Step{{GoalID: page.ID}, {GoalID: scroll.ID}},
+			}, goalCreated)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := runFunnel(t, db, engine, funnel)
+			if result.Steps[0].Visitors != 2 || result.Steps[1].Visitors != 1 {
+				t.Fatalf("scroll funnel visitors = %d -> %d, want 2 -> 1", result.Steps[0].Visitors, result.Steps[1].Visitors)
+			}
+		})
+	}
+}
+
+// writeScrollMeasurement adds the real engagement measurement used by the
+// scroll funnel test without changing the shared package fixture's event
+// totals. It follows the pricing page immediately, which lets strict mode
+// prove that this matching measurement is an action while other heartbeats
+// remain invisible.
+func writeScrollMeasurement(t *testing.T, db *sql.DB) {
+	t.Helper()
+	engagementID := internID(t, db, "dim_event_name", ingest.EventEngagement)
+	pricingID := internID(t, db, "dim_pathname", "/pricing")
+	if _, err := db.ExecContext(context.Background(), `
+		INSERT INTO events (id, site_id, timestamp, name_id, user_id, session_id, pathname_id, scroll_depth)
+		VALUES (30, ?, ?, ?, ?, 1, ?, 80)`, siteID, at(29, 10, 1)+1, engagementID, visitorA, pricingID); err != nil {
+		t.Fatal(err)
 	}
 }
 

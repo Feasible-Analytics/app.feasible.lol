@@ -87,6 +87,8 @@ func (a *API) answerStoreError(w http.ResponseWriter, what string, err error) {
 		a.fail(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, ErrConflict), errors.Is(err, sharing.ErrSiteOwnerChanged):
 		a.fail(w, http.StatusConflict, err.Error())
+	case errors.Is(err, ErrInvalid):
+		a.fail(w, http.StatusBadRequest, err.Error())
 	default:
 		a.internal(w, what, err)
 	}
@@ -232,6 +234,12 @@ func (a *API) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.answerStoreError(w, "create site", err)
 		return
+	}
+	if a.ProvisionSite != nil {
+		if err := a.ProvisionSite(r.Context(), key.TeamID, site.ID); err != nil {
+			a.answerStoreError(w, "provision site defaults", err)
+			return
+		}
 	}
 
 	// The routing snapshot is rebuilt immediately rather than at the next
@@ -556,7 +564,13 @@ func (a *API) handleListCustomProps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	properties, err := a.Control.CustomProperties(r.Context(), site.ID)
+	var properties any
+	var err error
+	if a.CustomProperties != nil {
+		properties, err = a.CustomProperties.ListProperties(r.Context(), site.ID)
+	} else {
+		properties, err = a.Control.CustomProperties(r.Context(), site.ID)
+	}
 	if err != nil {
 		a.answerStoreError(w, "custom properties", err)
 		return
@@ -569,6 +583,7 @@ func (a *API) handleListCustomProps(w http.ResponseWriter, r *http.Request) {
 type customPropRequest struct {
 	SiteID string `json:"site_id"`
 	Key    string `json:"key"`
+	Scope  string `json:"scope"`
 }
 
 // handleCreateCustomProp allows a property on a site.
@@ -602,12 +617,21 @@ func (a *API) handleCreateCustomProp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(name) > 64 {
-		a.fail(w, http.StatusBadRequest, "key is longer than the 64 characters a property name may have")
+	if len(name) > 300 {
+		a.fail(w, http.StatusBadRequest, "key is longer than the 300 characters a property name may have")
 		return
 	}
-
-	property, err := a.Control.AddCustomProperty(r.Context(), site.ID, name)
+	scope := strings.TrimSpace(request.Scope)
+	if scope == "" {
+		scope = "event"
+	}
+	var property any
+	var err error
+	if a.CustomProperties != nil {
+		property, err = a.CustomProperties.CreateProperty(r.Context(), site.ID, name, scope)
+	} else {
+		property, err = a.Control.AddCustomProperty(r.Context(), site.ID, name)
+	}
 	if err != nil {
 		a.answerStoreError(w, "add custom property", err)
 		return
@@ -628,7 +652,13 @@ func (a *API) handleDeleteCustomProp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.Control.DeleteCustomProperty(r.Context(), site.ID, id); err != nil {
+	var err error
+	if a.CustomProperties != nil {
+		err = a.CustomProperties.DeleteProperty(r.Context(), site.ID, id)
+	} else {
+		err = a.Control.DeleteCustomProperty(r.Context(), site.ID, id)
+	}
+	if err != nil {
 		a.answerStoreError(w, "delete custom property", err)
 		return
 	}

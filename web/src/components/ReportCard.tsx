@@ -265,7 +265,8 @@ export function ReportCard({
 												className="tnum w-16 translate-x-16 text-right text-sm font-medium text-body transition-transform duration-150 ease-[var(--ease-ui)] group-hover/card:translate-x-0"
 												title={exact(value)}
 											>
-												{compact(value)}
+												<span className="sr-only">{exact(value)}</span>
+												<span aria-hidden="true">{compact(value)}</span>
 											</span>
 											<span className="tnum w-16 pr-1 text-right text-sm text-muted opacity-0 transition-opacity duration-150 ease-[var(--ease-ui)] group-hover/card:opacity-100">
 												{percent(value, total)}
