@@ -7,4 +7,3 @@
 --
 
 ALTER TABLE goals ADD COLUMN scroll_depth INTEGER NOT NULL DEFAULT 0;
-
