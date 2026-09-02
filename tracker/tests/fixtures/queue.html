@@ -30,8 +30,15 @@
 					(window.legacy.q = window.legacy.q || []).push(arguments);
 				};
 
+			window.plausible =
+				window.plausible ||
+				function () {
+					(window.plausible.q = window.plausible.q || []).push(arguments);
+				};
+
 			window.feasible("Queued Early", { props: { when: "before" } });
 			window.legacy("Legacy Queued");
+			window.plausible("Plausible Queued", { props: { when: "migration" } });
 		</script>
 		<script
 			defer
@@ -44,8 +51,10 @@
 	<body>
 		<h1>Queue fixture</h1>
 		<button id="after" type="button">fire through the alias after load</button>
+		<button id="plausible-after" type="button">fire through the migration alias after load</button>
 		<script>
 			document.getElementById("after").onclick = () => window.legacy("Legacy Later");
+			document.getElementById("plausible-after").onclick = () => window.plausible("Plausible Later");
 		</script>
 	</body>
 </html>

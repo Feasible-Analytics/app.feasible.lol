@@ -37,19 +37,18 @@ function api(name, options) {
 // framework that mounts before a deferred script runs, is not a ReferenceError
 // and is not silently lost. Draining it here is what makes those calls arrive.
 //
-// `alias` exposes the same function under a second global name. It is how a
-// site migrating from another provider keeps its existing snippet and its
-// existing calls working while it changes one hostname.
+// The Plausible spelling is always installed as a migration alias, while
+// `data-alias` can expose the same function under one additional site-defined
+// name. Reassigning a duplicate is harmless because its queue is already gone.
 function install(fn) {
-	for (const name of ["feasible", cfg.n]) {
+	for (const name of ["feasible", "plausible", cfg.n]) {
 		if (!name) continue;
 
-		const existing = win[name];
-		const queued = existing && existing.q;
+		const queued = win[name]?.q;
 
 		win[name] = fn;
 
-		if (queued) for (const args of queued) fn(...args);
+		queued?.forEach((args) => fn(...args));
 	}
 }
 

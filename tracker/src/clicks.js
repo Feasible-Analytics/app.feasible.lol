@@ -9,8 +9,9 @@
 import { doc, loc, page } from "./state.js";
 import { send, KEEPALIVE } from "./send.js";
 
-// The class prefix that tags an element for tracking.
-const TAG = "feasible-event-";
+// The class prefixes that tag an element for tracking. The native spelling is
+// first; the second lets a migrating site keep its existing event markup.
+const TAG = /^(feasible|plausible)-event-/;
 
 // How far up the tree to look for a tag. A click lands on whatever is under the
 // cursor — the `<svg>` inside a `<span>` inside the `<button>` that carries the
@@ -34,10 +35,15 @@ function classesOf(el) {
 	return (el.getAttribute && el.getAttribute("class")) || "";
 }
 
+// prefixOf returns the supported tracking-prefix match for one class.
+function prefixOf(cls) {
+	return TAG.exec(cls);
+}
+
 // tagFor walks up from a click target looking for a tagged element.
 function tagFor(el) {
 	for (let i = 0; i <= TAG_DEPTH && el && el.getAttribute; i++) {
-		if (classesOf(el).indexOf(TAG) >= 0) return el;
+		if (classesOf(el).split(/\s+/).some(prefixOf)) return el;
 		el = el.parentElement;
 	}
 
@@ -48,24 +54,24 @@ function tagFor(el) {
 // returning them as a `[name, props]` pair or null when the element carries no
 // usable tag.
 //
-// The format is `feasible-event-<key>=<value>`, with `name` naming the event
-// and every other key becoming a property. `+` stands for a space, because a
-// class attribute cannot contain one. A bare `feasible-event-<Name>` with no
-// `=` is the same thing with the `name=` left off, which is why a missing `=`
-// resolves to the `name` key rather than to a branch of its own: `slice(0)`
-// over the whole segment is exactly the value the shorthand means.
+// The native format is `feasible-event-<key>=<value>`; the migration-compatible
+// `plausible-event-` prefix means the same thing. The latter also accepts `--`
+// as the separator because visual site builders commonly rewrite `=` inside a
+// class. `name` names the event, every other key becomes a property, and `+`
+// stands for a space. A bare prefixed class is shorthand for the event name.
 function parseTag(el) {
 	let name = "";
 	const props = {};
 
 	for (const cls of classesOf(el).split(/\s+/)) {
-		if (cls.indexOf(TAG) !== 0) continue;
+		const prefix = prefixOf(cls);
+		if (!prefix) continue;
 
-		const rest = cls.slice(TAG.length);
-		const eq = rest.indexOf("=");
+		const rest = cls.slice(prefix[0].length);
+		const split = rest.search(/=|--/);
 
-		const key = eq < 0 ? "name" : rest.slice(0, eq);
-		const value = rest.slice(eq + 1).replace(/\+/g, " ");
+		const key = split < 0 ? "name" : rest.slice(0, split);
+		const value = rest.slice(split + 1 + (rest[split] === "-")).replace(/\+/g, " ");
 
 		if (key === "name") name = value;
 		else props[key] = value;

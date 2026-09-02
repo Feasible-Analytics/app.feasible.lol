@@ -64,7 +64,9 @@ pageview that is never called is data nothing can recover.</p>
 
 <h4>data-alias</h4>
 <p>Expose the same function under a second name on <code>window</code>, for a site that already has
-its own <code>feasible</code> global or a house convention to follow.</p>
+its own <code>feasible</code> global or a house convention to follow. The tracker always installs
+<code>window.plausible</code> as a built-in migration alias, so existing calls keep working without
+this attribute.</p>
 
 <h4>data-capture-on-localhost</h4>
 <p>Count traffic on a local address. Off by default, so development traffic never reaches your real
@@ -115,12 +117,17 @@ monthly volume. Engagement pings never do.</p>
 <code>feasible-event-&lt;key&gt;=&lt;value&gt;</code> becomes a property. A class attribute cannot
 hold a space, so <code>+</code> is decoded as one: <code>feasible-event-name=Article+Saved</code>
 sends <code>Article Saved</code>.</p>
+<p>Sites migrating from Plausible can leave their existing <code>plausible-event-…</code> classes in
+place. Both the <code>=</code> form and the site-builder-friendly <code>--</code> separator are accepted,
+including event properties and tagged forms.</p>
 
 <h3>Calling it yourself</h3>
 <pre><code>feasible('Signup', { props: { plan: 'yearly' } })
 feasible('Purchase', { revenue: { amount: 49.00, currency: 'USD' } })
 feasible('Heartbeat', { interactive: false })
 feasible('pageview', { u: '/checkout/step-2' })</code></pre>
+<p><code>plausible(…)</code> is an alias of <code>feasible(…)</code>. Existing queued calls made before
+the tracker loads are replayed through either name.</p>
 <p>Two details that cost people an afternoon:</p>
 <ul>
   <li>A <strong>custom event</strong> takes <code>props</code>. A <strong>pageview</strong> takes

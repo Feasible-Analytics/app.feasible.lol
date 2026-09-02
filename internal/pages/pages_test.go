@@ -978,9 +978,9 @@ func TestProxyDocsRequireHeaderSanitation(t *testing.T) {
 	}
 }
 
-// TestNoCompetitorIsNamed keeps the repository's rule. The docs cover the same
-// topics as the incumbent's and say so in our own words, but naming anybody is
-// off limits.
+// TestNoCompetitorIsNamed keeps comparisons out of the documentation. The one
+// exception is the script-options page, where the exact Plausible identifiers
+// are part of the migration API and cannot be documented under another name.
 func TestNoCompetitorIsNamed(t *testing.T) {
 	banned := []string{"plausible", "fathom", "matomo", "simple analytics", "google analytics", "paddle"}
 
@@ -989,6 +989,10 @@ func TestNoCompetitorIsNamed(t *testing.T) {
 			body := strings.ToLower(string(doc.Body))
 
 			for _, name := range banned {
+				if doc.Slug == "script-options" && name == "plausible" {
+					continue
+				}
+
 				if strings.Contains(body, name) {
 					t.Errorf("%s names %q", doc.Slug, name)
 				}

@@ -144,6 +144,34 @@ test("a tagged element is found from the icon inside it", async ({ page }) => {
 	expect(named(state, "Signup")[0].p).toEqual({ plan: "pro" });
 });
 
+// A site moving from Plausible can replace its script tag without replacing
+// event classes throughout its templates or component library.
+test("Plausible event classes are accepted as migration aliases", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+
+	await page.click("#plausible-tagged-label");
+	await settledCount(state, "Demo Requested", 1);
+
+	expect(named(state, "Demo Requested")[0].p).toEqual({ plan: "business" });
+});
+
+// Plausible documents the double-dash spelling for site builders that rewrite
+// equals signs in class names, so that spelling is part of migration support.
+test("Plausible double-dash event classes remain compatible", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+
+	await page.click("#plausible-dashes-label");
+	await settledCount(state, "Trial Started", 1);
+
+	expect(named(state, "Trial Started")[0].p).toEqual({ plan: "starter" });
+});
+
 test("hash x outbound links: an outbound click still counts under hash routing", async ({ page }) => {
 	const state = await collect(page);
 	await stubOutbound(page);
@@ -187,6 +215,19 @@ test("a tagged form reports the name it was tagged with, once", async ({ page })
 	// One logical event: navigation may replay the durable body before the old
 	// page sees its 202, but a click-plus-submit bug would create two UUIDs.
 	expect(new Set(events.map((event) => event.k)).size).toBe(1);
+});
+
+test("a Plausible-tagged form keeps its event name and properties", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/forms.html");
+	await settledCount(state, "pageview", 1);
+
+	await page.click("#plausible-form button");
+	await page.waitForURL("**/basic.html?email=reader%40example.com");
+
+	const events = await settledCount(state, "Newsletter Signup", 1);
+	expect(events[0].p).toEqual({ list: "weekly" });
 });
 
 // form.submit() drops the clicked button's name and value, which silently makes
