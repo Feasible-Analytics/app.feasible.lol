@@ -79,6 +79,7 @@ commits the event to its own `FEASIBLE_INGEST_BUFFER_PATH`, and only then
 returns `202`. It polls the complete ordered `FEASIBLE_INGEST_SHARDS` list for
 domain ownership and removes an outbox row only when the owning app names that
 UUID after commit. An app outage delays dashboards while ingesters keep pageviews.
+The shard list is a JSON array because its order defines stable shard identity.
 
 App listeners publish authenticated domain and salt snapshots and accept
 durable batches alongside dashboard traffic. `FEASIBLE_APP_SHARD_ID` is the

@@ -40,7 +40,7 @@ const (
 	DefaultAppSalesEmail    = "sales@feasible.lol"
 	DefaultSMTPPort         = 587
 	DefaultIngestListen     = "127.0.0.1:19302"
-	DefaultIngestShards     = "http://127.0.0.1:19301"
+	DefaultIngestShards     = `["http://127.0.0.1:19301"]`
 	DefaultIngestBufferPath = "./data/ingest/buffer.db"
 	DefaultAppShardID       = 1
 
@@ -745,16 +745,25 @@ func parseSubprocessors(raw string) ([]Subprocessor, error) {
 	return subprocessors, nil
 }
 
-// parseShards validates the complete, static app-shard list. Completeness of
-// that list is what lets an ingester distinguish an unknown domain from a
-// domain hidden behind an unavailable shard.
+// parseShards validates the complete, ordered JSON array of app-shard URLs.
+// Completeness is what lets an ingester distinguish an unknown domain from a
+// domain hidden behind an unavailable shard, while explicit JSON preserves the
+// order that defines each shard's stable identity.
 func parseShards(raw string) ([]string, error) {
-	var out []string
+	var entries []string
+	if strings.TrimSpace(raw) == "" || !strings.HasPrefix(strings.TrimSpace(raw), "[") {
+		return nil, fmt.Errorf("FEASIBLE_INGEST_SHARDS: expected a JSON array of absolute URLs")
+	}
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return nil, fmt.Errorf("FEASIBLE_INGEST_SHARDS: expected a JSON array of absolute URLs: %w", err)
+	}
 
-	for _, part := range strings.Split(raw, ",") {
+	out := make([]string, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, part := range entries {
 		part = strings.TrimSpace(part)
 		if part == "" {
-			continue
+			return nil, fmt.Errorf("FEASIBLE_INGEST_SHARDS: entries cannot be empty")
 		}
 
 		parsed, err := url.Parse(part)
@@ -762,7 +771,12 @@ func parseShards(raw string) ([]string, error) {
 			return nil, fmt.Errorf("FEASIBLE_INGEST_SHARDS: %q is not an absolute URL", part)
 		}
 
-		out = append(out, strings.TrimRight(part, "/"))
+		part = strings.TrimRight(part, "/")
+		if _, exists := seen[part]; exists {
+			return nil, fmt.Errorf("FEASIBLE_INGEST_SHARDS: duplicate shard URL %q", part)
+		}
+		seen[part] = struct{}{}
+		out = append(out, part)
 	}
 
 	return out, nil

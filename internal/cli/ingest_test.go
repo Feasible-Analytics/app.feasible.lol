@@ -28,7 +28,7 @@ func configureStandaloneIngest(t *testing.T) {
 // list has to be visible at boot rather than discovered from missing data.
 func TestIngestReportsShards(t *testing.T) {
 	configureStandaloneIngest(t)
-	t.Setenv("FEASIBLE_INGEST_SHARDS", "http://127.0.0.1:19301, http://127.0.0.1:29301")
+	t.Setenv("FEASIBLE_INGEST_SHARDS", `["http://127.0.0.1:19301","http://127.0.0.1:29301"]`)
 
 	code, stdout, stderr := run(t, "ingest", "-check")
 

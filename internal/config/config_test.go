@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -502,6 +503,27 @@ func TestLoadFromParsesInternalKeys(t *testing.T) {
 
 	if len(cfg.Shared.InternalKeys) != 2 || cfg.Shared.InternalKeys[1].ID != "dev-02" {
 		t.Fatalf("got %+v", cfg.Shared.InternalKeys)
+	}
+}
+
+// TestLoadFromParsesOrderedShardArray verifies JSON order becomes stable shard
+// identity and URL normalization does not disturb that order.
+func TestLoadFromParsesOrderedShardArray(t *testing.T) {
+	t.Setenv("FEASIBLE_INGEST_SHARDS", `["http://app-1:19301/","http://app-2:19301"]`)
+
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(loader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"http://app-1:19301", "http://app-2:19301"}
+	if !slices.Equal(cfg.Ingest.Shards, want) {
+		t.Fatalf("shards = %v, want %v", cfg.Ingest.Shards, want)
 	}
 }
 
