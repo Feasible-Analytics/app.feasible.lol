@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/destructive"
@@ -1736,6 +1737,12 @@ func TestTwoFactorSetupAndChallenge(t *testing.T) {
 		t.Fatalf("finishing enrolment should show the recovery codes once:\n%s", body)
 	}
 
+	// Enrolment spent that code, and a code is single-use. Move the clock on a
+	// step so the sign-in below presents what the person's phone would actually
+	// be showing by the time they get there.
+	spentAt := app.store.Now()
+	app.store.SetClock(func() time.Time { return spentAt.Add(TOTPPeriod * time.Second) })
+
 	// A fresh sign-in now has to pass through the code screen.
 	fresh := newClient(t, app)
 
@@ -1852,6 +1859,66 @@ func TestOnboardingStatusFlips(t *testing.T) {
 
 	if !strings.Contains(body, `"received":false`) {
 		t.Errorf("a brand-new site should report no traffic yet: %s", body)
+	}
+}
+
+// countingTransport answers every installation check without leaving the
+// process, and counts how many actually went out.
+type countingTransport struct {
+	calls int
+}
+
+// RoundTrip returns a page carrying nothing, which is all the outcome needs.
+func (c *countingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	c.calls++
+
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader("<html></html>")),
+	}, nil
+}
+
+// TestInstallationCheckIsRateLimited checks the bound on the one signed-in
+// action that makes this server connect wherever a customer points it. Without
+// it, a loop of these is a port scanner carrying our address.
+func TestInstallationCheckIsRateLimited(t *testing.T) {
+	app := newTestApp(t)
+	c := registerAndVerify(t, app)
+
+	resp := c.post("/sites/new", url.Values{"domain": {"example.com"}, "timezone": {"Etc/UTC"}})
+	closeResponseBody(t, resp)
+
+	site, err := app.store.SiteByDomain(context.Background(), "example.com")
+	if err != nil {
+		t.Fatalf("read site: %v", err)
+	}
+
+	transport := &countingTransport{}
+	app.Verifier = &http.Client{Transport: transport}
+
+	path := "/onboarding/" + itoa(site.ID) + "/verify"
+
+	for i := 0; i < VerifyInstallAttempts; i++ {
+		resp = c.post(path, url.Values{})
+		closeResponseBody(t, resp)
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("check %d was refused with %d", i+1, resp.StatusCode)
+		}
+	}
+
+	resp = c.post(path, url.Values{})
+	closeResponseBody(t, resp)
+
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("the check past the limit returned %d, want 429", resp.StatusCode)
+	}
+
+	// The refusal has to come before the fetch, or the limit bounds the page we
+	// render rather than the connections we make.
+	if transport.calls != VerifyInstallAttempts {
+		t.Errorf("made %d outbound checks, want %d", transport.calls, VerifyInstallAttempts)
 	}
 }
 
@@ -1997,4 +2064,106 @@ func readAll(t *testing.T, resp *http.Response) string {
 // itoa formats an id for a URL path.
 func itoa(id int64) string {
 	return strconv.FormatInt(id, 10)
+}
+
+// TestGoogleOnlyAccountMustProveItselfToDisableTwoFactor covers the settings
+// changes a stolen session most wants.
+//
+// Turning the second factor off, and reissuing the codes that bypass it, are
+// the two ways a cookie alone could undo two-factor entirely. An account that
+// signs in with Google has no password to be asked for, so the proof it gives
+// is a code from the authenticator it is trying to remove.
+func TestGoogleOnlyAccountMustProveItselfToDisableTwoFactor(t *testing.T) {
+	app := newTestApp(t)
+	ctx := context.Background()
+
+	// No password hash: this identity exists only through Google.
+	user, _, err := app.store.CreateUser(ctx, "google@example.com", "", "", "google-subject")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := app.store.MarkVerified(ctx, user.ID); err != nil {
+		t.Fatalf("verify user: %v", err)
+	}
+
+	sealer := app.Sealer
+	key, err := app.store.BeginTOTP(ctx, sealer, user)
+	if err != nil {
+		t.Fatalf("begin totp: %v", err)
+	}
+	if _, err := app.store.EnableTOTP(ctx, user.ID); err != nil {
+		t.Fatalf("enable totp: %v", err)
+	}
+
+	client := signedClientFor(t, app, user.ID)
+
+	// Loading the screen the forms live on is what mints this session's CSRF
+	// cookie; a signed-in browser is redirected away from the sign-in page.
+	closeResponseBody(t, client.get("/settings/security"))
+
+	for _, path := range []string{"/settings/security/2fa/disable", "/settings/security/2fa/recovery"} {
+		resp := client.post(path, url.Values{})
+		closeResponseBody(t, resp)
+
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("POST %s with no proof = %d, want %d", path, resp.StatusCode, http.StatusUnauthorized)
+		}
+
+		reloaded, err := app.store.UserByID(ctx, user.ID)
+		if err != nil {
+			t.Fatalf("reload user: %v", err)
+		}
+		if !reloaded.TwoFactorEnabled() {
+			t.Fatalf("POST %s turned two-factor off without any proof", path)
+		}
+	}
+
+	// Setting a first password and deleting the account are the same class of
+	// change: both hand out or destroy the account, and neither may run on a
+	// cookie alone.
+	guarded := []struct {
+		path string
+		form url.Values
+	}{
+		{"/settings/password", url.Values{"new_password": {"a-brand-new-password"}}},
+		{"/settings/delete", url.Values{"confirm": {"DELETE"}}},
+	}
+
+	for _, attempt := range guarded {
+		resp := client.post(attempt.path, attempt.form)
+		closeResponseBody(t, resp)
+
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("POST %s with no proof = %d, want %d", attempt.path, resp.StatusCode, http.StatusUnauthorized)
+		}
+
+		reloaded, err := app.store.UserByID(ctx, user.ID)
+		if err != nil {
+			t.Fatalf("reload user after %s: %v", attempt.path, err)
+		}
+		if reloaded.PasswordHash != "" {
+			t.Fatalf("POST %s set a password without any proof", attempt.path)
+		}
+	}
+
+	// The same request with a code from the authenticator is the one that works.
+	code, err := totp.GenerateCode(key.Secret(), app.store.Now())
+	if err != nil {
+		t.Fatalf("generate code: %v", err)
+	}
+
+	resp := client.post("/settings/security/2fa/disable", url.Values{"code": {code}})
+	closeResponseBody(t, resp)
+
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("disable with a valid code = %d, want %d", resp.StatusCode, http.StatusFound)
+	}
+
+	reloaded, err := app.store.UserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("reload user: %v", err)
+	}
+	if reloaded.TwoFactorEnabled() {
+		t.Fatal("two-factor survived a disable that carried a valid code")
+	}
 }

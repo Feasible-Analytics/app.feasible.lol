@@ -68,6 +68,7 @@ func runIngest(e *env, args []string) int {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError
 	}
+	outbox.Log = e.log
 	if *replayParked {
 		count, replayErr := outbox.ReplayParked(ctx)
 		if replayErr != nil {
@@ -93,7 +94,7 @@ func runIngest(e *env, args []string) int {
 		func() bool { return !service.Sites.BuiltAt().IsZero() },
 		"no live or disk-cached routing snapshot has been built"))
 
-	server := httpserver.New("ingest", e.cfg.Ingest.Listen, processRoutes(ingestRoutes(service)))
+	server := httpserver.New("ingest", e.cfg.Ingest.Listen, processRoutes(ingestRoutes(service), nil))
 	server.Health = checks
 
 	return serveUntilSignalWith(e, server, service, nil, nil, outbox.Close)

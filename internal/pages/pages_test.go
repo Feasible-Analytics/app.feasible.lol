@@ -786,12 +786,16 @@ func TestPortalPreservesTheAuthenticatedTeamInItsReturnURL(t *testing.T) {
 	if _, err := control.Exec(`INSERT INTO teams (id, name, created_at, updated_at) VALUES (2, 'Second Team', ?, ?)`, pagesNow.Unix(), pagesNow.Unix()); err != nil {
 		t.Fatal(err)
 	}
-	if err := handler.Billing.Store.Save(context.Background(), billing.Subscription{
+	applied, err := handler.Billing.Store.SaveReconciled(context.Background(), billing.Subscription{
 		TeamID: 2, CustomerID: "cus_second", SubscriptionID: "sub_second",
 		Status: stripe.StatusActive, Plan: "monthly", PriceID: "price_monthly",
 		PaymentState: billing.PaymentPaid,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !applied {
+		t.Fatal("seeding the second team's mirror was rejected by the ordering guard")
 	}
 	client := stripe.New("sk_test_fake")
 	client.BaseURL = server.URL

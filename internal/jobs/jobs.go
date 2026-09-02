@@ -17,9 +17,9 @@
 // because the job was on the import queue and its arguments contained an import
 // id. A different worker sharing that queue crashed, was read as a failed
 // import, and the cleanup it triggered purged fifteen completed imports while
-// the interface went on showing them as completed for thirteen days. Every
-// lookup in this package therefore filters on kind, and a test asserts that a
-// foreign job carrying an import id in its arguments is not reported as one.
+// the interface went on showing them as completed for thirteen days. Workers
+// are therefore registered and dispatched by kind, and nothing in this package
+// infers a kind from a queue.
 package jobs
 
 import (
@@ -28,7 +28,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"sync"
 	"time"
 )
@@ -64,6 +63,12 @@ const (
 // served by a readable failure than by a job that keeps almost-working.
 const DefaultMaxAttempts = 4
 
+// MaxRetryBackoff caps the doubling delay between attempts. Not every job row
+// carries DefaultMaxAttempts — rows inserted directly take the schema's own
+// default of twenty — and uncapped doubling would put a late retry six days
+// out, which for the customer is indistinguishable from the job never running.
+const MaxRetryBackoff = time.Hour
+
 // PollInterval is how long an idle runner waits before looking again. Two
 // seconds keeps a freshly-enqueued import feeling immediate without turning an
 // idle install into a database write every tick.
@@ -75,6 +80,13 @@ const PollInterval = 2 * time.Second
 // release them, and without this an import would sit at "running" for ever
 // while the customer waits for a progress bar that is never going to move.
 const StaleClaim = 15 * time.Minute
+
+// HeartbeatInterval is how often a running job refreshes its claim. A year of
+// history can take longer than StaleClaim to import, and without a heartbeat a
+// sibling replica would decide the job was abandoned and start it a second
+// time in parallel. Refreshing at a third of the stale window leaves two missed
+// beats of slack before a genuinely live job could be mistaken for a dead one.
+const HeartbeatInterval = StaleClaim / 3
 
 // Job is one row of the queue.
 type Job struct {
@@ -151,17 +163,15 @@ func (c *Client) now() time.Time {
 	return c.Now().UTC()
 }
 
-// Enqueue adds a job. The unique key is optional and only holds while the job
-// is live: an import that runs twice doubles a customer's numbers and no later
-// check can tell which half was the duplicate, so the caller passes a key and
-// the partial index in the schema enforces it.
-func (c *Client) Enqueue(ctx context.Context, queue, kind string, args any, uniqueKey string) (int64, error) {
-	return c.EnqueueOwned(ctx, 0, queue, kind, args, uniqueKey)
-}
-
-// EnqueueOwned adds an account-owned job with an indexed team id. Deletion
-// removes these rows without parsing mutable JSON and can do so after the
-// account shard containing the import or export record has disappeared.
+// EnqueueOwned adds a job. The team id is indexed so that account deletion can
+// remove the rows without parsing mutable JSON, even after the account shard
+// holding the import or export record has disappeared; zero means the job
+// belongs to no account.
+//
+// The unique key is optional and only holds while the job is live: an import
+// that runs twice doubles a customer's numbers and no later check can tell
+// which half was the duplicate, so the caller passes a key and the partial
+// index in the schema refuses the second copy loudly.
 func (c *Client) EnqueueOwned(ctx context.Context, ownerTeamID int64, queue, kind string, args any, uniqueKey string) (int64, error) {
 	encoded, err := json.Marshal(args)
 	if err != nil {
@@ -182,44 +192,6 @@ func (c *Client) EnqueueOwned(ctx context.Context, ownerTeamID int64, queue, kin
 	}
 
 	return result.LastInsertId()
-}
-
-// EnqueueUnique adds a job only if its key is not already live, and says which
-// happened.
-//
-// Enqueue above refuses a duplicate with an error, which is right for work a
-// person asked for: an import enqueued twice must be refused loudly. A
-// recurring tick is the opposite case — every process in a deployment enqueues
-// the same one, they race, and all but one are expected to lose. Reporting that
-// as an error would put a failure in the log every minute on every replica.
-//
-// OR IGNORE rather than a check-then-insert, so the losers are decided by the
-// partial unique index in one statement rather than by a window between two.
-func (c *Client) EnqueueUnique(ctx context.Context, queue, kind string, args any, uniqueKey string) (int64, bool, error) {
-	if uniqueKey == "" {
-		return 0, false, fmt.Errorf("jobs: %s needs a unique key to be enqueued once", kind)
-	}
-
-	encoded, err := json.Marshal(args)
-	if err != nil {
-		return 0, false, fmt.Errorf("jobs: encode %s arguments: %w", kind, err)
-	}
-
-	result, err := c.db.ExecContext(ctx, `
-		INSERT OR IGNORE INTO jobs (queue, kind, args, site_id, state, max_attempts, scheduled_at, unique_key)
-		VALUES (?, ?, ?, ?, 'available', ?, ?, ?)`,
-		queue, kind, string(encoded), siteIDFromArgs(encoded), DefaultMaxAttempts, c.now().Unix(), uniqueKey)
-	if err != nil {
-		return 0, false, fmt.Errorf("jobs: enqueue %s: %w", kind, err)
-	}
-
-	if affected, _ := result.RowsAffected(); affected == 0 {
-		return 0, false, nil
-	}
-
-	id, err := result.LastInsertId()
-
-	return id, true, err
 }
 
 // EnqueuePeriodic creates one recurring job for one durable time bucket. The
@@ -383,10 +355,25 @@ func (c *Client) Fail(ctx context.Context, job *Job, cause error) error {
 		return nil
 	}
 
-	// Backoff in whole seconds: 2, 4, 8, 16. Long enough that a database that
-	// is momentarily busy has recovered, short enough that a customer watching
-	// a progress bar does not conclude the import is stuck.
-	delay := time.Duration(math.Pow(2, float64(job.Attempt))) * time.Second
+	// Backoff in whole seconds, doubling each time: 2, 4, 8, 16. Long enough
+	// that a database that is momentarily busy has recovered, short enough that
+	// a customer watching a progress bar does not conclude the import is stuck.
+	//
+	// The exponent is clamped before the shift rather than raised as a float:
+	// a float wide enough to overflow int64 converts to a negative duration,
+	// which would schedule the retry in the past and spin the runner.
+	exponent := job.Attempt
+	if exponent < 0 {
+		exponent = 0
+	}
+	if exponent > 32 {
+		exponent = 32
+	}
+
+	delay := time.Duration(1<<uint(exponent)) * time.Second
+	if delay > MaxRetryBackoff {
+		delay = MaxRetryBackoff
+	}
 
 	_, err := c.db.ExecContext(ctx,
 		"UPDATE jobs SET state = 'available', scheduled_at = ?, last_error = ? WHERE id = ?",
@@ -398,10 +385,26 @@ func (c *Client) Fail(ctx context.Context, job *Job, cause error) error {
 	return nil
 }
 
+// Heartbeat refreshes a running job's claim so ReleaseStale keeps treating it
+// as live. It is conditional on the executing state because a job that was
+// already released and reclaimed elsewhere must not have its new owner's claim
+// stamped by the old one.
+func (c *Client) Heartbeat(ctx context.Context, id int64) error {
+	_, err := c.db.ExecContext(ctx,
+		"UPDATE jobs SET attempted_at = ? WHERE id = ? AND state = 'executing'",
+		c.now().Unix(), id)
+	if err != nil {
+		return fmt.Errorf("jobs: heartbeat %d: %w", id, err)
+	}
+
+	return nil
+}
+
 // ReleaseStale puts abandoned claims back on the queue. It is the only thing
 // standing between a process being killed mid-job and that job being lost: the
 // state lives in the database, so nothing else in the system will ever notice
-// that whoever claimed it is gone.
+// that whoever claimed it is gone. "Abandoned" is a claim whose heartbeat has
+// stopped for longer than olderThan.
 //
 // The attempt count is left alone, so an abandoned job still runs out of
 // attempts eventually rather than retrying for ever.
@@ -445,48 +448,6 @@ func (c *Client) Get(ctx context.Context, id int64) (*Job, error) {
 	return &job, nil
 }
 
-// FailedOfKind lists the jobs of one worker type that were discarded.
-//
-// The signature is the point. Asking "which jobs on the imports queue failed
-// and happen to carry an import id" is how an unrelated worker's crash gets
-// attributed to an import, and how a cleanup built on that answer deletes
-// fifteen imports that had finished perfectly. A caller here has to name the
-// worker type it means, and cannot express the other question at all.
-func (c *Client) FailedOfKind(ctx context.Context, kind string) ([]Job, error) {
-	rows, err := c.db.QueryContext(ctx, `
-		SELECT id, queue, kind, args, state, attempt, max_attempts, scheduled_at, last_error
-		FROM jobs
-		WHERE kind = ? AND state = 'discarded'
-		ORDER BY id`, kind)
-	if err != nil {
-		return nil, fmt.Errorf("jobs: read failed %s: %w", kind, err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var found []Job
-
-	for rows.Next() {
-		var job Job
-		var args string
-		var lastError sql.NullString
-
-		if err := rows.Scan(&job.ID, &job.Queue, &job.Kind, &args, &job.State, &job.Attempt,
-			&job.MaxAttempts, &job.ScheduledAt, &lastError); err != nil {
-			return nil, fmt.Errorf("jobs: read failed %s: %w", kind, err)
-		}
-
-		job.Args = json.RawMessage(args)
-		job.LastError = lastError.String
-		found = append(found, job)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("jobs: read failed %s: %w", kind, err)
-	}
-
-	return found, nil
-}
-
 // Runner drains one or more queues, dispatching each job to the worker
 // registered for its kind. A kind with no worker is discarded with a message
 // saying so rather than retried forever: nothing in this process is ever going
@@ -496,6 +457,10 @@ type Runner struct {
 
 	// Interval is how long an idle pass waits before polling again.
 	Interval time.Duration
+
+	// Heartbeat is how often a running job's claim is refreshed. It is a field
+	// so a test can watch a heartbeat land without waiting five minutes.
+	Heartbeat time.Duration
 
 	// OnError is called for failures the runner itself cannot act on — a
 	// database that will not answer a claim. Job failures are recorded on the
@@ -509,7 +474,7 @@ type Runner struct {
 
 // NewRunner builds a runner over a client.
 func NewRunner(client *Client) *Runner {
-	return &Runner{client: client, workers: map[string]Worker{}, Interval: PollInterval}
+	return &Runner{client: client, workers: map[string]Worker{}, Interval: PollInterval, Heartbeat: HeartbeatInterval}
 }
 
 // Register attaches a worker to a kind and makes sure its queue is drained.
@@ -631,6 +596,23 @@ func (r *Runner) Once(ctx context.Context) (bool, error) {
 	return worked, nil
 }
 
+// outcomeWriteTimeout bounds the detached write that records a job's result.
+// It is short because it runs during shutdown, where the alternative to a
+// bounded wait is a process that will not exit.
+const outcomeWriteTimeout = 5 * time.Second
+
+// outcomeContext is the context a job's terminal state is written on.
+//
+// It deliberately does not inherit cancellation. The runner's context is
+// cancelled by the shutdown signal, and database/sql refuses a connection on a
+// cancelled context before it reaches SQLite — so writing the outcome on it
+// would silently leave the row claimed. The stale sweep would then hand a
+// finished job to the next process and run it a second time, which is the one
+// thing this package exists to prevent.
+func outcomeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), outcomeWriteTimeout)
+}
+
 // dispatch runs one claimed job and records the outcome on its row.
 func (r *Runner) dispatch(ctx context.Context, job *Job) {
 	worker, ok := r.workerFor(job.Kind)
@@ -638,7 +620,10 @@ func (r *Runner) dispatch(ctx context.Context, job *Job) {
 		// Not an error to report upwards: this process simply does not run this
 		// kind. Discarding with the reason attached is more honest than
 		// retrying something that will never succeed here.
-		err := r.client.Fail(ctx, job, PermanentError(fmt.Errorf("no worker is registered for %q in this process", job.Kind)))
+		outcome, cancel := outcomeContext(ctx)
+		err := r.client.Fail(outcome, job, PermanentError(fmt.Errorf("no worker is registered for %q in this process", job.Kind)))
+		cancel()
+
 		if err != nil && r.OnError != nil {
 			r.OnError(err)
 		}
@@ -646,16 +631,62 @@ func (r *Runner) dispatch(ctx context.Context, job *Job) {
 		return
 	}
 
-	if err := run(ctx, worker, *job); err != nil {
-		if failErr := r.client.Fail(ctx, job, err); failErr != nil && r.OnError != nil {
+	stopHeartbeat := r.keepClaimed(ctx, job.ID)
+	err := run(ctx, worker, *job)
+	stopHeartbeat()
+
+	outcome, cancel := outcomeContext(ctx)
+	defer cancel()
+
+	if err != nil {
+		if failErr := r.client.Fail(outcome, job, err); failErr != nil && r.OnError != nil {
 			r.OnError(failErr)
 		}
 
 		return
 	}
 
-	if err := r.client.Complete(ctx, job.ID); err != nil && r.OnError != nil {
+	if err := r.client.Complete(outcome, job.ID); err != nil && r.OnError != nil {
 		r.OnError(err)
+	}
+}
+
+// keepClaimed refreshes a job's claim in the background for as long as its
+// worker runs, and returns the function that stops doing so. The stop waits for
+// the goroutine to exit, so a heartbeat can never land after the row has been
+// completed or failed and make a finished job look like a running one.
+func (r *Runner) keepClaimed(ctx context.Context, id int64) func() {
+	interval := r.Heartbeat
+	if interval <= 0 {
+		interval = HeartbeatInterval
+	}
+
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+
+	go func() {
+		defer close(stopped)
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := r.client.Heartbeat(ctx, id); err != nil && r.OnError != nil {
+					r.OnError(err)
+				}
+			}
+		}
+	}()
+
+	return func() {
+		close(done)
+		<-stopped
 	}
 }
 

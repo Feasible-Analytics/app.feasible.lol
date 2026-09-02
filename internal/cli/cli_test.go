@@ -53,6 +53,7 @@ func setProductionOperator(t *testing.T) {
 	t.Setenv("FEASIBLE_OPERATOR_NAME", "Example Operator, Inc.")
 	t.Setenv("FEASIBLE_OPERATOR_ADDRESS", "123 Example Street")
 	t.Setenv("FEASIBLE_OPERATOR_EMAIL", "privacy@example.test")
+	t.Setenv("FEASIBLE_INGEST_SALT", "a-production-salt-nobody-else-knows")
 }
 
 // TestVersionFlag checks --version prints the stamped build line on stdout.

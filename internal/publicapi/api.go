@@ -102,7 +102,7 @@ type API struct {
 	Webhooks   *webhooks.Store
 	Dispatcher *webhooks.Dispatcher
 
-	// Goals, Funnels, Shields and Annotations are the features another part of
+	// Goals, Funnels and CustomProperties are the features another part of
 	// the product owns. They are interfaces and may be nil: where one is, the
 	// endpoint still exists and answers with a clear "not available yet"
 	// rather than a 404, because a route that vanishes looks like a bug in the
@@ -114,8 +114,6 @@ type API struct {
 	// ProvisionSite creates account-backed defaults after a site control row is
 	// committed, for both HTTP and MCP provisioning paths.
 	ProvisionSite func(context.Context, int64, int64) error
-	Shields       ShieldStore
-	Annotations   AnnotationStore
 
 	// BaseURL is the URL people actually type. Tracker snippets and shared-link
 	// URLs are built from it, so it has to be the public address rather than
@@ -301,11 +299,6 @@ func (a *API) Query(ctx context.Context, site sites.Site, q query.Query) (*query
 // halves of a comparison land on different days.
 func (a *API) Clock() time.Time {
 	return a.now()
-}
-
-// runQuery is the request-scoped spelling the HTTP handlers use.
-func (a *API) runQuery(r *http.Request, site sites.Site, q query.Query) (*query.Result, error) {
-	return a.Query(r.Context(), site, q)
 }
 
 // answerQueryError turns an engine failure into a response. A *query.Error is

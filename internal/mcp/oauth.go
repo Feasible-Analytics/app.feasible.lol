@@ -22,10 +22,14 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 )
 
 // A remote MCP client is a program somebody pasted a URL into. There is nobody
@@ -50,6 +54,29 @@ const (
 	// within a second of being issued by every real client, and a minute is
 	// generous for a slow redirect.
 	authorizationCodeLifetime = time.Minute
+)
+
+// Registration bounds. Registration is open, so the only thing standing
+// between a stranger and an unbounded row in system.db is these two numbers.
+// A name is shown on a consent page and a client has one or two callbacks;
+// anything past this is not a client.
+const (
+	maxClientNameLength = 200
+	maxRedirectURIs     = 10
+)
+
+// A client that registered and never finished authorising is a row nobody
+// will ever read. Thirty days is longer than any person takes between pasting
+// a URL and approving the connection.
+const unusedClientLifetime = 30 * 24 * time.Hour
+
+// The sweep job. It runs on the process's one queue like every other periodic
+// task so "is anything stuck" has one answer, and hourly because the rows it
+// removes are only ever a nuisance, never a risk.
+const (
+	Queue      = "maintenance"
+	KindSweep  = "mcp.oauth.sweep"
+	SweepEvery = time.Hour
 )
 
 // oauthScopes is the complete grant vocabulary for MCP. It deliberately uses
@@ -86,7 +113,17 @@ type OAuth struct {
 	// somewhere they cannot reach.
 	BaseURL string
 
+	// Trusted is the proxy allow-list the per-address throttle keys on. Nil
+	// trusts nobody, so a forwarded header from an unknown peer cannot pick
+	// its own bucket.
+	Trusted *clientip.TrustedProxies
+
 	Now func() time.Time
+
+	// perAddress throttles the three endpoints that take no credential. It is
+	// a value rather than a pointer so an OAuth built as a literal is limited
+	// without anybody remembering to construct it.
+	perAddress throttle
 }
 
 // now reads the clock.
@@ -108,10 +145,28 @@ func (o *OAuth) Routes(mux *http.ServeMux) {
 	// 404 on discovery is a connection that never starts.
 	mux.HandleFunc("GET "+PathProtectedResourceMetadata+Path, o.protectedResourceMetadata)
 
-	mux.HandleFunc("POST "+PathRegister, o.register)
+	mux.HandleFunc("POST "+PathRegister, o.throttled(o.register))
 	mux.HandleFunc("GET "+PathAuthorize, o.authorizeForm)
-	mux.HandleFunc("POST "+PathAuthorize, o.authorizeSubmit)
-	mux.HandleFunc("POST "+PathToken, o.token)
+	mux.HandleFunc("POST "+PathAuthorize, o.throttled(o.authorizeSubmit))
+	mux.HandleFunc("POST "+PathToken, o.throttled(o.token))
+}
+
+// throttled puts the per-address bucket in front of a handler that answers
+// before any credential is checked. Those three are where an unauthenticated
+// caller can make this process write to system.db or try a guessed token, and
+// the API-key limiter never sees them.
+func (o *OAuth) throttled(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		allowed, wait := o.perAddress.Allow(clientip.Key(r, o.Trusted))
+		if !allowed {
+			w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())))
+			writeOAuthError(w, http.StatusTooManyRequests, "slow_down",
+				"too many requests from this address — wait "+wait.Round(time.Second).String()+" and try again")
+			return
+		}
+
+		next(w, r)
+	}
 }
 
 // authorizationServerMetadata describes this authorisation server.
@@ -172,6 +227,18 @@ func (o *OAuth) register(w http.ResponseWriter, r *http.Request) {
 
 	if len(request.RedirectURIs) == 0 {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri", "redirect_uris is required")
+		return
+	}
+
+	if len(request.RedirectURIs) > maxRedirectURIs {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri",
+			"a client may register at most "+strconv.Itoa(maxRedirectURIs)+" redirect URIs")
+		return
+	}
+
+	if len(request.ClientName) > maxClientNameLength {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata",
+			"client_name may be at most "+strconv.Itoa(maxClientNameLength)+" characters")
 		return
 	}
 
@@ -457,6 +524,11 @@ func (o *OAuth) redirectURIs(ctx context.Context, clientID string) ([]string, er
 // the product; a key is already this API's credential, is revocable on its own,
 // and means this page never handles a password — so a mistake here cannot cost
 // somebody their account.
+//
+// It names where the access goes and what it covers, because registration is
+// open: anybody can register a client called anything and send this page's
+// link to somebody else. The name proves nothing; the destination is the one
+// fact on the page the person can check against what they meant to connect.
 var consentPage = template.Must(template.New("consent").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -467,10 +539,17 @@ var consentPage = template.Must(template.New("consent").Parse(`<!doctype html>
   input[type=password] { width: 100%; padding: .6rem; font: inherit; box-sizing: border-box; }
   button { margin-top: 1.5rem; padding: .6rem 1.2rem; font: inherit; cursor: pointer; }
   .who { background: #f4f4f5; padding: 1rem; border-radius: .4rem; }
+  .who ul { margin: .5rem 0 0; padding-left: 1.2rem; }
   .error { color: #b00020; font-weight: 600; }
 </style></head><body>
 <h1>Connect to Feasible</h1>
-<p class="who"><strong>{{.ClientName}}</strong> is asking to read the analytics for one of your teams.</p>
+<div class="who">
+  <p><strong>{{.ClientName}}</strong> is asking to connect to one of your teams.</p>
+  <p>If you allow it, access will be sent to <strong>{{.Destination}}</strong>. If that is not the
+     application you meant to connect, stop here.</p>
+  <p>It will be able to:</p>
+  <ul>{{range .Permissions}}<li>{{.}}</li>{{end}}</ul>
+</div>
 {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
 <form method="post" action="{{.Action}}">
   <input type="hidden" name="client_id" value="{{.ClientID}}">
@@ -491,7 +570,15 @@ var consentPage = template.Must(template.New("consent").Parse(`<!doctype html>
 
 // consentData is what the page renders from.
 type consentData struct {
-	ClientName          string
+	ClientName string
+
+	// Destination is where the authorisation code, and so the access, will be
+	// sent: the redirect host, or the app scheme for a native client.
+	Destination string
+
+	// Permissions are the requested scopes in plain words.
+	Permissions []string
+
 	ClientID            string
 	RedirectURI         string
 	State               string
@@ -528,6 +615,8 @@ func (o *OAuth) renderConsent(w http.ResponseWriter, request *authorizeRequest, 
 
 	_ = consentPage.Execute(w, consentData{
 		ClientName:          name,
+		Destination:         redirectDestination(request.RedirectURI),
+		Permissions:         scopeSentences(request.Scope),
 		ClientID:            request.ClientID,
 		RedirectURI:         request.RedirectURI,
 		State:               request.State,
@@ -537,6 +626,54 @@ func (o *OAuth) renderConsent(w http.ResponseWriter, request *authorizeRequest, 
 		Action:              o.BaseURL + PathAuthorize,
 		Error:               message,
 	})
+}
+
+// redirectDestination names where a validated redirect URI delivers the code.
+// The host is what a person can check; for a native app there is no host, so
+// the registered scheme is shown instead.
+func redirectDestination(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "an unknown destination"
+	}
+
+	if host := parsed.Host; host != "" {
+		return host
+	}
+
+	return "the application registered as " + parsed.Scheme + " on this device"
+}
+
+// scopeSentences turns a scope list into what each one lets the client do. An
+// empty request means every scope the key carries, and the page says so rather
+// than listing nothing.
+func scopeSentences(scope string) []string {
+	if strings.TrimSpace(scope) == "" {
+		return []string{"Do everything the API key you enter is allowed to do."}
+	}
+
+	sentences := make([]string, 0, len(oauthScopes))
+	for _, name := range strings.Fields(scope) {
+		sentences = append(sentences, scopeSentence(name))
+	}
+
+	return sentences
+}
+
+// scopeSentence is one scope in plain words.
+func scopeSentence(scope string) string {
+	switch scope {
+	case apikeys.ScopeStatsRead:
+		return "Read your analytics numbers."
+	case apikeys.ScopeSitesRead:
+		return "See your sites and their settings."
+	case apikeys.ScopeSitesProvision:
+		return "Create and change sites, goals and custom properties."
+	case apikeys.ScopeWebhooks:
+		return "Create and change webhooks."
+	}
+
+	return scope
 }
 
 // clientName reads a client's own name for the consent page, falling back to
@@ -712,14 +849,6 @@ func (o *OAuth) exchangeCode(w http.ResponseWriter, r *http.Request, authenticat
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback after commit is harmless
 
-	// Acquire SQLite's single writer lock before reading the one-time row. Two
-	// independent process connections now serialize before either can observe
-	// the code as unused.
-	if _, err := tx.ExecContext(r.Context(), `UPDATE mcp_oauth_codes SET consumed_at = consumed_at WHERE id = -1`); err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "the code could not be consumed")
-		return
-	}
-
 	err = tx.QueryRowContext(r.Context(), `
 		SELECT id, client_id, team_id, api_key_id, redirect_uri, scope, code_challenge, expires_at, consumed_at
 		FROM mcp_oauth_codes WHERE code_hash = ? AND client_id = ?`, hashToken(code), authenticatedClientID).
@@ -740,7 +869,12 @@ func (o *OAuth) exchangeCode(w http.ResponseWriter, r *http.Request, authenticat
 		// intended client and another party may hold the code, so neither keeps
 		// tokens minted from it.
 		_ = tx.Rollback()
-		o.revokeGrant(r.Context(), clientID, teamID)
+
+		if err := o.revokeGrant(r.Context(), clientID, teamID); err != nil {
+			writeOAuthError(w, http.StatusInternalServerError, "server_error", "the replayed grant could not be revoked")
+			return
+		}
+
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "that authorisation code has already been used")
 		return
 	}
@@ -812,11 +946,6 @@ func (o *OAuth) refresh(w http.ResponseWriter, r *http.Request, authenticatedCli
 		return
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback after commit is harmless
-
-	if _, err := tx.ExecContext(r.Context(), `UPDATE mcp_oauth_tokens SET revoked_at = revoked_at WHERE id = -1`); err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "the token could not be rotated")
-		return
-	}
 
 	err = tx.QueryRowContext(r.Context(), `
 		SELECT id, client_id, team_id, api_key_id, scope, refresh_expires_at, revoked_at, token_family_id
@@ -973,10 +1102,19 @@ func (o *OAuth) writeTokenPair(w http.ResponseWriter, pair tokenPair) {
 
 // revokeGrant kills every live token for one client and team. It runs when a
 // code is replayed, which means somebody other than the real client has it.
-func (o *OAuth) revokeGrant(ctx context.Context, clientID string, teamID int64) {
-	_, _ = o.DB.ExecContext(ctx,
+//
+// The error is returned rather than dropped because this is the one write in
+// the flow that answers a theft. A failure that left the stolen tokens live
+// while the reply still read "already used" would look exactly like a
+// successful defence.
+func (o *OAuth) revokeGrant(ctx context.Context, clientID string, teamID int64) error {
+	if _, err := o.DB.ExecContext(ctx,
 		`UPDATE mcp_oauth_tokens SET revoked_at = ? WHERE client_id = ? AND team_id = ? AND revoked_at IS NULL`,
-		o.now().Unix(), clientID, teamID)
+		o.now().Unix(), clientID, teamID); err != nil {
+		return fmt.Errorf("mcp: revoke replayed grant: %w", err)
+	}
+
+	return nil
 }
 
 // Authenticate turns a bearer token from the MCP endpoint into a credential.
@@ -1022,9 +1160,12 @@ func (o *OAuth) Authenticate(ctx context.Context, token string) (*apikeys.Key, e
 	// ends every connection made with it. Without this, revoking a key would
 	// leave every assistant that had ever used it still connected.
 	if apiKeyID.Valid {
-		key, err := o.keyByID(ctx, apiKeyID.Int64)
+		key, err := o.Keys.ByID(ctx, apiKeyID.Int64)
+		if errors.Is(err, apikeys.ErrNotFound) {
+			return nil, errors.New("the key this connection was authorised with has been revoked")
+		}
 		if err != nil {
-			return nil, err
+			return nil, errors.New("the key could not be read")
 		}
 		if key.TeamID != teamID {
 			return nil, errors.New("that token is not bound to its API key's team")
@@ -1040,37 +1181,84 @@ func (o *OAuth) Authenticate(ctx context.Context, token string) (*apikeys.Key, e
 	return nil, errors.New("that token is not bound to an active API key")
 }
 
-// keyByID reads the key an access token stands for, refusing a revoked key or
-// one whose owner is no longer a member of the team it was issued against.
-func (o *OAuth) keyByID(ctx context.Context, id int64) (*apikeys.Key, error) {
-	var (
-		key     apikeys.Key
-		scopes  string
-		revoked sql.NullInt64
-	)
+// Register puts the sweep on the process's runner and its hourly tick on the
+// cron, the way every other periodic job is attached.
+func (o *OAuth) Register(runner *jobs.Runner, cron *jobs.Cron, log *logger.Logger) {
+	runner.Register(Queue, KindSweep, jobs.Reporting(log, o.RunSweep))
+	cron.Add(Queue, KindSweep, SweepEvery)
+}
 
-	err := o.DB.QueryRowContext(ctx, `
-		SELECT api_keys.id, api_keys.team_id, api_keys.user_id, team_memberships.role, api_keys.name,
-		       api_keys.scopes, api_keys.hourly_limit, api_keys.revoked_at
-		FROM api_keys
-		JOIN team_memberships
-		  ON team_memberships.team_id = api_keys.team_id
-		 AND team_memberships.user_id = api_keys.user_id
-		WHERE api_keys.id = ?`, id).
-		Scan(&key.ID, &key.TeamID, &key.UserID, &key.Role, &key.Name, &scopes, &key.HourlyLimit, &revoked)
-
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && revoked.Valid) {
-		return nil, errors.New("the key this connection was authorised with has been revoked")
-	}
+// RunSweep is the hourly job: drop the OAuth rows nothing can use any more.
+func (o *OAuth) RunSweep(ctx context.Context, _ jobs.Job) (jobs.Outcome, error) {
+	removed, err := o.Sweep(ctx, o.now())
 	if err != nil {
-		return nil, errors.New("the key could not be read")
+		return jobs.Outcome{}, err
 	}
 
-	if err := json.Unmarshal([]byte(scopes), &key.Scopes); err != nil {
-		return nil, errors.New("the key's scopes could not be read")
+	if removed == 0 {
+		return jobs.Nothing("no expired OAuth codes, tokens or unused clients"), nil
 	}
 
-	return &key, nil
+	return jobs.Outcome{Handled: removed}, nil
+}
+
+// Sweep deletes expired codes, tokens past their refresh lifetime, and clients
+// that registered but never completed an authorisation. It reports how many
+// rows went, so a sweep that stops working is visible in a log line.
+//
+// A revoked token is kept until its refresh lifetime ends rather than deleted
+// at revocation: a revoked refresh token presented again is the evidence that
+// revokes its whole family, and deleting the row would turn that signal into
+// an ordinary "not valid".
+func (o *OAuth) Sweep(ctx context.Context, now time.Time) (int, error) {
+	stamp := now.Unix()
+	removed := 0
+
+	codes, err := o.DB.ExecContext(ctx, `DELETE FROM mcp_oauth_codes WHERE expires_at < ?`, stamp)
+	if err != nil {
+		return 0, fmt.Errorf("mcp oauth: sweep codes: %w", err)
+	}
+	removed += affected(codes)
+
+	// A token's parent is deleted before the token itself, so the reference
+	// is cleared first or the delete would fail on the foreign key. Nothing
+	// reads the parent back; it is lineage for the family id, which is a
+	// column of its own.
+	if _, err := o.DB.ExecContext(ctx, `
+		UPDATE mcp_oauth_tokens SET parent_token_id = NULL
+		WHERE parent_token_id IN (SELECT id FROM mcp_oauth_tokens WHERE refresh_expires_at < ?)`, stamp); err != nil {
+		return 0, fmt.Errorf("mcp oauth: sweep tokens: %w", err)
+	}
+
+	tokens, err := o.DB.ExecContext(ctx, `DELETE FROM mcp_oauth_tokens WHERE refresh_expires_at < ?`, stamp)
+	if err != nil {
+		return 0, fmt.Errorf("mcp oauth: sweep tokens: %w", err)
+	}
+	removed += affected(tokens)
+
+	clients, err := o.DB.ExecContext(ctx, `
+		DELETE FROM mcp_oauth_clients
+		WHERE created_at < ?
+		  AND client_id NOT IN (SELECT client_id FROM mcp_oauth_tokens)
+		  AND client_id NOT IN (SELECT client_id FROM mcp_oauth_codes)`,
+		now.Add(-unusedClientLifetime).Unix())
+	if err != nil {
+		return 0, fmt.Errorf("mcp oauth: sweep clients: %w", err)
+	}
+	removed += affected(clients)
+
+	return removed, nil
+}
+
+// affected reads a statement's row count, treating a driver that cannot say
+// as zero rather than as an error worth failing the sweep over.
+func affected(result sql.Result) int {
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0
+	}
+
+	return int(count)
 }
 
 // verifyPKCE checks a verifier against its challenge.

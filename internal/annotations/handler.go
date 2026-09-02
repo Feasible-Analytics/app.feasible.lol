@@ -157,7 +157,17 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request, site sites.Site
 		return
 	}
 
-	h.write(w, http.StatusOK, annotation)
+	// The response is the stored row, not the decoded input: the input has no
+	// author or timestamps, and a client that replaced its copy with it would
+	// lose both until the next list.
+	updated, err := h.Store.Get(r.Context(), site.AccountID, site.ID, id)
+	if err != nil {
+		h.failOrInternal(w, "read annotation", err)
+
+		return
+	}
+
+	h.write(w, http.StatusOK, updated)
 }
 
 // remove deletes a marker.

@@ -9,6 +9,7 @@
 package mail
 
 import (
+	"bufio"
 	"context"
 	"net"
 	"os"
@@ -234,6 +235,62 @@ func TestRenderUsesCRLFThroughout(t *testing.T) {
 	}
 }
 
+// TestRenderKeepsEveryHeaderOnOneLine is the header injection case. A team
+// name is customer-typed text that ends up in an invitation subject, and a
+// line break inside it would otherwise start a header of the customer's own.
+func TestRenderKeepsEveryHeaderOnOneLine(t *testing.T) {
+	raw := Render("feasible <no-reply@example.com>", Message{
+		To:      "owner@example.com\r\nBcc: everyone@example.com",
+		Subject: "You're invited to Acme\r\nBcc: list@example.com\r\nX-Injected: yes on feasible.lol",
+		HTML:    "<p>hi</p>",
+		Text:    "hi",
+		Tag:     "test",
+	})
+
+	headers, _, _ := strings.Cut(raw, "\r\n\r\n")
+
+	// An injected name is only a header when it begins a line. The same text
+	// carried inline on the To or Subject line is inert, and is what
+	// flattening is meant to produce — so the check is per line rather than
+	// over the whole block.
+	for _, line := range strings.Split(headers, "\r\n") {
+		for _, injected := range []string{"Bcc:", "X-Injected:"} {
+			if strings.HasPrefix(line, injected) {
+				t.Fatalf("an injected %s header survived into the message:\n%s", injected, headers)
+			}
+		}
+	}
+
+	if !strings.Contains(headers, "To: owner@example.com Bcc: everyone@example.com\r\n") {
+		t.Fatalf("the recipient was not flattened onto one line:\n%s", headers)
+	}
+
+	if !strings.Contains(headers, "Subject: You're invited to Acme Bcc: list@example.com X-Injected: yes on feasible.lol\r\n") {
+		t.Fatalf("the subject was not flattened onto one line:\n%s", headers)
+	}
+}
+
+// TestRenderEncodesANonASCIISubject pins RFC 2047: a subject with an em dash
+// or an accented letter must not go out as raw UTF-8 in a header, which is
+// invalid and renders as mojibake in strict clients.
+func TestRenderEncodesANonASCIISubject(t *testing.T) {
+	raw := Render("feasible <no-reply@example.com>", Message{
+		To: "owner@example.com", Subject: "Weekly report — acme.example", HTML: "<p>hi</p>", Text: "hi", Tag: "test",
+	})
+
+	if !strings.Contains(raw, "Subject: =?utf-8?q?Weekly_report_=E2=80=94_acme.example?=\r\n") {
+		t.Fatalf("the subject was not RFC 2047 encoded:\n%s", raw)
+	}
+
+	plain := Render("feasible <no-reply@example.com>", Message{
+		To: "owner@example.com", Subject: "Weekly report", HTML: "<p>hi</p>", Text: "hi", Tag: "test",
+	})
+
+	if !strings.Contains(plain, "Subject: Weekly report\r\n") {
+		t.Fatal("an ASCII subject must be left readable rather than encoded")
+	}
+}
+
 // TestEnvelopeAddressStripsTheDisplayName covers the SMTP conversation. MAIL
 // FROM takes an address, not "Name <address>", and a relay handed the display
 // form answers with a syntax error that names nothing useful.
@@ -339,4 +396,87 @@ type transportFunc func(ctx context.Context, msg Message) (Result, error)
 // Send calls the function.
 func (f transportFunc) Send(ctx context.Context, msg Message) (Result, error) {
 	return f(ctx, msg)
+}
+
+// TestStartTLSIsNotSilentlySkipped answers a relay that greets but never
+// advertises STARTTLS. Every message this transport carries holds a
+// password-reset link or a verification code, so continuing in the clear
+// because the server declined to offer the extension is exactly the silent
+// downgrade the setting exists to prevent.
+func TestStartTLSIsNotSilentlySkipped(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close SMTP listener: %v", err)
+		}
+	})
+
+	delivered := make(chan struct{}, 1)
+
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		reader := bufio.NewReader(conn)
+		write := func(line string) { _, _ = conn.Write([]byte(line + "\r\n")) }
+
+		write("220 relay.example ESMTP")
+
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+
+			switch verb := strings.ToUpper(strings.TrimSpace(line)); {
+			case strings.HasPrefix(verb, "EHLO"):
+				// Deliberately no STARTTLS in the extension list.
+				write("250-relay.example")
+				write("250 SIZE 10240000")
+
+			case strings.HasPrefix(verb, "MAIL FROM"), strings.HasPrefix(verb, "RCPT TO"):
+				write("250 OK")
+
+			case verb == "DATA":
+				delivered <- struct{}{}
+				write("354 go ahead")
+
+			case verb == "QUIT":
+				write("221 bye")
+				return
+
+			default:
+				write("250 OK")
+			}
+		}
+	}()
+
+	address := listener.Addr().(*net.TCPAddr)
+	transport := &SMTPTransport{Config: SMTPConfig{
+		Host: "127.0.0.1", Port: address.Port, From: "sender@example.com",
+		StartTLS: true, Timeout: 2 * time.Second,
+	}}
+
+	result, err := transport.Send(context.Background(), Message{
+		To: "owner@example.com", Subject: "test", Text: "test", HTML: "<p>test</p>",
+	})
+	if err == nil {
+		t.Fatal("the message was sent in the clear to a relay that does not offer STARTTLS")
+	}
+
+	if result.Accepted {
+		t.Fatal("the result claims the relay accepted a message that was never sent")
+	}
+
+	select {
+	case <-delivered:
+		t.Fatal("the body reached the relay unencrypted")
+	default:
+	}
 }

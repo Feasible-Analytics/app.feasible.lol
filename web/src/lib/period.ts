@@ -152,16 +152,23 @@ export function today(): string {
 	return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
 }
 
+/** parse reads YYYY-MM-DD as a UTC instant, the one form the arithmetic here
+ *  works in. A missing part falls back to the epoch rather than to NaN, so a
+ *  damaged bound produces a date the screen can show instead of "Invalid Date". */
 function parse(date: string): number {
 	const [year = 1970, month = 1, day = 1] = date.split("-").map(Number);
 
 	return Date.UTC(year, month - 1, day);
 }
 
+/** render is the inverse of parse: a UTC instant back to YYYY-MM-DD. */
 function render(at: Date): string {
-	return `${String(at.getUTCFullYear()).padStart(4, "0")}-${pad(at.getUTCMonth() + 1)}-${pad(at.getUTCDate())}`;
+	return `${pad(at.getUTCFullYear(), 4)}-${pad(at.getUTCMonth() + 1)}-${pad(at.getUTCDate())}`;
 }
 
-function pad(value: number): string {
-	return String(value).padStart(2, "0");
+/** pad zero-fills a calendar or clock field, so that 2026-9-2 is written
+ *  2026-09-02 and 5 seconds past the minute reads 0:05. Two wide is the default
+ *  because every field but the year is two wide. */
+export function pad(value: number, width = 2): string {
+	return String(value).padStart(width, "0");
 }

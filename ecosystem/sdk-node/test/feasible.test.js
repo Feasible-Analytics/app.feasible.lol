@@ -14,6 +14,7 @@ import { createRequire } from "node:module";
 import {
 	FeasibleClient,
 	FeasibleApiError,
+	FeasibleTransportError,
 	FeasibleValidationError,
 	createClient,
 	visitorFromNodeRequest,
@@ -74,6 +75,9 @@ function client(host, overrides = {}) {
 // visitor is the pair every event needs, spelled out once.
 const visitor = { clientIp: "203.0.113.9", userAgent: "Mozilla/5.0 (Macintosh)" };
 
+// UUID_V4 is the only shape the server accepts in the idempotency field.
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 test("a pageview sends three keys, text/plain, and the two forwarded headers", async () => {
 	const server = await startServer(accepted);
 
@@ -89,8 +93,12 @@ test("a pageview sends three keys, text/plain, and the two forwarded headers", a
 
 		const sent = server.requests[0];
 
-		assert.deepEqual(Object.keys(JSON.parse(sent.body)).sort(), ["d", "n", "u"]);
-		assert.deepEqual(JSON.parse(sent.body), {
+		const body = JSON.parse(sent.body);
+
+		assert.deepEqual(Object.keys(body).sort(), ["d", "k", "n", "u"]);
+		assert.match(body.k, UUID_V4);
+		assert.deepEqual(body, {
+			k: body.k,
 			n: "pageview",
 			u: "https://example.com/pricing",
 			d: "example.com",
@@ -132,6 +140,7 @@ test("a custom event carries props, revenue and the attribution overrides", asyn
 			"$",
 			"d",
 			"i",
+			"k",
 			"n",
 			"p",
 			"r",
@@ -146,7 +155,10 @@ test("a custom event carries props, revenue and the attribution overrides", asyn
 		]);
 
 		assert.deepEqual(body.p, { plan: "annual", seats: 4 });
-		assert.deepEqual(body.$, { amount: 99.5, currency: "usd" });
+
+		// The currency is upper-cased on the way out so that "usd" and "USD" do
+		// not become two rows on the same report.
+		assert.deepEqual(body.$, { amount: 99.5, currency: "USD" });
 		assert.equal(body.i, false);
 		assert.equal(body.utm_source, "newsletter");
 	} finally {
@@ -181,6 +193,24 @@ test("it refuses to send without a client IP or a User-Agent", async () => {
 			event: { ...visitor },
 			field: "event.url",
 			code: "missing_url",
+		},
+		{
+			name: "revenue with no currency",
+			event: { url: "https://example.com/", ...visitor, revenue: { amount: 99.5 } },
+			field: "event.revenue.currency",
+			code: "invalid_revenue_currency",
+		},
+		{
+			name: "revenue currency that is not a code",
+			event: { url: "https://example.com/", ...visitor, revenue: { amount: 99.5, currency: "dollars" } },
+			field: "event.revenue.currency",
+			code: "invalid_revenue_currency",
+		},
+		{
+			name: "revenue amount that is not a number",
+			event: { url: "https://example.com/", ...visitor, revenue: { amount: "99.5", currency: "USD" } },
+			field: "event.revenue.amount",
+			code: "invalid_revenue_amount",
 		},
 	];
 
@@ -273,6 +303,48 @@ test("a 5xx is retried with backoff until it succeeds", async () => {
 
 		assert.equal(result.attempts, 3);
 		assert.equal(server.requests.length, 3);
+	} finally {
+		await server.close();
+	}
+});
+
+test("the idempotency key survives a retry and is fresh for the next event", async () => {
+	const server = await startServer((_req, res, count) => {
+		res.writeHead(count === 1 ? 500 : 202).end();
+	});
+
+	try {
+		const analytics = client(server.host);
+
+		await analytics.pageview({ url: "https://example.com/", ...visitor });
+		await analytics.pageview({ url: "https://example.com/", ...visitor });
+
+		assert.equal(server.requests.length, 3);
+
+		const [first, retried, fresh] = server.requests.map((sent) => JSON.parse(sent.body).k);
+
+		assert.match(first, UUID_V4);
+		assert.equal(retried, first);
+		assert.notEqual(fresh, first);
+	} finally {
+		await server.close();
+	}
+});
+
+test("the timeout covers the body, not just the headers", { timeout: 5000 }, async () => {
+	// Headers arrive at once; the body never finishes.
+	const server = await startServer((_req, res) => {
+		res.writeHead(202);
+		res.write(" ");
+	});
+
+	try {
+		const analytics = client(server.host, { timeout: 50, attempts: 1 });
+
+		await assert.rejects(
+			analytics.pageview({ url: "https://example.com/", ...visitor }),
+			FeasibleTransportError,
+		);
 	} finally {
 		await server.close();
 	}
@@ -450,7 +522,7 @@ test("what the helper read is what the request carries", async () => {
 
 test("the require entry exposes the same surface as the import entry", async () => {
 	const require = createRequire(import.meta.url);
-	const cjs = require("../src/index.cjs");
+	const cjs = require("../src/core.cjs");
 
 	assert.equal(typeof cjs.FeasibleClient, "function");
 	assert.equal(cjs.FeasibleClient, FeasibleClient);

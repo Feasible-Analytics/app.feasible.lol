@@ -13,6 +13,7 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,15 +21,16 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dataio"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/google"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/pathclean"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/shields"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
 // newHandler builds a handler over a temporary install holding one site.
@@ -67,7 +69,7 @@ func newHandler(t *testing.T) (*Handler, *accounts.Manager) {
 		t.Fatal(err)
 	}
 
-	trusted, err := ingest.ParseTrustedProxies(nil)
+	trusted, err := clientip.ParseTrustedProxies(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,5 +485,96 @@ func TestDomainOfNamesTheSiteEveryRouteExcept(t *testing.T) {
 		if got := seen[path]; got != want {
 			t.Errorf("%s resolved to domain %q, want %q", path, got, want)
 		}
+	}
+}
+
+// TestTheGoogleCallbackRefusesAForgedState is the cross-account write. The
+// callback names no site in its path, so the gate in front of it proves only a
+// session — and the state used to be nothing but a domain and a provider,
+// which anybody could type. Replaying an authorisation code with somebody
+// else's domain in the state would have written a Google grant into their
+// account's database.
+func TestTheGoogleCallbackRefusesAForgedState(t *testing.T) {
+	handler, _ := newHandler(t)
+
+	app, ok := google.NewApp("id", "secret", "https://example.com")
+	if !ok {
+		t.Fatal("the Google application would not build")
+	}
+	handler.Google = app
+	handler.Role = func(*http.Request, sites.Site) teams.Role { return teams.RoleOwner }
+
+	// The old shape: a domain and a provider, and nothing tying the request to
+	// the browser that started it.
+	response := get(t, handler, "/settings/google/callback?code=x&state=example.com%7Cga4")
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("a two-field state answered %d, want it refused", response.Code)
+	}
+
+	// The right shape with somebody else's form token.
+	response = get(t, handler, "/settings/google/callback?code=x&state=example.com%7Cga4%7Cguessed")
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("a state carrying the wrong form token answered %d, want 403", response.Code)
+	}
+
+	// A provider we never issue must not become a stored grant nothing reads.
+	response = get(t, handler, "/settings/google/callback?code=x&state=example.com%7Cmade-up%7Ctest-csrf")
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("an unknown provider answered %d, want it refused", response.Code)
+	}
+}
+
+// TestTheGoogleCallbackRefusesSomebodyWhoCannotConfigureTheSite is the second
+// half: the form token proves the browser, and this proves the person behind it
+// is allowed to configure the site the state names.
+func TestTheGoogleCallbackRefusesSomebodyWhoCannotConfigureTheSite(t *testing.T) {
+	handler, _ := newHandler(t)
+
+	app, ok := google.NewApp("id", "secret", "https://example.com")
+	if !ok {
+		t.Fatal("the Google application would not build")
+	}
+	handler.Google = app
+
+	// No role resolver at all is a handler that cannot answer the question, and
+	// a handler that cannot answer it must not write the grant.
+	response := get(t, handler, "/settings/google/callback?code=x&state=example.com%7Cga4%7Ctest-csrf")
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("a callback with no role resolver answered %d, want 403", response.Code)
+	}
+
+	// A Viewer may read the dashboard and may not configure the site.
+	handler.Role = func(*http.Request, sites.Site) teams.Role { return teams.RoleViewer }
+
+	response = get(t, handler, "/settings/google/callback?code=x&state=example.com%7Cga4%7Ctest-csrf")
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("a Viewer's callback answered %d, want 403", response.Code)
+	}
+}
+
+// TestGoogleConnectBindsTheStateToTheBrowser pins the other end of the same
+// contract: the state the customer is sent to Google with carries the form
+// token, or the callback above can never accept anything.
+func TestGoogleConnectBindsTheStateToTheBrowser(t *testing.T) {
+	handler, _ := newHandler(t)
+
+	app, ok := google.NewApp("id", "secret", "https://example.com")
+	if !ok {
+		t.Fatal("the Google application would not build")
+	}
+	handler.Google = app
+
+	response := get(t, handler, "/settings/sites/example.com/google/connect?provider=search_console")
+	if response.Code != http.StatusFound {
+		t.Fatalf("connect answered %d, want a redirect to Google", response.Code)
+	}
+
+	target, err := url.Parse(response.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if state := target.Query().Get("state"); state != "example.com|search_console|test-csrf" {
+		t.Fatalf("state = %q, want the site, the provider and this browser's form token", state)
 	}
 }

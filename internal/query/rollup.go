@@ -11,10 +11,10 @@ package query
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
-	"sync"
 	"time"
 )
 
@@ -60,8 +60,9 @@ type Segment struct {
 // raw, and the check belongs in one place.
 type Router interface {
 	// Route splits a resolved range into the segments that answer it. It
-	// returns at least one segment.
-	Route(q *Query, r Resolved) []Segment
+	// returns at least one segment, or the error that stopped it reading what
+	// has been built — a summary it cannot check is not one it may read from.
+	Route(ctx context.Context, q *Query, r Resolved) ([]Segment, error)
 }
 
 // RawRouter reads everything from the raw tables. It stays the right answer for
@@ -70,16 +71,16 @@ type Router interface {
 type RawRouter struct{}
 
 // Route answers with the whole range, read raw.
-func (RawRouter) Route(_ *Query, r Resolved) []Segment {
-	return []Segment{{Range: r, Source: SourceRaw}}
+func (RawRouter) Route(_ context.Context, _ *Query, r Resolved) ([]Segment, error) {
+	return []Segment{{Range: r, Source: SourceRaw}}, nil
 }
 
-// SplitAtToday cuts a range into the part that is finished and the part that is
+// splitAtToday cuts a range into the part that is finished and the part that is
 // still running. It is the split the roll-up router makes — complete days come
 // from the summary, the day in progress cannot — and it lives here rather than
 // in the router so that the boundary arithmetic is written and tested once,
 // against the same timezone handling everything else uses.
-func SplitAtToday(r Resolved) (complete Resolved, partial Resolved, split bool) {
+func splitAtToday(r Resolved) (complete Resolved, partial Resolved, split bool) {
 	if !r.IncludesNow() {
 		return r, Resolved{}, false
 	}
@@ -423,74 +424,27 @@ type RollupCoverage struct {
 }
 
 // RollupState reads what has been built. It is an interface so the engine can
-// be handed a fake in a test and a cache in production, and so that the query
-// package does not have to know how the worker records its progress.
+// be handed a fake in a test, and so that the query package does not have to
+// know how the worker records its progress.
 type RollupState interface {
 	// Coverage returns what is built for one site and grain. The boolean is
-	// false when nothing is.
-	Coverage(ctx context.Context, siteID int64, grain Grain) (RollupCoverage, bool)
+	// false when nothing is; the error is a read that failed, which is never
+	// the same thing as nothing being built.
+	Coverage(ctx context.Context, siteID int64, grain Grain) (RollupCoverage, bool, error)
 }
 
-// rollupStateTTL is how long the router trusts a coverage reading. The worker
-// advances coverage once an hour, so anything under a minute is fresh enough,
-// and re-reading a two-row table on every dashboard query is a database round
-// trip for an answer that cannot have changed.
-const rollupStateTTL = 30 * time.Second
-
-// DatabaseState reads rollup_state, caching each answer briefly. It is the
-// implementation the serving path uses.
-type DatabaseState struct {
+// databaseState reads rollup_state. An engine lives for one request, so a read
+// here happens a couple of times per query against a table with one row per
+// site and grain; that is cheaper than a cache that would have to be
+// invalidated.
+type databaseState struct {
 	db *sql.DB
-
-	mu     sync.Mutex
-	cached map[stateKey]cachedCoverage
-
-	// Now is injectable so a test can expire the cache without sleeping.
-	Now func() time.Time
 }
 
-// stateKey identifies one cached coverage reading.
-type stateKey struct {
-	site  int64
-	grain Grain
-}
-
-// cachedCoverage is one reading and when it was taken.
-type cachedCoverage struct {
-	coverage RollupCoverage
-	found    bool
-	readAt   time.Time
-}
-
-// NewDatabaseState builds a coverage reader over an account's read handle.
-func NewDatabaseState(db *sql.DB) *DatabaseState {
-	return &DatabaseState{db: db, cached: map[stateKey]cachedCoverage{}}
-}
-
-// now reads the state's clock.
-func (s *DatabaseState) now() time.Time {
-	if s.Now == nil {
-		return time.Now()
-	}
-
-	return s.Now()
-}
-
-// Coverage answers what is built, from the cache when it is fresh. A read that
-// fails is reported as "nothing is built" rather than as an error: a summary is
-// a cache, and a cache that cannot be read means reading raw, not failing the
-// customer's dashboard.
-func (s *DatabaseState) Coverage(ctx context.Context, siteID int64, grain Grain) (RollupCoverage, bool) {
-	key := stateKey{site: siteID, grain: grain}
-
-	s.mu.Lock()
-	entry, ok := s.cached[key]
-	s.mu.Unlock()
-
-	if ok && s.now().Sub(entry.readAt) < rollupStateTTL {
-		return entry.coverage, entry.found
-	}
-
+// Coverage answers what is built. A missing row is "nothing built"; anything
+// else is returned, because a summary that cannot be checked must fail loudly
+// rather than quietly put every dashboard on the slow path.
+func (s databaseState) Coverage(ctx context.Context, siteID int64, grain Grain) (RollupCoverage, bool, error) {
 	var coverage RollupCoverage
 
 	err := s.db.QueryRowContext(ctx,
@@ -498,13 +452,14 @@ func (s *DatabaseState) Coverage(ctx context.Context, siteID int64, grain Grain)
 		siteID, int(grain),
 	).Scan(&coverage.Timezone, &coverage.From, &coverage.Through)
 
-	found := err == nil
+	if errors.Is(err, sql.ErrNoRows) {
+		return RollupCoverage{}, false, nil
+	}
+	if err != nil {
+		return RollupCoverage{}, false, fmt.Errorf("query: read roll-up coverage: %w", err)
+	}
 
-	s.mu.Lock()
-	s.cached[key] = cachedCoverage{coverage: coverage, found: found, readAt: s.now()}
-	s.mu.Unlock()
-
-	return coverage, found
+	return coverage, true, nil
 }
 
 // RollupRouter answers the complete days of a range from the summary tables and
@@ -518,42 +473,45 @@ type RollupRouter struct {
 
 // NewRollupRouter builds a router over an account's read handle.
 func NewRollupRouter(db *sql.DB) *RollupRouter {
-	return &RollupRouter{State: NewDatabaseState(db)}
+	return &RollupRouter{State: databaseState{db: db}}
 }
 
 // Route splits the range. The order of the checks is the order they get
 // cheaper: the ones that need no database come first, so a filtered query costs
 // nothing to refuse.
-func (r *RollupRouter) Route(q *Query, resolved Resolved) []Segment {
+func (r *RollupRouter) Route(ctx context.Context, q *Query, resolved Resolved) ([]Segment, error) {
 	raw := []Segment{{Range: resolved, Source: SourceRaw}}
 
 	if r == nil || r.State == nil {
-		return raw
+		return raw, nil
 	}
 
 	read, ok := planRollupRead(q, resolved)
 	if !ok {
-		return raw
+		return raw, nil
 	}
 
-	complete, partial, split := SplitAtToday(resolved)
+	complete, partial, split := splitAtToday(resolved)
 
 	// A range that is entirely in the future, or entirely today, has no
 	// complete day in it at all.
 	if !complete.End.After(complete.Start) {
-		return raw
+		return raw, nil
 	}
 
-	coverage, ok := r.State.Coverage(context.Background(), q.SiteIDs[0], read.grain)
+	coverage, ok, err := r.State.Coverage(ctx, q.SiteIDs[0], read.grain)
+	if err != nil {
+		return nil, err
+	}
 	if !ok || coverage.Timezone != q.Timezone {
-		return raw
+		return raw, nil
 	}
 
 	from := RollupLocalUnix(complete.Start, resolved.Location)
 	through := RollupLocalUnix(complete.End, resolved.Location)
 
 	if from < coverage.From || through > coverage.Through {
-		return raw
+		return raw, nil
 	}
 
 	segments := []Segment{{Range: complete, Source: SourceRollup, Grain: read.grain}}
@@ -561,7 +519,7 @@ func (r *RollupRouter) Route(q *Query, resolved Resolved) []Segment {
 		segments = append(segments, Segment{Range: partial, Source: SourceRaw})
 	}
 
-	return segments
+	return segments, nil
 }
 
 // rollupRead is everything the reader needs once a query has been accepted:

@@ -243,6 +243,7 @@
   "dashboard.report.devices.title": "Devices",
   "dashboard.report.languages.caveat": "The language a visitor's browser asks for, which is the language they configured rather than the one they can read. Someone reading English on a Spanish-language laptop counts as Spanish here.",
   "dashboard.report.languages.title": "Languages",
+  "dashboard.report.locations.attribution": "IP geolocation by DB-IP",
   "dashboard.report.locations.caveat": "Location comes from the visitor's IP address, which is looked up and then discarded — we never write it down. A VPN, a corporate network or a mobile carrier will place someone where their provider is rather than where they are.",
   "dashboard.report.locations.cities_caveat": "City is approximate, and structurally so. Mobile carriers and large employers route whole regions through a handful of exchanges, so a visitor in one town resolves to their provider's hub in another. Read this tab as a shape, not as a list of addresses.",
   "dashboard.report.locations.title": "Locations",

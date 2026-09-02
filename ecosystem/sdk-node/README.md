@@ -40,6 +40,12 @@ configuration. Use them only behind an application edge that strips client-suppl
 headers and writes its own. On a directly exposed app, pass the socket address explicitly so a
 client cannot choose its fingerprint or geolocation.
 
+The client sends `clientIp` as `X-Forwarded-For`. **The ingest server honours that header only
+from an address on its trusted-proxy list** (`FEASIBLE_INGEST_TRUSTED_PROXIES`); from any other
+peer it uses the socket address, which is your server. On a self-hosted instance, add the
+address your application calls from to that list. Check it with `debug()`: the derived event's
+`client_ip_source` is `x-forwarded-for` when the header was used and `socket` when it was not.
+
 ## Install
 
 ```bash
@@ -157,7 +163,7 @@ so you can log it — never swallowed, and never retried.
 
 | Class | When |
 |---|---|
-| `FeasibleValidationError` | Something required was missing. Has `field` and a `code` — `missing_client_ip`, `missing_user_agent`, `missing_name`, `missing_url`, `missing_domain`. |
+| `FeasibleValidationError` | Something required was missing, or a revenue amount or currency was unusable. Has `field` and a `code` — `missing_client_ip`, `missing_user_agent`, `missing_name`, `missing_url`, `missing_domain`, `invalid_revenue_amount`, `invalid_revenue_currency`. |
 | `FeasibleApiError` | The server refused the request. Has `statusCode`, the server's own `body` verbatim, and `attempts`. |
 | `FeasibleTransportError` | The request never reached a server. Has `attempt` and `cause`. |
 
@@ -192,12 +198,12 @@ console.log(await analytics.debug({ name: "pageview", url, ...visitorFromNodeReq
   ".": {
     "types": "./index.d.ts",
     "import": "./src/index.js",
-    "require": "./src/index.cjs",
-    "default": "./src/index.cjs"
+    "require": "./src/core.cjs",
+    "default": "./src/core.cjs"
   },
   "./package.json": "./package.json"
 },
-"main": "./src/index.cjs",
+"main": "./src/core.cjs",
 "module": "./src/index.js",
 "types": "./index.d.ts",
 "sideEffects": false

@@ -11,9 +11,9 @@ package sharing
 import (
 	"context"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -29,6 +29,10 @@ type fixture struct {
 	now    time.Time
 	siteID int64
 	domain string
+
+	// teamID owns the site. Every mutation is fenced on it, so a test that
+	// does not carry it cannot write anything.
+	teamID int64
 }
 
 // TestPasswordAttemptsAreBoundedPerSourceAndLink checks the durable window,
@@ -36,11 +40,11 @@ type fixture struct {
 func TestPasswordAttemptsAreBoundedPerSourceAndLink(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	first, err := f.store.CreateLink(ctx, f.siteID, "first", "correct", 0, 0)
+	first, err := f.store.CreateLinkForOwner(ctx, f.siteID, f.teamID, "first", "correct", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := f.store.CreateLink(ctx, f.siteID, "second", "correct", 0, 0)
+	second, err := f.store.CreateLinkForOwner(ctx, f.siteID, f.teamID, "second", "correct", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,6 +101,52 @@ func TestPasswordAttemptsAreBoundedPerSourceAndLink(t *testing.T) {
 	}
 }
 
+// TestOneLinkHasACeilingAcrossEverySource checks the backstop a per-source
+// budget cannot be: an attacker with a thousand addresses gets a thousand
+// budgets, so the link needs a ceiling of its own that every source shares.
+//
+// The row is seeded with the unsalted digest rather than a PBKDF2 hash because
+// the budget is spent before the derivation either way, and sixty guesses at
+// the shipped iteration count would cost seconds for nothing.
+func TestOneLinkHasACeilingAcrossEverySource(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	inserted, err := f.db.ExecContext(ctx, `
+		INSERT INTO shared_links (site_id, name, slug, password_hash, password_salt, created_at)
+		VALUES (?, 'ceiling', 'ceiling-link', ?, '', ?)
+	`, f.siteID, legacyPasswordHash("correct"), f.now.Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkID, err := inserted.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for spent, source := 0, 0; spent < PasswordLinkAttemptLimit; source++ {
+		key := "source-" + strconv.Itoa(source)
+
+		for attempt := 0; attempt < PasswordAttemptLimit && spent < PasswordLinkAttemptLimit; attempt++ {
+			if err := f.store.CheckPasswordForSource(ctx, linkID, key, "wrong"); !errors.Is(err, ErrWrongPassword) {
+				t.Fatalf("%s attempt %d = %v, want wrong password", key, attempt, err)
+			}
+
+			spent++
+		}
+	}
+
+	if err := f.store.CheckPasswordForSource(ctx, linkID, "unspent-source", "wrong"); !errors.Is(err, ErrPasswordThrottled) {
+		t.Fatalf("a source with its whole budget left = %v, want throttled", err)
+	}
+
+	// The ceiling counts every guess rather than only the wrong ones, so
+	// holding the password is not a way to reopen it.
+	if err := f.store.CheckPasswordForSource(ctx, linkID, "unspent-source", "correct"); !errors.Is(err, ErrPasswordThrottled) {
+		t.Fatalf("the right password reopened a spent link ceiling: %v", err)
+	}
+}
+
 // newFixture builds and seeds the database.
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
@@ -122,10 +172,10 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatalf("insert team: %v", err)
 	}
 
-	teamID, _ := team.LastInsertId()
+	f.teamID, _ = team.LastInsertId()
 
 	site, err := db.Exec(`INSERT INTO sites (account_id, domain, created_at, updated_at) VALUES (?, ?, ?, ?)`,
-		teamID, f.domain, f.now.Unix(), f.now.Unix())
+		f.teamID, f.domain, f.now.Unix(), f.now.Unix())
 	if err != nil {
 		t.Fatalf("insert site: %v", err)
 	}
@@ -146,7 +196,7 @@ func TestAPasswordProtectedLinkIsNeverEmbeddable(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	protected, err := f.store.CreateLink(ctx, f.siteID, "client", "hunter2", 0, 0)
+	protected, err := f.store.CreateLinkForOwner(ctx, f.siteID, f.teamID, "client", "hunter2", 0, 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -155,7 +205,7 @@ func TestAPasswordProtectedLinkIsNeverEmbeddable(t *testing.T) {
 		t.Fatal("a password-protected link reports itself as embeddable")
 	}
 
-	open, err := f.store.CreateLink(ctx, f.siteID, "public-ish", "", 0, 0)
+	open, err := f.store.CreateLinkForOwner(ctx, f.siteID, f.teamID, "public-ish", "", 0, 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -170,16 +220,16 @@ func TestAPasswordIsCheckedAndNotStoredInTheClear(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	link, err := f.store.CreateLink(ctx, f.siteID, "client", "correct horse", 0, 0)
+	link, err := f.store.CreateLinkForOwner(ctx, f.siteID, f.teamID, "client", "correct horse", 0, 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	if err := f.store.CheckPassword(ctx, link.Slug, "correct horse"); err != nil {
+	if err := f.store.CheckPasswordForSource(ctx, link.ID, "source-a", "correct horse"); err != nil {
 		t.Fatalf("the right password was refused: %v", err)
 	}
 
-	if err := f.store.CheckPassword(ctx, link.Slug, "wrong"); !errors.Is(err, ErrWrongPassword) {
+	if err := f.store.CheckPasswordForSource(ctx, link.ID, "source-a", "wrong"); !errors.Is(err, ErrWrongPassword) {
 		t.Fatalf("the wrong password was accepted: %v", err)
 	}
 
@@ -199,21 +249,27 @@ func TestAPasswordIsCheckedAndNotStoredInTheClear(t *testing.T) {
 }
 
 // TestLegacyPasswordRowsUpgradeOnlyAfterSuccessfulVerification preserves links
-// created before M9. A wrong password leaves the empty-salt row untouched; the
-// first correct password replaces it with PBKDF2, and later failures can never
-// move that row back to the legacy representation.
+// whose row still holds an unsalted digest. A wrong password leaves the
+// empty-salt row untouched; the first correct password replaces it with
+// PBKDF2, and later failures can never move that row back to the legacy
+// representation.
 func TestLegacyPasswordRowsUpgradeOnlyAfterSuccessfulVerification(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	const password = "pre-m9-secret"
-	if _, err := f.db.ExecContext(ctx, `
+	const password = "legacy-secret"
+	inserted, err := f.db.ExecContext(ctx, `
 		INSERT INTO shared_links (site_id, name, slug, password_hash, password_salt, created_at)
 		VALUES (?, 'legacy', 'legacy-link', ?, '', ?)
-	`, f.siteID, legacyPasswordHash(password), f.now.Unix()); err != nil {
+	`, f.siteID, legacyPasswordHash(password), f.now.Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkID, err := inserted.LastInsertId()
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := f.store.CheckPassword(ctx, "legacy-link", "wrong"); !errors.Is(err, ErrWrongPassword) {
+	if err := f.store.CheckPasswordForSource(ctx, linkID, "source-a", "wrong"); !errors.Is(err, ErrWrongPassword) {
 		t.Fatalf("wrong legacy password = %v, want ErrWrongPassword", err)
 	}
 	var beforeHash, beforeSalt string
@@ -226,7 +282,7 @@ func TestLegacyPasswordRowsUpgradeOnlyAfterSuccessfulVerification(t *testing.T) 
 		t.Fatalf("failed check changed legacy row to hash/salt %q/%q", beforeHash, beforeSalt)
 	}
 
-	if err := f.store.CheckPassword(ctx, "legacy-link", password); err != nil {
+	if err := f.store.CheckPasswordForSource(ctx, linkID, "source-a", password); err != nil {
 		t.Fatalf("correct legacy password failed: %v", err)
 	}
 	var upgradedHash, upgradedSalt string
@@ -238,7 +294,7 @@ func TestLegacyPasswordRowsUpgradeOnlyAfterSuccessfulVerification(t *testing.T) 
 	if upgradedSalt == "" || upgradedHash == beforeHash {
 		t.Fatalf("legacy row was not upgraded: hash/salt %q/%q", upgradedHash, upgradedSalt)
 	}
-	if err := f.store.CheckPassword(ctx, "legacy-link", "wrong"); !errors.Is(err, ErrWrongPassword) {
+	if err := f.store.CheckPasswordForSource(ctx, linkID, "source-a", "wrong"); !errors.Is(err, ErrWrongPassword) {
 		t.Fatalf("wrong upgraded password = %v, want ErrWrongPassword", err)
 	}
 	var finalSalt string
@@ -257,12 +313,12 @@ func TestTwoLinksWithTheSamePasswordHaveDifferentHashes(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	first, err := f.store.CreateLink(ctx, f.siteID, "a", "same", 0, 0)
+	first, err := f.store.CreateLinkForOwner(ctx, f.siteID, f.teamID, "a", "same", 0, 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	second, err := f.store.CreateLink(ctx, f.siteID, "b", "same", 0, 0)
+	second, err := f.store.CreateLinkForOwner(ctx, f.siteID, f.teamID, "b", "same", 0, 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -284,23 +340,26 @@ func hashOf(t *testing.T, f *fixture, id int64) string {
 	return hash
 }
 
-// TestDeriveKeyMatchesTheRFC8018Vector checks the hand-rolled PBKDF2 against a
-// published test vector, because "I implemented a KDF from the spec" is a claim
-// that has to be proven rather than asserted.
+// TestDeriveKeyMatchesAnIndependentImplementation pins the exact bytes every
+// stored hash was derived with, against a value produced outside this codebase.
 //
-// The vector is from RFC 6070 (PBKDF2-HMAC-SHA1) restated for SHA-256, which is
-// the widely-published value for password "password", salt "salt" and 4096
-// iterations. Our implementation is fixed at a different iteration count, so the
-// check is run against a deliberately re-parameterised call.
-func TestDeriveKeyMatchesTheRFC8018Vector(t *testing.T) {
-	// Derived with the standard algorithm: PBKDF2-HMAC-SHA256("password",
-	// "salt", 4096, 32).
-	const want = "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a"
+// It is a known-answer test rather than a round trip because the salt is fed to
+// PBKDF2 as its hex text rather than as decoded bytes. Anybody who "fixes" that
+// gets a derivation that is still perfectly correct PBKDF2 and still passes a
+// round-trip test, while silently locking every existing customer out of their
+// own shared link. This is the check that catches it.
+func TestDeriveKeyMatchesAnIndependentImplementation(t *testing.T) {
+	// PBKDF2-HMAC-SHA256("hunter2", "abcdef0123456789", 200000, 32), computed
+	// with OpenSSL through Python's hashlib.pbkdf2_hmac.
+	const want = "cc84cb66506106e84515e9b9d8e2c70ea1df5f50c1ae3e0b015209a1f2d3706a"
 
-	got := hex.EncodeToString(pbkdf2SHA256([]byte("password"), []byte("salt"), 4096, 32))
+	got, err := deriveKey("hunter2", "abcdef0123456789")
+	if err != nil {
+		t.Fatalf("derive: %v", err)
+	}
 
 	if got != want {
-		t.Fatalf("PBKDF2-HMAC-SHA256 produced\n%s\nwant\n%s", got, want)
+		t.Fatalf("deriveKey produced\n%s\nwant\n%s", got, want)
 	}
 }
 
@@ -331,18 +390,18 @@ func TestDeriveKeyIsDeterministic(t *testing.T) {
 	}
 }
 
-// TestALinkWithNoPasswordAcceptsAnything checks that CheckPassword is a no-op
-// for an open link rather than refusing every request.
+// TestALinkWithNoPasswordAcceptsAnything checks that the password check is a
+// no-op for an open link rather than refusing every request.
 func TestALinkWithNoPasswordAcceptsAnything(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	link, err := f.store.CreateLink(ctx, f.siteID, "open", "", 0, 0)
+	link, err := f.store.CreateLinkForOwner(ctx, f.siteID, f.teamID, "open", "", 0, 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	if err := f.store.CheckPassword(ctx, link.Slug, ""); err != nil {
+	if err := f.store.CheckPasswordForSource(ctx, link.ID, "source-a", ""); err != nil {
 		t.Fatalf("an open link refused an empty password: %v", err)
 	}
 }
@@ -356,7 +415,7 @@ func TestSlugsAreUnguessable(t *testing.T) {
 	seen := map[string]bool{}
 
 	for i := 0; i < 200; i++ {
-		link, err := f.store.CreateLink(ctx, f.siteID, "", "", 0, 0)
+		link, err := f.store.CreateLinkForOwner(ctx, f.siteID, f.teamID, "", "", 0, 0)
 		if err != nil {
 			t.Fatalf("create %d: %v", i, err)
 		}
@@ -380,12 +439,12 @@ func TestRevokingALinkRemovesItEntirely(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	link, err := f.store.CreateLink(ctx, f.siteID, "temporary", "", 0, 0)
+	link, err := f.store.CreateLinkForOwner(ctx, f.siteID, f.teamID, "temporary", "", 0, 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	if err := f.store.RevokeLink(ctx, f.siteID, link.ID); err != nil {
+	if err := f.store.RevokeLinkForOwner(ctx, f.siteID, f.teamID, link.ID); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
 
@@ -393,7 +452,7 @@ func TestRevokingALinkRemovesItEntirely(t *testing.T) {
 		t.Fatalf("a revoked link still resolves: %v", err)
 	}
 
-	if err := f.store.RevokeLink(ctx, f.siteID, link.ID); !errors.Is(err, ErrNotFound) {
+	if err := f.store.RevokeLinkForOwner(ctx, f.siteID, f.teamID, link.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("revoking twice = %v, want ErrNotFound", err)
 	}
 }
@@ -408,7 +467,7 @@ func TestAPublicSiteResolvesOnlyWhenItIsPublic(t *testing.T) {
 		t.Fatalf("a private site resolved: %v", err)
 	}
 
-	if err := f.store.SetPublic(ctx, f.siteID, true); err != nil {
+	if err := f.store.SetPublicForOwner(ctx, f.siteID, f.teamID, true); err != nil {
 		t.Fatalf("set public: %v", err)
 	}
 
@@ -421,7 +480,7 @@ func TestAPublicSiteResolvesOnlyWhenItIsPublic(t *testing.T) {
 		t.Fatalf("resolved to %q", link.Domain)
 	}
 
-	if err := f.store.SetPublic(ctx, f.siteID, false); err != nil {
+	if err := f.store.SetPublicForOwner(ctx, f.siteID, f.teamID, false); err != nil {
 		t.Fatalf("set private: %v", err)
 	}
 

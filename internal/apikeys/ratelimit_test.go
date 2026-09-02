@@ -55,3 +55,28 @@ func TestSweepDropsExpiredBuckets(t *testing.T) {
 		t.Fatalf("holding %d buckets after the window passed, want none", len(limiter.buckets))
 	}
 }
+
+// TestAllowNChargesTheWholeCost checks that an expensive call spends its whole
+// cost against the window and is refused whole rather than partly. A cost that
+// could be paid in instalments would let a caller at the edge of the limit run
+// the first half of an investigation and be cut off inside it.
+func TestAllowNChargesTheWholeCost(t *testing.T) {
+	limiter := NewLimiter(10)
+	key := &Key{ID: 1}
+
+	if decision := limiter.AllowN(key, 7); !decision.Allowed || decision.Remaining != 3 {
+		t.Fatalf("first charge = %+v, want allowed with 3 remaining", decision)
+	}
+
+	if decision := limiter.AllowN(key, 4); decision.Allowed {
+		t.Fatalf("a cost of 4 against 3 remaining was allowed: %+v", decision)
+	}
+
+	if decision := limiter.AllowN(key, 3); !decision.Allowed || decision.Remaining != 0 {
+		t.Fatalf("a cost that exactly fits was refused: %+v", decision)
+	}
+
+	if decision := limiter.AllowN(key, 0); decision.Allowed {
+		t.Fatal("a zero cost was free against an exhausted window")
+	}
+}

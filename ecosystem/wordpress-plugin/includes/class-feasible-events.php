@@ -27,7 +27,7 @@ class Feasible_Events {
 	// are a wire contract, not a label.
 	const OUTBOUND  = 'Outbound Link: Click';
 	const DOWNLOAD  = 'File Download';
-	const FORM      = 'Form: Submit';
+	const FORM      = 'Form: Submission';
 
 	// The response header the ingest server uses to say an event was not
 	// counted, and the reason the proxy puts in it. A 202 with this header is

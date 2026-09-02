@@ -169,6 +169,11 @@ func (h *TeamHandler) siteOptionsForRole(ctx context.Context, teamID int64, role
 }
 
 // siteOptions lists a team's sites for the guest-invitation picker.
+//
+// A failure here empties the picker rather than failing the page, because the
+// rest of the team screen is still usable — but it is logged, because a picker
+// that is empty for a team that has sites looks like a permissions bug and
+// would otherwise leave nothing anywhere to say what happened.
 func (h *TeamHandler) siteOptions(ctx context.Context, teamID int64) []siteOption {
 	rows, err := h.System.QueryContext(ctx, `
 		SELECT id, domain FROM sites
@@ -176,6 +181,8 @@ func (h *TeamHandler) siteOptions(ctx context.Context, teamID int64) []siteOptio
 		ORDER BY domain
 	`, teamID)
 	if err != nil {
+		h.logSiteOptions(teamID, err)
+
 		return nil
 	}
 	defer func() { _ = rows.Close() }()
@@ -185,13 +192,26 @@ func (h *TeamHandler) siteOptions(ctx context.Context, teamID int64) []siteOptio
 	for rows.Next() {
 		var option siteOption
 		if err := rows.Scan(&option.ID, &option.Domain); err != nil {
+			h.logSiteOptions(teamID, err)
+
 			return options
 		}
 
 		options = append(options, option)
 	}
 
+	if err := rows.Err(); err != nil {
+		h.logSiteOptions(teamID, err)
+	}
+
 	return options
+}
+
+// logSiteOptions records why the guest-invitation picker is short.
+func (h *TeamHandler) logSiteOptions(teamID int64, err error) {
+	if h.Log != nil {
+		h.Log.Error("the guest site picker could not be built", "team", teamID, "error", err)
+	}
 }
 
 // teamAction handles every form on the team screen.
@@ -318,8 +338,13 @@ func (h *TeamHandler) invite(w http.ResponseWriter, r *http.Request, identity Id
 		return
 	}
 
+	// The inviter's name only decorates the email. A user row that will not
+	// read is worth a line in the log, but not worth refusing to send an
+	// invitation that is otherwise complete.
 	var inviterName string
-	_ = h.System.QueryRowContext(ctx, `SELECT name FROM users WHERE id = ?`, identity.UserID).Scan(&inviterName)
+	if err := h.System.QueryRowContext(ctx, `SELECT name FROM users WHERE id = ?`, identity.UserID).Scan(&inviterName); err != nil && h.Log != nil {
+		h.Log.Warn("the inviter's name could not be read", "user", identity.UserID, "error", err)
+	}
 
 	if h.Mail == nil {
 		err = errors.New("settings: invitation mail is unavailable")
@@ -329,7 +354,13 @@ func (h *TeamHandler) invite(w http.ResponseWriter, r *http.Request, identity Id
 			inviterName, teams.Label(invitation.Role), link, time.Unix(invitation.ExpiresAt, 0))
 	}
 	if err != nil {
-		_ = h.Teams.RevokeInvitation(ctx, identity.UserID, identity.TeamID, invitation.ID)
+		// The invitation is revoked because nobody received its link, and a
+		// revoke that itself fails leaves a live token behind — which is a
+		// credential, so it is logged rather than dropped.
+		if revokeErr := h.Teams.RevokeInvitation(ctx, identity.UserID, identity.TeamID, invitation.ID); revokeErr != nil && h.Log != nil {
+			h.Log.Error("an undelivered invitation could not be revoked", "team", identity.TeamID,
+				"invitation", invitation.ID, "error", revokeErr)
+		}
 
 		if h.Log != nil {
 			h.Log.Error("an invitation could not be delivered", "team", identity.TeamID,

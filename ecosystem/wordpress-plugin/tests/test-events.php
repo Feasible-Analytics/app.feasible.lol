@@ -25,7 +25,7 @@ feasible_assert_same(
 	array(
 		'Outbound Link: Click' => 'track_outbound',
 		'File Download'        => 'track_downloads',
-		'Form: Submit'         => 'track_forms',
+		'Form: Submission'     => 'track_forms',
 	),
 	Feasible_Events::switches(),
 	'exactly three event names are suppressible, and each maps to one setting'

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/geo"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/salts"
@@ -89,7 +90,7 @@ type Service struct {
 // account manager. It reads the site list before returning because a process
 // that accepts traffic before it knows its domains would drop everything.
 func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager, opts Options) (*Service, error) {
-	trusted, err := ParseTrustedProxies(opts.TrustedProxies)
+	trusted, err := clientip.ParseTrustedProxies(opts.TrustedProxies)
 	if err != nil {
 		return nil, fmt.Errorf("trusted proxies: %w", err)
 	}
@@ -127,9 +128,8 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 	}
 
 	counters := NewCounters()
-	sessionCache := NewSessionCache()
 
-	writer := NewWriter(manager, sessionCache)
+	writer := NewWriter(manager)
 	writer.Now = now
 	writer.Usage = opts.Usage
 
@@ -146,17 +146,15 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 	}
 
 	service.Pipeline = &Pipeline{
-		Sites:     siteCache,
-		Salts:     saltSource,
-		Geo:       locator,
-		Agents:    service.Agents,
-		Bots:      bots,
-		Trusted:   trusted,
-		Shards:    DirectShard{},
-		Shield:    NoShield{},
-		Hostnames: NoHostnamePolicy{},
-		Counters:  counters,
-		Now:       now,
+		Sites:    siteCache,
+		Salts:    saltSource,
+		Geo:      locator,
+		Agents:   service.Agents,
+		Bots:     bots,
+		Trusted:  trusted,
+		Shards:   DirectShard{},
+		Counters: counters,
+		Now:      now,
 	}
 
 	// Direct mode flows accept → derive → buffer → account write. Hosted
@@ -184,7 +182,7 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 // system or account database handle: routing arrives over the signed app
 // protocol, while salts derive locally and events cross SQLite before 202.
 func NewRemoteService(ctx context.Context, outbox *Outbox, opts Options) (*Service, error) {
-	trusted, err := ParseTrustedProxies(opts.TrustedProxies)
+	trusted, err := clientip.ParseTrustedProxies(opts.TrustedProxies)
 	if err != nil {
 		return nil, fmt.Errorf("trusted proxies: %w", err)
 	}

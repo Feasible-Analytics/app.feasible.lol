@@ -1,12 +1,18 @@
 //
 // clientip.go
-// Resolving the visitor's real IP, and saying which header it came from.
+// Resolving the client's real IP, and saying which header it came from.
 //
-// Created: 2026-08-30
+// Created: 2026-09-02
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-package ingest
+// Package clientip is the one place a request's client address is worked out.
+// The ingest pipeline, the settings page, rate limiters and audit logs all
+// call it, so a proxy header is trusted under exactly the same rules
+// everywhere: an address resolved differently in one place is a shield rule
+// that does not match the traffic it was built from, or a rate limit an
+// attacker can key with a header of their choosing.
+package clientip
 
 import (
 	"net"
@@ -244,4 +250,43 @@ func parseAddr(value string) netip.Addr {
 	}
 
 	return addr.Unmap()
+}
+
+// Key returns a stable string for keying per-client rate limits: the resolved
+// client address when one can be determined through trusted proxies, else the
+// socket peer host. Never empty.
+//
+// It goes through ResolveClientIP rather than reading X-Forwarded-For directly
+// so a client cannot pick its own bucket by sending a header, which is the
+// flaw that turns a limiter into a no-op.
+func Key(r *http.Request, trusted *TrustedProxies) string {
+	if key := ResolveClientIP(r, trusted).String(); key != "" {
+		return key
+	}
+
+	if host := hostOnly(r.RemoteAddr); host != "" {
+		return host
+	}
+
+	return "unknown"
+}
+
+// IsPrivateOrLocal reports whether an address is not routable on the public
+// internet: loopback, RFC 1918 and ULA ranges, link-local, unspecified and
+// multicast, in either family. A v4-mapped v6 address is unmapped first, so
+// ::ffff:127.0.0.1 is loopback here rather than an ordinary global address.
+func IsPrivateOrLocal(addr netip.Addr) bool {
+	if !addr.IsValid() {
+		return false
+	}
+
+	addr = addr.Unmap()
+
+	return addr.IsLoopback() ||
+		addr.IsPrivate() ||
+		addr.IsLinkLocalUnicast() ||
+		addr.IsLinkLocalMulticast() ||
+		addr.IsInterfaceLocalMulticast() ||
+		addr.IsUnspecified() ||
+		addr.IsMulticast()
 }

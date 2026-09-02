@@ -159,13 +159,14 @@ func (b *whereBuilder) one(f Filter) (expr, error) {
 	if f.Operator == OpHasDone {
 		return b.hasDone(f)
 	}
-	if f.Dimension == "event:goal" {
-		return b.goal(f)
-	}
 
 	resolved, err := resolveDimension(f.Dimension)
 	if err != nil {
 		return expr{}, err
+	}
+
+	if resolved.Goal {
+		return b.goal(f)
 	}
 
 	if resolved.isProp() {
@@ -198,8 +199,31 @@ func (b *whereBuilder) goal(f Filter) (expr, error) {
 }
 
 // goalDefinition reads and compiles one site-owned definition against the
-// builder's event alias.
+// builder's event alias. The result is memoised on the compile context because
+// the same filter list is compiled once per statement, and a goal filter may
+// carry up to MaxFilterValues ids — without the memo one request could issue
+// thousands of small goal lookups.
 func (b *whereBuilder) goalDefinition(id int64, alias string) (expr, error) {
+	key := goalKey{id: id, alias: alias}
+	if compiled, ok := b.ctx.goals[key]; ok {
+		return compiled, nil
+	}
+
+	compiled, err := b.readGoalDefinition(id, alias)
+	if err != nil {
+		return expr{}, err
+	}
+
+	if b.ctx.goals != nil {
+		b.ctx.goals[key] = compiled
+	}
+
+	return compiled, nil
+}
+
+// readGoalDefinition reads one goal and its required properties and renders
+// them as a predicate on an events alias.
+func (b *whereBuilder) readGoalDefinition(id int64, alias string) (expr, error) {
 	var kind, page, event string
 	var depth int
 	sites := inInt64("site_id", b.sites)
@@ -219,7 +243,7 @@ func (b *whereBuilder) goalDefinition(id int64, alias string) (expr, error) {
 	case "page":
 		path := expr{SQL: alias + ".pathname_id IN (SELECT id FROM dim_pathname WHERE value = ?)", Args: []any{page}}
 		if strings.Contains(page, "*") {
-			path = expr{SQL: alias + ".pathname_id IN (SELECT id FROM dim_pathname WHERE " + MatchFunction + "(?, value, 1))", Args: []any{goalPattern(page)}}
+			path = expr{SQL: alias + ".pathname_id IN (SELECT id FROM dim_pathname WHERE " + MatchFunction + "(?, value, 1))", Args: []any{GoalPattern(page)}}
 		}
 		condition = and([]expr{{SQL: alias + ".name_id = ?", Args: []any{b.ctx.pageviewNameID}}, path})
 	case "event":
@@ -232,7 +256,7 @@ func (b *whereBuilder) goalDefinition(id int64, alias string) (expr, error) {
 	case "scroll":
 		condition = expr{SQL: alias + ".scroll_depth >= ? AND " + alias + ".scroll_depth <= 100", Args: []any{depth}}
 		if page != "" {
-			condition = and([]expr{condition, {SQL: alias + ".pathname_id IN (SELECT id FROM dim_pathname WHERE " + MatchFunction + "(?, value, 1))", Args: []any{goalPattern(page)}}})
+			condition = and([]expr{condition, {SQL: alias + ".pathname_id IN (SELECT id FROM dim_pathname WHERE " + MatchFunction + "(?, value, 1))", Args: []any{GoalPattern(page)}}})
 		}
 	default:
 		return expr{}, invalid("goal %d has unsupported kind %q", id, kind)
@@ -261,8 +285,12 @@ func (b *whereBuilder) goalDefinition(id int64, alias string) (expr, error) {
 	return and(parts), nil
 }
 
-// goalPattern converts stored star syntax into an anchored regular expression.
-func goalPattern(pattern string) string {
+// GoalPattern converts a goal's star syntax into an anchored regular
+// expression: one star stays inside a path segment, two cross them, and every
+// other character is literal. It is exported because the goals package must
+// compile the same pattern to the same expression — a second copy there would
+// let the goals page and a filtered graph count different visitors.
+func GoalPattern(pattern string) string {
 	var out strings.Builder
 	out.WriteByte('^')
 	for i := 0; i < len(pattern); {

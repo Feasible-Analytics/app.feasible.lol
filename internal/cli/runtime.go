@@ -102,14 +102,6 @@ func buildIngest(ctx context.Context, e *env, dataDir string) (*ingest.Service, 
 	return service, control, manager, nil
 }
 
-// attachIngestRecorder keeps the direct and standalone topologies on the same
-// observation wiring. Both the request-side handler and final-outcome writer
-// must report to one recorder or the health panel either loses diagnostics or
-// claims buffered events were stored before the shard decided their fate.
-func attachIngestRecorder(service *ingest.Service, recorder *health.Recorder) {
-	service.SetObserver(recorder)
-}
-
 // ingestHealth registers what any process that accepts events depends on. Both
 // process shapes call it, so neither can end up with a readiness probe that
 // checks less than the other; what differs between them is registered by the
@@ -135,16 +127,13 @@ func ingestHealth(checks *health.Set, control *sql.DB, service *ingest.Service, 
 
 // processRoutes combines a process's customer-facing and signed internal
 // handlers on one listener. Signed internal routes authenticate every service
-// request instead of treating socket placement as authentication.
-func processRoutes(base http.Handler, internal ...http.Handler) http.Handler {
+// request instead of treating socket placement as authentication. A nil
+// internal handler is a process with no private surface, such as the ingester.
+func processRoutes(base http.Handler, internal http.Handler) http.Handler {
 	mux := http.NewServeMux()
 
-	// Keep the retired observability path from falling through to an application
-	// catch-all. It no longer has a handler or instrumentation behind it, and a
-	// direct request to either process must make that absence explicit.
-	mux.HandleFunc("/metrics", http.NotFound)
-	if len(internal) > 0 && internal[0] != nil {
-		mux.Handle("/internal/", internal[0])
+	if internal != nil {
+		mux.Handle("/internal/", internal)
 	}
 	mux.Handle("/", base)
 

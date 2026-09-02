@@ -57,8 +57,8 @@ class Attribution:
 
     A delayed or offline conversion — a webhook hours later, a phone order, a
     refund — has no referrer of its own and would be filed as Direct forever, so
-    the campaign that earned it is passed explicitly. Ignored on browser
-    traffic, where the real referrer is authoritative.
+    the campaign that earned it is passed explicitly. The server applies them
+    to any event that carries them.
     """
 
     referrer: Optional[str] = None

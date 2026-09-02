@@ -19,6 +19,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/referrer"
 )
 
@@ -71,6 +72,32 @@ func TestQueryParametersAreStripped(t *testing.T) {
 	}
 	if strings.Contains(debug.Pathname, "email") || strings.Contains(debug.Pathname, "secret") {
 		t.Fatal("a query parameter survived into the stored path")
+	}
+}
+
+// TestHashRouteIsItsOwnPage covers the other half of the URL rule. The tracker
+// strips the fragment unless the site opted into hash routing, so a fragment
+// that does arrive is the page rather than a position on one — and dropping it
+// would file every route of such a site as "/".
+func TestHashRouteIsItsOwnPage(t *testing.T) {
+	h := newHandlerHarness(t)
+
+	debug := derive(t, h, pageview("https://example.com/#/pricing"), nil)
+	if debug.Pathname != "/#/pricing" {
+		t.Fatalf("pathname = %q, want /#/pricing", debug.Pathname)
+	}
+
+	// Two routes of the same hash-routed site stay two pages.
+	other := derive(t, h, pageview("https://example.com/#/about"), nil)
+	if other.Pathname == debug.Pathname {
+		t.Fatalf("two hash routes both stored as %q", other.Pathname)
+	}
+
+	// A query string is still stripped: the fragment is the page, the query is
+	// as private as it is anywhere else.
+	withQuery := derive(t, h, pageview("https://example.com/?session=secret#/pricing"), nil)
+	if withQuery.Pathname != "/#/pricing" {
+		t.Fatalf("pathname = %q, want the query stripped and the route kept", withQuery.Pathname)
 	}
 }
 
@@ -282,12 +309,12 @@ func TestDirectClientCannotSpoofAddressDerivedBehavior(t *testing.T) {
 
 	plain := request(nil)
 	spoofed := request(map[string]string{
-		HeaderFeasibleIP:     spoofedIP,
-		HeaderCFConnectingIP: spoofedIP,
-		HeaderForwardedFor:   spoofedIP,
+		clientip.HeaderFeasibleIP:     spoofedIP,
+		clientip.HeaderCFConnectingIP: spoofedIP,
+		clientip.HeaderForwardedFor:   spoofedIP,
 	})
 
-	if spoofed.ClientIP != socketIP || spoofed.ClientIPSource != SourceSocket {
+	if spoofed.ClientIP != socketIP || spoofed.ClientIPSource != clientip.SourceSocket {
 		t.Fatalf("spoofed request resolved %q from %q, want socket %q", spoofed.ClientIP, spoofed.ClientIPSource, socketIP)
 	}
 	if spoofed.UserID != plain.UserID {

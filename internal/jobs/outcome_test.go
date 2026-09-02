@@ -21,7 +21,7 @@ func TestASilentSuccessIsRecordedAsAFailure(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(newSystem(t))
 
-	id, err := client.Enqueue(ctx, "notifications", "reports.schedule", struct{}{}, "")
+	id, err := client.EnqueueOwned(ctx, 0, "notifications", "reports.schedule", struct{}{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestNothingWithAReasonSucceeds(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(newSystem(t))
 
-	id, err := client.Enqueue(ctx, "notifications", "reports.schedule", struct{}{}, "")
+	id, err := client.EnqueueOwned(ctx, 0, "notifications", "reports.schedule", struct{}{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestAnErrorFromAReportingHandlerStillFails(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(newSystem(t))
 
-	id, err := client.Enqueue(ctx, "notifications", "reports.alerts", struct{}{}, "")
+	id, err := client.EnqueueOwned(ctx, 0, "notifications", "reports.alerts", struct{}{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

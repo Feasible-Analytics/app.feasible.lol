@@ -345,3 +345,68 @@ func TestKeysAreDistinct(t *testing.T) {
 		seen[key] = true
 	}
 }
+
+// TestByIDAnswersLikeAuthenticate checks that a key read by id carries the same
+// fields, and is refused on the same terms, as the key presented in a header.
+// An OAuth token stands for a key by id, so a difference here would be a token
+// that outlives the key it was issued for.
+func TestByIDAnswersLikeAuthenticate(t *testing.T) {
+	keys, _ := testStore(t)
+	ctx := context.Background()
+
+	created, plaintext, err := keys.Create(ctx, 1, 1, "by-id", []string{ScopeStatsRead}, 250)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	presented, err := keys.Authenticate(ctx, plaintext)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byID, err := keys.ByID(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if byID.ID != presented.ID || byID.TeamID != presented.TeamID || byID.UserID != presented.UserID ||
+		byID.Role != presented.Role || byID.Name != presented.Name || byID.Prefix != presented.Prefix ||
+		byID.HourlyLimit != presented.HourlyLimit || strings.Join(byID.Scopes, ",") != strings.Join(presented.Scopes, ",") ||
+		!byID.CreatedAt.Equal(presented.CreatedAt) {
+		t.Fatalf("ByID = %+v, Authenticate = %+v", byID, presented)
+	}
+
+	if err := keys.Revoke(ctx, 1, created.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := keys.ByID(ctx, created.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a revoked key read by id returned %v, want ErrNotFound", err)
+	}
+
+	if _, err := keys.ByID(ctx, 999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a missing key read by id returned %v, want ErrNotFound", err)
+	}
+}
+
+// TestListRefusesAnUnreadableScopeList checks that a key the API would reject
+// is not listed as if it had every scope. The row can only get that way by
+// hand, and the answer has to name the key rather than hide it.
+func TestListRefusesAnUnreadableScopeList(t *testing.T) {
+	keys, db := testStore(t)
+	ctx := context.Background()
+
+	created, _, err := keys.Create(ctx, 1, 1, "broken", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.Exec(`UPDATE api_keys SET scopes = 'not json' WHERE id = ?`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = keys.List(ctx, 1)
+	if err == nil || !strings.Contains(err.Error(), "unreadable scope list") {
+		t.Fatalf("List returned %v, want an error naming the unreadable scope list", err)
+	}
+}

@@ -6,21 +6,19 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-// Package health is the ingestion health panel: what we accepted, what we threw
-// away and why, which address we resolved for the last request and which header
-// we believed it from, and the named warnings that turn all of that into
-// something a customer can act on.
+// The recorder is the ingestion health panel's write side: what we accepted,
+// what we threw away and why, which address we resolved for the last request
+// and which header we believed it from, and the named warnings that turn all
+// of that into something a customer can act on.
 //
-// It exists because the largest single source of support burden in this product
-// category is silent failure. Events are dropped and answered with a 202 and a
-// header nobody reads; properties past a cap vanish; a proxy that is not
-// forwarding the visitor's address turns every visitor into one. None of it
-// raises an error anywhere, so the first sign is somebody noticing a number
-// looks wrong weeks later — by which time the data is gone.
-//
-// This package is the opposite of that, and it is the differentiator: nothing
-// is dropped, truncated or reclassified without a count, a reason and a name
-// the customer can read on their own dashboard.
+// Events are dropped and answered with a 202 and a header nobody reads;
+// properties past a cap vanish; a proxy that is not forwarding the visitor's
+// address turns every visitor into one. None of it raises an error anywhere, so
+// without this the first sign is somebody noticing a number looks wrong weeks
+// later — by which time the data is gone. Nothing is dropped, truncated or
+// reclassified without a count, a reason and a name the customer can read on
+// their own dashboard.
+
 package health
 
 import (

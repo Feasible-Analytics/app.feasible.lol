@@ -70,9 +70,8 @@ func (a *API) handleQueryV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, MaxBodyBytes))
-	if err != nil {
-		a.fail(w, http.StatusBadRequest, "could not read the request body")
+	body, ok := a.readBody(w, r)
+	if !ok {
 		return
 	}
 

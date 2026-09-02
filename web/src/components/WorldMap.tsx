@@ -98,11 +98,15 @@ export function WorldMap({ rows, onFilter, selected }: Props) {
 		<div className="relative flex h-full flex-col">
 			{/* The map takes the middle of the card and the legend sits on the
 			    floor, rather than the two travelling together as one block with
-			    dead space above and below it. */}
+			    dead space above and below it.
+
+			    A group rather than an image: an image role hides everything
+			    inside it from assistive technology, and the countries are
+			    buttons a screen reader has to be able to reach. */}
 			<svg
 				viewBox={MAP_VIEWBOX}
 				className="my-auto w-full"
-				role="img"
+				role="group"
 				aria-label={t("dashboard.map.aria")}
 				onPointerLeave={() => setHovered(null)}
 			>

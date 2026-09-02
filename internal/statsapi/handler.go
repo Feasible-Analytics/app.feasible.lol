@@ -14,10 +14,12 @@
 package statsapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -171,9 +173,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	site, ok := h.Sites.Lookup(domain)
 	if !ok {
-		// Not found rather than forbidden: this endpoint has no authentication
-		// in front of it yet, and once it does, the answer for a site somebody
-		// may not read should be the same as for one that does not exist.
+		// Not found rather than forbidden, and Authorize refuses a site the
+		// caller may not read with the same status: otherwise the difference
+		// between the two answers is a way to enumerate which domains are
+		// registered on this install.
 		h.fail(w, http.StatusNotFound, "no site is registered for "+domain)
 		return
 	}
@@ -195,8 +198,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, MaxBodyBytes))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
 	if err != nil {
+		// Over the limit is refused as too large rather than reported as bad
+		// JSON: a truncated body that then fails to parse names the wrong
+		// problem.
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			h.fail(w, http.StatusRequestEntityTooLarge, "the request body is larger than "+strconv.Itoa(MaxBodyBytes)+" bytes")
+			return
+		}
+
 		h.fail(w, http.StatusBadRequest, "could not read the request body")
 		return
 	}
@@ -282,13 +294,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.writeBody(w, http.StatusOK, encoded)
 }
 
-// record times one answered report and says so out loud when it was slow.
-//
-// The source is the label because it is the one thing that explains the number:
-// the same report is single-digit milliseconds from a summary and seconds from
-// a raw twelve-month scan, and a histogram that mixed them would describe
-// neither. It is a closed set of two words, so it costs three series rather
-// than one per site.
+// record logs a report that took longer than SlowReport, with where it was
+// answered from, because the same report is milliseconds from a summary and
+// seconds from a raw scan and the source is what explains the difference.
 func (h *Handler) record(domain string, result *query.Result, took time.Duration) {
 	source := sourceLabel(result.Meta.Sources)
 
@@ -330,28 +338,17 @@ func (h *Handler) stillRunning(result *query.Result) bool {
 	return end.After(h.now())
 }
 
-// domain reads the site out of the URL, falling back to parsing the path so the
-// handler still works if it is ever mounted somewhere without a named wildcard.
+// domain reads the site out of the URL. Pattern is the only place this handler
+// is mounted, and it names the wildcard this reads.
 func (h *Handler) domain(r *http.Request) string {
-	if value := r.PathValue("domain"); value != "" {
-		return value
-	}
-
-	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	for i, part := range parts {
-		if part == "stats" && i+1 < len(parts) {
-			return parts[i+1]
-		}
-	}
-
-	return ""
+	return r.PathValue("domain")
 }
 
 // decode reads the request body, refusing anything it does not recognise. A
 // misspelt field that is silently ignored is a filter that never applied and a
 // number nobody can explain, so an unknown key is a 400 naming the key.
 func decode(body []byte) (*request, error) {
-	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 
 	parsed := &request{}

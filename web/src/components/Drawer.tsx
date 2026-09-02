@@ -20,7 +20,6 @@ import {
 	DRAWER_HEADINGS,
 	DRAWER_METRICS,
 	INVERTED,
-	breakdownValueIndex,
 	dimensionsOf,
 	findTab,
 	groupsOf,
@@ -164,7 +163,6 @@ export function Drawer({
 	const groups = groupsOf(listing);
 	const subTabs = subTabsOf(listing, tab);
 	const breakdown = BREAKDOWNS.find((entry) => entry.id === state.breakdown);
-	const breakdownAt = breakdownValueIndex(tab);
 
 	/** sort flips a column, or switches to it descending first — which is what
 	 *  somebody clicking "Bounce" almost always wants to see. */
@@ -382,13 +380,15 @@ export function Drawer({
 												</button>
 											</td>
 
+											{/* The breakdown is the second grouping dimension, so
+											    its value is the second entry on every row. */}
 											{breakdown?.id && (
 												<td className="px-3">
 													<span
 														className="block max-w-48 truncate text-muted"
-														title={row.dimensions[breakdownAt] || t("dashboard.value.unknown")}
+														title={row.dimensions[1] || t("dashboard.value.unknown")}
 													>
-														{row.dimensions[breakdownAt] || t("dashboard.value.unknown")}
+														{row.dimensions[1] || t("dashboard.value.unknown")}
 													</span>
 												</td>
 											)}
@@ -531,6 +531,13 @@ function DrawerTab({ label, active, onClick }: { label: string; active: boolean;
  * and they have to tab all the way down to where they were.
  */
 function useFocusTrap(panel: React.RefObject<HTMLElement | null>, onClose: () => void, opener: HTMLElement | null): void {
+	// The closer is read through a ref rather than listed as a dependency: the
+	// caller rebuilds it on every URL change, and re-running this effect for
+	// that would hand focus to the opener and then to the search box every time
+	// the reader sorts a column or turns a page.
+	const close = useRef(onClose);
+	close.current = onClose;
+
 	useEffect(() => {
 		const node = panel.current;
 		if (!node) return;
@@ -547,7 +554,7 @@ function useFocusTrap(panel: React.RefObject<HTMLElement | null>, onClose: () =>
 		const onKey = (event: KeyboardEvent) => {
 			if (event.key === "Escape") {
 				event.stopPropagation();
-				onClose();
+				close.current();
 				return;
 			}
 
@@ -579,5 +586,5 @@ function useFocusTrap(panel: React.RefObject<HTMLElement | null>, onClose: () =>
 			document.body.style.overflow = previousOverflow;
 			opener?.focus();
 		};
-	}, [panel, onClose, opener]);
+	}, [panel, opener]);
 }

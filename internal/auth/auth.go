@@ -67,9 +67,9 @@ func (s *Store) SetClock(now func() time.Time) {
 	s.now = now
 }
 
-// Now reports the current time through this store's clock, so nothing inside
-// the package ever calls time.Now directly and accidentally escapes the clock a
-// test installed.
+// Now reports the current time through this store's clock. Everything in the
+// package that decides an expiry reads it, so a test that installed a clock
+// moves every window at once.
 func (s *Store) Now() time.Time {
 	return s.now()
 }

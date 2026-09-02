@@ -12,6 +12,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -1160,7 +1161,7 @@ func TestPartialCoverageIsReported(t *testing.T) {
 // been resolved, so the database cannot do the ordering.
 func TestATruncatedGroupSetSaysSo(t *testing.T) {
 	engine := newEngine(t)
-	engine.MaxGroups = 1
+	engine.groupLimit = 1
 
 	q := baseQuery("pageviews", "bounce_rate")
 	q.Dimensions = []string{"event:page"}
@@ -1176,4 +1177,120 @@ func TestATruncatedGroupSetSaysSo(t *testing.T) {
 	if len(result.Results) == 0 {
 		t.Fatal("a truncated answer is still an answer")
 	}
+}
+
+// TestAQueryThatOutrunsTheDeadlineIsACallerError checks the engine's own
+// ceiling. Nothing above the engine cancels a handler's context, so without
+// this an exact query over a large range runs until the client hangs up.
+func TestAQueryThatOutrunsTheDeadlineIsACallerError(t *testing.T) {
+	engine := newEngine(t)
+	engine.QueryTimeout = time.Nanosecond
+
+	_, err := engine.Run(context.Background(), baseQuery("pageviews"))
+
+	var callerError *Error
+	if !errors.As(err, &callerError) || callerError.Code != ErrQueryTimeoutCode {
+		t.Fatalf("a timed-out query must be a caller error with the timeout code, got %v", err)
+	}
+
+	if !strings.Contains(callerError.Message, "narrow") {
+		t.Errorf("the timeout message must tell the caller what to do, got %q", callerError.Message)
+	}
+}
+
+// TestACallerWhoHungUpIsNotToldToNarrowTheQuery is the other half: a cancelled
+// request passes through as the cancellation it is, not as advice nobody will
+// read.
+func TestACallerWhoHungUpIsNotToldToNarrowTheQuery(t *testing.T) {
+	engine := newEngine(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := engine.Run(ctx, baseQuery("pageviews"))
+
+	var callerError *Error
+	if err == nil || errors.As(err, &callerError) {
+		t.Fatalf("a cancelled request must not become a caller error, got %v", err)
+	}
+}
+
+// TestAComparisonTruncationIsSaidOutLoud covers the one place a capped group
+// set was silent. Today has one busy hour for US visitors and yesterday has
+// two, so with a ceiling of one group the comparison is cut and the primary is
+// not — and a cut comparison reads as zero for the rows it dropped.
+func TestAComparisonTruncationIsSaidOutLoud(t *testing.T) {
+	engine := newEngine(t)
+	engine.groupLimit = 1
+
+	q := baseQuery("pageviews")
+	q.DateRange = DateRange{Preset: RangeDay}
+	q.Dimensions = []string{"time:hour"}
+	q.Filters = []Filter{{Operator: OpIs, Dimension: "visit:country", Values: []string{"US"}}}
+	q.Include.Comparisons = &Comparison{Mode: ComparePreviousPeriod}
+
+	result := run(t, engine, q)
+
+	warning, ok := result.Meta.MetricWarnings["pageviews"]
+	if !ok || warning.Code != WarnGroupsTruncated {
+		t.Fatalf("a truncated comparison must announce itself, got %+v", result.Meta.MetricWarnings)
+	}
+
+	if !strings.Contains(warning.Warning, "comparison period") {
+		t.Errorf("the warning must say it is the comparison that was cut, got %q", warning.Warning)
+	}
+}
+
+// TestConversionRateAcceptsAConfiguredGoalFilter checks that a goal picked
+// from the goals list counts as a goal for the conversion rate, and that it is
+// stripped from the denominator like any other. One visitor of three signed up.
+func TestConversionRateAcceptsAConfiguredGoalFilter(t *testing.T) {
+	engine, account := newEngineWithAccount(t)
+
+	q := baseQuery("conversion_rate")
+	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:goal", Values: []string{strconv.FormatInt(seedSignupGoal(t, account), 10)}}}
+
+	result := run(t, engine, q)
+
+	closeTo(t, "conversion_rate under a configured goal", result.Results[0].Metrics[0], 33.333)
+}
+
+// TestEventGoalCannotBeGroupedBy pins the one thing the goal filter is not: a
+// dimension. Its values are ids of stored definitions, and there is no column
+// to group a row by.
+func TestEventGoalCannotBeGroupedBy(t *testing.T) {
+	engine := newEngine(t)
+
+	q := baseQuery("pageviews")
+	q.Dimensions = []string{"event:goal"}
+
+	var callerError *Error
+	if _, err := engine.Run(context.Background(), q); !errors.As(err, &callerError) {
+		t.Fatalf("grouping by event:goal must be a caller error, got %v", err)
+	}
+
+	for _, name := range DimensionNames() {
+		if name == "event:goal" {
+			t.Fatal("event:goal must not be offered as something to group by")
+		}
+	}
+}
+
+// seedSignupGoal stores an event goal on the Signup event and returns its id.
+func seedSignupGoal(t *testing.T, account *accounts.Account) int64 {
+	t.Helper()
+
+	result, err := account.Writer().ExecContext(context.Background(), `
+		INSERT INTO goals (site_id, kind, event_name, created_at, signature)
+		VALUES (1, 'event', 'Signup', 0, 'signup')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return id
 }

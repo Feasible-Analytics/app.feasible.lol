@@ -154,7 +154,7 @@ func (h *Handler) showNewSite(w http.ResponseWriter, r *http.Request) {
 // pre-filled and overridable rather than a list of six hundred entries starting
 // at Africa/Abidjan.
 func (h *Handler) doNewSite(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -246,7 +246,7 @@ func (h *Handler) pushToCache(site *Site, team *Team) {
 
 // doPinSite pins or unpins a site from the list.
 func (h *Handler) doPinSite(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -352,7 +352,7 @@ func (h *Handler) transferDestinations(ctx context.Context, userID, sourceTeamID
 // by TransferSiteFrom under the writer lock, so a stale page cannot authorize a
 // second transfer after ownership has already moved.
 func (h *Handler) doSiteTransfer(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -388,7 +388,7 @@ func (h *Handler) doSiteTransfer(w http.ResponseWriter, r *http.Request) {
 // Session authentication and CSRF are both required because this endpoint is a
 // browser credential surface, not the bearer-key public API.
 func (h *Handler) doSiteTransferAPI(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -471,7 +471,7 @@ func transferErrorMessage(err error) string {
 
 // doSiteGeneral saves the display name, timezone, folder and public flag.
 func (h *Handler) doSiteGeneral(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -516,7 +516,7 @@ func (h *Handler) doSiteGeneral(w http.ResponseWriter, r *http.Request) {
 
 // doSiteDomain changes the domain and opens the dual-write window.
 func (h *Handler) doSiteDomain(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -555,7 +555,7 @@ func (h *Handler) doSiteDomain(w http.ResponseWriter, r *http.Request) {
 // doSiteReset erases every datum scoped to a site while retaining the site row
 // itself so the domain can begin collecting again under the same owner.
 func (h *Handler) doSiteReset(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -593,7 +593,7 @@ func (h *Handler) doSiteReset(w http.ResponseWriter, r *http.Request) {
 
 // doSiteDelete removes a site, its routing entry and its recorded traffic.
 func (h *Handler) doSiteDelete(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -633,7 +633,7 @@ func (h *Handler) doSiteDelete(w http.ResponseWriter, r *http.Request) {
 
 // doCreateFolder adds a folder.
 func (h *Handler) doCreateFolder(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -652,7 +652,7 @@ func (h *Handler) doCreateFolder(w http.ResponseWriter, r *http.Request) {
 
 // doRenameFolder renames a folder.
 func (h *Handler) doRenameFolder(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -671,7 +671,7 @@ func (h *Handler) doRenameFolder(w http.ResponseWriter, r *http.Request) {
 
 // doDeleteFolder removes a folder and leaves its sites at the top level.
 func (h *Handler) doDeleteFolder(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -703,7 +703,7 @@ type reorderRequest struct {
 // page has already moved the elements — a reload here would undo the animation
 // the user just watched.
 func (h *Handler) doReorder(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 

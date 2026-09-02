@@ -22,6 +22,7 @@ import (
 func (h *Handler) showAccountSettings(w http.ResponseWriter, r *http.Request) {
 	p := h.newPage(r, tr(r, "auth.title.account"), "settings")
 	p.Data["MinLength"] = MinPasswordLength
+	p.Data["ReauthMode"] = reauthMode(userFrom(r))
 
 	switch r.URL.Query().Get("saved") {
 	case "profile":
@@ -30,12 +31,21 @@ func (h *Handler) showAccountSettings(w http.ResponseWriter, r *http.Request) {
 		p.Flash = i18n.T(p.Lang, "auth.flash.password_changed")
 	}
 
+	// The emailed-code button posts to its own route and comes back here, so
+	// its outcome is reported from the query rather than carried in memory.
+	switch r.URL.Query().Get("confirm") {
+	case "sent":
+		p.Flash = i18n.T(p.Lang, "auth.flash.confirm_sent")
+	case "limited":
+		p.Error = i18n.T(p.Lang, "auth.error.too_many_attempts")
+	}
+
 	h.render(w, r, "settings_account", p, http.StatusOK)
 }
 
 // doUpdateProfile saves the display name and theme.
 func (h *Handler) doUpdateProfile(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -60,24 +70,25 @@ func (h *Handler) doUpdateProfile(w http.ResponseWriter, r *http.Request) {
 // in. A change that needed only a session means a stolen cookie becomes a
 // permanent takeover, because the attacker can lock the owner out with it.
 func (h *Handler) doChangePassword(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
 	user := userFrom(r)
 	session := sessionFrom(r)
 
-	current := r.PostFormValue("current_password")
 	next := r.PostFormValue("new_password")
 
 	p := h.newPage(r, tr(r, "auth.title.account"), "settings")
 	p.Data["MinLength"] = MinPasswordLength
 
-	// Somebody who signed up with Google has no current password to give, so
-	// the field is not demanded of them — setting the first password is not a
-	// change of anything.
-	if user.PasswordHash != "" && !CheckPassword(user.PasswordHash, current) {
-		p.Error = i18n.T(p.Lang, "auth.error.current_password")
+	p.Data["ReauthMode"] = reauthMode(user)
+
+	// Somebody who signed up with Google has no current password to give, but a
+	// first password is a new credential that works without Google afterwards.
+	// They prove themselves with the authenticator or an emailed code instead.
+	if ok, message := h.reauthenticate(w, r, user); !ok {
+		p.Error = i18n.T(p.Lang, message)
 		h.render(w, r, "settings_account", p, http.StatusUnauthorized)
 
 		return
@@ -128,7 +139,7 @@ func (h *Handler) showSessions(w http.ResponseWriter, r *http.Request) {
 
 // doRevokeSession signs one device out, or every device but this one.
 func (h *Handler) doRevokeSession(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -180,6 +191,7 @@ func (h *Handler) showSecurity(w http.ResponseWriter, r *http.Request) {
 	p.Data["Enabled"] = user.TwoFactorEnabled()
 	p.Data["RecoveryLeft"] = RecoveryCodesLeft(user)
 	p.Data["HasPassword"] = user.PasswordHash != ""
+	p.Data["ReauthMode"] = reauthMode(user)
 
 	// A half-finished enrolment is resumed rather than restarted. Issuing a new
 	// secret on every page load would invalidate the entry somebody has already
@@ -205,7 +217,7 @@ func (h *Handler) showSecurity(w http.ResponseWriter, r *http.Request) {
 
 // doStartTwoFactor issues a secret and shows the QR code.
 func (h *Handler) doStartTwoFactor(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -256,7 +268,7 @@ func (h *Handler) twoFactorQR(w http.ResponseWriter, r *http.Request) {
 // doEnableTwoFactor finishes enrolment once a code from the app checks out, and
 // shows the recovery codes.
 func (h *Handler) doEnableTwoFactor(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -272,7 +284,7 @@ func (h *Handler) doEnableTwoFactor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	valid, err := h.Store.VerifyTOTP(h.Sealer, user, r.PostFormValue("code"))
+	valid, err := h.Store.VerifyTOTP(r.Context(), h.Sealer, user, r.PostFormValue("code"))
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -313,18 +325,19 @@ func (h *Handler) doEnableTwoFactor(w http.ResponseWriter, r *http.Request) {
 
 // doRegenerateRecovery issues a fresh set of recovery codes.
 func (h *Handler) doRegenerateRecovery(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
 	user := userFrom(r)
 
-	if user.PasswordHash != "" && !CheckPassword(user.PasswordHash, r.PostFormValue("password")) {
+	if ok, message := h.reauthenticate(w, r, user); !ok {
 		p := h.newPage(r, tr(r, "auth.title.security"), "settings")
 		p.Data["Enabled"] = user.TwoFactorEnabled()
 		p.Data["RecoveryLeft"] = RecoveryCodesLeft(user)
-		p.Data["HasPassword"] = true
-		p.Error = i18n.T(p.Lang, "auth.error.password")
+		p.Data["HasPassword"] = user.PasswordHash != ""
+		p.Data["ReauthMode"] = reauthMode(user)
+		p.Error = i18n.T(p.Lang, message)
 
 		h.render(w, r, "settings_security", p, http.StatusUnauthorized)
 
@@ -352,7 +365,7 @@ func (h *Handler) doRegenerateRecovery(w http.ResponseWriter, r *http.Request) {
 // of a team that requires two-factor cannot switch it off, because that would
 // make the policy advisory.
 func (h *Handler) doDisableTwoFactor(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -362,6 +375,7 @@ func (h *Handler) doDisableTwoFactor(w http.ResponseWriter, r *http.Request) {
 	p.Data["Enabled"] = user.TwoFactorEnabled()
 	p.Data["RecoveryLeft"] = RecoveryCodesLeft(user)
 	p.Data["HasPassword"] = user.PasswordHash != ""
+	p.Data["ReauthMode"] = reauthMode(user)
 
 	locked, err := exists(r.Context(), h.Store.DB(), `
 		SELECT 1
@@ -382,8 +396,8 @@ func (h *Handler) doDisableTwoFactor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if user.PasswordHash != "" && !CheckPassword(user.PasswordHash, r.PostFormValue("password")) {
-		p.Error = i18n.T(p.Lang, "auth.error.password")
+	if ok, message := h.reauthenticate(w, r, user); !ok {
+		p.Error = i18n.T(p.Lang, message)
 		h.render(w, r, "settings_security", p, http.StatusUnauthorized)
 
 		return
@@ -420,7 +434,7 @@ func (h *Handler) showTeamSettings(w http.ResponseWriter, r *http.Request) {
 
 // doTeamSettings saves the team name and the two-factor policy.
 func (h *Handler) doTeamSettings(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -455,7 +469,7 @@ func (h *Handler) doTeamSettings(w http.ResponseWriter, r *http.Request) {
 // the payment provider's customer record is deleted. No support process can put
 // any of it back.
 func (h *Handler) doDeleteAccount(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -477,8 +491,10 @@ func (h *Handler) doDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if user.PasswordHash != "" && !CheckPassword(user.PasswordHash, r.PostFormValue("password")) {
-		p.Error = i18n.T(p.Lang, "auth.error.password")
+	p.Data["ReauthMode"] = reauthMode(user)
+
+	if ok, message := h.reauthenticate(w, r, user); !ok {
+		p.Error = i18n.T(p.Lang, message)
 		h.render(w, r, "settings_account", p, http.StatusUnauthorized)
 
 		return

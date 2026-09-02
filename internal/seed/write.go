@@ -61,8 +61,8 @@ const eventColumnCount = 30
 // in it. It stays one row at a time because only a small share of events carry
 // properties, revenue or a long-tail UTM field.
 const insertDetailsSQL = `
-	INSERT INTO event_details (event_id, props, revenue_amount, revenue_currency, utm_content, utm_term, full_url)
-	VALUES (?,?,?,?,?,?,?)`
+	INSERT INTO event_details (event_id, props, revenue_amount, revenue_currency, utm_content, utm_term)
+	VALUES (?,?,?,?,?,?)`
 
 // sessionColumns is the session row in bind order.
 const sessionColumns = `id, site_id, user_id, started_at, last_seen_at, duration, is_bounce,
@@ -539,7 +539,7 @@ func insertDetails(ctx context.Context, stmt *sql.Stmt, row eventRow) error {
 
 	if _, err := stmt.ExecContext(ctx,
 		row.id, props, amount, currency,
-		nullIfEmpty(event.UTMContent), nullIfEmpty(event.UTMTerm), nullIfEmpty(event.FullURL),
+		nullIfEmpty(event.UTMContent), nullIfEmpty(event.UTMTerm),
 	); err != nil {
 		return fmt.Errorf("seed write: insert event details: %w", err)
 	}

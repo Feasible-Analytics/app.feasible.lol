@@ -189,6 +189,10 @@ func (s *Store) saveSubscription(ctx context.Context, subscription Subscription,
 		return fmt.Errorf("reports: %q is not weekly or monthly", subscription.Kind)
 	}
 
+	if err := ValidateWebhookURL(subscription.SlackWebhookURL); err != nil {
+		return err
+	}
+
 	recipients, err := encodeRecipients(subscription.Recipients)
 	if err != nil {
 		return err
@@ -370,6 +374,10 @@ func (s *Store) saveAlertRule(ctx context.Context, rule AlertRule, expectedOwner
 		return fmt.Errorf("reports: %q is not spike or drop", rule.Kind)
 	}
 
+	if err := ValidateWebhookURL(rule.SlackWebhookURL); err != nil {
+		return err
+	}
+
 	if rule.Threshold <= 0 {
 		rule.Threshold = DefaultSpikeThreshold
 		if rule.Kind == KindDrop {
@@ -437,15 +445,12 @@ func (s *Store) saveAlertRule(ctx context.Context, rule AlertRule, expectedOwner
 	return nil
 }
 
-// ownerMutation takes SQLite's writer lock and verifies a site's owner before
-// returning the transaction that must contain the protected mutation.
+// ownerMutation verifies a site's owner inside the transaction it returns, so
+// the protected mutation and a site transfer serialise on system.db's writer
+// rather than both authorising from stale reads.
 func (s *Store) ownerMutation(ctx context.Context, siteID, expectedOwnerTeamID int64) (*sql.Tx, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("reports: begin owner mutation: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE sites SET updated_at = updated_at WHERE id = -1`); err != nil {
-		tx.Rollback() //nolint:errcheck // transaction cannot be reused
 		return nil, fmt.Errorf("reports: begin owner mutation: %w", err)
 	}
 	var ownerTeamID int64

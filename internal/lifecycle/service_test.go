@@ -11,6 +11,7 @@ package lifecycle
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1481,8 +1482,16 @@ func TestV10UpgradeFinishesLegacyOwnedCleanupWithoutLiveTeam(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 9 || result.To != 12 || fmt.Sprint(result.Applied) != "[10 11 12]" {
-		t.Fatalf("legacy cleanup migration result = %+v, want 9 through [10 11 12]", result)
+	// The expectation is derived from the set rather than written out, so a new
+	// system migration does not fail a test about account deletion.
+	wantApplied := []int{}
+	for _, migration := range migrate.System().Migrations {
+		if migration.Version > 9 {
+			wantApplied = append(wantApplied, migration.Version)
+		}
+	}
+	if result.From != 9 || result.To != migrate.System().Version() || fmt.Sprint(result.Applied) != fmt.Sprint(wantApplied) {
+		t.Fatalf("legacy cleanup migration result = %+v, want 9 through %v", result, wantApplied)
 	}
 
 	var completed, controlRemoved, localRemoved, artifactsIndexed, globalRemoved sql.NullInt64
@@ -1839,4 +1848,41 @@ func contains(haystack, needle string) bool {
 	}
 
 	return false
+}
+
+// TestAMailRelayOutageDoesNotDelayTheDeletion is the promise the whole clock
+// rests on: the data is destroyed on day 90.
+//
+// The warnings and the deletion run in the same pass, so a send that fails
+// would return before the deletion was even considered — and an account whose
+// relay is down, or which has no billing contact left to write to, would keep
+// its data indefinitely while the interface said it was gone. The failure still
+// has to reach the caller, because a warning nobody sent is its own problem.
+func TestAMailRelayOutageDoesNotDelayTheDeletion(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+
+	if _, err := h.service.Signal(ctx, 1, SignalPaymentFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	h.service.Notify = NotifierFunc(func(context.Context, Notice) (string, error) {
+		return "", errors.New("the mail relay is down")
+	})
+
+	if !exists(h.accountFile()) {
+		t.Fatal("the account database was never created")
+	}
+
+	// Straight to the day the data was promised to be destroyed, with every
+	// earlier warning still unsent.
+	h.travel(DeletionDays)
+
+	if _, err := h.service.Sweep(ctx); err == nil {
+		t.Fatal("a failed send was reported as a clean sweep")
+	}
+
+	if exists(h.accountFile()) {
+		t.Fatal("the account's data survived day 90 because a warning could not be sent")
+	}
 }

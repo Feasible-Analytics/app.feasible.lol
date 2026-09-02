@@ -26,6 +26,7 @@ package settings
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"embed"
 	"errors"
@@ -41,12 +42,12 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dataio"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/goals"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/google"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/pathclean"
@@ -121,9 +122,10 @@ func Patterns() []string {
 // DomainOf reads the site a request names, for the authorisation check that
 // wraps these pages.
 //
-// The OAuth callback answers empty: it names its site in the signed state
-// parameter rather than in the path, and is authorised when that state is
-// verified.
+// The OAuth callback answers empty, because Google redirects to one fixed URI
+// that can carry no path segment of ours. It names its site in the state
+// parameter instead, and googleCallback makes the site check the gate could
+// not.
 func DomainOf(r *http.Request) string {
 	return r.PathValue("domain")
 }
@@ -263,7 +265,7 @@ type Handler struct {
 	// resolves the viewer's address through exactly the same rules, because an
 	// address resolved a different way here would produce a rule that does not
 	// match the traffic it was created from.
-	Trusted *ingest.TrustedProxies
+	Trusted *clientip.TrustedProxies
 
 	// Shields and Paths are the running snapshots. They are updated in place on
 	// save so a customer sees a rule take effect immediately rather than after
@@ -706,11 +708,13 @@ func (h *Handler) allowRejectedHostname(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	account, err := h.Accounts.Open(r.Context(), site.AccountID)
+	lease, err := h.Accounts.Acquire(r.Context(), site.AccountID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer lease.Release() //nolint:errcheck // mutation and snapshot refresh share one fence
+	account := lease.Account
 
 	hostname := r.PostFormValue("hostname")
 	if hostname == shields.OtherHostname {
@@ -991,11 +995,31 @@ func (h *Handler) imports(w http.ResponseWriter, r *http.Request, site sites.Sit
 	}
 
 	if h.Google != nil {
-		data.GA4, _ = google.GetConnection(r.Context(), account.Reader(), site.ID, google.ProviderGA4)
-		data.SearchConsole, _ = google.GetConnection(r.Context(), account.Reader(), site.ID, google.ProviderSearchConsole)
+		var connectionErr error
+
+		data.GA4, connectionErr = google.GetConnection(r.Context(), account.Reader(), site.ID, google.ProviderGA4)
+		if connectionErr != nil {
+			// The screen still renders, showing the provider as unconnected.
+			// Saying nothing at all would show a customer who has connected
+			// Google a Connect button, with no trace of why.
+			h.logConnection(site.ID, google.ProviderGA4, connectionErr)
+		}
+
+		data.SearchConsole, connectionErr = google.GetConnection(r.Context(), account.Reader(), site.ID, google.ProviderSearchConsole)
+		if connectionErr != nil {
+			h.logConnection(site.ID, google.ProviderSearchConsole, connectionErr)
+		}
 	}
 
 	h.render(w, r, "imports", data)
+}
+
+// logConnection records a Google grant that could not be read, so a provider
+// showing as unconnected has an explanation somewhere.
+func (h *Handler) logConnection(siteID int64, provider string, err error) {
+	if h.Log != nil {
+		h.Log.Error("a Google connection could not be read", "site", siteID, "provider", provider, "error", err)
+	}
 }
 
 // exportViews renders the export list. The download URL is only ever built from
@@ -1269,17 +1293,32 @@ func (h *Handler) googleConnect(w http.ResponseWriter, r *http.Request, site sit
 		return
 	}
 
-	provider := r.URL.Query().Get("provider")
-
+	provider := google.ProviderGA4
 	scope := google.ScopeAnalytics
-	if provider == google.ProviderSearchConsole {
+
+	// Only the two providers this package knows are offered. Passing the query
+	// value straight through would write a grant under a provider name nothing
+	// ever reads back, which looks to the customer like a connection that
+	// silently does nothing.
+	if r.URL.Query().Get("provider") == google.ProviderSearchConsole {
+		provider = google.ProviderSearchConsole
 		scope = google.ScopeSearchConsole
 	}
 
 	// The state carries the site and the provider because the callback URL is
 	// fixed — Google redirects to one registered URI — and guessing the site
 	// from a session would connect the wrong one for anybody with two tabs open.
-	state := site.Domain + "|" + provider
+	//
+	// It also carries the form token, which is what makes the callback safe.
+	// Without it the state is guessable from a domain name, and anybody with an
+	// account could replay their own authorisation code against somebody else's
+	// site and have their Google property imported into it.
+	if h.CSRF == nil {
+		http.Error(w, "form token verification is unavailable", http.StatusForbidden)
+		return
+	}
+
+	state := site.Domain + "|" + provider + "|" + h.CSRF(w, r)
 
 	http.Redirect(w, r, h.Google.AuthorizeURL(state, scope), http.StatusFound)
 }
@@ -1307,19 +1346,56 @@ func (h *Handler) googleDisconnect(w http.ResponseWriter, r *http.Request, site 
 	h.redirect(w, r, site.Domain, "imports", tr(r, "auth.imports.flash_disconnected"), "")
 }
 
+// splitOAuthState reads back the three fields googleConnect wrote. A state
+// with any other shape was not built by us, so it is refused rather than
+// half-parsed into a site somebody else owns.
+func splitOAuthState(state string) (domain, provider, formToken string, ok bool) {
+	parts := strings.Split(state, "|")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return "", "", "", false
+	}
+
+	if parts[1] != google.ProviderGA4 && parts[1] != google.ProviderSearchConsole {
+		return "", "", "", false
+	}
+
+	return parts[0], parts[1], parts[2], true
+}
+
 // googleCallback finishes the OAuth exchange and stores the grant against the
 // one site the customer was configuring.
+//
+// This is the one route on the surface that names no site in its path, so the
+// gate in front of it proves a session and nothing more. Both of the checks the
+// gate cannot make are made here: the state has to carry this browser's form
+// token, and the signed-in person has to be allowed to configure the site the
+// state names. Without them, an authorisation code is a way to write a Google
+// grant into another account's database.
 func (h *Handler) googleCallback(w http.ResponseWriter, r *http.Request) {
 	if h.Google == nil {
 		http.Error(w, "no Google application is configured on this install", http.StatusNotFound)
 		return
 	}
 
-	domain, provider, _ := strings.Cut(r.URL.Query().Get("state"), "|")
+	domain, provider, formToken, ok := splitOAuthState(r.URL.Query().Get("state"))
+	if !ok {
+		http.Error(w, "that authorisation is not one we started", http.StatusBadRequest)
+		return
+	}
 
 	site, ok := h.Sites.Lookup(domain)
 	if !ok {
 		http.Error(w, "that authorisation does not name a site we serve", http.StatusBadRequest)
+		return
+	}
+
+	if h.CSRF == nil || subtle.ConstantTimeCompare([]byte(h.CSRF(w, r)), []byte(formToken)) != 1 {
+		http.Error(w, "that authorisation was not started from this browser", http.StatusForbidden)
+		return
+	}
+
+	if h.Role == nil || !teams.Can(h.Role(r, site), teams.PermManageSiteSettings) {
+		http.Error(w, "you may not configure "+site.Domain, http.StatusForbidden)
 		return
 	}
 

@@ -1,6 +1,6 @@
 //
 // api.go
-// The objects we read from Stripe and the six calls we make.
+// The objects we read from Stripe and the calls we make against them.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -10,6 +10,7 @@ package stripe
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -42,23 +43,22 @@ const TeamMetadataKey = "feasible_team_id"
 // function of the current state, and every extra field is another thing two
 // deliveries could disagree about.
 type Subscription struct {
-	ID                 string  `json:"id"`
-	Created            int64   `json:"created"`
-	Customer           string  `json:"customer"`
-	Status             string  `json:"status"`
-	CurrentPeriodEnd   int64   `json:"current_period_end"`
-	CancelAtPeriodEnd  bool    `json:"cancel_at_period_end"`
-	CanceledAt         int64   `json:"canceled_at"`
-	PauseCollection    *Pause  `json:"pause_collection"`
-	Items              Items   `json:"items"`
-	Metadata           Meta    `json:"metadata"`
-	LatestInvoice      string  `json:"latest_invoice"`
-	TrialEnd           int64   `json:"trial_end"`
-	Currency           string  `json:"currency"`
-	CollectionMethod   string  `json:"collection_method"`
-	DaysUntilDue       int     `json:"days_until_due"`
-	BillingCycleAnchor int64   `json:"billing_cycle_anchor"`
-	Discount           *string `json:"-"`
+	ID                 string `json:"id"`
+	Created            int64  `json:"created"`
+	Customer           string `json:"customer"`
+	Status             string `json:"status"`
+	CurrentPeriodEnd   int64  `json:"current_period_end"`
+	CancelAtPeriodEnd  bool   `json:"cancel_at_period_end"`
+	CanceledAt         int64  `json:"canceled_at"`
+	PauseCollection    *Pause `json:"pause_collection"`
+	Items              Items  `json:"items"`
+	Metadata           Meta   `json:"metadata"`
+	LatestInvoice      string `json:"latest_invoice"`
+	TrialEnd           int64  `json:"trial_end"`
+	Currency           string `json:"currency"`
+	CollectionMethod   string `json:"collection_method"`
+	DaysUntilDue       int    `json:"days_until_due"`
+	BillingCycleAnchor int64  `json:"billing_cycle_anchor"`
 }
 
 // Pause is Stripe's pause_collection block. Its presence — not the subscription
@@ -318,6 +318,14 @@ type list[T any] struct {
 	HasMore bool `json:"has_more"`
 }
 
+// searchList is the envelope of Stripe's search endpoints, which page by an
+// opaque cursor rather than by the last object's id.
+type searchList[T any] struct {
+	Data     []T    `json:"data"`
+	HasMore  bool   `json:"has_more"`
+	NextPage string `json:"next_page"`
+}
+
 // CheckoutParams describes the session to create. Trials are absent on purpose:
 // this product's trial takes no card, so no Stripe customer exists until
 // somebody pays, and asking Stripe for a trial would create one.
@@ -385,12 +393,28 @@ func (c *Client) CreateCheckoutSession(ctx context.Context, params CheckoutParam
 	return &session, nil
 }
 
-// CheckoutSessions reads every provider session. Metadata filtering happens
-// locally because Stripe does not expose metadata as a list filter; completed
-// sessions matter too because an orphan may already have created a customer and
-// subscription before its id reached system.db.
+// CheckoutSessions reads every provider session so a caller can match ours by
+// metadata. Stripe exposes no metadata filter on this list and no session
+// search endpoint, and a session created before its customer existed can be
+// found no other way — an orphan that already created a customer and a
+// subscription must still be reachable when its id never reached system.db.
 func (c *Client) CheckoutSessions(ctx context.Context) ([]CheckoutSession, error) {
+	return c.checkoutSessions(ctx, url.Values{})
+}
+
+// CheckoutSessionsForCustomer reads every session Stripe holds for one
+// customer, including the ones that carry none of our metadata. Completed
+// sessions are included because one may have created a subscription before its
+// id reached system.db.
+func (c *Client) CheckoutSessionsForCustomer(ctx context.Context, customerID string) ([]CheckoutSession, error) {
 	form := url.Values{}
+	form.Set("customer", customerID)
+
+	return c.checkoutSessions(ctx, form)
+}
+
+// checkoutSessions walks every page of one checkout-session listing.
+func (c *Client) checkoutSessions(ctx context.Context, form url.Values) ([]CheckoutSession, error) {
 	form.Set("limit", "100")
 
 	var sessions []CheckoutSession
@@ -410,29 +434,30 @@ func (c *Client) CheckoutSessions(ctx context.Context) ([]CheckoutSession, error
 	}
 }
 
-// Customers reads every provider customer so permanent deletion can discover
-// duplicate records created by a lost Checkout response or an old integration.
-// Stripe's customer list has no metadata filter, and deletion is rare enough
-// that a complete paginated scan is preferable to an eventually consistent
-// search that could leave a chargeable record behind.
-func (c *Client) Customers(ctx context.Context) ([]Customer, error) {
+// SearchCustomersByTeam finds every customer carrying an account's metadata,
+// which is how permanent deletion discovers a duplicate record left by a lost
+// Checkout response. Stripe's search index lags writes by up to a minute, so
+// it is a discovery aid for the rare deletion path, not the routing source
+// for webhooks.
+func (c *Client) SearchCustomersByTeam(ctx context.Context, teamID int64) ([]Customer, error) {
 	form := url.Values{}
+	form.Set("query", fmt.Sprintf("metadata['%s']:'%d'", TeamMetadataKey, teamID))
 	form.Set("limit", "100")
 
 	var customers []Customer
 	for {
-		var page list[Customer]
-		if err := c.get(ctx, "/v1/customers", form, &page); err != nil {
+		var page searchList[Customer]
+		if err := c.get(ctx, "/v1/customers/search", form, &page); err != nil {
 			return nil, err
 		}
 		customers = append(customers, page.Data...)
 		if !page.HasMore {
 			return customers, nil
 		}
-		if len(page.Data) == 0 {
-			return nil, fmt.Errorf("stripe: customers page said has_more without any data")
+		if page.NextPage == "" {
+			return nil, fmt.Errorf("stripe: customer search said has_more without a next page")
 		}
-		form.Set("starting_after", page.Data[len(page.Data)-1].ID)
+		form.Set("page", page.NextPage)
 	}
 }
 
@@ -666,18 +691,6 @@ func subscriptionDisplayRank(subscription *Subscription) int {
 	return 1
 }
 
-// ActiveSubscription remains the single-row compatibility helper. It now
-// delegates to the complete set and deterministic selection; billing decisions
-// that need blocking truth consume Subscriptions directly.
-func (c *Client) ActiveSubscription(ctx context.Context, customerID string) (*Subscription, error) {
-	subscriptions, err := c.Subscriptions(ctx, customerID)
-	if err != nil {
-		return nil, err
-	}
-
-	return SelectSubscription(subscriptions), nil
-}
-
 // Invoices reads every invoice for one customer, including historical paid
 // evidence needed to close the day-90 webhook delay window.
 func (c *Client) Invoices(ctx context.Context, customerID string) ([]Invoice, error) {
@@ -716,56 +729,9 @@ func (c *Client) DeleteCustomer(ctx context.Context, id string) error {
 	err := c.del(ctx, "/v1/customers/"+url.PathEscape(id), &out)
 
 	var apiErr *Error
-	if err != nil && asError(err, &apiErr) && apiErr.Status == 404 {
+	if errors.As(err, &apiErr) && apiErr.Status == 404 {
 		return nil
 	}
 
 	return err
-}
-
-// asError unwraps a Stripe API error, so a caller can branch on the status
-// without a type switch at every call site.
-func asError(err error, target **Error) bool {
-	if err == nil {
-		return false
-	}
-
-	if typed, ok := err.(*Error); ok {
-		*target = typed
-		return true
-	}
-
-	return false
-}
-
-// Plan names one of the two prices this product sells. It exists so that a
-// price id read back from Stripe can be turned into something a customer
-// recognises without a second API call on every page render.
-type Plan struct {
-	Key      string
-	Label    string
-	PriceID  string
-	Amount   int64
-	Interval string
-}
-
-// Describe turns a price id into a plan. An id we do not recognise — somebody
-// moved to a custom price in the Stripe dashboard — is described honestly as
-// custom rather than guessed at.
-func Describe(priceID, monthlyID, yearlyID string) Plan {
-	switch priceID {
-	case monthlyID:
-		return Plan{Key: "monthly", Label: "$9.99 / month", PriceID: priceID, Amount: 999, Interval: "month"}
-	case yearlyID:
-		return Plan{Key: "yearly", Label: "$100 / year", PriceID: priceID, Amount: 10000, Interval: "year"}
-	case "":
-		return Plan{}
-	default:
-		return Plan{Key: "custom", Label: "Custom plan", PriceID: priceID}
-	}
-}
-
-// Amount formats a Stripe minor-unit amount as dollars.
-func Amount(cents int64) string {
-	return fmt.Sprintf("$%d.%02d", cents/100, cents%100)
 }

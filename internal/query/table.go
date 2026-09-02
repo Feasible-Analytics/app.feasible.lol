@@ -303,8 +303,8 @@ func checkConversionGoal(q *Query, p *plan) error {
 		}
 
 		if !hasGoal(q, p.Scopes) {
-			return invalid(name + " needs a goal to measure — add a has_done filter, " +
-				"a filter on event:name or an event-scoped event:props:<key>, or break down by event:name")
+			return invalid("%s needs a goal to measure — add a has_done filter, "+
+				"a filter on event:name or an event-scoped event:props:<key>, or break down by event:name", name)
 		}
 	}
 

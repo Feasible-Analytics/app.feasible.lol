@@ -79,13 +79,6 @@ func ParseLevel(level string) slog.Level {
 	}
 }
 
-// With returns a logger carrying extra attributes, keeping the concrete type so
-// the named helpers survive. Without this override the embedded slog method
-// would hand back a bare *slog.Logger and every helper would be lost.
-func (l *Logger) With(args ...any) *Logger {
-	return &Logger{Logger: l.Logger.With(args...), traceEvents: l.traceEvents}
-}
-
 // TraceEventsEnabled reports whether --trace-events is on, so a caller can avoid
 // deriving a full event payload that would be thrown away.
 func (l *Logger) TraceEventsEnabled() bool {
@@ -105,68 +98,6 @@ func (l *Logger) EventReceived(domain, site, shard, dropReason string) {
 	}
 
 	l.Debug("event received", attrs...)
-}
-
-// ShardPoll records one poll of a shard's domain list. Ingestors drop anything
-// not in that map, so when events go missing the first question is always
-// whether the poll succeeded and how many domains came back.
-func (l *Logger) ShardPoll(shard string, notModified bool, domains int, took time.Duration) {
-	status := "changed"
-	if notModified {
-		status = "304"
-	}
-
-	l.Debug("shard poll",
-		"shard", shard,
-		"status", status,
-		"domains", domains,
-		"duration", took,
-	)
-}
-
-// OutboxFlush records one attempt to forward buffered events to a shard. Store
-// and forward hides failure by design — the client already got its 202 — so the
-// flush log is the only place a stuck outbox becomes visible.
-func (l *Logger) OutboxFlush(rows int, shard, outcome string, took time.Duration) {
-	l.Debug("outbox flush",
-		"rows", rows,
-		"shard", shard,
-		"outcome", outcome,
-		"duration", took,
-	)
-}
-
-// NotMine records a shard rejecting a forwarded event as belonging to someone
-// else. Whether the ingestor's routing map was complete decides whether this is
-// a harmless race after a site moved, or events being thrown away.
-func (l *Logger) NotMine(domain string, mapComplete bool, action string) {
-	l.Warn("shard returned not_mine",
-		"domain", domain,
-		"map_complete", mapComplete,
-		"action", action,
-	)
-}
-
-// RollupRun records one roll-up pass. Dashboards read roll-ups, so when a chart
-// is missing an hour this line says whether the pass ran and what it wrote.
-func (l *Logger) RollupRun(site, period string, rows int, took time.Duration) {
-	l.Debug("rollup run",
-		"site", site,
-		"period", period,
-		"rows", rows,
-		"duration", took,
-	)
-}
-
-// SlowQuery records a query that took too long, with the SQL and how much work
-// it did. On a per-account SQLite file the fix is nearly always a missing index,
-// and that is unfindable without the statement itself.
-func (l *Logger) SlowQuery(query string, took time.Duration, rowsExamined int64) {
-	l.Warn("slow query",
-		"sql", query,
-		"duration", took,
-		"rows_examined", rowsExamined,
-	)
 }
 
 // SlowReport records a report that took too long, with enough of the request to

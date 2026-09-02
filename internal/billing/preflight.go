@@ -77,8 +77,8 @@ func (s *Service) Preflight(ctx context.Context, smoke bool) PreflightReport {
 	report.add(PreflightPass, "Stripe credentials", "a secret key is configured; API access is checked below")
 
 	product, catalogReady := s.preflightProduct(ctx, &report)
-	monthlyReady := s.preflightPrice(ctx, &report, "monthly price", s.Plans.Monthly, product, 999, "month")
-	yearlyReady := s.preflightPrice(ctx, &report, "yearly price", s.Plans.Yearly, product, 10000, "year")
+	monthlyReady := s.preflightPrice(ctx, &report, "monthly price", s.Plans.Monthly, product, Monthly)
+	yearlyReady := s.preflightPrice(ctx, &report, "yearly price", s.Plans.Yearly, product, Yearly)
 
 	if strings.TrimSpace(s.WebhookSecret) == "" {
 		report.add(PreflightFail, "Webhook signing secret", "FEASIBLE_STRIPE_WEBHOOK_SECRET is empty")
@@ -145,7 +145,8 @@ func (s *Service) preflightProduct(ctx context.Context, report *PreflightReport)
 
 // preflightPrice checks one configured price against both checkout mechanics
 // and the public price copy customers see before clicking the button.
-func (s *Service) preflightPrice(ctx context.Context, report *PreflightReport, name, id string, product *stripe.Product, amount int64, interval string) bool {
+func (s *Service) preflightPrice(ctx context.Context, report *PreflightReport, name, id string, product *stripe.Product, want PlanPrice) bool {
+	amount, interval := want.Amount, want.Interval
 	if strings.TrimSpace(id) == "" {
 		report.add(PreflightFail, name, "price id is empty")
 		return false

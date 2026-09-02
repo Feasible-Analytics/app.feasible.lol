@@ -164,7 +164,7 @@ func (a *API) handleAggregate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := a.runQuery(r, request.Site, request.toQuery(nil, query.Pagination{Limit: 1}))
+	result, err := a.Query(r.Context(), request.Site, request.toQuery(nil, query.Pagination{Limit: 1}))
 	if err != nil {
 		a.answerQueryError(w, err)
 		return
@@ -214,7 +214,7 @@ func (a *API) handleTimeseries(w http.ResponseWriter, r *http.Request) {
 	// The limit is the bucket ceiling rather than a page size: a timeseries is
 	// read whole by every client that draws a graph, and paginating it would
 	// hand them half a chart.
-	result, err := a.runQuery(r, request.Site,
+	result, err := a.Query(r.Context(), request.Site,
 		request.toQuery([]string{interval}, query.Pagination{Limit: query.MaxLimit}))
 	if err != nil {
 		a.answerQueryError(w, err)
@@ -276,7 +276,7 @@ func (a *API) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 
 	pagination := query.Pagination{Limit: limit, Offset: (page - 1) * limit}
 
-	result, err := a.runQuery(r, request.Site, request.toQuery([]string{property}, pagination))
+	result, err := a.Query(r.Context(), request.Site, request.toQuery([]string{property}, pagination))
 	if err != nil {
 		a.answerQueryError(w, err)
 		return
@@ -319,6 +319,9 @@ func (a *API) handleRealtimeVisitors(w http.ResponseWriter, r *http.Request) {
 	if !a.requireScope(w, key, apikeys.ScopeStatsRead) {
 		return
 	}
+	if !a.requirePermission(w, key, teams.PermViewDashboard) {
+		return
+	}
 
 	values := r.URL.Query()
 
@@ -333,7 +336,7 @@ func (a *API) handleRealtimeVisitors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := a.runQuery(r, site, query.Query{
+	result, err := a.Query(r.Context(), site, query.Query{
 		SiteIDs:    []int64{site.ID},
 		Metrics:    []string{"visitors"},
 		Filters:    filters,

@@ -321,8 +321,12 @@ func (q *Query) Validate() error {
 
 	seenDimension := map[string]bool{}
 	for _, name := range q.Dimensions {
-		if _, err := resolveDimension(name); err != nil {
+		resolved, err := resolveDimension(name)
+		if err != nil {
 			return err
+		}
+		if resolved.Goal {
+			return invalid("%q can only be filtered on, not grouped by — break down by event:name instead", name)
 		}
 		if seenDimension[name] {
 			return invalid("dimension %q is listed twice", name)
@@ -451,7 +455,13 @@ func (f *Filter) validate(nested bool) error {
 	default:
 		return invalid("unknown filter operator %q", f.Operator)
 	}
-	if f.Dimension == "event:goal" {
+
+	dimension, err := resolveDimension(f.Dimension)
+	if err != nil {
+		return err
+	}
+
+	if dimension.Goal {
 		if f.Operator != OpIs && f.Operator != OpIsNot {
 			return invalid("event:goal supports only is and is_not")
 		}
@@ -465,11 +475,6 @@ func (f *Filter) validate(nested bool) error {
 			}
 		}
 		return nil
-	}
-
-	dimension, err := resolveDimension(f.Dimension)
-	if err != nil {
-		return err
 	}
 
 	if dimension.Time {

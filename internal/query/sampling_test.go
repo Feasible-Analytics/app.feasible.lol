@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"math"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1168,5 +1169,32 @@ func writeRollupTotalsWithVisits(t *testing.T, account *accounts.Account, siteID
 			siteID, bucket, events, visits); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// TestASampledGoalFilterAtSessionGrainIsRefused closes the gap in the sampling
+// bound. A goal compiled against sessions selects visits by an unsampled scan
+// of their events, so it needs the same refusal has_done gets; at event grain
+// the same filter is an ordinary row predicate and stays allowed.
+func TestASampledGoalFilterAtSessionGrainIsRefused(t *testing.T) {
+	engine, account := newEngineWithAccount(t)
+	goal := strconv.FormatInt(seedSignupGoal(t, account), 10)
+
+	sessions := baseQuery("bounce_rate")
+	sessions.Filters = []Filter{{Operator: OpIs, Dimension: "event:goal", Values: []string{goal}}}
+	sessions.SampleRate = 0.5
+
+	var callerError *Error
+	if _, err := engine.Run(context.Background(), sessions); !errors.As(err, &callerError) ||
+		callerError.Code != "sampling_requires_exact" || !strings.Contains(err.Error(), "event:goal") {
+		t.Fatalf("a sampled session-grain goal filter must be refused, got %v", err)
+	}
+
+	events := baseQuery("pageviews")
+	events.Filters = sessions.Filters
+	events.SampleRate = 0.5
+
+	if result := run(t, engine, events); result.Meta.Sampling == nil {
+		t.Fatal("an event-grain goal filter is bounded by the event sample and must still be answered")
 	}
 }

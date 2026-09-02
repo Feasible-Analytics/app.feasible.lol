@@ -60,6 +60,11 @@
       {{ end }}
     </p>
 
+    <form id="send-confirmation" method="post" action="{{ url $.Lang "/settings/confirm-code" }}" hidden>
+      <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+      <input type="hidden" name="next" value="/settings">
+    </form>
+
     <form method="post" action="{{ url $.Lang "/settings/password" }}" class="mt-4 space-y-5">
       <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
 
@@ -74,6 +79,8 @@
           <input id="current_password" name="current_password" type="password" autocomplete="current-password" required
                  class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
         </div>
+      {{ else }}
+        {{ template "reauth_code" dict "Lang" $.Lang "Mode" $.Data.ReauthMode "ID" "password" }}
       {{ end }}
 
       <div>
@@ -108,6 +115,8 @@
           <input id="delete_password" name="password" type="password" autocomplete="current-password" required
                  class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm">
         </div>
+      {{ else }}
+        {{ template "reauth_code" dict "Lang" $.Lang "Mode" $.Data.ReauthMode "ID" "delete" }}
       {{ end }}
 
       <div>

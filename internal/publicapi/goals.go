@@ -126,12 +126,11 @@ func (a *API) handleUpdateGoal(w http.ResponseWriter, r *http.Request) {
 		a.refuse(w, err)
 		return
 	}
-	updater, ok := a.Goals.(GoalUpdater)
-	if !ok {
-		a.notImplemented(w, "goal updates")
+	if a.Goals == nil {
+		a.notImplemented(w, "goals")
 		return
 	}
-	updated, err := updater.UpdateGoal(r.Context(), site.ID, id, *goal)
+	updated, err := a.Goals.UpdateGoal(r.Context(), site.ID, id, *goal)
 	if err != nil {
 		a.answerStoreError(w, "update goal", err)
 		return
@@ -183,12 +182,11 @@ func (a *API) handleCreateFunnel(w http.ResponseWriter, r *http.Request) {
 		a.refuse(w, err)
 		return
 	}
-	manager, ok := a.Funnels.(FunnelManager)
-	if !ok {
-		a.notImplemented(w, "funnel management")
+	if a.Funnels == nil {
+		a.notImplemented(w, "funnels")
 		return
 	}
-	created, err := manager.CreateFunnel(r.Context(), site.ID, Funnel{Name: strings.TrimSpace(request.Name), StrictOrder: request.StrictOrder, Steps: request.Steps})
+	created, err := a.Funnels.CreateFunnel(r.Context(), site.ID, Funnel{Name: strings.TrimSpace(request.Name), StrictOrder: request.StrictOrder, Steps: request.Steps})
 	if err != nil {
 		a.answerStoreError(w, "create funnel", err)
 		return
@@ -218,12 +216,11 @@ func (a *API) handleUpdateFunnel(w http.ResponseWriter, r *http.Request) {
 		a.refuse(w, err)
 		return
 	}
-	manager, ok := a.Funnels.(FunnelManager)
-	if !ok {
-		a.notImplemented(w, "funnel management")
+	if a.Funnels == nil {
+		a.notImplemented(w, "funnels")
 		return
 	}
-	updated, err := manager.UpdateFunnel(r.Context(), site.ID, id, Funnel{Name: strings.TrimSpace(request.Name), StrictOrder: request.StrictOrder, Steps: request.Steps})
+	updated, err := a.Funnels.UpdateFunnel(r.Context(), site.ID, id, Funnel{Name: strings.TrimSpace(request.Name), StrictOrder: request.StrictOrder, Steps: request.Steps})
 	if err != nil {
 		a.answerStoreError(w, "update funnel", err)
 		return
@@ -244,12 +241,11 @@ func (a *API) handleDeleteFunnel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	manager, ok := a.Funnels.(FunnelManager)
-	if !ok {
-		a.notImplemented(w, "funnel management")
+	if a.Funnels == nil {
+		a.notImplemented(w, "funnels")
 		return
 	}
-	if err := manager.DeleteFunnel(r.Context(), site.ID, id); err != nil {
+	if err := a.Funnels.DeleteFunnel(r.Context(), site.ID, id); err != nil {
 		a.answerStoreError(w, "delete funnel", err)
 		return
 	}

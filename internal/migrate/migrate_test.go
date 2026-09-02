@@ -1178,16 +1178,17 @@ func TestPlausibleChannelParityMigration(t *testing.T) {
 // TestCoordinatedMigrationNumbers pins the upgrade order requested by the
 // app-shard runtime: account ingest state and hostname authority follow the
 // deployed 0007 settings migration, while the system chain preserves every
-// historical step before removing obsolete salt storage in migration 12. The
-// account chain then adds Plausible's lossless imported-rollup fields in 13 and
-// repairs the first Plausible channel backfill in 14.
+// historical step before removing obsolete salt storage in migration 12 and
+// recording the last accepted authenticator step in 13. The account chain then
+// adds Plausible's lossless imported-rollup fields in 13 and repairs the first
+// Plausible channel backfill in 14.
 func TestCoordinatedMigrationNumbers(t *testing.T) {
 	for name, test := range map[string]struct {
 		set  Set
 		want []int
 	}{
 		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14}},
-		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}},
+		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := make([]int, 0, len(test.set.Migrations))
@@ -1330,7 +1331,7 @@ func TestRunRequiresTheContiguousPendingSequence(t *testing.T) {
 		if result.From != 0 || result.To != 0 || tableExists(t, db, "should_not_exist") {
 			t.Fatalf("gap wrote before validation: result=%+v table=%v", result, tableExists(t, db, "should_not_exist"))
 		}
-		if got := err.Error(); got != "test schema is at version 0: migration 0002 is missing before 0003_three; merge the reserved lower migration before upgrading" {
+		if got := err.Error(); got != "test migration sequence is incomplete: database is at version 0, expected migration 0002 next but found 0003_three" {
 			t.Fatalf("gap error = %q", got)
 		}
 	})
@@ -1367,9 +1368,25 @@ func TestControlFinalChainAppliesM8AfterM9(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 9 || result.To != 12 || fmt.Sprint(result.Applied) != "[10 11 12]" {
-		t.Fatalf("control upgrade = %+v, want 9 through [10 11 12]", result)
+	want := versionsAbove(System(), 9)
+	if result.From != 9 || result.To != System().Version() || fmt.Sprint(result.Applied) != fmt.Sprint(want) {
+		t.Fatalf("control upgrade = %+v, want 9 through %v", result, want)
 	}
+}
+
+// versionsAbove lists every migration in a set later than a version. Upgrade
+// tests assert against it rather than a literal so that adding a migration
+// does not fail a test about the shape of the chain rather than its contents.
+func versionsAbove(set Set, version int) []int {
+	applied := []int{}
+
+	for _, migration := range set.Migrations {
+		if migration.Version > version {
+			applied = append(applied, migration.Version)
+		}
+	}
+
+	return applied
 }
 
 // TestRunRefusesADatabaseFromANewerBuild covers a rolled-back deploy. Running
@@ -1653,8 +1670,9 @@ func TestAccountDeletionCleanupMigration0010(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 9 || result.To != 12 || fmt.Sprint(result.Applied) != "[10 11 12]" {
-		t.Fatalf("deletion cleanup upgrade = %+v, want 9 through [10 11 12]", result)
+	want := versionsAbove(System(), 9)
+	if result.From != 9 || result.To != System().Version() || fmt.Sprint(result.Applied) != fmt.Sprint(want) {
+		t.Fatalf("deletion cleanup upgrade = %+v, want 9 through %v", result, want)
 	}
 
 	tests := []struct {

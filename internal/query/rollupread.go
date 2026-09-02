@@ -11,7 +11,6 @@ package query
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -439,20 +438,4 @@ func rollupBacked(segments []Segment) bool {
 	}
 
 	return false
-}
-
-// rollupExplain renders the routing decision for a log line or a test failure.
-func rollupExplain(segments []Segment) string {
-	parts := make([]string, 0, len(segments))
-
-	for _, segment := range segments {
-		part := segment.Source.String()
-		if segment.Source == SourceRollup {
-			part += "/" + segment.Grain.String()
-		}
-
-		parts = append(parts, part+" "+segment.Range.String())
-	}
-
-	return strings.Join(parts, " + ")
 }

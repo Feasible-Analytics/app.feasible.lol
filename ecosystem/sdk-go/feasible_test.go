@@ -15,12 +15,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// uuidV4 is the only shape the server accepts in the idempotency field.
+var uuidV4 = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 // capture is what one recorded request looked like on the wire. The body is
 // kept as bytes rather than a decoded map so a test can assert on the exact
@@ -145,13 +149,17 @@ func TestPageviewWire(t *testing.T) {
 
 	got := (*seen)[0]
 
-	if want := []string{"d", "n", "u"}; strings.Join(keysOf(t, got.body), ",") != strings.Join(want, ",") {
+	if want := []string{"d", "k", "n", "u"}; strings.Join(keysOf(t, got.body), ",") != strings.Join(want, ",") {
 		t.Fatalf("keys = %v, want %v", keysOf(t, got.body), want)
 	}
 
 	body := decode(t, got.body)
 	if body["n"] != "pageview" || body["u"] != "https://example.com/pricing" || body["d"] != "example.com" {
 		t.Fatalf("unexpected body: %v", body)
+	}
+
+	if key, _ := body["k"].(string); !uuidV4.MatchString(key) {
+		t.Fatalf("k = %q, want a UUID v4", body["k"])
 	}
 
 	if got.contentType != "text/plain" {
@@ -176,20 +184,22 @@ func TestCustomEventWire(t *testing.T) {
 
 	client := newTestClient(t, server.URL, nil)
 
-	event := NewEvent("Purchase", "https://example.com/checkout", NewVisitor("203.0.113.9", "curl/8.4.0")).
-		WithProps(map[string]any{"plan": "annual", "seats": 4}).
-		WithRevenue(99.5, "usd").
-		WithTitle("Checkout").
-		WithReferrer("https://news.example/post").
-		WithInteractive(false).
-		WithAttribution(Attribution{
-			Referrer:    "https://news.example/post",
-			UTMSource:   "newsletter",
-			UTMMedium:   "email",
-			UTMCampaign: "spring",
-			UTMContent:  "cta-a",
-			UTMTerm:     "analytics",
-		})
+	interactive := false
+
+	event := NewEvent("Purchase", "https://example.com/checkout", NewVisitor("203.0.113.9", "curl/8.4.0"))
+	event.Props = map[string]any{"plan": "annual", "seats": 4}
+	event.Revenue = &Revenue{Amount: 99.5, Currency: "usd"}
+	event.Title = "Checkout"
+	event.Referrer = "https://news.example/post"
+	event.Interactive = &interactive
+	event.Attribution = Attribution{
+		Referrer:    "https://news.example/post",
+		UTMSource:   "newsletter",
+		UTMMedium:   "email",
+		UTMCampaign: "spring",
+		UTMContent:  "cta-a",
+		UTMTerm:     "analytics",
+	}
 
 	if _, err := client.Send(context.Background(), event); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -197,7 +207,7 @@ func TestCustomEventWire(t *testing.T) {
 
 	got := (*seen)[0]
 
-	want := []string{"$", "d", "i", "n", "p", "r", "referrer", "t", "u", "utm_campaign", "utm_content", "utm_medium", "utm_source", "utm_term"}
+	want := []string{"$", "d", "i", "k", "n", "p", "r", "referrer", "t", "u", "utm_campaign", "utm_content", "utm_medium", "utm_source", "utm_term"}
 	if strings.Join(keysOf(t, got.body), ",") != strings.Join(want, ",") {
 		t.Fatalf("keys = %v, want %v", keysOf(t, got.body), want)
 	}
@@ -209,8 +219,10 @@ func TestCustomEventWire(t *testing.T) {
 		t.Fatalf("props = %v", body["p"])
 	}
 
+	// The currency is upper-cased on the way out so that "usd" and "USD" do not
+	// become two rows on the same report.
 	revenue, ok := body["$"].(map[string]any)
-	if !ok || revenue["amount"] != 99.5 || revenue["currency"] != "usd" {
+	if !ok || revenue["amount"] != 99.5 || revenue["currency"] != "USD" {
 		t.Fatalf("revenue = %v", body["$"])
 	}
 
@@ -268,6 +280,28 @@ func TestValidation(t *testing.T) {
 			event:     NewEvent("Signup", "", NewVisitor("203.0.113.9", "curl/8.4.0")),
 			wantErr:   ErrMissingURL,
 			wantField: "Event.URL",
+		},
+		{
+			name: "empty revenue currency",
+			event: func() *Event {
+				event := NewEvent("Purchase", "https://example.com/", NewVisitor("203.0.113.9", "curl/8.4.0"))
+				event.Revenue = &Revenue{Amount: 99.5}
+
+				return event
+			}(),
+			wantErr:   ErrInvalidCurrency,
+			wantField: "Event.Revenue.Currency",
+		},
+		{
+			name: "revenue currency that is not a code",
+			event: func() *Event {
+				event := NewEvent("Purchase", "https://example.com/", NewVisitor("203.0.113.9", "curl/8.4.0"))
+				event.Revenue = &Revenue{Amount: 99.5, Currency: "dollars"}
+
+				return event
+			}(),
+			wantErr:   ErrInvalidCurrency,
+			wantField: "Event.Revenue.Currency",
 		},
 	}
 
@@ -405,6 +439,53 @@ func TestRetryOnServerError(t *testing.T) {
 
 	if result.Attempts != 3 || atomic.LoadInt32(&calls) != 3 {
 		t.Fatalf("attempts = %d, calls = %d, want 3 and 3", result.Attempts, calls)
+	}
+}
+
+// TestIdempotencyKeySurvivesRetry is what makes a retry safe. The server dedupes
+// on "k", so a 5xx that arrived after the event was committed must be resent
+// with the same key — and two different events must never share one.
+func TestIdempotencyKeySurvivesRetry(t *testing.T) {
+	var calls int32
+
+	server, seen := recordingServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	client := newTestClient(t, server.URL, nil)
+	visitor := NewVisitor("203.0.113.9", "curl/8.4.0")
+
+	if _, err := client.Pageview(context.Background(), visitor, "https://example.com/"); err != nil {
+		t.Fatalf("Pageview: %v", err)
+	}
+
+	if _, err := client.Pageview(context.Background(), visitor, "https://example.com/"); err != nil {
+		t.Fatalf("second Pageview: %v", err)
+	}
+
+	if len(*seen) != 3 {
+		t.Fatalf("want 3 requests (one retried, one fresh), got %d", len(*seen))
+	}
+
+	first, _ := decode(t, (*seen)[0].body)["k"].(string)
+	retried, _ := decode(t, (*seen)[1].body)["k"].(string)
+	fresh, _ := decode(t, (*seen)[2].body)["k"].(string)
+
+	if !uuidV4.MatchString(first) {
+		t.Fatalf("k = %q, want a UUID v4", first)
+	}
+
+	if retried != first {
+		t.Fatalf("retry sent k = %q, want the original %q", retried, first)
+	}
+
+	if fresh == first {
+		t.Fatalf("a second event reused k = %q", fresh)
 	}
 }
 
@@ -641,7 +722,8 @@ func TestEndpointAndDomainOverride(t *testing.T) {
 		t.Fatalf("Endpoint = %q", client.Endpoint())
 	}
 
-	event := NewPageview("https://other.example/", NewVisitor("203.0.113.9", "curl/8.4.0")).WithDomain("other.example")
+	event := NewPageview("https://other.example/", NewVisitor("203.0.113.9", "curl/8.4.0"))
+	event.Domain = "other.example"
 
 	if _, err := client.Send(context.Background(), event); err != nil {
 		t.Fatalf("Send: %v", err)

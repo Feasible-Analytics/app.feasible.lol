@@ -151,6 +151,10 @@ await track("Purchase", {
 `options` also takes `callback`, `interactive: false` for something the visitor did not do,
 and `u` to override the URL the event is recorded against.
 
+`pageview(options)` takes a narrower set — `props`, `callback`, `u`, and `referrer` to
+correct the referrer on an SPA route change. Revenue and `interactive` belong on a custom
+event; a pageview has nowhere to carry them.
+
 ### `enable()` / `disable()` / `isEnabled()`
 
 `disable()` writes the `feasible_ignore` opt-out that the script honours, so this browser

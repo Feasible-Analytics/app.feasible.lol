@@ -6,19 +6,26 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-// Package health answers "can this process serve" as a list of components
-// rather than a single yes.
+// Package health answers two different "is it working" questions, one for the
+// operator and one for the customer.
 //
-// The split from liveness is the whole point. Liveness asks whether the process
-// is running at all and must check nothing: a liveness probe that fails on a
-// slow database turns one slow database into a restart loop across every
-// replica at once. Readiness asks whether this process can do its job right
-// now, and a load balancer needs both — the first decides whether to kill it,
-// the second decides whether to send it traffic.
+// The process half (this file) answers "can this process serve" as a list of
+// components rather than a single yes. The split from liveness is the whole
+// point. Liveness asks whether the process is running at all and must check
+// nothing: a liveness probe that fails on a slow database turns one slow
+// database into a restart loop across every replica at once. Readiness asks
+// whether this process can do its job right now, and a load balancer needs
+// both — the first decides whether to kill it, the second decides whether to
+// send it traffic. A readiness failure that says only "not ready" costs whoever
+// is holding the pager the first twenty minutes of an outage, so a report names
+// every component and what was wrong with it.
 //
-// A readiness failure that says only "not ready" costs whoever is holding the
-// pager the first twenty minutes of an outage, so a report names every
-// component and what was wrong with it.
+// The ingestion half (recorder.go, panel.go, handler.go) answers "is my data
+// arriving intact" on the customer's own dashboard: what was accepted, what was
+// dropped and why, which address was resolved for the last request and which
+// header it was believed from. It exists because silent failure is the largest
+// single source of support burden in this product category, and the panel is
+// where every drop, truncation and reclassification gets a count and a name.
 package health
 
 import (

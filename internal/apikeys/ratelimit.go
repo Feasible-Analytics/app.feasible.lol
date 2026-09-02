@@ -105,6 +105,18 @@ func (l *Limiter) now() time.Time {
 
 // Allow counts one request against a key and reports whether it may proceed.
 func (l *Limiter) Allow(key *Key) Decision {
+	return l.AllowN(key, 1)
+}
+
+// AllowN counts a request that is worth several ordinary ones. An MCP tool that
+// runs twenty queries to answer one call has to pay for twenty, or the hourly
+// limit means twenty different things depending on which door a caller uses.
+// A cost below one counts as one, so a mistake can never make a call free.
+func (l *Limiter) AllowN(key *Key, cost int) Decision {
+	if cost < 1 {
+		cost = 1
+	}
+
 	limit := l.Default
 	if key != nil && key.HourlyLimit > 0 {
 		limit = key.HourlyLimit
@@ -130,11 +142,11 @@ func (l *Limiter) Allow(key *Key) Decision {
 		l.buckets[id] = current
 	}
 
-	if current.count >= limit {
-		return Decision{Allowed: false, Limit: limit, Remaining: 0, ResetsAt: current.windowEnds}
+	if current.count+cost > limit {
+		return Decision{Allowed: false, Limit: limit, Remaining: max(limit-current.count, 0), ResetsAt: current.windowEnds}
 	}
 
-	current.count++
+	current.count += cost
 
 	return Decision{
 		Allowed:   true,

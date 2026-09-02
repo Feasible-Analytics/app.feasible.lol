@@ -33,11 +33,10 @@ import (
 // destructive worker to resume the same idempotent workflow.
 const LeaseDuration = time.Minute
 
-// Operation kinds persisted in control migration 0008.
+// Operation kinds persisted in the destructive_operations table.
 const (
-	KindSiteReset    = "site_reset"
-	KindSiteDelete   = "site_delete"
-	KindAccountPurge = "account_purge"
+	KindSiteReset  = "site_reset"
+	KindSiteDelete = "site_delete"
 )
 
 // Errors callers map to a conflict or an ownership refusal.
@@ -131,10 +130,6 @@ func (s *Service) claimSite(ctx context.Context, ownerTeamID, siteID int64, kind
 		return claim{}, fmt.Errorf("destructive: claim site: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback after commit is harmless
-
-	if _, err := tx.ExecContext(ctx, `UPDATE sites SET updated_at = updated_at WHERE id = -1`); err != nil {
-		return claim{}, fmt.Errorf("destructive: claim site: %w", err)
-	}
 
 	operation := claim{Kind: kind, SiteID: siteID, OwnerID: ownerTeamID, Token: token}
 	var currentOwner int64
@@ -419,10 +414,6 @@ func (s *Service) finishSite(ctx context.Context, operation claim, remove bool) 
 		return fmt.Errorf("destructive: finish site: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback after commit is harmless
-
-	if _, err := tx.ExecContext(ctx, `UPDATE sites SET updated_at = updated_at WHERE id = -1`); err != nil {
-		return fmt.Errorf("destructive: finish site: %w", err)
-	}
 
 	var ownerID, accountID int64
 	err = tx.QueryRowContext(ctx, `

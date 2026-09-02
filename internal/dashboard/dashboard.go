@@ -65,7 +65,11 @@ const bootstrapPlaceholder = "__BOOTSTRAP__"
 // because it carries the site list; the assets are addressed by a digest in the
 // query string and so can be held forever.
 const (
-	shellCacheControl = "no-cache, must-revalidate"
+	// The shell carries the site list, the signed-in person's name and email
+	// and the form token, and it has no validator a revalidation could answer
+	// with a 304 — so nothing is gained by letting it be stored, and a shared
+	// machine or a proxy holding one account's bootstrap is what it costs.
+	shellCacheControl = "no-store"
 	assetCacheControl = "public, max-age=31536000, immutable"
 
 	// A request for an asset without the digest is somebody's bookmark or a
@@ -88,11 +92,6 @@ type Handler struct {
 	// empty list, which renders the "no sites yet" screen rather than a broken
 	// one.
 	Sites DomainSource
-
-	// Domains replaces the global site list for an authenticated request. The
-	// serving process supplies a membership-aware resolver; shared/public shells
-	// pass their own single-site bootstrap directly to WriteShell.
-	Domains func(*http.Request) []string
 
 	// Resolve supplies authenticated navigation and account-lock context after
 	// the auth middleware has attached the current user. Shared/public callers
@@ -340,24 +339,20 @@ type Shared struct {
 }
 
 // serveShell writes the HTML with this instance's site list in it.
+//
+// It keeps the listener's default X-Frame-Options: DENY. The dashboard reads
+// one account's traffic and must not be framed by another site, which is also
+// why the embed parameters do nothing here — they work on a share URL only,
+// and an authenticated dashboard that honoured them would be an authenticated
+// dashboard somebody had put in an iframe.
 func (h *Handler) serveShell(w http.ResponseWriter, r *http.Request) {
-	// The dashboard reads one account's traffic and must not be framed by
-	// another site: a clickjacked dashboard is a way to make somebody delete a
-	// site they meant to keep.
-	//
-	// It is also why the embed parameters do nothing here. They are documented
-	// as working on a share URL only, and an authenticated dashboard that
-	// honoured them would be an authenticated dashboard somebody had put in an
-	// iframe — which is the thing this header exists to prevent.
-	w.Header().Set("X-Frame-Options", "DENY")
-
 	h.WriteShell(w, r, h.bootstrap(w, r))
 }
 
-// WriteShell renders the SPA shell with a caller-supplied bootstrap. It sets
-// every header except the framing policy, which is the one decision that
-// differs between the authenticated dashboard and an embeddable share link and
-// so belongs to whichever handler knows the answer.
+// WriteShell renders the SPA shell with a caller-supplied bootstrap. It leaves
+// the framing policy alone, because that is the one decision that differs
+// between the authenticated dashboard and an embeddable share link and so
+// belongs to whichever handler knows the answer.
 //
 // The language is resolved here rather than by the caller, and before anything
 // is written, because resolving it can set the cookie that remembers an
@@ -375,7 +370,6 @@ func (h *Handler) WriteShell(w http.ResponseWriter, r *http.Request, boot Bootst
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", shellCacheControl)
-	w.Header().Set("Referrer-Policy", "same-origin")
 
 	w.WriteHeader(http.StatusOK)
 
@@ -402,9 +396,7 @@ func (h *Handler) bootstrap(w http.ResponseWriter, r *http.Request) Bootstrap {
 	}
 
 	domains := []string{}
-	if h.Domains != nil {
-		domains = h.Domains(r)
-	} else if h.Sites != nil {
+	if h.Sites != nil {
 		domains = h.Sites.Domains()
 	}
 

@@ -9,9 +9,9 @@
 package ingest
 
 // ShardShield decides whether a customer has blocked an event on something
-// other than its IP address. It is an interface with a no-op default for the
-// same reason IPShield is: the rules belong to the account database, and this
-// package must not learn how to read one.
+// other than its IP address. It is an interface, nil when an install has no
+// rules, for the same reason IPShield is: the rules belong to the account
+// database, and this package must not learn how to read one.
 //
 // The split between the two is not arbitrary. An IP rule can only be evaluated
 // at the event endpoint, because that is the only place the raw address still
@@ -24,9 +24,3 @@ type ShardShield interface {
 	// prose.
 	Allowed(siteID int64, hostname, pathname, country string) (bool, string)
 }
-
-// NoShardShield allows everything.
-type NoShardShield struct{}
-
-// Allowed always allows.
-func (NoShardShield) Allowed(int64, string, string, string) (bool, string) { return true, "" }

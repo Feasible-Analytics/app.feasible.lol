@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 )
 
@@ -207,7 +208,7 @@ func TestNormaliseRejectsRulesThatCannotMatch(t *testing.T) {
 // proxy that does not forward X-Forwarded-For, every visitor resolves to the
 // proxy, so manually blocking the displayed address would block every visitor.
 func TestViewerWarnsAboutLANAddress(t *testing.T) {
-	trusted, err := ingest.ParseTrustedProxies(nil)
+	trusted, err := clientip.ParseTrustedProxies(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,11 +228,11 @@ func TestViewerWarnsAboutLANAddress(t *testing.T) {
 
 	// A real forwarded address is reported as usable, and named by the header
 	// it came from so a customer debugging a proxy can see what we believed.
-	trusted, err = ingest.ParseTrustedProxies([]string{"192.168.178.1", "10.0.0.7"})
+	trusted, err = clientip.ParseTrustedProxies([]string{"192.168.178.1", "10.0.0.7"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Set(ingest.HeaderForwardedFor, "203.0.113.14, 10.0.0.7")
+	request.Header.Set(clientip.HeaderForwardedFor, "203.0.113.14, 10.0.0.7")
 
 	viewer = ResolveViewer(request, trusted)
 
@@ -243,7 +244,7 @@ func TestViewerWarnsAboutLANAddress(t *testing.T) {
 		t.Fatalf("resolved address = %q, want the nearest untrusted entry in the forwarded chain", viewer.Address)
 	}
 
-	if viewer.Source != ingest.SourceForwardedFor {
-		t.Fatalf("address source = %q, want %q", viewer.Source, ingest.SourceForwardedFor)
+	if viewer.Source != clientip.SourceForwardedFor {
+		t.Fatalf("address source = %q, want %q", viewer.Source, clientip.SourceForwardedFor)
 	}
 }

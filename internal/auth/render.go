@@ -200,8 +200,6 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, p 
 	// These pages carry session cookies and forms. A cached copy in a shared
 	// proxy is somebody else's account rendered into your browser.
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Referrer-Policy", "same-origin")
 	w.WriteHeader(status)
 
 	_, _ = buf.WriteTo(w)
@@ -274,15 +272,18 @@ func templateFuncs() template.FuncMap {
 		// is a list of times, and absolute timestamps make "is one of these not
 		// me" a subtraction the reader has to do in their head.
 		//
+		// The current time is an argument because these functions are bound
+		// once at start-up: the page's clock is the only one a test can move.
+		//
 		// Every counted branch goes through the catalogue's plural forms, so a
 		// language whose singular differs gets its own wording rather than the
 		// English one with a number in front of it.
-		"ago": func(locale string, unix int64) string {
+		"ago": func(now time.Time, locale string, unix int64) string {
 			if unix <= 0 {
 				return i18n.T(locale, "common.state.never")
 			}
 
-			d := time.Since(time.Unix(unix, 0))
+			d := now.Sub(time.Unix(unix, 0))
 
 			switch {
 			case d < time.Minute:
@@ -300,8 +301,8 @@ func templateFuncs() template.FuncMap {
 
 		// until is the countdown the dual-write banner shows, so somebody can
 		// see how long the old domain keeps working.
-		"until": func(locale string, unix int64) string {
-			d := time.Until(time.Unix(unix, 0))
+		"until": func(now time.Time, locale string, unix int64) string {
+			d := time.Unix(unix, 0).Sub(now)
 			if d <= 0 {
 				return i18n.T(locale, "common.state.expired")
 			}

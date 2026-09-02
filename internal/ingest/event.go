@@ -104,19 +104,13 @@ type Event struct {
 	// deleting it means a wrongly-classified visitor is gone forever.
 	BotReason string
 
-	// RejectReason carries the public tier's advisory claim-versus-page result.
-	// It never authorizes a drop: the writer's live hostname rules are
-	// authoritative and may have changed between derivation and commit.
-	RejectReason string `json:",omitempty"`
-
 	// Interactive drives the bounce rule for non-pageview events.
 	Interactive bool
 
-	// Props, Revenue and FullURL land in the cold event_details table, and only
-	// when there is something to write.
+	// Props and Revenue land in the cold event_details table, and only when
+	// there is something to write.
 	Props   map[string]string
 	Revenue *Revenue
-	FullURL string
 }
 
 // IsPageview reports whether this event counts towards the pageview metrics.
@@ -135,5 +129,5 @@ func (e *Event) IsEngagement() bool {
 // the decision in one place, so the flag stored on the hot row and the
 // existence of the detail row can never disagree.
 func (e *Event) HasDetails() bool {
-	return len(e.Props) > 0 || e.Revenue != nil || e.UTMContent != "" || e.UTMTerm != "" || e.FullURL != ""
+	return len(e.Props) > 0 || e.Revenue != nil || e.UTMContent != "" || e.UTMTerm != ""
 }

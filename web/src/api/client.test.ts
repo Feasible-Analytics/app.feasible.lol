@@ -7,16 +7,17 @@
 //
 
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { before } from "node:test";
 
 import { funnelReport, goalsReport, journeyReport, properties, propertyReport, query } from "./client";
 import type { Filter } from "./types";
 
-/** TestQueryCarriesSharedCapability proves filter and period requests cannot
- * drop the bearer that limits a shared dashboard to its validated link. */
-test("every stats query carries the shared-link capability", async () => {
-	const capability = "unguessable-shared-link";
+const capability = "unguessable-shared-link";
 
+// Every test here reads the same shared-link bootstrap, so it is installed
+// before any of them rather than inside the first: the client parses the page
+// once, and a test that ran alone would otherwise see no capability at all.
+before(() => {
 	globalThis.document = {
 		getElementById: () => ({
 			textContent: JSON.stringify({
@@ -34,7 +35,11 @@ test("every stats query carries the shared-link capability", async () => {
 			}),
 		}),
 	} as unknown as Document;
+});
 
+/** TestQueryCarriesSharedCapability proves filter and period requests cannot
+ * drop the bearer that limits a shared dashboard to its validated link. */
+test("every stats query carries the shared-link capability", async () => {
 	let presented = "";
 	globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
 		presented = new Headers(init?.headers).get("X-Feasible-Share") ?? "";
@@ -91,7 +96,7 @@ test("the goals report carries capabilities, filters, and the selected period", 
 		filters: [["is", "event:page", ["/pricing"]]],
 	});
 
-	assert.equal(presented, "unguessable-shared-link");
+	assert.equal(presented, capability);
 	assert.match(decodeURIComponent(requested), /date_range="28d"/);
 	assert.match(decodeURIComponent(requested), /event:page/);
 });
@@ -108,7 +113,7 @@ test("enabled property discovery carries the dashboard capability", async () => 
 	const found = await properties("example.com");
 
 	assert.equal(requested, "/api/sites/example.com/properties");
-	assert.equal(presented, "unguessable-shared-link");
+	assert.equal(presented, capability);
 	assert.equal(found[0]?.name, "plan");
 });
 
@@ -149,7 +154,7 @@ test("property, funnel, and journey reports keep the dashboard query contract", 
 	await funnelReport("example.com", 42, dashboard);
 	const journey = await journeyReport("example.com", { type: "goal", value: "7" }, "backward", "prefix", [], dashboard);
 
-	assert.deepEqual(presented, ["unguessable-shared-link", "unguessable-shared-link", "unguessable-shared-link"]);
+	assert.deepEqual(presented, [capability, capability, capability]);
 	assert.match(requested[0] ?? "", /properties\/plan name\/report/);
 	assert.match(requested[1] ?? "", /funnels\/42\/report/);
 	assert.match(requested[2] ?? "", /anchor_type=goal/);

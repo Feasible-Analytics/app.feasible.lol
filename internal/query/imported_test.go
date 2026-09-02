@@ -10,6 +10,7 @@ package query
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -359,4 +360,35 @@ func mustID(t *testing.T, account *accounts.Account, dimension intern.Dimension,
 	}
 
 	return id
+}
+
+// TestAGoalFilterIsAnImportGapNotAnError checks that a configured goal, which
+// no daily total can express, is reported as the volume it leaves out rather
+// than refused. Refusing it would make the goals list unusable the moment an
+// account imported its history.
+func TestAGoalFilterIsAnImportGapNotAnError(t *testing.T) {
+	engine, account := newEngineWithAccount(t)
+
+	seedImport(t, account, 1, []string{"visit:source"}, []importedRow{
+		{timestamp: importedDay.Unix(), dimensions: map[string]string{"visit:source": "Google"},
+			visitors: 40, visits: 50, pageviews: 100, events: 100},
+	})
+
+	goalID := seedSignupGoal(t, account)
+
+	result := run(t, engine, Query{
+		SiteIDs:   []int64{1},
+		Metrics:   []string{"pageviews"},
+		DateRange: importedRange(),
+		Filters:   []Filter{{Operator: OpIs, Dimension: "event:goal", Values: []string{strconv.FormatInt(goalID, 10)}}},
+		Include:   Include{Imports: true},
+	})
+
+	if len(result.Meta.ImportGaps) != 1 || result.Meta.ImportGaps[0].Dimension != "event:goal" {
+		t.Fatalf("import gaps = %+v, want exactly one naming event:goal", result.Meta.ImportGaps)
+	}
+
+	if result.Meta.ImportGaps[0].Pageviews != 100 {
+		t.Fatalf("gap volume = %v, want the 100 imported pageviews outside the answer", result.Meta.ImportGaps[0].Pageviews)
+	}
 }

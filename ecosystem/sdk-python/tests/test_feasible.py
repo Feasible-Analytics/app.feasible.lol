@@ -10,6 +10,7 @@
 
 import json
 import os
+import re
 import socket
 import sys
 import threading
@@ -19,6 +20,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # The package sits beside the tests rather than in an installed environment, so
 # the suite runs on a clean checkout with no install step and no network.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# The only shape the server accepts in the idempotency field.
+UUID_V4 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 
 from feasible import (  # noqa: E402
     APIError,
@@ -146,7 +150,8 @@ class PayloadTest(FeasibleTestCase):
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
         )
 
-        self.assertEqual(["n", "u", "d"], list(self.payload().keys()))
+        self.assertEqual(["k", "n", "u", "d"], list(self.payload().keys()))
+        self.assertRegex(self.payload()["k"], UUID_V4)
         self.assertEqual("pageview", self.payload()["n"])
         self.assertEqual("https://example.com/pricing", self.payload()["u"])
         self.assertEqual("example.com", self.payload()["d"])
@@ -173,7 +178,7 @@ class PayloadTest(FeasibleTestCase):
 
         payload = self.payload()
         self.assertEqual(
-            ["n", "u", "d", "r", "t", "p", "$", "i", "sd", "e", "w", "utm_source", "utm_campaign"],
+            ["k", "n", "u", "d", "r", "t", "p", "$", "i", "sd", "e", "w", "utm_source", "utm_campaign"],
             list(payload.keys()),
         )
         self.assertEqual({"plan": "pro", "seats": 4, "trial": False}, payload["p"])
@@ -379,6 +384,20 @@ class RetryTest(FeasibleTestCase):
         self.assertEqual(1, len(self.server.requests))
         self.assertEqual("datacenter_ip", result.dropped)
         self.assertTrue(result.was_dropped)
+
+    def test_the_idempotency_key_survives_a_retry(self):
+        """The server dedupes on "k", so a retry after a lost acknowledgement
+        must resend the same key — and the next event must get a fresh one."""
+        self.server.script = [(500, {}, "upstream is unhappy"), (202, {}, ""), (202, {}, "")]
+
+        self.client.pageview(url="https://example.com/", client_ip="203.0.113.9", user_agent="curl/8.4.0")
+        self.client.pageview(url="https://example.com/", client_ip="203.0.113.9", user_agent="curl/8.4.0")
+
+        self.assertEqual(3, len(self.server.requests))
+        first, retried, fresh = (self.payload(i)["k"] for i in range(3))
+        self.assertRegex(first, UUID_V4)
+        self.assertEqual(first, retried)
+        self.assertNotEqual(first, fresh)
 
     def test_a_transport_failure_is_retried_then_reported(self):
         """Nothing came back at all, which is the one case worth trying again —

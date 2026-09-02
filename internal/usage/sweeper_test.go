@@ -11,6 +11,7 @@ package usage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -487,4 +488,107 @@ type contactsFunc func(ctx context.Context, teamID int64) (string, string, error
 // Contact calls the function.
 func (f contactsFunc) Contact(ctx context.Context, teamID int64) (string, string, error) {
 	return f(ctx, teamID)
+}
+
+// TestAFailedSendDoesNotSilenceTheRung covers the claim-then-send ordering. The
+// notice row is claimed before the message is rendered so two sweeps cannot both
+// send it, which means a transport failure would otherwise mark the rung
+// delivered for the rest of the month and the customer would never be told they
+// are approaching their limit.
+func TestAFailedSendDoesNotSilenceTheRung(t *testing.T) {
+	f := newFixture(t)
+	f.add("2026-03", WarnThreshold)
+
+	var attempts int
+	f.sweeper.Notify = notifierFunc(func(context.Context, Notice) (string, error) {
+		attempts++
+
+		return "", errors.New("the mail relay is down")
+	})
+
+	if _, err := f.sweeper.Sweep(context.Background()); err == nil {
+		t.Fatal("a failed send was reported as a successful sweep")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempted %d sends, want 1", attempts)
+	}
+
+	sent, err := f.store.NoticeSent(context.Background(), 1, "2026-03", LevelWarn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent {
+		t.Fatal("a notice that was never delivered is still marked as sent")
+	}
+
+	// The relay comes back and the next sweep owes the customer the email.
+	f.sweeper.Notify = notifierFunc(f.capture)
+	f.sweep()
+
+	if got := f.levels(); len(got) != 1 || got[0] != LevelWarn {
+		t.Fatalf("levels after recovery = %v, want [warn]", got)
+	}
+}
+
+// TestAFailedSecondMonthSendDoesNotStartTheLockClock is the same rule where it
+// matters most. The reply deadline is stored before the message goes out, so a
+// send that fails would leave a two-week clock running against an account that
+// was never asked anything, and lock its dashboard when the clock expired.
+func TestAFailedSecondMonthSendDoesNotStartTheLockClock(t *testing.T) {
+	f := newFixture(t)
+	f.add("2026-01", MonthlyLimit+1)
+	f.add("2026-02", MonthlyLimit+1)
+	f.add("2026-03", MonthlyLimit+1)
+
+	// Only the second-month message fails. The three threshold rungs have to
+	// get through, or the sweep would stop before the conversation is opened
+	// and this would test nothing.
+	f.sweeper.Notify = notifierFunc(func(ctx context.Context, notice Notice) (string, error) {
+		if notice.Level == "second_month" {
+			return "", errors.New("the mail relay is down")
+		}
+
+		return f.capture(ctx, notice)
+	})
+
+	if _, err := f.sweeper.Sweep(context.Background()); err == nil {
+		t.Fatal("a failed send was reported as a successful sweep")
+	}
+
+	overage, err := f.store.Overage(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !overage.AskedAt.IsZero() || !overage.ReplyDeadline.IsZero() {
+		t.Fatalf("a reply deadline is running against an account that was never asked: %+v", overage)
+	}
+
+	// The relay comes back. The same month must still open the conversation,
+	// rather than treating it as already asked.
+	f.sweeper.Notify = notifierFunc(f.capture)
+	f.sweep()
+
+	overage, err = f.store.Overage(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overage.AskedAt.IsZero() {
+		t.Fatal("the recovered sweep did not open the conversation")
+	}
+	if want := f.now().Add(ReplyWindow); !overage.ReplyDeadline.Equal(want) {
+		t.Fatalf("reply deadline = %s, want %s", overage.ReplyDeadline, want)
+	}
+	if overage.Locked() {
+		t.Fatal("the account was locked at the moment it was asked")
+	}
+
+	var asked bool
+	for _, notice := range f.sent {
+		if notice.Level == "second_month" {
+			asked = true
+		}
+	}
+	if !asked {
+		t.Fatal("the second-month message was never sent")
+	}
 }

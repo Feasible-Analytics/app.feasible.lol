@@ -12,11 +12,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"strings"
 	"time"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/outbound"
 )
 
 // SlackTimeout bounds a webhook call. A notifier that blocks on a hung webhook
@@ -31,14 +37,54 @@ type SlackPoster interface {
 	Post(ctx context.Context, webhookURL, text string) error
 }
 
+// ValidateWebhookURL refuses a destination the poster would not be allowed to
+// reach, at the moment the customer saves it, so the reason appears on the
+// form rather than in a failed job hours later.
+//
+// It checks the address only when the URL already carries one, so saving a
+// form costs no DNS lookup. A hostname is resolved and checked again by the
+// poster's guarded client at connect time, which is the check that stops the
+// request.
+func ValidateWebhookURL(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || parsed.Hostname() == "" {
+		return errors.New("the chat webhook must be a full URL, starting with https://")
+	}
+
+	if scheme := strings.ToLower(parsed.Scheme); scheme != "http" && scheme != "https" {
+		return errors.New("the chat webhook must start with https:// or http://")
+	}
+
+	if addr, addrErr := netip.ParseAddr(parsed.Hostname()); addrErr == nil {
+		if clientip.IsPrivateOrLocal(addr) && !addr.Unmap().IsLoopback() {
+			return errors.New("the chat webhook points at a private or local network address, which is not allowed")
+		}
+	}
+
+	return nil
+}
+
 // Slack posts to an incoming webhook.
 type Slack struct {
+	// Client dials through outbound.Policy, so the webhook URL a customer
+	// typed into the reports form is resolved and checked again at connect
+	// time. Without it the field is a way to make this process POST to
+	// anything on its own network and hand the answer back in the failure the
+	// screen renders.
 	Client *http.Client
 }
 
-// NewSlack builds a poster with a bounded client.
-func NewSlack() *Slack {
-	return &Slack{Client: &http.Client{Timeout: SlackTimeout}}
+// NewSlack builds a poster whose client refuses a private or local
+// destination. The caller passes the policy the process runs under: a
+// self-hoster's chat relay is often on the same box, so loopback is allowed
+// there and refused in hosted production.
+func NewSlack(policy outbound.Policy) *Slack {
+	return &Slack{Client: policy.NewClient(SlackTimeout)}
 }
 
 // Post sends one message.
@@ -64,9 +110,12 @@ func (s *Slack) Post(ctx context.Context, webhookURL, text string) error {
 
 	request.Header.Set("Content-Type", "application/json")
 
+	// A poster built as a literal rather than through NewSlack still gets the
+	// guarded client, so there is no shape of this struct that dials anywhere
+	// the policy refuses.
 	client := s.Client
 	if client == nil {
-		client = &http.Client{Timeout: SlackTimeout}
+		client = outbound.Policy{AllowLoopback: true}.NewClient(SlackTimeout)
 	}
 
 	response, err := client.Do(request)

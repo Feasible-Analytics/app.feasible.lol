@@ -54,6 +54,10 @@ const (
 	// account has not paid" — the first is fixed by reconnecting and the second
 	// never is.
 	codePaymentRequired = -32002
+
+	// codeRateLimited is the hourly ceiling, distinct from both of the above
+	// because the fix is to wait, not to reconnect or to pay.
+	codeRateLimited = -32003
 )
 
 // rpcRequest is one incoming call. The id is a raw message because JSON-RPC

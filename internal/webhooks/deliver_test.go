@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -733,5 +734,95 @@ func TestAnUnlockedAccountStillPublishes(t *testing.T) {
 	}
 	if queued != 1 {
 		t.Fatalf("queued = %d, want 1", queued)
+	}
+}
+
+// TestAPrivateAddressIsRefusedAtEveryStage is the SSRF case. An endpoint URL is
+// a customer-supplied destination, and the delivery log shows the receiver's
+// answer back to that customer — so a webhook pointed at 169.254.169.254 or at
+// a service on our own network would read it and hand the body over.
+func TestAPrivateAddressIsRefusedAtEveryStage(t *testing.T) {
+	for _, raw := range []string{
+		"https://169.254.169.254/latest/meta-data/",
+		"https://10.0.0.5/hook",
+		"https://192.168.1.1/hook",
+		"https://[fd00::1]/hook",
+	} {
+		if err := ValidateURL(raw); err == nil {
+			t.Errorf("%s was accepted by ValidateURL", raw)
+		}
+	}
+
+	// The form check only sees an address when the customer typed one. The
+	// dialer is what stops a hostname that resolves to a private address, so
+	// the delivery client is checked directly.
+	store := NewStore(testControl(t))
+
+	client := NewWorker(store, time.Second).Client
+
+	response, err := client.Get("http://169.254.169.254/latest/meta-data/")
+	if err == nil {
+		_ = response.Body.Close()
+		t.Fatal("the delivery client reached the metadata endpoint")
+	}
+
+	if !strings.Contains(err.Error(), "private or local") {
+		t.Fatalf("the delivery client failed for another reason: %v", err)
+	}
+}
+
+// TestADeliveryDoesNotFollowARedirect covers the second half of the same
+// problem: a receiver that answers 302 pointing at loopback is a destination
+// nobody validated, reached with a signed payload attached.
+func TestADeliveryDoesNotFollowARedirect(t *testing.T) {
+	followed := false
+
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		followed = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer receiver.Close()
+
+	db := testControl(t)
+	clock := clockStart
+
+	store := NewStore(db)
+	store.Now = func() time.Time { return clock }
+
+	endpoint, err := store.Create(context.Background(), 1, nil, receiver.URL, "redirecting", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dispatcher := NewDispatcher(store)
+	dispatcher.Now = func() time.Time { return clock }
+
+	if _, err := dispatcher.Publish(context.Background(), 1, Event{Type: EventGoalConverted}); err != nil {
+		t.Fatal(err)
+	}
+
+	worker := NewWorker(store, time.Second)
+	worker.Now = func() time.Time { return clock }
+
+	if _, err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if followed {
+		t.Fatal("the delivery followed a redirect to a destination nobody registered")
+	}
+
+	deliveries, err := store.Deliveries(context.Background(), 1, endpoint.ID, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(deliveries) != 1 || deliveries[0].ResponseStatus != http.StatusFound {
+		t.Fatalf("log = %+v, want the 302 itself recorded", deliveries)
 	}
 }

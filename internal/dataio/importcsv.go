@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
@@ -41,6 +42,10 @@ const (
 
 	// MaxArchiveUncompressedBytes bounds ZIP expansion independently from the
 	// compressed upload cap, closing the classic small-upload ZIP-bomb path.
+	// The upload cap applies to the compressed file, deflate expands a
+	// well-chosen input a thousandfold, and encoding/csv holds a whole record
+	// in memory, so without this one crafted line is allocated in full before
+	// any row cap or parse error can fire.
 	MaxArchiveUncompressedBytes = 1 << 30
 
 	// MaxArchiveCompressionRatio permits ordinary spreadsheet compression while
@@ -118,7 +123,7 @@ func ImportCSV(ctx context.Context, db *sql.DB, cache *intern.Cache, record *Imp
 // carried. Every error names the file and the line, because "your import
 // failed" without either is a message the customer cannot act on and we cannot
 // answer a ticket about.
-func importOneFile(ctx context.Context, db *sql.DB, cache *intern.Cache, record *Import, source CSVSource, location *time.Location) (result []string, firstResult, lastResult, rowsResult int64, err error) {
+func importOneFile(ctx context.Context, db *sql.DB, cache *intern.Cache, record *Import, source CSVSource, location *time.Location) (dimensions []string, written, earliestResult, latestResult int64, err error) {
 	handle, err := source.Open()
 	if err != nil {
 		return nil, 0, 0, 0, fmt.Errorf("%s: could not be opened: %w", source.Name, err)
@@ -622,6 +627,12 @@ func sourcesFromZip(path string) ([]CSVSource, func() error, error) {
 	seen := map[string]bool{}
 	var expanded uint64
 
+	// One budget for the whole archive, spent as the entries are actually
+	// inflated. The header checks below read sizes the central directory
+	// declares, and a crafted archive can declare anything; this is the cap
+	// that holds when every entry lies about being small.
+	budget := &archiveBudget{remaining: MaxArchiveUncompressedBytes + 1}
+
 	for _, entry := range archive.File {
 		if entry.FileInfo().IsDir() || !strings.EqualFold(filepath.Ext(entry.Name), ".csv") {
 			continue
@@ -633,26 +644,30 @@ func sourcesFromZip(path string) ([]CSVSource, func() error, error) {
 
 		name := strings.ToLower(filepath.Base(entry.Name))
 		if seen[name] {
-			_ = archive.Close()
-			return nil, nil, fmt.Errorf("that zip file contains more than one CSV named %s", filepath.Base(entry.Name))
+			return nil, nil, closeArchiveWith(archive,
+				fmt.Errorf("that zip file contains more than one CSV named %s", filepath.Base(entry.Name)))
 		}
 		seen[name] = true
 
 		if entry.Flags&0x1 != 0 {
-			_ = archive.Close()
-			return nil, nil, fmt.Errorf("%s is encrypted — export it from Plausible again without a password", filepath.Base(entry.Name))
+			return nil, nil, closeArchiveWith(archive,
+				fmt.Errorf("%s is encrypted — export it again without a password", filepath.Base(entry.Name)))
+		}
+
+		if entry.UncompressedSize64 > MaxArchiveUncompressedBytes {
+			return nil, nil, closeArchiveWith(archive, tooLarge(filepath.Base(entry.Name)))
 		}
 
 		expanded += entry.UncompressedSize64
 		if expanded > MaxArchiveUncompressedBytes {
-			_ = archive.Close()
-			return nil, nil, fmt.Errorf("that zip expands beyond the %d MB import limit", MaxArchiveUncompressedBytes>>20)
+			return nil, nil, closeArchiveWith(archive,
+				fmt.Errorf("that zip expands beyond the %d MB import limit", MaxArchiveUncompressedBytes>>20))
 		}
 
 		if entry.CompressedSize64 > 0 && entry.UncompressedSize64/entry.CompressedSize64 > MaxArchiveCompressionRatio {
-			_ = archive.Close()
-			return nil, nil, fmt.Errorf("%s expands more than %d times and was refused as an unsafe archive",
-				filepath.Base(entry.Name), MaxArchiveCompressionRatio)
+			return nil, nil, closeArchiveWith(archive,
+				fmt.Errorf("%s expands more than %d times and was refused as an unsafe archive",
+					filepath.Base(entry.Name), MaxArchiveCompressionRatio))
 		}
 
 		// Our own export carries the raw events alongside the ten roll-up
@@ -663,26 +678,97 @@ func sourcesFromZip(path string) ([]CSVSource, func() error, error) {
 			continue
 		}
 
+		if len(sources) >= MaxArchiveCSVFiles {
+			return nil, nil, closeArchiveWith(archive,
+				fmt.Errorf("that zip contains more than %d CSV files", MaxArchiveCSVFiles))
+		}
+
 		file := entry
 
 		sources = append(sources, CSVSource{
 			Name: filepath.Base(file.Name),
-			Open: func() (io.ReadCloser, error) { return file.Open() },
+			Open: func() (io.ReadCloser, error) {
+				reader, err := file.Open()
+				if err != nil {
+					return nil, err
+				}
+
+				return &limitedEntry{ReadCloser: reader, name: filepath.Base(file.Name), budget: budget}, nil
+			},
 		})
 
-		if len(sources) > MaxArchiveCSVFiles {
-			_ = archive.Close()
-			return nil, nil, fmt.Errorf("that zip contains more than %d CSV files", MaxArchiveCSVFiles)
-		}
 	}
 
 	if len(sources) == 0 {
-		emptyErr := fmt.Errorf("that zip file has no CSVs in it — an import expects the files named %s", strings.Join(SheetNames(), ", "))
-		if closeErr := archive.Close(); closeErr != nil {
-			emptyErr = errors.Join(emptyErr, fmt.Errorf("dataio: close empty upload archive: %w", closeErr))
-		}
-		return nil, nil, emptyErr
+		return nil, nil, closeArchiveWith(archive,
+			fmt.Errorf("that zip file has no CSVs in it — an import expects the files named %s", strings.Join(SheetNames(), ", ")))
 	}
 
 	return sources, archive.Close, nil
+}
+
+// closeArchiveWith closes an archive that is being refused and keeps the
+// reason alongside any close failure, so neither is lost.
+func closeArchiveWith(archive *zip.ReadCloser, cause error) error {
+	if closeErr := archive.Close(); closeErr != nil {
+		cause = errors.Join(cause, fmt.Errorf("dataio: close refused upload archive: %w", closeErr))
+	}
+
+	return cause
+}
+
+// tooLarge is the message for an entry that inflates past the cap.
+func tooLarge(name string) error {
+	return fmt.Errorf("%s inflates to more than %d MB — that is a raw event log rather than a daily roll-up",
+		name, MaxArchiveUncompressedBytes>>20)
+}
+
+// archiveBudget is how many inflated bytes one archive may still produce,
+// shared by every entry in it. A per-entry limit alone would let a hundred
+// entries that each under-declare their size inflate to a hundred times the
+// cap between them.
+type archiveBudget struct {
+	mu        sync.Mutex
+	remaining int64
+}
+
+// take reserves up to n bytes and reports how many are allowed.
+func (b *archiveBudget) take(n int64) int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if n > b.remaining {
+		n = b.remaining
+	}
+
+	return n
+}
+
+// spend records bytes that were actually read.
+func (b *archiveBudget) spend(n int64) {
+	b.mu.Lock()
+	b.remaining -= n
+	b.mu.Unlock()
+}
+
+// limitedEntry stops reading a zip entry once the archive's inflated budget is
+// gone. The central directory can claim any size it likes, so the check on the
+// header is not enough on its own; this is what holds when the header lies.
+type limitedEntry struct {
+	io.ReadCloser
+	name   string
+	budget *archiveBudget
+}
+
+// Read hands back at most the bytes still allowed and fails once they are gone.
+func (l *limitedEntry) Read(p []byte) (int, error) {
+	allowed := l.budget.take(int64(len(p)))
+	if allowed <= 0 {
+		return 0, tooLarge(l.name)
+	}
+
+	n, err := l.ReadCloser.Read(p[:allowed])
+	l.budget.spend(int64(n))
+
+	return n, err
 }

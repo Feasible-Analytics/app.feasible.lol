@@ -85,12 +85,21 @@ func (a *API) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		siteID = &site.ID
 	}
 
+	// The caller's mistakes are refused here, with the store's own sentences,
+	// so that whatever the store returns afterwards is ours: a driver error
+	// must come back as a 500 that says nothing, not a 400 quoting SQLite.
+	if err := webhooks.ValidateURL(request.URL); err != nil {
+		a.fail(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := webhooks.ValidateEventTypes(request.EventTypes); err != nil {
+		a.fail(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	endpoint, err := a.Webhooks.Create(r.Context(), teamID, siteID, request.URL, request.Description, request.EventTypes)
 	if err != nil {
-		// Everything Create refuses is something the caller wrote: a bad URL, a
-		// scheme we will not send secrets over, an event type that does not
-		// exist. None of them is a 500.
-		a.fail(w, http.StatusBadRequest, err.Error())
+		a.answerStoreError(w, "create webhook", err)
 		return
 	}
 
@@ -160,24 +169,26 @@ func (a *API) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	endpoint, err := a.Webhooks.Update(r.Context(), teamID, id, request.URL, request.Description, request.EventTypes, request.Enabled)
-	if err != nil {
-		if isWebhookNotFound(err) {
-			a.fail(w, http.StatusNotFound, "no such webhook endpoint")
+	if request.URL != nil {
+		if err := webhooks.ValidateURL(*request.URL); err != nil {
+			a.fail(w, http.StatusBadRequest, err.Error())
 			return
 		}
+	}
+	if request.EventTypes != nil {
+		if err := webhooks.ValidateEventTypes(*request.EventTypes); err != nil {
+			a.fail(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 
-		a.fail(w, http.StatusBadRequest, err.Error())
-
+	endpoint, err := a.Webhooks.Update(r.Context(), teamID, id, request.URL, request.Description, request.EventTypes, request.Enabled)
+	if err != nil {
+		a.answerStoreError(w, "update webhook", err)
 		return
 	}
 
 	a.write(w, http.StatusOK, endpoint)
-}
-
-// isWebhookNotFound reports whether a store error is a missing row.
-func isWebhookNotFound(err error) bool {
-	return err != nil && strings.Contains(err.Error(), webhooks.ErrNotFound.Error())
 }
 
 // handleDeleteWebhook removes an endpoint and its log.

@@ -31,6 +31,11 @@ func (s *conversionStoreFixture) CreateGoal(_ context.Context, _ int64, goal Goa
 	return &goal, nil
 }
 
+// UpdateGoal echoes the validated goal for authorization tests.
+func (s *conversionStoreFixture) UpdateGoal(_ context.Context, _ int64, _ int64, goal Goal) (*Goal, error) {
+	return &goal, nil
+}
+
 // DeleteGoal records that the handler reached the destructive store method.
 func (s *conversionStoreFixture) DeleteGoal(context.Context, int64, int64) error {
 	s.deletedGoal = true

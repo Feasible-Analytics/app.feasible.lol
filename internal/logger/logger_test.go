@@ -43,14 +43,14 @@ func TestJSONFormat(t *testing.T) {
 	var buf bytes.Buffer
 
 	log := New(Options{Level: "debug", Format: "json", Output: &buf})
-	log.ShardPoll("http://127.0.0.1:19301", true, 12, 3*time.Millisecond)
+	log.EmailSent("someone@example.com", "verify", "/tmp/mail/1.html")
 
 	var line map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &line); err != nil {
 		t.Fatalf("not JSON: %v (%s)", err, buf.String())
 	}
 
-	if line["msg"] != "shard poll" || line["status"] != "304" || line["domains"] != float64(12) {
+	if line["msg"] != "email sent" || line["template"] != "verify" || line["recipient"] != "someone@example.com" {
 		t.Fatalf("missing fields: %v", line)
 	}
 }
@@ -123,20 +123,5 @@ func TestTraceEventGating(t *testing.T) {
 
 	if !strings.Contains(on.String(), "event trace") {
 		t.Fatalf("trace not logged while enabled: %q", on.String())
-	}
-}
-
-// TestWithKeepsHelpers guards the reason With is overridden at all: the embedded
-// slog method would hand back a bare *slog.Logger and every named helper would
-// disappear at the first call site that added a request id.
-func TestWithHelpersSurvive(t *testing.T) {
-	var buf bytes.Buffer
-
-	log := New(Options{Level: "debug", Format: "text", TraceEvents: true, Output: &buf}).With("request_id", "abc")
-	log.TraceEvent("domain", "example.com")
-
-	out := buf.String()
-	if !strings.Contains(out, "request_id=abc") || !strings.Contains(out, "event trace") {
-		t.Fatalf("attributes or trace lost through With: %q", out)
 	}
 }

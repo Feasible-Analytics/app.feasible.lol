@@ -13,6 +13,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pquerna/otp/totp"
 )
@@ -139,7 +140,7 @@ func TestTOTPVerifiesARealCode(t *testing.T) {
 		t.Fatalf("generate code: %v", err)
 	}
 
-	valid, err := s.VerifyTOTP(sealer, reloaded, code)
+	valid, err := s.VerifyTOTP(t.Context(), sealer, reloaded, code)
 	if err != nil {
 		t.Fatalf("verify totp: %v", err)
 	}
@@ -148,7 +149,7 @@ func TestTOTPVerifiesARealCode(t *testing.T) {
 		t.Error("a freshly generated code should verify")
 	}
 
-	valid, err = s.VerifyTOTP(sealer, reloaded, "000000")
+	valid, err = s.VerifyTOTP(t.Context(), sealer, reloaded, "000000")
 	if err != nil {
 		t.Fatalf("verify totp: %v", err)
 	}
@@ -159,8 +160,113 @@ func TestTOTPVerifiesARealCode(t *testing.T) {
 
 	// People paste their password into the code box often enough that a
 	// malformed value has to be a wrong code, not a 500.
-	if _, err := s.VerifyTOTP(sealer, reloaded, "not a code at all"); err != nil {
+	if _, err := s.VerifyTOTP(t.Context(), sealer, reloaded, "not a code at all"); err != nil {
 		t.Errorf("a malformed code should be a wrong code, not an error: %v", err)
+	}
+}
+
+// TestTOTPCodeCannotBeSpentTwice checks the replay guard.
+//
+// A code lives for about ninety seconds. Without this, one read over a
+// shoulder, left in a proxy log or typed into a phishing page works a second
+// time inside that window, which is most of what the second factor is for.
+func TestTOTPCodeCannotBeSpentTwice(t *testing.T) {
+	s, _ := newTestStore(t)
+	sealer := newTestSealer(t)
+	ctx := context.Background()
+
+	// A fixed clock, so the test never straddles a step boundary and reports a
+	// replay that was really two different codes.
+	base := time.Date(2026, 3, 1, 12, 0, 30, 0, time.UTC)
+	s.SetClock(func() time.Time { return base })
+
+	user, _, err := s.CreateUser(ctx, "a@example.com", "", "hash", "")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	key, err := s.BeginTOTP(ctx, sealer, user)
+	if err != nil {
+		t.Fatalf("begin totp: %v", err)
+	}
+
+	code, err := totp.GenerateCode(key.Secret(), s.Now())
+	if err != nil {
+		t.Fatalf("generate code: %v", err)
+	}
+
+	// Two loads of the same row, taken before either request writes. This is
+	// the shape of two requests arriving at once with one stolen code, and the
+	// second one's copy still says nothing has been spent.
+	first, err := s.UserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("read user: %v", err)
+	}
+
+	racing, err := s.UserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("read user: %v", err)
+	}
+
+	valid, err := s.VerifyTOTP(ctx, sealer, first, code)
+	if err != nil {
+		t.Fatalf("verify totp: %v", err)
+	}
+
+	if !valid {
+		t.Fatal("a freshly generated code should verify the first time")
+	}
+
+	valid, err = s.VerifyTOTP(ctx, sealer, racing, code)
+	if err != nil {
+		t.Fatalf("verify totp: %v", err)
+	}
+
+	if valid {
+		t.Error("the same code was accepted twice — the guard is in the read, not the write")
+	}
+
+	// A reload has to refuse it too, or the guard only lasts as long as one
+	// request's copy of the user.
+	reloaded, err := s.UserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("read user: %v", err)
+	}
+
+	valid, err = s.VerifyTOTP(ctx, sealer, reloaded, code)
+	if err != nil {
+		t.Fatalf("verify totp: %v", err)
+	}
+
+	if valid {
+		t.Error("a spent code survived a reload of the user")
+	}
+
+	// The next step is a different code and must still work, or the guard has
+	// locked the account out rather than protecting it.
+	s.SetClock(func() time.Time { return base.Add(TOTPPeriod * time.Second) })
+
+	next, err := totp.GenerateCode(key.Secret(), s.Now())
+	if err != nil {
+		t.Fatalf("generate code: %v", err)
+	}
+
+	if next == code {
+		t.Fatal("the clock did not move a whole step")
+	}
+
+	after, err := s.UserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("read user: %v", err)
+	}
+
+	valid, err = s.VerifyTOTP(ctx, sealer, after, next)
+	if err != nil {
+		t.Fatalf("verify totp: %v", err)
+	}
+
+	if !valid {
+		t.Error("the next code was refused, so the replay guard is a lockout")
 	}
 }
 

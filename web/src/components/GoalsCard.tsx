@@ -6,10 +6,9 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 
 import {
-	QueryError,
 	bootstrap,
 	funnelReport,
 	funnels,
@@ -35,7 +34,8 @@ import type {
 import type { FilterState } from "../lib/filters";
 import { compact, exact, metricAxisValue, metricTitle } from "../lib/format";
 import { t } from "../lib/i18n";
-import { useNearViewport } from "../lib/useStats";
+import type { RemoteState } from "../lib/useStats";
+import { useNearViewport, useRemote } from "../lib/useStats";
 import type { BehaviorState, BehaviorTab } from "../lib/url";
 import { Bar, Failure, InfoDot, Spinner } from "./atoms";
 
@@ -49,13 +49,6 @@ interface Props {
 	onFilter: (filter: FilterState, label: string) => void;
 	behavior: BehaviorState;
 	onBehaviorChange: (behavior: BehaviorState) => void;
-}
-
-interface RemoteState<T> {
-	data: T | null;
-	loading: boolean;
-	error: string | null;
-	reload: () => void;
 }
 
 interface AnchorOptions {
@@ -408,38 +401,6 @@ function PartialNotice({ from }: { from?: string }) {
 /** NumberCell renders an abbreviated count with its exact value on hover. */
 function NumberCell({ value }: { value: number }) {
 	return <span className="tnum pointer-events-none relative text-right text-sm text-body" title={exact(value)}><span className="sr-only">{exact(value)}</span><span aria-hidden="true">{compact(value)}</span></span>;
-}
-
-/** useRemote gives every behavior report cancellation, retry, and stable data. */
-function useRemote<T>(key: string, enabled: boolean, load: (signal: AbortSignal) => Promise<T>): RemoteState<T> {
-	const [data, setData] = useState<T | null>(null);
-	const [loading, setLoading] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-	const [nonce, setNonce] = useState(0);
-	const loader = useRef(load);
-	loader.current = load;
-
-	useEffect(() => {
-		if (!enabled) return;
-		const controller = new AbortController();
-		let live = true;
-		setLoading(true);
-		setError(null);
-
-		loader.current(controller.signal).then((response) => {
-			if (!live) return;
-			setData(response);
-			setLoading(false);
-		}).catch((caught: unknown) => {
-			if (!live || (caught instanceof DOMException && caught.name === "AbortError")) return;
-			setError(caught instanceof QueryError || caught instanceof Error ? caught.message : t("dashboard.error.query_failed"));
-			setLoading(false);
-		});
-
-		return () => { live = false; controller.abort(); };
-	}, [key, enabled, nonce]);
-
-	return { data, loading, error, reload: () => setNonce((value) => value + 1) };
 }
 
 /** goalFilter uses the goal definition itself as the filter dimension. Rebuilding

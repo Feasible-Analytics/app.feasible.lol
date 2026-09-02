@@ -20,7 +20,9 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/reports"
@@ -450,7 +452,7 @@ func TestTheHealthScreenShowsTheResolvedAddressSection(t *testing.T) {
 		Debug: ingest.Debug{
 			Domain:         f.domain,
 			ClientIP:       "203.0.113.9",
-			ClientIPSource: ingest.SourceForwardedFor,
+			ClientIPSource: clientip.SourceForwardedFor,
 			TrustedProxy:   true,
 			Hostname:       f.domain,
 			Pathname:       "/pricing",
@@ -467,7 +469,7 @@ func TestTheHealthScreenShowsTheResolvedAddressSection(t *testing.T) {
 		"Resolved client IP",
 		"203.0.113.9",
 		"Read from",
-		ingest.SourceForwardedFor,
+		clientip.SourceForwardedFor,
 		"Send a test event",
 		"Hostname allow-list",
 		"Dropped events, by reason",
@@ -484,7 +486,9 @@ func TestASettingsPageIsNeverFramable(t *testing.T) {
 	f := newFixture(t)
 	f.as(f.owner)
 
-	recorder := f.get(t, "/settings/members")
+	recorder := httptest.NewRecorder()
+	httpserver.SecurityHeaders(false, f.handler).ServeHTTP(recorder,
+		httptest.NewRequest(http.MethodGet, "/settings/members", nil))
 
 	if recorder.Header().Get("X-Frame-Options") != "DENY" {
 		t.Fatal("the settings screens are framable, which is how somebody is tricked into pressing Remove")

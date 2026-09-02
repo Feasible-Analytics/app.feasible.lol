@@ -24,10 +24,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/outbound"
 )
 
 // The event types. They are constants rather than free strings because a
@@ -179,11 +183,23 @@ type Store struct {
 	// Now is the clock, injectable so a test can walk a backoff schedule
 	// without sleeping through it.
 	Now func() time.Time
+
+	// Policy is where a customer-supplied endpoint URL is allowed to send us.
+	// The worker's client is built from it, so the address a hostname resolves
+	// to is checked again at connect time rather than only when the endpoint
+	// was saved. The default permits loopback because a self-hoster's receiver
+	// is very often on the same box; hosted production sets
+	// outbound.PolicyFor(cfg) to refuse it.
+	Policy outbound.Policy
 }
 
 // NewStore builds a store over the system database.
 func NewStore(db *sql.DB) *Store {
-	return &Store{db: db, Now: func() time.Time { return time.Now().UTC() }}
+	return &Store{
+		db:     db,
+		Now:    func() time.Time { return time.Now().UTC() },
+		Policy: outbound.Policy{AllowLoopback: true},
+	}
 }
 
 // now reads the store's clock.
@@ -204,10 +220,16 @@ func (s *Store) DB() *sql.DB {
 
 // ValidateURL refuses a destination we cannot usefully post to.
 //
-// The scheme check is the one that matters: a webhook that goes out over plain
-// HTTP puts the signed payload — which can name a converting visitor's page and
-// properties — on the wire in the clear. Plain HTTP is allowed only for
-// loopback, because that is how somebody tests locally.
+// The scheme check is the one that matters for confidentiality: a webhook that
+// goes out over plain HTTP puts the signed payload — which can name a
+// converting visitor's page and properties — on the wire in the clear. Plain
+// HTTP is allowed only for loopback, because that is how somebody tests
+// locally.
+//
+// It checks the address only when the URL already carries one, so that it can
+// be called from a form handler without a DNS lookup. A hostname is resolved
+// and checked again by the worker's client at connect time, which is the check
+// that actually stops the request.
 func ValidateURL(raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -223,11 +245,21 @@ func ValidateURL(raw string) error {
 		return errors.New("url must be absolute, for example https://example.com/hooks/feasible")
 	}
 
+	host := parsed.Hostname()
+
+	// An address typed straight into the form is the cheapest way to point a
+	// webhook at the cloud metadata endpoint or at a database on our own
+	// network, and refusing it here is what lets the customer see why.
+	if addr, addrErr := netip.ParseAddr(host); addrErr == nil {
+		if clientip.IsPrivateOrLocal(addr) && !addr.Unmap().IsLoopback() {
+			return errors.New("url points at a private or local network address, which is not allowed")
+		}
+	}
+
 	switch parsed.Scheme {
 	case "https":
 		return nil
 	case "http":
-		host := parsed.Hostname()
 		if host == "localhost" || host == "127.0.0.1" || host == "::1" {
 			return nil
 		}

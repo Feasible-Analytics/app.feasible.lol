@@ -79,25 +79,44 @@ func TestSparklineNormalisesToItsOwnMaximum(t *testing.T) {
 // since a wrong one shows up as wrong text on a page rather than a failure
 // anywhere.
 //
-// Every one of them takes the locale first, because the templates are parsed
-// once at start-up and a helper that closed over a language would answer in
-// whichever one the process happened to be built with.
+// Every one of them takes the locale before its value, because the templates
+// are parsed once at start-up and a helper that closed over a language would
+// answer in whichever one the process happened to be built with. The two that
+// measure time take the clock ahead of that, for the same reason: a helper that
+// read time.Now would ignore the clock a test installed.
 func TestTemplateHelpers(t *testing.T) {
 	funcs := templateFuncs()
 
-	ago, ok := funcs["ago"].(func(string, int64) string)
+	ago, ok := funcs["ago"].(func(time.Time, string, int64) string)
 	if !ok {
 		t.Fatal("ago is missing")
 	}
 
-	if got := ago("en", 0); got != "never" {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+
+	if got := ago(now, "en", 0); got != "never" {
 		t.Errorf("ago(0) = %q, want %q", got, "never")
 	}
 
 	// The counted branches go through the catalogue's plural forms, which is
 	// why they moved: the hand-written version said "1 minutes ago".
-	if got := ago("en", time.Now().Add(-90*time.Second).Unix()); got != "1 minute ago" {
+	if got := ago(now, "en", now.Add(-90*time.Second).Unix()); got != "1 minute ago" {
 		t.Errorf("ago(90 seconds) = %q, want %q", got, "1 minute ago")
+	}
+
+	// The clock is the page's, not the process's. A helper still reading
+	// time.Now would answer from the wall clock and ignore this one entirely.
+	if got := ago(now.Add(time.Hour), "en", now.Unix()); got != "1 hour ago" {
+		t.Errorf("ago measured against the wrong clock: %q", got)
+	}
+
+	until, ok := funcs["until"].(func(time.Time, string, int64) string)
+	if !ok {
+		t.Fatal("until is missing")
+	}
+
+	if got := until(now, "en", now.Add(-time.Second).Unix()); got != "expired" {
+		t.Errorf("until(past) = %q, want %q", got, "expired")
 	}
 
 	date, ok := funcs["date"].(func(string, int64) string)

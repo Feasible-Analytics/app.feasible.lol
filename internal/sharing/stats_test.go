@@ -36,20 +36,20 @@ func TestStatsCapabilitiesAreRevalidatedOnEveryRequest(t *testing.T) {
 	if _, _, err := authorizer.Authorize(request, f.domain); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("private site accepted public capability: %v", err)
 	}
-	if err := f.store.SetPublic(ctx, f.siteID, true); err != nil {
+	if err := f.store.SetPublicForOwner(ctx, f.siteID, f.teamID, true); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	if _, _, err := authorizer.Authorize(request, f.domain); err != nil {
 		t.Fatalf("public site refused capability: %v", err)
 	}
-	if err := f.store.SetPublic(ctx, f.siteID, false); err != nil {
+	if err := f.store.SetPublicForOwner(ctx, f.siteID, f.teamID, false); err != nil {
 		t.Fatalf("make private: %v", err)
 	}
 	if _, _, err := authorizer.Authorize(request, f.domain); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("private toggle did not revoke direct stats access: %v", err)
 	}
 
-	link, err := f.store.CreateLink(ctx, f.siteID, "temporary", "", 0, 0)
+	link, err := f.store.CreateLinkForOwner(ctx, f.siteID, f.teamID, "temporary", "", 0, 0)
 	if err != nil {
 		t.Fatalf("create link: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestStatsCapabilitiesAreRevalidatedOnEveryRequest(t *testing.T) {
 	if _, _, err := authorizer.Authorize(request, f.domain); err != nil {
 		t.Fatalf("open share refused: %v", err)
 	}
-	if err := f.store.RevokeLink(ctx, f.siteID, link.ID); err != nil {
+	if err := f.store.RevokeLinkForOwner(ctx, f.siteID, f.teamID, link.ID); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
 	if _, _, err := authorizer.Authorize(request, f.domain); !errors.Is(err, ErrNotFound) {
@@ -79,7 +79,7 @@ func TestProtectedAndSegmentedStatsCapabilitiesFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create segment: %v", err)
 	}
-	link, err := f.store.CreateLink(ctx, f.siteID, "client", "hunter2", segmentID, 0)
+	link, err := f.store.CreateLinkForOwner(ctx, f.siteID, f.teamID, "client", "hunter2", segmentID, 0)
 	if err != nil {
 		t.Fatalf("create protected link: %v", err)
 	}

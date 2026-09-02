@@ -33,7 +33,6 @@ const (
 	DeviceMobile  = "Mobile"
 	DeviceTablet  = "Tablet"
 	DeviceTV      = "TV"
-	DeviceBot     = "Bot"
 )
 
 // Result is one parsed user agent. Empty strings mean "we could not tell",

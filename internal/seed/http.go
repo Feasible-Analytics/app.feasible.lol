@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
@@ -185,7 +186,7 @@ func post(ctx context.Context, client *http.Client, endpoint string, body []byte
 	// The visitor's address, exactly as a reverse proxy in front of the ingest
 	// tier would present it. Without it every event in the check would come
 	// from the loopback address and be one visitor.
-	request.Header.Set(ingest.HeaderForwardedFor, person.IP)
+	request.Header.Set(clientip.HeaderForwardedFor, person.IP)
 
 	response, err := client.Do(request)
 	if err != nil {

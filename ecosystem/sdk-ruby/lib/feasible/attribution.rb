@@ -9,12 +9,12 @@
 # frozen_string_literal: true
 
 module Feasible
-  # The override fields the ingest endpoint honours for server-side callers. A
+  # The override fields that name where a conversion came from. A
   # delayed or offline conversion — a webhook hours later, a phone order, a
   # refund — has no referrer of its own and would be filed as Direct forever, so
   # the campaign that earned it is passed explicitly instead.
   #
-  # Ignored on browser traffic, where the real referrer is authoritative.
+  # The server applies them to any event that carries them.
   class Attribution
     attr_reader :referrer, :utm_source, :utm_medium, :utm_campaign, :utm_content, :utm_term
 

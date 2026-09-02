@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
@@ -119,7 +120,7 @@ func TestAcceptedAndDroppedAreCountedSeparately(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 0; i < 7; i++ {
-		f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{ClientIPSource: ingest.SourceForwardedFor}})
+		f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{ClientIPSource: clientip.SourceForwardedFor}})
 	}
 
 	for i := 0; i < 3; i++ {
@@ -240,7 +241,7 @@ func TestTheLastRequestIsKeptWhole(t *testing.T) {
 		TrackerVersion: 1,
 		Debug: ingest.Debug{
 			ClientIP:       "203.0.113.9",
-			ClientIPSource: ingest.SourceForwardedFor,
+			ClientIPSource: clientip.SourceForwardedFor,
 			TrustedProxy:   true,
 			Hostname:       "acme.example",
 			Pathname:       "/pricing",
@@ -266,7 +267,7 @@ func TestTheLastRequestIsKeptWhole(t *testing.T) {
 		t.Errorf("the resolved address is %q", last.ClientIP)
 	}
 
-	if last.ClientIPSource != ingest.SourceForwardedFor {
+	if last.ClientIPSource != clientip.SourceForwardedFor {
 		t.Errorf("the address source is %q — this is the field the whole panel exists for", last.ClientIPSource)
 	}
 
@@ -343,7 +344,7 @@ func TestPendingRequestDoesNotClaimAWrite(t *testing.T) {
 		Pending: true,
 		Debug: ingest.Debug{
 			ClientIP:       "203.0.113.9",
-			ClientIPSource: ingest.SourceForwardedFor,
+			ClientIPSource: clientip.SourceForwardedFor,
 		},
 	})
 
@@ -376,7 +377,7 @@ func TestFailedFlushRequeuesEveryRow(t *testing.T) {
 		Accepted: true,
 		Debug: ingest.Debug{
 			ClientIP:       "203.0.113.9",
-			ClientIPSource: ingest.SourceForwardedFor,
+			ClientIPSource: clientip.SourceForwardedFor,
 		},
 	})
 
@@ -517,7 +518,7 @@ func TestObservingIsSafeUnderConcurrency(t *testing.T) {
 			defer func() { done <- struct{}{} }()
 
 			for i := 0; i < 250; i++ {
-				f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{ClientIPSource: ingest.SourceSocket}})
+				f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{ClientIPSource: clientip.SourceSocket}})
 			}
 		}()
 	}

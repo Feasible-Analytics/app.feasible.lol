@@ -31,7 +31,6 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/stripe"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/usage"
 )
 
@@ -427,7 +426,7 @@ func (h *Handler) billing(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		plan := stripe.Describe(mirror.PriceID, h.Billing.Plans.Monthly, h.Billing.Plans.Yearly)
+		plan := h.Billing.Plans.Describe(mirror.PriceID)
 
 		data.Plan = planPanel{
 			Label:             firstNonEmpty(plan.Label, i18n.T(lang, "pages.billing.plan.none")),

@@ -43,6 +43,13 @@ trusted-proxy configuration. Use it only when your application edge strips clien
 forwarding headers and writes its own. On a directly exposed app, construct `Visitor` from
 the socket address so a client cannot choose its fingerprint or geolocation.
 
+The client sends the visitor's address as `X-Forwarded-For`. **The ingest server honours that
+header only from an address on its trusted-proxy list** (`FEASIBLE_INGEST_TRUSTED_PROXIES`);
+from any other peer it uses the socket address, which is your server. On a self-hosted
+instance, add the address your application calls from to that list. Check it with
+`client.Debug`: the derived event's `client_ip_source` is `x-forwarded-for` when the header
+was used and `socket` when it was not.
+
 ## Install
 
 ```bash
@@ -91,12 +98,20 @@ Self-hosting? Set `Options.Host` to your own host. Nothing else changes.
 ### A custom event, with properties and money
 
 ```go
-event := feasible.NewEvent("Purchase", "https://example.com/checkout", feasible.FromRequest(r)).
-	WithProps(map[string]any{"plan": "annual", "seats": 4}).
-	WithRevenue(99.50, "USD").
-	WithTitle("Checkout")
+event := feasible.NewEvent("Purchase", "https://example.com/checkout", feasible.FromRequest(r))
+event.Props = map[string]any{"plan": "annual", "seats": 4}
+event.Revenue = &feasible.Revenue{Amount: 99.50, Currency: "USD"}
+event.Title = "Checkout"
 
 result, err := client.Send(r.Context(), event)
+```
+
+`WithProp` adds one property at a time and allocates the map for you:
+
+```go
+event := feasible.NewEvent("Signup", "https://example.com/join", feasible.FromRequest(r)).
+	WithProp("plan", "annual").
+	WithProp("trial", true)
 ```
 
 Thirty properties at most; names cap at 300 characters and values at 2000. Anything past
@@ -110,14 +125,17 @@ attribution explicitly:
 
 ```go
 event := feasible.NewEvent("Purchase", "https://example.com/order/complete",
-	feasible.NewVisitor(order.VisitorIP, order.VisitorUserAgent)).
-	WithRevenue(240, "USD").
-	WithAttribution(feasible.Attribution{
-		UTMSource:   "newsletter",
-		UTMMedium:   "email",
-		UTMCampaign: "spring",
-	})
+	feasible.NewVisitor(order.VisitorIP, order.VisitorUserAgent))
+event.Revenue = &feasible.Revenue{Amount: 240, Currency: "USD"}
+event.Attribution = feasible.Attribution{
+	UTMSource:   "newsletter",
+	UTMMedium:   "email",
+	UTMCampaign: "spring",
+}
 ```
+
+The server applies these overrides to any event that carries them; nothing about them is
+specific to a server-side caller.
 
 Store the visitor's IP and User-Agent alongside whatever you are going to convert later.
 They are the only two values that cannot be reconstructed after the fact.
@@ -160,7 +178,7 @@ you can log it — never swallowed, and never retried.
 
 | Type | When |
 |---|---|
-| `*ValidationError` | Something required was missing. Wraps `ErrMissingClientIP`, `ErrMissingUserAgent`, `ErrMissingName`, `ErrMissingURL` or `ErrMissingDomain`, so `errors.Is` works. |
+| `*ValidationError` | Something required was missing, or a revenue currency was not a code. Wraps `ErrMissingClientIP`, `ErrMissingUserAgent`, `ErrMissingName`, `ErrMissingURL`, `ErrMissingDomain` or `ErrInvalidCurrency`, so `errors.Is` works. |
 | `*APIError` | The server refused the request. Carries the status and the server's own sentence verbatim. |
 
 ```go

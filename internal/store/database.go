@@ -51,11 +51,7 @@ func OpenDatabase(path string) (*Database, error) {
 		}
 	}
 
-	// _txlock=immediate takes the write lock when the transaction begins rather
-	// than when it first writes. Without it a transaction that reads and then
-	// writes has to upgrade its lock mid-flight, which SQLite cannot retry —
-	// it returns SQLITE_BUSY immediately and busy_timeout never applies.
-	writer, err := sql.Open(DriverName, DSN(path, "_txlock=immediate"))
+	writer, err := sql.Open(DriverName, DSN(path, TxLockImmediate))
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}

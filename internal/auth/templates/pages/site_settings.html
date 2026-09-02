@@ -47,7 +47,7 @@
   {{ if .Data.DualWrite }}
     <div class="mt-6 rounded-2xl border border-warn/30 bg-warn/10 p-4 text-sm text-warn-ink">
       <strong>{{ t $.Lang "auth.site_settings.dual_write_title" }}</strong>
-      {{ t $.Lang "auth.site_settings.dual_write_body" "domain" $site.PreviousDomain "duration" (until $.Lang $site.PreviousDomainUntil) }}
+      {{ t $.Lang "auth.site_settings.dual_write_body" "domain" $site.PreviousDomain "duration" (until $.Now $.Lang $site.PreviousDomainUntil) }}
     </div>
   {{ end }}
 

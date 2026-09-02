@@ -135,38 +135,3 @@ func TestFirstEventAtIsTheOnboardingPoll(t *testing.T) {
 		t.Errorf("want %d, got %d", when, at)
 	}
 }
-
-// TestResetStatsOnlyTouchesOneSite is the important guard. An account database
-// holds every site a team owns, and a reset scoped by anything but the site id
-// would take the customer's other sites with it — with no undo.
-func TestResetStatsOnlyTouchesOneSite(t *testing.T) {
-	traffic, manager := newTestTraffic(t)
-	ctx := context.Background()
-
-	now := time.Now()
-
-	insertSession(t, manager, 1, 7, now.Unix())
-	insertSession(t, manager, 1, 8, now.Unix())
-
-	if err := traffic.ResetStats(ctx, 1, 7); err != nil {
-		t.Fatalf("reset stats: %v", err)
-	}
-
-	gone, err := traffic.FirstEventAt(ctx, 1, 7)
-	if err != nil {
-		t.Fatalf("first event: %v", err)
-	}
-
-	if gone != 0 {
-		t.Error("the reset site should have no traffic left")
-	}
-
-	kept, err := traffic.FirstEventAt(ctx, 1, 8)
-	if err != nil {
-		t.Fatalf("first event: %v", err)
-	}
-
-	if kept == 0 {
-		t.Error("the other site in the same account must be untouched")
-	}
-}

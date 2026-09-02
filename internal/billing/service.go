@@ -178,7 +178,11 @@ func (s *Service) reconcileLockedWithRecovery(ctx context.Context, lease lifecyc
 		return false, err
 	}
 
-	customers, err := s.discoverAccountCustomers(ctx, lease, teamID, existing.CustomerID, customerID)
+	customers, err := s.discoverAccountCustomers(ctx, lease, teamID, false, existing.CustomerID, customerID)
+	if err != nil {
+		return false, err
+	}
+	evidence, err := s.storedPaymentUpdates(ctx, teamID)
 	if err != nil {
 		return false, err
 	}
@@ -224,10 +228,7 @@ func (s *Service) reconcileLockedWithRecovery(ctx context.Context, lease lifecyc
 				candidate = stored
 			}
 		}
-		candidate, err = s.latestPaymentUpdate(ctx, teamID, allSubscriptions[i].ID, candidate)
-		if err != nil {
-			return false, err
-		}
+		candidate = latestPaymentUpdate(evidence, allSubscriptions[i].ID, candidate)
 		resolvedUpdates[allSubscriptions[i].ID] = candidate
 		if allSubscriptions[i].Paying() && candidate.State == PaymentPaid {
 			entitled = append(entitled, allSubscriptions[i])
@@ -267,7 +268,7 @@ func (s *Service) reconcileLockedWithRecovery(ctx context.Context, lease lifecyc
 	}
 
 	if subscription != nil {
-		plan := stripe.Describe(subscription.PriceID(), s.Plans.Monthly, s.Plans.Yearly)
+		plan := s.Plans.Describe(subscription.PriceID())
 		newSubscription := existing.SubscriptionID != subscription.ID
 		mirror.SubscriptionID = subscription.ID
 		mirror.Status = subscription.Status
@@ -325,10 +326,7 @@ func (s *Service) reconcileLockedWithRecovery(ctx context.Context, lease lifecyc
 		mirror.PaymentFailedAt = time.Time{}
 	case PaymentFailed:
 		failureEvidence := resolvedUpdates[mirror.SubscriptionID]
-		failedAt, err := s.firstFailureInCurrentLapse(ctx, teamID, mirror.SubscriptionID, failureEvidence)
-		if err != nil {
-			return false, err
-		}
+		failedAt := firstFailureInCurrentLapse(evidence, mirror.SubscriptionID, failureEvidence)
 		if failedAt.IsZero() {
 			failedAt = paymentFailureTime(failureEvidence)
 		}
@@ -404,10 +402,17 @@ func (s *Service) reconcileLockedWithRecovery(ctx context.Context, lease lifecyc
 	return true, nil
 }
 
-// discoverAccountCustomers combines durable ownership with complete provider
-// metadata and Checkout Session scans. Every discovered identity is persisted
-// before its subscriptions can affect account entitlement.
-func (s *Service) discoverAccountCustomers(ctx context.Context, lease lifecycle.AccountLease, teamID int64, seeds ...string) (map[string]bool, error) {
+// discoverAccountCustomers returns every provider customer known to belong to
+// an account: the durable billing_account_customers rows, the ids the caller
+// already holds, and the customers named by Checkout Sessions carrying this
+// account's metadata. Every discovered identity is persisted before its
+// subscriptions can affect entitlement, because a second customer with a paid
+// period is the difference between an account being deleted at day 90 and an
+// account that is still paying.
+//
+// Permanent deletion additionally searches customers by metadata, since a
+// customer must not outlive the account it belongs to.
+func (s *Service) discoverAccountCustomers(ctx context.Context, lease lifecycle.AccountLease, teamID int64, searchProvider bool, seeds ...string) (map[string]bool, error) {
 	customers := make(map[string]bool)
 	remember := func(customerID string) error {
 		if customerID == "" || customers[customerID] {
@@ -432,20 +437,23 @@ func (s *Service) discoverAccountCustomers(ctx context.Context, lease lifecycle.
 			return nil, err
 		}
 	}
-	if err := lease.Renew(ctx); err != nil {
-		return nil, err
-	}
-	providerCustomers, err := s.Stripe.Customers(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("billing: discover payment customers for account %d: %w", teamID, err)
-	}
-	for i := range providerCustomers {
-		if !providerCustomers[i].Deleted && providerCustomers[i].Meta.TeamID() == teamID {
-			if err := remember(providerCustomers[i].ID); err != nil {
-				return nil, err
+	if searchProvider {
+		if err := lease.Renew(ctx); err != nil {
+			return nil, err
+		}
+		providerCustomers, err := s.Stripe.SearchCustomersByTeam(ctx, teamID)
+		if err != nil {
+			return nil, fmt.Errorf("billing: discover payment customers for account %d: %w", teamID, err)
+		}
+		for i := range providerCustomers {
+			if !providerCustomers[i].Deleted && providerCustomers[i].Meta.TeamID() == teamID {
+				if err := remember(providerCustomers[i].ID); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
+
 	if err := lease.Renew(ctx); err != nil {
 		return nil, err
 	}
@@ -528,26 +536,15 @@ func subscriptionByID(subscriptions []stripe.Subscription, id string) *stripe.Su
 // the first failure after the most recent successful payment. Reconstructing
 // the run makes an older first failure delivered late correct day zero without
 // reaching backward across an intervening recovery.
-func (s *Service) firstFailureInCurrentLapse(ctx context.Context, teamID int64, subscriptionID string, current PaymentUpdate) (time.Time, error) {
-	payloads, err := s.Store.EventPayloads(ctx, teamID, paymentEvidenceEventTypes())
-	if err != nil {
-		return time.Time{}, err
-	}
-
-	updates := make([]PaymentUpdate, 0, len(payloads)+1)
+func firstFailureInCurrentLapse(evidence []PaymentUpdate, subscriptionID string, current PaymentUpdate) time.Time {
+	updates := make([]PaymentUpdate, 0, len(evidence)+1)
 	if current.SubscriptionID == subscriptionID &&
 		(current.State == PaymentPaid || current.State == PaymentFailed) {
 		updates = append(updates, current)
 	}
 
-	for _, payload := range payloads {
-		event, err := stripe.DecodeEvent(payload)
-		if err != nil {
-			continue
-		}
-
-		candidate, err := paymentUpdate(event)
-		if err != nil || candidate.SubscriptionID != subscriptionID ||
+	for _, candidate := range evidence {
+		if candidate.SubscriptionID != subscriptionID ||
 			(candidate.State != PaymentPaid && candidate.State != PaymentFailed) {
 			continue
 		}
@@ -571,7 +568,7 @@ func (s *Service) firstFailureInCurrentLapse(ctx context.Context, teamID int64, 
 		}
 	}
 
-	return failedAt, nil
+	return failedAt
 }
 
 // paymentUpdateApplies rejects evidence for a different subscription. A customer
@@ -588,21 +585,18 @@ func paymentUpdateApplies(update PaymentUpdate, subscription *stripe.Subscriptio
 	return true
 }
 
-// latestPaymentUpdate resolves the signed evidence stored for one subscription.
-// Provider object creation time orders separate Checkout Sessions or invoices;
-// event creation time orders changes to the same object; and terminal settlement
-// semantics break exact timestamp ties without relying on delivery order.
-func (s *Service) latestPaymentUpdate(ctx context.Context, teamID int64, subscriptionID string, current PaymentUpdate) (PaymentUpdate, error) {
+// storedPaymentUpdates decodes every signed payment event stored for an
+// account once, so a reconcile that examines several subscriptions does not
+// re-read and re-decode the whole log for each of them. Payloads that no
+// longer decode are skipped: they were accepted under an older provider shape
+// and carry no evidence this reconcile can use.
+func (s *Service) storedPaymentUpdates(ctx context.Context, teamID int64) ([]PaymentUpdate, error) {
 	payloads, err := s.Store.EventPayloads(ctx, teamID, paymentEvidenceEventTypes())
 	if err != nil {
-		return PaymentUpdate{}, err
+		return nil, err
 	}
 
-	best := PaymentUpdate{}
-	if current.SubscriptionID == subscriptionID && current.State != "" {
-		best = current
-	}
-
+	updates := make([]PaymentUpdate, 0, len(payloads))
 	for _, payload := range payloads {
 		event, err := stripe.DecodeEvent(payload)
 		if err != nil {
@@ -610,19 +604,35 @@ func (s *Service) latestPaymentUpdate(ctx context.Context, teamID int64, subscri
 		}
 
 		candidate, err := paymentUpdate(event)
-		if err != nil {
+		if err != nil || candidate.State == "" {
 			continue
 		}
-		if candidate.SubscriptionID != subscriptionID || candidate.State == "" {
-			continue
-		}
+		updates = append(updates, candidate)
+	}
 
+	return updates, nil
+}
+
+// latestPaymentUpdate resolves the signed evidence stored for one subscription.
+// Provider object creation time orders separate Checkout Sessions or invoices;
+// event creation time orders changes to the same object; and terminal settlement
+// semantics break exact timestamp ties without relying on delivery order.
+func latestPaymentUpdate(evidence []PaymentUpdate, subscriptionID string, current PaymentUpdate) PaymentUpdate {
+	best := PaymentUpdate{}
+	if current.SubscriptionID == subscriptionID && current.State != "" {
+		best = current
+	}
+
+	for _, candidate := range evidence {
+		if candidate.SubscriptionID != subscriptionID {
+			continue
+		}
 		if paymentUpdateAfter(candidate, best) {
 			best = candidate
 		}
 	}
 
-	return best, nil
+	return best
 }
 
 // paymentUpdateAfter compares payment evidence independently of delivery order.
@@ -674,24 +684,6 @@ func paymentEvidenceRank(state string) int {
 	}
 }
 
-// CheckoutPaymentStatus reads the return session only to choose honest copy.
-// Account activation still belongs exclusively to the signed webhook path.
-func (s *Service) CheckoutPaymentStatus(ctx context.Context, sessionID string) (string, error) {
-	if s == nil || s.Stripe == nil || !s.Stripe.Configured() {
-		return "", fmt.Errorf("billing: no payment provider is configured on this install")
-	}
-	if sessionID == "" {
-		return "", fmt.Errorf("billing: checkout return has no session id")
-	}
-
-	session, err := s.Stripe.GetCheckoutSession(ctx, sessionID)
-	if err != nil {
-		return "", err
-	}
-
-	return session.PaymentStatus, nil
-}
-
 // StartTrial enrols a brand-new account. The trial takes no card, so there is
 // no customer at the payment provider and nothing to ask it about — the whole
 // trial lives in system.db, which is why this does not touch the provider at
@@ -721,7 +713,7 @@ func (s *Service) QuiesceForDeletion(ctx context.Context, lease lifecycle.Accoun
 		}
 		return lifecycle.PaymentQuiescence{CustomerIDs: nil, Restore: func(context.Context) error { return nil }}, nil
 	}
-	customers, err := s.discoverAccountCustomers(ctx, lease, teamID, customerID)
+	customers, err := s.discoverAccountCustomers(ctx, lease, teamID, true, customerID)
 	if err != nil {
 		return lifecycle.PaymentQuiescence{}, err
 	}
@@ -1107,10 +1099,16 @@ func settledInvoice(subscriptions []stripe.Subscription, invoices []stripe.Invoi
 	return selected, selectedAt, nil
 }
 
-// cleanupCheckoutSessions expires every open provider session carrying this
-// account's metadata plus every late session already recorded locally. A
-// completed orphan blocks a first customer; historical completions are harmless
-// once provider subscription truth says an existing customer is fully terminal.
+// cleanupCheckoutSessions expires every open provider session this account
+// could still complete: the late sessions recorded locally, every session
+// carrying this account's metadata, and every session Stripe holds for the
+// customers named by the caller. A completed orphan blocks a first customer;
+// historical completions are harmless once provider subscription truth says an
+// existing customer is fully terminal.
+//
+// The account-wide listing is what covers an account's first checkout, whose
+// session has no customer to list it by until it completes. Without it a
+// replacement checkout could be created beside a live orphan.
 func (s *Service) cleanupCheckoutSessions(ctx context.Context, lease lifecycle.AccountLease, teamID int64, blockCompleted bool, verifyCustomerID string, deletionCustomers map[string]bool, expireOpen bool) (bool, error) {
 	pending, err := s.Store.CheckoutCleanupSessions(ctx, teamID)
 	if err != nil {
@@ -1128,6 +1126,26 @@ func (s *Service) cleanupCheckoutSessions(ctx context.Context, lease lifecycle.A
 	for i := range sessions {
 		if sessions[i].Metadata.TeamID() == teamID {
 			ids[sessions[i].ID] = true
+		}
+	}
+
+	listFor := []string{}
+	switch {
+	case deletionCustomers != nil:
+		listFor = sortedCustomerIDs(deletionCustomers)
+	case verifyCustomerID != "":
+		listFor = []string{verifyCustomerID}
+	}
+	for _, customerID := range listFor {
+		if err := lease.Renew(ctx); err != nil {
+			return false, err
+		}
+		owned, err := s.Stripe.CheckoutSessionsForCustomer(ctx, customerID)
+		if err != nil {
+			return false, fmt.Errorf("billing: list checkout sessions for customer %s: %w", customerID, err)
+		}
+		for i := range owned {
+			ids[owned[i].ID] = true
 		}
 	}
 
@@ -1348,10 +1366,15 @@ func (s *Service) Checkout(ctx context.Context, teamID int64, planKey, email str
 		claim.Status = "expired"
 	}
 	if found && claim.Expired(s.now()) {
-		return nil, fmt.Errorf(
-			"billing: account %d has an indeterminate checkout older than the safe Stripe idempotency retry window; inspect provider session metadata before retrying",
-			teamID,
-		)
+		// Stripe forgets an idempotency key after 24 hours and a Checkout Session
+		// expires on its own 24 hours after creation, so a claim this old that
+		// never received its session cannot be recovered under its key. Retiring
+		// it risks at most one orphan session that Stripe closes within the hour;
+		// refusing would lock the account out of checkout for good.
+		if err := s.retireCheckoutClaim(ctx, lease, claim); err != nil {
+			return nil, err
+		}
+		claim.Status = "expired"
 	}
 	if !found || claim.Status == "expired" {
 		if _, err := s.cleanupCheckoutSessions(ctx, lease, teamID, existing.CustomerID == "", existing.CustomerID, nil, true); err != nil {

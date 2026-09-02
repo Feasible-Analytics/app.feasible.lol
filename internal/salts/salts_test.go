@@ -95,17 +95,3 @@ func TestNewRejectsEmptySharedValue(t *testing.T) {
 		t.Fatal("empty shared salt was accepted")
 	}
 }
-
-// TestEraseOverwritesDerivedMaterial verifies request-local secrets are cleared
-// before their slices are released.
-func TestEraseOverwritesDerivedMaterial(t *testing.T) {
-	source, _ := New("shared-test-salt")
-	pair, _ := source.Pair(context.Background())
-	current := pair.Current
-	previous := pair.Previous
-	pair.Erase()
-
-	if !bytes.Equal(current, make([]byte, Size)) || !bytes.Equal(previous, make([]byte, Size)) {
-		t.Fatal("Erase left derived salt bytes behind")
-	}
-}

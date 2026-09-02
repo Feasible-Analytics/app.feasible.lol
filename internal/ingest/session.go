@@ -9,7 +9,6 @@
 package ingest
 
 import (
-	"sync"
 	"time"
 )
 
@@ -21,27 +20,11 @@ const SessionTimeout = 30 * time.Minute
 // sessionTimeoutSeconds is the same value in the unit every timestamp uses.
 const sessionTimeoutSeconds = int64(SessionTimeout / time.Second)
 
-// SweepInterval is how often expired sessions leave the cache. Ten seconds is
-// often enough that memory tracks reality and rare enough that the sweep never
-// competes with ingestion for the bucket locks.
-const SweepInterval = 10 * time.Second
-
-// DirtyGrace is how long past its last event a session whose rows have never
-// been written is kept. A writer wedged for an hour is not going to save it,
-// and keeping every dirty session forever turns one stuck account into a process
-// that grows until it is killed — which loses the whole cache rather than one
-// visit.
-const DirtyGrace = time.Hour
-
-// sessionShards is how many independently locked buckets the cache has. It is a
-// power of two so the bucket is a mask rather than a modulo, and 64 is enough
-// that lock contention disappears well past the throughput one box can reach.
-const sessionShards = 64
-
-// Session is one visit, held in memory and flushed to SQLite as a single row
-// that is updated in place. A column store that cannot UPDATE has to fake this
-// with a sign column and a collapsing merge, which turns every average into a
-// ratio of signed sums; we just update the row.
+// Session is one visit. The writer loads it from the account database, folds a
+// batch into it, and writes it back as a single row that is updated in place.
+// A column store that cannot UPDATE has to fake this with a sign column and a
+// collapsing merge, which turns every average into a ratio of signed sums; we
+// just update the row.
 //
 // Several fields exist purely to make the fold independent of arrival order.
 // They record *when* a fact was established rather than the order it was
@@ -112,9 +95,10 @@ type Session struct {
 	ExitAt   int64
 	ExitTie  string
 
-	// Dirty means the row differs from what is in SQLite. Sessions are flushed
-	// as a dirty set rather than with an UPDATE per event, which is the
-	// difference between a few hundred writes a second and tens of thousands.
+	// Dirty means the row differs from what is in SQLite. A batch's sessions
+	// are written as one dirty set at the end of the fold rather than with an
+	// UPDATE per event, which is the difference between a few hundred writes a
+	// second and tens of thousands.
 	Dirty bool
 
 	// Restamp means the attribution and device block changed after events had
@@ -163,7 +147,7 @@ func (s *Session) distance(timestamp int64) int64 {
 	return 0
 }
 
-// sessionKey is the cache key: a session belongs to one visitor on one site.
+// sessionKey is the fold key: a session belongs to one visitor on one site.
 type sessionKey struct {
 	siteID int64
 	userID int64
@@ -179,46 +163,33 @@ type Merge struct {
 	Absorbed  int64
 }
 
-// SessionCache holds every live session. It is sharded because it is written on
-// every single event, and one mutex over the whole map would be the first thing
-// to saturate on a busy box.
+// SessionCache is the fold's working state for one write: the live sessions
+// and parked engagement pings of the visitor keys that write touches. The
+// writer builds one per account transaction from SQLite and discards it after
+// commit, and the seed generator holds one for a single-threaded run, so it is
+// never shared between goroutines and takes no locks.
 type SessionCache struct {
-	shards [sessionShards]sessionBucket
+	bucket sessionBucket
 
-	// maxOrphans bounds only process-local folds. The production writer uses a
-	// transaction-local cache backed by SQLite, where every accepted ping is
-	// already durable and must remain adoptable; zero disables this memory cap.
+	// maxOrphans bounds how many early pings one visitor may park. The writer
+	// disables it: SQLite already holds and bounds those rows, and every ping
+	// it accepted must stay adoptable.
 	maxOrphans int
 
-	// nextID allocates session ids. In direct mode this process is the only
-	// writer of the sessions table, so a counter seeded from the file's high
-	// water mark is both correct and free — no round trip per new visit.
-	idMu   sync.Mutex
+	// nextID allocates session ids for callers with no database allocator.
+	// The seed generator is the only writer of its file, so a counter seeded
+	// from the high water mark is both correct and free.
 	nextID map[int64]int64
 
-	// merges is drained by the writer. It is deliberately outside the buckets
-	// so that draining it does not have to walk or lock every shard.
-	mergeMu sync.Mutex
-	merges  []Merge
-
-	// OnOrphanExpired is called for every engagement ping whose visit never
-	// arrived. The ping is a genuine drop at that point, and by then the
-	// response went out half an hour ago — so this callback is the only way the
-	// drop can be counted and told to anyone at all.
-	OnOrphanExpired func(*Event)
-
-	// OnSessionAbandoned is called for a dirty session evicted long after its
-	// last event. It means a write never landed and its last few events are
-	// gone, which is data loss and has to be said out loud.
-	OnSessionAbandoned func(*Session)
+	// merges is drained by the writer after the fold.
+	merges []Merge
 }
 
-// sessionBucket is one independently locked slice of the cache. Each key maps
-// to a slice rather than a single session because an out-of-order event can
-// briefly create a second live session for the same visitor, and the fold has
-// to be able to see both to decide whether they are really one.
+// sessionBucket is the fold state itself. Each key maps to a slice rather than
+// a single session because an out-of-order event can briefly create a second
+// live session for the same visitor, and the fold has to be able to see both
+// to decide whether they are really one.
 type sessionBucket struct {
-	mu       sync.Mutex
 	sessions map[sessionKey][]*Session
 
 	// orphans holds engagement pings that arrived before the visit they belong
@@ -228,16 +199,13 @@ type sessionBucket struct {
 	orphans map[sessionKey][]*Event
 }
 
-// NewSessionCache builds an empty cache.
+// NewSessionCache builds an empty fold with the process-memory orphan cap.
 func NewSessionCache() *SessionCache {
-	cache := &SessionCache{nextID: map[int64]int64{}, maxOrphans: MaxOrphanEngagements}
-
-	for i := range cache.shards {
-		cache.shards[i].sessions = map[sessionKey][]*Session{}
-		cache.shards[i].orphans = map[sessionKey][]*Event{}
+	return &SessionCache{
+		bucket:     sessionBucket{sessions: map[sessionKey][]*Session{}, orphans: map[sessionKey][]*Event{}},
+		nextID:     map[int64]int64{},
+		maxOrphans: MaxOrphanEngagements,
 	}
-
-	return cache
 }
 
 // newDurableSessionCache builds the transaction-local fold used by Writer.
@@ -255,9 +223,6 @@ func newDurableSessionCache() *SessionCache {
 // collide with an existing row, so it is an explicit call rather than something
 // inferred lazily.
 func (c *SessionCache) SeedIDs(accountID, highest int64) {
-	c.idMu.Lock()
-	defer c.idMu.Unlock()
-
 	if current, ok := c.nextID[accountID]; !ok || highest+1 > current {
 		c.nextID[accountID] = highest + 1
 	}
@@ -265,9 +230,6 @@ func (c *SessionCache) SeedIDs(accountID, highest int64) {
 
 // allocateID hands out the next session id for an account.
 func (c *SessionCache) allocateID(accountID int64) int64 {
-	c.idMu.Lock()
-	defer c.idMu.Unlock()
-
 	next := c.nextID[accountID]
 	if next < 1 {
 		next = 1
@@ -275,16 +237,6 @@ func (c *SessionCache) allocateID(accountID int64) int64 {
 	c.nextID[accountID] = next + 1
 
 	return next
-}
-
-// bucket picks the shard for a key. The hash is a cheap integer mix rather than
-// a real hash function, because the inputs are already a 64-bit fingerprint and
-// a small site id — the only thing needed here is that neighbouring ids do not
-// land in the same bucket.
-func (c *SessionCache) bucket(key sessionKey) *sessionBucket {
-	mixed := uint64(key.userID)*0x9e3779b97f4a7c15 + uint64(key.siteID)
-
-	return &c.shards[(mixed>>32)&(sessionShards-1)]
 }
 
 // MaxOrphanEngagements caps how many early engagement pings one visitor may
@@ -316,14 +268,11 @@ func (c *SessionCache) ApplyAllocated(event *Event, allocate func() (int64, erro
 
 // apply contains the fold shared by the database-backed writer and direct
 // callers. The allocator is invoked only when the event genuinely opens a new
-// visit, while the visitor bucket is locked against a competing local fold.
+// visit.
 func (c *SessionCache) apply(event *Event, allocate func() (int64, error)) (*Session, bool, []*Event, error) {
 	key := sessionKey{siteID: event.SiteID, userID: event.UserID}
-	bucket := c.bucket(key)
 
-	bucket.mu.Lock()
-
-	session, absorbed := bucket.claim(key, event.Timestamp)
+	session, absorbed := c.bucket.claim(key, event.Timestamp)
 	found := key
 
 	// The previous salt is a session-lookup fallback and nothing else. Without
@@ -331,17 +280,7 @@ func (c *SessionCache) apply(event *Event, allocate func() (int64, error)) (*Ses
 	// session, and is counted as two people.
 	if session == nil && event.PreviousUserID != 0 && event.PreviousUserID != event.UserID {
 		previousKey := sessionKey{siteID: event.SiteID, userID: event.PreviousUserID}
-		previousBucket := c.bucket(previousKey)
-
-		// Two different keys can land in the same bucket, and locking one twice
-		// would deadlock.
-		if previousBucket != bucket {
-			previousBucket.mu.Lock()
-			session, absorbed = previousBucket.claim(previousKey, event.Timestamp)
-			previousBucket.mu.Unlock()
-		} else {
-			session, absorbed = previousBucket.claim(previousKey, event.Timestamp)
-		}
+		session, absorbed = c.bucket.claim(previousKey, event.Timestamp)
 
 		if session != nil {
 			found = previousKey
@@ -355,19 +294,17 @@ func (c *SessionCache) apply(event *Event, allocate func() (int64, error)) (*Ses
 		// independent of arrival order: a retry that delivers the ping before
 		// its pageview must still produce the same row.
 		if event.IsEngagement() {
-			bucket.park(key, event, c.maxOrphans)
-			bucket.mu.Unlock()
+			c.bucket.park(key, event, c.maxOrphans)
 			return nil, false, nil, nil
 		}
 
 		id, err := allocate()
 		if err != nil {
-			bucket.mu.Unlock()
 			return nil, false, nil, err
 		}
 
 		session = c.newSession(event, id)
-		bucket.sessions[key] = append(bucket.sessions[key], session)
+		c.bucket.sessions[key] = append(c.bucket.sessions[key], session)
 	}
 
 	// The session's identity wins over the event's. Copying it onto the event
@@ -376,24 +313,14 @@ func (c *SessionCache) apply(event *Event, allocate func() (int64, error)) (*Ses
 
 	session.fold(event)
 
-	revived := bucket.adopt(key, session)
+	revived := c.bucket.adopt(key, session)
 
-	// Pings parked under the pre-rotation fingerprint live in that key's own
-	// bucket, which is a different shard 63 times in 64. Adopting them from
-	// this one finds nothing and drops every engagement ping in flight across
-	// 00:00 UTC, silently.
+	// Pings parked under the pre-rotation fingerprint sit under that key, so a
+	// session found through the previous salt adopts from both keys or every
+	// engagement ping in flight across 00:00 UTC is dropped silently.
 	if found != key {
-		previousBucket := c.bucket(found)
-		if previousBucket != bucket {
-			previousBucket.mu.Lock()
-			revived = append(revived, previousBucket.adopt(found, session)...)
-			previousBucket.mu.Unlock()
-		} else {
-			revived = append(revived, previousBucket.adopt(found, session)...)
-		}
+		revived = append(revived, c.bucket.adopt(found, session)...)
 	}
-
-	bucket.mu.Unlock()
 
 	c.recordMerges(session, absorbed)
 
@@ -421,8 +348,7 @@ func (b *sessionBucket) park(key sessionKey, event *Event, limit int) {
 }
 
 // adopt folds every parked ping the session now covers and returns them, so the
-// writer stores the rows it skipped earlier. The caller must hold the bucket
-// lock.
+// writer stores the rows it skipped earlier.
 func (b *sessionBucket) adopt(key sessionKey, session *Session) []*Event {
 	waiting := b.orphans[key]
 	if len(waiting) == 0 {
@@ -455,8 +381,7 @@ func (b *sessionBucket) adopt(key sessionKey, session *Session) []*Event {
 }
 
 // claim returns the session an event at this timestamp belongs to, absorbing
-// any others it bridges, and reports which ids were absorbed. The caller must
-// already hold the bucket lock.
+// any others it bridges, and reports which ids were absorbed.
 //
 // Merging is purely an out-of-order repair. Arriving in order an event can
 // never match two sessions at once, because the later session could not have
@@ -521,13 +446,6 @@ func (b *sessionBucket) claim(key sessionKey, timestamp int64) (*Session, []int6
 // recordMerges queues the repairs the writer has to make on disk: repoint any
 // events already written to the absorbed session, and delete its row.
 func (c *SessionCache) recordMerges(survivor *Session, absorbed []int64) {
-	if len(absorbed) == 0 {
-		return
-	}
-
-	c.mergeMu.Lock()
-	defer c.mergeMu.Unlock()
-
 	for _, id := range absorbed {
 		c.merges = append(c.merges, Merge{AccountID: survivor.AccountID, Survivor: survivor.ID, Absorbed: id})
 	}
@@ -537,9 +455,6 @@ func (c *SessionCache) recordMerges(survivor *Session, absorbed []int64) {
 // It is scoped to an account because each account is a separate database file,
 // and a merge queued for one of them means nothing in another.
 func (c *SessionCache) TakeMerges(accountID int64) []Merge {
-	c.mergeMu.Lock()
-	defer c.mergeMu.Unlock()
-
 	if len(c.merges) == 0 {
 		return nil
 	}
@@ -568,234 +483,72 @@ func (c *SessionCache) TakeMerges(accountID int64) []Merge {
 func (c *SessionCache) TakeDirty(accountID int64) []*Session {
 	var dirty []*Session
 
-	for i := range c.shards {
-		bucket := &c.shards[i]
-
-		bucket.mu.Lock()
-		for _, live := range bucket.sessions {
-			for _, session := range live {
-				if !session.Dirty || session.AccountID != accountID {
-					continue
-				}
-				session.Dirty = false
-
-				// The copy is what crosses the lock boundary. Handing the live
-				// pointer to the writer would let a concurrent fold change a
-				// row halfway through being written.
-				snapshot := *session
-
-				// The restamp travels on the snapshot and is cleared here,
-				// because it describes a repair the writer is about to make.
-				// Leaving it set would rewrite every event of the visit again
-				// on every later flush.
-				session.Restamp = false
-
-				dirty = append(dirty, &snapshot)
+	for _, live := range c.bucket.sessions {
+		for _, session := range live {
+			if !session.Dirty || session.AccountID != accountID {
+				continue
 			}
+			session.Dirty = false
+
+			// The writer gets a copy so that folding the next batch cannot
+			// change a row halfway through being written.
+			snapshot := *session
+
+			// The restamp travels on the snapshot and is cleared here, because
+			// it describes a repair the writer is about to make. Leaving it set
+			// would rewrite every event of the visit again on every later flush.
+			session.Restamp = false
+
+			dirty = append(dirty, &snapshot)
 		}
-		bucket.mu.Unlock()
 	}
 
 	return dirty
 }
 
-// Redirty puts one account's sessions back in the dirty set after a failed
-// write. Without it a transaction that rolled back would leave the cache
-// believing rows are on disk that never landed, and the next flush would skip
-// them forever.
-//
-// The account is part of the match, not context: session ids are allocated per
-// account, so id 7 exists in every account database and matching on the id
-// alone would dirty an unrelated customer's row on every failed write.
-func (c *SessionCache) Redirty(accountID int64, sessions []*Session) {
-	if len(sessions) == 0 {
-		return
-	}
-
-	wanted := make(map[int64]*Session, len(sessions))
-	for _, session := range sessions {
-		wanted[session.ID] = session
-	}
-
-	for i := range c.shards {
-		bucket := &c.shards[i]
-
-		bucket.mu.Lock()
-		for _, live := range bucket.sessions {
-			for _, session := range live {
-				if session.AccountID != accountID {
-					continue
-				}
-
-				snapshot, ok := wanted[session.ID]
-				if !ok {
-					continue
-				}
-
-				session.Dirty = true
-
-				// A restamp the failed transaction was carrying goes back with
-				// the session. It is the only record that events on disk hold
-				// an attribution the session no longer has.
-				session.Restamp = session.Restamp || snapshot.Restamp
-			}
-		}
-		bucket.mu.Unlock()
-	}
-}
-
-// Sweep drops sessions that can no longer receive an event. It runs on a timer
-// rather than on access because an abandoned session is never touched again by
-// definition, so nothing else would ever notice it.
+// Sweep drops sessions and parked pings that can no longer receive an event,
+// and reports how many went. A long-running fold — the seed generator's —
+// would otherwise hold every visit of the run in memory. A dirty session is
+// never swept: its last events have not been written yet.
 func (c *SessionCache) Sweep(now int64) int {
 	removed := 0
 
-	// What expired is reported after every bucket is unlocked. The callbacks
-	// take locks of their own — a counter, a log — and calling them under a
-	// shard lock would put the sweep in the way of live ingestion.
-	var (
-		expired   []*Event
-		abandoned []*Session
-	)
-
-	for i := range c.shards {
-		bucket := &c.shards[i]
-
-		bucket.mu.Lock()
-
-		// A ping whose visit never turned up is a genuine drop. Expiring them
-		// here is what stops a client that only ever sends engagement events
-		// from growing the cache without bound.
-		for key, waiting := range bucket.orphans {
-			var kept []*Event
-			for _, orphan := range waiting {
-				if now-orphan.Timestamp <= sessionTimeoutSeconds {
-					kept = append(kept, orphan)
-					continue
-				}
-				expired = append(expired, orphan)
-				removed++
-			}
-
-			if len(kept) == 0 {
-				delete(bucket.orphans, key)
+	for key, waiting := range c.bucket.orphans {
+		var kept []*Event
+		for _, orphan := range waiting {
+			if now-orphan.Timestamp <= sessionTimeoutSeconds {
+				kept = append(kept, orphan)
 				continue
 			}
-			bucket.orphans[key] = kept
+			removed++
 		}
 
-		for key, live := range bucket.sessions {
-			kept := live[:0]
+		if len(kept) == 0 {
+			delete(c.bucket.orphans, key)
+			continue
+		}
+		c.bucket.orphans[key] = kept
+	}
 
-			for _, session := range live {
-				if now-session.LastSeenAt <= sessionTimeoutSeconds {
-					kept = append(kept, session)
-					continue
-				}
+	for key, live := range c.bucket.sessions {
+		kept := live[:0]
 
-				// A dirty session is held past the timeout, because dropping it
-				// would lose the last few events of a visit that has not been
-				// written yet. It is not held forever: past the grace period the
-				// write is not coming, and an unbounded cache costs every other
-				// visit in memory rather than this one.
-				if session.Dirty && now-session.LastSeenAt <= sessionTimeoutSeconds+int64(DirtyGrace/time.Second) {
-					kept = append(kept, session)
-					continue
-				}
-
-				if session.Dirty {
-					abandoned = append(abandoned, session)
-				}
-				removed++
-			}
-
-			if len(kept) == 0 {
-				delete(bucket.sessions, key)
+		for _, session := range live {
+			if session.Dirty || now-session.LastSeenAt <= sessionTimeoutSeconds {
+				kept = append(kept, session)
 				continue
 			}
-			bucket.sessions[key] = kept
+			removed++
 		}
-		bucket.mu.Unlock()
-	}
 
-	if c.OnOrphanExpired != nil {
-		for _, orphan := range expired {
-			c.OnOrphanExpired(orphan)
+		if len(kept) == 0 {
+			delete(c.bucket.sessions, key)
+			continue
 		}
-	}
-
-	if c.OnSessionAbandoned != nil {
-		for _, session := range abandoned {
-			c.OnSessionAbandoned(session)
-		}
+		c.bucket.sessions[key] = kept
 	}
 
 	return removed
-}
-
-// Len reports how many sessions are live. It is what a health check reads to
-// answer "is the cache growing without bound", which is the shape of a sweep
-// that has stopped running.
-func (c *SessionCache) Len() int {
-	count := 0
-
-	for i := range c.shards {
-		bucket := &c.shards[i]
-		bucket.mu.Lock()
-		for _, live := range bucket.sessions {
-			count += len(live)
-		}
-		bucket.mu.Unlock()
-	}
-
-	return count
-}
-
-// Snapshot copies every live session out for persistence. On graceful shutdown
-// the cache is written to disk and reloaded at boot, because otherwise a
-// restart splits every in-flight session in two and there is no way to tell
-// afterwards which visits were really one.
-func (c *SessionCache) Snapshot() []Session {
-	var out []Session
-
-	for i := range c.shards {
-		bucket := &c.shards[i]
-		bucket.mu.Lock()
-		for _, live := range bucket.sessions {
-			for _, session := range live {
-				out = append(out, *session)
-			}
-		}
-		bucket.mu.Unlock()
-	}
-
-	return out
-}
-
-// Restore puts a snapshot back. Sessions past the timeout are skipped, so a
-// process that was down for an hour does not resurrect visits that ended while
-// it was away.
-func (c *SessionCache) Restore(sessions []Session, now int64) int {
-	restored := 0
-
-	for i := range sessions {
-		session := sessions[i]
-		if now-session.LastSeenAt > sessionTimeoutSeconds {
-			continue
-		}
-
-		key := sessionKey{siteID: session.SiteID, userID: session.UserID}
-		bucket := c.bucket(key)
-
-		bucket.mu.Lock()
-		bucket.sessions[key] = append(bucket.sessions[key], &session)
-		bucket.mu.Unlock()
-
-		c.SeedIDs(session.AccountID, session.ID)
-		restored++
-	}
-
-	return restored
 }
 
 // Sentinels for the "no event yet" state of the entry, exit and first-event

@@ -473,7 +473,14 @@ class Feasible_Proxy {
 			self::send_header( Feasible_Events::DROPPED_HEADER, $dropped );
 		}
 
-		if ( '' !== $type ) {
+		// The upstream answer is echoed on this site's own origin, so only the
+		// two types the ingest endpoint legitimately speaks are relayed, and
+		// the browser is told not to guess at what anything else might be.
+		self::send_header( 'X-Content-Type-Options', 'nosniff' );
+
+		$relay = self::relays_body( $type );
+
+		if ( $relay ) {
 			self::send_header( 'Content-Type', $type );
 		}
 
@@ -488,9 +495,9 @@ class Feasible_Proxy {
 
 		status_header( $code > 0 ? $code : 502 );
 
-		if ( is_string( $answer ) && '' !== $answer ) {
-			// The upstream body is either empty or a debug JSON document we
-			// asked for, and it is relayed as it arrived.
+		if ( $relay && is_string( $answer ) && '' !== $answer ) {
+			// A debug JSON document or the endpoint's own sentence, relayed as
+			// it arrived so whoever is debugging reads what the server said.
 			echo $answer; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 		}
 
@@ -515,6 +522,11 @@ class Feasible_Proxy {
 	private static function refuse( $status, $reason, $message, $detail = '' ) {
 		self::send_header( self::ERROR_HEADER, $reason );
 
+		// The event route declares text/plain but sets nosniff only on a
+		// relayed answer, so a refusal would otherwise be the one response from
+		// this proxy a browser is free to sniff.
+		self::send_header( 'X-Content-Type-Options', 'nosniff' );
+
 		if ( '' !== $detail ) {
 			Feasible_Settings::record_error( 'proxy', $reason, $detail );
 		}
@@ -526,6 +538,23 @@ class Feasible_Proxy {
 		}
 
 		exit;
+	}
+
+	/**
+	 * relays_body decides whether an upstream response body may be echoed.
+	 *
+	 * The ingest endpoint answers empty, as text/plain, or as JSON. Anything
+	 * else comes from a misconfigured or compromised host, and echoing it
+	 * under its own type on this site's origin would let it run as this site.
+	 *
+	 * @param string $type The upstream Content-Type header, parameters included.
+	 * @return bool
+	 */
+	public static function relays_body( $type ) {
+		$parts = explode( ';', (string) $type, 2 );
+		$media = strtolower( trim( $parts[0] ) );
+
+		return 'application/json' === $media || 'text/plain' === $media;
 	}
 
 	/**

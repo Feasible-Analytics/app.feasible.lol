@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 )
 
@@ -38,7 +39,7 @@ func TestTheTestEventReportsWhatWasDerived(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(ingest.Debug{
 			ClientIP:       "203.0.113.4",
-			ClientIPSource: ingest.SourceForwardedFor,
+			ClientIPSource: clientip.SourceForwardedFor,
 			SiteDomain:     f.domain,
 			Hostname:       f.domain,
 			Country:        "GB",
@@ -63,7 +64,7 @@ func TestTheTestEventReportsWhatWasDerived(t *testing.T) {
 		t.Fatal("the test event was sent without the debug header, so it would have been written")
 	}
 
-	if result.Derived["client_ip_source"] != ingest.SourceForwardedFor {
+	if result.Derived["client_ip_source"] != clientip.SourceForwardedFor {
 		t.Fatalf("the derived event is %+v", result.Derived)
 	}
 
@@ -145,7 +146,7 @@ func TestThePanelEndpointAnswersJSON(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{ClientIPSource: ingest.SourceCloudflare}})
+	f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{ClientIPSource: clientip.SourceCloudflare}})
 
 	if _, err := f.recorder.Flush(ctx); err != nil {
 		t.Fatalf("flush: %v", err)

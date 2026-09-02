@@ -386,9 +386,6 @@ func (s *Store) SetRole(ctx context.Context, actorID, teamID, userID int64, role
 		return fmt.Errorf("teams: set role: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback after commit is harmless
-	if _, err := tx.ExecContext(ctx, `UPDATE team_memberships SET created_at = created_at WHERE id = -1`); err != nil {
-		return fmt.Errorf("teams: set role: %w", err)
-	}
 
 	actorRole, err := roleOfTx(ctx, tx, teamID, actorID)
 	if err != nil {
@@ -442,9 +439,6 @@ func (s *Store) RemoveMember(ctx context.Context, actorID, teamID, userID int64)
 		return fmt.Errorf("teams: remove member: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback after commit is harmless
-	if _, err := tx.ExecContext(ctx, `UPDATE team_memberships SET created_at = created_at WHERE id = -1`); err != nil {
-		return fmt.Errorf("teams: remove member: %w", err)
-	}
 
 	actorRole, err := roleOfTx(ctx, tx, teamID, actorID)
 	if err != nil {
@@ -550,13 +544,10 @@ func (s *Store) Invite(ctx context.Context, actorID int64, invitation Invitation
 	}
 	defer tx.Rollback() //nolint:errcheck // a rollback after commit is a no-op
 
-	// Reserve SQLite's writer before reading the live ownership boundary. A
-	// transfer and an invitation now have one serial order: either the transfer
-	// wins and this authorization fails, or this insert wins and the transfer
-	// removes it before publishing the new owner.
-	if _, err := tx.ExecContext(ctx, `UPDATE team_invitations SET expires_at = expires_at WHERE id = -1`); err != nil {
-		return "", Invitation{}, fmt.Errorf("teams: create invitation: %w", err)
-	}
+	// The transaction holds system.db's writer from BEGIN, so a transfer and an
+	// invitation have one serial order: either the transfer wins and this
+	// authorization fails, or this insert wins and the transfer removes it
+	// before publishing the new owner.
 
 	if IsGuestRole(invitation.Role) {
 		var teamID int64
@@ -712,12 +703,9 @@ func (s *Store) Accept(ctx context.Context, token string, userID int64) (Invitat
 	}
 	defer tx.Rollback() //nolint:errcheck // a rollback after commit is a no-op
 
-	// Take SQLite's writer lock before inspecting the one-time invitation.
-	// Independent database handles then serialize here rather than both reading
-	// the token before either request deletes it.
-	if _, err := tx.ExecContext(ctx, `UPDATE team_invitations SET expires_at = expires_at WHERE id = -1`); err != nil {
-		return Invitation{}, fmt.Errorf("teams: accept: %w", err)
-	}
+	// The transaction holds system.db's writer from BEGIN, so two requests
+	// presenting the same one-time invitation serialise here rather than both
+	// reading the token before either deletes it.
 
 	var invitation Invitation
 
@@ -897,11 +885,9 @@ func (s *Store) TransferOwnership(ctx context.Context, actorID, teamID, toUserID
 	}
 	defer tx.Rollback() //nolint:errcheck // a rollback after commit is a no-op
 
-	// Take the write lock before authorization. A concurrent transfer can no
-	// longer change the actor's role after this check and before the handover.
-	if _, err := tx.ExecContext(ctx, `UPDATE team_memberships SET role = role WHERE id = -1`); err != nil {
-		return fmt.Errorf("teams: transfer ownership: %w", err)
-	}
+	// The transaction holds system.db's writer from BEGIN, so a concurrent
+	// transfer cannot change the actor's role between this check and the
+	// handover.
 
 	actorRole, err := roleOfTx(ctx, tx, teamID, actorID)
 	if err != nil {
@@ -1039,10 +1025,6 @@ func (s *Store) TransferSiteFrom(ctx context.Context, actorID, siteID, expectedF
 	}
 	defer tx.Rollback() //nolint:errcheck // a rollback after commit is a no-op
 
-	if _, err := tx.ExecContext(ctx, `UPDATE sites SET updated_at = updated_at WHERE id = -1`); err != nil {
-		return fmt.Errorf("teams: transfer site: %w", err)
-	}
-
 	var fromTeamID int64
 	err = tx.QueryRowContext(ctx, `SELECT COALESCE(owner_team_id, account_id) FROM sites WHERE id = ?`, siteID).
 		Scan(&fromTeamID)
@@ -1176,6 +1158,14 @@ func validateSiteTransferSchema(ctx context.Context, tx *sql.Tx) error {
 		}
 		names = append(names, name)
 	}
+	// A truncated scan here would hide a table from the completeness check and
+	// let an unclassified site_id table through, which is the exact failure
+	// this guard exists to make impossible. rows.Close reports the driver's
+	// close error, never the iteration error, so both have to be read.
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("teams: inspect transfer schema: %w", err)
+	}
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("teams: inspect transfer schema: %w", err)
 	}
@@ -1195,6 +1185,12 @@ func validateSiteTransferSchema(ctx context.Context, tx *sql.Tx) error {
 				return fmt.Errorf("teams: inspect %s: %w", name, err)
 			}
 			hasSiteID = hasSiteID || column == "site_id"
+		}
+		// Stopping short of the site_id column would report the table as not
+		// site-scoped and wave the transfer through.
+		if err := columns.Err(); err != nil {
+			_ = columns.Close()
+			return fmt.Errorf("teams: inspect %s: %w", name, err)
 		}
 		if err := columns.Close(); err != nil {
 			return fmt.Errorf("teams: inspect %s: %w", name, err)

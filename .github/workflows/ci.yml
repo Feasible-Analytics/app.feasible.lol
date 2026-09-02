@@ -90,6 +90,25 @@ jobs:
 
       - run: make lint
 
+  # Known vulnerabilities in the toolchain and in dependencies, limited to the
+  # ones our code can actually reach. It is its own job so a new advisory fails
+  # loudly on the next pull request rather than being noticed at release time.
+  vulncheck:
+    name: Vulnerability check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - run: govulncheck ./...
+
   check-env:
     name: Environment contract
     runs-on: ubuntu-latest

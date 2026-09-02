@@ -262,10 +262,13 @@ export function MainGraph({ stats, metric, comparing, annotations = [] }: Props)
 				<SampledMark sampling={data.meta.sampling} />
 			</div>
 
+			{/* A group rather than an image: an image role hides everything inside
+			    it from assistive technology, and the annotation markers below are
+			    buttons a screen reader has to be able to reach. */}
 			<svg
 				width={width}
 				height={HEIGHT}
-				role="img"
+				role="group"
 				aria-label={t("dashboard.graph.aria", { metric: tileLabel(metric) })}
 				onPointerMove={(event) => {
 					const rect = event.currentTarget.getBoundingClientRect();

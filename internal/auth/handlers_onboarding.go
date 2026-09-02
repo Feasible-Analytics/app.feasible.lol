@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
@@ -98,12 +99,33 @@ func (h *Handler) onboardingStatus(w http.ResponseWriter, r *http.Request) {
 // have a Content-Security-Policy blocking the script — and those have three
 // completely different fixes.
 func (h *Handler) doVerifyInstall(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
 	site, _, ok := h.siteOr404(w, r, teams.PermManageSiteSettings)
 	if !ok {
+		return
+	}
+
+	// Every check makes this server connect to wherever the domain points and
+	// hands the status code back to whoever asked. Looped from a signed-in
+	// account that is a port scanner carrying our address, so it is bounded per
+	// site rather than per session.
+	if !h.Limiter.Allow(SubjectKey(strconv.FormatInt(site.ID, 10), "verify-install"), VerifyInstallAttempts, VerifyInstallWindow) {
+		h.Log.Warn("installation check rate limit reached", "site", site.ID, "domain", site.Domain)
+
+		p := h.newPage(r, tr(r, "auth.title.onboarding", "site", site.Label()), "sites")
+		p.Data["Site"] = site
+		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
+		p.Data["SnippetLegacy"] = SnippetLegacy(h.BaseURL, site)
+		p.Data["Platforms"] = InstallPlatforms()
+		p.Data["PollMillis"] = int(FirstEventPollInterval.Milliseconds())
+		p.Data["RoutingDelay"] = int(RoutingDelay.Seconds())
+		p.Error = i18n.T(p.Lang, "auth.error.too_many_attempts")
+
+		h.render(w, r, "onboarding", p, http.StatusTooManyRequests)
+
 		return
 	}
 
@@ -142,7 +164,7 @@ func (h *Handler) doVerifyInstall(w http.ResponseWriter, r *http.Request) {
 // coming back to it tomorrow, must not be held on this screen. A wizard with no
 // way out is a wizard people escape by closing the tab.
 func (h *Handler) doSkipOnboarding(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 

@@ -12,6 +12,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 )
 
 // TestLimiterCountsAndExpires checks the two properties the sign-in form
@@ -68,14 +70,18 @@ func TestResetClearsAKey(t *testing.T) {
 	limiter.Allow("key", 3, time.Minute)
 	limiter.Allow("key", 3, time.Minute)
 
-	if got := limiter.Remaining("key", 3, time.Minute); got != 1 {
-		t.Errorf("want 1 attempt left, got %d", got)
-	}
-
 	limiter.Reset("key")
 
-	if got := limiter.Remaining("key", 3, time.Minute); got != 3 {
-		t.Errorf("a reset key should have every attempt back, got %d", got)
+	// A reset key starts a fresh window, so the whole allowance is available
+	// again and only the attempt past it is refused.
+	for i := 0; i < 3; i++ {
+		if !limiter.Allow("key", 3, time.Minute) {
+			t.Fatalf("attempt %d after a reset should be allowed", i+1)
+		}
+	}
+
+	if limiter.Allow("key", 3, time.Minute) {
+		t.Error("a reset must give back the allowance, not remove the limit")
 	}
 }
 
@@ -88,7 +94,7 @@ func TestKeysAreIndependent(t *testing.T) {
 	request := httptest.NewRequest("POST", "/login", nil)
 	request.RemoteAddr = "203.0.113.10:54321"
 
-	source := ClientKey(request, "login")
+	source := ClientKey(request, nil, "login")
 	subject := SubjectKey("a@example.com", "login")
 
 	if source == subject {
@@ -115,17 +121,55 @@ func TestKeysAreIndependent(t *testing.T) {
 }
 
 // TestClientKeyIgnoresForwardedHeaders checks the key comes from the connection
-// rather than a header. A rate limit an attacker can bypass by writing a
-// different number in a header is worse than no limit, because it looks like
-// one.
+// when the peer is not a proxy we put there. A rate limit an attacker can
+// bypass by writing a different number in a header is worse than no limit,
+// because it looks like one.
 func TestClientKeyIgnoresForwardedHeaders(t *testing.T) {
 	request := httptest.NewRequest("POST", "/login", nil)
 	request.RemoteAddr = "203.0.113.10:54321"
 	request.Header.Set("X-Forwarded-For", "198.51.100.7")
 
-	key := ClientKey(request, "login")
-
-	if key != "login|203.0.113.10" {
+	// Nil is the default an installation gets before anything is configured,
+	// and it must trust nobody.
+	if key := ClientKey(request, nil, "login"); key != "login|203.0.113.10" {
 		t.Errorf("want the connection address, got %q", key)
+	}
+
+	elsewhere, err := clientip.ParseTrustedProxies([]string{"192.0.2.0/24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if key := ClientKey(request, elsewhere, "login"); key != "login|203.0.113.10" {
+		t.Errorf("a header from a peer that is not on the list was believed: %q", key)
+	}
+}
+
+// TestClientKeyFollowsATrustedProxy checks the other half. Behind our own
+// reverse proxy every connection arrives from the proxy's address, so a key
+// built from the socket alone would put every visitor in one bucket and let ten
+// bad passwords from anybody lock sign-in for everybody.
+func TestClientKeyFollowsATrustedProxy(t *testing.T) {
+	trusted, err := clientip.ParseTrustedProxies([]string{"203.0.113.10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest("POST", "/login", nil)
+	request.RemoteAddr = "203.0.113.10:54321"
+	request.Header.Set("X-Forwarded-For", "198.51.100.7")
+
+	if key := ClientKey(request, trusted, "login"); key != "login|198.51.100.7" {
+		t.Errorf("want the visitor behind the proxy, got %q", key)
+	}
+
+	// Two visitors behind the same proxy must land in different buckets, which
+	// is the whole point of reading the header at all.
+	other := httptest.NewRequest("POST", "/login", nil)
+	other.RemoteAddr = "203.0.113.10:54322"
+	other.Header.Set("X-Forwarded-For", "198.51.100.8")
+
+	if ClientKey(other, trusted, "login") == ClientKey(request, trusted, "login") {
+		t.Error("two visitors behind one proxy share a rate-limit bucket")
 	}
 }

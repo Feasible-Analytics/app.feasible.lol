@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 )
@@ -67,9 +68,10 @@ func (c *Cache) Refresh(ctx context.Context) error {
 	for accountID := range byAccount {
 		lease, err := c.accounts.Acquire(ctx, accountID)
 		if err != nil {
-			// One unreadable account must not blank every other account's
-			// rules. Skipping keeps the previous snapshot's entries for it,
-			// which is the safe direction: rules stay applied.
+			// The refresh is abandoned rather than published half-built, so the
+			// previous snapshot stays in force for every account. That is the
+			// safe direction: a rule the customer wrote keeps being applied
+			// rather than silently lapsing because one database was busy.
 			return fmt.Errorf("shields: refresh account %d: %w", accountID, err)
 		}
 
@@ -244,8 +246,8 @@ type Viewer struct {
 // a third-party site. It resolves through exactly the same precedence the
 // ingest tier uses, because an address resolved a different way here would be a
 // rule that does not match the traffic it was created from.
-func ResolveViewer(r *http.Request, trusted *ingest.TrustedProxies) Viewer {
-	client := ingest.ResolveClientIP(r, trusted)
+func ResolveViewer(r *http.Request, trusted *clientip.TrustedProxies) Viewer {
+	client := clientip.ResolveClientIP(r, trusted)
 
 	viewer := Viewer{Address: client.String(), Source: client.Source}
 
@@ -256,9 +258,7 @@ func ResolveViewer(r *http.Request, trusted *ingest.TrustedProxies) Viewer {
 		return viewer
 	}
 
-	addr := client.Addr.Unmap()
-
-	if addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsUnspecified() {
+	if clientip.IsPrivateOrLocal(client.Addr) {
 		viewer.Private = true
 		viewer.Warning = "auth.shields.warning_private"
 	}

@@ -92,7 +92,7 @@ export interface CallOptions {
 	signal?: AbortSignal;
 }
 
-/** Something required was missing. `code` is one of the missing_* strings. */
+/** Something required was missing or unusable. `code` says which. */
 export declare class FeasibleValidationError extends Error {
 	readonly name: "FeasibleValidationError";
 	readonly field: string;
@@ -101,7 +101,9 @@ export declare class FeasibleValidationError extends Error {
 		| "missing_name"
 		| "missing_url"
 		| "missing_client_ip"
-		| "missing_user_agent";
+		| "missing_user_agent"
+		| "invalid_revenue_amount"
+		| "invalid_revenue_currency";
 	readonly reason: string;
 }
 

@@ -109,8 +109,9 @@ type Meta struct {
 	// reads that.
 	Sampling *Sampling `json:"sampling,omitempty"`
 
-	// Sources names where the data came from — raw tables today, and a mix of
-	// raw and roll-up once summaries exist.
+	// Sources names where the data came from: "raw", "rollup", or both when
+	// the finished days were read from a summary and today from the fact
+	// tables.
 	Sources []string `json:"sources"`
 
 	// ImportGaps names what imported history could not answer, and how much of

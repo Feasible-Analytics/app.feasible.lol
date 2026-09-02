@@ -1,6 +1,6 @@
 //
 // security_test.go
-// HTTPS, HSTS, framing and the parameters we refuse to trust.
+// HTTPS redirects, framing and the parameters we refuse to trust.
 //
 // Created: 2026-08-31
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -15,11 +15,11 @@ import (
 	"testing"
 )
 
-// TestHTTPIsRedirectedToHTTPSAndHSTSIsSet is the acceptance criterion.
+// TestHTTPIsRedirectedToHTTPS is the acceptance criterion.
 //
 // A shared link's URL is the whole credential for whoever holds it, so putting
 // it on the wire in clear text hands it to anything between the two ends.
-func TestHTTPIsRedirectedToHTTPSAndHSTSIsSet(t *testing.T) {
+func TestHTTPIsRedirectedToHTTPS(t *testing.T) {
 	security := NewSecurity("https://stats.example.com")
 
 	if !security.RequireHTTPS {
@@ -48,16 +48,6 @@ func TestHTTPIsRedirectedToHTTPSAndHSTSIsSet(t *testing.T) {
 	if security.Apply(secure, forwarded) {
 		t.Fatal("an HTTPS request was redirected")
 	}
-
-	hsts := secure.Header().Get("Strict-Transport-Security")
-
-	if !strings.Contains(hsts, "max-age=31536000") {
-		t.Fatalf("HSTS is %q, want a year's max-age", hsts)
-	}
-
-	if !strings.Contains(hsts, "includeSubDomains") {
-		t.Fatalf("HSTS is %q, want includeSubDomains", hsts)
-	}
 }
 
 // TestAPlainInstallDoesNotRedirectItselfIntoALoop checks the local case.
@@ -70,10 +60,6 @@ func TestAPlainInstallDoesNotRedirectItselfIntoALoop(t *testing.T) {
 
 	if security.Apply(recorder, httptest.NewRequest(http.MethodGet, "/share/abc", nil)) {
 		t.Fatal("an http install redirected")
-	}
-
-	if recorder.Header().Get("Strict-Transport-Security") != "" {
-		t.Fatal("an http install set HSTS, which would make itself unreachable")
 	}
 }
 

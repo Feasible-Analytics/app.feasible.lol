@@ -22,6 +22,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/geo"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/referrer"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/salts"
@@ -47,14 +48,15 @@ var AcquisitionParams = []string{
 var clickIDParams = []string{referrer.ClickIDGoogle, referrer.ClickIDMicrosoft}
 
 // IPShield decides whether a customer has blocked an address. It is an
-// interface with a no-op default because the rule snapshot is injected, but
-// the check has to run here: this is the only place the raw IP still exists.
+// interface, nil when an install has no rules, because the rule snapshot is
+// injected — but the check has to run here: this is the only place the raw IP
+// still exists.
 type IPShield interface {
 	Blocked(siteID int64, addr netip.Addr) bool
 }
 
 // HostnamePolicy validates the page host against additive hostnames configured
-// for the claimed site.
+// for the claimed site. It is nil when an install has none.
 type HostnamePolicy interface {
 	AllowsHostname(siteID int64, hostname string) bool
 }
@@ -72,20 +74,6 @@ type SaltSource interface {
 	Pair(context.Context) (salts.Pair, error)
 }
 
-// NoShield allows everything. It is the default so that an install with no
-// shield rules configured costs one interface call rather than a nil check on
-// the hot path.
-type NoShield struct{}
-
-// Blocked always allows.
-func (NoShield) Blocked(int64, netip.Addr) bool { return false }
-
-// NoHostnamePolicy adds no hostnames beyond the site's registered domain.
-type NoHostnamePolicy struct{}
-
-// AllowsHostname reports no additive hostname rule.
-func (NoHostnamePolicy) AllowsHostname(int64, string) bool { return false }
-
 // Pipeline turns an HTTP request into a derived event. Everything it needs is
 // injected, because every one of these is a different licensing, deployment or
 // performance decision and none of them should be reachable from a call site.
@@ -95,7 +83,7 @@ type Pipeline struct {
 	Geo       geo.Locator
 	Agents    *useragent.Cache
 	Bots      *BotFilter
-	Trusted   *TrustedProxies
+	Trusted   *clientip.TrustedProxies
 	Shards    ShardResolver
 	Shield    IPShield
 	Hostnames HostnamePolicy
@@ -115,7 +103,17 @@ type Pipeline struct {
 // Debug is what X-Debug-Request returns: the resolved IP and every derived
 // field. It exists so anyone can debug their proxy in one curl, rather than
 // filing a ticket about numbers that look wrong for a reason only we can see.
+//
+// The endpoint is open to any page on the internet, so what it answers is
+// scoped to the caller's own request. The fingerprints below are the caller's,
+// derived from the address and agent they sent and salted per domain, so they
+// are answered: "why is one visitor counted as two" is the question the view
+// exists for. The account id is not the caller's, and probing several domains
+// with it would map which sites one customer owns, so it stays internal.
 type Debug struct {
+	// ClientIP is answered to the caller and goes no further: the observer
+	// receives this view with the address blanked, because the IP address
+	// never reaches disk.
 	ClientIP       string `json:"client_ip"`
 	ClientIPSource string `json:"client_ip_source"`
 	TrustedProxy   bool   `json:"trusted_proxy_configured"`
@@ -128,7 +126,7 @@ type Debug struct {
 	SiteDomain string `json:"site_domain"`
 
 	SiteID    int64 `json:"site_id"`
-	AccountID int64 `json:"account_id"`
+	AccountID int64 `json:"-"`
 	Shard     int   `json:"shard"`
 
 	EventName string `json:"event_name"`
@@ -187,22 +185,24 @@ type Result struct {
 // Derive runs the whole pipeline in the order that is correct, which is not the
 // order that is convenient. The sequence below is the specification:
 //
-//  2. resolve the client IP
+//  1. resolve the client IP, and start the debug view — it is filled as each
+//     step produces a field rather than only on the way out, because a debug
+//     request has to answer "why did this not count" with everything derived
+//     up to the drop
+//  2. parse the URL, and the referrer against its hostname
 //  3. bot filter — user agent, datacentre ranges, referrer spam
-//  4. build the debug view, which is filled as each step below produces a
-//     field rather than only on the way out — a debug request has to answer
-//     "why did this not count" with everything derived up to the drop
+//  4. resolve the site, record the hostname advisory while the original URL
+//     exists, and check the account is live and routed
 //  5. IP shield rules — here, because it is the last place the raw IP exists
 //  6. parse the user agent
 //  7. geolocate, then discard the IP
 //  8. compute the fingerprint
-//  9. parse the URL and the acquisition parameters
-//  10. parse the referrer
-//  11. derive the channel
+//  9. parse the properties and revenue
+//  10. resolve the acquisition parameters and the channel
 //
-// Steps 1 and 12 onward belong to the handler and writer. This layer records a
-// hostname advisory while the original URL exists; the writer applies the live
-// authoritative hostname, country, and page policy in the fact transaction.
+// Reading the request and writing the row belong to the handler and writer.
+// The writer applies the live authoritative hostname, country, and page policy
+// in the fact transaction.
 func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload) (Result, error) {
 	var result Result
 
@@ -228,9 +228,9 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 		return !debug
 	}
 
-	// Step 2. The single highest-leverage configuration in the system, and the
+	// Step 1. The single highest-leverage configuration in the system, and the
 	// one that fails silently behind a 202 in every direction.
-	client := ResolveClientIP(r, p.Trusted)
+	client := clientip.ResolveClientIP(r, p.Trusted)
 	clientIP := client.String()
 
 	rawUserAgent := r.Header.Get("User-Agent")
@@ -251,8 +251,8 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 		referrerInput = payload.OverrideReferrer
 	}
 
-	// Step 9, in part: the hostname is needed by the referrer parser to tell an
-	// internal link from an acquisition.
+	// Step 2. The hostname is needed by the referrer parser to tell an internal
+	// link from an acquisition.
 	pageURL, hostname, pathname, params, urlTruncated := parseEventURL(payload.URL)
 	actualURLValid := validEventURL(pageURL)
 	result.Truncation.URLTruncated = urlTruncated
@@ -270,6 +270,7 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 	botReason := p.classify(rawUserAgent, client.Addr, source.Referrer)
 	result.Debug.BotReason = botReason
 
+	// Step 4.
 	site, known := p.Sites.Lookup(payload.Domain)
 	if !known && stop(ReasonUnknownSite) {
 		return result, nil
@@ -278,8 +279,10 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 	// The public tier records an advisory decision while the original URL still
 	// exists. Known sites continue to the writer, which claims the UUID and
 	// applies the live authoritative rule in the same transaction as its count.
+	// The additive list is consulted only when the default rule said no: it is
+	// the rare case, and the lookup is the expensive half.
 	hostnameAllowed := known && hostnameClaimsDomain(hostname, site.Domain)
-	if known && p.Hostnames != nil && p.Hostnames.AllowsHostname(site.ID, hostname) {
+	if !hostnameAllowed && known && p.Hostnames != nil && p.Hostnames.AllowsHostname(site.ID, hostname) {
 		hostnameAllowed = true
 	}
 	if !actualURLValid || !hostnameAllowed {
@@ -330,7 +333,6 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 		stop(ReasonInternalError)
 		return result, fmt.Errorf("%w: %v", ErrSaltUnavailable, err)
 	}
-	defer pair.Erase()
 
 	// The third term is the domain the routing map is keyed by, never the raw
 	// "d" field. A site whose pages disagree about their own spelling —
@@ -356,7 +358,7 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 	result.Debug.RootDomain = rootDomain
 	result.Debug.SaltDay = pair.Day
 
-	// A props object we cannot read is a drop with a reason rather than a 4xx.
+	// Step 9. A props object we cannot read is a drop with a reason rather than a 4xx.
 	// The sender is a beacon: a status code it cannot act on produces a retry
 	// that fails in exactly the same way.
 	props, propTruncation, err := ParseProps(payload.Props)
@@ -378,7 +380,7 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 	engagement, clamped := payload.EngagementTime()
 	result.Truncation.EngagementClamped = clamped
 
-	// Steps 10 and 11. The acquisition tags win over the referrer when they are
+	// Step 10. The acquisition tags win over the referrer when they are
 	// present, because somebody set them deliberately.
 	acquisition := resolveAcquisition(params, payload, source)
 
@@ -435,17 +437,10 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 		Props:   props,
 		Revenue: revenue,
 	}
-	if result.DropReason == ReasonHostnameNotAllowed {
-		event.RejectReason = ReasonHostnameNotAllowed
-	}
 
 	result.Event = event
 	fillDebug(&result.Debug, event, pair.Day, rootDomain, location.Subdivision2)
 	result.Debug.Truncation = result.Truncation
-
-	// pageURL is kept only so the debug view can show what we parsed. It is not
-	// stored: full-URL capture is an opt-in setting at the account writer.
-	_ = pageURL
 
 	return result, nil
 }
@@ -606,6 +601,10 @@ func resolveAcquisition(params url.Values, payload *Payload, source referrer.Res
 // acquisition ones is stripped from the stored path, because a site that puts
 // an email address or a session token in its query string must not have us keep
 // it — and the customer cannot un-store it afterwards.
+//
+// A fragment is kept as part of the path. The tracker only ever sends one in
+// hash-routing mode, where "#/about" is the page, so its presence is the
+// signal; dropping it would store every route of such a site as "/".
 func parseEventURL(raw string) (parsed *url.URL, hostname, pathname string, params url.Values, truncated bool) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed == nil {
@@ -623,6 +622,9 @@ func parseEventURL(raw string) (parsed *url.URL, hostname, pathname string, para
 	pathname = parsed.EscapedPath()
 	if pathname == "" {
 		pathname = "/"
+	}
+	if parsed.Fragment != "" {
+		pathname += "#" + parsed.EscapedFragment()
 	}
 
 	// A trailing slash on anything but the root splits one page into two rows

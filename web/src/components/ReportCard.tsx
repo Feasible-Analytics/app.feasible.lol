@@ -289,6 +289,19 @@ export function ReportCard({
 				>
 					{t("dashboard.card.details")}
 				</button>
+
+				{/* The geolocation database is licensed on the condition that its
+				    maker is credited wherever its data is shown. */}
+				{card.attribution && (
+					<a
+						href={card.attribution.href}
+						target="_blank"
+						rel="noopener noreferrer"
+						className="ml-auto text-[11px] text-faint transition-colors duration-150 ease-[var(--ease-ui)] hover:text-muted"
+					>
+						{t(card.attribution.labelId)}
+					</a>
+				)}
 			</footer>
 		</section>
 	);

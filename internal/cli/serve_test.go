@@ -172,7 +172,15 @@ func newStack(t *testing.T) *stack {
 
 	com := buildCommerce(e, control, manager, service.Sites, mailer)
 
-	app, err := buildApp(e, control, manager, service, secret, mailer, com.Gate, com.Purger)
+	// The site rules are built the way serve builds them: the application reads
+	// the proxy allow-list off them, and the site configuration screens are
+	// mounted through them, which is what they are wrapped in under test.
+	site, err := buildSiteRules(ctx, e, service, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app, err := buildApp(e, control, manager, service, site, secret, mailer, com.Gate, com.Purger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,13 +203,6 @@ func newStack(t *testing.T) *stack {
 	}
 
 	public := buildPublic(e, control, service.Sites, manager, com.Gate)
-
-	// The site configuration screens are mounted the way serve mounts them,
-	// because what they are wrapped in is the thing under test here.
-	site, err := buildSiteRules(ctx, e, service, manager)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	data := buildData(e, control, manager, service, site)
 
@@ -616,7 +617,7 @@ func TestStatsCapabilitiesAreRevalidatedThroughTheAssembledRoute(t *testing.T) {
 		t.Fatalf("published site stats answered %d: %s", response.Code, response.Body.String())
 	}
 
-	if err := shares.SetPublic(ctx, 1, false); err != nil {
+	if err := shares.SetPublicForOwner(ctx, 1, lockedTeam, false); err != nil {
 		t.Fatal(err)
 	}
 	response = s.send(t, http.MethodPost, "/api/stats/example.com/query", body, map[string]string{
@@ -627,7 +628,7 @@ func TestStatsCapabilitiesAreRevalidatedThroughTheAssembledRoute(t *testing.T) {
 		t.Fatalf("private site direct stats answered %d, want 404: %s", response.Code, response.Body.String())
 	}
 
-	link, err := shares.CreateLink(ctx, 1, "temporary", "", 0, 1)
+	link, err := shares.CreateLinkForOwner(ctx, 1, lockedTeam, "temporary", "", 0, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -639,7 +640,7 @@ func TestStatsCapabilitiesAreRevalidatedThroughTheAssembledRoute(t *testing.T) {
 		t.Fatalf("live shared stats answered %d: %s", response.Code, response.Body.String())
 	}
 
-	if err := shares.RevokeLink(ctx, 1, link.ID); err != nil {
+	if err := shares.RevokeLinkForOwner(ctx, 1, lockedTeam, link.ID); err != nil {
 		t.Fatal(err)
 	}
 	response = s.send(t, http.MethodPost, "/api/stats/example.com/query", body, map[string]string{
@@ -650,7 +651,7 @@ func TestStatsCapabilitiesAreRevalidatedThroughTheAssembledRoute(t *testing.T) {
 		t.Fatalf("revoked link direct stats answered %d, want 404: %s", response.Code, response.Body.String())
 	}
 
-	protected, err := shares.CreateLink(ctx, 1, "protected", "hunter2", 0, 1)
+	protected, err := shares.CreateLinkForOwner(ctx, 1, lockedTeam, "protected", "hunter2", 0, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -836,5 +837,48 @@ func TestAnActiveAccountIsUnaffectedEverywhere(t *testing.T) {
 				t.Fatalf("a paying account was told it is not paying: %s", response.Body.String())
 			}
 		})
+	}
+}
+
+// TestTheListenerDefaultsToSafeHeadersAndOnlyAnEmbedRelaxesThem checks the
+// headers through the assembled route table, because the middleware and the
+// one page allowed to take a header back only meet there.
+func TestTheListenerDefaultsToSafeHeadersAndOnlyAnEmbedRelaxesThem(t *testing.T) {
+	s := newStack(t)
+
+	page := s.send(t, http.MethodGet, "/dashboard/", "", s.signedInForm())
+	if page.Code != http.StatusOK {
+		t.Fatalf("the signed-in dashboard answered %d", page.Code)
+	}
+
+	for name, want := range map[string]string{
+		"X-Frame-Options":        "DENY",
+		"X-Content-Type-Options": "nosniff",
+		"Referrer-Policy":        "same-origin",
+	} {
+		if got := page.Header().Get(name); got != want {
+			t.Errorf("signed-in page %s = %q, want %q", name, got, want)
+		}
+	}
+
+	if page.Header().Get("Strict-Transport-Security") != "" {
+		t.Error("an http base URL produced HSTS, which would lock browsers out of the install")
+	}
+
+	embed := s.send(t, http.MethodGet, "/public/example.com?embed=true", "", nil)
+	if embed.Code != http.StatusOK {
+		t.Fatalf("the public embed answered %d", embed.Code)
+	}
+
+	if got := embed.Header().Get("X-Frame-Options"); got != "" {
+		t.Errorf("the embed carries X-Frame-Options %q, so the iframe would be blank", got)
+	}
+
+	if !strings.Contains(embed.Header().Get("Content-Security-Policy"), "frame-ancestors *") {
+		t.Error("the embed did not open frame-ancestors")
+	}
+
+	if embed.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("relaxing framing on the embed dropped the other defaults")
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
@@ -549,7 +550,7 @@ func ipSourceShare(sources []Seen) (socket, total int64) {
 	for _, source := range sources {
 		total += source.Count
 
-		if source.Value == ingest.SourceSocket {
+		if source.Value == clientip.SourceSocket {
 			socket += source.Count
 		}
 	}

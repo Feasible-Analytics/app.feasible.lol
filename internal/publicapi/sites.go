@@ -9,13 +9,14 @@
 package publicapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"html"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/destructive"
@@ -33,13 +34,31 @@ var (
 	memberRoles = []string{"admin", "editor", "billing", "viewer"}
 )
 
+// readBody reads a request body up to the limit. A body over the limit is
+// refused as too large rather than truncated: a truncated body that then fails
+// to parse would be reported as bad JSON, which names the wrong problem.
+func (a *API) readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			a.fail(w, http.StatusRequestEntityTooLarge, "the request body is larger than "+strconv.Itoa(MaxBodyBytes)+" bytes")
+			return nil, false
+		}
+
+		a.fail(w, http.StatusBadRequest, "could not read the request body")
+		return nil, false
+	}
+
+	return body, true
+}
+
 // decodeBody reads a JSON request body into a target, refusing anything it does
 // not recognise. A misspelt field that is silently ignored is a setting that
 // never applied and a support ticket nobody can reproduce.
 func (a *API) decodeBody(w http.ResponseWriter, r *http.Request, target any) bool {
-	body, err := io.ReadAll(io.LimitReader(r.Body, MaxBodyBytes))
-	if err != nil {
-		a.fail(w, http.StatusBadRequest, "could not read the request body")
+	body, ok := a.readBody(w, r)
+	if !ok {
 		return false
 	}
 
@@ -193,7 +212,9 @@ type createSiteRequest struct {
 	Timezone    string `json:"timezone"`
 }
 
-// handleCreateSite registers a domain.
+// handleCreateSite registers a domain. It decodes the body and hands the rest
+// to NewSite, the same function the MCP tool calls, so a site created over
+// HTTP and one created by an assistant cannot differ.
 func (a *API) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 	key, ok := KeyFrom(r.Context())
 	if !ok {
@@ -213,47 +234,26 @@ func (a *API) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	domain, err := validateDomain(request.Domain)
+	site, err := a.NewSite(r.Context(), key, request.Domain, request.DisplayName, request.Timezone)
 	if err != nil {
-		a.refuse(w, err)
+		a.answerSiteError(w, "create site", err)
 		return
 	}
-
-	timezone := strings.TrimSpace(request.Timezone)
-	if timezone == "" {
-		timezone = "Etc/UTC"
-	}
-
-	if _, err := time.LoadLocation(timezone); err != nil {
-		a.fail(w, http.StatusBadRequest,
-			"timezone must be an IANA name such as America/Los_Angeles, not "+strconv.Quote(timezone))
-		return
-	}
-
-	site, err := a.System.CreateSite(r.Context(), key.TeamID, domain, request.DisplayName, timezone)
-	if err != nil {
-		a.answerStoreError(w, "create site", err)
-		return
-	}
-	if a.ProvisionSite != nil {
-		if err := a.ProvisionSite(r.Context(), key.TeamID, site.ID); err != nil {
-			a.answerStoreError(w, "provision site defaults", err)
-			return
-		}
-	}
-
-	// The routing snapshot is rebuilt immediately rather than at the next
-	// refresh, so that a script installed the moment after this call returns is
-	// already accepting events. Waiting out the refresh interval looks exactly
-	// like a broken snippet to whoever just installed it.
-	a.refreshSites(r)
-
-	// A site created programmatically is the event an agency's own automation
-	// hangs off — provisioning a client, kicking off onboarding — so it is
-	// published rather than left as something only our database knows.
-	a.publish(r, key.TeamID, siteCreatedEvent(site))
 
 	a.write(w, http.StatusCreated, site)
+}
+
+// answerSiteError maps a NewSite or EditSite failure onto a status: a
+// parameter the caller wrote is a 400 with its sentence, and anything else is
+// a store error.
+func (a *API) answerSiteError(w http.ResponseWriter, what string, err error) {
+	var param *paramError
+	if errors.As(err, &param) {
+		a.fail(w, http.StatusBadRequest, param.message)
+		return
+	}
+
+	a.answerStoreError(w, what, err)
 }
 
 // siteCreatedEvent builds the webhook payload for a new site. It is one
@@ -291,33 +291,20 @@ func validateDomain(raw string) (string, error) {
 	return domain, nil
 }
 
-// refreshSites rebuilds the routing snapshot after a write that changed it.
+// refreshSites rebuilds the routing snapshot after a write that changed it,
+// immediately rather than at the next refresh, so a script installed the
+// moment after the call returns is already accepting events.
 //
 // A failure is logged rather than returned: the write already succeeded, and
 // telling the caller their site was not created because a cache refresh failed
 // would be a lie that makes them create it twice.
-func (a *API) refreshSites(r *http.Request) {
+func (a *API) refreshSites(ctx context.Context) {
 	if a.Sites == nil {
 		return
 	}
 
-	if err := a.Sites.Refresh(r.Context()); err != nil && a.Log != nil {
+	if err := a.Sites.Refresh(ctx); err != nil && a.Log != nil {
 		a.Log.Error("site cache refresh failed after a provisioning write", "error", err)
-	}
-}
-
-// publish sends a webhook event, if webhooks are wired in.
-//
-// It never blocks and never fails the request that produced it: publishing
-// writes rows and returns, and a webhook that could not be queued must not undo
-// a site that was created.
-func (a *API) publish(r *http.Request, teamID int64, event webhooks.Event) {
-	if a.Dispatcher == nil {
-		return
-	}
-
-	if _, err := a.Dispatcher.Publish(r.Context(), teamID, event); err != nil && a.Log != nil {
-		a.Log.Error("webhook publish failed", "event", event.Type, "error", err)
 	}
 }
 
@@ -397,31 +384,11 @@ func (a *API) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if request.Domain != nil {
-		domain, err := validateDomain(*request.Domain)
-		if err != nil {
-			a.refuse(w, err)
-			return
-		}
-		request.Domain = &domain
-	}
-
-	if request.Timezone != nil {
-		if _, err := time.LoadLocation(*request.Timezone); err != nil {
-			a.fail(w, http.StatusBadRequest,
-				"timezone must be an IANA name such as America/Los_Angeles, not "+strconv.Quote(*request.Timezone))
-			return
-		}
-	}
-
-	record, err := a.System.UpdateSite(r.Context(), key.TeamID, site.ID,
-		request.Domain, request.DisplayName, request.Timezone, request.IsPublic)
+	record, err := a.EditSite(r.Context(), key, site, request.Domain, request.DisplayName, request.Timezone, request.IsPublic)
 	if err != nil {
-		a.answerStoreError(w, "update site", err)
+		a.answerSiteError(w, "update site", err)
 		return
 	}
-
-	a.refreshSites(r)
 
 	a.write(w, http.StatusOK, record)
 }
@@ -453,7 +420,7 @@ func (a *API) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.refreshSites(r)
+	a.refreshSites(r.Context())
 
 	a.write(w, http.StatusOK, map[string]any{"deleted": true, "domain": site.Domain})
 }
@@ -516,6 +483,9 @@ func (a *API) handleUpdateTracker(w http.ResponseWriter, r *http.Request) {
 //
 // The options are carried as data attributes rather than baked into a per-site
 // URL, because a snippet somebody can read and edit is a snippet they can debug.
+// Every value is escaped: a quote in an excluded-pages pattern would otherwise
+// end the attribute early and hand the customer a snippet that silently
+// tracks with the wrong settings.
 func trackerSnippet(baseURL, domain string, config *TrackerConfig) string {
 	if baseURL == "" {
 		baseURL = "https://feasible.lol"
@@ -523,11 +493,11 @@ func trackerSnippet(baseURL, domain string, config *TrackerConfig) string {
 
 	attributes := []string{
 		`defer`,
-		`data-domain="` + domain + `"`,
+		`data-domain="` + html.EscapeString(domain) + `"`,
 	}
 
 	if config.APIEndpoint != "" {
-		attributes = append(attributes, `data-api="`+config.APIEndpoint+`"`)
+		attributes = append(attributes, `data-api="`+html.EscapeString(config.APIEndpoint)+`"`)
 	}
 	// Each flag carries an explicit value, and the localhost one carries the
 	// hyphenated name. The script reads a flag with `getAttribute`, which hands
@@ -544,14 +514,14 @@ func trackerSnippet(baseURL, domain string, config *TrackerConfig) string {
 		attributes = append(attributes, `data-capture-on-localhost="true"`)
 	}
 	if config.ExcludedPages != "" {
-		attributes = append(attributes, `data-exclude="`+config.ExcludedPages+`"`)
+		attributes = append(attributes, `data-exclude="`+html.EscapeString(config.ExcludedPages)+`"`)
 	}
 	if config.FileTypes != "" {
-		attributes = append(attributes, `data-file-types="`+config.FileTypes+`"`)
+		attributes = append(attributes, `data-file-types="`+html.EscapeString(config.FileTypes)+`"`)
 	}
 
 	return `<script ` + strings.Join(attributes, " ") + ` src="` +
-		strings.TrimRight(baseURL, "/") + `/js/script.js"></script>`
+		html.EscapeString(strings.TrimRight(baseURL, "/")) + `/js/script.js"></script>`
 }
 
 // handleListCustomProps lists a site's allowed properties.
@@ -564,13 +534,12 @@ func (a *API) handleListCustomProps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var properties any
-	var err error
-	if a.CustomProperties != nil {
-		properties, err = a.CustomProperties.ListProperties(r.Context(), site.ID)
-	} else {
-		properties, err = a.System.CustomProperties(r.Context(), site.ID)
+	if a.CustomProperties == nil {
+		a.notImplemented(w, "custom properties")
+		return
 	}
+
+	properties, err := a.CustomProperties.ListProperties(r.Context(), site.ID)
 	if err != nil {
 		a.answerStoreError(w, "custom properties", err)
 		return
@@ -625,13 +594,13 @@ func (a *API) handleCreateCustomProp(w http.ResponseWriter, r *http.Request) {
 	if scope == "" {
 		scope = "event"
 	}
-	var property any
-	var err error
-	if a.CustomProperties != nil {
-		property, err = a.CustomProperties.CreateProperty(r.Context(), site.ID, name, scope)
-	} else {
-		property, err = a.System.AddCustomProperty(r.Context(), site.ID, name)
+
+	if a.CustomProperties == nil {
+		a.notImplemented(w, "custom properties")
+		return
 	}
+
+	property, err := a.CustomProperties.CreateProperty(r.Context(), site.ID, name, scope)
 	if err != nil {
 		a.answerStoreError(w, "add custom property", err)
 		return
@@ -652,13 +621,12 @@ func (a *API) handleDeleteCustomProp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var err error
-	if a.CustomProperties != nil {
-		err = a.CustomProperties.DeleteProperty(r.Context(), site.ID, id)
-	} else {
-		err = a.System.DeleteCustomProperty(r.Context(), site.ID, id)
+	if a.CustomProperties == nil {
+		a.notImplemented(w, "custom properties")
+		return
 	}
-	if err != nil {
+
+	if err := a.CustomProperties.DeleteProperty(r.Context(), site.ID, id); err != nil {
 		a.answerStoreError(w, "delete custom property", err)
 		return
 	}

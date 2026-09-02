@@ -615,9 +615,9 @@ type DeletionGuard struct {
 }
 
 // BeginDeletion creates the durable tombstone, drains every shared account
-// lease in every process, and detaches this manager's cached handle. The handle
-// remains available through Account until CloseAccount is called, allowing a
-// purger to inventory shard-owned global artifacts under the exclusive fence.
+// lease in every process, and closes this manager's cached handle. The guard it
+// returns holds no handle: a purger that needs to inventory the shard reopens it
+// through OpenAccount, under the exclusive fence.
 func (m *Manager) BeginDeletion(id int64) (*DeletionGuard, error) {
 	if id < 1 {
 		return nil, fmt.Errorf("account id %d is not valid", id)
@@ -647,20 +647,9 @@ func (m *Manager) BeginDeletion(id int64) (*DeletionGuard, error) {
 			_ = unlock(file)
 			return nil, err
 		}
-		account = nil
 	}
 
-	return &DeletionGuard{manager: m, id: id, file: file, lifetime: lifetime, account: account}, nil
-}
-
-// Account returns the detached account handle, when this process had one open.
-// A nil result means the purger should open the on-disk database directly if it
-// needs to inventory legacy artifact paths.
-func (g *DeletionGuard) Account() *Account {
-	if g == nil {
-		return nil
-	}
-	return g.account
+	return &DeletionGuard{manager: m, id: id, file: file, lifetime: lifetime}, nil
 }
 
 // OpenAccount returns the detached handle or opens an existing shard while the
@@ -887,8 +876,17 @@ func Discover(dataDir string) ([]int64, error) {
 			continue
 		}
 
+		// A directory with no database in it is an account that has not been
+		// opened yet, and is not this function's business. Any other failure is
+		// reported: the migration and backup commands walk this list, and an
+		// account skipped for an unreadable file would be reported as migrated
+		// or backed up when it was neither.
 		if _, err := os.Stat(Path(dataDir, id)); err != nil {
-			continue
+			if os.IsNotExist(err) {
+				continue
+			}
+
+			return nil, fmt.Errorf("inspect account %d database: %w", id, err)
 		}
 
 		ids = append(ids, id)

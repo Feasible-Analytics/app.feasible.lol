@@ -65,7 +65,7 @@ func TestCSRFAcceptsAFormFieldAndAHeader(t *testing.T) {
 	form.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	form.AddCookie(cookie)
 
-	if !h.checkCSRF(httptest.NewRecorder(), form) {
+	if !h.CheckFormToken(httptest.NewRecorder(), form) {
 		t.Error("a matching form field should be accepted")
 	}
 
@@ -74,7 +74,7 @@ func TestCSRFAcceptsAFormFieldAndAHeader(t *testing.T) {
 	json.Header.Set(csrfHeader, "a-token")
 	json.AddCookie(cookie)
 
-	if !h.checkCSRF(httptest.NewRecorder(), json) {
+	if !h.CheckFormToken(httptest.NewRecorder(), json) {
 		t.Error("a matching header should be accepted")
 	}
 }
@@ -92,7 +92,7 @@ func TestCSRFRefusesWhatItShould(t *testing.T) {
 	// No cookie at all.
 	none := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(""))
 
-	if h.checkCSRF(httptest.NewRecorder(), none) {
+	if h.CheckFormToken(httptest.NewRecorder(), none) {
 		t.Error("a request with no CSRF cookie should be refused")
 	}
 
@@ -103,7 +103,7 @@ func TestCSRFRefusesWhatItShould(t *testing.T) {
 	forged.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	forged.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "chosen"})
 
-	if h.checkCSRF(httptest.NewRecorder(), forged) {
+	if h.CheckFormToken(httptest.NewRecorder(), forged) {
 		t.Error("an unsigned CSRF cookie should be refused")
 	}
 
@@ -115,7 +115,7 @@ func TestCSRFRefusesWhatItShould(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 
-	if h.checkCSRF(recorder, mismatched) {
+	if h.CheckFormToken(recorder, mismatched) {
 		t.Error("a mismatched token should be refused")
 	}
 

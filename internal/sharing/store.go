@@ -14,14 +14,13 @@
 // password-protected dashboard cannot be embedded in an iframe, because making
 // the password form work cross-origin means serving it without X-Frame-Options,
 // which makes it clickjackable — a page that looks like a document but is
-// actually a login sitting invisibly under somebody's cursor. The incumbent
-// shipped this and then removed it for exactly that reason. We refuse the
+// actually a login sitting invisibly under somebody's cursor. We refuse the
 // combination in Embeddable rather than building it and regretting it.
 package sharing
 
 import (
 	"context"
-	"crypto/hmac"
+	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -56,8 +55,17 @@ const (
 	// PasswordAttemptLimit bounds expensive derivations for one source and link.
 	PasswordAttemptLimit = 6
 
+	// PasswordLinkAttemptLimit bounds guesses at one link from every source
+	// together. Per-source budgets stop one address from hammering a link;
+	// this stops an attacker who has many addresses from doing the same.
+	PasswordLinkAttemptLimit = 60
+
 	// PasswordAttemptWindow resets a source's per-link budget.
 	PasswordAttemptWindow = 15 * time.Minute
+
+	// linkBudgetSource is the source key the per-link ceiling is counted
+	// under. Real source keys are hex, so it can never collide with one.
+	linkBudgetSource = "*"
 )
 
 // The failures a caller must be able to tell apart.
@@ -141,39 +149,16 @@ func (s *Store) now() time.Time {
 	return s.Now().UTC()
 }
 
-// SetPublic turns a site's fully public dashboard on or off. It is a single
+// SetPublicForOwner turns a site's fully public dashboard on or off, but only
+// while the expected team still owns the site, so a settings request that
+// raced a transfer cannot publish the new owner's numbers. It is a single
 // boolean rather than a token because "public" means exactly that: the site's
 // numbers are readable by anybody who knows the domain, at a stable URL that
 // can be linked to from a blog post and will still work next year.
-func (s *Store) SetPublic(ctx context.Context, siteID int64, public bool) error {
-	return s.setPublic(ctx, siteID, 0, public)
-}
-
-// SetPublicForOwner changes publication only while the expected team owns the
-// site, fencing a stale settings request against transfer.
 func (s *Store) SetPublicForOwner(ctx context.Context, siteID, expectedOwnerTeamID int64, public bool) error {
-	return s.setPublic(ctx, siteID, expectedOwnerTeamID, public)
-}
-
-// setPublic applies the optional ownership fence and updates publication state.
-func (s *Store) setPublic(ctx context.Context, siteID, expectedOwnerTeamID int64, public bool) error {
 	value := 0
 	if public {
 		value = 1
-	}
-
-	if expectedOwnerTeamID == 0 {
-		result, err := s.db.ExecContext(ctx, `
-			UPDATE sites SET is_public = ?, updated_at = ? WHERE id = ?
-		`, value, s.now().Unix(), siteID)
-		if err != nil {
-			return fmt.Errorf("sharing: set public: %w", err)
-		}
-		if affected, _ := result.RowsAffected(); affected == 0 {
-			return ErrNotFound
-		}
-
-		return nil
 	}
 
 	tx, err := s.ownerMutation(ctx, siteID, expectedOwnerTeamID)
@@ -218,22 +203,11 @@ func (s *Store) PublicSite(ctx context.Context, domain string) (Link, error) {
 	return link, nil
 }
 
-// CreateLink mints a shared link. The password is optional; when it is set the
-// link is permanently non-embeddable, which the caller is told by Embeddable
-// rather than discovering when the iframe is blank.
-func (s *Store) CreateLink(ctx context.Context, siteID int64, name, password string, segmentID, createdBy int64) (Link, error) {
-	return s.createLink(ctx, siteID, 0, name, password, segmentID, createdBy)
-}
-
-// CreateLinkForOwner mints a credential only while the expected owner remains
-// current at the write boundary.
+// CreateLinkForOwner mints a shared link, but only while the expected team
+// still owns the site at the moment of the write. The password is optional;
+// when it is set the link is permanently non-embeddable, which the caller is
+// told by Embeddable rather than discovering when the iframe is blank.
 func (s *Store) CreateLinkForOwner(ctx context.Context, siteID, expectedOwnerTeamID int64,
-	name, password string, segmentID, createdBy int64) (Link, error) {
-	return s.createLink(ctx, siteID, expectedOwnerTeamID, name, password, segmentID, createdBy)
-}
-
-// createLink builds a link and applies an optional owner-fenced insert.
-func (s *Store) createLink(ctx context.Context, siteID, expectedOwnerTeamID int64,
 	name, password string, segmentID, createdBy int64) (Link, error) {
 	if segmentID != 0 {
 		if _, err := s.SegmentFilters(ctx, siteID, segmentID); err != nil {
@@ -273,20 +247,6 @@ func (s *Store) createLink(ctx context.Context, siteID, expectedOwnerTeamID int6
 	var creator any
 	if createdBy != 0 {
 		creator = createdBy
-	}
-
-	if expectedOwnerTeamID == 0 {
-		result, err := s.db.ExecContext(ctx, `
-			INSERT INTO shared_links
-				(site_id, name, slug, password_hash, password_salt, segment_id, created_by_user_id, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`, siteID, link.Name, slug, hash, salt, segment, creator, link.CreatedAt)
-		if err != nil {
-			return Link{}, fmt.Errorf("sharing: create link: %w", err)
-		}
-		link.ID, _ = result.LastInsertId()
-
-		return link, nil
 	}
 
 	tx, err := s.ownerMutation(ctx, siteID, expectedOwnerTeamID)
@@ -347,32 +307,11 @@ func (s *Store) Links(ctx context.Context, siteID int64) ([]Link, error) {
 	return links, nil
 }
 
-// RevokeLink deletes a shared link. There is no soft delete: a link is a live
-// credential, and "revoked but still in the table" is one query bug away from
-// still working.
-func (s *Store) RevokeLink(ctx context.Context, siteID, linkID int64) error {
-	return s.revokeLink(ctx, siteID, 0, linkID)
-}
-
-// RevokeLinkForOwner revokes only while the expected team owns the site.
+// RevokeLinkForOwner deletes a shared link, but only while the expected team
+// still owns the site. There is no soft delete: a link is a live credential,
+// and "revoked but still in the table" is one query bug away from still
+// working.
 func (s *Store) RevokeLinkForOwner(ctx context.Context, siteID, expectedOwnerTeamID, linkID int64) error {
-	return s.revokeLink(ctx, siteID, expectedOwnerTeamID, linkID)
-}
-
-// revokeLink applies the optional owner fence and removes the credential.
-func (s *Store) revokeLink(ctx context.Context, siteID, expectedOwnerTeamID, linkID int64) error {
-	if expectedOwnerTeamID == 0 {
-		result, err := s.db.ExecContext(ctx, `DELETE FROM shared_links WHERE id = ? AND site_id = ?`, linkID, siteID)
-		if err != nil {
-			return fmt.Errorf("sharing: revoke link: %w", err)
-		}
-		if affected, _ := result.RowsAffected(); affected == 0 {
-			return ErrNotFound
-		}
-
-		return nil
-	}
-
 	tx, err := s.ownerMutation(ctx, siteID, expectedOwnerTeamID)
 	if err != nil {
 		return err
@@ -393,28 +332,25 @@ func (s *Store) revokeLink(ctx context.Context, siteID, expectedOwnerTeamID, lin
 	return nil
 }
 
-// ownerMutation reserves system.db's writer and validates current ownership
-// before returning the transaction for a publication mutation.
+// ownerMutation validates current ownership inside the transaction it returns,
+// so a publication mutation and a site transfer serialise on system.db's
+// writer rather than both authorising from stale reads.
 func (s *Store) ownerMutation(ctx context.Context, siteID, expectedOwnerTeamID int64) (*sql.Tx, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("sharing: begin owner mutation: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE sites SET updated_at = updated_at WHERE id = -1`); err != nil {
-		tx.Rollback() //nolint:errcheck // transaction cannot be reused
 		return nil, fmt.Errorf("sharing: begin owner mutation: %w", err)
 	}
 	var ownerTeamID int64
 	err = tx.QueryRowContext(ctx, `
 		SELECT COALESCE(owner_team_id, account_id) FROM sites WHERE id = ?
 	`, siteID).Scan(&ownerTeamID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		tx.Rollback() //nolint:errcheck // transaction cannot be reused
+		return nil, fmt.Errorf("sharing: verify site owner: %w", err)
+	}
 	if errors.Is(err, sql.ErrNoRows) || ownerTeamID != expectedOwnerTeamID {
 		tx.Rollback() //nolint:errcheck // transaction cannot be reused
 		return nil, ErrSiteOwnerChanged
-	}
-	if err != nil {
-		tx.Rollback() //nolint:errcheck // transaction cannot be reused
-		return nil, fmt.Errorf("sharing: verify site owner: %w", err)
 	}
 
 	return tx, nil
@@ -447,20 +383,6 @@ func (s *Store) Resolve(ctx context.Context, slug string) (Link, error) {
 	return link, nil
 }
 
-// CheckPassword verifies a link's password for an internal caller. HTTP paths
-// use CheckPasswordForSource so independent clients receive independent limits.
-func (s *Store) CheckPassword(ctx context.Context, slug, password string) error {
-	var linkID int64
-	if err := s.db.QueryRowContext(ctx, `SELECT id FROM shared_links WHERE slug = ?`, slug).Scan(&linkID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		}
-		return fmt.Errorf("sharing: check password: %w", err)
-	}
-
-	return s.CheckPasswordForSource(ctx, linkID, "internal", password)
-}
-
 // CheckPasswordForSource durably reserves one attempt before paying PBKDF2's
 // CPU cost. The writer transaction serializes concurrent guesses against the
 // same row and resets an expired window atomically.
@@ -491,16 +413,15 @@ func (s *Store) CheckPasswordForSource(ctx context.Context, linkID int64, source
 }
 
 // reservePasswordAttempt reads the current credential and consumes one slot in
-// the source-link window under a SQLite writer reservation.
+// the source-link window. system.db is opened with an immediate transaction
+// lock, so the read and the decrement are already serialised against every
+// other guess by the time this transaction begins.
 func (s *Store) reservePasswordAttempt(ctx context.Context, linkID int64, sourceKey string) (string, string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", "", fmt.Errorf("sharing: reserve password attempt: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback after commit is harmless
-	if _, err := tx.ExecContext(ctx, `UPDATE share_password_attempts SET attempts = attempts WHERE link_id = -1`); err != nil {
-		return "", "", fmt.Errorf("sharing: reserve password attempt: %w", err)
-	}
 
 	var hash, salt string
 	err = tx.QueryRowContext(ctx, `
@@ -519,35 +440,12 @@ func (s *Store) reservePasswordAttempt(ctx context.Context, linkID int64, source
 		return "", "", nil
 	}
 
-	now := s.now().Unix()
-	windowStart, attempts := int64(0), 0
-	err = tx.QueryRowContext(ctx, `
-		SELECT window_started_at, attempts FROM share_password_attempts
-		WHERE link_id = ? AND source_key = ?
-	`, linkID, sourceKey).Scan(&windowStart, &attempts)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO share_password_attempts (link_id, source_key, window_started_at, attempts)
-			VALUES (?, ?, ?, 1)
-		`, linkID, sourceKey, now)
-	case err != nil:
-		return "", "", fmt.Errorf("sharing: reserve password attempt: %w", err)
-	case windowStart <= s.now().Add(-PasswordAttemptWindow).Unix():
-		_, err = tx.ExecContext(ctx, `
-			UPDATE share_password_attempts SET window_started_at = ?, attempts = 1
-			WHERE link_id = ? AND source_key = ?
-		`, now, linkID, sourceKey)
-	case attempts >= PasswordAttemptLimit:
-		return "", "", ErrPasswordThrottled
-	default:
-		_, err = tx.ExecContext(ctx, `
-			UPDATE share_password_attempts SET attempts = attempts + 1
-			WHERE link_id = ? AND source_key = ?
-		`, linkID, sourceKey)
+	now := s.now()
+	if err := reserveAttemptSlot(ctx, tx, linkID, sourceKey, PasswordAttemptLimit, now); err != nil {
+		return "", "", err
 	}
-	if err != nil {
-		return "", "", fmt.Errorf("sharing: reserve password attempt: %w", err)
+	if err := reserveAttemptSlot(ctx, tx, linkID, linkBudgetSource, PasswordLinkAttemptLimit, now); err != nil {
+		return "", "", err
 	}
 	if err := tx.Commit(); err != nil {
 		return "", "", fmt.Errorf("sharing: reserve password attempt: %w", err)
@@ -556,7 +454,54 @@ func (s *Store) reservePasswordAttempt(ctx context.Context, linkID int64, source
 	return hash, salt, nil
 }
 
+// reserveAttemptSlot consumes one attempt in a (link, key) window, opening or
+// resetting the window as needed, or reports the budget spent. Rows whose
+// window has lapsed are deleted whenever a new window opens, so the table can
+// never hold more than the windows currently open: nothing else ever reads
+// them, and unauthenticated traffic must not grow system.db without bound.
+func reserveAttemptSlot(ctx context.Context, tx *sql.Tx, linkID int64, key string, limit int, now time.Time) error {
+	expiry := now.Add(-PasswordAttemptWindow).Unix()
+	windowStart, attempts := int64(0), 0
+	err := tx.QueryRowContext(ctx, `
+		SELECT window_started_at, attempts FROM share_password_attempts
+		WHERE link_id = ? AND source_key = ?
+	`, linkID, key).Scan(&windowStart, &attempts)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM share_password_attempts WHERE window_started_at <= ?
+		`, expiry); err != nil {
+			return fmt.Errorf("sharing: purge password attempts: %w", err)
+		}
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO share_password_attempts (link_id, source_key, window_started_at, attempts)
+			VALUES (?, ?, ?, 1)
+		`, linkID, key, now.Unix())
+	case err != nil:
+		return fmt.Errorf("sharing: reserve password attempt: %w", err)
+	case windowStart <= expiry:
+		_, err = tx.ExecContext(ctx, `
+			UPDATE share_password_attempts SET window_started_at = ?, attempts = 1
+			WHERE link_id = ? AND source_key = ?
+		`, now.Unix(), linkID, key)
+	case attempts >= limit:
+		return ErrPasswordThrottled
+	default:
+		_, err = tx.ExecContext(ctx, `
+			UPDATE share_password_attempts SET attempts = attempts + 1
+			WHERE link_id = ? AND source_key = ?
+		`, linkID, key)
+	}
+	if err != nil {
+		return fmt.Errorf("sharing: reserve password attempt: %w", err)
+	}
+
+	return nil
+}
+
 // clearPasswordAttempts gives a source a fresh window after successful proof.
+// The per-link ceiling is left alone: it counts every guess, right or wrong,
+// which is what makes it a backstop rather than a budget one success resets.
 func (s *Store) clearPasswordAttempts(ctx context.Context, linkID int64, sourceKey string) error {
 	if _, err := s.db.ExecContext(ctx, `
 		DELETE FROM share_password_attempts WHERE link_id = ? AND source_key = ?
@@ -567,8 +512,8 @@ func (s *Store) clearPasswordAttempts(ctx context.Context, linkID int64, sourceK
 	return nil
 }
 
-// checkLegacyPassword verifies the pre-M9 unsalted SHA-256 representation and
-// replaces it with PBKDF2 only after a constant-time successful comparison.
+// checkLegacyPassword verifies a row still holding an unsalted SHA-256 digest
+// and replaces it with PBKDF2 only after a constant-time successful comparison.
 // The compare-and-swap predicate prevents a concurrent verifier from replacing
 // a newer salted value or moving a row back to the legacy representation.
 func (s *Store) checkLegacyPassword(ctx context.Context, linkID int64, password, legacyHash string) error {
@@ -621,7 +566,7 @@ func (s *Store) checkLegacyPassword(ctx context.Context, linkID int64, password,
 	return nil
 }
 
-// legacyPasswordHash reproduces the pre-M9 API/settings representation. It is
+// legacyPasswordHash reproduces the unsalted digest older rows hold. It is
 // verification-only: every write path uses hashPassword and a random salt.
 func legacyPasswordHash(password string) string {
 	digest := sha256.Sum256([]byte(password))
@@ -656,55 +601,18 @@ func hashPassword(password string) (hash, salt string, err error) {
 	return hash, salt, nil
 }
 
-// deriveKey runs PBKDF2-HMAC-SHA256 at this package's parameters.
+// deriveKey runs PBKDF2-HMAC-SHA256 at this package's parameters. The salt is
+// fed in as its hex text rather than decoded, because that is what every
+// stored hash was derived with; decoding it would invalidate all of them.
 func deriveKey(password, salt string) (string, error) {
 	if salt == "" {
 		return "", errors.New("sharing: a password hash needs a salt")
 	}
 
-	return hex.EncodeToString(pbkdf2SHA256([]byte(password), []byte(salt), pbkdf2Iterations, pbkdf2KeyLength)), nil
-}
-
-// pbkdf2SHA256 is PBKDF2 with HMAC-SHA256 as its pseudorandom function.
-//
-// It is written out here rather than pulled from a dependency because the whole
-// algorithm is twenty lines of standard library, and this project's pitch is a
-// single binary with as close to no dependencies as it can honestly manage.
-//
-// The implementation is RFC 8018 section 5.2 with no variation. Each output
-// block is U1 XOR U2 XOR … XOR Uc, where U1 = PRF(password, salt || INT(i)) and
-// Un = PRF(password, Un-1); the block index is four big-endian bytes. The
-// parameters are arguments rather than constants so a test can run it against a
-// published vector, which is the only honest way to ship a hand-written KDF.
-func pbkdf2SHA256(password, salt []byte, iterations, keyLength int) []byte {
-	mac := hmac.New(sha256.New, password)
-	blockSize := mac.Size()
-	blocks := (keyLength + blockSize - 1) / blockSize
-
-	out := make([]byte, 0, blocks*blockSize)
-
-	for block := 1; block <= blocks; block++ {
-		mac.Reset()
-		mac.Write(salt)
-		mac.Write([]byte{byte(block >> 24), byte(block >> 16), byte(block >> 8), byte(block)})
-
-		previous := mac.Sum(nil)
-
-		accumulator := make([]byte, blockSize)
-		copy(accumulator, previous)
-
-		for i := 1; i < iterations; i++ {
-			mac.Reset()
-			mac.Write(previous)
-			previous = mac.Sum(previous[:0])
-
-			for j := range accumulator {
-				accumulator[j] ^= previous[j]
-			}
-		}
-
-		out = append(out, accumulator...)
+	key, err := pbkdf2.Key(sha256.New, password, []byte(salt), pbkdf2Iterations, pbkdf2KeyLength)
+	if err != nil {
+		return "", fmt.Errorf("sharing: derive key: %w", err)
 	}
 
-	return out[:keyLength]
+	return hex.EncodeToString(key), nil
 }

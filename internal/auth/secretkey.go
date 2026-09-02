@@ -11,16 +11,17 @@ package auth
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
 // KeySize is 32 bytes, for AES-256-GCM.
@@ -50,70 +51,26 @@ func LoadKey(dataDir, configured string) ([]byte, error) {
 		return key, nil
 	}
 
-	return keyFromFile(filepath.Join(dataDir, KeyFileName))
-}
-
-// keyFromFile reads the generated key, creating it if it is not there. O_EXCL
-// means two processes starting at once cannot both generate a key and leave one
-// of them unable to read what the other wrote.
-func keyFromFile(path string) ([]byte, error) {
-	raw, err := os.ReadFile(path)
-	if err == nil {
-		key, err := hex.DecodeString(strings.TrimSpace(string(raw)))
-		if err != nil || len(key) != KeySize {
-			return nil, fmt.Errorf("app key %s is corrupt — every two-factor secret encrypted with it is unreadable", path)
-		}
-
-		return key, nil
-	}
-	if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("app key %s: %w", path, err)
-	}
-
-	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, fmt.Errorf("create %s: %w", dir, err)
-		}
-	}
-
-	key := make([]byte, KeySize)
-	if _, err := rand.Read(key); err != nil {
-		return nil, fmt.Errorf("app key: %w", err)
-	}
-
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		// Losing the race means another process wrote a key a moment ago, and
-		// that key is the right one to use.
-		if os.IsExist(err) {
-			return keyFromFile(path)
-		}
-		return nil, fmt.Errorf("app key %s: %w", path, err)
-	}
-	if _, err := file.WriteString(hex.EncodeToString(key)); err != nil {
-		writeErr := fmt.Errorf("app key %s: %w", path, err)
-		if closeErr := file.Close(); closeErr != nil {
-			writeErr = errors.Join(writeErr, fmt.Errorf("app key %s: close after write failure: %w", path, closeErr))
-		}
-		return nil, writeErr
-	}
-
-	if err := file.Close(); err != nil {
-		return nil, fmt.Errorf("app key %s: close: %w", path, err)
-	}
-
-	return key, nil
+	// A corrupt file here means every two-factor secret encrypted with it is
+	// unreadable, which is why the loader refuses rather than regenerating.
+	return store.LoadOrCreateKey(filepath.Join(dataDir, KeyFileName), KeySize, "app key")
 }
 
 // Sealer encrypts and authenticates small secrets with the application key. It
 // wraps the cipher rather than exposing it so that every caller gets AEAD with
 // a fresh nonce, and nobody can reach for the raw block cipher and reuse one.
 type Sealer struct {
-	aead cipher.AEAD
-	key  []byte
+	aead   cipher.AEAD
+	macKey []byte
 }
 
-// NewSealer builds the AES-GCM box.
+// NewSealer builds the AES-GCM box and derives the signing key.
+//
+// The two primitives never share material: the MAC key is derived from the
+// application key rather than being it. The cipher keeps the raw key because
+// it protects stored two-factor secrets, which cannot be re-encrypted without
+// every user's cooperation; the signed values are cookies that expire in
+// minutes, so their key can be anything derived from the same secret.
 func NewSealer(key []byte) (*Sealer, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -125,7 +82,12 @@ func NewSealer(key []byte) (*Sealer, error) {
 		return nil, fmt.Errorf("auth: app key: %w", err)
 	}
 
-	return &Sealer{aead: aead, key: key}, nil
+	macKey, err := hkdf.Key(sha256.New, key, nil, "feasible sign", KeySize)
+	if err != nil {
+		return nil, fmt.Errorf("auth: app key: %w", err)
+	}
+
+	return &Sealer{aead: aead, macKey: macKey}, nil
 }
 
 // Seal encrypts a value and returns it as one base64 string.
@@ -174,7 +136,7 @@ func (s *Sealer) Open(sealed string) (string, error) {
 // worthless a minute later and a database row per redirect is a table that only
 // ever needs cleaning up.
 func (s *Sealer) SignedValue(value string) string {
-	mac := hmac.New(sha256.New, s.key)
+	mac := hmac.New(sha256.New, s.macKey)
 	mac.Write([]byte(value))
 
 	return value + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
@@ -191,7 +153,7 @@ func (s *Sealer) VerifySignedValue(signed string) (string, bool) {
 
 	value, sig := signed[:dot], signed[dot+1:]
 
-	mac := hmac.New(sha256.New, s.key)
+	mac := hmac.New(sha256.New, s.macKey)
 	mac.Write([]byte(value))
 	want := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 

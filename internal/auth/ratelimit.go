@@ -9,11 +9,12 @@
 package auth
 
 import (
-	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 )
 
 // Limits for each protected action. They are separate because the actions have
@@ -39,6 +40,13 @@ const (
 	// attempts a minute makes that arithmetic hopeless.
 	TwoFactorAttempts = 5
 	TwoFactorWindow   = time.Minute
+
+	// VerifyInstallAttempts and VerifyInstallWindow bound the installation
+	// check per site. Each check connects to wherever the domain points, and
+	// a loop of them from a signed-in account is a port scanner carrying our
+	// address. Ten in ten minutes is plenty for somebody redeploying.
+	VerifyInstallAttempts = 10
+	VerifyInstallWindow   = 10 * time.Minute
 )
 
 // sweepInterval is how often dead buckets are discarded. Without it the map is
@@ -113,25 +121,6 @@ func (l *Limiter) Reset(key string) {
 	delete(l.buckets, key)
 }
 
-// Remaining reports how many attempts a key has left, for the message that
-// tells somebody they are close to being locked out rather than surprising
-// them with it.
-func (l *Limiter) Remaining(key string, limit int, window time.Duration) int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	b, ok := l.buckets[key]
-	if !ok || l.now().Sub(b.openedAt) >= window {
-		return limit
-	}
-
-	if remaining := limit - b.count; remaining > 0 {
-		return remaining
-	}
-
-	return 0
-}
-
 // sweep drops buckets nothing could still be inside. It runs opportunistically
 // under the lock the caller already holds rather than on a goroutine, because a
 // background sweeper for a map that is only touched during sign-in attempts is
@@ -156,18 +145,15 @@ func (l *Limiter) sweep(now time.Time) {
 
 // ClientKey builds a rate-limit key from the request source and a label.
 //
-// It uses the remote address rather than any forwarded header. This process
-// sits behind our own reverse proxy in every deployment we ship, and a header
-// an attacker can set is a rate limit an attacker can bypass by writing a
-// different number in it — which is worse than no limit, because it looks like
-// one.
-func ClientKey(r *http.Request, label string) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-
-	return label + "|" + host
+// The source is resolved under the same trusted-proxy rules as everything else
+// in this binary. Behind our own reverse proxy every connection arrives from
+// the proxy's address, so keying on the socket alone puts every visitor in one
+// bucket and ten bad passwords from anybody lock sign-in for everybody. A
+// forwarded header is honoured only from a peer on the trusted list, because a
+// header anyone can set is a limit anyone can escape by writing a different
+// number in it.
+func ClientKey(r *http.Request, trusted *clientip.TrustedProxies, label string) string {
+	return label + "|" + clientip.Key(r, trusted)
 }
 
 // SubjectKey builds a rate-limit key from what is being attacked rather than

@@ -1176,12 +1176,9 @@ func (p *Purger) claim(ctx context.Context, account Account, now time.Time, cust
 	}
 	defer tx.Rollback() //nolint:errcheck // a rollback after a successful commit is a no-op
 
-	// Acquire SQLite's writer reservation before topology validation. A site
-	// transfer and a deletion claim therefore serialize on system.db instead of
-	// both authorizing from stale reads.
-	if _, err := tx.ExecContext(ctx, `UPDATE destructive_operations SET updated_at = updated_at WHERE resource_id = -1`); err != nil {
-		return false, fmt.Errorf("lifecycle: fence deletion %d: %w", account.TeamID, err)
-	}
+	// The transaction holds system.db's writer from BEGIN, so a site transfer
+	// and a deletion claim serialise instead of both authorising from stale
+	// reads.
 	if err := validateTransferTopologyTx(ctx, tx, account.TeamID); err != nil {
 		return false, err
 	}

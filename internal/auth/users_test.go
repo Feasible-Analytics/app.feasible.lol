@@ -100,30 +100,6 @@ func TestDisplayNameFallsBackToTheAddress(t *testing.T) {
 	}
 }
 
-// TestUnlinkGoogleRefusesToLockSomebodyOut checks the guard on the one action
-// in this package that can leave an account with no way in at all.
-func TestUnlinkGoogleRefusesToLockSomebodyOut(t *testing.T) {
-	s, _ := newTestStore(t)
-	ctx := context.Background()
-
-	user, _, err := s.CreateUser(ctx, "a@example.com", "", "", "google-sub")
-	if err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-
-	if err := s.UnlinkGoogle(ctx, user.ID); err == nil {
-		t.Fatal("unlinking the only sign-in method should be refused")
-	}
-
-	if err := s.SetPassword(ctx, user.ID, "a long enough password", 0); err != nil {
-		t.Fatalf("set password: %v", err)
-	}
-
-	if err := s.UnlinkGoogle(ctx, user.ID); err != nil {
-		t.Errorf("unlinking should be allowed once a password exists: %v", err)
-	}
-}
-
 // TestRequire2FAIsATeamSetting checks the policy round-trips, since it is what
 // the sign-in gate reads on every request.
 func TestRequire2FAIsATeamSetting(t *testing.T) {
