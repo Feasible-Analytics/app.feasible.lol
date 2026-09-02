@@ -14,11 +14,8 @@ accepts it. If your procurement process requires a signed copy, write to
 
 <h3>1. Subject matter and duration</h3>
 <p>We process visitor data on your behalf for as long as your account exists, in order to
-provide web analytics. Live processing ends when the account is deleted. Encrypted
-disaster-recovery replica objects become eligible for provider removal under object-storage lifecycle
-within 72 hours of being written. Replication stops within 60 seconds, so the final object is eligible
-within 72 hours and 60 seconds of live deletion. Physical removal is asynchronous with no published
-maximum completion time.</p>
+provide web analytics. Live processing ends when the account is deleted. Storage and recovery
+systems outside the application are governed by their operators' retention controls.</p>
 
 <h3>2. Nature and purpose</h3>
 <p>Collecting, deriving, storing, aggregating and displaying analytics events from the
@@ -50,12 +47,9 @@ full URLs. If prohibited data is sent, you must stop the sender and erase the af
   <li>We notify you without undue delay, and in any case within 72 hours, if we become aware
       of a personal data breach affecting your data.</li>
   <li>At the end of the service the hourly lifecycle sweep immediately removes the live account database and records on the published
-      schedule. Replication stops within the watch interval, currently at most 60 seconds, and
-      each encrypted disaster-recovery replica object becomes eligible for provider removal within
-      72 hours of being written. The final object can be written during that stop interval, so it is
-      eligible within 72 hours and 60 seconds of live deletion. Physical removal is asynchronous with no published maximum; replicas can remain
-      operationally restorable while removal is pending and are not used to reactivate the account.
-      Provider deletion is attempted in the same sweep and retried on every hourly sweep until it succeeds.</li>
+      schedule. Storage and recovery systems outside the application are governed by their operators'
+      retention controls and are not used to reactivate the account. Provider deletion is attempted
+      in the same sweep and retried on every hourly sweep until it succeeds.</li>
   <li>We make available what you need to demonstrate compliance and to audit ours.</li>
 </ul>
 
@@ -86,8 +80,7 @@ with the UK Addendum where the UK GDPR applies.</p>
       configuration and the UTC date. The shared value is not stored in an analytics or system
       database, and raw IP addresses are discarded before an event is persisted.</li>
   <li>One database per account, so a query for one customer cannot reach another's data.</li>
-  <li>Encrypted storage volumes for live account databases and encrypted object storage for
-      disaster-recovery replicas.</li>
+  <li>Encrypted storage volumes for live account databases.</li>
   <li>Credentials, API keys, invitation tokens and reset tokens are stored only as hashes.</li>
   <li>Administrative routes listen on loopback only and are not routable from any network.</li>
   <li>Least-privilege access, reviewed, and logged.</li>

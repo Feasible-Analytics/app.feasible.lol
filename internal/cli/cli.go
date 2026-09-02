@@ -46,8 +46,6 @@ Commands:
   ingest       Durably buffer events and deliver them to the owning app shard.
   db migrate   Migrate system.db and every account database. Never automatic.
   db backup    Write a consistent snapshot of every database.
-  litestream   Generate and check the continuous replication configuration,
-               which has to be regenerated whenever an account is created.
   rollup       Build, rebuild or inspect the pre-aggregated report tables.
   seed         Generate realistic fake traffic to build and measure against.
   api-key      Create, list and revoke public API keys. One key type, and it
@@ -181,8 +179,6 @@ func Run(opts Options) int {
 		return runIngest(e, args[1:])
 	case "db":
 		return runDB(e, args[1:])
-	case "litestream":
-		return runLitestream(e, args[1:])
 	case "seed":
 		return runSeed(e, args[1:])
 	case "mcp":

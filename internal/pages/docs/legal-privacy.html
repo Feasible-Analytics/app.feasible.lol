@@ -58,11 +58,10 @@ adding one.</p>
       service operates. It is combined with the UTC date to derive a different visitor-hashing
       value each day and is not stored in the analytics or system databases.</li>
   <li><strong>Account records</strong> — until you delete the account. At scheduled day 90 the
-      hourly lifecycle sweep immediately removes them from the live service. Encrypted
-      disaster-recovery replica objects become eligible for provider removal within 72 hours of
-      being written. Replication stops within 60 seconds, so the final object is eligible within 72
-      hours and 60 seconds of live deletion. Physical removal is asynchronous with no published maximum. Payment-provider
-      deletion is attempted in that sweep and retried on every hourly sweep until it succeeds.</li>
+      hourly lifecycle sweep immediately removes them from the live service. Storage and recovery
+      systems outside the application are governed by their operators' retention controls.
+      Payment-provider deletion is attempted in that sweep and retried on every hourly sweep until
+      it succeeds.</li>
   <li><strong>Deletion records</strong> — the team name and contact email are kept only long enough
       to send the confirmation, then erased. A payment-provider customer identifier is kept only
       while external erasure is retrying. A minimal tombstone of internal team id, deletion and

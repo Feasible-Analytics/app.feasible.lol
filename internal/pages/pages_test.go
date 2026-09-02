@@ -558,7 +558,7 @@ func TestPricingPublishesTheLifecycleTimetable(t *testing.T) {
 
 	body := render(t, handler, "/pricing").Body.String()
 
-	for _, want := range []string{"Days 0 – 30", "Days 30 – 60", "Days 60 – 90", "Day 90", "we keep collecting", "live systems", "72 hours", "retried hourly"} {
+	for _, want := range []string{"Days 0 – 30", "Days 30 – 60", "Days 60 – 90", "Day 90", "we keep collecting", "live systems", "outside the application", "retried hourly"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the pricing page never mentions %q", want)
 		}
@@ -920,8 +920,7 @@ func TestTheLegalPagesNameTheController(t *testing.T) {
 }
 
 // TestDeletionCopyMatchesOperationalRetention prevents the legal pages from
-// promising immediate backup erasure or a day-90 state the lifecycle worker
-// cannot guarantee while object retention and provider retries are external.
+// promising that the application controls storage operated outside itself.
 func TestDeletionCopyMatchesOperationalRetention(t *testing.T) {
 	for _, page := range []Doc{
 		mustFind(t, documentation, "privacy"),
@@ -930,17 +929,14 @@ func TestDeletionCopyMatchesOperationalRetention(t *testing.T) {
 		mustFind(t, legal, "dpa"),
 	} {
 		body := strings.ToLower(strings.Join(strings.Fields(string(page.Body)), " "))
-		if !strings.Contains(body, "72 hours") {
-			t.Errorf("%s does not state the replica retention window", page.Slug)
-		}
-		for _, required := range []string{"immediate", "hourly", "being written", "60 seconds"} {
+		for _, required := range []string{"live", "hourly", "outside"} {
 			if !strings.Contains(body, required) {
 				t.Errorf("%s does not state day-90 %s behavior", page.Slug, required)
 			}
 		}
-		for _, contradiction := range []string{"no backup", "nothing left to restore"} {
+		for _, contradiction := range []string{"60 seconds", "replica", "replication"} {
 			if strings.Contains(body, contradiction) {
-				t.Errorf("%s still claims %q during the restorable replica window", page.Slug, contradiction)
+				t.Errorf("%s still claims application-owned storage behavior with %q", page.Slug, contradiction)
 			}
 		}
 	}

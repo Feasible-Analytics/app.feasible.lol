@@ -9,48 +9,13 @@
 package config
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/replica"
 )
-
-// setValidReplicaAttestation writes the atomic provider bundle required by
-// production startup. The canonical renderer keeps the fixture aligned with
-// the deployed lifecycle contract.
-func setValidReplicaAttestation(t *testing.T, replicaURL string) {
-	t.Helper()
-
-	policy, err := replica.Render(replicaURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	location, err := replica.ParseLocation(replicaURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bundle, err := json.Marshal(replica.Attestation{
-		Version: replica.AttestationVersion, FetchedAt: time.Now().UTC(), ReplicaURL: replicaURL,
-		Bucket: location.Bucket, Prefix: location.Prefix,
-		BucketLocation: json.RawMessage(`{"LocationConstraint":null}`),
-		Lifecycle:      policy, Versioning: json.RawMessage(`{}`), ObjectLock: json.RawMessage(`{}`),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(t.TempDir(), "replica-attestation.json")
-	if err := os.WriteFile(path, bundle, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("FEASIBLE_LITESTREAM_ATTESTATION", path)
-}
 
 // setProductionOperator supplies a concrete self-hosted legal identity to
 // production tests whose subject is unrelated to legal-mode validation.
@@ -292,35 +257,6 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.Ingest.BufferPath != DefaultIngestBufferPath {
 		t.Errorf("outbox path: got %q", cfg.Ingest.BufferPath)
 	}
-	if cfg.Litestream.ReplicaURL != "" {
-		t.Errorf("replica URL: got %q, want empty — an install that configured no replication has none", cfg.Litestream.ReplicaURL)
-	}
-}
-
-// TestLoadFromReplicationDefaults covers the one pairing among these values that
-// produces a replica nobody can restore from: retention has to outlive the
-// snapshot interval, or the snapshot a restore replays onto is deleted before
-// its replacement exists.
-func TestLoadFromReplicationDefaults(t *testing.T) {
-	loader, err := NewLoader(t.TempDir(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := LoadFrom(loader)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if cfg.Litestream.ConfigPath != DefaultLitestreamConfig {
-		t.Errorf("config path: got %q", cfg.Litestream.ConfigPath)
-	}
-	if cfg.Litestream.SyncInterval != time.Second {
-		t.Errorf("sync interval: got %s, want the one second the durability claim quotes", cfg.Litestream.SyncInterval)
-	}
-	if cfg.Litestream.WatchInterval <= 0 {
-		t.Errorf("watch interval: got %s — a new account would never be picked up", cfg.Litestream.WatchInterval)
-	}
 }
 
 // TestLoadFromProductionLoggingDefaults checks that production flips the logging
@@ -389,97 +325,12 @@ func TestHostedProductionRequiresConcreteSubprocessors(t *testing.T) {
 		{"role":"object_storage","legal_entity":"Storage Corp","service":"Object storage","data":"Encrypted database replicas","region":"US"},
 		{"role":"email","legal_entity":"Mail Corp","service":"Transactional email","data":"Account addresses and service messages","region":"US"}
 	]`)
-	replicaURL := "s3://replicas/shard-01"
-	t.Setenv("FEASIBLE_LITESTREAM_REPLICA_URL", replicaURL)
-	t.Setenv("FEASIBLE_LITESTREAM_ON_CHANGE", "systemctl restart litestream")
-	setValidReplicaAttestation(t, replicaURL)
-
 	cfg, err := LoadFrom(loader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(cfg.App.Subprocessors) != 3 || cfg.App.Subprocessors[1].Role != "object_storage" {
 		t.Fatalf("subprocessors = %+v", cfg.App.Subprocessors)
-	}
-}
-
-// TestHostedProductionRequiresReplicaEnforcement keeps the live legal promise
-// fail-closed when provider retention checks or timely Litestream reloads are
-// absent from a hosted deployment.
-func TestHostedProductionRequiresReplicaEnforcement(t *testing.T) {
-	t.Setenv("FEASIBLE_ENV", EnvProduction)
-	t.Setenv("FEASIBLE_APP_HOSTED", "true")
-	t.Setenv("FEASIBLE_APP_MAIL_TRANSPORT", MailTransportSMTP)
-	t.Setenv("FEASIBLE_SMTP_HOST", "smtp.example.test")
-	t.Setenv("FEASIBLE_HOSTED_SUBPROCESSORS_JSON", `[
-		{"role":"compute","legal_entity":"Compute Corp","service":"Virtual machines","data":"Encrypted visitor analytics","region":"US"},
-		{"role":"object_storage","legal_entity":"Storage Corp","service":"Object storage","data":"Encrypted database replicas","region":"US"},
-		{"role":"email","legal_entity":"Mail Corp","service":"Transactional email","data":"Account addresses and service messages","region":"US"}
-	]`)
-
-	loader, err := NewLoader("", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "REPLICA_URL") {
-		t.Fatalf("missing replica configuration error = %v", err)
-	}
-
-	t.Setenv("FEASIBLE_LITESTREAM_REPLICA_URL", "s3://replicas/shard-01")
-	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "ON_CHANGE") {
-		t.Fatalf("missing reload command error = %v", err)
-	}
-
-	t.Setenv("FEASIBLE_LITESTREAM_ON_CHANGE", "systemctl restart litestream")
-	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "ATTESTATION") {
-		t.Fatalf("missing provider attestation error = %v", err)
-	}
-
-	setValidReplicaAttestation(t, "s3://replicas/shard-01")
-	t.Setenv("FEASIBLE_LITESTREAM_WATCH_SECONDS", "61")
-	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "within 60 seconds") {
-		t.Fatalf("slow replica watch error = %v", err)
-	}
-}
-
-// TestProductionRejectsInvalidReplicaAttestation proves application startup is
-// itself fail-closed when a provider export is unreadable or no longer proves
-// the public expiry bound; a separate scheduled check is not the only guard.
-func TestProductionRejectsInvalidReplicaAttestation(t *testing.T) {
-	t.Setenv("FEASIBLE_ENV", EnvProduction)
-	setProductionOperator(t)
-	replicaURL := "s3://replicas/shard-01"
-	t.Setenv("FEASIBLE_LITESTREAM_REPLICA_URL", replicaURL)
-	t.Setenv("FEASIBLE_LITESTREAM_ATTESTATION", filepath.Join(t.TempDir(), "missing.json"))
-
-	loader, err := NewLoader("", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "read provider evidence") {
-		t.Fatalf("unreadable attestation error = %v", err)
-	}
-
-	setValidReplicaAttestation(t, replicaURL)
-	path := os.Getenv("FEASIBLE_LITESTREAM_ATTESTATION")
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var evidence replica.Attestation
-	if err := json.Unmarshal(body, &evidence); err != nil {
-		t.Fatal(err)
-	}
-	evidence.Versioning = json.RawMessage(`{"Status":"Enabled"}`)
-	body, err = json.Marshal(evidence)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, body, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "versioning") {
-		t.Fatalf("noncompliant attestation error = %v", err)
 	}
 }
 

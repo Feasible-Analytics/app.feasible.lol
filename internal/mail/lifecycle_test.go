@@ -128,9 +128,9 @@ func TestEveryWarningNamesItsDate(t *testing.T) {
 	}
 }
 
-// TestDeletionWarningsStateLiveReplicaAndProviderTiming prevents one warning
-// from reverting to the false shorthand that everything vanishes at day 90.
-func TestDeletionWarningsStateLiveReplicaAndProviderTiming(t *testing.T) {
+// TestDeletionWarningsStateLiveAndProviderTiming ensures every warning states
+// what the application removes and how payment-provider retries behave.
+func TestDeletionWarningsStateLiveAndProviderTiming(t *testing.T) {
 	for _, template := range []string{
 		lifecycle.TemplateDeletionIn15,
 		lifecycle.TemplateDeletionIn5,
@@ -141,7 +141,7 @@ func TestDeletionWarningsStateLiveReplicaAndProviderTiming(t *testing.T) {
 			t.Fatal(err)
 		}
 		body := strings.ToLower(strings.Join(content.Body, " "))
-		for _, want := range []string{"live", "72 hours", "60 seconds", "being written", "hourly", "payment-provider"} {
+		for _, want := range []string{"live", "hourly", "payment-provider"} {
 			if !strings.Contains(body, want) {
 				t.Errorf("%s does not state %q", template, want)
 			}

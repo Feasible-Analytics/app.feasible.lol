@@ -15,7 +15,6 @@ that matter most.
 
 | Document | When you need it |
 |---|---|
-| [litestream.md](litestream.md) | Continuous replication, and why the config is generated |
 | [load-balancer.md](load-balancer.md) | Health-check settings, and degraded versus dead |
 | [game-day.md](game-day.md) | The written exercise that breaks things on purpose |
 | [runbooks/](runbooks/) | One document per failure this system actually has |
@@ -26,7 +25,6 @@ that matter most.
 |---|---|
 | [shard-down.md](runbooks/shard-down.md) | An app shard is unavailable while ingesters retain traffic |
 | [rollup-behind.md](runbooks/rollup-behind.md) | Reports are slow and yesterday looks wrong |
-| [restore-account.md](runbooks/restore-account.md) | One account's database is gone or corrupt |
 | [write-buffer-growing.md](runbooks/write-buffer-growing.md) | The buffer only goes up |
 | [orphaned-ingester-volume.md](runbooks/orphaned-ingester-volume.md) | A failed ingester left acknowledged events on its volume |
 | [disk-filling.md](runbooks/disk-filling.md) | Free space is falling towards zero |

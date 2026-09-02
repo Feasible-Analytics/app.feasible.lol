@@ -22,8 +22,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/replica"
 )
 
 // Defaults are the values used when a variable is absent. They are deliberately
@@ -57,25 +55,6 @@ const (
 	// DefaultWebhookPoll is how long the delivery worker waits when the queue is
 	// empty, in seconds. It loops without pausing while there is work.
 	DefaultWebhookPoll = 5
-
-	// DefaultLitestreamConfig is where the generated replication configuration
-	// is written. It is outside the data directory on purpose: the file
-	// describes how to recover the data directory, and a copy that only exists
-	// inside the thing it recovers is not a recovery plan.
-	DefaultLitestreamConfig = "/etc/litestream.yml"
-
-	// DefaultLitestreamSync is how often each database's new write-ahead log
-	// pages are shipped, in seconds. One second is the replica recovery point;
-	// the public 202 already waited for the local account commit.
-	DefaultLitestreamSync = 1
-
-	// DefaultLitestreamSnapshot is how often a full copy is taken, in hours.
-	DefaultLitestreamSnapshot = 6
-
-	// DefaultLitestreamWatch is how often the watcher re-reads the account
-	// directory, in seconds. It is the window in which a brand-new account's
-	// database is on disk and not yet replicated.
-	DefaultLitestreamWatch = 60
 
 	// DefaultQuerySampleThreshold leaves the sampling ceiling to the query
 	// engine, which is the one place the number is written down. Zero is the
@@ -307,48 +286,14 @@ type API struct {
 	QuerySampleThreshold int64
 }
 
-// Litestream holds the values the `litestream` command reads. It is its own
-// section because no serving process reads any of it: replication is a daemon
-// beside us, and this binary's only part in it is writing the file that daemon
-// reads.
-type Litestream struct {
-	// ConfigPath is the file to generate.
-	ConfigPath string
-
-	// ReplicaURL is the prefix every database is replicated under. Empty means
-	// replication is not configured, which is normal for a self-hoster and an
-	// error for a hosted storage group.
-	ReplicaURL string
-
-	SyncInterval     time.Duration
-	SnapshotInterval time.Duration
-
-	// WatchInterval is how often `litestream config -watch` re-reads the
-	// account directory.
-	WatchInterval time.Duration
-
-	// OnChange is the shell command run after the file changes, which is how
-	// the daemon picks up a newly created account database. It is empty by
-	// default because the right command depends on how Litestream is
-	// supervised, and guessing would produce a watcher that silently reloads
-	// nothing.
-	OnChange string
-
-	// AttestationPath is one atomically published provider-evidence bundle.
-	// Production validates its freshness and exact bucket/prefix binding before
-	// writing replication configuration.
-	AttestationPath string
-}
-
 // Config is the whole configuration for the binary. Both sections are always
 // loaded, even in single-process mode, because `serve` with the direct
 // transport runs the ingest path in-process.
 type Config struct {
-	Shared     Shared
-	App        App
-	API        API
-	Ingest     Ingest
-	Litestream Litestream
+	Shared Shared
+	App    App
+	API    API
+	Ingest Ingest
 }
 
 // IsProduction reports whether this process is running in production, which is
@@ -635,15 +580,6 @@ func LoadFrom(l *Loader) (*Config, error) {
 
 			QuerySampleThreshold: int64(l.Int("FEASIBLE_QUERY_SAMPLE_THRESHOLD", DefaultQuerySampleThreshold)),
 		},
-		Litestream: Litestream{
-			ConfigPath:       l.String("FEASIBLE_LITESTREAM_CONFIG", DefaultLitestreamConfig),
-			ReplicaURL:       strings.TrimSpace(l.String("FEASIBLE_LITESTREAM_REPLICA_URL", "")),
-			SyncInterval:     time.Duration(l.Int("FEASIBLE_LITESTREAM_SYNC_SECONDS", DefaultLitestreamSync)) * time.Second,
-			SnapshotInterval: time.Duration(l.Int("FEASIBLE_LITESTREAM_SNAPSHOT_HOURS", DefaultLitestreamSnapshot)) * time.Hour,
-			WatchInterval:    time.Duration(l.Int("FEASIBLE_LITESTREAM_WATCH_SECONDS", DefaultLitestreamWatch)) * time.Second,
-			OnChange:         strings.TrimSpace(l.String("FEASIBLE_LITESTREAM_ON_CHANGE", "")),
-			AttestationPath:  strings.TrimSpace(l.String("FEASIBLE_LITESTREAM_ATTESTATION", "")),
-		},
 		Ingest: Ingest{
 			Listen:         l.String("FEASIBLE_INGEST_LISTEN", DefaultIngestListen),
 			BufferPath:     l.String("FEASIBLE_INGEST_BUFFER_PATH", DefaultIngestBufferPath),
@@ -854,15 +790,6 @@ func (c *Config) Validate() error {
 			}
 		}
 
-		if c.Litestream.ReplicaURL == "" {
-			return fmt.Errorf("FEASIBLE_LITESTREAM_REPLICA_URL: hosted production requires encrypted database replicas")
-		}
-		if c.Litestream.WatchInterval > time.Minute {
-			return fmt.Errorf("FEASIBLE_LITESTREAM_WATCH_SECONDS: hosted production must stop deleted-account replication within 60 seconds")
-		}
-		if c.Litestream.OnChange == "" {
-			return fmt.Errorf("FEASIBLE_LITESTREAM_ON_CHANGE: hosted production requires a Litestream reload command")
-		}
 	}
 	if c.IsProduction() && !c.App.Hosted {
 		operatorFields := map[string]string{
@@ -881,15 +808,6 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("self-hosted production operator identity is incomplete; missing %s", strings.Join(missing, ", "))
 		}
 	}
-	// Any production deployment that configures replicas must prove the complete
-	// provider control bundle at startup. This makes stale, unreadable, or noncompliant
-	// exports a deployment failure, not merely a monitoring warning.
-	if c.IsProduction() && c.Litestream.ReplicaURL != "" {
-		if err := validateReplicaProviderState(c.Litestream); err != nil {
-			return err
-		}
-	}
-
 	if strings.TrimSpace(c.Shared.IngestSalt) == "" {
 		return fmt.Errorf("FEASIBLE_INGEST_SALT cannot be empty")
 	}
@@ -921,23 +839,6 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("private app-shard URL %q must use https in hosted production", endpoint)
 			}
 		}
-	}
-
-	return nil
-}
-
-// validateReplicaProviderState reads one atomic, fresh provider evidence bundle
-// and applies the same contract used by the deployment checker.
-func validateReplicaProviderState(cfg Litestream) error {
-	if cfg.AttestationPath == "" {
-		return fmt.Errorf("FEASIBLE_LITESTREAM_ATTESTATION: production replication requires fresh provider evidence")
-	}
-	body, err := os.ReadFile(cfg.AttestationPath)
-	if err != nil {
-		return fmt.Errorf("FEASIBLE_LITESTREAM_ATTESTATION: read provider evidence: %w", err)
-	}
-	if err := replica.ValidateAttestation(cfg.ReplicaURL, body, time.Now().UTC()); err != nil {
-		return fmt.Errorf("production replica attestation: %w", err)
 	}
 
 	return nil

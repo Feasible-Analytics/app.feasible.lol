@@ -92,15 +92,9 @@ with an access or erasure request. A pseudonymous fingerprint alone usually prov
 to match a named requester to one stored row.</p>
 
 <h3>Deleting an account</h3>
-<p>At day 90 the hourly lifecycle sweep immediately removes the live analytics database and account records. The replication
-watcher stops the deleted database's active replication within at most 60 seconds. A provider-side
-lifecycle rule covering the whole shard prefix makes encrypted disaster-recovery replicas eligible
-for removal within 72 hours of each replica object's creation, including prefixes no longer in the
-Litestream configuration. The final object can still be in the process of being written during that
-60-second stop interval, so it
-is eligible within 72 hours and 60 seconds of live deletion. Physical removal is asynchronous with no published maximum, and replicas
-may remain operationally restorable while it is pending; they are not used to reactivate the deleted
-account.</p>
+<p>At day 90 the hourly lifecycle sweep immediately removes the live analytics database and account
+records. Storage and recovery systems operated outside this application have their own retention and
+deletion controls and are not used to reactivate the deleted account.</p>
 <p>We also ask the payment provider to remove its customer record. If that external request fails,
 we retain only the provider identifier needed to retry it on every hourly lifecycle sweep until it
 succeeds, and send the deletion confirmation after it succeeds. Once the mail relay's acceptance is
@@ -112,7 +106,6 @@ plus invoices retained for tax obligations, remains. See the timetable on the
 
 <h3>Where the data lives</h3>
 <p>For the hosted service, in one SQLite database per account on encrypted volumes supplied by our
-compute host, with encrypted disaster-recovery replicas in object storage. Those infrastructure
-providers are subprocessors and are named with their data and region on the
+compute host. Infrastructure providers are subprocessors and are named with their data and region on the
 <a href="/legal/subprocessors">current subprocessor list</a>. There is no third-party data warehouse
 or analytics-on-our-analytics.</p>

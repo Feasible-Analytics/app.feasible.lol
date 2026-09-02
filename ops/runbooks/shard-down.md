@@ -32,7 +32,7 @@ local outbox and retries the owning app shard until it returns.
    ingester's previous contribution intact but makes the combined map
    incomplete after 60 seconds.
 4. If only one account database is damaged, verify other accounts on that shard
-   still commit and follow [restore-account.md](restore-account.md).
+   still commit before beginning the operator's external recovery procedure.
 
 ## Fix
 
@@ -41,7 +41,6 @@ the shard is out of the load balancer, then return it to service:
 
 ```bash
 feasible db migrate
-feasible litestream check
 ```
 
 The ingesters drain automatically. Confirm buffer oldest age falls to zero and
@@ -55,4 +54,4 @@ that repeated UUIDs create one permanent receipt and at most one fact.
 - Removing the failed shard from every ingester's static list makes an
   incomplete routing map appear complete and allows unknown-domain drops.
 - Copying account SQLite files while either process has them open is not a
-  failover procedure; use the replica and restore runbook.
+  failover procedure. Use a consistent snapshot made by `feasible db backup`.

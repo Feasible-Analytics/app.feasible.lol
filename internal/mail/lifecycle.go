@@ -26,11 +26,6 @@ import (
 //     stated plainly once, and there is no countdown, no "act now", and no
 //     hidden unsubscribe.
 
-// replicaEligibilityCopy is shared by every deletion warning and confirmation
-// so none can collapse a per-object provider rule into an inaccurate promise
-// measured from live deletion. Physical removal remains explicitly unbounded.
-const replicaEligibilityCopy = "Each encrypted disaster-recovery replica object becomes eligible for provider removal within 72 hours of being written. Replication stops within 60 seconds of live deletion, so the final object is eligible within 72 hours and 60 seconds of live deletion. Physical replica removal is asynchronous with no published maximum."
-
 // LifecycleMailer turns a lifecycle notice into a sent message. It is the
 // bridge between the state machine, which knows the dates, and the transport,
 // which knows whether anything left the building.
@@ -169,7 +164,7 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 		content.Heading = "We have stopped collecting"
 		content.Body = []string{
 			"As of today we are no longer recording events from your sites. Your site itself is unaffected; the tracking script keeps working and returns normally.",
-			"Your existing data is safe until " + day(notice.DeletesAt) + ". On that date the hourly sweep removes it from live systems immediately, and payment-provider deletion retries hourly until complete. " + replicaEligibilityCopy,
+			"Your existing data is safe until " + day(notice.DeletesAt) + ". On that date the hourly sweep removes it from live systems immediately, and payment-provider deletion retries hourly until complete.",
 			"If you come back before then, everything you had is still here. The days between today and the day you return will show on your graphs as a labelled gap, not as zeroes — we would rather say we were not counting than pretend nobody visited.",
 		}
 
@@ -178,7 +173,7 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 		content.Heading = "Your live data is removed on " + day(notice.DeletesAt)
 		content.Body = []string{
 			"On " + day(notice.DeletesAt) + " we delete the live database holding your analytics and your account records, and request deletion of your customer record with our payment provider.",
-			replicaEligibilityCopy + " Replicas may remain operationally restorable while removal is pending, but are not used to reactivate a deleted account. A failed payment-provider deletion is retried hourly.",
+			"Storage and recovery systems outside this application follow their operators' retention controls and are not used to reactivate a deleted account. A failed payment-provider deletion is retried hourly.",
 			"You can download everything we hold at any time before then, and you can bring the account back simply by paying.",
 		}
 
@@ -186,7 +181,7 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 		content.Subject = "Five days until your data is deleted, on " + day(notice.DeletesAt)
 		content.Heading = "Five days until deletion"
 		content.Body = []string{
-			"On " + day(notice.DeletesAt) + " the hourly sweep immediately removes your account and analytics from live systems, and payment-provider deletion is retried hourly until it succeeds. " + replicaEligibilityCopy,
+			"On " + day(notice.DeletesAt) + " the hourly sweep immediately removes your account and analytics from live systems, and payment-provider deletion is retried hourly until it succeeds.",
 			"If you want to keep the history without keeping the account, download it now — the link below gives you everything we hold in a portable format, and it works whether or not you ever pay us again.",
 		}
 
@@ -196,7 +191,7 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 		content.Body = []string{
 			"This is the final notice. Tomorrow, " + day(notice.DeletesAt) + ", we delete your live analytics database and account records and request deletion of your customer record with our payment provider.",
 			"Download everything below if you want to keep it. Paying before tomorrow stops the deletion and restores full access immediately.",
-			replicaEligibilityCopy + " Replicas are not used to reactivate a deleted account. Payment-provider deletion is retried on every hourly lifecycle sweep until it succeeds.",
+			"Storage and recovery systems outside this application follow their operators' retention controls and are not used to reactivate a deleted account. Payment-provider deletion is retried on every hourly lifecycle sweep until it succeeds.",
 		}
 
 	case lifecycle.TemplateAccountDeleted:
@@ -205,9 +200,9 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 		content.Body = []string{
 			"As we said we would, we have deleted your account today.",
 			"What we deleted: the database holding every pageview, event and session for your sites; your account, team, site and API-key records; and your customer record with our payment provider, including the stored card.",
-			replicaEligibilityCopy + " Replicas may remain operationally restorable while removal is pending; they are not used to reactivate the account.",
+			"Storage and recovery systems outside this application follow their operators' retention controls and are not used to reactivate the account.",
 			"After this message is accepted, its destination address and your team name are erased from the deletion record. We keep a minimal record of the internal account id and deletion timestamps, plus invoices for as long as tax law requires.",
-			"You are very welcome back. Signing up again starts a fresh account with a fresh trial; retained disaster-recovery replicas are never used to reactivate the deleted account.",
+			"You are very welcome back. Signing up again starts a fresh account with a fresh trial; deleted account data is never used to reactivate the account.",
 		}
 		content.Facts = nil
 		content.Secondary = nil

@@ -267,11 +267,11 @@ revokes an outstanding site invitation.
 
 ### When it goes wrong
 
-[`ops/`](ops/) holds the operational half: continuous replication with
-Litestream, the load balancer's health-check settings, a runbook per failure this
-system actually has, and the game day that breaks things on purpose to check the
-runbooks are true. [`ops/README.md`](ops/README.md) lists every metric the binary
-emits, which is also the list a runbook is allowed to name.
+[`ops/`](ops/) holds the operational half: the load balancer's health-check
+settings, a runbook per failure this system actually has, and the game day that
+breaks things on purpose to check the runbooks are true. [`ops/README.md`](ops/README.md)
+lists every metric the binary emits, which is also the list a runbook is allowed
+to name.
 
 ## Cutting a release
 

@@ -132,6 +132,6 @@ as the database itself, and it takes the write lock for the whole operation.
 `db backup -out` on another filesystem is the version that works.
 
 **Turning off `feasible db backup` because it fills the disk.** Point `-out`
-somewhere else and prune it. Replication is the recovery mechanism, but the
-snapshots are what you fall back to when the replica is unusable, and discovering
-you have neither is a bad day.
+somewhere else and prune it. The command creates the consistent snapshots this
+repository knows how to produce; moving those snapshots to durable storage is an
+operator responsibility.
