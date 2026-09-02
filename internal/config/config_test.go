@@ -147,17 +147,21 @@ func TestLoadFromRejectsMalformedBooleans(t *testing.T) {
 	}
 }
 
-// TestHostedProductionRejectsLogOnlyMail ensures a deployment cannot publish
-// deletion-warning promises while writing every message only to local disk.
-func TestHostedProductionRejectsLogOnlyMail(t *testing.T) {
+// TestHostedProductionAllowsLogOnlyMail keeps a hosted deployment usable while
+// its transactional provider is deliberately deferred and messages stay local.
+func TestHostedProductionAllowsLogOnlyMail(t *testing.T) {
 	t.Setenv("FEASIBLE_ENV", EnvProduction)
 	t.Setenv("FEASIBLE_APP_HOSTED", "true")
 	loader, err := NewLoader("", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "log-only") {
-		t.Fatalf("hosted log-mail error = %v", err)
+	config, err := LoadFrom(loader)
+	if err != nil {
+		t.Fatalf("hosted log-mail configuration: %v", err)
+	}
+	if config.App.MailTransport != MailTransportLog {
+		t.Fatalf("mail transport = %q, want %q", config.App.MailTransport, MailTransportLog)
 	}
 }
 

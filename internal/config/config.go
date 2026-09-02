@@ -716,11 +716,6 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if c.IsProduction() && c.App.Hosted {
-		if c.App.MailTransport == MailTransportLog {
-			return fmt.Errorf("FEASIBLE_APP_MAIL_TRANSPORT: hosted production cannot use log-only mail")
-		}
-	}
 	if c.IsProduction() && !c.App.Hosted {
 		operatorFields := map[string]string{
 			"FEASIBLE_OPERATOR_NAME":    c.App.OperatorName,
