@@ -158,21 +158,6 @@ type App struct {
 	SMTP   SMTP
 	Google GoogleOAuth
 	Stripe Stripe
-
-	// Subprocessors is the deployment's public legal inventory. Source code
-	// cannot know which infrastructure a hosted operator chose, so production
-	// hosted mode requires these facts explicitly instead of publishing category
-	// placeholders as though they were legal entities.
-	Subprocessors []Subprocessor
-}
-
-// Subprocessor is one legal entity that can process hosted-service data.
-type Subprocessor struct {
-	Role        string `json:"role"`
-	LegalEntity string `json:"legal_entity"`
-	Service     string `json:"service"`
-	Data        string `json:"data"`
-	Region      string `json:"region"`
 }
 
 // SMTP is the relay the smtp mail transport uses. It is a nested struct so that
@@ -587,12 +572,6 @@ func LoadFrom(l *Loader) (*Config, error) {
 		},
 	}
 
-	subprocessors, err := parseSubprocessors(l.String("FEASIBLE_HOSTED_SUBPROCESSORS_JSON", ""))
-	if err != nil {
-		return nil, err
-	}
-	cfg.App.Subprocessors = subprocessors
-
 	shards, err := parseShards(l.String("FEASIBLE_INGEST_SHARDS", DefaultIngestShards))
 	if err != nil {
 		return nil, err
@@ -615,29 +594,6 @@ func LoadFrom(l *Loader) (*Config, error) {
 	}
 
 	return cfg, nil
-}
-
-// parseSubprocessors decodes the public hosted-provider inventory. JSON keeps
-// the five fields in each legal disclosure together and avoids a parallel set
-// of numbered environment variables that can drift across deployments.
-func parseSubprocessors(raw string) ([]Subprocessor, error) {
-	if strings.TrimSpace(raw) == "" {
-		return nil, nil
-	}
-
-	var subprocessors []Subprocessor
-	if err := json.Unmarshal([]byte(raw), &subprocessors); err != nil {
-		return nil, fmt.Errorf("FEASIBLE_HOSTED_SUBPROCESSORS_JSON: not valid JSON: %w", err)
-	}
-
-	for i, entry := range subprocessors {
-		if strings.TrimSpace(entry.Role) == "" || strings.TrimSpace(entry.LegalEntity) == "" ||
-			strings.TrimSpace(entry.Service) == "" || strings.TrimSpace(entry.Data) == "" || strings.TrimSpace(entry.Region) == "" {
-			return nil, fmt.Errorf("FEASIBLE_HOSTED_SUBPROCESSORS_JSON: entry %d needs role, legal_entity, service, data and region", i)
-		}
-	}
-
-	return subprocessors, nil
 }
 
 // parseShards validates the complete, ordered JSON array of app-shard URLs.
@@ -764,32 +720,6 @@ func (c *Config) Validate() error {
 		if c.App.MailTransport == MailTransportLog {
 			return fmt.Errorf("FEASIBLE_APP_MAIL_TRANSPORT: hosted production cannot use log-only mail")
 		}
-		required := []string{"compute", "object_storage", "email"}
-		if c.App.Stripe.Enabled() {
-			required = append(required, "billing")
-		}
-		present := make(map[string]bool, len(required))
-
-		for _, entry := range c.App.Subprocessors {
-			role := strings.ToLower(strings.TrimSpace(entry.Role))
-			for _, requiredRole := range required {
-				if role == requiredRole {
-					present[role] = true
-				}
-			}
-
-			text := strings.ToLower(entry.LegalEntity + " " + entry.Service + " " + entry.Data + " " + entry.Region)
-			if strings.Contains(text, "placeholder") || strings.Contains(text, "non-production") || strings.Contains(text, "example.invalid") {
-				return fmt.Errorf("FEASIBLE_HOSTED_SUBPROCESSORS_JSON: production entry %q is still a sample placeholder", entry.Role)
-			}
-		}
-
-		for _, role := range required {
-			if !present[role] {
-				return fmt.Errorf("FEASIBLE_HOSTED_SUBPROCESSORS_JSON: hosted production requires a %s entry", role)
-			}
-		}
-
 	}
 	if c.IsProduction() && !c.App.Hosted {
 		operatorFields := map[string]string{

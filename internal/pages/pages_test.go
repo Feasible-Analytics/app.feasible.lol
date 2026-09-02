@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/billing"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
@@ -109,7 +108,6 @@ func TestEveryPageRenders(t *testing.T) {
 		"/legal/privacy",
 		"/legal/terms",
 		"/legal/dpa",
-		"/legal/subprocessors",
 	}
 
 	for _, doc := range documentation {
@@ -180,7 +178,6 @@ func TestWritePublicBrowserFixtures(t *testing.T) {
 		"/legal/privacy",
 		"/legal/terms",
 		"/legal/dpa",
-		"/legal/subprocessors",
 	}
 	for _, doc := range documentation {
 		paths = append(paths, "/docs/"+doc.Slug)
@@ -232,24 +229,6 @@ func TestPublicHeaderHasNarrowViewportContainment(t *testing.T) {
 	}
 	if strings.Contains(css, "letter-spacing: -") {
 		t.Fatal("public CSS still uses negative letter spacing")
-	}
-}
-
-// TestSubprocessorPageUsesDeploymentConfiguration proves the public legal list
-// names configured entities and does not substitute generic provider labels.
-func TestSubprocessorPageUsesDeploymentConfiguration(t *testing.T) {
-	handler, _ := newHandler(t)
-	handler.Hosted = true
-	handler.Subprocessors = []config.Subprocessor{{
-		Role: "compute", LegalEntity: "Named Compute LLC", Service: "Virtual machines",
-		Data: "Encrypted visitor analytics", Region: "United States",
-	}}
-
-	body := render(t, handler, "/legal/subprocessors").Body.String()
-	for _, want := range []string{"Named Compute LLC", "Virtual machines", "Encrypted visitor analytics", "United States"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("subprocessor page is missing %q", want)
-		}
 	}
 }
 
@@ -963,13 +942,13 @@ func TestPathCleaningDocsDiscloseTheLegacyBoundary(t *testing.T) {
 	}
 }
 
-// TestDPALinksConfiguredSubprocessors keeps legal copy tied to the deployment
-// inventory while retaining the documented hosted and self-hosted boundaries.
-func TestDPALinksConfiguredSubprocessors(t *testing.T) {
+// TestDPALinksPublicSubprocessors keeps the legal inventory on the public
+// website while retaining the documented hosted and self-hosted boundaries.
+func TestDPALinksPublicSubprocessors(t *testing.T) {
 	body := strings.ToLower(string(mustFind(t, legal, "dpa").Body))
 
 	for _, want := range []string{
-		"/legal/subprocessors",
+		"https://feasible.lol/legal/subprocessors",
 		"legal entities",
 		"data category",
 		"tls terminates",

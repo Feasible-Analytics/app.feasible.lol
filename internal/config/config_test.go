@@ -304,58 +304,6 @@ func TestSelfHostedProductionRequiresOperatorIdentity(t *testing.T) {
 	}
 }
 
-// TestHostedProductionRequiresConcreteSubprocessors keeps the public legal list
-// from degrading into category placeholders on a real hosted deployment.
-func TestHostedProductionRequiresConcreteSubprocessors(t *testing.T) {
-	t.Setenv("FEASIBLE_ENV", EnvProduction)
-	t.Setenv("FEASIBLE_APP_HOSTED", "true")
-	t.Setenv("FEASIBLE_APP_MAIL_TRANSPORT", MailTransportSMTP)
-	t.Setenv("FEASIBLE_SMTP_HOST", "smtp.example.test")
-
-	loader, err := NewLoader("", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "compute") {
-		t.Fatalf("missing hosted inventory error = %v", err)
-	}
-
-	t.Setenv("FEASIBLE_HOSTED_SUBPROCESSORS_JSON", `[
-		{"role":"compute","legal_entity":"Compute Corp","service":"Virtual machines","data":"Encrypted visitor analytics","region":"US"},
-		{"role":"object_storage","legal_entity":"Storage Corp","service":"Object storage","data":"Encrypted database replicas","region":"US"},
-		{"role":"email","legal_entity":"Mail Corp","service":"Transactional email","data":"Account addresses and service messages","region":"US"}
-	]`)
-	cfg, err := LoadFrom(loader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.App.Subprocessors) != 3 || cfg.App.Subprocessors[1].Role != "object_storage" {
-		t.Fatalf("subprocessors = %+v", cfg.App.Subprocessors)
-	}
-}
-
-// TestHostedProductionRejectsSampleSubprocessors prevents the visibly local
-// sample from being copied into a hosted production environment unchanged.
-func TestHostedProductionRejectsSampleSubprocessors(t *testing.T) {
-	t.Setenv("FEASIBLE_ENV", EnvProduction)
-	t.Setenv("FEASIBLE_APP_HOSTED", "true")
-	t.Setenv("FEASIBLE_APP_MAIL_TRANSPORT", MailTransportSMTP)
-	t.Setenv("FEASIBLE_SMTP_HOST", "smtp.example.test")
-	t.Setenv("FEASIBLE_HOSTED_SUBPROCESSORS_JSON", `[
-		{"role":"compute","legal_entity":"LOCAL PLACEHOLDER","service":"VM","data":"data","region":"US"},
-		{"role":"object_storage","legal_entity":"Storage Corp","service":"objects","data":"replicas","region":"US"},
-		{"role":"email","legal_entity":"Mail Corp","service":"mail","data":"addresses","region":"US"}
-	]`)
-
-	loader, err := NewLoader("", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "placeholder") {
-		t.Fatalf("sample hosted inventory error = %v", err)
-	}
-}
-
 // TestLoadFromReadsInternalKey verifies both processes receive the same plain
 // signing value without a JSON wrapper or key identifier.
 func TestLoadFromReadsInternalKey(t *testing.T) {

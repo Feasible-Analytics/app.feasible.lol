@@ -156,7 +156,6 @@ func buildCommerce(e *env, control *sql.DB, manager *accounts.Manager, siteCache
 			Log:             e.log,
 			SalesEmail:      e.cfg.App.SalesEmail,
 			Hosted:          e.cfg.App.Hosted,
-			Subprocessors:   e.cfg.App.Subprocessors,
 			OperatorName:    e.cfg.App.OperatorName,
 			OperatorAddress: e.cfg.App.OperatorAddress,
 			OperatorEmail:   e.cfg.App.OperatorEmail,
