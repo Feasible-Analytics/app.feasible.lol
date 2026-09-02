@@ -22,6 +22,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/geo"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/referrer"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/salts"
@@ -95,7 +96,7 @@ type Pipeline struct {
 	Geo       geo.Locator
 	Agents    *useragent.Cache
 	Bots      *BotFilter
-	Trusted   *TrustedProxies
+	Trusted   *clientip.TrustedProxies
 	Shards    ShardResolver
 	Shield    IPShield
 	Hostnames HostnamePolicy
@@ -230,7 +231,7 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 
 	// Step 2. The single highest-leverage configuration in the system, and the
 	// one that fails silently behind a 202 in every direction.
-	client := ResolveClientIP(r, p.Trusted)
+	client := clientip.ResolveClientIP(r, p.Trusted)
 	clientIP := client.String()
 
 	rawUserAgent := r.Header.Get("User-Agent")

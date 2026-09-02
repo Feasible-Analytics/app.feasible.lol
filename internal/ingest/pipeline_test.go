@@ -19,6 +19,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/referrer"
 )
 
@@ -282,12 +283,12 @@ func TestDirectClientCannotSpoofAddressDerivedBehavior(t *testing.T) {
 
 	plain := request(nil)
 	spoofed := request(map[string]string{
-		HeaderFeasibleIP:     spoofedIP,
-		HeaderCFConnectingIP: spoofedIP,
-		HeaderForwardedFor:   spoofedIP,
+		clientip.HeaderFeasibleIP:     spoofedIP,
+		clientip.HeaderCFConnectingIP: spoofedIP,
+		clientip.HeaderForwardedFor:   spoofedIP,
 	})
 
-	if spoofed.ClientIP != socketIP || spoofed.ClientIPSource != SourceSocket {
+	if spoofed.ClientIP != socketIP || spoofed.ClientIPSource != clientip.SourceSocket {
 		t.Fatalf("spoofed request resolved %q from %q, want socket %q", spoofed.ClientIP, spoofed.ClientIPSource, socketIP)
 	}
 	if spoofed.UserID != plain.UserID {

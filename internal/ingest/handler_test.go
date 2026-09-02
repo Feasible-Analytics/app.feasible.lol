@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/salts"
 )
 
@@ -254,8 +255,8 @@ func TestDebugRequestReturnsEverything(t *testing.T) {
 	if debug.ClientIP != visitors[0].ip {
 		t.Errorf("client_ip = %q, want %q", debug.ClientIP, visitors[0].ip)
 	}
-	if debug.ClientIPSource != SourceForwardedFor {
-		t.Errorf("client_ip_source = %q, want %q", debug.ClientIPSource, SourceForwardedFor)
+	if debug.ClientIPSource != clientip.SourceForwardedFor {
+		t.Errorf("client_ip_source = %q, want %q", debug.ClientIPSource, clientip.SourceForwardedFor)
 	}
 	if debug.SiteID != 1 || debug.AccountID != 1 {
 		t.Errorf("site/account = %d/%d, want 1/1", debug.SiteID, debug.AccountID)
@@ -305,7 +306,7 @@ func TestServerSideCallerIsToldWhatIsMissing(t *testing.T) {
 	}
 
 	message := recorder.Body.String()
-	for _, want := range []string{HeaderForwardedFor, "User-Agent"} {
+	for _, want := range []string{clientip.HeaderForwardedFor, "User-Agent"} {
 		if !strings.Contains(message, want) {
 			t.Errorf("the error does not mention %s: %s", want, message)
 		}
@@ -322,7 +323,7 @@ func TestBrowserFromADatacentreIsNotRefused(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/event", strings.NewReader(validBody))
 	req.Header.Set("Content-Type", "text/plain")
 	req.Header.Set("User-Agent", visitors[0].userAgent)
-	req.Header.Set(HeaderForwardedFor, "203.0.113.9")
+	req.Header.Set(clientip.HeaderForwardedFor, "203.0.113.9")
 	req.RemoteAddr = "192.0.2.44:41000"
 
 	recorder := httptest.NewRecorder()

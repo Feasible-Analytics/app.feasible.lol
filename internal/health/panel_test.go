@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 )
 
@@ -41,11 +42,11 @@ func TestTheProxyWarningFiresWhenMostTrafficHasNoForwardingHeader(t *testing.T) 
 	ctx := context.Background()
 
 	for i := 0; i < 80; i++ {
-		f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{ClientIPSource: ingest.SourceSocket}})
+		f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{ClientIPSource: clientip.SourceSocket}})
 	}
 
 	for i := 0; i < 20; i++ {
-		f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{ClientIPSource: ingest.SourceForwardedFor}})
+		f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{ClientIPSource: clientip.SourceForwardedFor}})
 	}
 
 	if _, err := f.recorder.Flush(ctx); err != nil {
@@ -78,7 +79,7 @@ func TestTheProxyWarningDoesNotFireOnAQuietSite(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 0; i < ProxyWarningMinimum-1; i++ {
-		f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{ClientIPSource: ingest.SourceSocket}})
+		f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{ClientIPSource: clientip.SourceSocket}})
 	}
 
 	if _, err := f.recorder.Flush(ctx); err != nil {
@@ -102,11 +103,11 @@ func TestTheProxyWarningDoesNotFireWhenTheProxyIsWorking(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 0; i < 90; i++ {
-		f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{ClientIPSource: ingest.SourceForwardedFor}})
+		f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{ClientIPSource: clientip.SourceForwardedFor}})
 	}
 
 	for i := 0; i < 10; i++ {
-		f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{ClientIPSource: ingest.SourceSocket}})
+		f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{ClientIPSource: clientip.SourceSocket}})
 	}
 
 	if _, err := f.recorder.Flush(ctx); err != nil {
@@ -455,7 +456,7 @@ func TestCorrectedWarningsAndDebugDetailsAgeOut(t *testing.T) {
 	f := newFixture(t)
 	f.observe(ingest.Observation{
 		Accepted: true, TrackerVersion: CurrentTrackerVersion,
-		Debug: ingest.Debug{Hostname: "staging.other.test", ClientIPSource: ingest.SourceSocket},
+		Debug: ingest.Debug{Hostname: "staging.other.test", ClientIPSource: clientip.SourceSocket},
 	})
 	if _, err := f.recorder.Flush(context.Background()); err != nil {
 		t.Fatal(err)

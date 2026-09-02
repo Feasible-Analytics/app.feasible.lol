@@ -1,10 +1,12 @@
 module github.com/Feasible-Analytics/app.feasible.lol
 
-go 1.23.0
+go 1.26
+
+toolchain go1.26.8
 
 require (
 	github.com/pquerna/otp v1.5.0
-	golang.org/x/crypto v0.41.0
+	golang.org/x/crypto v0.55.0
 	modernc.org/sqlite v1.39.0
 )
 
@@ -22,8 +24,8 @@ require (
 	github.com/oschwald/maxminddb-golang v1.13.1
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
-	golang.org/x/net v0.43.0
-	golang.org/x/sys v0.35.0
+	golang.org/x/net v0.58.0
+	golang.org/x/sys v0.47.0
 	modernc.org/libc v1.66.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

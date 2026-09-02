@@ -838,3 +838,46 @@ func TestAnActiveAccountIsUnaffectedEverywhere(t *testing.T) {
 		})
 	}
 }
+
+// TestTheListenerDefaultsToSafeHeadersAndOnlyAnEmbedRelaxesThem checks the
+// headers through the assembled route table, because the middleware and the
+// one page allowed to take a header back only meet there.
+func TestTheListenerDefaultsToSafeHeadersAndOnlyAnEmbedRelaxesThem(t *testing.T) {
+	s := newStack(t)
+
+	page := s.send(t, http.MethodGet, "/dashboard/", "", s.signedInForm())
+	if page.Code != http.StatusOK {
+		t.Fatalf("the signed-in dashboard answered %d", page.Code)
+	}
+
+	for name, want := range map[string]string{
+		"X-Frame-Options":        "DENY",
+		"X-Content-Type-Options": "nosniff",
+		"Referrer-Policy":        "same-origin",
+	} {
+		if got := page.Header().Get(name); got != want {
+			t.Errorf("signed-in page %s = %q, want %q", name, got, want)
+		}
+	}
+
+	if page.Header().Get("Strict-Transport-Security") != "" {
+		t.Error("an http base URL produced HSTS, which would lock browsers out of the install")
+	}
+
+	embed := s.send(t, http.MethodGet, "/public/example.com?embed=true", "", nil)
+	if embed.Code != http.StatusOK {
+		t.Fatalf("the public embed answered %d", embed.Code)
+	}
+
+	if got := embed.Header().Get("X-Frame-Options"); got != "" {
+		t.Errorf("the embed carries X-Frame-Options %q, so the iframe would be blank", got)
+	}
+
+	if !strings.Contains(embed.Header().Get("Content-Security-Policy"), "frame-ancestors *") {
+		t.Error("the embed did not open frame-ancestors")
+	}
+
+	if embed.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("relaxing framing on the embed dropped the other defaults")
+	}
+}

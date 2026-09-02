@@ -166,10 +166,9 @@ type screen struct {
 
 // ServeHTTP routes one settings request.
 func (h *TeamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// These screens hold an account's administration. A framed settings page is
-	// how somebody is tricked into pressing Remove.
-	w.Header().Set("X-Frame-Options", "DENY")
-	w.Header().Set("Referrer-Policy", "same-origin")
+	// Framing and referrer policy come from the listener's default headers;
+	// this surface only needs to stop a shared machine keeping the last
+	// person's team on screen.
 	w.Header().Set("Cache-Control", "no-store")
 
 	path := strings.TrimPrefix(r.URL.Path, PathPrefix)

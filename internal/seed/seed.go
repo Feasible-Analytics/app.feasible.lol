@@ -26,6 +26,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
@@ -337,7 +338,7 @@ func (g *generator) open(ctx context.Context) error {
 
 	saltSource.SetClock(func() time.Time { return g.clock })
 
-	trusted, err := ingest.ParseTrustedProxies(nil)
+	trusted, err := clientip.ParseTrustedProxies(nil)
 	if err != nil {
 		return err
 	}

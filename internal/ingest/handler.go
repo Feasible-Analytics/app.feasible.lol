@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 )
 
@@ -121,7 +122,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Apply the per-source ceiling before parsing and derivation. It remains a
 	// named 202 drop because a browser beacon cannot act usefully on a 429.
-	if h.Limiter != nil && !h.Limiter.Allow(ResolveClientIP(r, h.Pipeline.Trusted).Addr) {
+	if h.Limiter != nil && !h.Limiter.Allow(clientip.ResolveClientIP(r, h.Pipeline.Trusted).Addr) {
 		h.drop(w, 0, "", ReasonRateLimited)
 		return
 	}
@@ -268,8 +269,8 @@ func (h *Handler) serverSideCallerProblem(r *http.Request) string {
 		return ""
 	}
 
-	client := ResolveClientIP(r, h.Pipeline.Trusted)
-	if client.Source != SourceSocket {
+	client := clientip.ResolveClientIP(r, h.Pipeline.Trusted)
+	if client.Source != clientip.SourceSocket {
 		return ""
 	}
 
@@ -278,8 +279,8 @@ func (h *Handler) serverSideCallerProblem(r *http.Request) string {
 	}
 
 	var missing []string
-	if client.Source == SourceSocket {
-		missing = append(missing, HeaderForwardedFor)
+	if client.Source == clientip.SourceSocket {
+		missing = append(missing, clientip.HeaderForwardedFor)
 	}
 	if r.Header.Get("User-Agent") == "" {
 		missing = append(missing, "User-Agent")
@@ -291,7 +292,7 @@ func (h *Handler) serverSideCallerProblem(r *http.Request) string {
 
 	return "this request arrived from a datacentre address with no " +
 		strings.Join(missing, " and no ") +
-		". A server-side caller must forward the visitor's real " + HeaderForwardedFor +
+		". A server-side caller must forward the visitor's real " + clientip.HeaderForwardedFor +
 		" and User-Agent, or every event will be attributed to your server rather than to the visitor."
 }
 

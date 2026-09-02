@@ -41,12 +41,12 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dataio"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/goals"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/google"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/pathclean"
@@ -263,7 +263,7 @@ type Handler struct {
 	// resolves the viewer's address through exactly the same rules, because an
 	// address resolved a different way here would produce a rule that does not
 	// match the traffic it was created from.
-	Trusted *ingest.TrustedProxies
+	Trusted *clientip.TrustedProxies
 
 	// Shields and Paths are the running snapshots. They are updated in place on
 	// save so a customer sees a rule take effect immediately rather than after

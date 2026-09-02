@@ -200,8 +200,6 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, p 
 	// These pages carry session cookies and forms. A cached copy in a shared
 	// proxy is somebody else's account rendered into your browser.
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Referrer-Policy", "same-origin")
 	w.WriteHeader(status)
 
 	_, _ = buf.WriteTo(w)

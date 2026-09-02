@@ -20,9 +20,9 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dataio"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/google"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/pathclean"
@@ -67,7 +67,7 @@ func newHandler(t *testing.T) (*Handler, *accounts.Manager) {
 		t.Fatal(err)
 	}
 
-	trusted, err := ingest.ParseTrustedProxies(nil)
+	trusted, err := clientip.ParseTrustedProxies(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

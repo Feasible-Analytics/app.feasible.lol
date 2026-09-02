@@ -340,24 +340,20 @@ type Shared struct {
 }
 
 // serveShell writes the HTML with this instance's site list in it.
+//
+// It keeps the listener's default X-Frame-Options: DENY. The dashboard reads
+// one account's traffic and must not be framed by another site, which is also
+// why the embed parameters do nothing here — they work on a share URL only,
+// and an authenticated dashboard that honoured them would be an authenticated
+// dashboard somebody had put in an iframe.
 func (h *Handler) serveShell(w http.ResponseWriter, r *http.Request) {
-	// The dashboard reads one account's traffic and must not be framed by
-	// another site: a clickjacked dashboard is a way to make somebody delete a
-	// site they meant to keep.
-	//
-	// It is also why the embed parameters do nothing here. They are documented
-	// as working on a share URL only, and an authenticated dashboard that
-	// honoured them would be an authenticated dashboard somebody had put in an
-	// iframe — which is the thing this header exists to prevent.
-	w.Header().Set("X-Frame-Options", "DENY")
-
 	h.WriteShell(w, r, h.bootstrap(w, r))
 }
 
-// WriteShell renders the SPA shell with a caller-supplied bootstrap. It sets
-// every header except the framing policy, which is the one decision that
-// differs between the authenticated dashboard and an embeddable share link and
-// so belongs to whichever handler knows the answer.
+// WriteShell renders the SPA shell with a caller-supplied bootstrap. It leaves
+// the framing policy alone, because that is the one decision that differs
+// between the authenticated dashboard and an embeddable share link and so
+// belongs to whichever handler knows the answer.
 //
 // The language is resolved here rather than by the caller, and before anything
 // is written, because resolving it can set the cookie that remembers an
@@ -375,7 +371,6 @@ func (h *Handler) WriteShell(w http.ResponseWriter, r *http.Request, boot Bootst
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", shellCacheControl)
-	w.Header().Set("Referrer-Policy", "same-origin")
 
 	w.WriteHeader(http.StatusOK)
 

@@ -21,6 +21,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/access"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/auth"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dashboard"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dataio"
@@ -354,7 +355,7 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 type siteRules struct {
 	shields *shields.Cache
 	paths   *pathclean.Cache
-	trusted *ingest.TrustedProxies
+	trusted *clientip.TrustedProxies
 }
 
 // buildSiteRules loads the shield and path cleaning rules and attaches them to
@@ -364,7 +365,7 @@ type siteRules struct {
 // raw address still exists. Country, page, and hostname rules run in the writer
 // against the live account rule snapshot.
 func buildSiteRules(ctx context.Context, e *env, service *ingest.Service, manager *accounts.Manager) (*siteRules, error) {
-	trusted, err := ingest.ParseTrustedProxies(e.cfg.Ingest.TrustedProxies)
+	trusted, err := clientip.ParseTrustedProxies(e.cfg.Ingest.TrustedProxies)
 	if err != nil {
 		return nil, fmt.Errorf("trusted proxies: %w", err)
 	}
@@ -596,5 +597,9 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 		mux.Handle(tracker.PixelPath, &tracker.Pixel{Events: service.Handler})
 	}
 
-	return mux
+	// Every route above gets the safe headers unless it takes them back
+	// itself, which only the embeddable share page does. HSTS follows the base
+	// URL's scheme for the same reason the share redirect does: an http
+	// install that sent it would lock browsers out of itself.
+	return httpserver.SecurityHeaders(sharing.NewSecurity(e.cfg.App.BaseURL).RequireHTTPS, mux)
 }

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 )
 
@@ -260,9 +261,10 @@ func TestNonGetIsRefused(t *testing.T) {
 
 // TestShellIsNotFramable covers the clickjacking header. The dashboard renders
 // one account's traffic and carries destructive controls, so being embedded in
-// somebody else's page is never a legitimate use.
+// somebody else's page is never a legitimate use: the shell must leave the
+// listener's default in place rather than relax it the way a share page does.
 func TestShellIsNotFramable(t *testing.T) {
-	w := get(t, New(fakeSites{}), "/dashboard/")
+	w := get(t, httpserver.SecurityHeaders(false, New(fakeSites{})), "/dashboard/")
 
 	if got := w.Header().Get("X-Frame-Options"); got != "DENY" {
 		t.Fatalf("X-Frame-Options is %q, want DENY", got)

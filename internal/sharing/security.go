@@ -1,6 +1,6 @@
 //
 // security.go
-// HTTPS, HSTS and framing policy for the pages anybody can reach.
+// HTTPS redirects and framing policy for the pages anybody can reach.
 //
 // Created: 2026-08-31
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -12,7 +12,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -20,19 +19,13 @@ import (
 	"strings"
 )
 
-// HSTSMaxAge is one year in seconds, the value browsers require before a domain
-// is eligible for preloading. A shorter max-age means a visitor who has not
-// been back inside the window is downgradeable again, which is most of the
-// point of the header.
-const HSTSMaxAge = 31536000
-
 // Security decides how public pages are protected in transit. It is resolved
 // from the configured base URL rather than guessed per request: a local
 // development install runs over plain HTTP and must not redirect itself into a
 // loop trying to reach an HTTPS listener that does not exist.
 type Security struct {
-	// RequireHTTPS turns on the redirect and the HSTS header. It is true when
-	// the install's base URL is an https one.
+	// RequireHTTPS turns on the redirect. It is true when the install's base
+	// URL is an https one; the listener sets HSTS from the same fact.
 	RequireHTTPS bool
 
 	// Host is the hostname redirects are built against, taken from the base
@@ -89,9 +82,6 @@ func (s Security) Apply(w http.ResponseWriter, r *http.Request) bool {
 
 		return true
 	}
-
-	w.Header().Set("Strict-Transport-Security",
-		fmt.Sprintf("max-age=%d; includeSubDomains", HSTSMaxAge))
 
 	return false
 }

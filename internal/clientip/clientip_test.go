@@ -2,15 +2,16 @@
 // clientip_test.go
 // Tests for the precedence order and the trusted-proxy allow-list.
 //
-// Created: 2026-08-30
+// Created: 2026-09-02
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-package ingest
+package clientip
 
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"testing"
 )
 
@@ -253,5 +254,93 @@ func TestBadTrustedProxyEntryIsRejected(t *testing.T) {
 		if _, err := ParseTrustedProxies([]string{entry}); err == nil {
 			t.Errorf("ParseTrustedProxies accepted %q", entry)
 		}
+	}
+}
+
+// TestKeyCannotBeChosenByTheClient is what makes a limiter keyed on it worth
+// having: a header from an untrusted peer must not move the request into a
+// bucket of the sender's choosing.
+func TestKeyCannotBeChosenByTheClient(t *testing.T) {
+	trusted := mustTrust(t, "10.0.0.7")
+
+	cases := []struct {
+		name    string
+		peer    string
+		headers map[string]string
+		want    string
+	}{
+		{
+			name:    "a forwarded header from a trusted proxy keys on the client",
+			peer:    "10.0.0.7:41000",
+			headers: map[string]string{HeaderForwardedFor: "203.0.113.5"},
+			want:    "203.0.113.5",
+		},
+		{
+			name:    "a forwarded header from anyone else keys on the peer",
+			peer:    "203.0.113.99:41000",
+			headers: map[string]string{HeaderForwardedFor: "203.0.113.5"},
+			want:    "203.0.113.99",
+		},
+		{
+			name: "a v4-mapped peer keys on the same string as the plain v4",
+			peer: "[::ffff:203.0.113.99]:41000",
+			want: "203.0.113.99",
+		},
+		{
+			name: "a peer that is not an address still keys on something",
+			peer: "unix-socket-client",
+			want: "unix-socket-client",
+		},
+		{
+			name: "no peer at all is never an empty key",
+			peer: "",
+			want: "unknown",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Key(newIPRequest(tc.peer, tc.headers), trusted); got != tc.want {
+				t.Errorf("Key = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIsPrivateOrLocal enumerates the ranges an outbound request must never
+// reach and the settings page must warn about, in both families and in the
+// v4-mapped form a dual-stack listener produces.
+func TestIsPrivateOrLocal(t *testing.T) {
+	cases := map[string]bool{
+		"127.0.0.1":          true,
+		"127.8.8.8":          true,
+		"::1":                true,
+		"10.0.0.5":           true,
+		"172.16.4.4":         true,
+		"192.168.178.1":      true,
+		"fd12::1":            true,
+		"169.254.169.254":    true,
+		"fe80::1":            true,
+		"ff02::1":            true,
+		"224.0.0.1":          true,
+		"0.0.0.0":            true,
+		"::":                 true,
+		"::ffff:127.0.0.1":   true,
+		"::ffff:10.0.0.5":    true,
+		"::ffff:169.254.1.1": true,
+		"203.0.113.5":        false,
+		"8.8.8.8":            false,
+		"2001:db8::1":        false,
+		"::ffff:203.0.113.5": false,
+	}
+
+	for value, want := range cases {
+		if got := IsPrivateOrLocal(netip.MustParseAddr(value)); got != want {
+			t.Errorf("IsPrivateOrLocal(%s) = %v, want %v", value, got, want)
+		}
+	}
+
+	if IsPrivateOrLocal(netip.Addr{}) {
+		t.Error("the zero address reported as private; callers check validity themselves")
 	}
 }
