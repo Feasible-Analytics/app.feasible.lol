@@ -132,6 +132,24 @@ function strip<T>(value: T): T {
 	return value;
 }
 
+/** withImportedHistory makes migration data part of every historical dashboard
+ * report unless a caller deliberately opts out. The public query API keeps
+ * imports opt-in so an integration cannot change totals unexpectedly, but the
+ * dashboard is the destination of an import and must show that history without
+ * requiring a hidden request flag. Realtime windows stay native-only because a
+ * daily aggregate cannot describe who is on the site right now. */
+function withImportedHistory(body: StatsRequest): StatsRequest {
+	if (body.date_range === "5m" || body.date_range === "realtime") return body;
+
+	return {
+		...body,
+		include: {
+			...body.include,
+			imports: body.include?.imports ?? true,
+		},
+	};
+}
+
 /**
  * query runs one report against one site.
  *
@@ -147,7 +165,7 @@ export async function query(
 	const response = await fetch(`/api/stats/${encodeURIComponent(domain)}/query`, {
 		method: "POST",
 		headers: { "Content-Type": "application/json", ...capabilityHeaders() },
-		body: JSON.stringify(strip(body)),
+		body: JSON.stringify(strip(withImportedHistory(body))),
 		signal,
 	});
 
