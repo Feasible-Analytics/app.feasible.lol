@@ -674,6 +674,11 @@ func TestPlausibleSourcesDeriveTheirMissingChannel(t *testing.T) {
 	}{
 		{[]string{"2026-08-28", "Google", "google.com", "", "", "", "2"}, "Organic Search"},
 		{[]string{"2026-08-28", "Google", "google.com", "newsletter", "email", "launch", "2"}, "Email"},
+		{[]string{"2026-08-28", "Microsoft Copilot", "", "copilot.com", "", "", "2"}, "AI Assistants"},
+		{[]string{"2026-08-28", "ChatGPT", "", "chatgpt.com", "", "", "2"}, "AI Assistants"},
+		{[]string{"2026-08-28", "Google Gemini", "gemini.google.com", "", "", "", "2"}, "AI Assistants"},
+		{[]string{"2026-08-28", "X (Twitter)", "t.co", "", "", "", "2"}, "Organic Social"},
+		{[]string{"2026-08-28", "Brave", "search.brave.com", "", "", "", "2"}, "Organic Search"},
 		{[]string{"2026-08-28", "Direct", "", "", "", "", "2"}, "Direct"},
 	}
 

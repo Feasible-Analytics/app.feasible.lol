@@ -15,9 +15,14 @@ import "testing"
 func TestCanonicalSourceCategoriesAreRecoverable(t *testing.T) {
 	cases := map[string]Category{
 		"Google":            CategorySearch,
+		"Brave":             CategorySearch,
 		"Facebook":          CategorySocial,
+		"X (Twitter)":       CategorySocial,
 		"Yahoo!":            CategorySearch,
 		"Microsoft Copilot": CategoryAI,
+		"copilot.com":       CategoryAI,
+		"Google Gemini":     CategoryAI,
+		"chatgpt.com":       CategoryAI,
 		"Newsletter":        CategoryEmail,
 		"unknown.example":   CategoryUnknown,
 	}

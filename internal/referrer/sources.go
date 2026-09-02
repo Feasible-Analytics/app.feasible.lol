@@ -142,6 +142,7 @@ var hosts = map[string]Source{
 	"gemini.google.com":     {"Gemini", CategoryAI},
 	"bard.google.com":       {"Gemini", CategoryAI},
 	"copilot.microsoft.com": {"Microsoft Copilot", CategoryAI},
+	"copilot.com":           {"Microsoft Copilot", CategoryAI},
 	"you.com":               {"You.com", CategoryAI},
 	"poe.com":               {"Poe", CategoryAI},
 
@@ -271,6 +272,14 @@ func buildCategoriesByName() map[string]Category {
 		categories[key] = source.Category
 	}
 
+	// Plausible exports a few canonical display labels that differ from the
+	// shorter labels Feasible uses. Keeping them here lets an aggregate export
+	// retain the category Plausible assigned before the original referrer was
+	// discarded.
+	categories["brave"] = CategorySearch
+	categories["google gemini"] = CategoryAI
+	categories["x (twitter)"] = CategorySocial
+
 	return categories
 }
 
@@ -278,7 +287,19 @@ func buildCategoriesByName() map[string]Category {
 // label. Unknown labels deliberately return CategoryUnknown, which the channel
 // classifier treats as ordinary referral traffic rather than dropping it.
 func CategoryForSource(name string) Category {
-	return categoriesByName[strings.ToLower(strings.TrimSpace(name))]
+	name = strings.ToLower(strings.TrimSpace(name))
+	if category, ok := categoriesByName[name]; ok {
+		return category
+	}
+
+	// Plausible sometimes exports a hostname in utm_source. Resolve that shape
+	// through the same host table used by native ingestion so an explicit tag
+	// such as chatgpt.com does not erase the AI category carried by its source.
+	if source, ok := lookupHost(normaliseHost(name)); ok {
+		return source.Category
+	}
+
+	return CategoryUnknown
 }
 
 // buildHostsByName inverts the source table.

@@ -419,7 +419,12 @@ func deriveImportedChannel(row *Row) {
 	category := referrer.CategoryForSource(source)
 
 	if utmSource != "" {
-		category = referrer.CategoryForSource(utmSource)
+		// A known campaign source is stronger evidence than the display source,
+		// but an unknown tag must not erase a category Plausible already encoded
+		// in its canonical source label.
+		if campaignCategory := referrer.CategoryForSource(utmSource); campaignCategory != referrer.CategoryUnknown {
+			category = campaignCategory
+		}
 		if source == "" {
 			source = utmSource
 		}

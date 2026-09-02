@@ -1063,8 +1063,8 @@ func TestAccountV7ToCurrentKeepsPopulatedSessionOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 7 || result.To != 13 || fmt.Sprint(result.Applied) != "[8 9 10 11 12 13]" {
-		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 13 via [8 9 10 11 12 13]",
+	if result.From != 7 || result.To != 14 || fmt.Sprint(result.Applied) != "[8 9 10 11 12 13 14]" {
+		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 14 via [8 9 10 11 12 13 14]",
 			result.From, result.To, result.Applied)
 	}
 
@@ -1110,17 +1110,83 @@ func TestAccountV7ToCurrentKeepsPopulatedSessionOwnership(t *testing.T) {
 	}
 }
 
+// TestPlausibleChannelParityMigration repairs the canonical labels that the
+// first Plausible backfill put in Referral while leaving an ordinary referral
+// untouched. This keeps already-imported accounts aligned after an upgrade.
+func TestPlausibleChannelParityMigration(t *testing.T) {
+	ctx := context.Background()
+	db := newDatabase(t)
+
+	if _, err := Run(ctx, db, accountThrough(13)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO imports (id, site_id, source, created_at) VALUES (1, 1, 'plausible', 1);
+		INSERT INTO dim_channel (id, value) VALUES (1, 'Referral');
+		INSERT INTO dim_source (id, value) VALUES
+			(1, 'Microsoft Copilot'), (2, 'ChatGPT'), (3, 'Google Gemini'),
+			(4, 'X (Twitter)'), (5, 'Brave'), (6, 'example.com');
+		INSERT INTO imported_rollups (import_id, site_id, timestamp, covered, source_id, channel_id)
+		VALUES (1, 1, 1, 384, 1, 1), (1, 1, 1, 384, 2, 1),
+			(1, 1, 1, 384, 3, 1), (1, 1, 1, 384, 4, 1),
+			(1, 1, 1, 384, 5, 1), (1, 1, 1, 384, 6, 1);`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Run(ctx, db, Account()); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT source.value, channel.value
+		FROM imported_rollups rollup
+		JOIN dim_source source ON source.id = rollup.source_id
+		JOIN dim_channel channel ON channel.id = rollup.channel_id
+		ORDER BY source.id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	want := map[string]string{
+		"Microsoft Copilot": "AI Assistants",
+		"ChatGPT":           "AI Assistants",
+		"Google Gemini":     "AI Assistants",
+		"X (Twitter)":       "Organic Social",
+		"Brave":             "Organic Search",
+		"example.com":       "Referral",
+	}
+	for rows.Next() {
+		var source, channel string
+		if err := rows.Scan(&source, &channel); err != nil {
+			t.Fatal(err)
+		}
+		if channel != want[source] {
+			t.Errorf("%s channel = %q, want %q", source, channel, want[source])
+		}
+		delete(want, source)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(want) != 0 {
+		t.Fatalf("migration did not return sources: %v", want)
+	}
+}
+
 // TestCoordinatedMigrationNumbers pins the upgrade order requested by the
 // app-shard runtime: account ingest state and hostname authority follow the
 // deployed 0007 settings migration, while the system chain preserves every
 // historical step before removing obsolete salt storage in migration 12. The
-// account chain then adds Plausible's lossless imported-rollup fields in 13.
+// account chain then adds Plausible's lossless imported-rollup fields in 13 and
+// repairs the first Plausible channel backfill in 14.
 func TestCoordinatedMigrationNumbers(t *testing.T) {
 	for name, test := range map[string]struct {
 		set  Set
 		want []int
 	}{
-		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13}},
+		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14}},
 		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}},
 	} {
 		t.Run(name, func(t *testing.T) {
