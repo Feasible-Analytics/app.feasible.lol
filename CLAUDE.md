@@ -101,7 +101,7 @@ The three processes live in the **`Server` tab**, one per labelled pane:
 
 | Pane label | Runs | Port |
 |---|---|---|
-| **App** | `make app-ts` | 19301 (internal 19401, loopback only) |
+| **App** | `make app-ts` | 19301 |
 | **Ingest** | `make ingest-ts` | 19302 |
 | **Caddy** | `make caddy-ts` | 19300 |
 
@@ -127,9 +127,9 @@ loopback wastes his time and yours.
    the bind address. Get this wrong and cookies will not set, redirects bounce, and Google OAuth
    rejects the redirect URI — all with no useful error message.
 
-The **internal listener stays on `127.0.0.1` even in `-ts` mode.** Putting `/internal/*` on the
-tailnet would expose the salts endpoint — the one that can reverse visitor fingerprints — to every
-device on it.
+Each process has one listener. Caddy still denies `/internal/*` and `/metrics` at the public edge;
+tests and operational checks that need those paths connect directly to the process port. Internal
+requests remain HMAC-authenticated because network placement is not authentication.
 
 **Find a pane by label, never by a hard-coded id** — herdr compacts ids when panes close:
 

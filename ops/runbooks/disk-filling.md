@@ -91,7 +91,7 @@ checkpoint is not completing, usually because a long-running read is holding the
 file. The log is truncated when the process closes the handle cleanly:
 
 ```bash
-scripts/drain.sh http://127.0.0.1:19402/metrics   # on each ingestor
+scripts/drain.sh http://127.0.0.1:19302/metrics   # on each ingestor
 systemctl restart feasible                         # closes every handle, checkpointing each WAL
 ```
 

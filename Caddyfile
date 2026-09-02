@@ -19,9 +19,13 @@
 }
 
 {$FEASIBLE_CADDY_BIND:127.0.0.1}:{$FEASIBLE_CADDY_PORT:19300} {
-	# /internal/* is denied outright. Operational health and metrics live on the
-	# separate loopback listener and are not routed through the public proxy.
+	# Service and observability paths share each process socket but are denied at
+	# the public edge. Trusted services and monitoring connect directly through
+	# the protected network instead of through Caddy.
 	handle /internal/* {
+		respond "404 page not found" 404
+	}
+	handle /metrics {
 		respond "404 page not found" 404
 	}
 

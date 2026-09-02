@@ -43,27 +43,25 @@ saves the outage:
 
 ## Where the signals are
 
-Each process runs two listeners. The public one serves traffic; the internal one
-is bound to loopback in every mode, **including Tailscale mode**, and is where
-operations look.
+Each process runs one listener. The protected network and edge proxy determine
+which paths are externally reachable.
 
 | | App (`feasible serve`) | Ingest (`feasible ingest`) |
 |---|---|---|
-| Public listen | `FEASIBLE_APP_LISTEN`, default `127.0.0.1:19301` | `FEASIBLE_INGEST_LISTEN`, default `127.0.0.1:19302` |
-| Internal listen | `FEASIBLE_APP_INTERNAL_LISTEN`, default `127.0.0.1:19401` | `FEASIBLE_INGEST_INTERNAL_LISTEN`, default `127.0.0.1:19402` |
+| Listen | `FEASIBLE_APP_LISTEN`, default `127.0.0.1:19301` | `FEASIBLE_INGEST_LISTEN`, default `127.0.0.1:19302` |
 
-Both listeners answer `/health/live` and `/health/ready`. Only the internal one
-answers `/metrics`.
+Both processes answer `/health/live`, `/health/ready`, and `/metrics` on that
+listener.
 
 ```bash
-curl -s http://127.0.0.1:19401/metrics | grep '^feasible_'
-curl -s http://127.0.0.1:19401/health/ready | python3 -m json.tool
+curl -s http://127.0.0.1:19301/metrics | grep '^feasible_'
+curl -s http://127.0.0.1:19301/health/ready | python3 -m json.tool
 ```
 
-The defaults bind the internal listener to loopback. A hosted deployment puts
-app private listeners on a private encrypted network so ingesters can reach the
-authenticated `/internal/domains`, `/internal/salts`, and `/internal/ingest`
-endpoints. The public edge must never expose those paths.
+A hosted deployment puts app listeners on a protected network so ingesters can
+reach the authenticated `/internal/domains`, `/internal/salts`, and
+`/internal/ingest` endpoints. The public edge must never expose those paths or
+`/metrics`.
 
 ## The signal inventory
 

@@ -26,7 +26,7 @@
 
 set -euo pipefail
 
-METRICS_URL="${1:-http://127.0.0.1:19402/metrics}"
+METRICS_URL="${1:-http://127.0.0.1:19302/metrics}"
 TIMEOUT_SECONDS="${DRAIN_TIMEOUT_SECONDS:-120}"
 POLL_SECONDS="${DRAIN_POLL_SECONDS:-2}"
 

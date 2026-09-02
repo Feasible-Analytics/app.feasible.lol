@@ -8,15 +8,12 @@
 # Run `make` on its own for the list of targets.
 
 # ── Ports ─────────────────────────────────────────────────────────────────────
-# 193xx is public, 194xx is internal: the number says which side of the fence a
-# process sits on. They are deliberately away from 3000/4000/5000/8000/8080,
+# These ports are deliberately away from 3000/4000/5000/8000/8080,
 # which collide with everything else on a working machine.
 PORT_CADDY        ?= 19300
 PORT_APP          ?= 19301
 PORT_INGEST       ?= 19302
 PORT_SITE         ?= 19303
-PORT_APP_INTERNAL    ?= 19401
-PORT_INGEST_INTERNAL ?= 19402
 
 # ── Addresses ─────────────────────────────────────────────────────────────────
 # BIND_HOST is what the processes listen on; PUBLIC_HOST is what ends up in URLs.
@@ -29,11 +26,6 @@ PUBLIC_HOST ?= localhost
 
 BASE_URL      = http://$(PUBLIC_HOST):$(PORT_CADDY)
 SOLO_BASE_URL = http://$(PUBLIC_HOST):$(PORT_APP)
-
-# The health and metrics listeners never move off loopback, in any mode. Current
-# main has no internal event-delivery or salt-distribution API.
-INTERNAL_LISTEN        = 127.0.0.1:$(PORT_APP_INTERNAL)
-INGEST_INTERNAL_LISTEN = 127.0.0.1:$(PORT_INGEST_INTERNAL)
 
 # ── Tailscale ─────────────────────────────────────────────────────────────────
 # The App Store build does not put the CLI on PATH, hence the fallback path.
@@ -66,11 +58,11 @@ LDFLAGS := -s -w \
 # Every run target sets the same variables from the same place, so there is one
 # answer to "what is this process actually configured with".
 APP_ENV = FEASIBLE_APP_LISTEN=$(BIND_HOST):$(PORT_APP) \
-	FEASIBLE_APP_INTERNAL_LISTEN=$(INTERNAL_LISTEN) \
 	FEASIBLE_APP_BASE_URL=$(BASE_URL)
 
 INGEST_ENV = FEASIBLE_INGEST_LISTEN=$(BIND_HOST):$(PORT_INGEST) \
-	FEASIBLE_INGEST_INTERNAL_LISTEN=$(INGEST_INTERNAL_LISTEN)
+	FEASIBLE_INGEST_SHARDS=http://$(BIND_HOST):$(PORT_APP) \
+	FEASIBLE_INGEST_SALT_URL=http://$(BIND_HOST):$(PORT_APP)
 
 CADDY_ENV = FEASIBLE_CADDY_BIND=$(BIND_HOST) \
 	FEASIBLE_CADDY_PORT=$(PORT_CADDY) \
@@ -110,7 +102,7 @@ help:
 	@echo
 	@echo "  Run one process each, in its own terminal, so its logs stay readable:"
 	@echo "    make caddy      reverse proxy on :$(PORT_CADDY) — the only port you open in a browser"
-	@echo "    make app        the app on :$(PORT_APP) (internal :$(PORT_APP_INTERNAL), loopback only)"
+	@echo "    make app        the app and signed internal routes on :$(PORT_APP)"
 	@echo "    make ingest     the ingest tier on :$(PORT_INGEST)"
 	@echo "    make testsite   a page with the snippet installed, on :$(PORT_SITE)"
 	@echo
@@ -367,7 +359,6 @@ dev: build
 dev-solo: build
 	@echo "listening on $(SOLO_BASE_URL)"
 	@FEASIBLE_APP_LISTEN=$(BIND_HOST):$(PORT_APP) \
-		FEASIBLE_APP_INTERNAL_LISTEN=$(INTERNAL_LISTEN) \
 		FEASIBLE_APP_BASE_URL=$(SOLO_BASE_URL) \
 		FEASIBLE_APP_TRANSPORT=direct \
 		./$(BINARY) serve

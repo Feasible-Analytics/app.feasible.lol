@@ -57,8 +57,7 @@ Flags:
 // deployment: one binary, one data directory, no queue and no second service.
 func runServe(e *env, args []string) int {
 	fs := newFlagSet("serve", e, serveHelp)
-	listen := fs.String("listen", e.cfg.App.Listen, "public listen address (host:port)")
-	internalListen := fs.String("internal-listen", e.cfg.App.InternalListen, "private listen address for /internal/*")
+	listen := fs.String("listen", e.cfg.App.Listen, "listen address (host:port)")
 	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding system.db and the account databases")
 	check := fs.Bool("check", false, "resolve and print the configuration, then exit without listening")
 
@@ -67,7 +66,6 @@ func runServe(e *env, args []string) int {
 	}
 
 	e.cfg.App.Listen = *listen
-	e.cfg.App.InternalListen = *internalListen
 	e.cfg.App.DataDir = *dataDir
 
 	// The configuration is reported before anything is opened, so that
@@ -75,7 +73,6 @@ func runServe(e *env, args []string) int {
 	// databases are not there yet — which is exactly when the question is asked.
 	e.log.Info("serve configuration",
 		"listen", e.cfg.App.Listen,
-		"internal_listen", e.cfg.App.InternalListen,
 		"base_url", e.cfg.App.BaseURL,
 		"data_dir", e.cfg.App.DataDir,
 		"transport", e.cfg.App.Transport,
@@ -221,21 +218,21 @@ func runServe(e *env, args []string) int {
 	data := buildData(e, control, manager, service, site)
 	extra.Register(data.runner)
 
-	server := httpserver.New("app", e.cfg.App.Listen,
-		serveRoutes(e, service, manager, secret, e.cfg.App.DataDir, app, public, com, data.settings, extra))
-	server.Health = checks
-
 	privateShard := &ingest.InternalShard{
 		ID: e.cfg.App.ShardID, Sites: service.Sites, Shields: site.shields,
 		Salts: service.Salts, Writer: service.Writer,
 	}
 	privateRoutes := ingest.VerifyInternal(internalKeys(e.cfg.Shared.InternalKeys), privateShard.Handler())
-	internal := internalServer("app-internal", e.cfg.App.InternalListen, checks, privateRoutes)
+	server := httpserver.New("app", e.cfg.App.Listen, processRoutes(
+		serveRoutes(e, service, manager, secret, e.cfg.App.DataDir, app, public, com, data.settings, extra),
+		privateRoutes,
+	))
+	server.Health = checks
 
 	pruneCtx, stopPrune := context.WithCancel(context.Background())
 	go app.RunPrune(pruneCtx)
 
-	return serveUntilSignalWith(e, server, internal, service, worker,
+	return serveUntilSignalWith(e, server, service, worker,
 		backgroundLoops(com.Start, site.background(e), data.background(), extra.background(e)),
 		func() error { stopPrune(); stopWorker(); return nil }, manager.CloseAll, control.Close)
 }

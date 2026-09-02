@@ -67,7 +67,7 @@ recreating deleted data.
 **1. Stop the process that would hold the file open.**
 
 ```bash
-scripts/drain.sh http://127.0.0.1:19402/metrics   # on each ingestor first
+scripts/drain.sh http://127.0.0.1:19302/metrics   # on each ingestor first
 systemctl stop feasible                            # then the shard
 ```
 

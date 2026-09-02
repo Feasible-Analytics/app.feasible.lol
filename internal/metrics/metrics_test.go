@@ -123,8 +123,8 @@ func TestHandlerServesTheTextFormat(t *testing.T) {
 }
 
 // TestWatchReplacesThePreviousSampler checks registering twice is not a panic.
-// A process that builds a second listener — and every test that builds two —
-// must not die over a metric.
+// Rebuilding process services in tests must not die over a metric left by the
+// previous service.
 func TestWatchReplacesThePreviousSampler(t *testing.T) {
 	depth := 3
 

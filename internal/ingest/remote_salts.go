@@ -20,7 +20,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/salts"
 )
 
-// RemoteSalts fetches the two live salts over the private app listener and
+// RemoteSalts fetches the two live salts from the protected app endpoint and
 // retains them only in memory.
 type RemoteSalts struct {
 	URL    string

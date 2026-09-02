@@ -47,7 +47,7 @@ func TestServeReportsResolvedConfig(t *testing.T) {
 	for _, want := range []string{
 		"base_url=http://rager.example.ts.net:19300",
 		"transport=http",
-		"internal_listen=127.0.0.1:19401",
+		"listen=127.0.0.1:19301",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("serve did not report %q; got %q", want, stdout)

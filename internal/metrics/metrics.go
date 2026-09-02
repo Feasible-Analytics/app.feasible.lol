@@ -209,8 +209,8 @@ var (
 )
 
 // sampled holds the collector currently registered, so that Watch can replace
-// it rather than fail on a duplicate. A process that builds a second listener —
-// and every test that builds two — must not panic over a metric.
+// it rather than fail on a duplicate. Rebuilding process services in tests must
+// not panic over a metric registered by the previous service.
 var sampled atomic.Pointer[sampler]
 
 // Watch registers the gauges that have to be read at scrape time rather than

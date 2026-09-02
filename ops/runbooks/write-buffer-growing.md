@@ -31,13 +31,13 @@ per configured app shard, so one failed shard must not stop healthy shards.
 
 ## Diagnosis
 
-1. Query the ingester's private listener. Its readiness must remain healthy
+1. Query the ingester directly on its protected service address. Its readiness must remain healthy
    while an app is down as long as `buffer.db`, the cached routing snapshot,
    and the current salt remain usable.
 2. Compare several ingesters. A queue rising everywhere for one destination is
    an app-shard incident. A queue rising on one ingester is its network, disk,
    signing key, clock, or cached route.
-3. Check app private-listener logs for HMAC failures, `not_mine`, account SQLite
+3. Check app logs for HMAC failures, `not_mine`, account SQLite
    errors, and partial commit responses. Verify clocks are within five minutes.
 4. Check free space on the ingester volume. Unknown domains are held only while
    the static shard map is incomplete and are bounded at 100,000 rows or 50 MB;
@@ -58,7 +58,7 @@ Before a planned ingester restart, remove it from the public load balancer and
 wait for its local queue to reach zero:
 
 ```bash
-scripts/drain.sh http://127.0.0.1:19402/metrics
+scripts/drain.sh http://127.0.0.1:19302/metrics
 systemctl restart feasible-ingest
 ```
 
@@ -73,7 +73,7 @@ a replacement with the same shard list and internal keys. Follow
 - Removing an app URL from `FEASIBLE_INGEST_SHARDS` while it still owns accounts
   makes the routing map falsely complete.
 - Pointing a shard entry at a load-balanced group destroys deterministic account
-  ownership; each entry must address that shard's private listener.
+  ownership; each entry must address that shard's protected service address.
 - Returning synthetic `202` responses at the edge acknowledges data no ingester
   owns.
 - Terminating an ingester before its outbox is empty without preserving its

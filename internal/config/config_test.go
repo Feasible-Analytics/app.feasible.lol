@@ -252,8 +252,8 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.Shared.Env != DefaultEnv {
 		t.Errorf("env: got %q", cfg.Shared.Env)
 	}
-	if cfg.App.Listen != DefaultAppListen || cfg.App.InternalListen != DefaultAppInternalListen {
-		t.Errorf("listen addresses: got %q and %q", cfg.App.Listen, cfg.App.InternalListen)
+	if cfg.App.Listen != DefaultAppListen {
+		t.Errorf("listen address: got %q", cfg.App.Listen)
 	}
 	if cfg.App.Transport != TransportDirect {
 		t.Errorf("transport: got %q, want the self-hoster default", cfg.App.Transport)

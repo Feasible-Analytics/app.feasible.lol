@@ -30,7 +30,6 @@ Flags:
 func runIngest(e *env, args []string) int {
 	fs := newFlagSet("ingest", e, ingestHelp)
 	listen := fs.String("listen", e.cfg.Ingest.Listen, "listen address (host:port)")
-	internalListen := fs.String("internal-listen", e.cfg.Ingest.InternalListen, "private listen address for /metrics (host:port)")
 	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding geolocation and classification data; account databases are never opened")
 	replayParked := fs.Bool("replay-parked", false, "return operator-reviewed parked events to delivery")
 	check := fs.Bool("check", false, "resolve and print the configuration, then exit without listening")
@@ -40,7 +39,6 @@ func runIngest(e *env, args []string) int {
 	}
 
 	e.cfg.Ingest.Listen = *listen
-	e.cfg.Ingest.InternalListen = *internalListen
 	if err := validateIngestTopology(e); err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError
@@ -48,7 +46,6 @@ func runIngest(e *env, args []string) int {
 
 	e.log.Info("ingest configuration",
 		"listen", e.cfg.Ingest.Listen,
-		"internal_listen", e.cfg.Ingest.InternalListen,
 		"shards", e.cfg.Ingest.Shards,
 		"buffer_path", e.cfg.Ingest.BufferPath,
 		"salt_url", e.cfg.Ingest.SaltURL,
@@ -104,12 +101,10 @@ func runIngest(e *env, args []string) int {
 
 	watchProcess(service, nil, filepath.Dir(e.cfg.Ingest.BufferPath), nil)
 
-	server := httpserver.New("ingest", e.cfg.Ingest.Listen, ingestRoutes(service))
+	server := httpserver.New("ingest", e.cfg.Ingest.Listen, processRoutes(ingestRoutes(service)))
 	server.Health = checks
 
-	internal := internalServer("ingest-internal", e.cfg.Ingest.InternalListen, checks)
-
-	return serveUntilSignalWith(e, server, internal, service, nil, nil, outbox.Close)
+	return serveUntilSignalWith(e, server, service, nil, nil, outbox.Close)
 }
 
 // validateIngestTopology rejects a standalone ingester that has no complete

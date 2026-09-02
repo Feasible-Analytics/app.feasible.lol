@@ -189,24 +189,19 @@ func jobCounts(control *sql.DB) func(context.Context) (metrics.JobCounts, error)
 	}
 }
 
-// internalServer builds the loopback listener every process runs beside its
-// public one: the metrics endpoint, and the same two health probes.
-//
-// Metrics live here rather than on the public listener because /metrics is an
-// operations endpoint. Nothing on it is customer data, but our event rate,
-// error rate and account count are not the internet's business, and no operator
-// expects to have to firewall a path.
-func internalServer(name, addr string, checks *health.Set, routes ...http.Handler) *httpserver.Server {
+// processRoutes combines a process's customer-facing and operational handlers
+// on one listener. Network policy and the edge proxy decide which paths are
+// reachable externally; signed internal routes still authenticate every
+// service request instead of treating socket placement as authentication.
+func processRoutes(base http.Handler, internal ...http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", metrics.Handler())
-	if len(routes) > 0 && routes[0] != nil {
-		mux.Handle("/internal/", routes[0])
+	if len(internal) > 0 && internal[0] != nil {
+		mux.Handle("/internal/", internal[0])
 	}
+	mux.Handle("/", base)
 
-	server := httpserver.New(name, addr, mux)
-	server.Health = checks
-
-	return server
+	return mux
 }
 
 // internalKeys converts configuration records into the protocol package's
@@ -220,27 +215,19 @@ func internalKeys(keys []config.InternalKey) []ingest.InternalKey {
 	return converted
 }
 
-// serveUntilSignalWith runs the listeners until SIGINT or SIGTERM, then shuts
+// serveUntilSignalWith runs the listener until SIGINT or SIGTERM, then shuts
 // everything down in order. Returning an exit code rather than calling os.Exit
 // is what lets the whole command be driven from a test.
 //
 // The roll-up worker is optional so that the ingest-only process, which has no
-// reports to make fast, does not summarise anything. The internal listener is
-// optional for the same reason a test does not want a second port bound.
-//
-// The background hook is where the process's own loops go — the billing
-// sweeps, the usage flush, the access gate, the rule refresh and the import
-// runner. They are started here rather than as bare goroutines so that
-// shutdown waits for them: every one holds state somebody can see, and a
-// process that exited without waiting would lose it on every deploy.
-//
-// The background hook carries the process's own loops — the billing sweeps, the
+// reports to make fast, does not summarise anything. The background hook
+// carries the process's own loops — the billing sweeps, the
 // usage flush, the access gate, the rule refreshes and the job runner. They are
 // started here rather than by their own packages so that shutdown waits for
 // them. The usage recorder flushes its last interval on the way out, and a
 // process that exited without waiting would lose the events an account was
 // billed for, every single deploy.
-func serveUntilSignalWith(e *env, server, internal *httpserver.Server, service *ingest.Service, worker *rollup.Worker, background func(context.Context, func(func())), closers ...func() error) int {
+func serveUntilSignalWith(e *env, server *httpserver.Server, service *ingest.Service, worker *rollup.Worker, background func(context.Context, func(func())), closers ...func() error) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -258,24 +245,6 @@ func serveUntilSignalWith(e *env, server, internal *httpserver.Server, service *
 	if err := server.Listen(); err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError
-	}
-
-	// The internal listener is bound before anything starts, so that a port
-	// already in use is a start-up error naming the port rather than a metrics
-	// endpoint that silently never came up.
-	if internal != nil {
-		if err := internal.Listen(); err != nil {
-			fmt.Fprintf(e.stderr, "%v\n", err)
-			return ExitError
-		}
-
-		go func() {
-			if err := internal.Serve(); err != nil {
-				e.log.Error("the internal listener stopped", "error", err)
-			}
-		}()
-
-		e.log.Info("internal listener", "addr", internal.Addr(), "metrics", "/metrics")
 	}
 
 	service.Start(ctx)
@@ -323,16 +292,6 @@ func serveUntilSignalWith(e *env, server, internal *httpserver.Server, service *
 	if err := server.Shutdown(shutdownCtx, drainDelay); err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		code = ExitError
-	}
-
-	// The internal listener goes last and without a drain: nothing is in front
-	// of it, and keeping it up through the public drain means a scrape taken
-	// during the shutdown still gets an answer.
-	if internal != nil {
-		if err := internal.Shutdown(shutdownCtx, 0); err != nil {
-			fmt.Fprintf(e.stderr, "%v\n", err)
-			code = ExitError
-		}
 	}
 
 	if err := service.Stop(shutdownCtx); err != nil {

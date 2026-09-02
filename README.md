@@ -49,15 +49,17 @@ stays readable:
 
 ```bash
 make caddy             # :19300 — the only port you open in a browser
-make app               # :19301, plus :19401 internal, loopback only
-make ingest            # :19302, plus :19402 internal, loopback only
+make app               # :19301 — application and signed internal routes
+make ingest            # :19302 — events, health and metrics
 make testsite          # :19303 — a real page with the snippet installed
 ```
 
 `make dev` runs all three at once. Every runnable target has a `-ts` twin
 (`make app-ts`, `make dev-ts`) that binds to the Tailscale address and moves
 `FEASIBLE_APP_BASE_URL` with it, so the app is reachable from another machine.
-The internal listeners stay on `127.0.0.1` in every mode.
+Each process has one listener. Caddy exposes customer paths and denies
+`/internal/*` and `/metrics`; trusted services and monitoring connect directly
+over the protected network.
 
 `make` on its own lists everything.
 
@@ -78,11 +80,12 @@ returns `202`. It polls the complete ordered `FEASIBLE_INGEST_SHARDS` list for
 domain ownership and removes an outbox row only when the owning app names that
 UUID after commit. An app outage delays dashboards while ingesters keep pageviews.
 
-App private listeners publish authenticated domain and salt snapshots and
-accept durable batches. `FEASIBLE_APP_SHARD_ID` is the app's one-based stable
-position in the ingester list. In hosted production these listeners use private
-TLS networking and `FEASIBLE_INTERNAL_KEYS`; `/internal/*` is never exposed by
-the public load balancer. See [.env.sample](.env.sample) for the complete app
+App listeners publish authenticated domain and salt snapshots and accept
+durable batches alongside dashboard traffic. `FEASIBLE_APP_SHARD_ID` is the
+app's one-based stable position in the ingester list. In hosted production these
+listeners are reachable only over protected networking and internal requests
+use `FEASIBLE_INTERNAL_KEYS`; `/internal/*` is never exposed by the public load
+balancer. See [.env.sample](.env.sample) for the complete app
 and ingester configuration and [ops/load-balancer.md](ops/load-balancer.md) for
 failure and drain behavior.
 
@@ -151,14 +154,13 @@ compiled before Go embeds them. Running never does.
 
 ## Watching it run
 
-Every process serves two probes and, on its loopback listener, a metrics
-endpoint:
+Every process serves two probes and a metrics endpoint on its single listener:
 
 ```bash
 curl localhost:19301/health/live     # is the process up
 curl localhost:19301/health/ready    # can it serve, component by component
-curl localhost:19401/metrics         # Prometheus text format (app)
-curl localhost:19402/metrics         # the ingest tier's own
+curl localhost:19301/metrics         # Prometheus text format (app)
+curl localhost:19302/metrics         # the ingest tier's own
 ```
 
 `/health/live` checks nothing on purpose: a liveness probe that failed on a slow

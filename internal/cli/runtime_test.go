@@ -21,17 +21,23 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
-// TestInternalListenerServesMetricsAndHealth checks the loopback listener every
-// process runs beside its public one. It is assembled in one place for both
-// process shapes, so a mistake here would silently cost the whole system its
-// monitoring while everything else kept working.
-func TestInternalListenerServesMetricsAndHealth(t *testing.T) {
+// TestProcessListenerServesApplicationMetricsHealthAndInternalRoutes checks all
+// four surfaces share one socket. The edge proxy controls external reachability
+// by path; a second listener must not quietly return through later refactoring.
+func TestProcessListenerServesApplicationMetricsHealthAndInternalRoutes(t *testing.T) {
 	checks := &health.Set{}
 	checks.Require("system_db", func(context.Context) error { return nil })
+	application := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("application"))
+	})
+	internal := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("internal"))
+	})
 
 	// Port zero, because a test that hard-coded one would fail whenever
 	// anything else on the machine happened to hold it.
-	server := internalServer("test-internal", "127.0.0.1:0", checks)
+	server := httpserver.New("test-process", "127.0.0.1:0", processRoutes(application, internal))
+	server.Health = checks
 
 	if err := server.Listen(); err != nil {
 		t.Fatal(err)
@@ -56,6 +62,12 @@ func TestInternalListenerServesMetricsAndHealth(t *testing.T) {
 	// answering is also a target that can be checked.
 	if got := fetch(t, base+httpserver.PathReady); !strings.Contains(got, "system_db") {
 		t.Errorf("readiness did not name its components: %s", got)
+	}
+	if got := fetch(t, base+"/internal/domains"); got != "internal" {
+		t.Errorf("internal route returned %q", got)
+	}
+	if got := fetch(t, base+"/"); got != "application" {
+		t.Errorf("application route returned %q", got)
 	}
 }
 

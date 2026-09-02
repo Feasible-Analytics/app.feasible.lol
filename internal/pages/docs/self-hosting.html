@@ -92,19 +92,18 @@ visitor. That handles proxies which append to an existing chain without acceptin
 the left by a direct client. Configure every trusted edge to strip or overwrite client-supplied
 <code>X-Feasible-IP</code> and <code>CF-Connecting-IP</code>; an allow-list cannot distinguish a header
 the proxy created from one it passed through unchanged.</p>
-<p>Keep <code>FEASIBLE_APP_INTERNAL_LISTEN</code> on loopback, and the ingest tier's
-<code>FEASIBLE_INGEST_INTERNAL_LISTEN</code> with it. Every process runs a second, private listener
-beside its public one, and <code>/metrics</code> is on it. Nothing there is customer data — the series
-deliberately carry no site, domain, path or country — but your event rate, error rate and account
-count are not the internet's business, and no operator should have to firewall a path. It must not be
-routable from anywhere, including a private tailnet.</p>
+<p>Each process uses one listener. The app serves signed <code>/internal/*</code> routes beside the
+dashboard, and both the app and ingester serve <code>/metrics</code> beside their normal traffic. Put
+those sockets on a protected service network and configure the public proxy to deny
+<code>/internal/*</code> and <code>/metrics</code>. Internal requests remain HMAC-authenticated; the
+firewall limits reachability but is not itself treated as authentication.</p>
 <p>The metrics are Prometheus-shaped: accepted, dropped, classified and written events, flush counts
 and durations, roll-up and query timings, HTTP request counts and latencies, plus gauges sampled at
 scrape time for the ingest buffer, live sessions, routed sites, open database handles, queued jobs and
 database and WAL sizes.</p>
 
 <h3>Health probes</h3>
-<p>Two, on both listeners, because they answer different questions and conflating them either restarts
+<p>Two on each process listener, because they answer different questions and conflating them either restarts
 a process that was merely busy or sends traffic to one that is draining.</p>
 <ul>
   <li><code>GET /health/live</code> — is this process alive. True from the moment the listener is up
@@ -116,12 +115,12 @@ a process that was merely busy or sends traffic to one that is draining.</p>
 </ul>
 
 <h3>Running the ingest tier separately</h3>
-<p>Do not split it in this build. <code>FEASIBLE_APP_TRANSPORT=direct</code> runs ingestion inside
-<code>serve</code>, and that is the supported deployment shape. The standalone <code>ingest</code>
-command exists, but it currently opens the account databases in its own data directory and writes
-through the same direct transport. <code>FEASIBLE_INGEST_SHARDS</code>,
-<code>FEASIBLE_INGEST_BUFFER_PATH</code> and <code>FEASIBLE_INTERNAL_KEYS</code> are parsed and reported
-by <code>ingest --check</code>, but the SQLite outbox and remote shard forwarding are not wired yet.</p>
+<p><code>FEASIBLE_APP_TRANSPORT=direct</code> runs ingestion inside <code>serve</code> for the simple
+self-hosted shape. Hosted deployments run <code>feasible ingest</code> separately. It commits each
+privacy-safe event to <code>FEASIBLE_INGEST_BUFFER_PATH</code> before answering 202, learns ownership
+from every URL in <code>FEASIBLE_INGEST_SHARDS</code>, and retries delivery to the owning app until
+that shard acknowledges the exact event UUID. The standalone ingester never opens
+<code>system.db</code> or an account database.</p>
 
 <h3>Billing on a self-hosted install</h3>
 <p>There is none, and nothing is limited because of it. With no payment provider configured the

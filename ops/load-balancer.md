@@ -159,7 +159,7 @@ deploy, deregister first.
 ```bash
 # 1. Deregister this instance from the load balancer (platform-specific).
 # 2. Wait until it owes nothing.
-scripts/drain.sh http://127.0.0.1:19402/metrics
+scripts/drain.sh http://127.0.0.1:19302/metrics
 # 3. Now send SIGTERM.
 ```
 
