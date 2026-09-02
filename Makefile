@@ -88,7 +88,7 @@ FRESH ?= --fresh
 
 .DEFAULT_GOAL := help
 
-.PHONY: help assets tracker-deps tracker web-deps ui-css build test test-race test-web test-tracker test-integration test-ecosystem \
+.PHONY: help assets tracker-deps tracker web-deps ui-css binary build test test-race test-web test-tracker test-integration test-ecosystem \
 	bench lint check-env \
 	migrate migrate-fresh seed seed-big seed-http caddy app ingest testsite dev dev-solo \
 	caddy-ts app-ts ingest-ts testsite-ts dev-ts dev-solo-ts require-tailscale
@@ -114,6 +114,7 @@ help:
 	@echo
 	@echo "  Toolchain:"
 	@echo "    make build      build ./$(BINARY) (runs the asset build first)"
+	@echo "    make binary     build ./$(BINARY) from the committed embedded assets"
 	@echo "    make tracker    build the browser script and check it fits the size budget"
 	@echo "    make test       unit tests, including the tracker size budget"
 	@echo "    make test-web   the dashboard's unit tests on their own"
@@ -203,10 +204,20 @@ ui-css: web-deps
 		echo "tailwindcss is not installed — keeping the committed internal/auth/assets/app.css"; \
 	fi
 
-## build: compile the single binary
-build: assets
+## binary: compile the single binary from the committed embedded assets
+# Runtime-only processes use this target because the generated tracker and
+# dashboard files are already embedded in the repository. Keeping JavaScript
+# installation out of this path also lets app and ingest processes restart at
+# the same time without racing over their shared node_modules directories.
+binary:
 	@go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/$(BINARY)
 	@echo "built ./$(BINARY) $(VERSION) ($(COMMIT))"
+
+## build: rebuild the assets, then compile the single binary
+# The recursive target is intentionally invoked from the recipe so an explicit
+# parallel make cannot compile while the embedded asset files are being written.
+build: assets
+	@$(MAKE) --no-print-directory binary
 
 ## test: unit tests, and the tracker size budget
 # The tracker is rebuilt first so that the budget is measured against the source
@@ -334,7 +345,7 @@ app: build
 	@$(APP_ENV) FEASIBLE_APP_TRANSPORT=http ./$(BINARY) serve
 
 ## ingest: the ingest tier
-ingest: build
+ingest: binary
 	@echo "listening on http://$(PUBLIC_HOST):$(PORT_INGEST)"
 	@$(INGEST_ENV) ./$(BINARY) ingest
 
