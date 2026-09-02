@@ -269,7 +269,7 @@ func buildData(e *env, control *sql.DB, manager *accounts.Manager, service *inge
 	runner := jobs.NewRunner(queue)
 	runner.OnError = func(err error) { e.log.Error("job runner", "error", err) }
 
-	workers := &dataio.Workers{Accounts: manager, Sites: service.Sites, DataDir: e.cfg.App.DataDir}
+	workers := &dataio.Workers{Accounts: manager, Sites: service.Sites, DataDir: e.cfg.App.DataDir, Control: control}
 	workers.Register(runner)
 
 	handler := &settings.Handler{

@@ -22,6 +22,7 @@ import (
 // Import sources.
 const (
 	SourceCSV           = "csv"
+	SourcePlausible     = "plausible"
 	SourceGA4           = "ga4"
 	SourceSearchConsole = "search_console"
 )
@@ -94,6 +95,22 @@ func CreateImport(ctx context.Context, db *sql.DB, siteID int64, source, label s
 	}
 
 	return &Import{ID: id, SiteID: siteID, Source: source, Label: label, Status: StatusPending, CreatedAt: now.Unix()}, nil
+}
+
+// SetImportSource records the detected provider after an upload has been
+// durably copied and its archive directory can be inspected. Keeping detection
+// server-side prevents a renamed ZIP from being marketed as a successful
+// Plausible migration before its contents have been verified.
+func SetImportSource(ctx context.Context, db *sql.DB, id int64, source string) error {
+	if source != SourceCSV && source != SourcePlausible {
+		return fmt.Errorf("dataio: unsupported uploaded import source %q", source)
+	}
+
+	if _, err := db.ExecContext(ctx, "UPDATE imports SET source = ? WHERE id = ?", source, id); err != nil {
+		return fmt.Errorf("dataio: set import source: %w", err)
+	}
+
+	return nil
 }
 
 // GetImport reads one import, scoped to its site so an id from another account
@@ -183,10 +200,27 @@ func ListImports(ctx context.Context, db *sql.DB, siteID int64, limit int) ([]Im
 // clears any previous failure, so a retried import does not show the reason the
 // last attempt failed while it is succeeding.
 func StartImport(ctx context.Context, db *sql.DB, id int64, total int, now time.Time) error {
-	_, err := db.ExecContext(ctx, `
-		UPDATE imports SET status = 'running', started_at = ?, progress_total = ?, failure = ''
-		WHERE id = ?`, now.Unix(), total, id)
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
+		return fmt.Errorf("dataio: restart import %d: %w", id, err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	// A worker can be retried after committing some batches. Clearing its own
+	// rows makes the retry an exact replay instead of quietly doubling every
+	// file that completed before the interruption.
+	if _, err := tx.ExecContext(ctx, "DELETE FROM imported_rollups WHERE import_id = ?", id); err != nil {
+		return fmt.Errorf("dataio: restart import %d: %w", id, err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		UPDATE imports SET status = 'running', started_at = ?, progress_total = ?, failure = ''
+		, progress_done = 0, rows_written = 0, cursor = '' WHERE id = ?`, now.Unix(), total, id)
+	if err != nil {
+		return fmt.Errorf("dataio: start import %d: %w", id, err)
+	}
+
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("dataio: start import %d: %w", id, err)
 	}
 
@@ -233,10 +267,27 @@ func CompleteImport(ctx context.Context, db *sql.DB, id int64, dimensions []stri
 // customer verbatim, so callers write it for them: which file, which row, and
 // what was wrong with it.
 func FailImport(ctx context.Context, db *sql.DB, id int64, reason string, now time.Time) error {
-	_, err := db.ExecContext(ctx,
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("dataio: fail import %d: %w", id, err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	// An invalid archive may fail after earlier CSVs committed their batches.
+	// Failed imports must never leak partial history into reports, so status and
+	// row cleanup are one transaction.
+	if _, err := tx.ExecContext(ctx, "DELETE FROM imported_rollups WHERE import_id = ?", id); err != nil {
+		return fmt.Errorf("dataio: fail import %d: %w", id, err)
+	}
+
+	_, err = tx.ExecContext(ctx,
 		"UPDATE imports SET status = 'failed', completed_at = ?, failure = ? WHERE id = ?",
 		now.Unix(), reason, id)
 	if err != nil {
+		return fmt.Errorf("dataio: fail import %d: %w", id, err)
+	}
+
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("dataio: fail import %d: %w", id, err)
 	}
 

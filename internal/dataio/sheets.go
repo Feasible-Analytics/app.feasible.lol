@@ -40,6 +40,12 @@ const (
 	FieldExits      = "exits"
 	FieldDuration   = "visit_duration"
 	FieldEngagement = "time_on_page"
+
+	// These fields are internal totals used to reconstruct Plausible's average
+	// engagement and scroll-depth metrics without averaging averages.
+	FieldEngagementVisits = "time_on_page_visits"
+	FieldScrollDepth      = "scroll_depth_total"
+	FieldScrollVisits     = "scroll_depth_visits"
 )
 
 // dimensionHeaders maps a CSV column name to the query dimension it holds. The
@@ -221,7 +227,12 @@ func SheetNames() []string {
 // what the error for an unrecognised column prints, because "unknown column"
 // without the alternatives is a round trip to the documentation over a typo.
 func KnownHeaders() []string {
-	names := []string{DateHeader}
+	names := []string{
+		DateHeader,
+		"link_url", "property", "value", "utm_content", "utm_term",
+		"total_scroll_depth", "total_scroll_depth_visits",
+		"total_time_on_page", "total_time_on_page_visits",
+	}
 
 	for name := range dimensionHeaders {
 		names = append(names, name)

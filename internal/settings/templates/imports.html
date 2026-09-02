@@ -1,83 +1,108 @@
 {{define "body"}}
-<h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "auth.imports.title" }}</h1>
-<p class="mt-1 max-w-2xl text-sm text-muted">{{ t $.Lang "auth.imports.lede" }}</p>
+<div class="max-w-3xl">
+	<p class="text-xs font-semibold uppercase tracking-[0.16em] text-accent-ink">{{ t $.Lang "auth.imports.plausible_eyebrow" }}</p>
+	<h1 class="mt-2 text-3xl font-semibold tracking-tight text-heading sm:text-4xl">{{ t $.Lang "auth.imports.plausible_title" }}</h1>
+	<p class="mt-3 text-base leading-7 text-muted">{{ t $.Lang "auth.imports.plausible_lede" }}</p>
+</div>
 
-<section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm">
-	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.imports.csv_title" }}</h2>
-	<p class="mt-1 max-w-2xl text-xs text-muted">
-		{{ t $.Lang "auth.imports.csv_help" }}
-		<span class="font-mono">{{ range $i, $n := .SheetNames }}{{ if $i }}, {{ end }}{{ $n }}{{ end }}</span>
-	</p>
+<ol class="mt-8 grid gap-3 sm:grid-cols-3" aria-label="{{ t $.Lang "auth.imports.steps_label" }}">
+	<li class="flex items-start gap-3 rounded-xl border border-line bg-card px-4 py-3">
+		<span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent/15 text-xs font-bold text-accent-ink" aria-hidden="true">1</span>
+		<div><p class="text-sm font-semibold text-heading">{{ t $.Lang "auth.imports.step_export" }}</p><p class="mt-0.5 text-xs leading-5 text-muted">{{ t $.Lang "auth.imports.step_export_help" }}</p></div>
+	</li>
+	<li class="flex items-start gap-3 rounded-xl border border-accent/30 bg-accent/5 px-4 py-3">
+		<span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent text-xs font-bold text-fill-fg" aria-hidden="true">2</span>
+		<div><p class="text-sm font-semibold text-heading">{{ t $.Lang "auth.imports.step_upload" }}</p><p class="mt-0.5 text-xs leading-5 text-muted">{{ t $.Lang "auth.imports.step_upload_help" }}</p></div>
+	</li>
+	<li class="flex items-start gap-3 rounded-xl border border-line bg-card px-4 py-3">
+		<span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-subtle text-xs font-bold text-muted" aria-hidden="true">3</span>
+		<div><p class="text-sm font-semibold text-heading">{{ t $.Lang "auth.imports.step_review" }}</p><p class="mt-0.5 text-xs leading-5 text-muted">{{ t $.Lang "auth.imports.step_review_help" }}</p></div>
+	</li>
+</ol>
 
-	<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/imports/upload" .Domain) }}" enctype="multipart/form-data" class="mt-4 flex flex-wrap items-end gap-3">
-		<input type="hidden" name="csrf_token" value="{{.CSRF}}">
-		<div class="min-w-[16rem] flex-1">
-			<label class="block text-xs font-medium text-muted" for="import-file">{{ t $.Lang "auth.imports.file_label" }}</label>
-			<input id="import-file" type="file" name="file" accept=".csv,.zip" required
-				class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+<section class="mt-5 overflow-hidden rounded-2xl border border-line bg-card shadow-sm" aria-labelledby="plausible-upload-title">
+	<div class="grid lg:grid-cols-[minmax(0,1fr)_18rem]">
+		<div class="p-5 sm:p-7">
+			<div class="flex items-start gap-3">
+				<span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/10 text-accent-ink" aria-hidden="true">
+					<svg viewBox="0 0 24 24" fill="none" class="h-5 w-5" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 13v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/></svg>
+				</span>
+				<div><h2 id="plausible-upload-title" class="text-base font-semibold text-heading">{{ t $.Lang "auth.imports.upload_title" }}</h2><p class="mt-1 text-sm leading-6 text-muted">{{ t $.Lang "auth.imports.upload_help" }}</p></div>
+			</div>
+
+			<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/imports/upload" .Domain) }}" enctype="multipart/form-data" class="mt-5" data-import-form data-error-type="{{ t $.Lang "auth.imports.client_error_type" }}" data-error-size="{{ t $.Lang "auth.imports.client_error_size" }}" data-uploading="{{ t $.Lang "auth.imports.client_uploading" }}" data-selected="{{ t $.Lang "auth.imports.client_selected" }}">
+				<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+				<label for="import-file" class="group relative flex min-h-44 cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-field bg-page px-5 py-8 text-center transition-colors hover:border-accent hover:bg-accent/5 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/25" data-import-dropzone>
+					<svg viewBox="0 0 24 24" fill="none" class="h-8 w-8 text-muted transition-colors group-hover:text-accent-ink" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7.5A2.5 2.5 0 0 1 6.5 5h2l1.5 2h7.5A2.5 2.5 0 0 1 20 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5v-9Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 16v-6m0 0-2.5 2.5M12 10l2.5 2.5"/></svg>
+					<span class="mt-3 text-sm font-semibold text-heading" data-import-primary>{{ t $.Lang "auth.imports.drop_title" }}</span>
+					<span class="mt-1 text-xs leading-5 text-muted" data-import-secondary>{{ t $.Lang "auth.imports.drop_help" }}</span>
+					<input id="import-file" type="file" name="file" accept=".zip,.csv,application/zip,text/csv" required class="sr-only" data-import-file>
+				</label>
+				<p class="mt-2 hidden text-sm text-down-ink" role="alert" data-import-error></p>
+
+				<div class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+					<p class="text-xs leading-5 text-muted">{{ t $.Lang "auth.imports.privacy_note" }}</p>
+					<button type="submit" disabled class="inline-flex min-h-11 shrink-0 items-center justify-center rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40" data-import-submit>
+						<svg viewBox="0 0 24 24" fill="none" class="mr-2 hidden h-4 w-4 animate-spin" stroke="currentColor" stroke-width="2" aria-hidden="true" data-import-spinner><path stroke-linecap="round" d="M12 3a9 9 0 1 1-9 9"/></svg>
+						<span data-import-submit-label>{{ t $.Lang "auth.imports.start_plausible" }}</span>
+					</button>
+				</div>
+				<div class="sr-only" aria-live="polite" data-import-announcer></div>
+			</form>
 		</div>
 
-		<button type="submit" class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "auth.imports.start" }}</button>
-	</form>
+		<aside class="border-t border-line bg-subtle/50 p-5 sm:p-7 lg:border-l lg:border-t-0" aria-label="{{ t $.Lang "auth.imports.what_moves" }}">
+			<h3 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.imports.what_moves" }}</h3>
+			<ul class="mt-4 space-y-4">
+				<li class="flex gap-3"><span class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-up/15 text-up-ink" aria-hidden="true">✓</span><div><p class="text-sm font-medium text-heading">{{ t $.Lang "auth.imports.history_title" }}</p><p class="mt-0.5 text-xs leading-5 text-muted">{{ t $.Lang "auth.imports.history_help" }}</p></div></li>
+				<li class="flex gap-3"><span class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-up/15 text-up-ink" aria-hidden="true">✓</span><div><p class="text-sm font-medium text-heading">{{ t $.Lang "auth.imports.dimensions_title" }}</p><p class="mt-0.5 text-xs leading-5 text-muted">{{ t $.Lang "auth.imports.dimensions_help" }}</p></div></li>
+				<li class="flex gap-3"><span class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-up/15 text-up-ink" aria-hidden="true">✓</span><div><p class="text-sm font-medium text-heading">{{ t $.Lang "auth.imports.safe_title" }}</p><p class="mt-0.5 text-xs leading-5 text-muted">{{ t $.Lang "auth.imports.safe_help" }}</p></div></li>
+			</ul>
+		</aside>
+	</div>
 </section>
 
-<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
-	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.imports.list_title" }}</h2>
+<details class="mt-4 rounded-xl border border-line bg-card px-5 py-4 text-sm">
+	<summary class="cursor-pointer font-medium text-heading marker:text-muted">{{ t $.Lang "auth.imports.other_formats" }}</summary>
+	<p class="mt-3 max-w-3xl text-xs leading-5 text-muted">{{ t $.Lang "auth.imports.csv_help" }} <span class="font-mono">{{ range $i, $n := .SheetNames }}{{ if $i }}, {{ end }}{{ $n }}{{ end }}</span></p>
+</details>
+
+<section class="mt-8" aria-labelledby="import-history-title">
+	<div class="flex items-end justify-between gap-4">
+		<div><h2 id="import-history-title" class="text-lg font-semibold text-heading">{{ t $.Lang "auth.imports.list_title" }}</h2><p class="mt-1 text-sm text-muted">{{ t $.Lang "auth.imports.list_help" }}</p></div>
+		{{ if .Imports }}<span class="rounded-full bg-subtle px-2.5 py-1 text-xs font-medium text-muted">{{ len .Imports }}</span>{{ end }}
+	</div>
 
 	{{ if .Imports }}
-	<div class="mt-4 overflow-x-auto">
-		<table class="w-full text-sm">
-			<thead>
-				<tr class="border-b border-line text-left text-xs font-semibold uppercase tracking-wide text-muted">
-					<th class="w-1/4 pb-2 pr-3 font-semibold">{{ t $.Lang "auth.imports.column_file" }}</th>
-					<th class="w-24 pb-2 pr-3 font-semibold">{{ t $.Lang "auth.imports.column_source" }}</th>
-					<th class="w-28 pb-2 pr-3 font-semibold">{{ t $.Lang "auth.imports.column_status" }}</th>
-					<th class="w-44 pb-2 pr-3 font-semibold">{{ t $.Lang "auth.imports.column_progress" }}</th>
-					<th class="pb-2 pr-3 font-semibold">{{ t $.Lang "auth.imports.column_detail" }}</th>
-					<th class="w-20 pb-2"><span class="sr-only">{{ t $.Lang "auth.imports.column_actions" }}</span></th>
-				</tr>
-			</thead>
-			<tbody class="divide-y divide-line">
-				{{ range .Imports }}
-				<tr>
-					<td class="py-2 pr-3 align-top text-heading">{{ .Label }}</td>
-					<td class="py-2 pr-3 align-top text-muted">{{ .Source }}</td>
-					<td class="py-2 pr-3 align-top">
-						{{ if eq .Status "completed" }}
-						<span class="rounded-md bg-up/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-up-ink">{{ t $.Lang "auth.imports.status_completed" }}</span>
-						{{ else if eq .Status "failed" }}
-						<span class="rounded-md bg-down/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-down-ink">{{ t $.Lang "auth.imports.status_failed" }}</span>
-						{{ else if eq .Status "running" }}
-						<span class="rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-ink">{{ t $.Lang "auth.imports.status_running" }}</span>
-						{{ else if eq .Status "cancelled" }}
-						<span class="rounded-md bg-subtle px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">{{ t $.Lang "auth.imports.status_cancelled" }}</span>
-						{{ else }}
-						<span class="rounded-md bg-subtle px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">{{ t $.Lang "auth.imports.status_pending" }}</span>
-						{{ end }}
-					</td>
-					<td class="py-2 pr-3 align-top">
-						<div class="h-1.5 w-36 overflow-hidden rounded-full bg-subtle"><span class="block h-full bg-accent" style="width:{{ .Progress }}%"></span></div>
-						<span class="mt-1 block text-xs text-muted">{{ t $.Lang "auth.imports.progress" "done" .ProgressDone "total" .ProgressTotal "rows" .RowsWritten }}</span>
-					</td>
-					<td class="py-2 pr-3 align-top text-xs">
-						{{ if .Failure }}<span class="text-down-ink">{{ .Failure }}</span>
-						{{ else if .Dimensions }}<span class="text-muted">{{ t $.Lang "auth.imports.carries" }} {{ range $i, $d := .Dimensions }}{{ if $i }}, {{ end }}{{ $d }}{{ end }}</span>
-						{{ else }}<span class="text-faint">—</span>{{ end }}
-					</td>
-					<td class="py-2 align-top">
-						<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/imports/delete" $.Domain) }}">
-							<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-							<input type="hidden" name="id" value="{{ .ID }}">
-							<button type="submit" class="text-sm font-medium text-down hover:text-down-ink">{{ t $.Lang "auth.imports.delete" }}</button>
-						</form>
-					</td>
-				</tr>
-				{{ end }}
-			</tbody>
-		</table>
+	<div class="mt-4 space-y-3">
+		{{ range .Imports }}
+		<article class="rounded-2xl border {{ if eq .Status "failed" }}border-down/30{{ else if eq .Status "completed" }}border-up/25{{ else }}border-line{{ end }} bg-card p-5 shadow-sm" data-import-status="{{ .Status }}">
+			<div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+				<div class="min-w-0">
+					<div class="flex flex-wrap items-center gap-2">
+						<h3 class="truncate text-sm font-semibold text-heading">{{ .Label }}</h3>
+						{{ if eq .Status "completed" }}<span class="rounded-md bg-up/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-up-ink">{{ t $.Lang "auth.imports.status_completed" }}</span>
+						{{ else if eq .Status "failed" }}<span class="rounded-md bg-down/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-down-ink">{{ t $.Lang "auth.imports.status_failed" }}</span>
+						{{ else if eq .Status "running" }}<span class="rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-ink">{{ t $.Lang "auth.imports.status_running" }}</span>
+						{{ else if eq .Status "cancelled" }}<span class="rounded-md bg-subtle px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">{{ t $.Lang "auth.imports.status_cancelled" }}</span>
+						{{ else }}<span class="rounded-md bg-subtle px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">{{ t $.Lang "auth.imports.status_pending" }}</span>{{ end }}
+					</div>
+					<p class="mt-1 text-xs capitalize text-muted">{{ .Source }}</p>
+				</div>
+				<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/imports/delete" $.Domain) }}">
+					<input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="id" value="{{ .ID }}">
+					<button type="submit" class="text-sm font-medium text-down transition-colors hover:text-down-ink">{{ t $.Lang "auth.imports.delete" }}</button>
+				</form>
+			</div>
+			<div class="mt-4">
+				<div class="h-2 overflow-hidden rounded-full bg-subtle" role="progressbar" aria-label="{{ t $.Lang "auth.imports.column_progress" }}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ .Progress }}"><span class="block h-full rounded-full {{ if eq .Status "failed" }}bg-down{{ else if eq .Status "completed" }}bg-up{{ else }}bg-accent{{ end }} transition-[width]" style="width:{{ .Progress }}%"></span></div>
+				<div class="mt-2 flex flex-col gap-1 text-xs sm:flex-row sm:items-center sm:justify-between"><span class="text-muted">{{ t $.Lang "auth.imports.progress" "done" .ProgressDone "total" .ProgressTotal "rows" .RowsWritten }}</span>{{ if .Failure }}<span class="font-medium text-down-ink">{{ .Failure }}</span>{{ else if .Dimensions }}<span class="text-muted">{{ t $.Lang "auth.imports.carries" }} {{ range $i, $d := .Dimensions }}{{ if $i }}, {{ end }}{{ $d }}{{ end }}</span>{{ end }}</div>
+			</div>
+		</article>
+		{{ end }}
 	</div>
 	{{ else }}
-	<p class="mt-4 text-sm text-faint">{{ t $.Lang "auth.imports.list_empty" }}</p>
+	<div class="mt-4 rounded-2xl border border-dashed border-field bg-card px-6 py-10 text-center"><p class="text-sm font-medium text-heading">{{ t $.Lang "auth.imports.list_empty" }}</p><p class="mt-1 text-xs text-muted">{{ t $.Lang "auth.imports.list_empty_help" }}</p></div>
 	{{ end }}
 </section>
 
@@ -182,4 +207,109 @@
 	</div>
 </section>
 {{ end }}
+
+<script>
+	(function () {
+		"use strict";
+
+		var form = document.querySelector("[data-import-form]");
+		var activeImport = document.querySelector('[data-import-status="pending"], [data-import-status="running"]');
+
+		if (form) {
+			var input = form.querySelector("[data-import-file]");
+			var dropzone = form.querySelector("[data-import-dropzone]");
+			var primary = form.querySelector("[data-import-primary]");
+			var secondary = form.querySelector("[data-import-secondary]");
+			var error = form.querySelector("[data-import-error]");
+			var submit = form.querySelector("[data-import-submit]");
+			var submitLabel = form.querySelector("[data-import-submit-label]");
+			var spinner = form.querySelector("[data-import-spinner]");
+			var announcer = form.querySelector("[data-import-announcer]");
+			var defaultPrimary = primary.textContent;
+			var defaultSecondary = secondary.textContent;
+			var maximumBytes = 200 * 1024 * 1024;
+
+			// formatBytes keeps the selected-file confirmation human readable without
+			// making somebody mentally divide a byte count before they can continue.
+			function formatBytes(bytes) {
+				if (bytes < 1024 * 1024) return Math.max(1, Math.round(bytes / 1024)) + " KB";
+				return (bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0) + " MB";
+			}
+
+			// showError connects visual feedback and the live region, so an invalid
+			// archive is explained immediately to keyboard and screen-reader users too.
+			function showError(message) {
+				error.textContent = message;
+				error.classList.remove("hidden");
+				dropzone.classList.add("border-down", "bg-down/5");
+				submit.disabled = true;
+				announcer.textContent = message;
+			}
+
+			// resetError returns the dropzone to its neutral state before each new
+			// validation pass, preventing a corrected choice from still looking broken.
+			function resetError() {
+				error.textContent = "";
+				error.classList.add("hidden");
+				dropzone.classList.remove("border-down", "bg-down/5");
+			}
+
+			// validateFile accepts the established single-CSV path while making a ZIP
+			// the primary migration route, and mirrors the server's public size limit.
+			function validateFile() {
+				resetError();
+				var file = input.files && input.files[0];
+
+				if (!file) {
+					primary.textContent = defaultPrimary;
+					secondary.textContent = defaultSecondary;
+					submit.disabled = true;
+					return;
+				}
+
+				var lowerName = file.name.toLowerCase();
+				if (!lowerName.endsWith(".zip") && !lowerName.endsWith(".csv")) {
+					showError(form.dataset.errorType);
+					return;
+				}
+
+				if (file.size > maximumBytes) {
+					showError(form.dataset.errorSize);
+					return;
+				}
+
+				primary.textContent = file.name;
+				secondary.textContent = form.dataset.selected + " · " + formatBytes(file.size);
+				submit.disabled = false;
+				announcer.textContent = file.name + ". " + form.dataset.selected;
+			}
+
+			input.addEventListener("change", validateFile);
+
+			form.addEventListener("submit", function () {
+				if (submit.disabled) return;
+				submit.disabled = true;
+				input.setAttribute("aria-busy", "true");
+				spinner.classList.remove("hidden");
+				submitLabel.textContent = form.dataset.uploading;
+				announcer.textContent = form.dataset.uploading;
+			});
+		}
+
+		// refreshImportProgress turns a background import into a live-feeling flow.
+		// It waits while the tab is hidden or a second file is being chosen, so it
+		// never interrupts work and only reloads when there is useful new status.
+		function refreshImportProgress() {
+			var fileIsBeingChosen = form && form.querySelector("[data-import-file]").files.length > 0;
+			if (document.visibilityState === "visible" && !fileIsBeingChosen) {
+				window.location.reload();
+				return;
+			}
+
+			window.setTimeout(refreshImportProgress, 4000);
+		}
+
+		if (activeImport) window.setTimeout(refreshImportProgress, 4000);
+	})();
+</script>
 {{end}}

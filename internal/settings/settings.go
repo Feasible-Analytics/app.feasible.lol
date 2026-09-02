@@ -1089,8 +1089,19 @@ func (h *Handler) uploadImport(w http.ResponseWriter, r *http.Request, site site
 		return
 	}
 
+	source, err := dataio.ClassifyUpload(destination)
+	if err != nil {
+		h.failAndRedirect(w, r, account, site.Domain, record.ID, discardImportUpload(destination, err).Error())
+		return
+	}
+
+	if err := dataio.SetImportSource(r.Context(), account.Writer(), record.ID, source); err != nil {
+		h.failAndRedirect(w, r, account, site.Domain, record.ID, discardImportUpload(destination, err).Error())
+		return
+	}
+
 	if err := dataio.SetUploadPath(r.Context(), account.Writer(), record.ID, destination); err != nil {
-		h.failAndRedirect(w, r, account, site.Domain, record.ID, err.Error())
+		h.failAndRedirect(w, r, account, site.Domain, record.ID, discardImportUpload(destination, err).Error())
 		return
 	}
 
@@ -1103,6 +1114,18 @@ func (h *Handler) uploadImport(w http.ResponseWriter, r *http.Request, site site
 	}
 
 	h.redirect(w, r, site.Domain, "imports", tr(r, "auth.imports.flash_queued", "file", header.Filename), "")
+}
+
+// discardImportUpload removes a durable upload when validation or database
+// bookkeeping fails before a worker owns it. Joining a cleanup failure keeps
+// the original customer-facing reason while leaving an operator enough path
+// detail to remove the orphan manually.
+func discardImportUpload(path string, cause error) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return errors.Join(cause, fmt.Errorf("remove rejected upload %s: %w", path, err))
+	}
+
+	return cause
 }
 
 // failAndRedirect writes a failure onto the import row and shows it. The row
@@ -1132,6 +1155,18 @@ func (h *Handler) deleteImport(w http.ResponseWriter, r *http.Request, site site
 	account := lease.Account
 
 	id, _ := strconv.ParseInt(r.PostFormValue("id"), 10, 64)
+	record, err := dataio.GetImport(r.Context(), account.Reader(), site.ID, id)
+	if err != nil {
+		h.redirect(w, r, site.Domain, "imports", "", err.Error())
+		return
+	}
+
+	if record.UploadPath != "" {
+		if err := os.Remove(record.UploadPath); err != nil && !os.IsNotExist(err) {
+			h.redirect(w, r, site.Domain, "imports", "", fmt.Errorf("remove uploaded archive: %w", err).Error())
+			return
+		}
+	}
 
 	if err := dataio.DeleteImport(r.Context(), account.Writer(), site.ID, id); err != nil {
 		h.redirect(w, r, site.Domain, "imports", "", err.Error())

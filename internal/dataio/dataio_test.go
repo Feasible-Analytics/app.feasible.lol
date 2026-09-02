@@ -27,6 +27,23 @@ import (
 // fixtureNow is the instant the round trip resolves its date range against.
 var fixtureNow = time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 
+// plausibleFixture is a minimal, complete native Plausible export. Its headers
+// mirror the real Optimus Cafe archive, including every provider-specific
+// column that a generic CSV importer would otherwise reject or misinterpret.
+var plausibleFixture = map[string]string{
+	"imported_browsers_20260828_20260828.csv":          "date,browser,browser_version,visitors,visits,visit_duration,bounces,pageviews\n2026-08-28,Chrome,140,2,2,90,1,5\n",
+	"imported_custom_events_20260828_20260828.csv":     "date,name,link_url,path,visitors,events\n2026-08-28,Outbound Link: Click,https://example.org,/pricing,2,3\n",
+	"imported_custom_props_20260828_20260828.csv":      "date,property,value,visitors,events\n2026-08-28,position,hero,2,4\n",
+	"imported_devices_20260828_20260828.csv":           "date,device,visitors,visits,visit_duration,bounces,pageviews\n2026-08-28,Desktop,2,2,90,1,5\n",
+	"imported_entry_pages_20260828_20260828.csv":       "date,entry_page,visitors,entrances,visit_duration,bounces,pageviews\n2026-08-28,/,2,2,90,1,5\n",
+	"imported_exit_pages_20260828_20260828.csv":        "date,exit_page,visitors,visit_duration,exits,bounces,pageviews\n2026-08-28,/pricing,2,90,2,1,5\n",
+	"imported_locations_20260828_20260828.csv":         "date,country,region,city,visitors,visits,visit_duration,bounces,pageviews\n2026-08-28,US,US-OR,5739936,2,2,90,1,5\n",
+	"imported_operating_systems_20260828_20260828.csv": "date,operating_system,operating_system_version,visitors,visits,visit_duration,bounces,pageviews\n2026-08-28,Mac,15,2,2,90,1,5\n",
+	"imported_pages_20260828_20260828.csv":             "date,hostname,page,visits,visitors,pageviews,total_scroll_depth,total_scroll_depth_visits,total_time_on_page,total_time_on_page_visits\n2026-08-28,example.com,/pricing,2,2,5,120,2,60,2\n",
+	"imported_sources_20260828_20260828.csv":           "date,source,referrer,utm_source,utm_medium,utm_campaign,utm_content,utm_term,pageviews,visitors,visits,visit_duration,bounces\n2026-08-28,Google,google.com,newsletter,email,launch,hero,analytics,5,2,2,90,1\n",
+	"imported_visitors_20260828_20260828.csv":          "date,visitors,pageviews,bounces,visits,visit_duration\n2026-08-28,2,5,1,2,90\n",
+}
+
 // at builds a timestamp inside the fixture's window.
 func at(day, hour int) int64 {
 	return time.Date(2026, 8, day, hour, 0, 0, 0, time.UTC).Unix()
@@ -147,6 +164,286 @@ func TestCSVRoundTrip(t *testing.T) {
 	// answer at all.
 	compare(t, engine, "filtered by source", nil,
 		[]query.Filter{{Operator: query.OpIs, Dimension: "visit:source", Values: []string{"Google"}}})
+}
+
+// TestPlausibleArchiveMigration proves the native eleven-file archive is
+// detected and imported without editing, while preserving Plausible-only
+// custom properties, outbound URLs, engagement denominators and scroll depth.
+func TestPlausibleArchiveMigration(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "plausible-export.zip")
+	writeArchive(t, archivePath, plausibleFixture)
+
+	source, err := ClassifyUpload(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source != SourcePlausible {
+		t.Fatalf("source = %q, want %q", source, SourcePlausible)
+	}
+
+	record, account := importPlausibleArchive(t, archivePath)
+	if record.ProgressDone != len(plausibleFixture) || record.ProgressTotal != len(plausibleFixture) {
+		t.Fatalf("progress = %d/%d, want %d/%d", record.ProgressDone, record.ProgressTotal,
+			len(plausibleFixture), len(plausibleFixture))
+	}
+
+	var propertyKey, propertyValue string
+	var engagement, engagementVisits, scrollTotal, scrollVisits int64
+	if err := account.Reader().QueryRow(`
+		SELECT property_key, property_value, engagement_total, engagement_visits,
+		       scroll_depth_total, scroll_depth_visits
+		FROM imported_rollups
+		WHERE import_id = ? AND property_key = 'position'`, record.ID).Scan(
+		&propertyKey, &propertyValue, &engagement, &engagementVisits, &scrollTotal, &scrollVisits); err != nil {
+		t.Fatal(err)
+	}
+	if propertyKey != "position" || propertyValue != "hero" {
+		t.Fatalf("property = %q:%q, want position:hero", propertyKey, propertyValue)
+	}
+
+	if err := account.Reader().QueryRow(`
+		SELECT engagement_total, engagement_visits, scroll_depth_total, scroll_depth_visits
+		FROM imported_rollups
+		WHERE import_id = ? AND engagement_visits > 0`, record.ID).Scan(
+		&engagement, &engagementVisits, &scrollTotal, &scrollVisits); err != nil {
+		t.Fatal(err)
+	}
+	if engagement != 60_000 || engagementVisits != 2 || scrollTotal != 120 || scrollVisits != 2 {
+		t.Fatalf("Plausible metrics = engagement %d/%d scroll %d/%d, want 60000/2 and 120/2",
+			engagement, engagementVisits, scrollTotal, scrollVisits)
+	}
+
+	engine := query.New(account.Reader())
+	base := query.Query{
+		SiteIDs: []int64{1}, Include: query.Include{Imports: true},
+		DateRange: query.DateRange{Preset: query.RangeCustom,
+			Start: time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC),
+			End:   time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC)},
+		Pagination: query.Pagination{Limit: 100},
+	}
+
+	pageQuery := base
+	pageQuery.Metrics = []string{"time_on_page", "scroll_depth"}
+	pageQuery.Dimensions = []string{"event:page"}
+	pageResult, err := engine.Run(context.Background(), pageQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pageResult.Results) != 1 || pageResult.Results[0].Metrics[0] != 30 || pageResult.Results[0].Metrics[1] != 60 {
+		t.Fatalf("page engagement result = %+v, want 30 seconds and 60%% scroll depth", pageResult.Results)
+	}
+
+	propertyQuery := base
+	propertyQuery.Metrics = []string{"events"}
+	propertyQuery.Dimensions = []string{"event:props:position"}
+	propertyResult, err := engine.Run(context.Background(), propertyQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(propertyResult.Results) != 1 || propertyResult.Results[0].Dimensions[0] != "hero" || propertyResult.Results[0].Metrics[0] != 4 {
+		t.Fatalf("property result = %+v, want hero with 4 events", propertyResult.Results)
+	}
+
+	urlQuery := base
+	urlQuery.Metrics = []string{"events"}
+	urlQuery.Dimensions = []string{"event:props:url"}
+	urlResult, err := engine.Run(context.Background(), urlQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(urlResult.Results) != 1 || urlResult.Results[0].Dimensions[0] != "https://example.org" || urlResult.Results[0].Metrics[0] != 3 {
+		t.Fatalf("outbound URL result = %+v, want https://example.org with 3 events", urlResult.Results)
+	}
+
+	var before int
+	if err := account.Reader().QueryRow("SELECT COUNT(*) FROM imported_rollups WHERE import_id = ?", record.ID).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	retrySources, closeRetry, err := SourcesFromUpload(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ImportCSV(context.Background(), account.Writer(), account.Intern, record, retrySources,
+		time.UTC, func() time.Time { return fixtureNow }); err != nil {
+		t.Fatal(err)
+	}
+	if err := closeRetry(); err != nil {
+		t.Fatal(err)
+	}
+	var after int
+	if err := account.Reader().QueryRow("SELECT COUNT(*) FROM imported_rollups WHERE import_id = ?", record.ID).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("retry left %d roll-ups, want the original %d", after, before)
+	}
+}
+
+// TestUnsafeZIPArchivesAreRejected covers two archive-level attacks before a
+// worker reads a CSV: duplicate case-folded names that would double-count one
+// table, and extreme expansion that turns a tiny upload into excessive work.
+func TestUnsafeZIPArchivesAreRejected(t *testing.T) {
+	t.Run("duplicate names", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "duplicates.zip")
+		writeArchive(t, path, map[string]string{
+			"imported_visitors_20260828_20260828.csv": "date,visitors\n2026-08-28,1\n",
+			"IMPORTED_VISITORS_20260828_20260828.CSV": "date,visitors\n2026-08-28,1\n",
+		})
+
+		if _, err := ClassifyUpload(path); err == nil || !strings.Contains(err.Error(), "more than one CSV") {
+			t.Fatalf("duplicate archive error = %v", err)
+		}
+	})
+
+	t.Run("extreme expansion", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "expansion.zip")
+		writeArchive(t, path, map[string]string{
+			"imported_visitors_20260828_20260828.csv": strings.Repeat("0", 4<<20),
+		})
+
+		if _, err := ClassifyUpload(path); err == nil || !strings.Contains(err.Error(), "unsafe archive") {
+			t.Fatalf("expanding archive error = %v", err)
+		}
+	})
+}
+
+// TestFailedImportRemovesPartialRows ensures a bad later CSV cannot leave the
+// successfully committed prefix of an archive visible in customer reports.
+func TestFailedImportRemovesPartialRows(t *testing.T) {
+	manager := accounts.NewManager(t.TempDir())
+	t.Cleanup(func() { _ = manager.CloseAll() })
+	account, err := manager.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := CreateImport(context.Background(), account.Writer(), 1, SourcePlausible, "broken.zip", fixtureNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := NewWriter(account.Writer(), account.Intern, record.ID, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Add(context.Background(), Row{
+		Timestamp:  time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC).Unix(),
+		Dimensions: map[string]string{}, Metrics: map[string]int64{FieldPageviews: 5},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := FailImport(context.Background(), account.Writer(), record.ID, "later.csv: invalid", fixtureNow); err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	if err := account.Reader().QueryRow("SELECT COUNT(*) FROM imported_rollups WHERE import_id = ?", record.ID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("failed import retained %d partial rows", rows)
+	}
+}
+
+// TestOptimusCafePlausibleArchive exercises the importer against the supplied
+// production-shaped export when its path is provided by the developer. It is
+// optional in CI so the customer's analytics archive is never copied into the
+// repository or made a build dependency.
+func TestOptimusCafePlausibleArchive(t *testing.T) {
+	path := os.Getenv("FEASIBLE_PLAUSIBLE_ARCHIVE")
+	if path == "" {
+		t.Skip("FEASIBLE_PLAUSIBLE_ARCHIVE is not set")
+	}
+
+	source, err := ClassifyUpload(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source != SourcePlausible {
+		t.Fatalf("source = %q, want %q", source, SourcePlausible)
+	}
+
+	record, _ := importPlausibleArchive(t, path)
+	if record.Status != StatusCompleted || record.ProgressDone != 11 || record.RowsWritten == 0 {
+		t.Fatalf("real archive result = status %q, progress %d, rows %d",
+			record.Status, record.ProgressDone, record.RowsWritten)
+	}
+}
+
+// importPlausibleArchive opens an isolated account database and runs one
+// Plausible ZIP through the same parser and roll-up writer as the background
+// job, returning the completed record for focused assertions.
+func importPlausibleArchive(t *testing.T, archivePath string) (*Import, *accounts.Account) {
+	t.Helper()
+
+	manager := accounts.NewManager(t.TempDir())
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close account manager: %v", err)
+		}
+	})
+
+	account, err := manager.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := CreateImport(context.Background(), account.Writer(), 1, SourcePlausible,
+		filepath.Base(archivePath), fixtureNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sources, closeArchive, err := SourcesFromUpload(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := closeArchive(); err != nil {
+			t.Errorf("close Plausible archive: %v", err)
+		}
+	})
+
+	if err := ImportCSV(context.Background(), account.Writer(), account.Intern, record, sources,
+		time.UTC, func() time.Time { return fixtureNow }); err != nil {
+		t.Fatal(err)
+	}
+
+	completed, err := GetImport(context.Background(), account.Reader(), 1, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return completed, account
+}
+
+// writeArchive creates a deterministic ZIP fixture from named CSV bodies.
+func writeArchive(t *testing.T, path string, files map[string]string) {
+	t.Helper()
+
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	archive := zip.NewWriter(file)
+	for name, body := range files {
+		entry, err := archive.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(entry, body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // compare runs the same question against the native site and the reconstructed
