@@ -36,7 +36,7 @@ import (
 func TestServeReportsResolvedConfig(t *testing.T) {
 	t.Setenv("FEASIBLE_APP_BASE_URL", "http://rager.example.ts.net:19300")
 	t.Setenv("FEASIBLE_APP_TRANSPORT", "http")
-	t.Setenv("FEASIBLE_INTERNAL_KEYS", `[{"id":"test","secret":"test-secret"}]`)
+	t.Setenv("FEASIBLE_INTERNAL_KEY", "test-secret")
 
 	code, stdout, stderr := run(t, "serve", "-check")
 

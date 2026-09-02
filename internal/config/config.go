@@ -119,22 +119,15 @@ const (
 	EnvDevelopment = "development"
 )
 
-// InternalKey authenticates one generation of private app-shard traffic.
-// Ordered lists permit overlap during rotation without coordinated restarts.
-type InternalKey struct {
-	ID     string `json:"id"`
-	Secret string `json:"secret"`
-}
-
 // Shared holds the values both processes read. Their values must match on every
 // machine in a deployment, which is why they live in their own section of
 // .env.sample rather than being duplicated per app.
 type Shared struct {
-	Env          string
-	LogLevel     string
-	LogFormat    string
-	InternalKeys []InternalKey
-	TraceEvents  bool
+	Env         string
+	LogLevel    string
+	LogFormat   string
+	InternalKey string
+	TraceEvents bool
 
 	// IngestSalt is shared by every ingest process. Each process combines it
 	// with the UTC day locally, so daily visitor identifiers agree without an
@@ -596,6 +589,7 @@ func LoadFrom(l *Loader) (*Config, error) {
 			LogLevel:    strings.ToLower(l.String("FEASIBLE_LOG_LEVEL", defaultLevel)),
 			LogFormat:   strings.ToLower(l.String("FEASIBLE_LOG_FORMAT", defaultFormat)),
 			TraceEvents: traceEvents,
+			InternalKey: strings.TrimSpace(l.String("FEASIBLE_INTERNAL_KEY", "")),
 			IngestSalt:  l.String("FEASIBLE_INGEST_SALT", DefaultIngestSalt),
 		},
 		App: App{
@@ -657,12 +651,6 @@ func LoadFrom(l *Loader) (*Config, error) {
 		},
 	}
 
-	keys, err := parseInternalKeys(l.String("FEASIBLE_INTERNAL_KEYS", ""))
-	if err != nil {
-		return nil, err
-	}
-	cfg.Shared.InternalKeys = keys
-
 	subprocessors, err := parseSubprocessors(l.String("FEASIBLE_HOSTED_SUBPROCESSORS_JSON", ""))
 	if err != nil {
 		return nil, err
@@ -691,30 +679,6 @@ func LoadFrom(l *Loader) (*Config, error) {
 	}
 
 	return cfg, nil
-}
-
-// parseInternalKeys decodes the signing keys. They are carried as JSON rather
-// than a delimited string because a key list has to hold two fields per entry
-// and survive rotation, and inventing a second mini-format for that is how you
-// end up unable to put a comma in a secret.
-func parseInternalKeys(raw string) ([]InternalKey, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil, nil
-	}
-
-	var keys []InternalKey
-	if err := json.Unmarshal([]byte(raw), &keys); err != nil {
-		return nil, fmt.Errorf("FEASIBLE_INTERNAL_KEYS: not valid JSON: %w", err)
-	}
-
-	for i, key := range keys {
-		if key.ID == "" || key.Secret == "" {
-			return nil, fmt.Errorf("FEASIBLE_INTERNAL_KEYS: entry %d needs both an id and a secret", i)
-		}
-	}
-
-	return keys, nil
 }
 
 // parseSubprocessors decodes the public hosted-provider inventory. JSON keeps
@@ -821,8 +785,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("FEASIBLE_APP_TRANSPORT: %q is not direct or http", c.App.Transport)
 	}
 	if c.App.Transport == TransportHTTP {
-		if len(c.Shared.InternalKeys) == 0 {
-			return fmt.Errorf("FEASIBLE_INTERNAL_KEYS: http transport requires at least one signing key")
+		if c.Shared.InternalKey == "" {
+			return fmt.Errorf("FEASIBLE_INTERNAL_KEY: http transport requires a signing key")
 		}
 	}
 

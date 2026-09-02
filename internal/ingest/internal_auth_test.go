@@ -16,20 +16,20 @@ import (
 	"time"
 )
 
-// TestInternalAuthenticationAcceptsRotatingKeys verifies that an ingester uses
-// the first key while an app can accept an overlapping previous generation.
-func TestInternalAuthenticationAcceptsRotatingKeys(t *testing.T) {
+// TestInternalAuthenticationAcceptsSharedKey verifies an app accepts a request
+// signed by an ingester holding the same deployment key.
+func TestInternalAuthenticationAcceptsSharedKey(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	keys := []InternalKey{{ID: "new", Secret: "new-secret"}, {ID: "old", Secret: "old-secret"}}
+	key := "shared-secret"
 	called := false
-	handler := VerifyInternal(keys, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := VerifyInternal(key, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
 	body := []byte(`{"events":[]}`)
 	request := httptest.NewRequest(http.MethodPost, InternalIngestPath, bytes.NewReader(body))
-	signer := &InternalSigner{Keys: keys[1:], Now: func() time.Time { return now }}
+	signer := &InternalSigner{Key: key, Now: func() time.Time { return now }}
 	if err := signer.Sign(request, body); err != nil {
 		t.Fatal(err)
 	}
@@ -41,19 +41,38 @@ func TestInternalAuthenticationAcceptsRotatingKeys(t *testing.T) {
 	}
 }
 
+// TestInternalAuthenticationRejectsDifferentKey proves possession of a
+// different shared value cannot authorize an internal request.
+func TestInternalAuthenticationRejectsDifferentKey(t *testing.T) {
+	body := []byte(`{"events":[]}`)
+	request := httptest.NewRequest(http.MethodPost, InternalIngestPath, bytes.NewReader(body))
+	if err := (&InternalSigner{Key: "wrong-secret"}).Sign(request, body); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	VerifyInternal("expected-secret", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("request signed with a different key reached the private handler")
+	})).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("different key answered %d, want 401", recorder.Code)
+	}
+}
+
 // TestInternalAuthenticationRejectsTampering verifies that the signature binds
 // the method, path, timestamp, and exact body bytes.
 func TestInternalAuthenticationRejectsTampering(t *testing.T) {
-	keys := []InternalKey{{ID: "active", Secret: "secret"}}
+	key := "secret"
 	body := []byte(`{"events":[]}`)
 	request := httptest.NewRequest(http.MethodPost, InternalIngestPath, bytes.NewReader(body))
-	if err := (&InternalSigner{Keys: keys}).Sign(request, body); err != nil {
+	if err := (&InternalSigner{Key: key}).Sign(request, body); err != nil {
 		t.Fatal(err)
 	}
 	request.Body = http.NoBody
 
 	recorder := httptest.NewRecorder()
-	VerifyInternal(keys, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	VerifyInternal(key, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("tampered request reached the private handler")
 	})).ServeHTTP(recorder, request)
 
@@ -65,16 +84,16 @@ func TestInternalAuthenticationRejectsTampering(t *testing.T) {
 // TestInternalAuthenticationRejectsOldRequests verifies that a captured request
 // cannot be replayed outside the five-minute clock window.
 func TestInternalAuthenticationRejectsOldRequests(t *testing.T) {
-	keys := []InternalKey{{ID: "active", Secret: "secret"}}
+	key := "secret"
 	body := []byte(`{}`)
 	request := httptest.NewRequest(http.MethodPost, InternalIngestPath, bytes.NewReader(body))
-	signer := &InternalSigner{Keys: keys, Now: func() time.Time { return time.Now().Add(-internalClockSkew - time.Minute) }}
+	signer := &InternalSigner{Key: key, Now: func() time.Time { return time.Now().Add(-internalClockSkew - time.Minute) }}
 	if err := signer.Sign(request, body); err != nil {
 		t.Fatal(err)
 	}
 
 	recorder := httptest.NewRecorder()
-	VerifyInternal(keys, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	VerifyInternal(key, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("expired request reached the private handler")
 	})).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUnauthorized {

@@ -48,7 +48,7 @@ func runIngest(e *env, args []string) int {
 		"listen", e.cfg.Ingest.Listen,
 		"shards", e.cfg.Ingest.Shards,
 		"buffer_path", e.cfg.Ingest.BufferPath,
-		"internal_keys", len(e.cfg.Shared.InternalKeys),
+		"internal_signing", e.cfg.Shared.InternalKey != "",
 		"trusted_proxies", len(e.cfg.Ingest.TrustedProxies),
 		"env", e.cfg.Shared.Env,
 		"trace_events", e.cfg.Shared.TraceEvents,
@@ -63,7 +63,7 @@ func runIngest(e *env, args []string) int {
 	}
 
 	ctx := context.Background()
-	signer := &ingest.InternalSigner{Keys: internalKeys(e.cfg.Shared.InternalKeys)}
+	signer := &ingest.InternalSigner{Key: e.cfg.Shared.InternalKey}
 	outbox, err := ingest.OpenOutbox(ctx, e.cfg.Ingest.BufferPath, e.cfg.Ingest.Shards, signer)
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
@@ -110,8 +110,8 @@ func validateIngestTopology(e *env) error {
 	if len(e.cfg.Ingest.Shards) == 0 {
 		return fmt.Errorf("FEASIBLE_INGEST_SHARDS: ingest requires at least one app shard")
 	}
-	if len(e.cfg.Shared.InternalKeys) == 0 {
-		return fmt.Errorf("FEASIBLE_INTERNAL_KEYS: ingest requires at least one signing key")
+	if e.cfg.Shared.InternalKey == "" {
+		return fmt.Errorf("FEASIBLE_INTERNAL_KEY: ingest requires a signing key")
 	}
 
 	return nil

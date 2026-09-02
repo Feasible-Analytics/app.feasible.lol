@@ -63,7 +63,7 @@ systemctl restart feasible-ingest
 ```
 
 If the process will not restart but its volume survives, attach that volume to
-a replacement with the same shard list and internal keys. Follow
+a replacement with the same shard list and shared internal key. Follow
 [orphaned-ingester-volume.md](orphaned-ingester-volume.md).
 
 ## What makes it worse

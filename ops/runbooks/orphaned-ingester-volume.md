@@ -22,7 +22,7 @@ but an app shard has not committed. The host is disposable; the volume is not.
 
 Confirm the host will not return and locate the exact persistent volume mounted
 at `FEASIBLE_INGEST_BUFFER_PATH`. Do not attach one writable volume to two live
-ingesters. Preserve the failed instance's shard list and HMAC key generation;
+ingesters. Preserve the failed instance's shard list and shared HMAC key;
 the cached routing map in the database is useful, but its static denominator
 comes from configuration.
 

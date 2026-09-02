@@ -111,16 +111,15 @@ func TestLookupPrefersEnvironmentOverDotenv(t *testing.T) {
 	}
 }
 
-// TestParseDotenv covers the shapes people actually write by hand. The JSON key
-// list is the one that matters: it is full of quotes and colons, and losing its
-// surrounding quotes would turn a working config into an unparseable one.
+// TestParseDotenv covers the shapes people actually write by hand, including a
+// quoted shared key whose spaces must survive parsing.
 func TestParseDotenv(t *testing.T) {
 	body := `
 # a comment
 export FEASIBLE_ENV=production
 
 FEASIBLE_LOG_LEVEL = debug
-FEASIBLE_INTERNAL_KEYS='[{"id":"dev-01","secret":"s"}]'
+FEASIBLE_INTERNAL_KEY='secret with spaces'
 QUOTED="with spaces"
 `
 
@@ -130,10 +129,10 @@ QUOTED="with spaces"
 	}
 
 	want := map[string]string{
-		"FEASIBLE_ENV":           "production",
-		"FEASIBLE_LOG_LEVEL":     "debug",
-		"FEASIBLE_INTERNAL_KEYS": `[{"id":"dev-01","secret":"s"}]`,
-		"QUOTED":                 "with spaces",
+		"FEASIBLE_ENV":          "production",
+		"FEASIBLE_LOG_LEVEL":    "debug",
+		"FEASIBLE_INTERNAL_KEY": "secret with spaces",
+		"QUOTED":                "with spaces",
 	}
 
 	for name, value := range want {
@@ -486,10 +485,10 @@ func TestHostedProductionRejectsSampleSubprocessors(t *testing.T) {
 	}
 }
 
-// TestLoadFromParsesInternalKeys covers the signing key list, including the
-// rotation case of more than one key being valid at once.
-func TestLoadFromParsesInternalKeys(t *testing.T) {
-	t.Setenv("FEASIBLE_INTERNAL_KEYS", `[{"id":"dev-01","secret":"a"},{"id":"dev-02","secret":"b"}]`)
+// TestLoadFromReadsInternalKey verifies both processes receive the same plain
+// signing value without a JSON wrapper or key identifier.
+func TestLoadFromReadsInternalKey(t *testing.T) {
+	t.Setenv("FEASIBLE_INTERNAL_KEY", "shared-signing-key")
 
 	loader, err := NewLoader("", "")
 	if err != nil {
@@ -501,8 +500,8 @@ func TestLoadFromParsesInternalKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(cfg.Shared.InternalKeys) != 2 || cfg.Shared.InternalKeys[1].ID != "dev-02" {
-		t.Fatalf("got %+v", cfg.Shared.InternalKeys)
+	if cfg.Shared.InternalKey != "shared-signing-key" {
+		t.Fatalf("internal key = %q", cfg.Shared.InternalKey)
 	}
 }
 
@@ -538,7 +537,6 @@ func TestLoadFromRejectsBadValues(t *testing.T) {
 		"FEASIBLE_APP_MAIL_TRANSPORT": "pigeon",
 		"FEASIBLE_APP_BASE_URL":       "localhost:19300",
 		"FEASIBLE_INGEST_SHARDS":      "127.0.0.1:19401",
-		"FEASIBLE_INTERNAL_KEYS":      `[{"id":"dev-01"}]`,
 	}
 
 	for name, value := range cases {

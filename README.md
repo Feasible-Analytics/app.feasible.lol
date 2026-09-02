@@ -85,7 +85,7 @@ App listeners publish authenticated domain snapshots and accept durable batches
 alongside dashboard traffic. `FEASIBLE_APP_SHARD_ID` is the
 app's one-based stable position in the ingester list. In hosted production these
 listeners are reachable only over protected networking and internal requests
-use `FEASIBLE_INTERNAL_KEYS`; `/internal/*` is never exposed by the public load
+use `FEASIBLE_INTERNAL_KEY`; `/internal/*` is never exposed by the public load
 balancer. See [.env.sample](.env.sample) for the complete app
 and ingester configuration and [ops/load-balancer.md](ops/load-balancer.md) for
 failure and drain behavior.

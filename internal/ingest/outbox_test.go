@@ -51,7 +51,7 @@ type outboxDestination struct {
 // boundary: the in-memory batch waits for buffer.db, not for a reachable app.
 func TestOutboxTransportReleasesWaiterBeforeAppCommit(t *testing.T) {
 	outbox, err := OpenOutbox(testContext(), filepath.Join(t.TempDir(), "buffer.db"), []string{"http://127.0.0.1:1"},
-		&InternalSigner{Keys: []InternalKey{{ID: "active", Secret: "secret"}}})
+		&InternalSigner{Key: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestOutboxSurvivesAppFailureAndIngesterRestart(t *testing.T) {
 	server := httptest.NewServer(destination)
 	defer server.Close()
 	path := filepath.Join(t.TempDir(), "buffer.db")
-	signer := &InternalSigner{Keys: []InternalKey{{ID: "active", Secret: "secret"}}}
+	signer := &InternalSigner{Key: "secret"}
 
 	outbox, err := OpenOutbox(testContext(), path, []string{server.URL}, signer)
 	if err != nil {
@@ -158,7 +158,7 @@ func TestOutboxDeletesOnlyExactAcknowledgments(t *testing.T) {
 	server := httptest.NewServer(destination)
 	defer server.Close()
 	outbox, err := OpenOutbox(testContext(), filepath.Join(t.TempDir(), "buffer.db"), []string{server.URL},
-		&InternalSigner{Keys: []InternalKey{{ID: "active", Secret: "secret"}}})
+		&InternalSigner{Key: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestOutboxDeletesOnlyExactAcknowledgments(t *testing.T) {
 func TestOutboxPersistsNoRawAddress(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "buffer.db")
 	outbox, err := OpenOutbox(testContext(), path, []string{"http://127.0.0.1:1"},
-		&InternalSigner{Keys: []InternalKey{{ID: "active", Secret: "secret"}}})
+		&InternalSigner{Key: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestOutboxPersistsNoRawAddress(t *testing.T) {
 // back to delivery rather than requiring edits to the SQLite file.
 func TestOutboxReplaysParkedRows(t *testing.T) {
 	outbox, err := OpenOutbox(testContext(), filepath.Join(t.TempDir(), "buffer.db"), []string{"http://127.0.0.1:1"},
-		&InternalSigner{Keys: []InternalKey{{ID: "active", Secret: "secret"}}})
+		&InternalSigner{Key: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}

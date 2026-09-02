@@ -20,7 +20,7 @@ import (
 // every standalone ingester, while leaving individual tests free to vary URLs.
 func configureStandaloneIngest(t *testing.T) {
 	t.Helper()
-	t.Setenv("FEASIBLE_INTERNAL_KEYS", `[{"id":"test","secret":"test-secret"}]`)
+	t.Setenv("FEASIBLE_INTERNAL_KEY", "test-secret")
 }
 
 // TestIngestReportsShards checks the shard list is parsed and reported. An

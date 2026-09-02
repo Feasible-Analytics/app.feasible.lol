@@ -222,7 +222,7 @@ func runServe(e *env, args []string) int {
 		ID: e.cfg.App.ShardID, Sites: service.Sites, Shields: site.shields,
 		Writer: service.Writer,
 	}
-	privateRoutes := ingest.VerifyInternal(internalKeys(e.cfg.Shared.InternalKeys), privateShard.Handler())
+	privateRoutes := ingest.VerifyInternal(e.cfg.Shared.InternalKey, privateShard.Handler())
 	server := httpserver.New("app", e.cfg.App.Listen, processRoutes(
 		serveRoutes(e, service, manager, secret, e.cfg.App.DataDir, app, public, com, data.settings, extra),
 		privateRoutes,

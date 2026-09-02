@@ -33,7 +33,7 @@ type routingServer struct {
 
 // ServeHTTP returns a signed-request-aware routing snapshot for one shard.
 func (s *routingServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get(internalKeyHeader) == "" || r.Header.Get(internalSigHeader) == "" {
+	if r.Header.Get(internalTimeHeader) == "" || r.Header.Get(internalSigHeader) == "" {
 		http.Error(w, "missing signature", http.StatusUnauthorized)
 		return
 	}
@@ -68,7 +68,7 @@ func TestRemoteRouterRetainsFailedShardAndRestoresDiskCache(t *testing.T) {
 
 	db := openRoutingDB(t)
 	now := time.Now().UTC()
-	signer := &InternalSigner{Keys: []InternalKey{{ID: "active", Secret: "secret"}}, Now: func() time.Time { return now }}
+	signer := &InternalSigner{Key: "secret", Now: func() time.Time { return now }}
 	router, err := NewRemoteRouter(context.Background(), db, []string{firstHTTP.URL, secondHTTP.URL}, signer)
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestRemoteRouterDropsUnknownOnlyWhenComplete(t *testing.T) {
 	httpServer := httptest.NewServer(server)
 	defer httpServer.Close()
 	db := openRoutingDB(t)
-	signer := &InternalSigner{Keys: []InternalKey{{ID: "active", Secret: "secret"}}}
+	signer := &InternalSigner{Key: "secret"}
 	router, err := NewRemoteRouter(context.Background(), db, []string{httpServer.URL}, signer)
 	if err != nil {
 		t.Fatal(err)
@@ -142,7 +142,7 @@ func TestRemoteRouterRejectsMisorderedShardIdentity(t *testing.T) {
 	httpServer := httptest.NewServer(server)
 	defer httpServer.Close()
 	router, err := NewRemoteRouter(context.Background(), openRoutingDB(t), []string{httpServer.URL},
-		&InternalSigner{Keys: []InternalKey{{ID: "active", Secret: "secret"}}})
+		&InternalSigner{Key: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}

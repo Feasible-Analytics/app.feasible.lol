@@ -23,30 +23,22 @@ import (
 )
 
 const (
-	internalKeyHeader  = "X-Feasible-Key"
 	internalTimeHeader = "X-Feasible-Time"
 	internalSigHeader  = "X-Feasible-Sig"
 	internalClockSkew  = 5 * time.Minute
 	internalKeyRate    = 1000
 )
 
-// InternalKey is one rotatable signing identity. Signers use the first key;
-// verifiers accept every configured key so rotation requires no coordinated
-// restart.
-type InternalKey struct {
-	ID     string
-	Secret string
-}
-
 // InternalSigner signs requests sent from an ingester to an app shard.
 type InternalSigner struct {
-	Keys []InternalKey
-	Now  func() time.Time
+	Key string
+	Now func() time.Time
 }
 
-// Sign adds an identity, timestamp, and body-integrity signature to a request.
+// Sign adds a timestamp and body-integrity signature to a request. The shared
+// key itself never leaves the process.
 func (s *InternalSigner) Sign(request *http.Request, body []byte) error {
-	if len(s.Keys) == 0 || s.Keys[0].ID == "" || s.Keys[0].Secret == "" {
+	if s.Key == "" {
 		return fmt.Errorf("internal authentication has no signing key")
 	}
 
@@ -55,9 +47,8 @@ func (s *InternalSigner) Sign(request *http.Request, body []byte) error {
 		now = s.Now().UTC()
 	}
 	timestamp := strconv.FormatInt(now.Unix(), 10)
-	signature := internalSignature(s.Keys[0].Secret, request.Method, request.URL.EscapedPath(), timestamp, body)
+	signature := internalSignature(s.Key, request.Method, request.URL.EscapedPath(), timestamp, body)
 
-	request.Header.Set(internalKeyHeader, s.Keys[0].ID)
 	request.Header.Set(internalTimeHeader, timestamp)
 	request.Header.Set(internalSigHeader, signature)
 
@@ -67,23 +58,17 @@ func (s *InternalSigner) Sign(request *http.Request, body []byte) error {
 // VerifyInternal authenticates a private request before handing it to the
 // shard handler. The body is restored after verification so the real handler
 // reads exactly the bytes whose digest was signed.
-func VerifyInternal(keys []InternalKey, next http.Handler) http.Handler {
-	byID := make(map[string]InternalKey, len(keys))
-	for _, key := range keys {
-		byID[key.ID] = key
-	}
+func VerifyInternal(key string, next http.Handler) http.Handler {
 	type keyWindow struct {
 		second int64
 		count  int
 	}
 	var rateMu sync.Mutex
-	rate := make(map[string]keyWindow, len(keys))
+	var rate keyWindow
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		keyID := strings.TrimSpace(r.Header.Get(internalKeyHeader))
-		key, ok := byID[keyID]
-		if !ok || key.Secret == "" {
-			http.Error(w, "internal request identity is not accepted", http.StatusUnauthorized)
+		if key == "" {
+			http.Error(w, "internal signing key is not configured", http.StatusUnauthorized)
 			return
 		}
 
@@ -110,7 +95,7 @@ func VerifyInternal(keys []InternalKey, next http.Handler) http.Handler {
 			http.Error(w, "internal request signature is invalid", http.StatusUnauthorized)
 			return
 		}
-		got, err := hex.DecodeString(internalSignature(key.Secret, r.Method, r.URL.EscapedPath(), stamp, body))
+		got, err := hex.DecodeString(internalSignature(key, r.Method, r.URL.EscapedPath(), stamp, body))
 		if err != nil || !hmac.Equal(got, want) {
 			http.Error(w, "internal request signature is invalid", http.StatusUnauthorized)
 			return
@@ -118,14 +103,13 @@ func VerifyInternal(keys []InternalKey, next http.Handler) http.Handler {
 
 		second := time.Now().Unix()
 		rateMu.Lock()
-		window := rate[keyID]
-		if window.second != second {
-			window = keyWindow{second: second}
+		if rate.second != second {
+			rate = keyWindow{second: second}
 		}
-		window.count++
-		rate[keyID] = window
+		rate.count++
+		count := rate.count
 		rateMu.Unlock()
-		if window.count > internalKeyRate {
+		if count > internalKeyRate {
 			http.Error(w, "internal request rate limit exceeded", http.StatusTooManyRequests)
 			return
 		}

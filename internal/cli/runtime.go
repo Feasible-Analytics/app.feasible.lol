@@ -196,17 +196,6 @@ func processRoutes(base http.Handler, internal ...http.Handler) http.Handler {
 	return mux
 }
 
-// internalKeys converts configuration records into the protocol package's
-// deliberately small signing type.
-func internalKeys(keys []config.InternalKey) []ingest.InternalKey {
-	converted := make([]ingest.InternalKey, 0, len(keys))
-	for _, key := range keys {
-		converted = append(converted, ingest.InternalKey{ID: key.ID, Secret: key.Secret})
-	}
-
-	return converted
-}
-
 // serveUntilSignalWith runs the listener until SIGINT or SIGTERM, then shuts
 // everything down in order. Returning an exit code rather than calling os.Exit
 // is what lets the whole command be driven from a test.
