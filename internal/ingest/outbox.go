@@ -57,12 +57,12 @@ func OpenOutbox(ctx context.Context, path string, shards []string, signer *Inter
 	}
 	outbox := &Outbox{DB: db, Shards: shards, Signer: signer}
 	if err := outbox.createSchema(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	router, err := NewRemoteRouter(ctx, db, shards, signer)
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	outbox.Router = router
@@ -77,7 +77,7 @@ func (o *Outbox) Send(ctx context.Context, _ int, batch []Event) ([]uuid.UUID, e
 	if err != nil {
 		return nil, fmt.Errorf("outbox: begin: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var unroutedRows, unroutedBytes int64
 	for _, event := range batch {
@@ -164,7 +164,7 @@ func (o *Outbox) ReplayParked(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("outbox replay: begin: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	result, err := tx.ExecContext(ctx, `
 		INSERT OR IGNORE INTO outbox
 		(shard_id, account_id, event_uuid, domain, payload, created_at, attempts, next_try_at, last_error)
@@ -306,7 +306,7 @@ func (o *Outbox) deliver(ctx context.Context, shard int) error {
 	if err != nil {
 		return o.retryRows(ctx, rows, err.Error(), false)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	var result IngestResponse
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
@@ -362,7 +362,7 @@ func (o *Outbox) selectRows(ctx context.Context, shard int) ([]outboxRow, error)
 	if err != nil {
 		return nil, fmt.Errorf("outbox select shard %d: %w", shard, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var selected []outboxRow
 	for rows.Next() {
 		var row outboxRow
@@ -440,7 +440,7 @@ func (o *Outbox) parkIDs(ctx context.Context, ids []int64, reason string) error 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	for _, id := range ids {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT OR IGNORE INTO outbox_parked

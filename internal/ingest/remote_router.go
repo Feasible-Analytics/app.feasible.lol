@@ -224,7 +224,7 @@ func (r *RemoteRouter) refreshShard(ctx context.Context, shard int) error {
 	if err != nil {
 		return fmt.Errorf("routing shard %d: %w", shard, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode == http.StatusNotModified {
 		r.mu.Lock()
 		r.lastSuccess[shard] = r.clock()
@@ -285,7 +285,7 @@ func (r *RemoteRouter) load(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("routing cache load: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var shard int
 		var domain, etag string
@@ -319,7 +319,7 @@ func (r *RemoteRouter) persistShard(ctx context.Context, shard int, etag string,
 	if err != nil {
 		return fmt.Errorf("routing shard %d: begin cache update: %w", shard, err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, "DELETE FROM routing_cache WHERE shard_id = ?", shard); err != nil {
 		return fmt.Errorf("routing shard %d: clear cache: %w", shard, err)
 	}

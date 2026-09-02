@@ -28,6 +28,16 @@ import (
 // operations; Go 1.23 does not yet expose testing.T.Context.
 func testContext() context.Context { return context.Background() }
 
+// closeTestOutbox registers a checked close for one temporary outbox.
+func closeTestOutbox(t *testing.T, outbox *Outbox) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := outbox.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+}
+
 // outboxDestination is a controllable app shard that records deliveries and
 // acknowledges either all events or only the first one.
 type outboxDestination struct {
@@ -45,7 +55,7 @@ func TestOutboxTransportReleasesWaiterBeforeAppCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer outbox.Close()
+	closeTestOutbox(t, outbox)
 	buffer := NewBuffer(outbox, 1, time.Hour)
 	event := Event{UUID: uuid.New(), Shard: 0, AccountID: 10, SiteID: 1, Domain: "known.example"}
 	if err := buffer.AddAndWait(testContext(), event); err != nil {
@@ -124,7 +134,7 @@ func TestOutboxSurvivesAppFailureAndIngesterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer restarted.Close()
+	closeTestOutbox(t, restarted)
 	if restarted.Len() != 1 {
 		t.Fatalf("restart retained %d events, want 1", restarted.Len())
 	}
@@ -152,7 +162,7 @@ func TestOutboxDeletesOnlyExactAcknowledgments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer outbox.Close()
+	closeTestOutbox(t, outbox)
 	if err := outbox.Router.RefreshAll(testContext()); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +223,7 @@ func TestOutboxReplaysParkedRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer outbox.Close()
+	closeTestOutbox(t, outbox)
 	event := Event{UUID: uuid.New(), Shard: 0, AccountID: 10, SiteID: 1, Domain: "known.example"}
 	if _, err := outbox.Send(testContext(), 0, []Event{event}); err != nil {
 		t.Fatal(err)

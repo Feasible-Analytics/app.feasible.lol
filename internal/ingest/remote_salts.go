@@ -63,7 +63,7 @@ func (s *RemoteSalts) Refresh(ctx context.Context) (salts.Pair, error) {
 	if err != nil {
 		return salts.Pair{}, fmt.Errorf("remote salts: fetch: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return salts.Pair{}, fmt.Errorf("remote salts: app returned %s", response.Status)
 	}
