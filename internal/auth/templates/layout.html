@@ -81,6 +81,27 @@
       </main>
     </div>
   </div>
+{{ else if .Focused }}
+  <div class="min-h-full">
+    <header class="border-b border-line bg-card">
+      <div class="mx-auto flex w-full max-w-5xl items-center justify-between px-4 py-4 sm:px-6">
+        <a href="{{ url $.Lang "/sites" }}" class="flex items-center gap-2 font-semibold text-heading">
+          <span class="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-accent text-fill-fg font-bold">f</span>
+          feasible.lol
+        </a>
+
+        <div class="text-right">
+          <p class="text-sm font-medium text-heading">{{ .User.DisplayName }}</p>
+          <p class="text-xs text-muted">{{ .User.Email }}</p>
+        </div>
+      </div>
+    </header>
+
+    <main class="mx-auto w-full max-w-3xl px-4 py-10 sm:px-6 lg:py-14">
+      {{ template "messages.html" . }}
+      {{ template "content" . }}
+    </main>
+  </div>
 {{ else }}
   <div class="flex min-h-full flex-col items-center justify-center px-4 py-10">
     <a href="{{ url $.Lang "/" }}" class="mb-8 flex items-center gap-2 text-lg font-semibold text-heading">

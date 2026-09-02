@@ -24,7 +24,13 @@ func (h *Handler) showOnboarding(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p := h.newPage(r, tr(r, "auth.title.onboarding", "site", site.Label()), "sites")
+	firstRun := r.URL.Query().Get("first_run") == "1"
+	if firstRun {
+		p.Nav = ""
+		p.Focused = true
+	}
 	p.Data["Site"] = site
+	p.Data["FirstRun"] = firstRun
 	p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
 	p.Data["SnippetLegacy"] = SnippetLegacy(h.BaseURL, site)
 	p.Data["Platforms"] = InstallPlatforms()
@@ -107,7 +113,13 @@ func (h *Handler) doVerifyInstall(w http.ResponseWriter, r *http.Request) {
 		"outcome", string(result.Outcome), "status", result.StatusCode)
 
 	p := h.newPage(r, tr(r, "auth.title.onboarding", "site", site.Label()), "sites")
+	firstRun := r.PostFormValue("first_run") == "1"
+	if firstRun {
+		p.Nav = ""
+		p.Focused = true
+	}
 	p.Data["Site"] = site
+	p.Data["FirstRun"] = firstRun
 	p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
 	p.Data["SnippetLegacy"] = SnippetLegacy(h.BaseURL, site)
 	p.Data["Platforms"] = InstallPlatforms()

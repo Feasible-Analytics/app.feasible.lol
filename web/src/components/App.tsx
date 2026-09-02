@@ -544,11 +544,15 @@ const EMPTY: ReadonlySet<string> = new Set();
  *  broken and a broken dashboard gets a support ticket. */
 function NoSites() {
 	return (
-		<div className="flex min-h-screen items-center justify-center px-6">
-			<div className="max-w-md text-center">
-				<h1 className="text-lg font-semibold text-body">{t("dashboard.no_sites.title")}</h1>
-				<p className="mt-2 text-sm text-muted">{t("dashboard.no_sites.body")}</p>
-			</div>
+		<div className="flex min-h-screen items-center justify-center bg-page px-6">
+			<section className="w-full max-w-md rounded-2xl border border-line bg-card p-8 text-center shadow-sm">
+				<div className="mx-auto flex size-12 items-center justify-center rounded-2xl bg-accent text-xl font-bold text-white dark:text-slate-950">f</div>
+				<h1 className="mt-5 text-xl font-semibold text-body">{t("dashboard.no_sites.title")}</h1>
+				<p className="mt-2 text-sm leading-6 text-muted">{t("dashboard.no_sites.body")}</p>
+				<a href="/sites/new" className="mt-6 inline-flex rounded-lg bg-accent px-5 py-2.5 text-sm font-semibold text-white hover:bg-accent-hover dark:text-slate-950">
+					{t("dashboard.no_sites.action")}
+				</a>
+			</section>
 		</div>
 	);
 }

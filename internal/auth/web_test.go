@@ -283,8 +283,8 @@ func registerAndVerify(t *testing.T, app *testApp) *client {
 	resp = c.post("/verify-email", url.Values{"code": {code}})
 	closeResponseBody(t, resp)
 
-	if !strings.HasPrefix(resp.Header.Get("Location"), "/sites") {
-		t.Fatalf("verification should go to the sites list, got %q (status %d)",
+	if !strings.HasPrefix(resp.Header.Get("Location"), "/sites/new?") || !strings.Contains(resp.Header.Get("Location"), "welcome=1") {
+		t.Fatalf("verification should go to first-site setup, got %q (status %d)",
 			resp.Header.Get("Location"), resp.StatusCode)
 	}
 
@@ -1215,20 +1215,26 @@ func TestRegisterVerifyAndCreateASite(t *testing.T) {
 	app := newTestApp(t)
 	c := registerAndVerify(t, app)
 
-	body := c.body("/sites")
+	body := c.body("/sites/new?welcome=1")
 
-	if !strings.Contains(body, "No sites yet") {
-		t.Errorf("a new account should see the empty state:\n%s", body)
+	for _, fragment := range []string{"Add a site", "One snippet", "Skip for now"} {
+		if !strings.Contains(body, fragment) {
+			t.Errorf("first-site setup is missing %q:\n%s", fragment, body)
+		}
+	}
+	if strings.Contains(body, "<aside") || strings.Contains(body, "Display name") {
+		t.Errorf("first-site setup should be focused on the domain:\n%s", body)
 	}
 
 	resp := c.post("/sites/new", url.Values{
 		"domain":       {"https://Example.com/pricing"},
 		"display_name": {"Marketing site"},
 		"timezone":     {"Europe/London"},
+		"first_run":    {"1"},
 	})
 	closeResponseBody(t, resp)
 
-	if !strings.HasPrefix(resp.Header.Get("Location"), "/onboarding/") {
+	if !strings.HasPrefix(resp.Header.Get("Location"), "/onboarding/") || !strings.Contains(resp.Header.Get("Location"), "first_run=1") {
 		t.Fatalf("creating a site should go to onboarding, got %q", resp.Header.Get("Location"))
 	}
 
