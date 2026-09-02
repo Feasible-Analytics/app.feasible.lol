@@ -11,12 +11,20 @@
 -->
 {{ define "content" }}
 <div class="mx-auto max-w-xl" x-data="siteForm()" x-init="detectTimezone()">
+  {{ if .Data.FirstRun }}
+    <div class="mb-8 flex items-center justify-center gap-2" aria-hidden="true">
+      <span class="h-2 w-8 rounded-full bg-accent"></span>
+      <span class="h-2 w-2 rounded-full bg-line"></span>
+    </div>
+  {{ end }}
+
   <h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "auth.site_new.title" }}</h1>
   <p class="mt-1 text-sm text-muted">{{ t $.Lang "auth.site_new.subtitle" }}</p>
 
   <form method="post" action="{{ url $.Lang "/sites/new" }}" class="mt-8 space-y-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <input type="hidden" name="team_id" value="{{ .Data.TeamID }}">
+    {{ if .Data.FirstRun }}<input type="hidden" name="first_run" value="1">{{ end }}
 
     <div>
       <label for="domain" class="block text-sm font-medium text-body">{{ t $.Lang "auth.site_new.domain" }}</label>
@@ -26,6 +34,7 @@
       <p class="mt-1 text-xs text-muted">{{ t $.Lang "auth.site_new.domain_help" }}</p>
     </div>
 
+    {{ if not .Data.FirstRun }}
     <div>
       <label for="display_name" class="block text-sm font-medium text-body">
         {{ t $.Lang "auth.site_new.display_name" }} <span class="text-faint">{{ t $.Lang "auth.site_new.optional" }}</span>
@@ -52,8 +61,6 @@
         <span class="text-faint">{{ t $.Lang "auth.site_new.tz_detected" }}</span>
       </p>
 
-      <input type="hidden" name="timezone" :value="timezone">
-
       <select x-show="override" x-model="timezone"
               class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
         <template x-for="zone in zones" :key="zone">
@@ -63,13 +70,18 @@
 
       <p class="mt-1 text-xs text-muted">{{ t $.Lang "auth.site_new.tz_help" }}</p>
     </div>
+    {{ end }}
+
+    <input type="hidden" name="timezone" :value="timezone">
 
     <div class="flex items-center gap-3">
       <button type="submit"
               class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
         {{ t $.Lang "auth.site_new.submit" }}
       </button>
-      <a href="{{ url $.Lang (printf "/sites?team_id=%d" .Data.TeamID) }}" class="text-sm font-medium text-muted hover:text-body">{{ t $.Lang "common.action.cancel" }}</a>
+      <a href="{{ url $.Lang (printf "/sites?team_id=%d" .Data.TeamID) }}" class="text-sm font-medium text-muted hover:text-body">
+        {{ if .Data.FirstRun }}{{ t $.Lang "auth.onboarding.skip" }}{{ else }}{{ t $.Lang "common.action.cancel" }}{{ end }}
+      </a>
     </div>
   </form>
 </div>

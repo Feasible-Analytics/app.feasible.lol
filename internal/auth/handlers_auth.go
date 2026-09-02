@@ -563,11 +563,22 @@ func (h *Handler) pendingInvitation(r *http.Request) (teams.Invitation, bool) {
 	return invitation, err == nil
 }
 
-// afterVerification sends an invited signup into redemption and every other
-// signup to the ordinary welcome screen.
+// afterVerification sends an invited signup into redemption, a new account
+// into first-site setup, and preserves an explicit purchase destination.
 func (h *Handler) afterVerification(r *http.Request, next string) string {
 	if _, ok := h.pendingInvitation(r); ok {
 		return "/invitations/accept"
+	}
+
+	next = safeNext(next)
+	if next == "/sites" || next == "/dashboard/" {
+		team, err := h.teamForRequest(r, teams.PermManageSites)
+		if err == nil {
+			list, listErr := h.Store.ListSites(r.Context(), team.ID, "")
+			if listErr == nil && len(list) == 0 {
+				return "/sites/new?team_id=" + strconv.FormatInt(team.ID, 10) + "&welcome=1"
+			}
+		}
 	}
 
 	return afterVerification(next)

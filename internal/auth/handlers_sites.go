@@ -134,8 +134,14 @@ func (h *Handler) showNewSite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p := h.newPage(r, tr(r, "auth.title.site_new"), "sites")
+	firstRun := r.URL.Query().Get("welcome") == "1"
+	if firstRun {
+		p.Nav = ""
+		p.Focused = true
+	}
 	p.Data["Timezones"] = CommonTimezones()
 	p.Data["TeamID"] = team.ID
+	p.Data["FirstRun"] = firstRun
 
 	h.render(w, r, "site_new", p, http.StatusOK)
 }
@@ -177,11 +183,17 @@ func (h *Handler) doNewSite(w http.ResponseWriter, r *http.Request) {
 	site, err := h.Store.CreateSite(r.Context(), team.ID, domain, displayName, timezone)
 	if err != nil {
 		p := h.newPage(r, tr(r, "auth.title.site_new"), "sites")
+		firstRun := r.PostFormValue("first_run") == "1"
+		if firstRun {
+			p.Nav = ""
+			p.Focused = true
+		}
 		p.Data["Timezones"] = CommonTimezones()
 		p.Data["Domain"] = domain
 		p.Data["DisplayName"] = displayName
 		p.Data["Timezone"] = timezone
 		p.Data["TeamID"] = team.ID
+		p.Data["FirstRun"] = firstRun
 
 		if errors.Is(err, ErrDomainTaken) {
 			p.Error = i18n.T(p.Lang, "auth.error.domain_taken")
@@ -209,7 +221,11 @@ func (h *Handler) doNewSite(w http.ResponseWriter, r *http.Request) {
 	// processes discover the durable control row on their normal refresh.
 	h.pushToCache(site, team)
 
-	http.Redirect(w, r, "/onboarding/"+strconv.FormatInt(site.ID, 10), http.StatusFound)
+	destination := "/onboarding/" + strconv.FormatInt(site.ID, 10)
+	if r.PostFormValue("first_run") == "1" {
+		destination += "?first_run=1"
+	}
+	http.Redirect(w, r, destination, http.StatusFound)
 }
 
 // pushToCache inserts a site into the in-memory routing map.

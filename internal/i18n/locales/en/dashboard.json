@@ -204,6 +204,7 @@
   "dashboard.metric.visitors": "Unique visitors",
   "dashboard.metric.visits": "Total visits",
   "dashboard.no_sites.body": "Add a site and install the tracking snippet, and its traffic will appear here within a few seconds.",
+  "dashboard.no_sites.action": "Add your first site",
   "dashboard.no_sites.title": "No sites yet",
   "dashboard.locked.billing": "Open billing",
   "dashboard.locked.export": "Export data",

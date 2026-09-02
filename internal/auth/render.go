@@ -77,6 +77,11 @@ type page struct {
 	Title string
 	Nav   string
 
+	// Focused gives a signed-in setup step a quiet shell without losing the
+	// wider content area it needs. It is separate from Nav because signed-out
+	// forms also have no navigation and intentionally stay card-width.
+	Focused bool
+
 	// Lang is the language this response is written in. It lives on the page
 	// rather than being resolved inside the template function because a
 	// template function has no request: the functions are bound once when the

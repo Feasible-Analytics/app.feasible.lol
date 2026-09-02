@@ -9,6 +9,7 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 )
 
@@ -113,6 +114,12 @@ func (h *Handler) finishGoogle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.startSession(w, r, user)
+	if created || invited {
+		request := r.WithContext(context.WithValue(r.Context(), contextUser, user))
+		http.Redirect(w, r, h.afterVerification(request, next), http.StatusFound)
+		return
+	}
+
 	http.Redirect(w, r, next, http.StatusFound)
 }
 
