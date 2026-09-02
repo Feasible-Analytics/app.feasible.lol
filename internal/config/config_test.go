@@ -17,14 +17,109 @@ import (
 	"testing"
 )
 
-// setProductionOperator supplies a concrete self-hosted legal identity to
-// production tests whose subject is unrelated to legal-mode validation.
+// setProductionOperator supplies a concrete self-hosted legal identity and a
+// real ingest salt to production tests whose subject is neither of those.
 func setProductionOperator(t *testing.T) {
 	t.Helper()
 	t.Setenv("FEASIBLE_APP_HOSTED", "false")
 	t.Setenv("FEASIBLE_OPERATOR_NAME", "Example Operator, Inc.")
 	t.Setenv("FEASIBLE_OPERATOR_ADDRESS", "123 Example Street")
 	t.Setenv("FEASIBLE_OPERATOR_EMAIL", "privacy@example.test")
+	t.Setenv("FEASIBLE_INGEST_SALT", "a-production-salt-nobody-else-knows")
+}
+
+// TestProductionRefusesTheDevelopmentSalt is the check that keeps a forgotten
+// variable from shipping a public salt: with it, every visitor's daily hash is
+// brute-forceable by anyone holding the fact rows.
+func TestProductionRefusesTheDevelopmentSalt(t *testing.T) {
+	t.Setenv("FEASIBLE_ENV", EnvProduction)
+	setProductionOperator(t)
+	t.Setenv("FEASIBLE_INGEST_SALT", DefaultIngestSalt)
+
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "FEASIBLE_INGEST_SALT") {
+		t.Fatalf("production accepted the development salt: err = %v", err)
+	}
+
+	t.Setenv("FEASIBLE_ENV", EnvDevelopment)
+	if _, err := LoadFrom(loader); err != nil {
+		t.Fatalf("development rejected its own default salt: %v", err)
+	}
+}
+
+// TestProductionRefusesAShortInternalKey keeps the HMAC key that authenticates
+// ingesters to app shards from being a guessable placeholder.
+func TestProductionRefusesAShortInternalKey(t *testing.T) {
+	t.Setenv("FEASIBLE_ENV", EnvProduction)
+	setProductionOperator(t)
+	t.Setenv("FEASIBLE_INTERNAL_KEY", "dev-only-change-me")
+
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "FEASIBLE_INTERNAL_KEY") {
+		t.Fatalf("production accepted an %d-character internal key: err = %v", len("dev-only-change-me"), err)
+	}
+
+	t.Setenv("FEASIBLE_INTERNAL_KEY", strings.Repeat("k", MinInternalKeyLength))
+	if _, err := LoadFrom(loader); err != nil {
+		t.Fatalf("a %d-character key was rejected: %v", MinInternalKeyLength, err)
+	}
+}
+
+// TestIntFailsLoudly is the "never fail silently" rule applied to numbers: a
+// shard id of "abc" quietly becoming shard 1 would have two app processes claim
+// the same position, and a rate limit of zero would lock every customer out.
+func TestIntFailsLoudly(t *testing.T) {
+	cases := map[string]string{
+		"FEASIBLE_APP_SHARD_ID":            "abc",
+		"FEASIBLE_API_RATE_LIMIT":          "0",
+		"FEASIBLE_SMTP_PORT":               "-25",
+		"FEASIBLE_WEBHOOK_TIMEOUT_SECONDS": "soon",
+		"FEASIBLE_QUERY_SAMPLE_THRESHOLD":  "lots",
+	}
+
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, value)
+
+			loader, err := NewLoader("", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("%s=%q was accepted: err = %v", name, value, err)
+			}
+		})
+	}
+}
+
+// TestQuerySampleThresholdAcceptsANegativeValue pins the documented meaning of
+// the threshold's sign: negative turns automatic sampling off for an operator
+// who would rather wait than estimate.
+func TestQuerySampleThresholdAcceptsANegativeValue(t *testing.T) {
+	t.Setenv("FEASIBLE_QUERY_SAMPLE_THRESHOLD", "-1")
+
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(loader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.API.QuerySampleThreshold != -1 {
+		t.Fatalf("threshold = %d, want -1", cfg.API.QuerySampleThreshold)
+	}
 }
 
 // TestLookupPrefersConfigDir is the Docker-secrets contract from the CLI issue:

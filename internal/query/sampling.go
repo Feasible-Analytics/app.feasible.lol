@@ -157,37 +157,39 @@ func (e *Engine) decideSampling(ctx context.Context, q *Query, primary Resolved,
 		return nil, nil
 	}
 
+	// The daily counts every estimate below reads arrive with the sampling
+	// schema; a database opened before that migration stays exact.
+	counted, err := e.hasSamplingCounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	if q.SampleRate < 1 {
 		if err := validateBoundedSampling(q, blueprint); err != nil {
 			return nil, err
 		}
 
-		primaryRows, known, err := e.factRowsUpper(ctx, q.SiteIDs, primary)
+		if !counted {
+			return nil, requiresExact("sampling is not available until the materialized sampling schema is integrated; set exact to true")
+		}
+
+		primaryRows, err := e.factRowsUpper(ctx, q.SiteIDs, primary)
 		if err != nil {
 			return nil, err
 		}
-		primaryEstimate := scanEstimate{}
+		primaryEstimate := estimateFactWork(primaryRows, plannedScanPasses(q, blueprint, false))
 		comparisonEstimate := scanEstimate{}
-		if known {
-			primaryEstimate = estimateFactWork(primaryRows, plannedScanPasses(q, blueprint, false))
-			if comparison != nil {
-				comparisonRows, comparisonKnown, err := e.factRowsUpper(ctx, q.SiteIDs, *comparison)
-				if err != nil {
-					return nil, err
-				}
-				known = comparisonKnown
-				if known {
-					comparisonEstimate = estimateFactWork(comparisonRows, plannedScanPasses(q, blueprint, true))
-				}
+		if comparison != nil {
+			comparisonRows, err := e.factRowsUpper(ctx, q.SiteIDs, *comparison)
+			if err != nil {
+				return nil, err
 			}
-		}
-		if !known {
-			return nil, requiresExact("sampling is not available until the materialized sampling schema is integrated; set exact to true")
+			comparisonEstimate = estimateFactWork(comparisonRows, plannedScanPasses(q, blueprint, true))
 		}
 
 		fullEstimate := primaryEstimate.add(comparisonEstimate)
 		threshold := e.sampleThreshold()
-		if known && threshold >= 0 && float64(fullEstimate.total())*q.SampleRate > float64(threshold) {
+		if threshold >= 0 && float64(fullEstimate.total())*q.SampleRate > float64(threshold) {
 			return nil, requiresExact(
 				"the requested sample is estimated to read %d fact rows after applying rate %g, above the %d-row budget; use a lower sample rate, narrow the query, or set exact to true",
 				sampledEstimate(fullEstimate.total(), q.SampleRate), q.SampleRate, threshold)
@@ -198,7 +200,7 @@ func (e *Engine) decideSampling(ctx context.Context, q *Query, primary Resolved,
 	}
 
 	threshold := e.sampleThreshold()
-	if threshold < 0 {
+	if threshold < 0 || !counted {
 		return nil, nil
 	}
 
@@ -208,12 +210,18 @@ func (e *Engine) decideSampling(ctx context.Context, q *Query, primary Resolved,
 		comparisonPasses = plannedScanPasses(q, blueprint, true)
 	}
 
-	primarySegments := e.router().Route(q, primary)
+	primarySegments, err := e.router().Route(ctx, q, primary)
+	if err != nil {
+		return nil, err
+	}
 	primaryHasRaw := rawSpanDays(primarySegments) > 0
 	comparisonHasRaw := false
 	var comparisonSegments []Segment
 	if comparison != nil {
-		comparisonSegments = e.router().Route(q, *comparison)
+		comparisonSegments, err = e.router().Route(ctx, q, *comparison)
+		if err != nil {
+			return nil, err
+		}
 		comparisonHasRaw = rawSpanDays(comparisonSegments) > 0
 	}
 
@@ -224,39 +232,27 @@ func (e *Engine) decideSampling(ctx context.Context, q *Query, primary Resolved,
 		return nil, nil
 	}
 
-	primaryRows, known, err := e.rawFactRowsUpper(ctx, q.SiteIDs, primarySegments)
+	primaryRows, err := e.rawFactRowsUpper(ctx, q.SiteIDs, primarySegments)
 	if err != nil {
 		return nil, err
-	}
-	if !known {
-		return nil, nil
 	}
 
 	primaryEstimate := estimateFactWork(primaryRows, primaryPasses)
-	primarySeam, seamKnown, err := e.seamScanEstimate(ctx, q, blueprint, primary, primarySegments)
+	primarySeam, err := e.seamScanEstimate(ctx, q, blueprint, primary, primarySegments)
 	if err != nil {
 		return nil, err
-	}
-	if !seamKnown {
-		return nil, nil
 	}
 	primaryEstimate = primaryEstimate.add(primarySeam)
 	comparisonEstimate := scanEstimate{}
 	if comparison != nil {
-		comparisonRows, comparisonKnown, err := e.rawFactRowsUpper(ctx, q.SiteIDs, comparisonSegments)
+		comparisonRows, err := e.rawFactRowsUpper(ctx, q.SiteIDs, comparisonSegments)
 		if err != nil {
 			return nil, err
-		}
-		if !comparisonKnown {
-			return nil, nil
 		}
 		comparisonEstimate = estimateFactWork(comparisonRows, comparisonPasses)
-		comparisonSeam, comparisonSeamKnown, err := e.seamScanEstimate(ctx, q, blueprint, *comparison, comparisonSegments)
+		comparisonSeam, err := e.seamScanEstimate(ctx, q, blueprint, *comparison, comparisonSegments)
 		if err != nil {
 			return nil, err
-		}
-		if !comparisonSeamKnown {
-			return nil, nil
 		}
 		comparisonEstimate = comparisonEstimate.add(comparisonSeam)
 	}
@@ -279,22 +275,16 @@ func (e *Engine) decideSampling(ctx context.Context, q *Query, primary Resolved,
 	// every visitor. Once either period triggers sampling, both periods run at
 	// one coherent rate over raw facts, so calculate that rate from both full
 	// windows rather than only the raw slice that crossed the threshold.
-	primaryRows, known, err = e.factRowsUpper(ctx, q.SiteIDs, primary)
+	primaryRows, err = e.factRowsUpper(ctx, q.SiteIDs, primary)
 	if err != nil {
 		return nil, err
-	}
-	if !known {
-		return nil, nil
 	}
 	primaryEstimate = estimateFactWork(primaryRows, primaryPasses)
 	comparisonEstimate = scanEstimate{}
 	if comparison != nil {
-		comparisonRows, comparisonKnown, err := e.factRowsUpper(ctx, q.SiteIDs, *comparison)
+		comparisonRows, err := e.factRowsUpper(ctx, q.SiteIDs, *comparison)
 		if err != nil {
 			return nil, err
-		}
-		if !comparisonKnown {
-			return nil, nil
 		}
 		comparisonEstimate = estimateFactWork(comparisonRows, comparisonPasses)
 	}
@@ -613,20 +603,20 @@ func rawSpanDays(segments []Segment) float64 {
 // summary range meets its current raw segment. Each carried metric component
 // is a separate statement over the previous day plus the raw segment, and
 // nested session predicates are charged by the same rules as ordinary passes.
-func (e *Engine) seamScanEstimate(ctx context.Context, q *Query, blueprint *plan, resolved Resolved, segments []Segment) (scanEstimate, bool, error) {
+func (e *Engine) seamScanEstimate(ctx context.Context, q *Query, blueprint *plan, resolved Resolved, segments []Segment) (scanEstimate, error) {
 	if len(segments) <= 1 || !rollupBacked(segments) || segments[len(segments)-1].Source != SourceRaw {
-		return scanEstimate{}, true, nil
+		return scanEstimate{}, nil
 	}
 
 	read, ok := planRollupRead(q, resolved)
 	if !ok || read.perBucket {
-		return scanEstimate{}, true, nil
+		return scanEstimate{}, nil
 	}
 
 	partial := segments[len(segments)-1].Range
 	previous, _, needed := seamCorrectionWindow(resolved, partial, read)
 	if !needed {
-		return scanEstimate{}, true, nil
+		return scanEstimate{}, nil
 	}
 
 	passes := scanPasses{}
@@ -653,12 +643,12 @@ func (e *Engine) seamScanEstimate(ctx context.Context, q *Query, blueprint *plan
 	window := partial
 	window.Start = previous.Start
 
-	rows, known, err := e.factRowsUpper(ctx, q.SiteIDs, window)
-	if err != nil || !known {
-		return scanEstimate{}, known, err
+	rows, err := e.factRowsUpper(ctx, q.SiteIDs, window)
+	if err != nil {
+		return scanEstimate{}, err
 	}
 
-	return estimateFactWork(rows, passes), true, nil
+	return estimateFactWork(rows, passes), nil
 }
 
 // spanDays returns one range's fractional day count.
@@ -786,13 +776,30 @@ func containsMetric(metrics []string, wanted string) bool {
 	return false
 }
 
+// hasSamplingCounts reports whether this database carries the per-day fact
+// counts the estimator reads. It is one catalogue probe per query rather than
+// a guess from a driver's error text, which is the kind of check that quietly
+// stops working when the wording changes.
+func (e *Engine) hasSamplingCounts(ctx context.Context) (bool, error) {
+	var present bool
+	if err := e.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM sqlite_master
+			WHERE type = 'table' AND name = 'sampling_daily_counts'
+		)`).Scan(&present); err != nil {
+		return false, fmt.Errorf("query: inspect sampling counts: %w", err)
+	}
+
+	return present, nil
+}
+
 // factRowsUpper reads exact trigger-maintained counts for every UTC day touched
 // by a range. Boundary days are included in full, making this a conservative
 // upper bound for partial ranges and ensuring a current spike cannot be diluted
 // by historical traffic.
-func (e *Engine) factRowsUpper(ctx context.Context, siteIDs []int64, r Resolved) (scanEstimate, bool, error) {
+func (e *Engine) factRowsUpper(ctx context.Context, siteIDs []int64, r Resolved) (scanEstimate, error) {
 	if !r.End.After(r.Start) {
-		return scanEstimate{}, true, nil
+		return scanEstimate{}, nil
 	}
 
 	sites := inInt64("site_id", siteIDs)
@@ -805,32 +812,27 @@ func (e *Engine) factRowsUpper(ctx context.Context, siteIDs []int64, r Resolved)
 		"SELECT SUM(event_rows), SUM(session_rows) FROM sampling_daily_counts WHERE "+sites.SQL+
 			" AND day >= ? AND day <= ?", args...).Scan(&events, &sessions)
 	if err != nil {
-		// A version-10 database opened for maintenance or compatibility remains
-		// exact until migration 0011 installs the sampling schema.
-		if strings.Contains(err.Error(), "no such table: sampling_daily_counts") {
-			return scanEstimate{}, false, nil
-		}
-		return scanEstimate{}, false, fmt.Errorf("query: estimate scan: %w", err)
+		return scanEstimate{}, fmt.Errorf("query: estimate scan: %w", err)
 	}
 
-	return scanEstimate{Events: events.Int64, Sessions: sessions.Int64}, true, nil
+	return scanEstimate{Events: events.Int64, Sessions: sessions.Int64}, nil
 }
 
 // rawFactRowsUpper adds the bounded daily populations touched by raw segments.
-func (e *Engine) rawFactRowsUpper(ctx context.Context, siteIDs []int64, segments []Segment) (scanEstimate, bool, error) {
+func (e *Engine) rawFactRowsUpper(ctx context.Context, siteIDs []int64, segments []Segment) (scanEstimate, error) {
 	var total scanEstimate
 	for _, segment := range segments {
 		if segment.Source != SourceRaw {
 			continue
 		}
-		rows, known, err := e.factRowsUpper(ctx, siteIDs, segment.Range)
-		if err != nil || !known {
-			return scanEstimate{}, known, err
+		rows, err := e.factRowsUpper(ctx, siteIDs, segment.Range)
+		if err != nil {
+			return scanEstimate{}, err
 		}
 		total = total.add(rows)
 	}
 
-	return total, true, nil
+	return total, nil
 }
 
 // utcDay returns the UTC midnight containing one Unix timestamp, including

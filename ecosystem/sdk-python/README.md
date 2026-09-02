@@ -53,6 +53,12 @@ address. They have no trusted-proxy configuration. Use them only behind an appli
 strips client-supplied forwarding headers and writes its own. On a directly exposed app, pass the
 socket address explicitly so a client cannot choose its fingerprint or geolocation.
 
+The client sends the visitor's address as `X-Forwarded-For`. **The ingest server honours that header
+only from an address on its trusted-proxy list** (`FEASIBLE_INGEST_TRUSTED_PROXIES`); from any other
+peer it uses the socket address, which is your server. On a self-hosted instance, add the address your
+application calls from to that list. Check it with `client.debug()`: the derived event's `client_ip_source` is
+`x-forwarded-for` when the header was used and `socket` when it was not.
+
 ## Install
 
 ```bash
@@ -113,8 +119,8 @@ client.event(
 )
 ```
 
-These overrides are honoured for server-side callers only, and ignored on browser traffic where the
-real referrer is authoritative.
+The server applies these overrides to any event that carries them; nothing about them is specific to
+a server-side caller.
 
 ## The result, and why an event might not be counted
 

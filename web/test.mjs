@@ -38,9 +38,9 @@ await build({
 	platform: "node",
 	format: "esm",
 	target: "node22",
-	// The tests exercise pure functions, so nothing in node_modules is reachable
-	// from them. Leaving packages external anyway keeps a stray import loud
-	// rather than silently pulling React into a unit test.
+	// Packages stay external because Node resolves node_modules itself at run
+	// time. Bundling them would copy React into every test file that renders a
+	// component, for nothing.
 	packages: "external",
 	logLevel: "warning",
 });

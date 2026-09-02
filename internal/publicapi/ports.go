@@ -13,11 +13,8 @@ import (
 	"errors"
 )
 
-// Conversion, shield, and annotation features are narrow interfaces so the
-// public API and MCP share one implementation without owning their storage.
-
-// ErrNotAvailable is what an unimplemented dependency answers with.
-var ErrNotAvailable = errors.New("not available yet")
+// Conversion features are narrow interfaces so the public API and MCP share
+// one implementation without owning their storage.
 
 // ErrInvalid marks a domain validation failure from an account-backed adapter.
 var ErrInvalid = errors.New("invalid conversion definition")
@@ -103,33 +100,6 @@ type CustomPropertyStore interface {
 	ListProperties(ctx context.Context, siteID int64) ([]CustomProperty, error)
 	CreateProperty(ctx context.Context, siteID int64, name, scope string) (*CustomProperty, error)
 	DeleteProperty(ctx context.Context, siteID, propertyID int64) error
-}
-
-// ShieldRule is one thing that is blocked from being counted.
-type ShieldRule struct {
-	ID    int64  `json:"id"`
-	Type  string `json:"type"`
-	Value string `json:"value"`
-}
-
-// ShieldStore is the traffic-filtering feature as this API needs it.
-type ShieldStore interface {
-	ListShields(ctx context.Context, siteID int64) ([]ShieldRule, error)
-	AddShieldRule(ctx context.Context, siteID int64, rule ShieldRule) (*ShieldRule, error)
-}
-
-// Annotation is a note pinned to a date on a site's charts.
-type Annotation struct {
-	ID     int64  `json:"id"`
-	Date   string `json:"date"`
-	Note   string `json:"note"`
-	SiteID int64  `json:"-"`
-}
-
-// AnnotationStore is the annotations feature as this API needs it.
-type AnnotationStore interface {
-	ListAnnotations(ctx context.Context, siteID int64, from, to string) ([]Annotation, error)
-	CreateAnnotation(ctx context.Context, siteID int64, annotation Annotation) (*Annotation, error)
 }
 
 // unavailable is the message an endpoint gives when its feature is not wired in

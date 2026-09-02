@@ -11,6 +11,7 @@ package query
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -33,13 +34,21 @@ type Engine struct {
 	// product, and a suite that waits for real midnight is a suite nobody runs.
 	Now func() time.Time
 
-	// Router decides which source answers each slice of the range. Today that
-	// is always the raw tables; see rollup.go for why the seam exists now.
+	// Router decides which source answers each slice of the range: the summary
+	// tables for finished days they cover, the raw tables for everything else.
 	Router Router
 
-	// MaxGroups bounds how many groups are pulled into memory when the
-	// ordering cannot be pushed into SQL.
-	MaxGroups int
+	// groupLimit bounds how many groups are pulled into memory when the
+	// ordering cannot be pushed into SQL. Zero takes MaxGroups; a test lowers
+	// it to exercise truncation without writing ten thousand rows.
+	groupLimit int
+
+	// QueryTimeout bounds how long one Run may hold a reader. Zero takes
+	// DefaultQueryTimeout; a negative value removes the bound, for an operator
+	// who would rather wait than be refused. An exact query over a large range
+	// with hundreds of patterns has no other ceiling, and the HTTP server's
+	// write timeout does not cancel a handler.
+	QueryTimeout time.Duration
 
 	// SampleThreshold is how many repeated event and session fact-row reads a
 	// query may be estimated to perform before it is answered from a sample.
@@ -56,12 +65,21 @@ type Engine struct {
 // splits anything, finds nothing, and answers the whole range from raw.
 func New(db *sql.DB) *Engine {
 	return &Engine{
-		db:        db,
-		Now:       func() time.Time { return time.Now().UTC() },
-		Router:    NewRollupRouter(db),
-		MaxGroups: MaxGroups,
+		db:     db,
+		Now:    func() time.Time { return time.Now().UTC() },
+		Router: NewRollupRouter(db),
 	}
 }
+
+// DefaultQueryTimeout is how long a query may run before it is refused with a
+// caller-facing error. Thirty seconds is longer than any dashboard waits and
+// shorter than the point at which a handful of parallel scans saturate an
+// account's reader pool.
+const DefaultQueryTimeout = 30 * time.Second
+
+// ErrQueryTimeoutCode is the stable code on the *Error a timed-out query
+// returns, so a client can tell "narrow this" from "you typed it wrong".
+const ErrQueryTimeoutCode = "query_timeout"
 
 // Database exposes the engine's read-only handle to feature reports that must
 // preserve event order or inspect numeric facts the grouped query API does not
@@ -90,17 +108,55 @@ func (e *Engine) router() Router {
 
 // maxGroups returns the configured group ceiling.
 func (e *Engine) maxGroups() int {
-	if e.MaxGroups <= 0 {
+	if e.groupLimit <= 0 {
 		return MaxGroups
 	}
 
-	return e.MaxGroups
+	return e.groupLimit
+}
+
+// queryTimeout returns the configured deadline, or zero for none.
+func (e *Engine) queryTimeout() time.Duration {
+	switch {
+	case e.QueryTimeout == 0:
+		return DefaultQueryTimeout
+	case e.QueryTimeout < 0:
+		return 0
+	default:
+		return e.QueryTimeout
+	}
 }
 
 // Run answers one query. Everything a caller got wrong comes back as *Error,
 // which the HTTP layer turns into a 400 with the message attached; anything
 // else is ours and is a 500.
+//
+// A query that outruns the engine's deadline is the caller's problem too — it
+// is answered with a *Error telling them to narrow it or use sampling — but a
+// caller who hung up is not, and that cancellation passes through untouched.
 func (e *Engine) Run(ctx context.Context, q Query) (*Result, error) {
+	parent := ctx
+
+	if timeout := e.queryTimeout(); timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	result, err := e.run(ctx, q)
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) && parent.Err() == nil {
+		return nil, &Error{
+			Code: ErrQueryTimeoutCode,
+			Message: fmt.Sprintf("the query did not finish within %s — narrow the date range or filters, "+
+				"or drop exact so it can be answered from a sample", e.queryTimeout()),
+		}
+	}
+
+	return result, err
+}
+
+// run is Run without the deadline: normalise, validate, plan, execute.
+func (e *Engine) run(ctx context.Context, q Query) (*Result, error) {
 	q.Normalise()
 
 	if err := q.Validate(); err != nil {
@@ -230,7 +286,7 @@ func (e *Engine) Run(ctx context.Context, q Query) (*Result, error) {
 	}
 
 	if comparison != nil {
-		if err := e.attachComparison(ctx, &q, blueprint, resolved, *comparison, compile, primary.keyRestriction(groups), result); err != nil {
+		if err := e.attachComparison(ctx, &q, blueprint, resolved, *comparison, compile, primary.keyRestriction(groups), warnings, result); err != nil {
 			return nil, err
 		}
 	}
@@ -268,7 +324,7 @@ func (e *Engine) resolveRange(ctx context.Context, q *Query, location *time.Loca
 // numbers off the rows already computed. It runs after the primary query so
 // that it can be restricted to the groups that actually came back, rather than
 // paginating a second, differently-ordered result set.
-func (e *Engine) attachComparison(ctx context.Context, q *Query, blueprint *plan, primaryRange, comparison Resolved, compile compileContext, keys map[int][]any, result *Result) error {
+func (e *Engine) attachComparison(ctx context.Context, q *Query, blueprint *plan, primaryRange, comparison Resolved, compile compileContext, keys map[int][]any, warnings *warningSet, result *Result) error {
 	result.Meta.ComparisonDateRange = []string{
 		comparison.Start.In(comparison.Location).Format(time.RFC3339),
 		comparison.End.In(comparison.Location).Format(time.RFC3339),
@@ -280,7 +336,7 @@ func (e *Engine) attachComparison(ctx context.Context, q *Query, blueprint *plan
 		plan:     blueprint,
 		resolved: comparison,
 		compile:  compile,
-		warnings: &warningSet{},
+		warnings: warnings,
 
 		// The earlier period is never paginated. Its rows are looked up by the
 		// key of a row that is already on the page, and a LIMIT here would cut
@@ -298,6 +354,17 @@ func (e *Engine) attachComparison(ctx context.Context, q *Query, blueprint *plan
 	groups, err := previous.execute(ctx, keys)
 	if err != nil {
 		return err
+	}
+
+	// An unrestricted comparison is capped like any other in-memory group set,
+	// and a primary row whose group fell outside the cap reads as an earlier
+	// value of zero — which looks exactly like a period in which nothing
+	// happened. The cap is said out loud instead.
+	if previous.truncated {
+		for _, name := range q.Metrics {
+			warnings.add(name, WarnGroupsTruncated,
+				fmt.Sprintf("the comparison period matched more than %d groups, so rows outside its largest ones compare against zero — narrow the filters or the date range", e.maxGroups()))
+		}
 	}
 
 	// The earlier period's rows are keyed by their labels rather than by their
@@ -362,7 +429,10 @@ func (e *Engine) attachComparison(ctx context.Context, q *Query, blueprint *plan
 // this account has never recorded resolves to -1 so it matches no row — id 0 is
 // the empty string, and matching that would count every event with no name.
 func (e *Engine) compileContext(ctx context.Context, q *Query) (compileContext, error) {
-	compile := compileContext{db: e.db, context: ctx, pageviewNameID: -1, engagementNameID: -1, sampleRate: q.SampleRate}
+	compile := compileContext{
+		db: e.db, context: ctx, pageviewNameID: -1, engagementNameID: -1,
+		sampleRate: q.SampleRate, goals: map[goalKey]expr{},
+	}
 	if err := e.db.QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM sqlite_master

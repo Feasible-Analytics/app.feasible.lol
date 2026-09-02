@@ -13,6 +13,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"mime"
 	"net"
 	"net/smtp"
 	"os"
@@ -329,9 +330,9 @@ func Render(from string, msg Message) string {
 
 	var b strings.Builder
 
-	b.WriteString("From: " + from + "\r\n")
-	b.WriteString("To: " + msg.To + "\r\n")
-	b.WriteString("Subject: " + msg.Subject + "\r\n")
+	b.WriteString("From: " + headerValue(from) + "\r\n")
+	b.WriteString("To: " + headerValue(msg.To) + "\r\n")
+	b.WriteString("Subject: " + encodeSubject(msg.Subject) + "\r\n")
 	b.WriteString("Date: " + time.Now().UTC().Format(time.RFC1123Z) + "\r\n")
 	if msg.MessageID != "" {
 		b.WriteString("Message-ID: <" + safeName(msg.MessageID) + "@feasible.lol>\r\n")
@@ -353,6 +354,30 @@ func Render(from string, msg Message) string {
 	b.WriteString("--" + boundary + "--\r\n")
 
 	return b.String()
+}
+
+// headerValue flattens a value onto one header line. A line break inside a
+// header ends that header, so a team name or an address carrying CR or LF
+// would otherwise inject a header of its own — a Bcc, say — into the message.
+func headerValue(value string) string {
+	value = strings.NewReplacer("\r", " ", "\n", " ").Replace(value)
+
+	return strings.TrimSpace(value)
+}
+
+// encodeSubject makes the subject a legal header: one line, and RFC 2047
+// encoded when it holds anything outside ASCII. A raw UTF-8 subject reads as
+// mojibake in the clients that follow the standard strictly.
+func encodeSubject(subject string) string {
+	subject = headerValue(subject)
+
+	for i := 0; i < len(subject); i++ {
+		if subject[i] >= 0x80 {
+			return mime.QEncoding.Encode("utf-8", subject)
+		}
+	}
+
+	return subject
 }
 
 // dotStuff escapes a line that begins with a full stop, and converts bare

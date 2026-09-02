@@ -143,6 +143,55 @@ func TestTheEndpointCreatesListsAndDeletes(t *testing.T) {
 	}
 }
 
+// TestUpdateAnswersWithTheStoredRow checks the edit response carries the
+// author and the timestamps. A client replaces its local copy with what comes
+// back, and a half-empty object would blank the author until the next list.
+func TestUpdateAnswersWithTheStoredRow(t *testing.T) {
+	handler, domain := newHandler(t)
+
+	create := httptest.NewRecorder()
+	handler.ServeHTTP(create, request(http.MethodPost, domain,
+		"/api/sites/"+domain+"/annotations",
+		`{"shown_on":"2026-08-14","body":"Launched the new pricing page"}`))
+
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create answered %d: %s", create.Code, create.Body.String())
+	}
+
+	var created Annotation
+	if err := json.Unmarshal(create.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	update := httptest.NewRecorder()
+	edit := request(http.MethodPut, domain, "/api/sites/"+domain+"/annotations/1",
+		`{"shown_on":"2026-08-15","body":"Moved the launch a day"}`)
+	edit.SetPathValue("id", "1")
+
+	handler.ServeHTTP(update, edit)
+
+	if update.Code != http.StatusOK {
+		t.Fatalf("update answered %d: %s", update.Code, update.Body.String())
+	}
+
+	var updated Annotation
+	if err := json.Unmarshal(update.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if updated.Body != "Moved the launch a day" || updated.ShownOn != "2026-08-15" {
+		t.Fatalf("the response does not carry the edit: %+v", updated)
+	}
+
+	if updated.AuthorUserID != created.AuthorUserID || updated.AuthorName != created.AuthorName {
+		t.Fatalf("the response lost the author: %+v", updated)
+	}
+
+	if updated.CreatedAt == 0 || updated.UpdatedAt == 0 {
+		t.Fatalf("the response lost the timestamps: %+v", updated)
+	}
+}
+
 // TestAnEmptyListIsAnEmptyArrayNotNull checks the shape the front end reads. A
 // null would be a runtime error in a map over the result.
 func TestAnEmptyListIsAnEmptyArrayNotNull(t *testing.T) {

@@ -379,8 +379,6 @@ function AnalyticsDashboard() {
 
 	useShortcuts(actions);
 
-	if (sites.length === 0) return <NoSites />;
-
 	const drawerCard = state.drawer ? findCard(state.drawer.card) : undefined;
 	const drawerTab = drawerCard && state.drawer ? findTab(drawerCard, state.drawer.tab) : undefined;
 

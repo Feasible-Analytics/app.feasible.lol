@@ -100,7 +100,7 @@ test("init injects one configured script tag and installs the queue stub", (t) =
 	assert.equal(el.getAttribute("data-exclude"), "/admin/**,/preview/*");
 	assert.equal(el.getAttribute("data-hash"), "true");
 	assert.equal(el.getAttribute("data-manual"), "true");
-	assert.equal(el.getAttribute("data-captureOnLocalhost"), "true");
+	assert.equal(el.getAttribute("data-capture-on-localhost"), "true");
 	assert.equal(el.getAttribute("data-alias"), "siteAnalytics");
 	assert.equal(el.getAttribute("defer"), "");
 

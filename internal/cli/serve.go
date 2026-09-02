@@ -442,7 +442,7 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	// Registration goes through settings.Mount rather than a loop here, so
 	// every route on the segment comes from the one table a test can walk. A
 	// pattern registered beside that table rather than in it is a pattern
-	// nothing checks for shadowing — which is how this has broken three times.
+	// nothing checks for shadowing.
 	if site != nil || extra != nil {
 		settings.Mount(mux,
 			app.GuardSite(settings.DomainOf, site),

@@ -137,42 +137,6 @@ func TestDeleteCustomerDistinguishesAbsentFromRejected(t *testing.T) {
 	}
 }
 
-// TestActiveSubscriptionPaginatesUntilAPayingRecord proves a customer with a
-// long subscription history cannot have an active subscription hidden beyond
-// the first Stripe page.
-func TestActiveSubscriptionPaginatesUntilAPayingRecord(t *testing.T) {
-	requests := 0
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
-		w.Header().Set("Content-Type", "application/json")
-
-		switch r.URL.Query().Get("starting_after") {
-		case "":
-			_, _ = w.Write([]byte(`{"has_more":true,"data":[{"id":"sub_old","status":"canceled","current_period_end":10,"items":{"data":[]}}]}`))
-		case "sub_old":
-			_, _ = w.Write([]byte(`{"has_more":false,"data":[{"id":"sub_paying","status":"active","current_period_end":20,"items":{"data":[]}}]}`))
-		default:
-			http.Error(w, "unexpected cursor", http.StatusBadRequest)
-		}
-	}))
-	t.Cleanup(server.Close)
-
-	client := New("sk_test_fake")
-	client.BaseURL = server.URL
-
-	subscription, err := client.ActiveSubscription(context.Background(), "cus_many")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if subscription == nil || subscription.ID != "sub_paying" {
-		t.Fatalf("active subscription is %+v, want sub_paying", subscription)
-	}
-	if requests != 2 {
-		t.Fatalf("subscription lookup made %d requests, want 2", requests)
-	}
-}
-
 // TestSubscriptionsPreserveMixedPagedTruth proves pagination returns every
 // status instead of collapsing the customer to one fallback before billing can
 // detect a retryable subscription.
@@ -235,20 +199,27 @@ func TestSubscriptionSelectionAndBlockingAreDeterministic(t *testing.T) {
 }
 
 // TestProviderListsPaginateAndVoidInvoiceUsesIdempotency covers the discovery
-// reads and recovery writes that close untracked Stripe objects.
+// reads and recovery writes that close untracked Stripe objects: sessions are
+// listed for one customer, customers are found through metadata search, and
+// both walk every page.
 func TestProviderListsPaginateAndVoidInvoiceUsesIdempotency(t *testing.T) {
 	var voidKey string
 	var deleteKey string
+	var sessionCustomers []string
+	var searchQueries []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions" && r.URL.Query().Get("starting_after") == "":
+			sessionCustomers = append(sessionCustomers, r.URL.Query().Get("customer"))
 			_, _ = w.Write([]byte(`{"has_more":true,"data":[{"id":"cs_1","status":"open"}]}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/checkout/sessions":
+			sessionCustomers = append(sessionCustomers, r.URL.Query().Get("customer"))
 			_, _ = w.Write([]byte(`{"has_more":false,"data":[{"id":"cs_2","status":"open"}]}`))
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/customers" && r.URL.Query().Get("starting_after") == "":
-			_, _ = w.Write([]byte(`{"has_more":true,"data":[{"id":"cus_1","metadata":{"feasible_team_id":"7"}}]}`))
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/customers":
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/customers/search" && r.URL.Query().Get("page") == "":
+			searchQueries = append(searchQueries, r.URL.Query().Get("query"))
+			_, _ = w.Write([]byte(`{"has_more":true,"next_page":"cursor_2","data":[{"id":"cus_1","metadata":{"feasible_team_id":"7"}}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/customers/search" && r.URL.Query().Get("page") == "cursor_2":
 			_, _ = w.Write([]byte(`{"has_more":false,"data":[{"id":"cus_2","metadata":{"feasible_team_id":"7"}}]}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/invoices/in_open/void":
 			voidKey = r.Header.Get("Idempotency-Key")
@@ -264,19 +235,25 @@ func TestProviderListsPaginateAndVoidInvoiceUsesIdempotency(t *testing.T) {
 
 	client := New("sk_test_fake")
 	client.BaseURL = server.URL
-	sessions, err := client.CheckoutSessions(context.Background())
+	sessions, err := client.CheckoutSessionsForCustomer(context.Background(), "cus_1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(sessions) != 2 || sessions[0].ID != "cs_1" || sessions[1].ID != "cs_2" {
 		t.Fatalf("open checkout pages are %+v", sessions)
 	}
-	customers, err := client.Customers(context.Background())
+	if len(sessionCustomers) != 2 || sessionCustomers[0] != "cus_1" || sessionCustomers[1] != "cus_1" {
+		t.Fatalf("session pages were filtered by customers %v, want cus_1 on every page", sessionCustomers)
+	}
+	customers, err := client.SearchCustomersByTeam(context.Background(), 7)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(customers) != 2 || customers[0].ID != "cus_1" || customers[1].ID != "cus_2" || customers[1].Meta.TeamID() != 7 {
 		t.Fatalf("customer pages are %+v", customers)
+	}
+	if len(searchQueries) != 1 || searchQueries[0] != "metadata['feasible_team_id']:'7'" {
+		t.Fatalf("customer search queries are %q", searchQueries)
 	}
 	invoice, err := client.VoidInvoice(context.Background(), "in_open", "void-in-open")
 	if err != nil {

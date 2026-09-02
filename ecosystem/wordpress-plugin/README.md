@@ -52,6 +52,11 @@ This helper has no trusted-proxy configuration, so the WordPress edge must strip
 forwarding headers and write its own. A directly exposed installation should use `REMOTE_ADDR`
 instead so a client cannot choose its fingerprint or geolocation.
 
+The analytics server honours `X-Forwarded-For` only from an address on its trusted-proxy list
+(`FEASIBLE_INGEST_TRUSTED_PROXIES`); from any other peer it uses the socket address, which is your
+web host. On a self-hosted instance, add your web host's outbound address to that list, and confirm
+with `X-Debug-Request: true` — the derived event's `client_ip_source` should read `x-forwarded-for`.
+
 The upstream status code and the `x-feasible-dropped` header come back to the browser unchanged, so
 a classified event is still visible to whoever is debugging it. `X-Debug-Request: true` passes
 through as well, which means you can answer "why was that event not counted" with one `curl` against
@@ -80,7 +85,7 @@ browser holding a cached copy of the script keeps working until its cache expire
 | 404 errors | WordPress | Sends `404` with the path and the referrer. |
 | Outbound links | Browser script | Switch it off and the proxy stops forwarding `Outbound Link: Click`. |
 | File downloads | Browser script | Same, for `File Download`. You can also override which extensions count. |
-| Form submissions | Browser script | Same, for `Form: Submit`. |
+| Form submissions | Browser script | Same, for `Form: Submission`. |
 
 The last three are measured by the script itself and cannot be switched off inside it. The proxy is
 the only place the control can honestly live, which is why those three switches need the proxy on —

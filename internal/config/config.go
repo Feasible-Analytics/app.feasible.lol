@@ -43,6 +43,11 @@ const (
 	DefaultIngestSalt       = "dev-only-shared-salt-change-me"
 	DefaultAppShardID       = 1
 
+	// MinInternalKeyLength is the shortest HMAC key production accepts. 32
+	// characters is the SHA-256 block the key is hashed into; anything shorter
+	// is guessable in a way the signature scheme cannot compensate for.
+	MinInternalKeyLength = 32
+
 	// DefaultAPIRateLimit is how many public-API requests one key may make an
 	// hour. It is configurable at all because the incumbent's equivalent is
 	// hard-coded at 600 even in the build people run on their own hardware, and
@@ -431,25 +436,39 @@ func (l *Loader) Bool(name string, fallback bool) (bool, error) {
 	return parsed, nil
 }
 
-// Int reads a whole-number variable.
-//
-// An unparseable or non-positive value falls back to the default rather than
-// failing the boot. Every number read through this is a limit, an interval or a
-// port, and a typo in one must not stop a process starting — a rate limit of
-// zero would lock every customer out of the API it exists to protect, and a
-// port of zero would bind the mail relay to nothing.
-func (l *Loader) Int(name string, fallback int) int {
+// Int reads a positive whole-number variable. Every number read through this
+// is a limit, an interval, a port or a shard position, and none of them has a
+// meaningful zero or negative value. A malformed one fails startup, like Bool:
+// a shard id of "abc" quietly becoming shard 1 would have two app processes
+// claim the same position in a multi-shard deployment, which is exactly the
+// kind of silent failure this project refuses to ship.
+func (l *Loader) Int(name string, fallback int) (int, error) {
+	parsed, err := l.SignedInt(name, fallback)
+	if err != nil {
+		return 0, err
+	}
+	if parsed <= 0 {
+		return 0, fmt.Errorf("%s: %d is not a positive whole number", name, parsed)
+	}
+
+	return parsed, nil
+}
+
+// SignedInt reads a whole-number variable whose sign carries meaning, such as
+// a threshold where zero means "use the default" and a negative value means
+// "off". Only an unparseable value is an error.
+func (l *Loader) SignedInt(name string, fallback int) (int, error) {
 	value, ok := l.lookup(name)
 	if !ok || value == "" {
-		return fallback
+		return fallback, nil
 	}
 
 	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed <= 0 {
-		return fallback
+	if err != nil {
+		return 0, fmt.Errorf("%s: %q is not a whole number", name, value)
 	}
 
-	return parsed
+	return parsed, nil
 }
 
 // Load reads the whole configuration. The .env file is only consulted outside
@@ -505,6 +524,31 @@ func LoadFrom(l *Loader) (*Config, error) {
 		return nil, err
 	}
 
+	shardID, err := l.Int("FEASIBLE_APP_SHARD_ID", DefaultAppShardID)
+	if err != nil {
+		return nil, err
+	}
+	smtpPort, err := l.Int("FEASIBLE_SMTP_PORT", DefaultSMTPPort)
+	if err != nil {
+		return nil, err
+	}
+	rateLimit, err := l.Int("FEASIBLE_API_RATE_LIMIT", DefaultAPIRateLimit)
+	if err != nil {
+		return nil, err
+	}
+	webhookTimeout, err := l.Int("FEASIBLE_WEBHOOK_TIMEOUT_SECONDS", DefaultWebhookTimeout)
+	if err != nil {
+		return nil, err
+	}
+	webhookPoll, err := l.Int("FEASIBLE_WEBHOOK_POLL_SECONDS", DefaultWebhookPoll)
+	if err != nil {
+		return nil, err
+	}
+	sampleThreshold, err := l.SignedInt("FEASIBLE_QUERY_SAMPLE_THRESHOLD", DefaultQuerySampleThreshold)
+	if err != nil {
+		return nil, err
+	}
+
 	// Production wants machine-readable logs at info; a laptop wants readable
 	// logs at debug. Deriving both from the environment means a developer never
 	// has to set them, and a production box never accidentally ships text logs.
@@ -529,7 +573,7 @@ func LoadFrom(l *Loader) (*Config, error) {
 			Transport:       strings.ToLower(l.String("FEASIBLE_APP_TRANSPORT", DefaultAppTransport)),
 			MailTransport:   strings.ToLower(l.String("FEASIBLE_APP_MAIL_TRANSPORT", DefaultAppMailTransport)),
 			Hosted:          hosted,
-			ShardID:         l.Int("FEASIBLE_APP_SHARD_ID", DefaultAppShardID),
+			ShardID:         shardID,
 			MailFrom:        l.String("FEASIBLE_APP_MAIL_FROM", DefaultAppMailFrom),
 			SalesEmail:      l.String("FEASIBLE_APP_SALES_EMAIL", DefaultAppSalesEmail),
 			OperatorName:    strings.TrimSpace(l.String("FEASIBLE_OPERATOR_NAME", "")),
@@ -539,7 +583,7 @@ func LoadFrom(l *Loader) (*Config, error) {
 			Worker:          worker,
 			SMTP: SMTP{
 				Host:     strings.TrimSpace(l.String("FEASIBLE_SMTP_HOST", "")),
-				Port:     l.Int("FEASIBLE_SMTP_PORT", DefaultSMTPPort),
+				Port:     smtpPort,
 				Username: l.String("FEASIBLE_SMTP_USERNAME", ""),
 				Password: l.String("FEASIBLE_SMTP_PASSWORD", ""),
 				StartTLS: startTLS,
@@ -558,12 +602,12 @@ func LoadFrom(l *Loader) (*Config, error) {
 			},
 		},
 		API: API{
-			RateLimit:      l.Int("FEASIBLE_API_RATE_LIMIT", DefaultAPIRateLimit),
-			WebhookTimeout: time.Duration(l.Int("FEASIBLE_WEBHOOK_TIMEOUT_SECONDS", DefaultWebhookTimeout)) * time.Second,
-			WebhookPoll:    time.Duration(l.Int("FEASIBLE_WEBHOOK_POLL_SECONDS", DefaultWebhookPoll)) * time.Second,
+			RateLimit:      rateLimit,
+			WebhookTimeout: time.Duration(webhookTimeout) * time.Second,
+			WebhookPoll:    time.Duration(webhookPoll) * time.Second,
 			MCPKey:         strings.TrimSpace(l.String("FEASIBLE_MCP_API_KEY", "")),
 
-			QuerySampleThreshold: int64(l.Int("FEASIBLE_QUERY_SAMPLE_THRESHOLD", DefaultQuerySampleThreshold)),
+			QuerySampleThreshold: int64(sampleThreshold),
 		},
 		Ingest: Ingest{
 			Listen:         l.String("FEASIBLE_INGEST_LISTEN", DefaultIngestListen),
@@ -682,6 +726,20 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// The internal key is the only thing that authenticates an ingester to an
+	// app shard, and the ingest salt is what keeps a visitor's daily hash from
+	// being brute-forced by anyone holding the fact rows. Development ships
+	// throwaway values for both so a laptop works with no configuration; a
+	// production box that still has them is a misconfiguration, not a choice.
+	if c.IsProduction() {
+		if c.Shared.IngestSalt == DefaultIngestSalt {
+			return fmt.Errorf("FEASIBLE_INGEST_SALT: production cannot run with the development default")
+		}
+		if c.Shared.InternalKey != "" && len(c.Shared.InternalKey) < MinInternalKeyLength {
+			return fmt.Errorf("FEASIBLE_INTERNAL_KEY: production requires at least %d characters, got %d", MinInternalKeyLength, len(c.Shared.InternalKey))
+		}
+	}
+
 	switch c.App.MailTransport {
 	case MailTransportLog, MailTransportSMTP:
 	default:
@@ -733,9 +791,6 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("self-hosted production operator identity is incomplete; missing %s", strings.Join(missing, ", "))
 		}
 	}
-	if strings.TrimSpace(c.Shared.IngestSalt) == "" {
-		return fmt.Errorf("FEASIBLE_INGEST_SALT cannot be empty")
-	}
 	if c.App.SecretKey != "" && len(c.App.SecretKey) != 64 {
 		return fmt.Errorf("FEASIBLE_APP_SECRET_KEY: expected 64 hex characters, got %d", len(c.App.SecretKey))
 	}
@@ -744,10 +799,6 @@ func (c *Config) Validate() error {
 	// cannot finish, which is worse than no button at all.
 	if (c.App.Google.ClientID == "") != (c.App.Google.ClientSecret == "") {
 		return fmt.Errorf("FEASIBLE_GOOGLE_CLIENT_ID and FEASIBLE_GOOGLE_CLIENT_SECRET must be set together or not at all")
-	}
-
-	if c.App.MailTransport == MailTransportSMTP && c.App.SMTP.Host == "" {
-		return fmt.Errorf("FEASIBLE_SMTP_HOST is required when FEASIBLE_APP_MAIL_TRANSPORT is smtp")
 	}
 
 	base, err := url.Parse(c.App.BaseURL)

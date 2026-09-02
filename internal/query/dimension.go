@@ -58,6 +58,12 @@ type dimension struct {
 
 	// PropKey is the custom property this dimension reads, for event:props:*.
 	PropKey string
+
+	// Goal marks event:goal, whose values are configured goal ids rather than
+	// stored column values. It can be filtered on but never grouped by, and
+	// every helper that classifies a filter must see it as an event-scoped
+	// conversion rather than an unknown name.
+	Goal bool
 }
 
 // Interval names for time dimensions.
@@ -177,6 +183,10 @@ var dimensions = map[string]dimension{
 	"time:day":    {Name: "time:day", Time: true, Interval: IntervalDay},
 	"time:week":   {Name: "time:week", Time: true, Interval: IntervalWeek},
 	"time:month":  {Name: "time:month", Time: true, Interval: IntervalMonth},
+
+	// A goal is a stored definition compiled into an event predicate at query
+	// time, so it has no column on either table.
+	"event:goal": {Name: "event:goal", Goal: true},
 }
 
 // aliases are spellings that mean an existing dimension. They exist so that a
@@ -248,12 +258,16 @@ func ValidMetric(name string) error {
 	return nil
 }
 
-// DimensionNames lists every fixed dimension, sorted. It is what the error
-// message for an unknown one prints, because "unknown dimension" without the
-// list means a round trip to the documentation for a typo.
+// DimensionNames lists every fixed dimension a query may group by, sorted. It
+// is what the error message for an unknown one prints, because "unknown
+// dimension" without the list means a round trip to the documentation for a
+// typo. The goal filter is left out: it is not something a query can group by.
 func DimensionNames() []string {
 	names := make([]string, 0, len(dimensions))
-	for name := range dimensions {
+	for name, d := range dimensions {
+		if d.Goal {
+			continue
+		}
 		names = append(names, name)
 	}
 

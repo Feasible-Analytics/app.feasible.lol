@@ -150,14 +150,6 @@ func ImportedCoverage(names []string) (uint64, error) {
 	return mask, nil
 }
 
-// ImportedMetricNames lists the metrics imported roll-ups can answer. The three
-// composites are absent because none of them has an aggregate a daily total
-// could carry: a scroll depth is a distribution and an exit rate needs the
-// pageviews of a specific page in a specific visit.
-func ImportedMetricNames() []string {
-	return []string{"visitors", "visits", "pageviews", "events", "bounce_rate", "visit_duration", "views_per_visit", "time_on_page", "scroll_depth"}
-}
-
 // importedComponents returns the aggregate expressions that feed one metric
 // from the roll-up table. The component order matches the metric definition
 // exactly, because Combine reads them positionally.
@@ -357,17 +349,11 @@ func (x *executor) importedPass(ctx context.Context, r Resolved, groups *groupSe
 	}
 
 	st := statement{
-		table: tableEvents, alias: importedAlias,
+		table: tableEvents, alias: importedAlias, nameOverride: ImportedTable,
 		dims: dims, columns: columns, conditions: conditions,
 	}
 
 	sqlText, args := x.renderStatement(st)
-
-	// The rendered FROM names the fact table, so it is swapped for the roll-up
-	// table here. Rendering is shared on purpose: the SELECT list, GROUP BY and
-	// argument ordering are the parts that must not diverge from every other
-	// statement this package builds.
-	sqlText = strings.Replace(sqlText, " FROM events "+importedAlias, " FROM "+ImportedTable+" "+importedAlias, 1)
 
 	if _, err := x.readRows(ctx, sqlText, args, len(dims), len(columns), groups, targets, true); err != nil {
 		return err
@@ -622,6 +608,14 @@ func (x *executor) importedRequirements() ([]string, []ImportGap) {
 
 		resolved, err := resolveDimension(filter.Dimension)
 		if err != nil {
+			continue
+		}
+
+		if resolved.Goal {
+			gaps = append(gaps, ImportGap{
+				Dimension: filter.Dimension,
+				Reason:    "imported history is stored as daily totals with no individual visits inside them, so a goal filter cannot select any of it",
+			})
 			continue
 		}
 

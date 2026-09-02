@@ -44,3 +44,10 @@ test("default and damaged behavior selections degrade to the Goals tab", () => {
 	});
 	assert.equal(href(state), "/dashboard/site.test");
 });
+
+test("a malformed percent-encoding in the path opens a dashboard rather than throwing", () => {
+	const state = parse(new URL("https://example.test/dashboard/%C0%80"));
+
+	assert.equal(state.domain, "%C0%80");
+	assert.equal(state.preset, "28d");
+});

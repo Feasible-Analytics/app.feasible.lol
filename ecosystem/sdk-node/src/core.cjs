@@ -14,6 +14,8 @@
 
 "use strict";
 
+const { randomUUID } = require("node:crypto");
+
 // The hosted service. A self-hoster passes their own host and nothing else
 // changes, which is why the endpoint path is not configurable — there is only
 // one, and a setting for it would only be something to get wrong.
@@ -75,9 +77,10 @@ class FeasibleApiError extends Error {
 	}
 }
 
-// FeasibleTransportError is a request that never reached a server. It is a
-// separate class from the API error because the retry decision turns on the
-// difference: nothing was counted, so nothing can be duplicated by trying again.
+// FeasibleTransportError is a request that produced no HTTP answer: a refused
+// connection, a DNS failure, a timeout. It is a separate class from the API
+// error because the two need different fixes — this one is usually egress or a
+// firewall, not the payload.
 class FeasibleTransportError extends Error {
 	// The cause is kept because a DNS failure and a refused connection are
 	// different problems with different fixes.
@@ -341,8 +344,10 @@ class FeasibleClient {
 		}
 
 		// The keys are assigned in wire order so a captured body is diffable by
-		// eye against the documented contract.
-		const body = { n: name, u: url, d: text(event.domain) || this.domain };
+		// eye against the documented contract. The idempotency key is minted
+		// here, once per event, so every retry resends the same one and the
+		// server can drop the duplicate instead of counting it twice.
+		const body = { k: randomUUID(), n: name, u: url, d: text(event.domain) || this.domain };
 
 		if (text(event.referrer)) body.r = event.referrer;
 		if (event.props && Object.keys(event.props).length) body.p = event.props;
@@ -395,7 +400,10 @@ class FeasibleClient {
 
 	// attempt performs one request. The body is always read, even when it is
 	// thrown away, so the connection can go back in the keep-alive pool rather
-	// than being torn down and re-handshaked for the next event.
+	// than being torn down and re-handshaked for the next event. The timeout
+	// stays armed until the body has been read: headers arriving says nothing
+	// about whether the body will, and a stalled body would otherwise hold the
+	// caller's request handler open with no bound at all.
 	async attempt(event, body, debug, attempt, signal) {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(new Error("timed out")), this.timeout);
@@ -418,6 +426,7 @@ class FeasibleClient {
 		if (debug) headers[HEADER_DEBUG] = "true";
 
 		let response;
+		let raw;
 
 		try {
 			response = await this.fetch(this.endpoint, {
@@ -426,14 +435,14 @@ class FeasibleClient {
 				body,
 				signal: controller.signal,
 			});
+
+			raw = await response.text();
 		} catch (error) {
 			throw new FeasibleTransportError(attempt, error);
 		} finally {
 			clearTimeout(timer);
 			if (signal) signal.removeEventListener("abort", onAbort);
 		}
-
-		const raw = await response.text();
 
 		if (response.ok) {
 			return {

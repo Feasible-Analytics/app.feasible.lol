@@ -40,6 +40,12 @@ configuration. Use them only behind an application edge that strips client-suppl
 headers and writes its own. On a directly exposed app, pass the socket address explicitly so a
 client cannot choose its fingerprint or geolocation.
 
+The client sends `clientIp` as `X-Forwarded-For`. **The ingest server honours that header only
+from an address on its trusted-proxy list** (`FEASIBLE_INGEST_TRUSTED_PROXIES`); from any other
+peer it uses the socket address, which is your server. On a self-hosted instance, add the
+address your application calls from to that list. Check it with `debug()`: the derived event's
+`client_ip_source` is `x-forwarded-for` when the header was used and `socket` when it was not.
+
 ## Install
 
 ```bash
@@ -192,12 +198,12 @@ console.log(await analytics.debug({ name: "pageview", url, ...visitorFromNodeReq
   ".": {
     "types": "./index.d.ts",
     "import": "./src/index.js",
-    "require": "./src/index.cjs",
-    "default": "./src/index.cjs"
+    "require": "./src/core.cjs",
+    "default": "./src/core.cjs"
   },
   "./package.json": "./package.json"
 },
-"main": "./src/index.cjs",
+"main": "./src/core.cjs",
 "module": "./src/index.js",
 "types": "./index.d.ts",
 "sideEffects": false

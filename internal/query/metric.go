@@ -75,6 +75,19 @@ type compileContext struct {
 	// filter compiler cannot disagree about whether a page is the raw path or
 	// the cleaned one.
 	pathClean bool
+
+	// goals memoises compiled goal definitions for the life of one query. It
+	// is a map so the primary and comparison executors, which copy this
+	// context by value, share one set of lookups.
+	goals map[goalKey]expr
+}
+
+// goalKey identifies one memoised goal predicate. The alias is part of the key
+// because the same goal renders differently against the events table and
+// against the e2 alias of a session semi-join.
+type goalKey struct {
+	id    int64
+	alias string
 }
 
 // metric is one number a query can ask for.

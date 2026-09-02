@@ -340,28 +340,6 @@ func (s *Store) LinkGoogle(ctx context.Context, userID int64, sub string) error 
 	return nil
 }
 
-// UnlinkGoogle detaches the Google identity. It refuses when there is no
-// password, because the alternative is an account with no way at all to sign
-// in — a lockout that no support process can undo.
-func (s *Store) UnlinkGoogle(ctx context.Context, userID int64) error {
-	user, err := s.UserByID(ctx, userID)
-	if err != nil {
-		return err
-	}
-
-	if user.PasswordHash == "" {
-		return fmt.Errorf("auth: set a password before unlinking Google, or you will not be able to sign in")
-	}
-
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE users SET google_sub = NULL, updated_at = ? WHERE id = ?
-	`, s.now().Unix(), userID); err != nil {
-		return fmt.Errorf("auth: unlink google: %w", err)
-	}
-
-	return nil
-}
-
 // TouchUser records that somebody was active. It is written on session refresh
 // rather than on every request so that reading a dashboard does not put a write
 // on the app shard system database once per XHR.
@@ -401,38 +379,6 @@ func (s *Store) TeamForUser(ctx context.Context, userID int64) (*Team, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("auth: read team: %w", err)
-	}
-
-	t.TrialEndsAt = nullInt64(trialEnds)
-	t.AcceptTrafficUntil = nullInt64(acceptTill)
-
-	return &t, nil
-}
-
-// OwnedTeamForUser returns only an account the user currently owns. Destructive
-// settings use this narrower lookup so losing or deleting one owned team can
-// never make an ordinary membership in somebody else's team become deletable.
-func (s *Store) OwnedTeamForUser(ctx context.Context, userID int64) (*Team, error) {
-	var (
-		t          Team
-		trialEnds  sql.NullInt64
-		acceptTill sql.NullInt64
-	)
-
-	err := s.db.QueryRowContext(ctx, `
-		SELECT teams.id, teams.name, teams.trial_ends_at, teams.accept_traffic_until,
-		       teams.require_2fa, teams.created_at, teams.updated_at
-		FROM teams
-		JOIN team_memberships ON team_memberships.team_id = teams.id
-		WHERE team_memberships.user_id = ? AND team_memberships.role = 'owner'
-		ORDER BY teams.id
-		LIMIT 1
-	`, userID).Scan(&t.ID, &t.Name, &trialEnds, &acceptTill, &t.Require2FA, &t.CreatedAt, &t.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("auth: read owned team: %w", err)
 	}
 
 	t.TrialEndsAt = nullInt64(trialEnds)

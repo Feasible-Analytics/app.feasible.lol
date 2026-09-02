@@ -8,6 +8,7 @@
 
 import type { Interval, Metric } from "../api/types";
 import { formatterLocale, n, t } from "./i18n";
+import { pad } from "./period";
 
 /** The month names, built once per locale. They come from Intl rather than from
  *  a table of English abbreviations, because the axis of a translated dashboard
@@ -87,10 +88,6 @@ export function duration(seconds: number): string {
 	if (minutes > 0) return t("dashboard.format.duration.minutes", { minutes, seconds: pad(secs) });
 
 	return t("dashboard.format.duration.seconds", { seconds: secs });
-}
-
-function pad(value: number): string {
-	return value < 10 ? `0${value}` : String(value);
 }
 
 /** metricValue renders one metric in its own units. Percentages, durations and

@@ -40,13 +40,28 @@ export class QueryError extends Error {
 	}
 }
 
-/** bootstrap reads the site list and the message catalogue the server wrote
- *  into the page. A missing or unparseable blob is treated as an empty install
- *  rather than a crash: an account with no sites yet is a real state, and it
- *  should reach the empty screen rather than a white one. An absent catalogue
- *  is the same bargain — every label renders as its own id, which is visible
- *  rather than blank. */
+/** The parsed bootstrap. It is read once because it cannot change without a
+ *  navigation, and because every consumer of it — the router's base path, the
+ *  preference store's kill switch, the chrome, the goals card — has to agree.
+ *  Two reads that disagreed would mean an embed that hides its top bar and then
+ *  tries to write to localStorage anyway. */
+let booted: Bootstrap | undefined;
+
+/** bootstrap returns the site list, share mode, navigation and message
+ *  catalogue the server wrote into the page. App and several cards call it on
+ *  every render, so it parses the blob once and hands back the same object. */
 export function bootstrap(): Bootstrap {
+	if (!booted) booted = readBootstrap();
+
+	return booted;
+}
+
+/** readBootstrap parses the page's bootstrap block. A missing or unparseable
+ *  blob is treated as an empty install rather than a crash: an account with no
+ *  sites yet is a real state, and it should reach the empty screen rather than
+ *  a white one. An absent catalogue is the same bargain — every label renders
+ *  as its own id, which is visible rather than blank. */
+function readBootstrap(): Bootstrap {
 	const node = document.getElementById("feasible-bootstrap");
 
 	if (!node?.textContent) return { sites: [], locale: "", messages: {} };
@@ -68,20 +83,10 @@ export function bootstrap(): Bootstrap {
 	}
 }
 
-/** The share mode this page was served in, read once at module load.
- *
- *  It is read once rather than per call because it cannot change without a
- *  navigation, and because every consumer of it — the router's base path, the
- *  preference store's kill switch, the chrome — has to agree. Two reads that
- *  disagreed would mean an embed that hides its top bar and then tries to write
- *  to localStorage anyway. */
-let sharedMode: Shared | undefined;
-
-/** shared returns the share mode, or undefined on the authenticated dashboard. */
+/** shared returns the share mode this page was served in, or undefined on the
+ *  authenticated dashboard. */
 export function shared(): Shared | undefined {
-	if (sharedMode === undefined) sharedMode = bootstrap().shared;
-
-	return sharedMode;
+	return bootstrap().shared;
 }
 
 /** annotations reads the dated notes for a site over a range.
@@ -162,31 +167,12 @@ export async function query(
 	body: StatsRequest,
 	signal?: AbortSignal,
 ): Promise<StatsResponse> {
-	const response = await fetch(`/api/stats/${encodeURIComponent(domain)}/query`, {
+	const response = await dashboardFetch(`/api/stats/${encodeURIComponent(domain)}/query`, {
 		method: "POST",
-		headers: { "Content-Type": "application/json", ...capabilityHeaders() },
+		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(strip(withImportedHistory(body))),
 		signal,
 	});
-
-	if (!response.ok) {
-		// The failure body is the same one-field shape whatever the status, so
-		// the message is read the same way for a 400 and a 500. A body that is
-		// not JSON at all means something in front of us answered — a proxy, a
-		// login redirect — and the status is then the only honest thing to say.
-		let message = t("dashboard.error.query_status", { status: response.status });
-		let code = "";
-
-		try {
-			const failure = (await response.json()) as { error?: string; code?: string };
-			if (failure?.error) message = failure.error;
-			if (failure?.code) code = failure.code;
-		} catch {
-			/* Keep the status-based message. */
-		}
-
-		throw new QueryError(response.status, message, code);
-	}
 
 	return (await response.json()) as StatsResponse;
 }
@@ -204,23 +190,9 @@ export async function goalsReport(
 	if (request.filters?.length) params.set("filters", JSON.stringify(request.filters));
 	if (request.exact) params.set("exact", "true");
 
-	const response = await fetch(`/api/sites/${encodeURIComponent(domain)}/goals/report?${params.toString()}`, {
-		headers: capabilityHeaders(),
+	const response = await dashboardFetch(`/api/sites/${encodeURIComponent(domain)}/goals/report?${params.toString()}`, {
 		signal,
 	});
-
-	if (!response.ok) {
-		let message = t("dashboard.error.query_status", { status: response.status });
-
-		try {
-			const failure = (await response.json()) as { error?: string };
-			if (failure?.error) message = failure.error;
-		} catch {
-			/* Keep the status-based message. */
-		}
-
-		throw new QueryError(response.status, message);
-	}
 
 	const report = (await response.json()) as GoalReport;
 	report.rows = Array.isArray(report.rows) ? report.rows : [];
@@ -232,7 +204,7 @@ export async function goalsReport(
  * dimensions. It is separate from their value reports so switching dashboard
  * tabs does not scan the cold event-details table merely to populate a menu. */
 export async function properties(domain: string, signal?: AbortSignal): Promise<Property[]> {
-	const response = await dashboardGet(`/api/sites/${encodeURIComponent(domain)}/properties`, signal);
+	const response = await dashboardFetch(`/api/sites/${encodeURIComponent(domain)}/properties`, { signal });
 	const body = (await response.json()) as { properties?: Property[] };
 
 	return Array.isArray(body.properties) ? body.properties : [];
@@ -247,9 +219,9 @@ export async function propertyReport(
 	signal?: AbortSignal,
 ): Promise<PropertyReport> {
 	const params = reportParams(request);
-	const response = await dashboardGet(
+	const response = await dashboardFetch(
 		`/api/sites/${encodeURIComponent(domain)}/properties/${encodeURIComponent(name)}/report?${params.toString()}`,
-		signal,
+		{ signal },
 	);
 	const report = (await response.json()) as PropertyReport;
 	report.rows = Array.isArray(report.rows) ? report.rows : [];
@@ -259,7 +231,7 @@ export async function propertyReport(
 
 /** funnels lists reusable funnel definitions without running any of them. */
 export async function funnels(domain: string, signal?: AbortSignal): Promise<Funnel[]> {
-	const response = await dashboardGet(`/api/sites/${encodeURIComponent(domain)}/funnels`, signal);
+	const response = await dashboardFetch(`/api/sites/${encodeURIComponent(domain)}/funnels`, { signal });
 	const body = (await response.json()) as { funnels?: Funnel[] };
 
 	return Array.isArray(body.funnels) ? body.funnels : [];
@@ -273,10 +245,9 @@ export async function funnelReport(
 	signal?: AbortSignal,
 ): Promise<FunnelReport> {
 	const params = reportParams(request);
-	const response = await dashboardGet(
-		`/api/sites/${encodeURIComponent(domain)}/funnels/${id}/report?${params.toString()}`,
+	const response = await dashboardFetch(`/api/sites/${encodeURIComponent(domain)}/funnels/${id}/report?${params.toString()}`, {
 		signal,
-	);
+	});
 	const report = (await response.json()) as FunnelReport;
 	report.steps = Array.isArray(report.steps) ? report.steps : [];
 
@@ -301,10 +272,7 @@ export async function journeyReport(
 	params.set("direction", direction);
 	params.set("trail", JSON.stringify(trail));
 	params.set("grouping", grouping);
-	const response = await dashboardGet(
-		`/api/sites/${encodeURIComponent(domain)}/journey?${params.toString()}`,
-		signal,
-	);
+	const response = await dashboardFetch(`/api/sites/${encodeURIComponent(domain)}/journey?${params.toString()}`, { signal });
 	const report = (await response.json()) as JourneyReport;
 	report.steps = Array.isArray(report.steps) ? report.steps : [];
 	report.trail = Array.isArray(report.trail) ? report.trail : [];
@@ -335,23 +303,36 @@ function reportParams(request: DashboardReportRequest): URLSearchParams {
 	return params;
 }
 
-/** dashboardGet applies capability headers and turns the shared error envelope
- * into the same QueryError every other dashboard report uses. */
-async function dashboardGet(path: string, signal?: AbortSignal): Promise<Response> {
-	const response = await fetch(path, { headers: capabilityHeaders(), signal });
+interface DashboardInit {
+	method?: string;
+	headers?: Record<string, string>;
+	body?: string;
+	signal?: AbortSignal;
+}
+
+/** dashboardFetch is the one request path every dashboard read shares. It
+ *  attaches the public/shared capability and turns the server's error envelope
+ *  into a QueryError carrying the server's own sentence, so a 400 and a 500 are
+ *  read the same way everywhere. A body that is not JSON at all means something
+ *  in front of us answered — a proxy, a login redirect — and the status is then
+ *  the only honest thing to say. */
+async function dashboardFetch(path: string, init: DashboardInit = {}): Promise<Response> {
+	const response = await fetch(path, { ...init, headers: { ...init.headers, ...capabilityHeaders() } });
 
 	if (response.ok) return response;
 
 	let message = t("dashboard.error.query_status", { status: response.status });
+	let code = "";
 
 	try {
-		const failure = (await response.json()) as { error?: string };
+		const failure = (await response.json()) as { error?: string; code?: string };
 		if (failure?.error) message = failure.error;
+		if (failure?.code) code = failure.code;
 	} catch {
 		/* Keep the status-based message. */
 	}
 
-	throw new QueryError(response.status, message);
+	throw new QueryError(response.status, message, code);
 }
 
 /** capabilityHeaders carries the public/shared capability on every stats

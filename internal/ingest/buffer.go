@@ -235,9 +235,7 @@ func (b *Buffer) notify(events []Event, committed []uuid.UUID, sendErr error) {
 	b.mu.Lock()
 	for _, event := range events {
 		err := sendErr
-		if sendErr == nil {
-			err = nil
-		} else if _, ok := done[event.UUID]; ok {
+		if _, ok := done[event.UUID]; ok {
 			err = nil
 		}
 

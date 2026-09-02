@@ -10,17 +10,14 @@ package tracker
 
 import (
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base32"
-	"encoding/hex"
-	"errors"
-	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
 // SecretSize is the length of the key the tokens are derived with.
@@ -81,60 +78,9 @@ func NewKeyer(secret []byte, sites DomainSource) *Keyer {
 // is why it is a file rather than a value derived from something else — a
 // remedy nobody can perform is not a remedy.
 func LoadSecret(dataDir string) ([]byte, error) {
-	return secretFromFile(filepath.Join(dataDir, SecretFileName))
-}
-
-// secretFromFile reads the secret, creating it if it is not there. It is
-// written with O_EXCL so that two processes starting at once cannot each
-// generate one and hand out two different sets of paths for the same sites.
-func secretFromFile(path string) ([]byte, error) {
-	raw, err := os.ReadFile(path)
-	if err == nil {
-		secret, err := hex.DecodeString(strings.TrimSpace(string(raw)))
-		if err != nil || len(secret) != SecretSize {
-			return nil, fmt.Errorf("script key %s is corrupt — every site's script path derives from it", path)
-		}
-
-		return secret, nil
-	}
-	if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("script key %s: %w", path, err)
-	}
-
-	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, fmt.Errorf("create %s: %w", dir, err)
-		}
-	}
-
-	secret := make([]byte, SecretSize)
-	if _, err := rand.Read(secret); err != nil {
-		return nil, fmt.Errorf("script key: %w", err)
-	}
-
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		// Losing the race means another process wrote a secret a moment ago,
-		// and that one is the one every path already derives from.
-		if os.IsExist(err) {
-			return secretFromFile(path)
-		}
-
-		return nil, fmt.Errorf("script key %s: %w", path, err)
-	}
-	if _, err := file.WriteString(hex.EncodeToString(secret)); err != nil {
-		writeErr := fmt.Errorf("script key %s: %w", path, err)
-		if closeErr := file.Close(); closeErr != nil {
-			writeErr = errors.Join(writeErr, fmt.Errorf("script key %s: close after write failure: %w", path, closeErr))
-		}
-		return nil, writeErr
-	}
-
-	if err := file.Close(); err != nil {
-		return nil, fmt.Errorf("script key %s: close: %w", path, err)
-	}
-
-	return secret, nil
+	// A corrupt file means every site's script path derives from garbage, so
+	// the loader refuses rather than regenerating and silently moving them all.
+	return store.LoadOrCreateKey(filepath.Join(dataDir, SecretFileName), SecretSize, "script key")
 }
 
 // Token derives the opaque path segment for one domain.

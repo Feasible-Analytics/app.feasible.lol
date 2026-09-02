@@ -332,3 +332,46 @@ func TestTheCurrentWindowSitsInsideTheRealtimeWindow(t *testing.T) {
 		t.Fatalf("the current window %s is not inside the realtime window %s", current, live)
 	}
 }
+
+// TestAbsoluteBoundsKeepTheirOffset checks the third bound form. An RFC 3339
+// timestamp names an instant; re-reading its wall clock in the site's zone
+// would shift a Los Angeles range by the site's own offset.
+func TestAbsoluteBoundsKeepTheirOffset(t *testing.T) {
+	loc := losAngeles(t)
+
+	var rng DateRange
+	if err := json.Unmarshal([]byte(`["2026-08-01T00:00:00-07:00","2026-08-02T00:00:00-07:00"]`), &rng); err != nil {
+		t.Fatal(err)
+	}
+
+	if !rng.Absolute || rng.DateOnly {
+		t.Fatalf("RFC 3339 bounds parsed as %+v, want absolute", rng)
+	}
+
+	want := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
+
+	for _, site := range []*time.Location{loc, time.UTC} {
+		resolved, err := rng.Resolve(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC), site, time.Time{})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if !resolved.Start.Equal(want) || !resolved.End.Equal(want.AddDate(0, 0, 1)) {
+			t.Errorf("site %s resolved %s..%s, want the instants written", site, resolved.Start.UTC(), resolved.End.UTC())
+		}
+	}
+
+	encoded, err := json.Marshal(rng)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(encoded) != `["2026-08-01T00:00:00-07:00","2026-08-02T00:00:00-07:00"]` {
+		t.Errorf("re-encoded as %s", encoded)
+	}
+
+	var mixed DateRange
+	if err := json.Unmarshal([]byte(`["2026-08-01","2026-08-02T00:00:00-07:00"]`), &mixed); err == nil {
+		t.Fatal("a range mixing wall-clock and absolute bounds must be refused")
+	}
+}

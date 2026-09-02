@@ -234,6 +234,52 @@ func TestRenderUsesCRLFThroughout(t *testing.T) {
 	}
 }
 
+// TestRenderKeepsEveryHeaderOnOneLine is the header injection case. A team
+// name is customer-typed text that ends up in an invitation subject, and a
+// line break inside it would otherwise start a header of the customer's own.
+func TestRenderKeepsEveryHeaderOnOneLine(t *testing.T) {
+	raw := Render("feasible <no-reply@example.com>", Message{
+		To:      "owner@example.com\r\nBcc: everyone@example.com",
+		Subject: "You're invited to Acme\r\nBcc: list@example.com\r\nX-Injected: yes on feasible.lol",
+		HTML:    "<p>hi</p>",
+		Text:    "hi",
+		Tag:     "test",
+	})
+
+	headers, _, _ := strings.Cut(raw, "\r\n\r\n")
+
+	for _, injected := range []string{"Bcc:", "X-Injected:"} {
+		if strings.Contains(headers, injected) {
+			t.Fatalf("an injected %s header survived into the message:\n%s", injected, headers)
+		}
+	}
+
+	if !strings.Contains(headers, "Subject: You're invited to Acme Bcc: list@example.com X-Injected: yes on feasible.lol\r\n") {
+		t.Fatalf("the subject was not flattened onto one line:\n%s", headers)
+	}
+}
+
+// TestRenderEncodesANonASCIISubject pins RFC 2047: a subject with an em dash
+// or an accented letter must not go out as raw UTF-8 in a header, which is
+// invalid and renders as mojibake in strict clients.
+func TestRenderEncodesANonASCIISubject(t *testing.T) {
+	raw := Render("feasible <no-reply@example.com>", Message{
+		To: "owner@example.com", Subject: "Weekly report — acme.example", HTML: "<p>hi</p>", Text: "hi", Tag: "test",
+	})
+
+	if !strings.Contains(raw, "Subject: =?utf-8?q?Weekly_report_=E2=80=94_acme.example?=\r\n") {
+		t.Fatalf("the subject was not RFC 2047 encoded:\n%s", raw)
+	}
+
+	plain := Render("feasible <no-reply@example.com>", Message{
+		To: "owner@example.com", Subject: "Weekly report", HTML: "<p>hi</p>", Text: "hi", Tag: "test",
+	})
+
+	if !strings.Contains(plain, "Subject: Weekly report\r\n") {
+		t.Fatal("an ASCII subject must be left readable rather than encoded")
+	}
+}
+
 // TestEnvelopeAddressStripsTheDisplayName covers the SMTP conversation. MAIL
 // FROM takes an address, not "Name <address>", and a relay handed the display
 // form answers with a syntax error that names nothing useful.

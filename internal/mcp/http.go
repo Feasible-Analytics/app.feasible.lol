@@ -16,6 +16,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
@@ -88,8 +89,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // post handles one JSON-RPC message.
 func (h *Handler) post(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, MaxBodyBytes))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
 	if err != nil {
+		// A body over the limit is refused as too large, not reported as bad
+		// JSON: truncating it and then failing to parse the remainder would
+		// name the wrong problem.
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "the request body is larger than "+strconv.Itoa(MaxBodyBytes)+" bytes")
+			return
+		}
+
 		writeError(w, http.StatusBadRequest, "could not read the request body")
 		return
 	}

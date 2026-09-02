@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { Goal, JourneyAnchor } from "../api/types";
-import { anchorKey, behaviorEnabled, extendJourneyTrail, filterAnchors, goalFilter } from "./GoalsCard";
+import { anchorKey, behaviorEnabled, filterAnchors, goalFilter } from "./GoalsCard";
 
 /** configuredGoal supplies all wire fields so each test changes only the goal
  * behavior it intends to exercise. */
@@ -42,15 +42,9 @@ test("goal rows filter through the exact goal definition", () => {
 	});
 });
 
-test("journey continuation keeps typed anchors and does not mutate its trail", () => {
-	const page: JourneyAnchor = { type: "page", value: "/pricing", label: "Pricing" };
-	const event: JourneyAnchor = { type: "event", value: "Signup" };
-	const trail = [page];
-	const next = extendJourneyTrail(trail, event);
-
-	assert.deepEqual(trail, [page]);
-	assert.deepEqual(next, [page, event]);
-	assert.equal(anchorKey(page), "page:/pricing");
+test("anchor keys cannot collide across pages, events and goals", () => {
+	assert.equal(anchorKey({ type: "page", value: "/pricing", label: "Pricing" }), "page:/pricing");
+	assert.equal(anchorKey({ type: "event", value: "7" }), "event:7");
 	assert.equal(anchorKey({ type: "goal", value: "7" }), "goal:7");
 });
 

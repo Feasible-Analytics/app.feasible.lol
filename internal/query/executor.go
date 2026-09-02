@@ -466,7 +466,10 @@ func (x *executor) warnSessionMetrics(code, message string) {
 
 // execute runs every statement the query needs and returns the merged groups.
 func (x *executor) execute(ctx context.Context, restrict map[int][]any) (*groupSet, error) {
-	segments := x.engine.router().Route(x.query, x.resolved)
+	segments, err := x.engine.router().Route(ctx, x.query, x.resolved)
+	if err != nil {
+		return nil, err
+	}
 
 	// A range can only be answered from more than one source if every metric
 	// adds up across the split. Counting distinct visitors does not, so a query

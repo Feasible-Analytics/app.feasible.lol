@@ -307,8 +307,26 @@ func (s *Store) Validate(ctx context.Context, key *Key) error {
 	return nil
 }
 
-// byHash reads one key row.
+// ByID reads one key by its row id, refusing a revoked key or one whose owner
+// has left the team, exactly as presenting the key itself would. An OAuth
+// token stands for a key by id, and the token must stop working on the same
+// terms as the key.
+func (s *Store) ByID(ctx context.Context, id int64) (*Key, error) {
+	key, _, err := s.readKey(ctx, "api_keys.id = ?", id)
+
+	return key, err
+}
+
+// byHash reads one key row by the hash of its plaintext.
 func (s *Store) byHash(ctx context.Context, hashed string) (*Key, string, error) {
+	return s.readKey(ctx, "api_keys.key_hash = ?", hashed)
+}
+
+// readKey is the one query behind every key lookup, so that the membership
+// join, the revoked check and the scope parse cannot differ between finding a
+// key by its hash and finding it by its id. The predicate is one of the two
+// constants above, never caller input.
+func (s *Store) readKey(ctx context.Context, where string, arg any) (*Key, string, error) {
 	var (
 		key        Key
 		storedHash string
@@ -327,7 +345,7 @@ func (s *Store) byHash(ctx context.Context, hashed string) (*Key, string, error)
 		JOIN team_memberships
 		  ON team_memberships.team_id = api_keys.team_id
 		 AND team_memberships.user_id = api_keys.user_id
-		WHERE api_keys.key_hash = ?`, hashed).
+		WHERE `+where, arg).
 		Scan(&key.ID, &key.TeamID, &key.UserID, &key.Role, &key.Name, &storedHash, &key.Prefix,
 			&scopes, &key.HourlyLimit, &lastUsed, &created, &revoked)
 
@@ -404,8 +422,11 @@ func (s *Store) List(ctx context.Context, teamID int64) (keys []Key, err error) 
 			return nil, fmt.Errorf("apikeys: list: %w", err)
 		}
 
+		// Authenticate refuses a key whose scope list will not parse, and the
+		// list must not show that same key as "all scopes" — a key the API
+		// rejects would look fully working in the dashboard.
 		if err := json.Unmarshal([]byte(scopes), &key.Scopes); err != nil {
-			key.Scopes = nil
+			return nil, fmt.Errorf("apikeys: key %d has an unreadable scope list: %w", key.ID, err)
 		}
 
 		key.CreatedAt = time.Unix(created, 0).UTC()

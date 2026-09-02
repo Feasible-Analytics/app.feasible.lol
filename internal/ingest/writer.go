@@ -24,9 +24,9 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
 )
 
-// Event receipts are permanent. A browser can replay a locally retained event
-// at any age, so expiring a UUID would eventually turn a lost acknowledgement
-// into a duplicated fact row.
+// Event receipts in recent_event_ids are permanent despite the table's name. A
+// browser can replay a locally retained event at any age, so expiring a UUID
+// would eventually turn a lost acknowledgement into a duplicated fact row.
 
 const (
 	// MaxRejectedHostnames is the durable cardinality cap per site and UTC day.
@@ -63,7 +63,6 @@ type UsageRecorder interface {
 // deals in HTTP and derived events; this is the durable fact authority.
 type Writer struct {
 	accounts *accounts.Manager
-	sessions *SessionCache
 
 	// Usage counts the billable volume. It is optional: a self-hosted install
 	// has no billing at all, and ingestion must not depend on it existing.
@@ -111,20 +110,14 @@ type accountLock struct {
 	mu sync.Mutex
 }
 
-// NewWriter builds an account writer. The cache is transaction-local working
-// state; production ownership is loaded from and published after SQLite.
-func NewWriter(manager *accounts.Manager, sessions *SessionCache) *Writer {
+// NewWriter builds an account writer. Fold state is loaded from and written
+// back to each account database inside the write transaction, so the writer
+// holds none of it between batches.
+func NewWriter(manager *accounts.Manager) *Writer {
 	return &Writer{
 		accounts: manager,
-		sessions: sessions,
 		locks:    map[int64]*accountLock{},
 	}
-}
-
-// Sessions exposes fold working state for deterministic tests. Production
-// session ownership remains stored in each account database.
-func (w *Writer) Sessions() *SessionCache {
-	return w.sessions
 }
 
 // clock returns the writer's time source.
@@ -348,10 +341,24 @@ func (w *Writer) writeAccountDurable(ctx context.Context, accountID int64, event
 	if err := persistDurableFoldState(ctx, tx, dirty, merges, adopted); err != nil {
 		return committed, err
 	}
+	expired, err := w.pruneFoldState(ctx, tx, events)
+	if err != nil {
+		return committed, err
+	}
 	if err := w.commitDurable(ctx, tx, rows, dirty, merges, ids); err != nil {
 		return committed, err
 	}
 	cacheTx.Commit()
+
+	// A ping whose pageview never came is a genuine drop, and by now its 202
+	// went out over an hour ago — so this counter is the only place the
+	// customer ever hears about it.
+	for i := range expired {
+		if w.Counters != nil {
+			w.Counters.Dropped(expired[i].SiteID, ReasonNoSessionForEngage)
+		}
+		w.observe(&expired[i], false, ReasonNoSessionForEngage)
+	}
 
 	for _, blocked := range shielded {
 		committed = append(committed, blocked.id)
@@ -423,26 +430,22 @@ func loadDurableFoldKey(ctx context.Context, tx *sql.Tx, cache *SessionCache, ac
 		return fmt.Errorf("write batch: read durable sessions: %w", err)
 	}
 
-	bucket := cache.bucket(key)
-	bucket.mu.Lock()
+	bucket := &cache.bucket
 	for rows.Next() {
 		var payload []byte
 		if err := rows.Scan(&payload); err != nil {
-			bucket.mu.Unlock()
 			_ = rows.Close()
 			return fmt.Errorf("write batch: read durable session: %w", err)
 		}
 
 		var session Session
 		if err := json.Unmarshal(payload, &session); err != nil {
-			bucket.mu.Unlock()
 			_ = rows.Close()
 			return fmt.Errorf("write batch: decode durable session: %w", err)
 		}
 		session.AccountID = accountID
 		bucket.sessions[key] = append(bucket.sessions[key], &session)
 	}
-	bucket.mu.Unlock()
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("write batch: read durable sessions: %w", err)
 	}
@@ -461,8 +464,6 @@ func loadDurableFoldKey(ctx context.Context, tx *sql.Tx, cache *SessionCache, ac
 	}
 	defer func() { _ = orphans.Close() }()
 
-	bucket.mu.Lock()
-	defer bucket.mu.Unlock()
 	for orphans.Next() {
 		var payload []byte
 		if err := orphans.Scan(&payload); err != nil {
@@ -482,8 +483,11 @@ func loadDurableFoldKey(ctx context.Context, tx *sql.Tx, cache *SessionCache, ac
 	return nil
 }
 
-// loadLegacyFoldKey hydrates active session rows that predate the companion
-// state table. Their next successful fold writes complete durable state.
+// loadLegacyFoldKey hydrates session rows that have no companion state row:
+// sessions written before the state table existed, or whose state was pruned
+// after the retention window. The hydration is approximate — the tie-break
+// keys are not recoverable from the row — and the next successful fold writes
+// complete durable state again.
 func loadLegacyFoldKey(ctx context.Context, tx *sql.Tx, cache *SessionCache, accountID int64, key sessionKey, first, last int64) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT
@@ -531,9 +535,7 @@ func loadLegacyFoldKey(ctx context.Context, tx *sql.Tx, cache *SessionCache, acc
 	}
 	defer func() { _ = rows.Close() }()
 
-	bucket := cache.bucket(key)
-	bucket.mu.Lock()
-	defer bucket.mu.Unlock()
+	bucket := &cache.bucket
 
 	for rows.Next() {
 		var (
@@ -584,6 +586,65 @@ func loadLegacyFoldKey(ctx context.Context, tx *sql.Tx, cache *SessionCache, acc
 	}
 
 	return nil
+}
+
+// foldStateRetention is how long a visit's fold state and its unadopted pings
+// outlive the visit. Nothing arriving now can extend a session that ended a
+// full window ago, and the second window absorbs a delayed delivery from the
+// outbox. Past it a very late event hydrates the session approximately from
+// the sessions table, and a parked ping is a drop.
+const foldStateRetention = 2 * SessionTimeout
+
+// pruneFoldState removes fold state past the retention window for the sites in
+// a batch and returns the parked pings that will now never find their pageview,
+// so they can be reported after commit. Without this both tables grow for the
+// life of the account, one row per visit.
+func (w *Writer) pruneFoldState(ctx context.Context, tx *sql.Tx, events []Event) ([]Event, error) {
+	cutoff := w.clock().Add(-foldStateRetention).Unix()
+	pruned := map[int64]struct{}{}
+
+	var expired []Event
+	for i := range events {
+		siteID := events[i].SiteID
+		if _, done := pruned[siteID]; done {
+			continue
+		}
+		pruned[siteID] = struct{}{}
+
+		rows, err := tx.QueryContext(ctx, `
+			SELECT payload FROM ingest_orphan_engagements
+			WHERE site_id = ? AND timestamp < ?`, siteID, cutoff)
+		if err != nil {
+			return nil, fmt.Errorf("write batch: read expired orphans: %w", err)
+		}
+		for rows.Next() {
+			var payload []byte
+			if err := rows.Scan(&payload); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("write batch: read expired orphan: %w", err)
+			}
+			event, err := decodeDurableEvent(payload)
+			if err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			expired = append(expired, event)
+		}
+		if err := rows.Close(); err != nil {
+			return nil, fmt.Errorf("write batch: read expired orphans: %w", err)
+		}
+
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM ingest_orphan_engagements WHERE site_id = ? AND timestamp < ?", siteID, cutoff); err != nil {
+			return nil, fmt.Errorf("write batch: prune expired orphans: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM ingest_session_state WHERE site_id = ? AND last_seen_at < ?", siteID, cutoff); err != nil {
+			return nil, fmt.Errorf("write batch: prune fold state: %w", err)
+		}
+	}
+
+	return expired, nil
 }
 
 // persistDurableOrphan stores an engagement event before acknowledging it.
@@ -872,79 +933,6 @@ func claimEventID(ctx context.Context, tx *sql.Tx, id uuid.UUID, now int64) (boo
 	return claimed == 1, nil
 }
 
-// DedupeLookupChunk is how many ids one dedupe query asks about.
-//
-// It exists because SQLite refuses a statement with more bound parameters than
-// its compile-time limit, and a batch is only "a few hundred events" while
-// everything is healthy. The moment a flush runs slow the buffer keeps
-// accepting, so the next batch can be tens of thousands — and an unchunked
-// lookup then fails on the one batch that most needs to be written, requeues it
-// unchanged, and fails on it identically forever. A buffer that can never drain
-// is worse than a slow one.
-//
-// Five hundred is far below any build's limit and still one round trip per five
-// hundred ids, so the batching this exists to protect is intact.
-const DedupeLookupChunk = 500
-
-// knownEventIDs asks the dedupe table which of these ids it already holds. It is
-// one query per chunk of ids rather than one query per event, because a round
-// trip each would undo the point of batching.
-func knownEventIDs(ctx context.Context, db *sql.DB, events []Event) (map[uuid.UUID]struct{}, error) {
-	if len(events) == 0 {
-		return nil, nil
-	}
-
-	seen := map[uuid.UUID]struct{}{}
-
-	for start := 0; start < len(events); start += DedupeLookupChunk {
-		end := min(start+DedupeLookupChunk, len(events))
-
-		if err := lookupEventIDs(ctx, db, events[start:end], seen); err != nil {
-			return nil, err
-		}
-	}
-
-	return seen, nil
-}
-
-// lookupEventIDs runs one chunk's query and adds whatever it found to seen.
-func lookupEventIDs(ctx context.Context, db *sql.DB, events []Event, seen map[uuid.UUID]struct{}) error {
-	query := "SELECT event_uuid FROM recent_event_ids WHERE event_uuid IN (?"
-	args := make([]any, 0, len(events))
-	args = append(args, events[0].UUID[:])
-
-	for i := 1; i < len(events); i++ {
-		query += ",?"
-		args = append(args, events[i].UUID[:])
-	}
-	query += ")"
-
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("dedupe lookup: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	for rows.Next() {
-		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
-			return fmt.Errorf("dedupe lookup: %w", err)
-		}
-
-		id, err := uuid.FromBytes(raw)
-		if err != nil {
-			continue
-		}
-		seen[id] = struct{}{}
-	}
-
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("dedupe lookup: %w", err)
-	}
-
-	return nil
-}
-
 // commitDurable writes facts and fold repairs through the transaction that
 // already owns the permanent UUID receipts.
 func (w *Writer) commitDurable(ctx context.Context, tx *sql.Tx, rows []eventRow, dirty []*Session, merges []Merge, ids *dimensionIDs) error {
@@ -1055,10 +1043,10 @@ func insertEvent(ctx context.Context, tx *sql.Tx, row eventRow, ids *dimensionID
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO event_details (event_id, props, revenue_amount, revenue_currency, utm_content, utm_term, full_url)
-		VALUES (?,?,?,?,?,?,?)`,
+		INSERT INTO event_details (event_id, props, revenue_amount, revenue_currency, utm_content, utm_term)
+		VALUES (?,?,?,?,?,?)`,
 		eventID, props, amount, currency,
-		nullIfEmpty(event.UTMContent), nullIfEmpty(event.UTMTerm), nullIfEmpty(event.FullURL),
+		nullIfEmpty(event.UTMContent), nullIfEmpty(event.UTMTerm),
 	); err != nil {
 		return fmt.Errorf("write batch: insert event details: %w", err)
 	}

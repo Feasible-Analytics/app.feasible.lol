@@ -27,7 +27,7 @@
               {{ end }}
             </p>
             <p class="mt-0.5 text-xs text-muted">
-              {{ t $.Lang "auth.settings_sessions.meta" "used" (ago $.Lang .LastSeenAt) "created" (ago $.Lang .CreatedAt) "expires" (date $.Lang .ExpiresAt) }}
+              {{ t $.Lang "auth.settings_sessions.meta" "used" (ago $.Now $.Lang .LastSeenAt) "created" (ago $.Now $.Lang .CreatedAt) "expires" (date $.Lang .ExpiresAt) }}
             </p>
           </div>
 

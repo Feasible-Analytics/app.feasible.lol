@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { properties as fetchProperties } from "../api/client";
 import type { DateRange, Property, StatsRequest } from "../api/types";
 import type { FilterLabels, FilterState, Operator } from "../lib/filters";
+import { useDismiss } from "../lib/dom";
 import { FILTERABLE, OPERATORS, dimensionLabel, pillMessage, remove, replace, valueOf } from "../lib/filters";
 import { compact, exact } from "../lib/format";
 import { t } from "../lib/i18n";
@@ -515,33 +516,4 @@ function ValueEditor({
 			</div>
 		</div>
 	);
-}
-
-/** useDismiss closes the popover on an outside click or Escape. Escape is
- *  stopped here rather than allowed to bubble, because the same key clears every
- *  filter on the page and closing a panel must not also throw away the work the
- *  panel was doing. */
-function useDismiss(ref: React.RefObject<HTMLElement | null>, open: boolean, close: () => void): void {
-	useEffect(() => {
-		if (!open) return;
-
-		const onDown = (event: MouseEvent) => {
-			if (ref.current && !ref.current.contains(event.target as Node)) close();
-		};
-
-		const onKey = (event: KeyboardEvent) => {
-			if (event.key !== "Escape") return;
-
-			event.stopPropagation();
-			close();
-		};
-
-		document.addEventListener("mousedown", onDown);
-		document.addEventListener("keydown", onKey, true);
-
-		return () => {
-			document.removeEventListener("mousedown", onDown);
-			document.removeEventListener("keydown", onKey, true);
-		};
-	}, [open, close, ref]);
 }

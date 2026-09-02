@@ -49,27 +49,17 @@ type Tool struct {
 	// management for writes.
 	Permission teams.Permission
 
-	Handler func(ctx context.Context, key *apikeys.Key, args json.RawMessage) (*toolResult, error)
-}
+	// Scope is the API-key scope the tool needs. It is required: registration
+	// panics on a tool without one, so classifying a new tool is part of
+	// writing it rather than a convention a handler can miss.
+	Scope string
 
-// toolScopes is the auditable authorization policy for the complete MCP tool
-// surface. Registration rejects an unclassified tool, making scope review a
-// required part of adding one rather than a convention a new handler can miss.
-var toolScopes = map[string]string{
-	"list_sites":             apikeys.ScopeSitesRead,
-	"query_stats":            apikeys.ScopeStatsRead,
-	"get_realtime_visitors":  apikeys.ScopeStatsRead,
-	"compare_periods":        apikeys.ScopeStatsRead,
-	"create_site":            apikeys.ScopeSitesProvision,
-	"update_site":            apikeys.ScopeSitesProvision,
-	"list_goals":             apikeys.ScopeSitesRead,
-	"create_goal":            apikeys.ScopeSitesProvision,
-	"list_funnels":           apikeys.ScopeStatsRead,
-	"get_funnel":             apikeys.ScopeStatsRead,
-	"explain_traffic_change": apikeys.ScopeStatsRead,
-	"list_shields":           apikeys.ScopeSitesRead,
-	"add_shield_rule":        apikeys.ScopeSitesProvision,
-	"create_annotation":      apikeys.ScopeSitesProvision,
+	// Cost is how many requests the tool spends against the key's hourly
+	// limit, for a tool that issues many queries to answer one call. Zero
+	// counts as one.
+	Cost int
+
+	Handler func(ctx context.Context, key *apikeys.Key, args json.RawMessage) (*toolResult, error)
 }
 
 // resourceScopes classifies every MCP resource method. Resource templates and
@@ -112,7 +102,7 @@ func New(api *publicapi.API, log *logger.Logger) *Server {
 // cached and makes a diff of two sessions unreadable.
 func (s *Server) register(tools ...*Tool) {
 	for _, tool := range tools {
-		if _, ok := toolScopes[tool.Name]; !ok {
+		if tool.Scope == "" {
 			panic("mcp: tool " + tool.Name + " has no scope classification")
 		}
 
@@ -296,8 +286,12 @@ func (s *Server) callTool(ctx context.Context, key *apikeys.Key, request *rpcReq
 	if !publicapi.KeyCan(key, permission) {
 		return result(request.ID, toolFailure("this credential's current team role does not permit %s", permission))
 	}
-	if !key.Allows(toolScopes[tool.Name]) {
-		return result(request.ID, toolFailure("this credential does not grant the %s scope", toolScopes[tool.Name]))
+	if !key.Allows(tool.Scope) {
+		return result(request.ID, toolFailure("this credential does not grant the %s scope", tool.Scope))
+	}
+
+	if refusal := s.charge(key, tool.Cost); refusal != "" {
+		return result(request.ID, toolFailure("%s", refusal))
 	}
 
 	answer, err := tool.Handler(ctx, key, params.Arguments)
@@ -313,6 +307,24 @@ func (s *Server) callTool(ctx context.Context, key *apikeys.Key, request *rpcReq
 	}
 
 	return result(request.ID, answer)
+}
+
+// charge spends a call against the key's hourly limit and phrases the refusal
+// when the window is spent.
+//
+// The MCP endpoint takes the same keys and tokens as the REST API, so a call
+// here has to count on the same meter: a key that is throttled over HTTP and
+// unlimited over MCP is not throttled. The refusal names the reset time for the
+// same reason the REST response carries Retry-After — told only "no", a client
+// retries at once.
+func (s *Server) charge(key *apikeys.Key, cost int) string {
+	decision := s.API.Limiter.AllowN(key, cost)
+	if decision.Allowed {
+		return ""
+	}
+
+	return fmt.Sprintf("rate limit of %d requests per hour reached — it resets at %s",
+		decision.Limit, decision.ResetsAt.Format("15:04:05 MST"))
 }
 
 // authorizeScope applies both layers every MCP resource needs: the scope on

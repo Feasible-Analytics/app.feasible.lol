@@ -7,6 +7,7 @@
 //
 
 import type { Interval, StatsResponse } from "../api/types";
+import { pad } from "./period";
 
 /**
  * The engine does the counting; this file does the alignment.
@@ -129,7 +130,7 @@ export function previousBucketLabel(bounds: string[] | undefined, interval: Inte
 		case "month": {
 			const total = (year * 12 + month - 1) + index;
 
-			return `${pad4(Math.floor(total / 12))}-${pad2((total % 12) + 1)}`;
+			return `${pad(Math.floor(total / 12), 4)}-${pad((total % 12) + 1)}`;
 		}
 
 		default:
@@ -143,13 +144,5 @@ export function previousBucketLabel(bounds: string[] | undefined, interval: Inte
 function isoDate(year: number, month: number, day: number): string {
 	const at = new Date(Date.UTC(year, month - 1, day));
 
-	return `${pad4(at.getUTCFullYear())}-${pad2(at.getUTCMonth() + 1)}-${pad2(at.getUTCDate())}`;
-}
-
-function pad2(value: number): string {
-	return String(value).padStart(2, "0");
-}
-
-function pad4(value: number): string {
-	return String(value).padStart(4, "0");
+	return `${pad(at.getUTCFullYear(), 4)}-${pad(at.getUTCMonth() + 1)}-${pad(at.getUTCDate())}`;
 }

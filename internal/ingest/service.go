@@ -128,9 +128,8 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 	}
 
 	counters := NewCounters()
-	sessionCache := NewSessionCache()
 
-	writer := NewWriter(manager, sessionCache)
+	writer := NewWriter(manager)
 	writer.Now = now
 	writer.Usage = opts.Usage
 
@@ -154,8 +153,6 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 		Bots:      bots,
 		Trusted:   trusted,
 		Shards:    DirectShard{},
-		Shield:    NoShield{},
-		Hostnames: NoHostnamePolicy{},
 		Counters:  counters,
 		Now:       now,
 	}

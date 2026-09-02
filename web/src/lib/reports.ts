@@ -64,6 +64,9 @@ export interface CardDef {
 	tabs: Tab[];
 	/** The footnote on a number that reliably looks like a bug and is not. */
 	caveatId?: string;
+	/** Who the data behind this card is licensed from, for a licence that asks
+	 *  to be credited wherever its data is shown. */
+	attribution?: { labelId: string; href: string };
 }
 
 /** The metric every report row is ranked and sized by. Visitors is the default
@@ -89,7 +92,7 @@ export const DRAWER_HEADINGS: Record<string, string> = {
  *  these three exactly backwards. */
 export const INVERTED: ReadonlySet<string> = new Set(["bounce_rate", "exit_rate"]);
 
-/** notCampaignTagged excludes the untagged bucket from a UTM report. */
+/** tagged excludes the untagged bucket from a UTM report. */
 function tagged(dimension: string): Filter[] {
 	return [["is_not", dimension, [""], { case_sensitive: true }]];
 }
@@ -189,6 +192,7 @@ export const LOCATIONS: CardDef = {
 	titleId: "dashboard.report.locations.title",
 	tint: "tint-locations",
 	caveatId: "dashboard.report.locations.caveat",
+	attribution: { labelId: "dashboard.report.locations.attribution", href: "https://db-ip.com" },
 	tabs: [
 		{
 			id: "map",
@@ -308,12 +312,6 @@ export function dimensionsOf(tab: Tab, breakdown = ""): string[] {
 	if (breakdown) dimensions.push(breakdown);
 
 	return dimensions;
-}
-
-/** breakdownValueIndex returns where a drawer row stores its optional
- * breakdown after the primary dimension. */
-export function breakdownValueIndex(_tab: Tab): number {
-	return 1;
 }
 
 /**

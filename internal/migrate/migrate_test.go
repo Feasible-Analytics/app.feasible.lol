@@ -1330,7 +1330,7 @@ func TestRunRequiresTheContiguousPendingSequence(t *testing.T) {
 		if result.From != 0 || result.To != 0 || tableExists(t, db, "should_not_exist") {
 			t.Fatalf("gap wrote before validation: result=%+v table=%v", result, tableExists(t, db, "should_not_exist"))
 		}
-		if got := err.Error(); got != "test schema is at version 0: migration 0002 is missing before 0003_three; merge the reserved lower migration before upgrading" {
+		if got := err.Error(); got != "test migration sequence is incomplete: database is at version 0, expected migration 0002 next but found 0003_three" {
 			t.Fatalf("gap error = %q", got)
 		}
 	})

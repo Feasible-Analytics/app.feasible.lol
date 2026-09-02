@@ -136,6 +136,10 @@ func (s *Server) readResource(ctx context.Context, key *apikeys.Key, request *rp
 		return failure(request.ID, codeUnauthorized, "%s", refusal)
 	}
 
+	if refusal := s.charge(key, 1); refusal != "" {
+		return failure(request.ID, codeRateLimited, "%s", refusal)
+	}
+
 	var params readResourceParams
 	if err := json.Unmarshal(request.Params, &params); err != nil {
 		return failure(request.ID, codeInvalidParams, "resources/read needs a uri")

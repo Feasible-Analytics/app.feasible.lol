@@ -11,7 +11,9 @@ package query
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -22,27 +24,56 @@ import (
 type rawSplitter struct{}
 
 // Route splits at today when there is a complete part to split off.
-func (rawSplitter) Route(_ *Query, r Resolved) []Segment {
-	complete, partial, split := SplitAtToday(r)
+func (rawSplitter) Route(_ context.Context, _ *Query, r Resolved) ([]Segment, error) {
+	complete, partial, split := splitAtToday(r)
 	if !split {
-		return []Segment{{Range: r, Source: SourceRaw}}
+		return []Segment{{Range: r, Source: SourceRaw}}, nil
 	}
 
 	return []Segment{
 		{Range: complete, Source: SourceRaw},
 		{Range: partial, Source: SourceRaw},
-	}
+	}, nil
 }
 
 // fixedState is a coverage reader that answers whatever a test tells it to.
 type fixedState struct {
 	coverage RollupCoverage
 	found    bool
+	err      error
 }
 
 // Coverage answers the fixed reading.
-func (s fixedState) Coverage(context.Context, int64, Grain) (RollupCoverage, bool) {
-	return s.coverage, s.found
+func (s fixedState) Coverage(context.Context, int64, Grain) (RollupCoverage, bool, error) {
+	return s.coverage, s.found, s.err
+}
+
+// rollupExplain renders a routing decision for a test failure.
+func rollupExplain(segments []Segment) string {
+	parts := make([]string, 0, len(segments))
+
+	for _, segment := range segments {
+		part := segment.Source.String()
+		if segment.Source == SourceRollup {
+			part += "/" + segment.Grain.String()
+		}
+
+		parts = append(parts, part+" "+segment.Range.String())
+	}
+
+	return strings.Join(parts, " + ")
+}
+
+// route is Route for a test that is not exercising the error path.
+func route(t *testing.T, router Router, q *Query, r Resolved) []Segment {
+	t.Helper()
+
+	segments, err := router.Route(context.Background(), q, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return segments
 }
 
 // coveringRouter is a roll-up router that believes everything is built, so a
@@ -61,7 +92,7 @@ func TestRawRouterAnswersTheWholeRange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	segments := RawRouter{}.Route(&Query{}, resolved)
+	segments := route(t, RawRouter{}, &Query{}, resolved)
 
 	if len(segments) != 1 || segments[0].Source != SourceRaw {
 		t.Fatalf("the raw router should answer with one raw segment, got %+v", segments)
@@ -76,7 +107,7 @@ func TestSplitAtTodaySeparatesTheFinishedDays(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	complete, partial, split := SplitAtToday(resolved)
+	complete, partial, split := splitAtToday(resolved)
 	if !split {
 		t.Fatal("a range that reaches today has a finished part and an unfinished one")
 	}
@@ -98,7 +129,7 @@ func TestSplitAtTodaySeparatesTheFinishedDays(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, split := SplitAtToday(past); split {
+	if _, _, split := splitAtToday(past); split {
 		t.Error("a range entirely in the past has nothing to split off")
 	}
 }
@@ -258,7 +289,7 @@ func TestTheRouterRefusesEverythingItCannotAnswerExactly(t *testing.T) {
 			t.Fatalf("%s: %v", test.name, err)
 		}
 
-		segments := router.Route(&q, resolved)
+		segments := route(t, router, &q, resolved)
 
 		if got := rollupBacked(segments); got != test.rollup {
 			t.Errorf("%s: routed to %s, want rollup=%v — %s", test.name, rollupExplain(segments), test.rollup, test.why)
@@ -281,7 +312,7 @@ func TestTheRouterRefusesAnotherTimezone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if segments := router.Route(&q, resolved); rollupBacked(segments) {
+	if segments := route(t, router, &q, resolved); rollupBacked(segments) {
 		t.Errorf("a summary cut on Los Angeles days answered a query about UTC days: %s", rollupExplain(segments))
 	}
 }
@@ -299,7 +330,7 @@ func TestTheRouterRefusesWhatIsNotBuiltYet(t *testing.T) {
 	}
 
 	nothing := &RollupRouter{State: fixedState{found: false}}
-	if segments := nothing.Route(&q, resolved); rollupBacked(segments) {
+	if segments := route(t, nothing, &q, resolved); rollupBacked(segments) {
 		t.Errorf("a site with nothing built was routed to a summary: %s", rollupExplain(segments))
 	}
 
@@ -311,7 +342,7 @@ func TestTheRouterRefusesWhatIsNotBuiltYet(t *testing.T) {
 		Through:  RollupLocalUnix(startOfDay(fixtureNow, time.UTC), time.UTC),
 	}}}
 
-	if segments := partial.Route(&q, resolved); rollupBacked(segments) {
+	if segments := route(t, partial, &q, resolved); rollupBacked(segments) {
 		t.Errorf("a range reaching past the covered window was routed to a summary: %s", rollupExplain(segments))
 	}
 }
@@ -379,5 +410,20 @@ func assertColumn(t *testing.T, db *sql.DB, table, column string) {
 
 	if found != 1 {
 		t.Errorf("the roll-up registry names %s.%s, which the schema does not have", table, column)
+	}
+}
+
+// TestACoverageReadFailureFailsTheQuery pins the rule that a summary which
+// cannot be checked is an error, not "nothing built": treating it as the
+// latter would silently put every dashboard on the raw path.
+func TestACoverageReadFailureFailsTheQuery(t *testing.T) {
+	engine := newEngine(t)
+	engine.Router = &RollupRouter{State: fixedState{err: errors.New("rollup_state is locked")}}
+
+	_, err := engine.Run(context.Background(), baseQuery("pageviews"))
+
+	var callerError *Error
+	if err == nil || errors.As(err, &callerError) || !strings.Contains(err.Error(), "locked") {
+		t.Fatalf("an unreadable coverage table must fail the query as ours, got %v", err)
 	}
 }

@@ -11,11 +11,13 @@ package feasible
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"math/rand/v2"
+	mathrand "math/rand/v2"
 	"net"
 	"net/http"
 	"os"
@@ -190,8 +192,8 @@ type Revenue struct {
 
 // Attribution overrides where a conversion came from. A delayed or offline
 // conversion has no referrer of its own, so without these it is Direct forever
-// and the campaign that actually paid for it gets no credit. The server honours
-// them only for server-side callers.
+// and the campaign that actually paid for it gets no credit. The server applies
+// them to any event that carries them.
 type Attribution struct {
 	Referrer    string
 	UTMSource   string
@@ -203,7 +205,7 @@ type Attribution struct {
 
 // Event is one thing that happened. Build it with NewPageview or NewEvent so
 // the visitor cannot be left out, then set whatever else applies directly on
-// the struct or through the With helpers.
+// the struct.
 type Event struct {
 	// Name is "pageview" for a pageview and anything else for a custom event.
 	Name string
@@ -267,13 +269,6 @@ func NewEvent(name, pageURL string, visitor Visitor) *Event {
 	return &Event{Name: name, URL: pageURL, Visitor: visitor}
 }
 
-// WithProps replaces the custom properties, for the common case of building the
-// map at the call site.
-func (e *Event) WithProps(props map[string]any) *Event {
-	e.Props = props
-	return e
-}
-
 // WithProp adds one property, allocating the map on first use so a caller never
 // has to.
 func (e *Event) WithProp(name string, value any) *Event {
@@ -283,45 +278,6 @@ func (e *Event) WithProp(name string, value any) *Event {
 
 	e.Props[name] = value
 
-	return e
-}
-
-// WithRevenue attaches money in major units and an ISO 4217 currency code.
-func (e *Event) WithRevenue(amount float64, currency string) *Event {
-	e.Revenue = &Revenue{Amount: amount, Currency: currency}
-	return e
-}
-
-// WithTitle sets the page title.
-func (e *Event) WithTitle(title string) *Event {
-	e.Title = title
-	return e
-}
-
-// WithReferrer sets the referrer the browser reported.
-func (e *Event) WithReferrer(referrer string) *Event {
-	e.Referrer = referrer
-	return e
-}
-
-// WithAttribution sets the server-side attribution overrides, which is how a
-// conversion that happens hours after the click keeps the campaign that earned
-// it instead of landing in Direct.
-func (e *Event) WithAttribution(attribution Attribution) *Event {
-	e.Attribution = attribution
-	return e
-}
-
-// WithInteractive marks the event as an interaction or not. Pass false for
-// something the visitor did not do, so it cannot end a bounce on its own.
-func (e *Event) WithInteractive(interactive bool) *Event {
-	e.Interactive = &interactive
-	return e
-}
-
-// WithDomain reports this event against a different site to the client default.
-func (e *Event) WithDomain(domain string) *Event {
-	e.Domain = domain
 	return e
 }
 
@@ -577,6 +533,7 @@ func (c *Client) Debug(ctx context.Context, event *Event) (json.RawMessage, erro
 // wire shape, and the field order here is the key order on the wire, which
 // makes a captured body diffable by eye.
 type wirePayload struct {
+	Key            string         `json:"k"`
 	Name           string         `json:"n"`
 	URL            string         `json:"u"`
 	Domain         string         `json:"d"`
@@ -647,6 +604,7 @@ func (c *Client) payload(event *Event) ([]byte, error) {
 	}
 
 	body := wirePayload{
+		Key:            newKey(),
 		Name:           event.Name,
 		URL:            event.URL,
 		Domain:         domain,
@@ -673,6 +631,39 @@ func (c *Client) payload(event *Event) ([]byte, error) {
 	}
 
 	return encoded, nil
+}
+
+// newKey mints the idempotency key an event carries on every attempt. The
+// server drops a second event with the same key, which is what makes a retry
+// after a lost acknowledgement harmless: the payload is encoded once per Send,
+// so every retry resends the same key. It is a random UUID v4 because that is
+// the only shape the server accepts in this field, and it is built by hand
+// rather than imported so the package keeps its zero dependencies.
+func newKey() string {
+	var raw [16]byte
+
+	if _, err := rand.Read(raw[:]); err != nil {
+		// The system entropy source failing is not something a tracking call
+		// can recover from, and sending no key would silently reopen the
+		// double-count on retry.
+		panic("feasible: crypto/rand failed: " + err.Error())
+	}
+
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+
+	var text [36]byte
+	hex.Encode(text[0:8], raw[0:4])
+	text[8] = '-'
+	hex.Encode(text[9:13], raw[4:6])
+	text[13] = '-'
+	hex.Encode(text[14:18], raw[6:8])
+	text[18] = '-'
+	hex.Encode(text[19:23], raw[8:10])
+	text[23] = '-'
+	hex.Encode(text[24:36], raw[10:16])
+
+	return string(text[:])
 }
 
 // deliver runs the attempt loop. The retry rules are the point of this function:
@@ -724,8 +715,8 @@ func (c *Client) attempt(ctx context.Context, event *Event, payload []byte, debu
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		// A transport error is a connection that never reached the server, so
-		// nothing was counted and a retry cannot duplicate anything.
+		// Safe to retry even if the bytes did reach the server: the payload
+		// carries the same idempotency key on every attempt.
 		return nil, nil, &transportError{attempt: attempt, err: err}
 	}
 
@@ -799,7 +790,7 @@ func (c *Client) backoff(attempt int) time.Duration {
 
 	half := wait / 2
 
-	return half + time.Duration(rand.Int64N(int64(half)+1))
+	return half + time.Duration(mathrand.Int64N(int64(half)+1))
 }
 
 // sleep waits, or gives up early when the caller's context ends. A retry loop

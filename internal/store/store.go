@@ -72,10 +72,20 @@ func DSN(path string, extra ...string) string {
 	return dsn
 }
 
+// TxLockImmediate makes every transaction take SQLite's write lock at BEGIN
+// rather than at its first write. A deferred transaction that reads and then
+// writes has to upgrade its lock mid-flight, and SQLite cannot retry that: it
+// returns SQLITE_BUSY at once and busy_timeout never applies. Taking the lock
+// up front turns that immediate failure into a wait, and lets a read-then-write
+// transaction be written without any locking ceremony of its own. Read-only
+// transactions are unaffected, because the driver honours TxOptions.ReadOnly
+// with a plain BEGIN.
+const TxLockImmediate = "_txlock=immediate"
+
 // Open opens (and creates, if missing) a SQLite database with the pragmas this
 // project needs everywhere. It is the general-purpose handle used by
-// maintenance commands; the serving path wants OpenDatabase instead, which
-// separates the single writer from the reader pool.
+// maintenance commands and for system.db; the account serving path wants
+// OpenDatabase instead, which separates the single writer from the reader pool.
 func Open(path string) (*sql.DB, error) {
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -83,7 +93,7 @@ func Open(path string) (*sql.DB, error) {
 		}
 	}
 
-	db, err := sql.Open(DriverName, DSN(path))
+	db, err := sql.Open(DriverName, DSN(path, TxLockImmediate))
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}

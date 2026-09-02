@@ -12,8 +12,10 @@ import type { Filter, Preset, StatsRequest } from "../api/types";
 import type { Navigation } from "../api/types";
 import type { CompareMode } from "../lib/compare";
 import { COMPARE_LABELS } from "../lib/compare";
+import { useDismiss } from "../lib/dom";
 import { calendarDate, rangeLabel } from "../lib/format";
 import { n, t } from "../lib/i18n";
+import { addDays, step, today } from "../lib/period";
 import type { Theme } from "../lib/prefs";
 import type { UrlState } from "../lib/url";
 import { useStats } from "../lib/useStats";
@@ -119,6 +121,10 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, fil
 					current={state.domain}
 					sites={sites}
 					onPick={(domain) => {
+						// The authenticated dashboard reloads rather than switching
+						// in place: the per-site navigation links are computed on the
+						// server and only ship in the bootstrap, so a SPA switch would
+						// leave the settings link pointing at the previous site.
 						if (navigation) {
 							window.location.assign(`/dashboard/${encodeURIComponent(domain)}`);
 							return;
@@ -411,9 +417,11 @@ function PeriodPicker({
 		setOpen(false);
 		setCustom(false);
 
+		// Yesterday is computed the same way the keyboard shortcut computes it,
+		// so the two routes to the same day cannot disagree.
 		if (id === "yesterday") {
-			const day = isoDay(-1);
-			onNavigate({ ...state, from: day, to: day, drawer: null });
+			const day = step("day", "", "", today(), -1);
+			if (day) onNavigate({ ...state, from: day.from, to: day.to, drawer: null });
 			return;
 		}
 
@@ -494,8 +502,8 @@ function PeriodPicker({
 /** CustomRange is the two-date form. It applies nothing until both bounds are
  *  set, so a half-typed range never fires a query the server will refuse. */
 function CustomRange({ from, to, onApply }: { from: string; to: string; onApply: (from: string, to: string) => void }) {
-	const [start, setStart] = useState(from || isoDay(-6));
-	const [end, setEnd] = useState(to || isoDay(0));
+	const [start, setStart] = useState(from || addDays(today(), -6));
+	const [end, setEnd] = useState(to || today());
 
 	return (
 		<div className="flex flex-col gap-2 px-2.5 py-2">
@@ -561,44 +569,13 @@ function ThemeToggle({ theme, onTheme }: { theme: Theme; onTheme: (next: Theme) 
 	);
 }
 
+/** Chevron is the drop-down arrow drawn over the menus and the native selects.
+ *  A select's own arrow cannot be styled the same way in every browser, so it
+ *  is hidden and this one is drawn in its place. */
 function Chevron({ className = "" }: { className?: string }) {
 	return (
 		<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true" className={`fill-none stroke-current ${className}`}>
 			<path d="M3 4.5 6 7.5 9 4.5" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
 		</svg>
 	);
-}
-
-/** useDismiss closes a popover on an outside click or Escape. Both are needed:
- *  a menu that only closes on Escape traps a mouse user, and one that only
- *  closes on an outside click traps a keyboard user. */
-function useDismiss(ref: React.RefObject<HTMLElement | null>, open: boolean, close: () => void): void {
-	useEffect(() => {
-		if (!open) return;
-
-		const onDown = (event: MouseEvent) => {
-			if (ref.current && !ref.current.contains(event.target as Node)) close();
-		};
-
-		const onKey = (event: KeyboardEvent) => {
-			if (event.key === "Escape") close();
-		};
-
-		document.addEventListener("mousedown", onDown);
-		document.addEventListener("keydown", onKey);
-
-		return () => {
-			document.removeEventListener("mousedown", onDown);
-			document.removeEventListener("keydown", onKey);
-		};
-	}, [open, close, ref]);
-}
-
-/** isoDay renders a day relative to today as YYYY-MM-DD in the reader's own
- *  timezone, which is what a date picker means by "yesterday". */
-function isoDay(offset: number): string {
-	const at = new Date();
-	at.setDate(at.getDate() + offset);
-
-	return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
 }

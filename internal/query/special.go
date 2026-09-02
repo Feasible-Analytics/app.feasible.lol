@@ -405,7 +405,7 @@ func isGoalDimension(d dimension, scopes map[string]string) bool {
 		return d.scopeOf(scopes) == propScopeEvent
 	}
 
-	return d.Name == "event:name"
+	return d.Goal || d.Name == "event:name"
 }
 
 // hasGoal reports whether a query names a conversion at all.

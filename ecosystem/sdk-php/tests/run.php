@@ -42,6 +42,9 @@ spl_autoload_register(static function (string $class): void {
 });
 
 /** @var list<string> Failures collected so one broken case does not hide the rest. */
+// The only shape the server accepts in the idempotency field.
+const UUID_V4 = '/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/';
+
 $failures = [];
 
 /** @var int How many assertions ran, printed so a silent no-op cannot pass. */
@@ -123,7 +126,8 @@ $result = $client->pageview(
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
 );
 
-same('pageview sends exactly n, u, d', ['n', 'u', 'd'], array_keys($transport->payload()));
+same('pageview sends exactly k, n, u, d', ['k', 'n', 'u', 'd'], array_keys($transport->payload()));
+check('the idempotency key is a UUID v4', preg_match(UUID_V4, $transport->payload()['k']) === 1);
 same('pageview name is "pageview"', 'pageview', $transport->payload()['n']);
 same('pageview url is the full URL', 'https://example.com/pricing', $transport->payload()['u']);
 same('pageview domain is the registered site', 'example.com', $transport->payload()['d']);
@@ -154,7 +158,7 @@ $client->event(
 $payload = $transport->payload();
 same(
     'a full event sends every documented key in wire order',
-    ['n', 'u', 'd', 'r', 't', 'p', '$', 'i', 'sd', 'e', 'w', 'utm_source', 'utm_campaign'],
+    ['k', 'n', 'u', 'd', 'r', 't', 'p', '$', 'i', 'sd', 'e', 'w', 'utm_source', 'utm_campaign'],
     array_keys($payload)
 );
 same('props travel under "p"', ['plan' => 'pro', 'seats' => 4, 'trial' => false], $payload['p']);
@@ -219,6 +223,19 @@ $client = new Client(domain: 'example.com', transport: $transport, disabled: fal
 $client->pageview(...$visitor->args(), url: 'https://example.com/');
 same('a spread visitor forwards its IP', '203.0.113.77', $transport->header('X-Forwarded-For'));
 
+// A visitor built from stored data rather than a parsed request can carry a
+// line break, and the transports write these values as raw header lines.
+$transport = new RecordingTransport();
+$client = new Client(domain: 'example.com', transport: $transport, disabled: false);
+$client->pageview(
+    url: 'https://example.com/',
+    clientIp: "203.0.113.9\r\nX-Injected: yes",
+    userAgent: "Mozilla/5.0\nX-Injected: yes\0"
+);
+same('a line break in the IP cannot start a new header', '203.0.113.9X-Injected: yes', $transport->header('X-Forwarded-For'));
+same('a line break in the agent cannot start a new header', 'Mozilla/5.0X-Injected: yes', $transport->header('User-Agent'));
+check('no injected header reached the transport', $transport->header('X-Injected') === null);
+
 // No-op mode: nothing is sent, the call succeeds, and the event is kept for a
 // test suite to assert on.
 $transport = new RecordingTransport();
@@ -261,6 +278,16 @@ $result = $client->pageview(url: 'https://example.com/', clientIp: '203.0.113.9'
 same('a 500 and a dropped connection are both retried', 3, $transport->count());
 same('the successful attempt is reported', 3, $result->attempts);
 same('the retried event ends up accepted', 202, $result->status);
+
+// The server dedupes on "k", so a retry after a lost acknowledgement must
+// resend the same key — and the next event must get a fresh one.
+$transport = new RecordingTransport([new Response(500, [], 'upstream is unhappy')]);
+$client = new Client(domain: 'example.com', transport: $transport, disabled: false, backoffBase: 0.0);
+$client->pageview(url: 'https://example.com/', clientIp: '203.0.113.9', userAgent: 'curl/8.4.0');
+$client->pageview(url: 'https://example.com/', clientIp: '203.0.113.9', userAgent: 'curl/8.4.0');
+[$first, $retried, $fresh] = array_map(static fn (int $i): string => $transport->payload($i)['k'], [0, 1, 2]);
+same('a retry resends the same idempotency key', $first, $retried);
+check('the next event gets a fresh idempotency key', $first !== $fresh);
 
 // Retries stop at maxAttempts rather than looping until the endpoint recovers.
 $transport = new RecordingTransport([], new Response(503, [], 'still unhappy'));

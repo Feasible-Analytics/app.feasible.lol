@@ -292,7 +292,10 @@ final class Client
             throw new InvalidEventException('url is required: the full URL of the page the event happened on');
         }
 
-        $payload = ['n' => $name, 'u' => $url, 'd' => $this->domain];
+        // The idempotency key is minted here, once per event, so every retry
+        // resends the same one and the server drops the duplicate instead of
+        // counting it twice.
+        $payload = ['k' => self::newKey(), 'n' => $name, 'u' => $url, 'd' => $this->domain];
 
         if ($referrer !== null && trim($referrer) !== '') {
             $payload['r'] = $referrer;
@@ -338,6 +341,24 @@ final class Client
     }
 
     /**
+     * Mints the idempotency key an event carries on every attempt. It is a
+     * random UUID v4 because that is the only shape the server accepts in
+     * this field, and it is built by hand so the package keeps its zero
+     * dependencies.
+     */
+    private static function newKey(): string
+    {
+        $raw = random_bytes(16);
+        $raw[6] = chr((ord($raw[6]) & 0x0f) | 0x40);
+        $raw[8] = chr((ord($raw[8]) & 0x3f) | 0x80);
+
+        $hex = bin2hex($raw);
+
+        return substr($hex, 0, 8) . '-' . substr($hex, 8, 4) . '-' . substr($hex, 12, 4) . '-'
+            . substr($hex, 16, 4) . '-' . substr($hex, 20, 12);
+    }
+
+    /**
      * Validates the visitor, then either records or sends. The validation runs
      * in no-op mode too, on purpose: a test suite that never exercises the
      * check would let a call with no address ship to production unnoticed,
@@ -347,8 +368,11 @@ final class Client
      */
     private function dispatch(array $payload, string $clientIp, string $userAgent, bool $debug): Result
     {
-        $ip = trim($clientIp);
-        $agent = trim($userAgent);
+        // Both values become raw header lines in the transports, and PHP's
+        // stream wrapper does not refuse a line break in one. Stripping here
+        // keeps a visitor built from stored data from injecting a header.
+        $ip = trim(str_replace(["\r", "\n", "\0"], '', $clientIp));
+        $agent = trim(str_replace(["\r", "\n", "\0"], '', $userAgent));
 
         if ($ip === '') {
             throw new MissingClientIpException('clientIp');

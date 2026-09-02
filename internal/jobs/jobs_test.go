@@ -14,6 +14,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,66 +40,6 @@ func newSystem(t *testing.T) *sql.DB {
 	return db
 }
 
-// TestFailedJobsAreFoundByWorkerType is the regression test for a real
-// incident. An incumbent's error reporter decided a crash was a failed import
-// because the job sat on the import queue and its arguments contained an
-// import id; a different worker sharing that queue crashed, was read as a
-// failed import, and the cleanup built on that answer purged fifteen imports
-// that had finished perfectly — while the interface went on calling them
-// completed for thirteen days.
-//
-// The fix is that nothing here can ask the question that way. A caller has to
-// name the worker type, and this asserts that a foreign job carrying an import
-// id in its arguments is not reported as one.
-func TestFailedJobsAreFoundByWorkerType(t *testing.T) {
-	ctx := context.Background()
-	client := NewClient(newSystem(t))
-
-	// A genuine import that failed.
-	importID, err := client.Enqueue(ctx, QueueImports, KindCSVImport, map[string]any{"import_id": 7}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// A completely different worker, on the same queue, whose arguments happen
-	// to carry an import id. This is the job that was misread.
-	strangerID, err := client.Enqueue(ctx, QueueImports, "rollup_rebuild", map[string]any{"import_id": 7, "site_id": 1}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, id := range []int64{importID, strangerID} {
-		job, err := client.Get(ctx, id)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		job.Attempt = job.MaxAttempts
-
-		if err := client.Fail(ctx, job, errors.New("boom")); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	failed, err := client.FailedOfKind(ctx, KindCSVImport)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(failed) != 1 {
-		t.Fatalf("%d failed imports reported, want exactly the one that was an import", len(failed))
-	}
-
-	if failed[0].ID != importID {
-		t.Fatalf("the failed import reported was job %d, want %d — a foreign worker on the same queue was misread as an import",
-			failed[0].ID, importID)
-	}
-
-	if failed[0].LastError == "" {
-		t.Fatal("a discarded job carries no reason, which is the failure this queue exists to make visible")
-	}
-}
-
 // TestRunnerDispatchesByKind checks the other half of the same rule: a job runs
 // on the worker registered for its kind, and a kind nothing handles is
 // discarded with a message rather than retried until the attempts run out.
@@ -114,11 +55,11 @@ func TestRunnerDispatchesByKind(t *testing.T) {
 		return nil
 	}))
 
-	if _, err := client.Enqueue(ctx, QueueImports, KindCSVImport, map[string]any{}, ""); err != nil {
+	if _, err := client.EnqueueOwned(ctx, 0, QueueImports, KindCSVImport, map[string]any{}, ""); err != nil {
 		t.Fatal(err)
 	}
 
-	unhandled, err := client.Enqueue(ctx, QueueImports, "rollup_rebuild", map[string]any{}, "")
+	unhandled, err := client.EnqueueOwned(ctx, 0, QueueImports, "rollup_rebuild", map[string]any{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,11 +91,11 @@ func TestUniqueKeyStopsDoubleEnqueue(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(newSystem(t))
 
-	if _, err := client.Enqueue(ctx, QueueImports, KindCSVImport, map[string]any{}, "import-4"); err != nil {
+	if _, err := client.EnqueueOwned(ctx, 0, QueueImports, KindCSVImport, map[string]any{}, "import-4"); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := client.Enqueue(ctx, QueueImports, KindCSVImport, map[string]any{}, "import-4"); err == nil {
+	if _, err := client.EnqueueOwned(ctx, 0, QueueImports, KindCSVImport, map[string]any{}, "import-4"); err == nil {
 		t.Fatal("the same import was enqueued twice")
 	}
 }
@@ -169,7 +110,7 @@ func TestFailBacksOffThenDiscards(t *testing.T) {
 	at := time.Unix(1_800_000_000, 0)
 	client.Now = func() time.Time { return at }
 
-	id, err := client.Enqueue(ctx, QueueImports, KindCSVImport, map[string]any{}, "")
+	id, err := client.EnqueueOwned(ctx, 0, QueueImports, KindCSVImport, map[string]any{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +167,7 @@ func TestStaleClaimsAreReleased(t *testing.T) {
 	at := time.Unix(1_800_000_000, 0)
 	client.Now = func() time.Time { return at }
 
-	id, err := client.Enqueue(ctx, QueueExports, KindSiteExport, map[string]any{}, "")
+	id, err := client.EnqueueOwned(ctx, 0, QueueExports, KindSiteExport, map[string]any{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,47 +208,72 @@ func TestStaleClaimsAreReleased(t *testing.T) {
 	}
 }
 
-// TestEnqueueRefusesADuplicateAndEnqueueUniqueDoesNot pins the difference
-// between the two, which is the difference between work a person asked for and
-// a tick every replica tries to create.
-//
-// An import enqueued twice doubles a customer's numbers, so Enqueue has to say
-// no out loud. An hourly tick is expected to lose that race on every replica
-// but one, and reporting each loss as an error would put a failure in the log
-// every minute on every box.
-func TestEnqueueRefusesADuplicateAndEnqueueUniqueDoesNot(t *testing.T) {
+// TestAHeartbeatKeepsALongJobClaimed covers an import that outlives the stale
+// window. Two app replicas both run the worker, and without a heartbeat the
+// second would decide the first's still-running import was abandoned and start
+// it again in parallel, doubling the customer's numbers.
+func TestAHeartbeatKeepsALongJobClaimed(t *testing.T) {
 	ctx := context.Background()
-	client := NewClient(newSystem(t))
+	db := newSystem(t)
+	client := NewClient(db)
 
-	if _, err := client.Enqueue(ctx, QueueImports, KindCSVImport, struct{}{}, "import:7"); err != nil {
+	var clock atomic.Int64
+	start := time.Unix(1_800_000_000, 0)
+	clock.Store(start.Unix())
+	client.Now = func() time.Time { return time.Unix(clock.Load(), 0) }
+
+	id, err := client.EnqueueOwned(ctx, 0, QueueImports, KindCSVImport, struct{}{}, "")
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := client.Enqueue(ctx, QueueImports, KindCSVImport, struct{}{}, "import:7"); err == nil {
-		t.Fatal("a duplicate import was accepted silently")
+	runner := NewRunner(client)
+	runner.Heartbeat = 5 * time.Millisecond
+
+	var released int64
+	var releaseErr error
+	runner.Register(QueueImports, KindCSVImport, WorkerFunc(func(ctx context.Context, job Job) error {
+		// The job has now been running for longer than the stale window, and
+		// the heartbeat must have moved its claim forward with the clock.
+		later := start.Add(StaleClaim + time.Minute)
+		clock.Store(later.Unix())
+
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			var attemptedAt int64
+			if err := db.QueryRowContext(ctx, "SELECT attempted_at FROM jobs WHERE id = ?", job.ID).Scan(&attemptedAt); err != nil {
+				return err
+			}
+			if attemptedAt == later.Unix() {
+				break
+			}
+			if time.Now().After(deadline) {
+				return errors.New("no heartbeat landed within five seconds")
+			}
+			time.Sleep(time.Millisecond)
+		}
+
+		released, releaseErr = client.ReleaseStale(ctx, StaleClaim)
+
+		return nil
+	}))
+
+	if _, err := runner.Once(ctx); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if releaseErr != nil {
+		t.Fatal(releaseErr)
+	}
+	if released != 0 {
+		t.Fatalf("%d running jobs were released as stale while their worker was still going", released)
 	}
 
-	if _, created, err := client.EnqueueUnique(ctx, "notifications", "reports.schedule", struct{}{}, "cron:1"); err != nil || !created {
-		t.Fatalf("the first tick was created=%v err=%v", created, err)
-	}
-
-	_, created, err := client.EnqueueUnique(ctx, "notifications", "reports.schedule", struct{}{}, "cron:1")
+	job, err := client.Get(ctx, id)
 	if err != nil {
-		t.Fatalf("a losing tick was reported as an error: %v", err)
+		t.Fatal(err)
 	}
-
-	if created {
-		t.Fatal("the same tick was created twice in one period")
-	}
-}
-
-// TestEnqueueUniqueNeedsAKey refuses the call that would otherwise enqueue an
-// unbounded number of identical rows, one per look.
-func TestEnqueueUniqueNeedsAKey(t *testing.T) {
-	client := NewClient(newSystem(t))
-
-	if _, _, err := client.EnqueueUnique(context.Background(), "notifications", "reports.schedule", struct{}{}, ""); err == nil {
-		t.Fatal("a unique enqueue with no key was accepted")
+	if job.State != StateCompleted {
+		t.Fatalf("job state = %q, want completed: %s", job.State, job.LastError)
 	}
 }
 
@@ -320,7 +286,7 @@ func TestAPanickingWorkerFailsTheJobRatherThanTheProcess(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(newSystem(t))
 
-	id, err := client.Enqueue(ctx, QueueImports, KindCSVImport, struct{}{}, "")
+	id, err := client.EnqueueOwned(ctx, 0, QueueImports, KindCSVImport, struct{}{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

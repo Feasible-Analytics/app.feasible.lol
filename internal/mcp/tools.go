@@ -38,9 +38,6 @@ func (s *Server) toolset() []*Tool {
 		s.explainTrafficChangeTool(),
 		s.createSiteTool(),
 		s.updateSiteTool(),
-		s.listShieldsTool(),
-		s.addShieldRuleTool(),
-		s.createAnnotationTool(),
 	}
 }
 
@@ -51,6 +48,7 @@ func (s *Server) toolset() []*Tool {
 func (s *Server) listSitesTool() *Tool {
 	return &Tool{
 		Name:        "list_sites",
+		Scope:       apikeys.ScopeSitesRead,
 		Title:       "List sites",
 		Description: "List the sites this credential can read, with the timezone each one's days are counted in.",
 		ReadOnly:    true,
@@ -117,6 +115,7 @@ type statsArgs struct {
 func (s *Server) queryStatsTool() *Tool {
 	return &Tool{
 		Name:  "query_stats",
+		Scope: apikeys.ScopeStatsRead,
 		Title: "Query stats",
 		Description: "Run any analytics query: pick metrics, group by dimensions, filter, sort and " +
 			"paginate. This is the same engine the dashboard runs on, so a number here is the number " +
@@ -330,6 +329,7 @@ type realtimeArgs struct {
 func (s *Server) realtimeTool() *Tool {
 	return &Tool{
 		Name:  "get_realtime_visitors",
+		Scope: apikeys.ScopeStatsRead,
 		Title: "Realtime visitors",
 		Description: "How many visitors are on the site right now — meaning in the last thirty minutes, " +
 			"which is how long a visit stays open.",
@@ -401,6 +401,7 @@ type compareArgs struct {
 func (s *Server) comparePeriodsTool() *Tool {
 	return &Tool{
 		Name:  "compare_periods",
+		Scope: apikeys.ScopeStatsRead,
 		Title: "Compare periods",
 		Description: "Run a query over one period and the period before it, and report both numbers and " +
 			"the percentage change. Both windows are resolved against the same clock and the same " +
@@ -523,6 +524,7 @@ type createSiteArgs struct {
 func (s *Server) createSiteTool() *Tool {
 	return &Tool{
 		Name:        "create_site",
+		Scope:       apikeys.ScopeSitesProvision,
 		Title:       "Create site",
 		Description: "Register a new site on this team and return the tracking snippet to install.",
 		Permission:  teams.PermManageSites,
@@ -567,6 +569,7 @@ type updateSiteArgs struct {
 func (s *Server) updateSiteTool() *Tool {
 	return &Tool{
 		Name:        "update_site",
+		Scope:       apikeys.ScopeSitesProvision,
 		Title:       "Update site",
 		Description: "Change a site's domain, display name, timezone or public-dashboard setting. Anything left out is untouched.",
 		InputSchema: object(map[string]any{
@@ -609,6 +612,7 @@ type siteOnlyArgs struct {
 func (s *Server) listGoalsTool() *Tool {
 	return &Tool{
 		Name:        "list_goals",
+		Scope:       apikeys.ScopeSitesRead,
 		Title:       "List goals",
 		Description: "List the conversions this site counts.",
 		ReadOnly:    true,
@@ -667,6 +671,7 @@ type createGoalArgs struct {
 func (s *Server) createGoalTool() *Tool {
 	return &Tool{
 		Name:        "create_goal",
+		Scope:       apikeys.ScopeSitesProvision,
 		Title:       "Create goal",
 		Description: "Register a page, custom-event, or scroll-depth conversion with optional revenue and property constraints.",
 		InputSchema: object(map[string]any{
@@ -725,6 +730,7 @@ func (s *Server) createGoalTool() *Tool {
 func (s *Server) listFunnelsTool() *Tool {
 	return &Tool{
 		Name:        "list_funnels",
+		Scope:       apikeys.ScopeStatsRead,
 		Title:       "List funnels",
 		Description: "List the funnels defined on this site, with their steps.",
 		ReadOnly:    true,
@@ -769,6 +775,7 @@ type getFunnelArgs struct {
 func (s *Server) getFunnelTool() *Tool {
 	return &Tool{
 		Name:        "get_funnel",
+		Scope:       apikeys.ScopeStatsRead,
 		Title:       "Get funnel",
 		Description: "Report how many visitors reached each step of a funnel over a date range.",
 		ReadOnly:    true,
@@ -801,158 +808,6 @@ func (s *Server) getFunnelTool() *Tool {
 			return &toolResult{
 				Content:           []content{text(fmt.Sprintf("Funnel %s: %d entered.", report.Funnel.Name, report.EntryVisitors))},
 				StructuredContent: report,
-			}, nil
-		},
-	}
-}
-
-// listShieldsTool lists what is being kept out of the numbers.
-func (s *Server) listShieldsTool() *Tool {
-	return &Tool{
-		Name:        "list_shields",
-		Title:       "List shield rules",
-		Description: "List the rules that keep traffic out of this site's numbers — blocked IP addresses, countries, pages and hostnames.",
-		ReadOnly:    true,
-		Permission:  teams.PermManageSiteSettings,
-		InputSchema: object(map[string]any{"site_id": siteArg()}, "site_id"),
-		Handler: func(ctx context.Context, key *apikeys.Key, raw json.RawMessage) (*toolResult, error) {
-			args := &siteOnlyArgs{}
-			if err := decodeArgs(raw, args); err != nil {
-				return toolFailure("%s", err.Error()), nil
-			}
-
-			site, err := s.API.SiteFor(key, args.SiteID)
-			if err != nil {
-				return toolFailure("%s", err.Error()), nil
-			}
-
-			if s.API.Shields == nil {
-				return toolFailure("%s", publicapi.Unavailable("shield rules")), nil
-			}
-
-			rules, err := s.API.Shields.ListShields(ctx, site.ID)
-			if err != nil {
-				return nil, err
-			}
-
-			return &toolResult{
-				Content:           []content{text(fmt.Sprintf("%d shield rules on %s.", len(rules), site.Domain))},
-				StructuredContent: map[string]any{"shields": rules},
-			}, nil
-		},
-	}
-}
-
-// shieldArgs is the add_shield_rule tool's arguments.
-type shieldArgs struct {
-	SiteID string `json:"site_id"`
-	Type   string `json:"type"`
-	Value  string `json:"value"`
-}
-
-// addShieldRuleTool blocks something from being counted.
-func (s *Server) addShieldRuleTool() *Tool {
-	return &Tool{
-		Name:        "add_shield_rule",
-		Title:       "Add shield rule",
-		Description: "Stop counting traffic that matches a rule. This changes future numbers only; it does not remove traffic already counted.",
-		InputSchema: object(map[string]any{
-			"site_id": siteArg(),
-			"type":    enum("What kind of thing to block.", "ip", "country", "page", "hostname"),
-			"value":   str("The address, two-letter country code, path or hostname to block."),
-		}, "site_id", "type", "value"),
-		Handler: func(ctx context.Context, key *apikeys.Key, raw json.RawMessage) (*toolResult, error) {
-			args := &shieldArgs{}
-			if err := decodeArgs(raw, args); err != nil {
-				return toolFailure("%s", err.Error()), nil
-			}
-
-			site, err := s.API.SiteFor(key, args.SiteID)
-			if err != nil {
-				return toolFailure("%s", err.Error()), nil
-			}
-
-			switch args.Type {
-			case "ip", "country", "page", "hostname":
-			default:
-				return toolFailure("type must be ip, country, page or hostname, not %q", args.Type), nil
-			}
-
-			if strings.TrimSpace(args.Value) == "" {
-				return toolFailure("value is required"), nil
-			}
-
-			if s.API.Shields == nil {
-				return toolFailure("%s", publicapi.Unavailable("shield rules")), nil
-			}
-
-			rule, err := s.API.Shields.AddShieldRule(ctx, site.ID, publicapi.ShieldRule{Type: args.Type, Value: args.Value})
-			if err != nil {
-				return nil, err
-			}
-
-			return &toolResult{
-				Content:           []content{text("Blocked " + rule.Type + " " + rule.Value + ".")},
-				StructuredContent: rule,
-			}, nil
-		},
-	}
-}
-
-// annotationArgs is the create_annotation tool's arguments.
-type annotationArgs struct {
-	SiteID string `json:"site_id"`
-	Date   string `json:"date"`
-	Note   string `json:"note"`
-}
-
-// createAnnotationTool pins a note to a date.
-//
-// This is the tool that closes the loop on the others: an assistant that has
-// just worked out why traffic moved should be able to write the answer onto the
-// chart, so the next person to look does not have to work it out again.
-func (s *Server) createAnnotationTool() *Tool {
-	return &Tool{
-		Name:        "create_annotation",
-		Title:       "Create annotation",
-		Description: "Pin a note to a date on this site's charts — a release, a campaign launch, an outage.",
-		InputSchema: object(map[string]any{
-			"site_id": siteArg(),
-			"date":    str("The day the note belongs to, as YYYY-MM-DD."),
-			"note":    str("What happened."),
-		}, "site_id", "date", "note"),
-		Handler: func(ctx context.Context, key *apikeys.Key, raw json.RawMessage) (*toolResult, error) {
-			args := &annotationArgs{}
-			if err := decodeArgs(raw, args); err != nil {
-				return toolFailure("%s", err.Error()), nil
-			}
-
-			site, err := s.API.SiteFor(key, args.SiteID)
-			if err != nil {
-				return toolFailure("%s", err.Error()), nil
-			}
-
-			if err := validateDate(args.Date); err != nil {
-				return toolFailure("%s", err.Error()), nil
-			}
-
-			if strings.TrimSpace(args.Note) == "" {
-				return toolFailure("note is required"), nil
-			}
-
-			if s.API.Annotations == nil {
-				return toolFailure("%s", publicapi.Unavailable("annotations")), nil
-			}
-
-			created, err := s.API.Annotations.CreateAnnotation(ctx, site.ID,
-				publicapi.Annotation{Date: args.Date, Note: args.Note})
-			if err != nil {
-				return nil, err
-			}
-
-			return &toolResult{
-				Content:           []content{text("Noted " + created.Date + ": " + created.Note)},
-				StructuredContent: created,
 			}, nil
 		},
 	}

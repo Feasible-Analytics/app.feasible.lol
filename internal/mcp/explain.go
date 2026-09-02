@@ -159,7 +159,13 @@ type headlineChange struct {
 func (s *Server) explainTrafficChangeTool() *Tool {
 	return &Tool{
 		Name:  "explain_traffic_change",
+		Scope: apikeys.ScopeStatsRead,
 		Title: "Explain a traffic change",
+
+		// One call is one headline query plus two breakdowns per dimension,
+		// every one exact. It is charged as that many requests so the hourly
+		// limit means the same thing here as it does for query_stats.
+		Cost: 1 + 2*len(explainDimensions),
 		Description: "Work out why a site's traffic moved. Measures the period against the one before " +
 			"it, then breaks the change down by source, channel, campaign, page, country, device, " +
 			"browser and OS, and ranks what actually accounts for the difference — including things " +
@@ -750,7 +756,7 @@ func narrate(answer *explanation) string {
 	}
 
 	fmt.Fprintf(&out, "%s on %s %s from %s to %s%s, comparing %s..%s against %s..%s.\n\n",
-		strings.Title(strings.ReplaceAll(answer.Metric, "_", " ")), //nolint:staticcheck // ASCII metric names only
+		titleCase(strings.ReplaceAll(answer.Metric, "_", " ")),
 		answer.SiteID, direction, number(answer.Previous), number(answer.Current), change,
 		day(answer.Period[0]), day(answer.Period[1]), day(answer.Comparison[0]), day(answer.Comparison[1]))
 
@@ -845,12 +851,14 @@ func round1(value float64) float64 {
 	return math.Round(value*10) / 10
 }
 
-// validateDate checks a YYYY-MM-DD argument before it reaches anything that
-// would answer a bad one with an internal error.
-func validateDate(value string) error {
-	if _, err := time.Parse("2006-01-02", value); err != nil {
-		return fmt.Errorf("date must be written as YYYY-MM-DD, not %q", value)
+// titleCase capitalises each word of a metric name for the opening sentence.
+// Metric names are ASCII identifiers, so the first byte of each word is the
+// whole rule.
+func titleCase(value string) string {
+	words := strings.Fields(value)
+	for i, word := range words {
+		words[i] = strings.ToUpper(word[:1]) + word[1:]
 	}
 
-	return nil
+	return strings.Join(words, " ")
 }

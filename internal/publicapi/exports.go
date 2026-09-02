@@ -11,6 +11,7 @@ package publicapi
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
@@ -83,6 +84,7 @@ func (a *API) NewSite(ctx context.Context, key *apikeys.Key, domain, displayName
 		return nil, err
 	}
 
+	timezone = strings.TrimSpace(timezone)
 	if timezone == "" {
 		timezone = "Etc/UTC"
 	}
@@ -101,19 +103,19 @@ func (a *API) NewSite(ctx context.Context, key *apikeys.Key, domain, displayName
 		}
 	}
 
-	if a.Sites != nil {
-		if err := a.Sites.Refresh(ctx); err != nil && a.Log != nil {
-			a.Log.Error("site cache refresh failed after a provisioning write", "error", err)
-		}
-	}
+	a.refreshSites(ctx)
 
+	// A site created programmatically is the event an agency's own automation
+	// hangs off — provisioning a client, kicking off onboarding — so it is
+	// published rather than left as something only our database knows.
 	a.publishEvent(ctx, key.TeamID, site)
 
 	return site, nil
 }
 
 // publishEvent sends the site.created webhook without letting a webhook failure
-// undo a site that already exists.
+// undo a site that already exists: publishing writes rows and returns, and a
+// webhook that could not be queued must not undo a site that was created.
 func (a *API) publishEvent(ctx context.Context, teamID int64, site *Site) {
 	if a.Dispatcher == nil {
 		return
@@ -149,22 +151,20 @@ func (a *API) EditSite(ctx context.Context, key *apikeys.Key, site sites.Site, d
 		return nil, err
 	}
 
-	if a.Sites != nil {
-		if err := a.Sites.Refresh(ctx); err != nil && a.Log != nil {
-			a.Log.Error("site cache refresh failed after a provisioning write", "error", err)
-		}
-	}
+	a.refreshSites(ctx)
 
 	return record, nil
 }
 
 // AllowedProperties lists a site's custom property allow list, which is part of
-// what the MCP schema resource tells a model it may ask for.
+// what the MCP schema resource tells a model it may ask for. A build with no
+// property registry answers with none, and the schema says why.
 func (a *API) AllowedProperties(ctx context.Context, siteID int64) ([]CustomProperty, error) {
-	if a.CustomProperties != nil {
-		return a.CustomProperties.ListProperties(ctx, siteID)
+	if a.CustomProperties == nil {
+		return nil, errors.New(unavailable("custom properties"))
 	}
-	return a.System.CustomProperties(ctx, siteID)
+
+	return a.CustomProperties.ListProperties(ctx, siteID)
 }
 
 // ValidateGoalDefinition checks the complete goal shape used by MCP and other

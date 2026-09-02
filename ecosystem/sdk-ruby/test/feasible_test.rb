@@ -13,6 +13,9 @@ require "json"
 require "socket"
 require "feasible"
 
+# The only shape the server accepts in the idempotency field.
+UUID_V4 = /\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/
+
 # A tiny HTTP endpoint that records every request and answers from a script.
 #
 # It speaks the two lines of HTTP the SDK needs rather than pulling in a real
@@ -129,7 +132,8 @@ class FeasibleTest < Minitest::Test
       user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
     )
 
-    assert_equal %w[n u d], payload.keys
+    assert_equal %w[k n u d], payload.keys
+    assert_match UUID_V4, payload["k"]
     assert_equal "pageview", payload["n"]
     assert_equal "https://example.com/pricing", payload["u"]
     assert_equal "example.com", payload["d"]
@@ -155,7 +159,7 @@ class FeasibleTest < Minitest::Test
       viewport_width: 1440
     )
 
-    assert_equal %w[n u d r t p $ i sd e w utm_source utm_campaign], payload.keys
+    assert_equal %w[k n u d r t p $ i sd e w utm_source utm_campaign], payload.keys
     assert_equal({ "plan" => "pro", "seats" => 4, "trial" => false }, payload["p"])
     assert_equal({ "amount" => 49.5, "currency" => "USD" }, payload["$"])
     assert_equal false, payload["i"]
@@ -363,6 +367,21 @@ class FeasibleTest < Minitest::Test
 
   # Nothing came back at all, which is the one case worth trying again — and
   # worth its own error class when every attempt fails the same way.
+  # The server dedupes on "k", so a retry after a lost acknowledgement must
+  # resend the same key — and the next event must get a fresh one.
+  def test_the_idempotency_key_survives_a_retry
+    @server.script = [[500, {}, "upstream is unhappy"], [202, {}, ""], [202, {}, ""]]
+
+    @client.pageview(url: "https://example.com/", client_ip: "203.0.113.9", user_agent: "curl/8.4.0")
+    @client.pageview(url: "https://example.com/", client_ip: "203.0.113.9", user_agent: "curl/8.4.0")
+
+    assert_equal 3, @server.requests.length
+    first, retried, fresh = (0..2).map { |i| payload(i)["k"] }
+    assert_match UUID_V4, first
+    assert_equal first, retried
+    refute_equal first, fresh
+  end
+
   def test_a_transport_failure_is_retried_then_reported
     # A port nothing is listening on: bound to learn a free number, then closed,
     # so the connection is refused immediately rather than hanging.

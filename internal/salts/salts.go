@@ -33,13 +33,6 @@ type Pair struct {
 	Day      int64
 }
 
-// Erase overwrites the request-local derived material before releasing it.
-func (p *Pair) Erase() {
-	zeroBytes(p.Current)
-	zeroBytes(p.Previous)
-	*p = Pair{}
-}
-
 // Source derives salts from one shared deployment value and an injectable UTC
 // clock. It owns no database or background lifecycle.
 type Source struct {
@@ -90,11 +83,4 @@ func (s *Source) derive(day int64) []byte {
 	_, _ = mac.Write(encoded[:])
 
 	return append([]byte(nil), mac.Sum(nil)[:Size]...)
-}
-
-// zeroBytes overwrites derived material before its backing array is released.
-func zeroBytes(value []byte) {
-	for i := range value {
-		value[i] = 0
-	}
 }

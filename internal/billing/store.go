@@ -82,10 +82,10 @@ const accountLeaseDuration = 5 * time.Minute
 // system.db while another process reconciles the same account.
 const accountLeasePoll = 20 * time.Millisecond
 
-// checkoutProviderRetryWindow stops automatic provider retries before Stripe
-// may prune the idempotency result. A sessionless claim older than this fails
-// closed for operator review; replacing it or retrying it after the provider's
-// retention floor could create a second live Checkout Session.
+// checkoutProviderRetryWindow is how long a claim that never received its
+// session is retried under its original idempotency key. Stripe keeps a key's
+// result for 24 hours, so inside this window a retry recovers the same session
+// rather than creating a second one; past it the claim is retired and replaced.
 const checkoutProviderRetryWindow = 23 * time.Hour
 
 // NewStore builds a store over the system database.
@@ -358,16 +358,6 @@ func (s *Store) ForgetQuiescenceObject(ctx context.Context, teamID int64, object
 	return nil
 }
 
-// ForgetQuiescence clears the durable restoration list after every provider
-// object has been restored successfully.
-func (s *Store) ForgetQuiescence(ctx context.Context, teamID int64) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM billing_quiescence_objects WHERE team_id = ?`, teamID); err != nil {
-		return fmt.Errorf("billing: clear quiescence for %d: %w", teamID, err)
-	}
-
-	return nil
-}
-
 // RememberAccountCustomer records one provider identity as belonging to an
 // account without allowing a conflicting webhook to transfer it to another.
 func (s *Store) RememberAccountCustomer(ctx context.Context, teamID int64, customerID string) error {
@@ -523,26 +513,15 @@ func (s *Store) ReopenScheduledDeletionForRecovery(ctx context.Context, teamID i
 	return nil
 }
 
-// Save writes the mirror back. It is a full overwrite rather than a set of
-// partial updates because the whole row is read from the provider in one go —
-// updating some columns from a fresh read and leaving others from an older one
-// is how a row ends up describing a state that never existed.
-func (s *Store) Save(ctx context.Context, sub Subscription) error {
-	_, err := s.save(ctx, sub, false)
-
-	return err
-}
-
-// SaveReconciled writes a provider snapshot only when its event watermark is
-// not older than the row already committed. The boolean is false when another
-// process won with newer Stripe evidence.
+// SaveReconciled writes a provider snapshot back as one full-row upsert, and
+// only when its event watermark is not older than the row already committed.
+// The boolean is false when another process won with newer Stripe evidence.
+//
+// It is a full overwrite rather than a set of partial updates because the whole
+// row is read from the provider in one go; updating some columns from a fresh
+// read and leaving others from an older one is how a row ends up describing a
+// state that never existed.
 func (s *Store) SaveReconciled(ctx context.Context, sub Subscription) (bool, error) {
-	return s.save(ctx, sub, true)
-}
-
-// save performs the shared subscription upsert and optionally applies the
-// durable event-timestamp compare-and-swap guard.
-func (s *Store) save(ctx context.Context, sub Subscription, ordered bool) (bool, error) {
 	now := s.now().Unix()
 
 	var periodEnd any
@@ -557,19 +536,6 @@ func (s *Store) save(ctx context.Context, sub Subscription, ordered bool) (bool,
 	cancelAtEnd := 0
 	if sub.CancelAtPeriodEnd {
 		cancelAtEnd = 1
-	}
-
-	guard := ""
-	if ordered {
-		guard = `
-			WHERE excluded.stripe_subscription_id IS NOT subscriptions.stripe_subscription_id
-			   OR excluded.reconciled_event_created > subscriptions.reconciled_event_created
-			   OR (excluded.reconciled_event_created = subscriptions.reconciled_event_created
-			       AND (excluded.evidence_source_created > subscriptions.evidence_source_created
-			            OR (excluded.evidence_source_created = subscriptions.evidence_source_created
-			                AND (excluded.evidence_event_created > subscriptions.evidence_event_created
-			                     OR (excluded.evidence_event_created = subscriptions.evidence_event_created
-			                         AND excluded.evidence_rank >= subscriptions.evidence_rank)))))`
 	}
 
 	result, err := s.db.ExecContext(ctx, `
@@ -598,7 +564,15 @@ func (s *Store) save(ctx context.Context, sub Subscription, ordered bool) (bool,
 			evidence_rank           = excluded.evidence_rank,
 			reconciled_event_created = excluded.reconciled_event_created,
 			updated_at             = excluded.updated_at
-	`+guard, sub.TeamID, nullIfEmpty(sub.CustomerID), nullIfEmpty(sub.SubscriptionID), sub.Status, sub.Plan,
+		WHERE excluded.stripe_subscription_id IS NOT subscriptions.stripe_subscription_id
+		   OR excluded.reconciled_event_created > subscriptions.reconciled_event_created
+		   OR (excluded.reconciled_event_created = subscriptions.reconciled_event_created
+		       AND (excluded.evidence_source_created > subscriptions.evidence_source_created
+		            OR (excluded.evidence_source_created = subscriptions.evidence_source_created
+		                AND (excluded.evidence_event_created > subscriptions.evidence_event_created
+		                     OR (excluded.evidence_event_created = subscriptions.evidence_event_created
+		                         AND excluded.evidence_rank >= subscriptions.evidence_rank)))))
+	`, sub.TeamID, nullIfEmpty(sub.CustomerID), nullIfEmpty(sub.SubscriptionID), sub.Status, sub.Plan,
 		sub.PriceID, periodEnd, cancelAtEnd, sub.BillingEmail, sub.PaymentState, paymentFailedAt,
 		sub.EvidenceSourceAt, sub.EvidenceEventAt, sub.EvidenceRank, sub.ReconciledEventAt, now, now)
 	if err != nil {
@@ -629,9 +603,8 @@ type CheckoutClaim struct {
 	BillingEmail   string
 }
 
-// Expired reports whether a sessionless provider result is now indeterminate.
-// It must not be replaced automatically: after Stripe's documented 24-hour
-// idempotency floor, neither reusing nor changing the key can prove uniqueness.
+// Expired reports whether a claim that never received its session is too old
+// for its idempotency key to still recover the same provider result.
 func (c CheckoutClaim) Expired(now time.Time) bool {
 	return c.Status == "creating" && c.SessionID == "" && !c.ExpiresAt.After(now.UTC())
 }
@@ -663,9 +636,9 @@ func (s *Store) CheckoutClaimForAccount(ctx context.Context, teamID int64) (Chec
 }
 
 // NewCheckoutClaim replaces an absent or explicitly retired checkout with a
-// fresh intent. Sessionless claims are never replaced merely because time
-// passed; Checkout must recover them with their original idempotency key or
-// fail closed before Stripe may prune that key.
+// fresh intent. A sessionless claim is never replaced here merely because time
+// passed: Checkout recovers it under its original idempotency key while Stripe
+// still holds that result, and retires it explicitly once it cannot.
 func (s *Store) NewCheckoutClaim(ctx context.Context, teamID int64, plan, priceID, customerID, billingEmail string) (CheckoutClaim, error) {
 	token, err := randomToken()
 	if err != nil {

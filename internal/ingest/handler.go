@@ -13,6 +13,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
@@ -64,16 +65,23 @@ type Handler struct {
 // method rather than an inline call because every exit path in ServeHTTP has to
 // report — an observation only emitted on the happy path would produce a health
 // panel that is blind to exactly the requests somebody opens it to explain.
+//
+// The observer persists what it is given, so the address is blanked here. The
+// source header is what a proxy problem is diagnosed from; the address itself
+// never reaches disk.
 func (h *Handler) observe(payload *Payload, result Result, userAgent string, accepted, pending bool) {
 	if h.Observer == nil {
 		return
 	}
 
+	debug := result.Debug
+	debug.ClientIP = ""
+
 	h.Observer.Observe(Observation{
 		SiteID:         result.Debug.SiteID,
 		AccountID:      result.Debug.AccountID,
 		ReceivedAt:     result.Debug.Timestamp,
-		Debug:          result.Debug,
+		Debug:          debug,
 		DropReason:     result.Debug.DropReason,
 		Accepted:       accepted,
 		Pending:        pending,
@@ -177,6 +185,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.Counters.Truncated(result.Debug.SiteID, result.Truncation)
 	}
 
+	// A hostname the public tier would refuse is still written: the writer holds
+	// the live allow-list and makes the authoritative decision in the fact
+	// transaction, so a list edited a moment ago applies to this event.
 	hostnameSuspect := result.DropReason == ReasonHostnameNotAllowed && result.Event != nil
 
 	if (result.DropReason != "" && !hostnameSuspect) || result.Event == nil {
@@ -221,7 +232,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.observe(payload, result, r.Header.Get("User-Agent"), false, true)
 
 	if h.Log != nil {
-		h.Log.EventReceived(payload.Domain, itoa(event.SiteID), itoa(int64(event.Shard)), event.BotReason)
+		h.Log.EventReceived(payload.Domain, idString(event.SiteID), idString(int64(event.Shard)), event.BotReason)
 
 		if h.Log.TraceEventsEnabled() {
 			h.Log.TraceEvent(
@@ -253,7 +264,7 @@ func (h *Handler) drop(w http.ResponseWriter, siteID int64, domain, reason strin
 	h.Counters.Dropped(siteID, reason)
 
 	if h.Log != nil {
-		h.Log.EventReceived(domain, itoa(siteID), "", reason)
+		h.Log.EventReceived(domain, idString(siteID), "", reason)
 	}
 
 	w.WriteHeader(http.StatusAccepted)
@@ -264,30 +275,23 @@ func (h *Handler) drop(w http.ResponseWriter, siteID int64, domain, reason strin
 // check is narrow on purpose: it only fires when the resolved request arrived
 // straight from a datacentre address without a usable forwarded address, which
 // is exactly the shape of a misconfigured API integration.
+//
+// It is skipped entirely when no proxy is trusted. Such an install ignores
+// forwarded headers by design, so telling a caller to send one would be
+// telling them to do something that cannot help.
 func (h *Handler) serverSideCallerProblem(r *http.Request) string {
-	if h.Pipeline == nil || h.Pipeline.Bots == nil {
+	if h.Pipeline == nil || h.Pipeline.Bots == nil || h.Pipeline.Trusted.Empty() {
 		return ""
 	}
 
 	client := clientip.ResolveClientIP(r, h.Pipeline.Trusted)
-	if client.Source != clientip.SourceSocket {
+	if client.Source != clientip.SourceSocket || !h.Pipeline.Bots.IsDatacenterIP(client.Addr) {
 		return ""
 	}
 
-	if !h.Pipeline.Bots.IsDatacenterIP(client.Addr) {
-		return ""
-	}
-
-	var missing []string
-	if client.Source == clientip.SourceSocket {
-		missing = append(missing, clientip.HeaderForwardedFor)
-	}
+	missing := []string{clientip.HeaderForwardedFor}
 	if r.Header.Get("User-Agent") == "" {
 		missing = append(missing, "User-Agent")
-	}
-
-	if len(missing) == 0 {
-		return ""
 	}
 
 	return "this request arrived from a datacentre address with no " +
@@ -316,30 +320,13 @@ func acceptableContentType(value string) bool {
 	return false
 }
 
-// itoa formats an id for a log line without pulling strconv into every call
-// site's imports.
-func itoa(value int64) string {
+// idString formats an id for a log line. Zero means "no id was resolved" —
+// an unknown site, no shard — and an empty field says that more honestly
+// than a literal 0 would.
+func idString(value int64) string {
 	if value == 0 {
 		return ""
 	}
 
-	var buf [20]byte
-	i := len(buf)
-	negative := value < 0
-	if negative {
-		value = -value
-	}
-
-	for value > 0 {
-		i--
-		buf[i] = byte('0' + value%10)
-		value /= 10
-	}
-
-	if negative {
-		i--
-		buf[i] = '-'
-	}
-
-	return string(buf[i:])
+	return strconv.FormatInt(value, 10)
 }

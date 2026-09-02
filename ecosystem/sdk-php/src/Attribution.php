@@ -12,12 +12,12 @@ declare(strict_types=1);
 namespace Feasible;
 
 /**
- * The override fields the ingest endpoint honours for server-side callers. A
+ * The override fields that name where a conversion came from. A
  * delayed or offline conversion — a webhook hours later, a phone order, a
  * refund — has no referrer of its own and would be filed as Direct forever, so
  * the campaign that earned it is passed explicitly instead.
  *
- * These are ignored on browser traffic, where the real referrer is authoritative.
+ * The server applies them to any event that carries them.
  */
 final class Attribution
 {

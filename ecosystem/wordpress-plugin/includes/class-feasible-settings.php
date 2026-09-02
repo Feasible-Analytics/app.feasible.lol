@@ -28,6 +28,11 @@ class Feasible_Settings {
 	// can never race a settings save and lose a field.
 	const ERROR_OPTION = 'feasible_last_error';
 
+	// How long the same failure goes unrecorded before it is written again.
+	// During an outage every beacon fails the same way, and a write per beacon
+	// would make the options table the busiest table on the site.
+	const ERROR_THROTTLE_SECONDS = 60;
+
 	// Where the hosted service lives. A self-hosted install overrides it.
 	const DEFAULT_HOST = 'https://app.feasible.lol';
 
@@ -437,6 +442,10 @@ class Feasible_Settings {
 	 * @return void
 	 */
 	public static function record_error( $route, $reason, $detail = '' ) {
+		if ( ! self::error_is_stale( get_option( self::ERROR_OPTION, array() ), $route, $reason, time() ) ) {
+			return;
+		}
+
 		update_option(
 			self::ERROR_OPTION,
 			array(
@@ -447,6 +456,35 @@ class Feasible_Settings {
 			),
 			false
 		);
+	}
+
+	/**
+	 * error_is_stale reports whether a failure is worth writing over the one
+	 * already recorded: any different failure is, and the same one is only once
+	 * the throttle window has passed, so the timestamp stays roughly current
+	 * without a write per beacon.
+	 *
+	 * @param mixed  $existing What is recorded now, or anything else if nothing is.
+	 * @param string $route    Which route failed.
+	 * @param string $reason   A short machine-readable reason.
+	 * @param int    $now      The current Unix time.
+	 * @return bool
+	 */
+	public static function error_is_stale( $existing, $route, $reason, $now ) {
+		if ( ! is_array( $existing ) ) {
+			return true;
+		}
+
+		$same_route  = isset( $existing['route'] ) && (string) $route === (string) $existing['route'];
+		$same_reason = isset( $existing['reason'] ) && (string) $reason === (string) $existing['reason'];
+
+		if ( ! $same_route || ! $same_reason ) {
+			return true;
+		}
+
+		$recorded = isset( $existing['time'] ) ? (int) $existing['time'] : 0;
+
+		return ( (int) $now - $recorded ) >= self::ERROR_THROTTLE_SECONDS;
 	}
 
 	/**

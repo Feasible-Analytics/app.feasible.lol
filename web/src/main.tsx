@@ -10,6 +10,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { App } from "./components/App";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 /**
  * mount boots the SPA.
@@ -17,7 +18,9 @@ import { App } from "./components/App";
  * A missing root element is a broken shell rather than a broken bundle, so it
  * fails with a sentence naming what is wrong instead of a null dereference that
  * sends whoever finds it into the minified bundle looking for a bug that is not
- * there.
+ * there. Everything below it sits inside one error boundary, because a render
+ * error with nothing to catch it is a blank page with no message — the failure
+ * mode this product promises never to have.
  */
 function mount(): void {
 	const root = document.getElementById("root");
@@ -28,7 +31,9 @@ function mount(): void {
 
 	createRoot(root).render(
 		<StrictMode>
-			<App />
+			<ErrorBoundary>
+				<App />
+			</ErrorBoundary>
 		</StrictMode>,
 	);
 }

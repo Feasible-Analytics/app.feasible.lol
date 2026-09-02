@@ -42,6 +42,8 @@ require_once dirname( __DIR__ ) . '/includes/class-feasible-client-ip.php';
 require_once dirname( __DIR__ ) . '/includes/class-feasible-events.php';
 require_once dirname( __DIR__ ) . '/includes/class-feasible-measurements.php';
 require_once dirname( __DIR__ ) . '/includes/class-feasible-paths.php';
+require_once dirname( __DIR__ ) . '/includes/class-feasible-proxy.php';
+require_once dirname( __DIR__ ) . '/includes/class-feasible-settings.php';
 
 $GLOBALS['feasible_test_passed']   = 0;
 $GLOBALS['feasible_test_failures'] = array();

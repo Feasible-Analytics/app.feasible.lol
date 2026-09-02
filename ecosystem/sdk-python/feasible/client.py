@@ -12,6 +12,7 @@ import json
 import os
 import random
 import time
+import uuid
 from typing import Any, Dict, List, Mapping, Optional
 
 from .errors import (
@@ -265,7 +266,10 @@ class Client:
         if not url:
             raise InvalidEventError("url is required: the full URL of the page the event happened on")
 
-        payload: Dict[str, Any] = {"n": name, "u": url, "d": self.domain}
+        # The idempotency key is minted here, once per event, so every retry
+        # resends the same one and the server drops the duplicate instead of
+        # counting it twice.
+        payload: Dict[str, Any] = {"k": str(uuid.uuid4()), "n": name, "u": url, "d": self.domain}
 
         if referrer and referrer.strip():
             payload["r"] = referrer

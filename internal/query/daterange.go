@@ -47,9 +47,10 @@ const RealtimeWindow = 30 * time.Minute
 // 100%.
 const CurrentWindow = 5 * time.Minute
 
-// dateLayout and dateTimeLayout are the two forms a custom bound may take. A
-// bare date is read as local midnight in the site's timezone, which is what
-// somebody typing "2026-08-01" into a date picker means.
+// dateLayout and dateTimeLayout are the two wall-clock forms a custom bound may
+// take. A bare date is read as local midnight in the site's timezone, which is
+// what somebody typing "2026-08-01" into a date picker means. The third form,
+// RFC 3339, carries its own offset and names an instant.
 const (
 	dateLayout     = "2006-01-02"
 	dateTimeLayout = "2006-01-02 15:04:05"
@@ -72,6 +73,11 @@ type DateRange struct {
 	// DateOnly records that the bounds were written as bare dates, so the
 	// inclusive end covers the whole final day rather than one instant of it.
 	DateOnly bool
+
+	// Absolute records that the bounds were written as RFC 3339 timestamps
+	// with their own offset. They already name an instant, so resolution must
+	// not re-read them as wall-clock time in the site's zone.
+	Absolute bool
 }
 
 // Resolved is a date range with every ambiguity removed: absolute bounds, the
@@ -193,8 +199,13 @@ func (d DateRange) Resolve(now time.Time, loc *time.Location, earliest time.Time
 		resolved.End = now.Truncate(time.Second).Add(time.Second)
 
 	case RangeCustom:
-		resolved.Start = inLocation(d.Start, loc)
-		resolved.End = inLocation(d.End, loc)
+		if d.Absolute {
+			resolved.Start = d.Start.In(loc)
+			resolved.End = d.End.In(loc)
+		} else {
+			resolved.Start = inLocation(d.Start, loc)
+			resolved.End = inLocation(d.End, loc)
+		}
 
 		// A bare date names a whole day, so the inclusive end becomes the start
 		// of the next one. Without this, "1 August to 1 August" is an empty
@@ -270,9 +281,8 @@ func (r Resolved) Elapsed() time.Duration {
 	return r.Now.Sub(r.Start)
 }
 
-// Complete reports whether the whole range is in the past. It is the question
-// the roll-up router will ask once roll-up tables exist: a finished day can be
-// read from a summary, an unfinished one cannot.
+// Complete reports whether the whole range is in the past: a finished day can
+// be read from a summary, an unfinished one cannot.
 func (r Resolved) Complete() bool {
 	return !r.End.After(r.Now)
 }
@@ -539,39 +549,55 @@ func (d *DateRange) UnmarshalJSON(data []byte) error {
 		return invalid("a custom date_range needs exactly two dates")
 	}
 
-	start, startDateOnly, err := parseBound(bounds[0])
+	start, err := parseBound(bounds[0])
 	if err != nil {
 		return err
 	}
 
-	end, endDateOnly, err := parseBound(bounds[1])
+	end, err := parseBound(bounds[1])
 	if err != nil {
 		return err
+	}
+
+	// Mixing an absolute bound with a wall-clock one would resolve the two
+	// ends of one range by different rules, so a pair is read one way or the
+	// other.
+	if start.absolute != end.absolute {
+		return invalid("both dates of a custom date_range must be written the same way — either as local dates and times or as RFC 3339 timestamps")
 	}
 
 	d.Preset = RangeCustom
-	d.Start, d.End = start, end
-	d.DateOnly = startDateOnly && endDateOnly
+	d.Start, d.End = start.at, end.at
+	d.DateOnly = start.dateOnly && end.dateOnly
+	d.Absolute = start.absolute
 
 	return nil
 }
 
+// parsedBound is one custom bound as written: the time, and which of the three
+// accepted forms it took.
+type parsedBound struct {
+	at       time.Time
+	dateOnly bool
+	absolute bool
+}
+
 // parseBound reads one custom bound, accepting a date, a local datetime or an
 // RFC 3339 timestamp.
-func parseBound(value string) (time.Time, bool, error) {
+func parseBound(value string) (parsedBound, error) {
 	if at, err := time.Parse(dateLayout, value); err == nil {
-		return at, true, nil
+		return parsedBound{at: at, dateOnly: true}, nil
 	}
 
 	if at, err := time.Parse(dateTimeLayout, value); err == nil {
-		return at, false, nil
+		return parsedBound{at: at}, nil
 	}
 
 	if at, err := time.Parse(time.RFC3339, value); err == nil {
-		return at.UTC(), false, nil
+		return parsedBound{at: at, absolute: true}, nil
 	}
 
-	return time.Time{}, false, invalid("%q is not a date — use 2026-08-01 or 2026-08-01 13:00:00", value)
+	return parsedBound{}, invalid("%q is not a date — use 2026-08-01, 2026-08-01 13:00:00 or 2026-08-01T13:00:00-07:00", value)
 }
 
 // MarshalJSON writes the preset name, or the pair of bounds for a custom range.
@@ -581,8 +607,11 @@ func (d DateRange) MarshalJSON() ([]byte, error) {
 	}
 
 	layout := dateTimeLayout
-	if d.DateOnly {
+	switch {
+	case d.DateOnly:
 		layout = dateLayout
+	case d.Absolute:
+		layout = time.RFC3339
 	}
 
 	return json.Marshal([]string{d.Start.Format(layout), d.End.Format(layout)})

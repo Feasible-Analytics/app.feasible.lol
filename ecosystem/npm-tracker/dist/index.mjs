@@ -117,7 +117,7 @@ function injectScript(options) {
 	if (options.alias) el.setAttribute("data-alias", String(options.alias));
 	if (options.hashRouting) el.setAttribute("data-hash", "true");
 	if (options.manual) el.setAttribute("data-manual", "true");
-	if (options.trackLocalhost) el.setAttribute("data-captureOnLocalhost", "true");
+	if (options.trackLocalhost) el.setAttribute("data-capture-on-localhost", "true");
 
 	el.setAttribute("src", scriptSource(options));
 

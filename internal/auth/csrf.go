@@ -115,20 +115,3 @@ func (h *Handler) checkCSRF(w http.ResponseWriter, r *http.Request) bool {
 
 	return true
 }
-
-// IssueCSRF returns the current form token and refreshes its signed cookie.
-// Settings screens live in a separate package and use this narrow callback so
-// they share the application's CSRF implementation without duplicating keys or
-// cookie policy.
-func (h *Handler) IssueCSRF(w http.ResponseWriter, r *http.Request) string {
-	token := h.csrfToken(r)
-	h.issueCSRF(w, token)
-
-	return token
-}
-
-// CheckCSRF exposes the application's submission check to separately owned
-// settings routes mounted behind the same signed-in handler.
-func (h *Handler) CheckCSRF(w http.ResponseWriter, r *http.Request) bool {
-	return h.checkCSRF(w, r)
-}

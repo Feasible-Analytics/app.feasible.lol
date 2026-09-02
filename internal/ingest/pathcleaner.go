@@ -9,8 +9,8 @@
 package ingest
 
 // PathCleaner calculates the report-facing path for a raw path. It is an
-// interface with a no-op default because the rules live in the account database
-// and this package must not learn to read one.
+// interface, nil when an install has no rules, because the rules live in the
+// account database and this package must not learn to read one.
 //
 // The shard stores the original path and writes a source-to-target mapping in
 // the same transaction. Reports group through that mapping, so changing or
@@ -18,9 +18,3 @@ package ingest
 type PathCleaner interface {
 	Clean(siteID int64, path string) string
 }
-
-// NoPathCleaner leaves report paths unchanged.
-type NoPathCleaner struct{}
-
-// Clean returns the path unchanged.
-func (NoPathCleaner) Clean(_ int64, path string) string { return path }

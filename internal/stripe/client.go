@@ -1,6 +1,6 @@
 //
 // client.go
-// A small, direct client for the six Stripe calls this product makes.
+// A small, direct client for the handful of Stripe calls this product makes.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -10,9 +10,10 @@
 //
 // It is written by hand rather than by adding the official SDK because this
 // product ships as one binary with a deliberately short dependency list, and
-// the surface it actually needs is six calls, one signature check and a handful
-// of fields. The SDK is a large dependency with its own release cadence and a
-// generated model of every object Stripe has ever had; none of that helps here.
+// the surface it actually needs is a couple of dozen calls, one signature check
+// and a handful of fields. The SDK is a large dependency with its own release
+// cadence and a generated model of every object Stripe has ever had; none of
+// that helps here.
 //
 // Everything is form-encoded and every response is JSON, which is Stripe's own
 // wire format rather than an abstraction over it — so anything in Stripe's
@@ -28,13 +29,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
 
-// APIBase is Stripe's endpoint. It is a field on the client rather than a
-// constant so tests can point at a local server, and so a future proxy is a
-// configuration change rather than a code change.
+// APIBase is Stripe's endpoint, and the default for Client.BaseURL. Tests point
+// BaseURL at a local server instead.
 const APIBase = "https://api.stripe.com"
 
 const (
@@ -54,6 +55,54 @@ const (
 // own API is slow, since Stripe will retry the delivery anyway.
 const requestTimeout = 20 * time.Second
 
+// Retry defaults. Three attempts absorb a rate-limit burst or one flapping
+// edge without turning a real outage into a minute-long webhook handler.
+const (
+	defaultRetryAttempts = 3
+	defaultRetryDelay    = 500 * time.Millisecond
+
+	// maxRetryAfter caps how long a Retry-After header is honoured, so a
+	// misbehaving proxy cannot park a handler for an hour.
+	maxRetryAfter = 30 * time.Second
+)
+
+// RetryPolicy bounds how a throttled (429) or failed (5xx) call is repeated.
+// Zero values take the package defaults, so a Client built with New retries
+// without any configuration and a test can set Attempts to one to observe a
+// single failure.
+type RetryPolicy struct {
+	// Attempts is the total number of tries, including the first.
+	Attempts int
+
+	// Delay is the wait before the second attempt; it doubles each time. A
+	// Retry-After header from Stripe overrides it.
+	Delay time.Duration
+}
+
+// attempts returns the effective attempt count.
+func (p RetryPolicy) attempts() int {
+	if p.Attempts < 1 {
+		return defaultRetryAttempts
+	}
+
+	return p.Attempts
+}
+
+// delay returns the wait before a given retry, honouring Stripe's Retry-After
+// when it sent one.
+func (p RetryPolicy) delay(retry int, retryAfter string) time.Duration {
+	if seconds, err := strconv.Atoi(strings.TrimSpace(retryAfter)); err == nil && seconds > 0 {
+		return min(time.Duration(seconds)*time.Second, maxRetryAfter)
+	}
+
+	base := p.Delay
+	if base <= 0 {
+		base = defaultRetryDelay
+	}
+
+	return base << retry
+}
+
 // Client is an authenticated connection to one Stripe account.
 type Client struct {
 	// SecretKey is the sk_test_ or sk_live_ key. It is the only credential
@@ -66,6 +115,9 @@ type Client struct {
 	// HTTP defaults to a client with a timeout. Go's default has none, which is
 	// how a stalled TLS handshake becomes a stuck goroutine forever.
 	HTTP *http.Client
+
+	// Retry bounds the 429 and 5xx retries every call makes.
+	Retry RetryPolicy
 }
 
 // New builds a client for a secret key.
@@ -116,13 +168,17 @@ func (c *Client) call(ctx context.Context, method, path string, form url.Values,
 
 // callWithVersion performs one request and decodes the result. Every method in
 // this package goes through it, so authentication, the pinned API version, the
-// idempotency key and error decoding cannot be forgotten on a new call.
+// idempotency key, error decoding and retries cannot be forgotten on a new call.
 //
 // The idempotency key is not optional for writes. A create-checkout-session
 // call that times out and is retried without one produces two sessions, and in
 // the payment path a retry that creates a second object is the difference
 // between a customer paying once and paying twice.
-func (c *Client) callWithVersion(ctx context.Context, method, path string, form url.Values, idempotencyKey, apiVersion string, out any) (err error) {
+//
+// A 429 is always retried, because Stripe executed nothing. A 5xx is retried
+// only when repeating the call cannot duplicate anything: reads, deletes, and
+// writes carrying an idempotency key.
+func (c *Client) callWithVersion(ctx context.Context, method, path string, form url.Values, idempotencyKey, apiVersion string, out any) error {
 	if !c.Configured() {
 		return fmt.Errorf("stripe: no secret key configured")
 	}
@@ -134,27 +190,12 @@ func (c *Client) callWithVersion(ctx context.Context, method, path string, form 
 
 	endpoint := strings.TrimRight(base, "/") + path
 
-	var body io.Reader
-	if method != http.MethodGet && form != nil {
-		body = strings.NewReader(form.Encode())
+	encoded := ""
+	if form != nil {
+		encoded = form.Encode()
 	}
-	if method == http.MethodGet && len(form) > 0 {
-		endpoint += "?" + form.Encode()
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
-	if err != nil {
-		return fmt.Errorf("stripe: %s %s: %w", method, path, err)
-	}
-
-	req.SetBasicAuth(c.SecretKey, "")
-	req.Header.Set("Stripe-Version", apiVersion)
-
-	if method != http.MethodGet {
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	}
-	if idempotencyKey != "" {
-		req.Header.Set("Idempotency-Key", idempotencyKey)
+	if method == http.MethodGet && encoded != "" {
+		endpoint += "?" + encoded
 	}
 
 	client := c.HTTP
@@ -162,9 +203,57 @@ func (c *Client) callWithVersion(ctx context.Context, method, path string, form 
 		client = &http.Client{Timeout: requestTimeout}
 	}
 
+	repeatable := method == http.MethodGet || method == http.MethodDelete || idempotencyKey != ""
+	attempts := c.Retry.attempts()
+
+	for attempt := 0; ; attempt++ {
+		var body io.Reader
+		if method != http.MethodGet && form != nil {
+			body = strings.NewReader(encoded)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+		if err != nil {
+			return fmt.Errorf("stripe: %s %s: %w", method, path, err)
+		}
+
+		req.SetBasicAuth(c.SecretKey, "")
+		req.Header.Set("Stripe-Version", apiVersion)
+
+		if method != http.MethodGet {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
+		if idempotencyKey != "" {
+			req.Header.Set("Idempotency-Key", idempotencyKey)
+		}
+
+		status, retryAfter, err := c.do(client, req, method, path, out)
+		if err == nil {
+			return nil
+		}
+
+		retryable := status == http.StatusTooManyRequests || (status >= 500 && repeatable)
+		if !retryable || attempt+1 >= attempts {
+			return err
+		}
+
+		timer := time.NewTimer(c.Retry.delay(attempt, retryAfter))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("stripe: %s %s: %w", method, path, ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+// do sends one prepared request and decodes the answer. It returns the HTTP
+// status and Retry-After header alongside the error so the caller can decide
+// whether the failure is worth repeating.
+func (c *Client) do(client *http.Client, req *http.Request, method, path string, out any) (status int, retryAfter string, err error) {
 	response, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("stripe: %s %s: %w", method, path, err)
+		return 0, "", fmt.Errorf("stripe: %s %s: %w", method, path, err)
 	}
 	defer func() {
 		if closeErr := response.Body.Close(); closeErr != nil {
@@ -172,30 +261,33 @@ func (c *Client) callWithVersion(ctx context.Context, method, path string, form 
 		}
 	}()
 
+	status = response.StatusCode
+	retryAfter = response.Header.Get("Retry-After")
+
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
 	if err != nil {
-		return fmt.Errorf("stripe: %s %s: read response: %w", method, path, err)
+		return status, retryAfter, fmt.Errorf("stripe: %s %s: read response: %w", method, path, err)
 	}
 
-	if response.StatusCode >= 400 {
+	if status >= 400 {
 		var envelope errorEnvelope
 		if err := json.Unmarshal(raw, &envelope); err == nil && envelope.Error != nil {
-			envelope.Error.Status = response.StatusCode
-			return envelope.Error
+			envelope.Error.Status = status
+			return status, retryAfter, envelope.Error
 		}
 
-		return &Error{Status: response.StatusCode, Type: "api_error", Message: strings.TrimSpace(string(raw))}
+		return status, retryAfter, &Error{Status: status, Type: "api_error", Message: strings.TrimSpace(string(raw))}
 	}
 
 	if out == nil {
-		return nil
+		return status, retryAfter, nil
 	}
 
 	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("stripe: %s %s: decode response: %w", method, path, err)
+		return status, retryAfter, fmt.Errorf("stripe: %s %s: decode response: %w", method, path, err)
 	}
 
-	return nil
+	return status, retryAfter, nil
 }
 
 // post is a write. Every one takes an idempotency key.

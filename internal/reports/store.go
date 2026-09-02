@@ -437,15 +437,12 @@ func (s *Store) saveAlertRule(ctx context.Context, rule AlertRule, expectedOwner
 	return nil
 }
 
-// ownerMutation takes SQLite's writer lock and verifies a site's owner before
-// returning the transaction that must contain the protected mutation.
+// ownerMutation verifies a site's owner inside the transaction it returns, so
+// the protected mutation and a site transfer serialise on system.db's writer
+// rather than both authorising from stale reads.
 func (s *Store) ownerMutation(ctx context.Context, siteID, expectedOwnerTeamID int64) (*sql.Tx, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("reports: begin owner mutation: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE sites SET updated_at = updated_at WHERE id = -1`); err != nil {
-		tx.Rollback() //nolint:errcheck // transaction cannot be reused
 		return nil, fmt.Errorf("reports: begin owner mutation: %w", err)
 	}
 	var ownerTeamID int64

@@ -9,6 +9,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "securerandom"
 
 module Feasible
   # Sends events to POST /api/event from your server.
@@ -178,7 +179,10 @@ module Feasible
         raise InvalidEventError, "url is required: the full URL of the page the event happened on"
       end
 
-      payload = { "n" => name, "u" => url, "d" => domain }
+      # The idempotency key is minted here, once per event, so every retry
+      # resends the same one and the server drops the duplicate instead of
+      # counting it twice.
+      payload = { "k" => SecureRandom.uuid, "n" => name, "u" => url, "d" => domain }
 
       payload["r"] = referrer unless referrer.nil? || referrer.to_s.strip.empty?
       payload["t"] = title unless title.nil? || title.to_s.strip.empty?

@@ -37,10 +37,6 @@ export function base(): string {
 	return shared()?.base ?? DEFAULT_BASE;
 }
 
-/** BASE is the authenticated prefix, kept for the parse fallback below. Prefer
- *  base() everywhere a URL is constructed. */
-export const BASE = DEFAULT_BASE;
-
 const PRESETS: Preset[] = [
 	"realtime",
 	"5m",
@@ -128,7 +124,7 @@ export function parse(url: URL): UrlState {
 
 	// Behind a share link the prefix already names the site, so the path after
 	// it is empty and the domain comes from the bootstrap instead.
-	const fromPath = decodeURIComponent(path.replace(/^\/+|\/+$/g, "").split("/")[0] ?? "");
+	const fromPath = decodeSegment(path.replace(/^\/+|\/+$/g, "").split("/")[0] ?? "");
 	const domain = fromPath || (shared()?.domain ?? "");
 
 	const params = url.searchParams;
@@ -150,6 +146,18 @@ export function parse(url: URL): UrlState {
 		drawer: parseDrawer(params),
 		behavior: parseBehavior(params),
 	};
+}
+
+/** decodeSegment reads one path segment, keeping the raw text when it is not
+ *  valid percent-encoding. The share and public shells serve any trailing path,
+ *  so a malformed one reaches this parser during the first render, and a
+ *  domain nobody has is a 404 the page can show — a throw here is a blank one. */
+function decodeSegment(segment: string): string {
+	try {
+		return decodeURIComponent(segment);
+	} catch {
+		return segment;
+	}
 }
 
 /** parseBehavior accepts only the small typed vocabulary the Explore endpoint

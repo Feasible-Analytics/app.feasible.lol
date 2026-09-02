@@ -343,57 +343,6 @@ type CustomProperty struct {
 	CreatedAt int64  `json:"created_at"`
 }
 
-// CustomProperties lists a site's allowed properties.
-func (c *SystemStore) CustomProperties(ctx context.Context, siteID int64) ([]CustomProperty, error) {
-	rows, err := c.db.QueryContext(ctx,
-		`SELECT id, key, created_at FROM site_custom_properties WHERE site_id = ? ORDER BY key`, siteID)
-	if err != nil {
-		return nil, fmt.Errorf("publicapi: custom properties: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	properties := []CustomProperty{}
-
-	for rows.Next() {
-		var property CustomProperty
-		if err := rows.Scan(&property.ID, &property.Key, &property.CreatedAt); err != nil {
-			return nil, fmt.Errorf("publicapi: custom properties: %w", err)
-		}
-
-		properties = append(properties, property)
-	}
-
-	return properties, rows.Err()
-}
-
-// AddCustomProperty allows a property on a site. Adding one that is already
-// allowed is a success rather than a conflict, because an integration that
-// declares its properties on every deploy should not have to remember which of
-// them it declared last time.
-func (c *SystemStore) AddCustomProperty(ctx context.Context, siteID int64, key string) (*CustomProperty, error) {
-	now := c.now().Unix()
-
-	if _, err := c.db.ExecContext(ctx,
-		`INSERT INTO site_custom_properties (site_id, key, created_at) VALUES (?, ?, ?)
-		 ON CONFLICT (site_id, key) DO NOTHING`, siteID, key, now); err != nil {
-		return nil, fmt.Errorf("publicapi: add custom property: %w", err)
-	}
-
-	var property CustomProperty
-	if err := c.db.QueryRowContext(ctx,
-		`SELECT id, key, created_at FROM site_custom_properties WHERE site_id = ? AND key = ?`,
-		siteID, key).Scan(&property.ID, &property.Key, &property.CreatedAt); err != nil {
-		return nil, fmt.Errorf("publicapi: add custom property: %w", err)
-	}
-
-	return &property, nil
-}
-
-// DeleteCustomProperty stops allowing a property.
-func (c *SystemStore) DeleteCustomProperty(ctx context.Context, siteID, id int64) error {
-	return c.deleteScoped(ctx, "site_custom_properties", "site_id", siteID, id)
-}
-
 // SharedLink is one public dashboard URL.
 type SharedLink struct {
 	ID          int64  `json:"id"`
@@ -430,11 +379,6 @@ func (c *SystemStore) SharedLinks(ctx context.Context, siteID int64) ([]SharedLi
 	}
 
 	return links, rows.Err()
-}
-
-// DeleteSharedLink revokes a link.
-func (c *SystemStore) DeleteSharedLink(ctx context.Context, siteID, id int64) error {
-	return c.deleteScoped(ctx, "shared_links", "site_id", siteID, id)
 }
 
 // Guest is one person with access to a single site but not to the team.
