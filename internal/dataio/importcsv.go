@@ -25,6 +25,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/referrer"
 )
 
 // MaxCSVRowsPerFile bounds one file. Ten years of daily rows broken down by
@@ -211,6 +212,11 @@ type columnPlan struct {
 	metricScale []int64
 
 	dimensions []string
+
+	// deriveChannel marks a sources sheet that carries the inputs to Feasible's
+	// acquisition classifier but no channel column of its own. Plausible exports
+	// exactly that shape, so deriving it restores the default Sources-card tab.
+	deriveChannel bool
 }
 
 // planColumns reads a header row. An unrecognised column is an error naming the
@@ -334,6 +340,11 @@ func planColumns(filename string, header []string) (*columnPlan, error) {
 		plan.dimensions = append(plan.dimensions, query.ImportedPropertyDimension)
 	}
 
+	if table == "imported_sources" && !seen["visit:channel"] {
+		plan.dimensions = append(plan.dimensions, "visit:channel")
+		plan.deriveChannel = true
+	}
+
 	return plan, nil
 }
 
@@ -391,7 +402,40 @@ func (p *columnPlan) row(fields []string, location *time.Location) (Row, error) 
 		}
 	}
 
+	if p.deriveChannel {
+		deriveImportedChannel(&row)
+	}
+
 	return row, nil
+}
+
+// deriveImportedChannel reconstructs the acquisition channel from the source
+// and UTM fields Plausible exports. Click identifiers cannot participate
+// because aggregate CSVs intentionally do not contain per-click identifiers;
+// source category and campaign tags still recover the meaningful taxonomy.
+func deriveImportedChannel(row *Row) {
+	source := strings.TrimSpace(row.Dimensions["visit:source"])
+	utmSource := strings.TrimSpace(row.Dimensions["visit:utm_source"])
+	category := referrer.CategoryForSource(source)
+
+	if utmSource != "" {
+		category = referrer.CategoryForSource(utmSource)
+		if source == "" {
+			source = utmSource
+		}
+	}
+
+	if source == "" || strings.EqualFold(source, "Direct") || strings.EqualFold(source, referrer.Direct) {
+		source = referrer.Direct
+	}
+
+	row.Dimensions["visit:channel"] = referrer.Channel(referrer.Input{
+		Source:         source,
+		Category:       category,
+		Medium:         row.Dimensions["visit:utm_medium"],
+		Campaign:       row.Dimensions["visit:utm_campaign"],
+		CampaignSource: utmSource,
+	})
 }
 
 // plausibleTable identifies one table in Plausible's dated export naming
