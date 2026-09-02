@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/goals"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
 )
@@ -214,6 +215,44 @@ func TestPlausibleArchiveMigration(t *testing.T) {
 	}
 
 	engine := query.New(account.Reader())
+	worker := Workers{Now: func() time.Time { return fixtureNow }}
+	if err := worker.registerImportedProperties(context.Background(), account.Writer(), record); err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.registerImportedGoals(context.Background(), account.Writer(), record); err != nil {
+		t.Fatal(err)
+	}
+
+	allowed, err := goals.Allowed(context.Background(), account.Reader(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(allowed) != 1 || allowed[0].Name != "position" || allowed[0].Scope != goals.ScopeEvent {
+		t.Fatalf("registered Plausible properties = %+v, want event-scoped position", allowed)
+	}
+
+	goalList, err := goals.List(context.Background(), account.Reader(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(goalList) != 1 || goalList[0].EventName != "Outbound Link: Click" || goalList[0].CreatedAt != record.RangeStart {
+		t.Fatalf("registered Plausible goals = %+v, want imported outbound-link goal", goalList)
+	}
+
+	goalResult, err := goals.Report(context.Background(), account.Reader(), engine, goals.ReportRequest{
+		SiteID: 1,
+		DateRange: query.DateRange{Preset: query.RangeCustom,
+			Start: time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC),
+			End:   time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC)},
+		Timezone: "UTC",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(goalResult.Rows) != 1 || goalResult.Rows[0].TotalConversions != 3 {
+		t.Fatalf("imported Plausible goal report = %+v, want three conversions", goalResult.Rows)
+	}
+
 	base := query.Query{
 		SiteIDs: []int64{1}, Include: query.Include{Imports: true},
 		DateRange: query.DateRange{Preset: query.RangeCustom,

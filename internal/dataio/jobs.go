@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/goals"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/pathclean"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
@@ -135,7 +137,11 @@ func (w *Workers) RunCSVImport(ctx context.Context, job jobs.Job) error {
 		return w.failImport(ctx, account.Writer(), record.ID, err.Error())
 	}
 
-	if err := w.registerImportedProperties(ctx, account.Reader(), record); err != nil {
+	if err := w.registerImportedProperties(ctx, account.Writer(), record); err != nil {
+		return err
+	}
+
+	if err := w.registerImportedGoals(ctx, account.Writer(), record); err != nil {
 		return err
 	}
 
@@ -155,11 +161,13 @@ func (w *Workers) RunCSVImport(ctx context.Context, job jobs.Job) error {
 	return SetUploadPath(ctx, account.Writer(), record.ID, "")
 }
 
-// registerImportedProperties copies distinct Plausible property keys into the
-// site's system-database allow list. The insert is idempotent, which matters
-// when a worker retries after the account roll-ups have already committed.
+// registerImportedProperties exposes distinct Plausible property keys through
+// both registries that can serve the site. Dashboard reports read the account
+// allow-list, while public API configuration reads system.db; keeping both in
+// sync makes the migrated history visible in either interface. The operation
+// is idempotent because a worker may retry after roll-ups have committed.
 func (w *Workers) registerImportedProperties(ctx context.Context, account *sql.DB, record *Import) error {
-	if w.Control == nil || record.Source != SourcePlausible {
+	if record.Source != SourcePlausible {
 		return nil
 	}
 
@@ -171,6 +179,8 @@ func (w *Workers) registerImportedProperties(ctx context.Context, account *sql.D
 	}
 	defer func() { _ = rows.Close() }()
 
+	var keys []string
+
 	for rows.Next() {
 		var key string
 		if err := rows.Scan(&key); err != nil {
@@ -179,16 +189,79 @@ func (w *Workers) registerImportedProperties(ctx context.Context, account *sql.D
 		if key == "url" {
 			continue
 		}
-
-		if _, err := w.Control.ExecContext(ctx, `
-			INSERT INTO site_custom_properties (site_id, key, created_at) VALUES (?, ?, ?)
-			ON CONFLICT (site_id, key) DO NOTHING`, record.SiteID, key, w.now().Unix()); err != nil {
-			return fmt.Errorf("dataio: register Plausible property %q: %w", key, err)
-		}
+		keys = append(keys, key)
 	}
 
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("dataio: discover Plausible properties: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("dataio: discover Plausible properties: %w", err)
+	}
+
+	for _, key := range keys {
+		if _, err := goals.Allow(ctx, account, record.SiteID, key, goals.ScopeEvent,
+			time.Unix(record.RangeStart, 0)); err != nil {
+			return fmt.Errorf("dataio: register Plausible property %q: %w", key, err)
+		}
+
+		if w.Control == nil {
+			continue
+		}
+
+		if _, err := w.Control.ExecContext(ctx, `
+			INSERT INTO site_custom_properties (site_id, key, created_at) VALUES (?, ?, ?)
+			ON CONFLICT (site_id, key) DO NOTHING`, record.SiteID, key, record.RangeStart); err != nil {
+			return fmt.Errorf("dataio: register Plausible property %q: %w", key, err)
+		}
+	}
+
+	return nil
+}
+
+// registerImportedGoals turns each named Plausible custom-event series into a
+// manageable Feasible event goal. Plausible's aggregate ZIP does not carry its
+// goal-definition list, but Plausible itself offers the same “add all events”
+// recovery path. The internal engagement measurement is excluded because it
+// is dashboard plumbing rather than an action a customer chose to track.
+func (w *Workers) registerImportedGoals(ctx context.Context, account *sql.DB, record *Import) error {
+	if record.Source != SourcePlausible {
+		return nil
+	}
+
+	rows, err := account.QueryContext(ctx, `
+		SELECT DISTINCT names.value
+		FROM imported_rollups rollups
+		JOIN dim_event_name names ON names.id = rollups.name_id
+		WHERE rollups.import_id = ? AND names.value <> '' AND names.value <> ?
+		ORDER BY names.value`, record.ID, ingest.EventEngagement)
+	if err != nil {
+		return fmt.Errorf("dataio: discover Plausible goals: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var names []string
+
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return fmt.Errorf("dataio: discover Plausible goals: %w", err)
+		}
+		names = append(names, name)
+	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("dataio: discover Plausible goals: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("dataio: discover Plausible goals: %w", err)
+	}
+
+	for _, name := range names {
+		if _, err := goals.EnsureImportedEvent(ctx, account, record.SiteID, name,
+			time.Unix(record.RangeStart, 0)); err != nil {
+			return fmt.Errorf("dataio: register Plausible goal %q: %w", name, err)
+		}
 	}
 
 	return nil

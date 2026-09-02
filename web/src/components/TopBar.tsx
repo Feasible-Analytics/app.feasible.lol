@@ -12,7 +12,7 @@ import type { Filter, Preset, StatsRequest } from "../api/types";
 import type { Navigation } from "../api/types";
 import type { CompareMode } from "../lib/compare";
 import { COMPARE_LABELS } from "../lib/compare";
-import { rangeLabel } from "../lib/format";
+import { calendarDate, rangeLabel } from "../lib/format";
 import { n, t } from "../lib/i18n";
 import type { Theme } from "../lib/prefs";
 import type { UrlState } from "../lib/url";
@@ -226,11 +226,15 @@ function SettingsIcon() {
 	);
 }
 
-/** periodLabel names the current range for the button face. A custom range is
- *  shown as its own two dates, which are already the reader's own input. */
-function periodLabel(state: UrlState): string {
+/** periodLabel names the current range for the button face. ISO values remain
+ *  in the URL and native date inputs, while the visible label follows the
+ *  dashboard locale and reads like a date rather than a database value. */
+export function periodLabel(state: UrlState): string {
 	if (state.from && state.to) {
-		return state.from === state.to ? state.from : t("dashboard.format.range", { from: state.from, to: state.to });
+		const from = calendarDate(state.from);
+		const to = calendarDate(state.to);
+
+		return state.from === state.to ? from : t("dashboard.format.range", { from, to });
 	}
 
 	const period = PERIODS.find((entry) => entry.preset === state.preset);

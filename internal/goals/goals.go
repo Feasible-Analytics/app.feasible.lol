@@ -364,6 +364,46 @@ func Create(ctx context.Context, db *sql.DB, goal Goal, now time.Time) (Goal, er
 	return goal, nil
 }
 
+// EnsureImportedEvent creates the unfiltered event goal an aggregate migration
+// can prove existed, or moves an identical goal's reporting boundary back to
+// the first imported bucket. It deliberately preserves every other field on
+// an existing goal, including its display name, automatic marker, revenue
+// configuration and property constraints.
+func EnsureImportedEvent(ctx context.Context, db *sql.DB, siteID int64, eventName string, first time.Time) (Goal, error) {
+	goal := Goal{SiteID: siteID, Kind: KindEvent, EventName: eventName, CreatedAt: first.Unix()}
+	goal.Normalise()
+
+	if err := goal.Validate(); err != nil {
+		return Goal{}, err
+	}
+
+	signature := goal.signature()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO goals (site_id, kind, display_name, page_pattern, event_name, scroll_depth,
+			is_revenue, currency, is_automatic, created_at, signature)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(site_id, signature) DO UPDATE SET
+			created_at = MIN(goals.created_at, excluded.created_at)`,
+		goal.SiteID, string(goal.Kind), goal.DisplayName, goal.PagePattern, goal.EventName, goal.ScrollDepth,
+		0, "", 0, goal.CreatedAt, signature,
+	); err != nil {
+		return Goal{}, fmt.Errorf("goals: ensure imported event: %w", err)
+	}
+
+	list, err := List(ctx, db, siteID)
+	if err != nil {
+		return Goal{}, err
+	}
+
+	for _, candidate := range list {
+		if candidate.signature() == signature {
+			return candidate, nil
+		}
+	}
+
+	return Goal{}, fmt.Errorf("goals: ensure imported event: stored goal could not be read back")
+}
+
 // Update atomically replaces a goal's editable definition and property
 // constraints while preserving its identity, creation time, site, and
 // automatic provenance.
