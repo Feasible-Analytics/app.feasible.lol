@@ -30,8 +30,8 @@ comes from configuration.
 
 1. Fence or terminate the old host so it cannot write the volume again.
 2. Attach the volume to one replacement ingester at the same buffer path.
-3. Configure the complete `FEASIBLE_INGEST_SHARDS`, salt authority, and an
-   accepted signing key.
+3. Configure the complete `FEASIBLE_INGEST_SHARDS`, shared
+   `FEASIBLE_INGEST_SALT`, and an accepted signing key.
 4. Start the replacement off the public load balancer. Watch the queue drain.
 5. When `feasible_ingest_buffer_events` and parked rows are zero, stop it and
    retire the volume, or register it as a normal ingester.

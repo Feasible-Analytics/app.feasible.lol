@@ -92,7 +92,7 @@ func buildIngest(ctx context.Context, e *env, dataDir string) (*ingest.Service, 
 	service, err := ingest.NewService(ctx, control, manager, ingest.Options{
 		DataDir:        dataDir,
 		TrustedProxies: e.cfg.Ingest.TrustedProxies,
-		SaltKey:        e.cfg.Shared.SaltKey,
+		IngestSalt:     e.cfg.Shared.IngestSalt,
 		Log:            e.log,
 	})
 	if err != nil {
@@ -127,14 +127,6 @@ func ingestHealth(checks *health.Set, control *sql.DB, service *ingest.Service, 
 	// event, so a directory that cannot be written to is a process that will
 	// accept traffic and then fail to store it.
 	checks.Require("account_directory", health.Directory(filepath.Join(dataDir, config.AccountDatabaseDir)))
-
-	// Without a salt there is no visitor id and therefore no event. Readiness
-	// fails and requests receive a retryable 503 without changing counters.
-	checks.Require("salts", func(ctx context.Context) error {
-		pair, err := service.Salts.Pair(ctx)
-		pair.Erase()
-		return err
-	})
 
 	checks.Optional("geolocation", health.Condition(func() bool {
 		_, missing := service.Geo.(geo.Unknown)

@@ -390,7 +390,7 @@ func TestControlBaseMigratesAFreshDatabase(t *testing.T) {
 	for _, table := range []string{
 		"users", "user_sessions", "teams", "team_memberships", "team_invitations",
 		"site_folders", "sites", "guest_memberships", "subscriptions",
-		"usage_counters", "api_keys", "shared_links", "salts", "jobs",
+		"usage_counters", "api_keys", "shared_links", "jobs",
 		"email_verification_codes", "password_reset_tokens",
 		"billing_account_leases", "billing_account_customers", "billing_quiescence_objects", "billing_checkouts",
 		"billing_checkout_cleanup", "lifecycle_account_leases", "lifecycle_outbox",
@@ -1112,15 +1112,15 @@ func TestAccountV7ToCurrentKeepsPopulatedSessionOwnership(t *testing.T) {
 
 // TestCoordinatedMigrationNumbers pins the upgrade order requested by the
 // app-shard runtime: account ingest state and hostname authority follow the
-// deployed 0007 settings migration, while control salt authority follows Stripe
-// 0006.
+// deployed 0007 settings migration, while the system chain preserves every
+// historical step before removing obsolete salt storage in migration 12.
 func TestCoordinatedMigrationNumbers(t *testing.T) {
 	for name, test := range map[string]struct {
 		set  Set
 		want []int
 	}{
 		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12}},
-		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}},
+		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := make([]int, 0, len(test.set.Migrations))
@@ -1288,7 +1288,7 @@ func TestRunRequiresTheContiguousPendingSequence(t *testing.T) {
 }
 
 // TestControlFinalChainAppliesM8AfterM9 proves the merged chain advances from
-// the real M9 schema through M8's cleanup without a placeholder or version gap.
+// the real M9 schema through cleanup and obsolete-salt removal without a gap.
 func TestControlFinalChainAppliesM8AfterM9(t *testing.T) {
 	ctx := context.Background()
 	db := newDatabase(t)
@@ -1300,8 +1300,8 @@ func TestControlFinalChainAppliesM8AfterM9(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 9 || result.To != 11 || fmt.Sprint(result.Applied) != "[10 11]" {
-		t.Fatalf("control upgrade = %+v, want 9 through [10 11]", result)
+	if result.From != 9 || result.To != 12 || fmt.Sprint(result.Applied) != "[10 11 12]" {
+		t.Fatalf("control upgrade = %+v, want 9 through [10 11 12]", result)
 	}
 }
 
@@ -1586,8 +1586,8 @@ func TestAccountDeletionCleanupMigration0010(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 9 || result.To != 11 || fmt.Sprint(result.Applied) != "[10 11]" {
-		t.Fatalf("deletion cleanup upgrade = %+v, want 9 through [10 11]", result)
+	if result.From != 9 || result.To != 12 || fmt.Sprint(result.Applied) != "[10 11 12]" {
+		t.Fatalf("deletion cleanup upgrade = %+v, want 9 through [10 11 12]", result)
 	}
 
 	tests := []struct {

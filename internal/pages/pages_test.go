@@ -28,7 +28,6 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/salts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/stripe"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
@@ -1077,20 +1076,14 @@ func TestEveryInternalDocLinkResolves(t *testing.T) {
 	}
 }
 
-// TestThePrivacyDocMatchesTheSaltRetention keeps the one number in the privacy
-// story tied to the code that enforces it. A page claiming a shorter retention
-// than the store actually keeps is a promise we are not keeping.
-func TestThePrivacyDocMatchesTheSaltRetention(t *testing.T) {
-	want := fmt.Sprintf("%d hours", int(salts.Retention.Hours()))
-
+// TestThePrivacyDocsDescribeSharedDailySaltDerivation keeps the public privacy
+// story aligned with the stateless implementation used by every ingester.
+func TestThePrivacyDocsDescribeSharedDailySaltDerivation(t *testing.T) {
 	for _, page := range []Doc{mustFind(t, documentation, "privacy"), mustFind(t, legal, "privacy"), mustFind(t, legal, "dpa")} {
-		if !strings.Contains(string(page.Body), want) {
-			t.Errorf("%s does not state the real salt retention of %s", page.Slug, want)
-		}
 		body := strings.ToLower(string(page.Body))
-		for _, disclosure := range []string{"system", "replica", "72", "restore", "expired salts"} {
+		for _, disclosure := range []string{"shared", "utc", "not stored"} {
 			if !strings.Contains(body, disclosure) {
-				t.Errorf("%s does not disclose salt replica detail %q", page.Slug, disclosure)
+				t.Errorf("%s does not disclose shared salt detail %q", page.Slug, disclosure)
 			}
 		}
 	}

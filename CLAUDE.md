@@ -193,7 +193,7 @@ Do not re-open these without a reason. Full reasoning is in the build plan.
 - **Front end** — React + TypeScript for the stats dashboard only; server-rendered Go templates
   everywhere else.
 - **Two things must be byte-exact** or every number drifts and it is unrecoverable later: the visitor
-  fingerprint and its salt rotation, and the session accumulation rules.
+  fingerprint and shared UTC-day salt derivation, and the session accumulation rules.
 - **Never fail silently.** Every dropped event, truncated field and failed job must be visible to the
   customer or to us. This is the single biggest thing we are fixing about the products we compete with.
 

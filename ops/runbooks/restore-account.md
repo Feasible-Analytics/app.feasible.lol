@@ -184,8 +184,3 @@ loses its last second too, for a fault none of them had.
 databases and the system database are replicated independently and are not a
 consistent set. Rolling the system database back deletes sites, keys and users
 created since, and none of that is in an account database to recover from.
-
-**Putting `salt.key` into the replica bucket while you are in there.** It
-decrypts the fingerprint salts in `system.db`, and a copy beside them unseals
-every historical snapshot at once. Back it up somewhere the replica credentials
-cannot reach.

@@ -43,8 +43,8 @@ ordered by how safe it is to remove.
 | `geoip/dbip-city-lite.mmdb` | City geolocation, ~60 MB | **Yes** — countries still work, cities go unknown |
 | `geoip/dbip-country-lite.mmdb` | Country geolocation | Yes, but it degrades every event's country |
 | `lists/` | Refreshed bot and spam lists | Yes — an embedded baseline is compiled in |
-| `salt.key`, `app.key`, `script.key` | Encryption keys | **Never** |
-| `system.db`, `system.db-wal` | Sites, users, keys, salts, jobs | **Never** |
+| `app.key`, `script.key` | Encryption keys | **Never** |
+| `system.db`, `system.db-wal` | Sites, users, keys, jobs | **Never** |
 | `accounts/*/analytics.db`, `-wal` | Customer data | **Never** |
 
 **Never delete a `-wal` file.** It is not a log in the "old and disposable"
@@ -130,10 +130,6 @@ a quiet account is a customer with a quiet website.
 **Running `VACUUM` in place on a full disk.** It needs roughly as much free space
 as the database itself, and it takes the write lock for the whole operation.
 `db backup -out` on another filesystem is the version that works.
-
-**Truncating the salts table to reclaim space.** It is a few rows and it is the
-only thing that can find yesterday's sessions. See
-[salt-rotation.md](salt-rotation.md).
 
 **Turning off `feasible db backup` because it fills the disk.** Point `-out`
 somewhere else and prune it. Replication is the recovery mechanism, but the

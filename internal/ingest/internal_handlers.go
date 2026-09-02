@@ -28,9 +28,6 @@ const (
 
 	// InternalIngestPath accepts derived batches from the store-and-forward tier.
 	InternalIngestPath = "/internal/ingest"
-
-	// InternalSaltsPath returns only the two currently usable fingerprint salts.
-	InternalSaltsPath = "/internal/salts"
 )
 
 // RoutedSite is one domain record returned to ingesters. Blocked IP rules are
@@ -45,14 +42,6 @@ type RoutedSite struct {
 type DomainsResponse struct {
 	Shard int          `json:"shard"`
 	Sites []RoutedSite `json:"sites"`
-}
-
-// SaltResponse contains usable identity material without tomorrow's
-// pre-provisioned secret or any historical archive.
-type SaltResponse struct {
-	Current  []byte `json:"current"`
-	Previous []byte `json:"previous,omitempty"`
-	Day      int64  `json:"day"`
 }
 
 // IngestBatch is the private delivery envelope.
@@ -85,7 +74,6 @@ type InternalShard struct {
 	ID      int
 	Sites   *sites.Cache
 	Shields RoutingShields
-	Salts   SaltSource
 	Writer  BatchWriter
 }
 
@@ -94,7 +82,6 @@ type InternalShard struct {
 func (s *InternalShard) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+InternalDomainsPath, s.handleDomains)
-	mux.HandleFunc("GET "+InternalSaltsPath, s.handleSalts)
 	mux.HandleFunc("POST "+InternalIngestPath, s.handleIngest)
 
 	return mux
@@ -134,21 +121,6 @@ func (s *InternalShard) handleDomains(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("ETag", etag)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(append(body, '\n'))
-}
-
-// handleSalts returns isolated copies and erases them after encoding.
-func (s *InternalShard) handleSalts(w http.ResponseWriter, r *http.Request) {
-	pair, err := s.Salts.Pair(r.Context())
-	if err != nil {
-		http.Error(w, "fingerprint salts are unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	defer pair.Erase()
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(SaltResponse{
-		Current: pair.Current, Previous: pair.Previous, Day: pair.Day,
-	})
 }
 
 // handleIngest validates ownership before committing a batch. A stale sender

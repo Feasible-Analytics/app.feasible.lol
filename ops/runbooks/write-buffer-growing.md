@@ -32,8 +32,8 @@ per configured app shard, so one failed shard must not stop healthy shards.
 ## Diagnosis
 
 1. Query the ingester directly on its protected service address. Its readiness must remain healthy
-   while an app is down as long as `buffer.db`, the cached routing snapshot,
-   and the current salt remain usable.
+   while an app is down as long as `buffer.db` and the cached routing snapshot
+   remain usable.
 2. Compare several ingesters. A queue rising everywhere for one destination is
    an app-shard incident. A queue rising on one ingester is its network, disk,
    signing key, clock, or cached route.

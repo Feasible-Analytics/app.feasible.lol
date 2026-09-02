@@ -42,6 +42,7 @@ const (
 	DefaultIngestListen     = "127.0.0.1:19302"
 	DefaultIngestShards     = `["http://127.0.0.1:19301"]`
 	DefaultIngestBufferPath = "./data/ingest/buffer.db"
+	DefaultIngestSalt       = "dev-only-shared-salt-change-me"
 	DefaultAppShardID       = 1
 
 	// DefaultAPIRateLimit is how many public-API requests one key may make an
@@ -135,11 +136,10 @@ type Shared struct {
 	InternalKeys []InternalKey
 	TraceEvents  bool
 
-	// SaltKey encrypts the fingerprint salts at rest, as 32 hex-encoded bytes.
-	// Empty means one is generated under the data directory on first run, so
-	// encryption at rest is true by default rather than only when somebody
-	// remembered to set a variable.
-	SaltKey string
+	// IngestSalt is shared by every ingest process. Each process combines it
+	// with the UTC day locally, so daily visitor identifiers agree without an
+	// app-side salt authority or network request.
+	IngestSalt string
 }
 
 // App holds the values only the `serve` process reads.
@@ -273,7 +273,6 @@ type Ingest struct {
 
 	Shards     []string
 	BufferPath string
-	SaltURL    string
 
 	// TrustedProxies may supply client-address headers. Empty means all
 	// forwarded headers are ignored so a direct client cannot forge its
@@ -597,7 +596,7 @@ func LoadFrom(l *Loader) (*Config, error) {
 			LogLevel:    strings.ToLower(l.String("FEASIBLE_LOG_LEVEL", defaultLevel)),
 			LogFormat:   strings.ToLower(l.String("FEASIBLE_LOG_FORMAT", defaultFormat)),
 			TraceEvents: traceEvents,
-			SaltKey:     strings.TrimSpace(l.String("FEASIBLE_SALT_KEY", "")),
+			IngestSalt:  l.String("FEASIBLE_INGEST_SALT", DefaultIngestSalt),
 		},
 		App: App{
 			Listen:          l.String("FEASIBLE_APP_LISTEN", DefaultAppListen),
@@ -654,7 +653,6 @@ func LoadFrom(l *Loader) (*Config, error) {
 		Ingest: Ingest{
 			Listen:         l.String("FEASIBLE_INGEST_LISTEN", DefaultIngestListen),
 			BufferPath:     l.String("FEASIBLE_INGEST_BUFFER_PATH", DefaultIngestBufferPath),
-			SaltURL:        strings.TrimRight(l.String("FEASIBLE_INGEST_SALT_URL", ""), "/"),
 			TrustedProxies: parseList(l.String("FEASIBLE_INGEST_TRUSTED_PROXIES", "")),
 		},
 	}
@@ -676,9 +674,6 @@ func LoadFrom(l *Loader) (*Config, error) {
 		return nil, err
 	}
 	cfg.Ingest.Shards = shards
-	if cfg.Ingest.SaltURL == "" && len(shards) > 0 {
-		cfg.Ingest.SaltURL = shards[0]
-	}
 	if !cfg.App.Hosted && cfg.Shared.Env == EnvDevelopment {
 		if cfg.App.OperatorName == "" {
 			cfg.App.OperatorName = "Operator of " + cfg.App.BaseURL
@@ -929,10 +924,9 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if c.Shared.SaltKey != "" && len(c.Shared.SaltKey) != 64 {
-		return fmt.Errorf("FEASIBLE_SALT_KEY: expected 64 hex characters, got %d", len(c.Shared.SaltKey))
+	if strings.TrimSpace(c.Shared.IngestSalt) == "" {
+		return fmt.Errorf("FEASIBLE_INGEST_SALT cannot be empty")
 	}
-
 	if c.App.SecretKey != "" && len(c.App.SecretKey) != 64 {
 		return fmt.Errorf("FEASIBLE_APP_SECRET_KEY: expected 64 hex characters, got %d", len(c.App.SecretKey))
 	}
@@ -951,14 +945,8 @@ func (c *Config) Validate() error {
 	if err != nil || base.Scheme == "" || base.Host == "" {
 		return fmt.Errorf("FEASIBLE_APP_BASE_URL: %q is not an absolute URL", c.App.BaseURL)
 	}
-	if c.Ingest.SaltURL != "" {
-		saltURL, err := url.Parse(c.Ingest.SaltURL)
-		if err != nil || saltURL.Scheme == "" || saltURL.Host == "" {
-			return fmt.Errorf("FEASIBLE_INGEST_SALT_URL: %q is not an absolute URL", c.Ingest.SaltURL)
-		}
-	}
 	if c.IsProduction() && c.App.Hosted && c.App.Transport == TransportHTTP {
-		for _, endpoint := range append(append([]string(nil), c.Ingest.Shards...), c.Ingest.SaltURL) {
+		for _, endpoint := range c.Ingest.Shards {
 			if endpoint == "" {
 				continue
 			}

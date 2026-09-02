@@ -192,26 +192,6 @@ func TestRenderCarriesNoCredentials(t *testing.T) {
 	}
 }
 
-// TestReplicaDocsDiscloseTheSaltWindowAndSafeRestore keeps the operational
-// runbook aligned with the public bounded re-identification statement.
-func TestReplicaDocsDiscloseTheSaltWindowAndSafeRestore(t *testing.T) {
-	for _, path := range []string{"../../ops/litestream.md", "../../ops/runbooks/salt-rotation.md"} {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		text := strings.ToLower(string(body))
-		for _, want := range []string{"48 hours", "72", "re-identification", "service is stopped", "expired salts"} {
-			if !strings.Contains(text, want) {
-				t.Errorf("%s does not disclose %q", path, want)
-			}
-		}
-		if strings.Contains(text, "does not break the promise") {
-			t.Errorf("%s still claims replica retention does not bound the guarantee", path)
-		}
-	}
-}
-
 // TestSyncReportsOnlyRealChanges is the decision the watcher is built on:
 // restarting the daemon interrupts replication for every database on the box,
 // so it must happen when an account appears and not once a minute.

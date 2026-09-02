@@ -30,7 +30,6 @@ that matter most.
 | [write-buffer-growing.md](runbooks/write-buffer-growing.md) | The buffer only goes up |
 | [orphaned-ingester-volume.md](runbooks/orphaned-ingester-volume.md) | A failed ingester left acknowledged events on its volume |
 | [disk-filling.md](runbooks/disk-filling.md) | Free space is falling towards zero |
-| [salt-rotation.md](runbooks/salt-rotation.md) | Visitor counts jumped, or a salt outlived its 48 hours |
 
 Every one of them has the same four sections, and the fourth is the one that
 saves the outage:
@@ -59,9 +58,8 @@ curl -s http://127.0.0.1:19301/health/ready | python3 -m json.tool
 ```
 
 A hosted deployment puts app listeners on a protected network so ingesters can
-reach the authenticated `/internal/domains`, `/internal/salts`, and
-`/internal/ingest` endpoints. The public edge must never expose those paths or
-`/metrics`.
+reach the authenticated `/internal/domains` and `/internal/ingest` endpoints.
+The public edge must never expose those paths or `/metrics`.
 
 ## The signal inventory
 

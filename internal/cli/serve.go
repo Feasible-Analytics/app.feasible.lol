@@ -220,7 +220,7 @@ func runServe(e *env, args []string) int {
 
 	privateShard := &ingest.InternalShard{
 		ID: e.cfg.App.ShardID, Sites: service.Sites, Shields: site.shields,
-		Salts: service.Salts, Writer: service.Writer,
+		Writer: service.Writer,
 	}
 	privateRoutes := ingest.VerifyInternal(internalKeys(e.cfg.Shared.InternalKeys), privateShard.Handler())
 	server := httpserver.New("app", e.cfg.App.Listen, processRoutes(

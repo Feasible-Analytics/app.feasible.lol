@@ -9,7 +9,7 @@ Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 # Game day
 
 Run this in staging quarterly and after changes to ingestion, SQLite durability,
-session folding, or salt erasure. The deployment should match production: a
+session folding, or daily fingerprint derivation. The deployment should match production: a
 load balancer, at least two ingesters with separate persistent volumes, at
 least two app shards with separate account ownership, and Litestream replication.
 
@@ -73,13 +73,13 @@ Let the server commit, then reset the connection before the client receives the
 response. The browser must replay the same UUID. Pass when the receipt and fact
 counts remain one.
 
-## 5. Refuse salt erasure
+## 5. Verify the shared daily salt
 
-In an isolated staging copy, install a SQLite trigger that rejects deletion from
-`salts`, advance the test clock past retention, and refresh. Readiness and event
-derivation must fail closed; the in-memory cache must not continue hashing.
-Remove the trigger and verify current plus pre-provisioned next-day authority
-material recovers.
+Send the same debug request through two ingesters configured with the same
+`FEASIBLE_INGEST_SALT`; both must report the same day and visitor identifier.
+Repeat across 00:00 UTC and verify the identifier changes while a session that
+started before midnight still folds through the previous-day lookup. A mismatch
+means an ingester has the wrong shared configuration.
 
 ## 6. Fill an ingester disk, then an app disk
 

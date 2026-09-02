@@ -54,11 +54,9 @@ adding one.</p>
 <ul>
   <li><strong>Analytics data</strong> — for as long as your account exists. We do not age it
       out, and retention is not a paid upgrade.</li>
-  <li><strong>The rotating salt</strong> — deleted from the live system database after 48 hours.
-      The provider lifecycle makes each encrypted system-database replica object eligible for
-      removal within 72 hours of being written. The key is stored separately, and a system
-      restore must prune expired salts before service. Physical removal is asynchronous with no
-      published maximum, so re-identification remains possible during any provider-removal delay.</li>
+  <li><strong>The shared ingest salt</strong> — retained as deployment configuration while the
+      service operates. It is combined with the UTC date to derive a different visitor-hashing
+      value each day and is not stored in the analytics or system databases.</li>
   <li><strong>Account records</strong> — until you delete the account. At scheduled day 90 the
       hourly lifecycle sweep immediately removes them from the live service. Encrypted
       disaster-recovery replica objects become eligible for provider removal within 72 hours of

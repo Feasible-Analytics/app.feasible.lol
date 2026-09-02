@@ -1481,8 +1481,8 @@ func TestV10UpgradeFinishesLegacyOwnedCleanupWithoutLiveTeam(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 9 || result.To != 11 || fmt.Sprint(result.Applied) != "[10 11]" {
-		t.Fatalf("legacy cleanup migration result = %+v, want 9 through [10 11]", result)
+	if result.From != 9 || result.To != 12 || fmt.Sprint(result.Applied) != "[10 11 12]" {
+		t.Fatalf("legacy cleanup migration result = %+v, want 9 through [10 11 12]", result)
 	}
 
 	var completed, controlRemoved, localRemoved, artifactsIndexed, globalRemoved sql.NullInt64

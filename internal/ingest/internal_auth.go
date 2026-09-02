@@ -1,6 +1,6 @@
 //
 // internal_auth.go
-// HMAC authentication for private ingest, routing, and salt requests.
+// HMAC authentication for private ingest and routing requests.
 //
 // Created: 2026-09-01
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.

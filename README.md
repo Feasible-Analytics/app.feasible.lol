@@ -81,14 +81,19 @@ domain ownership and removes an outbox row only when the owning app names that
 UUID after commit. An app outage delays dashboards while ingesters keep pageviews.
 The shard list is a JSON array because its order defines stable shard identity.
 
-App listeners publish authenticated domain and salt snapshots and accept
-durable batches alongside dashboard traffic. `FEASIBLE_APP_SHARD_ID` is the
+App listeners publish authenticated domain snapshots and accept durable batches
+alongside dashboard traffic. `FEASIBLE_APP_SHARD_ID` is the
 app's one-based stable position in the ingester list. In hosted production these
 listeners are reachable only over protected networking and internal requests
 use `FEASIBLE_INTERNAL_KEYS`; `/internal/*` is never exposed by the public load
 balancer. See [.env.sample](.env.sample) for the complete app
 and ingester configuration and [ops/load-balancer.md](ops/load-balancer.md) for
 failure and drain behavior.
+
+Every ingester receives the same `FEASIBLE_INGEST_SALT` and combines it with
+the UTC day locally. That small, deterministic measure keeps visitor hashes
+separate across days without making ingestion depend on an app, database row,
+rotation worker, or private salt endpoint.
 
 The shared metadata file on each app shard is `system.db`. An installation from
 before that rename must stop all Feasible processes and run `feasible db migrate`

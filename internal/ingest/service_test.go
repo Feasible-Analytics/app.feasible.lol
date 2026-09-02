@@ -61,10 +61,9 @@ var domainSpellings = []string{
 // between its apex and its www name rather than one of case.
 var urlHosts = []string{"example.com", "www.example.com"}
 
-// fixtureSaltKey pins the salt encryption key, so both replays read the same
-// salt out of the same system database and therefore compute the same
-// fingerprints.
-const fixtureSaltKey = "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
+// fixtureIngestSalt pins daily derivation so every replay computes the same
+// fingerprints without shared database state.
+const fixtureIngestSalt = "fixture-shared-salt"
 
 // fixtureStart is noon UTC, far enough from midnight that the whole stream sits
 // inside one salt day.
@@ -354,9 +353,7 @@ func expectedFor(sets int) coreMetrics {
 	return m
 }
 
-// harness is one wired-up ingest service over its own account database, sharing
-// a system database with its twin so both runs see the same salt and the same
-// site.
+// harness is one wired-up ingest service over its own account database.
 type harness struct {
 	service *Service
 	manager *accounts.Manager
@@ -377,10 +374,7 @@ func (h *harness) setClock(at time.Time) {
 	h.clock.Store(at.Unix())
 }
 
-// newSystem builds the app shard system database with one team and one site. It
-// is shared between the two runs on purpose: the salt is a fingerprint input,
-// so two independently generated salts would make the visitor ids differ for a
-// reason that has nothing to do with ordering.
+// newSystem builds the app shard system database with one team and one site.
 func newSystem(t testing.TB, dir string) *sql.DB {
 	t.Helper()
 
@@ -409,9 +403,8 @@ func newSystem(t testing.TB, dir string) *sql.DB {
 	return db
 }
 
-// newHarness wires a service whose clock the test drives. Both the pipeline and
-// the salt store read the same clock, so the whole replay sits inside one salt
-// day however the events are ordered.
+// newHarness wires a service whose clock drives both event timestamps and daily
+// salt derivation, so replay ordering cannot change the salt day.
 func newHarness(t testing.TB, control *sql.DB, dataDir string, wrap func(Transport) Transport) *harness {
 	t.Helper()
 
@@ -423,7 +416,7 @@ func newHarness(t testing.TB, control *sql.DB, dataDir string, wrap func(Transpo
 
 	service, err := NewService(context.Background(), control, manager, Options{
 		DataDir:        dataDir,
-		SaltKey:        fixtureSaltKey,
+		IngestSalt:     fixtureIngestSalt,
 		Now:            h.now,
 		TrustedProxies: []string{"192.0.2.0/24"},
 	})
@@ -915,13 +908,6 @@ func TestSessionSurvivesSaltRotation(t *testing.T) {
 	control := newSystem(t, dir)
 
 	h := newHarness(t, control, filepath.Join(dir, "midnight"), nil)
-
-	// The salt for the day before has to exist, or there is no previous salt to
-	// fall back to — which is the whole mechanism under test.
-	h.setClock(time.Date(2026, time.August, 30, 23, 0, 0, 0, time.UTC))
-	if _, err := h.service.Salts.Refresh(context.Background()); err != nil {
-		t.Fatal(err)
-	}
 
 	before := time.Date(2026, time.August, 30, 23, 55, 0, 0, time.UTC)
 	after := time.Date(2026, time.August, 31, 0, 5, 0, 0, time.UTC)

@@ -27,10 +27,9 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
-// benchSaltKey pins the salt encryption key so a run never has to generate one,
-// which would otherwise write a file into the data directory as a side effect
-// of measuring something.
-const benchSaltKey = "3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b"
+// benchIngestSalt pins daily derivation so repeated benchmark passes produce
+// identical visitor IDs.
+const benchIngestSalt = "benchmark-shared-salt"
 
 // userAgents are the browsers the load is sent as. There are several because
 // the user-agent cache is on the hot path, and a run with one string would
@@ -183,8 +182,8 @@ func RunWrite(ctx context.Context, opts WriteOptions) (WriteResult, error) {
 	defer func() { _ = manager.CloseAll() }()
 
 	service, err := ingest.NewService(ctx, control, manager, ingest.Options{
-		DataDir: opts.DataDir,
-		SaltKey: benchSaltKey,
+		DataDir:    opts.DataDir,
+		IngestSalt: benchIngestSalt,
 	})
 	if err != nil {
 		return WriteResult{}, err

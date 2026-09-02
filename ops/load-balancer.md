@@ -25,8 +25,8 @@ laptop is the routing bug production would have had.
 The edge denies `/internal/*`. In local and single-host deployments the second
 listener stays on loopback. Hosted app shards bind it to a private interface
 with TLS and HMAC authentication because ingesters poll `/internal/domains` and
-`/internal/salts` and deliver batches to `/internal/ingest`. Each configured
-shard URL addresses one owning shard; it is not a round-robin app URL.
+deliver batches to `/internal/ingest`. Each configured shard URL addresses one
+owning shard; it is not a round-robin app URL.
 
 ## Liveness and readiness are different questions
 
@@ -58,7 +58,6 @@ Registered in code, not configurable, and different per process on purpose.
 | `system_db` | required | **not opened** | app 503 |
 | `account_directory` | required | **not opened** | app 503 |
 | `outbox` | not used in direct mode | required | ingest 503 |
-| `salts` | required | required from memory; refreshed privately | 503 when no current salt remains |
 | `geolocation` | **optional** | **optional** | still 200 |
 | `routing_map` | required — **built** | required — live or disk-cached snapshot built | 503 |
 
@@ -79,7 +78,6 @@ process answers 200 and keeps taking traffic.
   "components": [
     {"name": "system_db", "status": "ok"},
     {"name": "account_directory", "status": "ok"},
-    {"name": "salts", "status": "ok"},
     {"name": "geolocation", "status": "degraded",
      "detail": "no geolocation database is loaded — countries will be unknown"},
     {"name": "routing_map", "status": "ok"}
@@ -107,7 +105,6 @@ A failed **required** component is a different thing entirely: status
   "components": [
     {"name": "system_db", "status": "ok"},
     {"name": "account_directory", "status": "ok"},
-    {"name": "salts", "status": "ok"},
     {"name": "geolocation", "status": "ok"},
     {"name": "routing_map", "status": "failed",
      "detail": "the routing map is empty — every event would be dropped as an unknown site"}
@@ -142,7 +139,7 @@ reproduce on purpose.
 **Fail open matters because readiness failures can be correlated.** App shards
 have separate account storage, while each ingester has a separate durable
 outbox volume. A load balancer that removes every event target on a shared
-configuration or salt failure has converted retryable backpressure into a total
+configuration failure has converted retryable backpressure into a total
 edge outage. Where the platform offers it, prefer sending traffic to unhealthy
 targets over sending it nowhere.
 

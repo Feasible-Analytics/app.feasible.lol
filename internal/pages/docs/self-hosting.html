@@ -29,15 +29,13 @@ that is not in that file does not exist — the build fails if the source reads 
 Values resolve from <code>$CONFIG_DIR/&lt;NAME&gt;</code> (for Docker and systemd secrets), then the
 environment, then <code>.env</code> outside production.</p>
 
-<h3>Two keys, generated for you</h3>
-<p><code>FEASIBLE_SALT_KEY</code> encrypts the visitor-fingerprint salts, and
-<code>FEASIBLE_APP_SECRET_KEY</code> encrypts two-factor secrets and signs the short-lived cookies.
-Leave either unset and one is generated on first run into <code>salt.key</code> or
-<code>app.key</code> in the data directory, mode <code>0600</code>. That is what makes "encrypted at
-rest" true by default rather than only when somebody remembered to set it.</p>
-<p>Treat the salt key as being as sensitive as raw address logs: the key plus the stored hashes is
-enough to brute-force a visitor's address and user agent back out for as long as a salt row survives.
-Lose the app key and every enrolled authenticator app stops working.</p>
+<h3>Shared ingest salt and app key</h3>
+<p>Set the same <code>FEASIBLE_INGEST_SALT</code> on every ingester. Each process combines it with
+the UTC date locally, so daily visitor identifiers agree without contacting an app shard. It is a
+small protection for visitor hashes, not an encryption key or a replacement for network security.</p>
+<p><code>FEASIBLE_APP_SECRET_KEY</code> encrypts two-factor secrets and signs short-lived cookies.
+Leave it unset and one is generated on first run into <code>app.key</code> in the data directory with
+mode <code>0600</code>. Lose the app key and every enrolled authenticator app stops working.</p>
 
 <h3>Email</h3>
 <p>Set <code>FEASIBLE_APP_MAIL_TRANSPORT=smtp</code> and point it at a relay. The default

@@ -141,9 +141,8 @@ Litestream can no longer clean a prefix after its database leaves the file.
 
 The durable removal control is the bucket lifecycle rule
 `feasible-replica-expiration-v1`, not Litestream's configuration. It filters the
-entire shard prefix, so it continues to cover a deleted `account-*` prefix and
-old `system` snapshots containing expired salts after either database stops
-changing. Render the exact provider JSON with:
+entire shard prefix, so it continues to cover a deleted `account-*` prefix after
+that database stops changing. Render the exact provider JSON with:
 
 ```bash
 FEASIBLE_ENV=development feasible litestream policy \
@@ -193,28 +192,10 @@ the bucket afterwards.
 
 ## What must never reach the bucket
 
-**`salt.key`.** It sits at `$FEASIBLE_APP_DATA_DIR/salt.key` and it decrypts the
-fingerprint salts in `system.db`. The live database deletes salts after 48
-hours, but an encrypted system snapshot can retain the deleted row until the
-provider removes it. The lifecycle rule makes each replica object eligible
-within 72 hours of being written; asynchronous removal has no published maximum.
-Litestream only replicates the SQLite
-files the configuration names, so the key is not in the bucket by default —
-**and it must never be put there.** Separate key storage reduces exposure, but
-it does not erase the replica re-identification capability: an authorised
-operator restoring both the system replica and its separately backed-up key,
-together with matching analytics data, could test a fingerprint while a
-provider-retained snapshot remains.
-
-Back the key up separately, to somewhere the replica credentials cannot reach. A
-restored `system.db` without its key is a shard that cannot read any salt, which
-is a fixable outage. A restored `system.db` with the key stored next to it is
-not fixable, because it collapses the separation that limits replica exposure.
-
-Restore `system.db` only while the service is stopped. Before any app or ingest
-process starts, prune expired salts older than 48 hours from the restored database;
-otherwise the restore extends their live availability beyond the published
-window. Then start the service and verify the normal two-row salt state.
+`FEASIBLE_INGEST_SALT` is deployment configuration, not database state, and is
+therefore not part of a Litestream replica. Every ingester must receive the same
+value through the normal configuration channel so its UTC-day visitor hashes
+agree with the rest of the ingest tier.
 
 **Raw addresses.** There are none to leak: the IP is discarded at the event
 endpoint before anything is written, so no replicated file has ever held one.

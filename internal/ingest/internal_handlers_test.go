@@ -19,17 +19,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/salts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 )
-
-// testSaltSource returns isolated deterministic salt material.
-type testSaltSource struct{}
-
-// Pair returns a valid pair for the current UTC day.
-func (testSaltSource) Pair(context.Context) (salts.Pair, error) {
-	return salts.Pair{Current: bytes.Repeat([]byte{1}, salts.Size), Day: salts.Day(time.Now())}, nil
-}
 
 // testBatchWriter records accepted events and acknowledges each UUID.
 type testBatchWriter struct {
@@ -53,15 +44,15 @@ type testRoutingShields struct{}
 // BlockedIPPrefixes returns one deterministic network for protocol assertions.
 func (testRoutingShields) BlockedIPPrefixes(int64) []string { return []string{"192.0.2.0/24"} }
 
-// TestInternalShardPublishesRoutingAndSalts verifies the two snapshots an
-// ingester needs can be fetched without opening the app's system database.
-func TestInternalShardPublishesRoutingAndSalts(t *testing.T) {
+// TestInternalShardPublishesRouting verifies an ingester can fetch ownership
+// without opening the app's system database.
+func TestInternalShardPublishesRouting(t *testing.T) {
 	cache := sites.NewEmpty()
 	cache.Replace([]sites.Site{
 		{ID: 1, AccountID: 10, Domain: "active.example"},
 		{ID: 2, AccountID: 20, Domain: "expired.example", AcceptTrafficUntil: time.Now().Add(-time.Hour).Unix()},
 	}, time.Now())
-	shard := &InternalShard{ID: 7, Sites: cache, Shields: testRoutingShields{}, Salts: testSaltSource{}, Writer: &testBatchWriter{}}
+	shard := &InternalShard{ID: 7, Sites: cache, Shields: testRoutingShields{}, Writer: &testBatchWriter{}}
 
 	routing := httptest.NewRecorder()
 	shard.Handler().ServeHTTP(routing, httptest.NewRequest(http.MethodGet, InternalDomainsPath, nil))
@@ -83,16 +74,6 @@ func TestInternalShardPublishesRoutingAndSalts(t *testing.T) {
 	if notModified.Code != http.StatusNotModified {
 		t.Fatalf("matching ETag answered %d, want 304", notModified.Code)
 	}
-
-	saltReply := httptest.NewRecorder()
-	shard.Handler().ServeHTTP(saltReply, httptest.NewRequest(http.MethodGet, InternalSaltsPath, nil))
-	var salt SaltResponse
-	if err := json.Unmarshal(saltReply.Body.Bytes(), &salt); err != nil {
-		t.Fatal(err)
-	}
-	if len(salt.Current) != salts.Size || salt.Day != salts.Day(time.Now()) {
-		t.Fatalf("salt response = %+v", salt)
-	}
 }
 
 // TestInternalShardAcknowledgesOnlyOwnedEvents verifies that stale routing
@@ -101,7 +82,7 @@ func TestInternalShardAcknowledgesOnlyOwnedEvents(t *testing.T) {
 	cache := sites.NewEmpty()
 	cache.Replace([]sites.Site{{ID: 1, AccountID: 10, Domain: "owned.example"}}, time.Now())
 	writer := &testBatchWriter{}
-	shard := &InternalShard{ID: 1, Sites: cache, Salts: testSaltSource{}, Writer: writer}
+	shard := &InternalShard{ID: 1, Sites: cache, Writer: writer}
 	ownedID, foreignID := uuid.New(), uuid.New()
 	body, err := json.Marshal(IngestBatch{Events: []Event{
 		{UUID: ownedID, SiteID: 1, AccountID: 10, Domain: "owned.example"},

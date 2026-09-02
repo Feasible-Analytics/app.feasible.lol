@@ -19,13 +19,13 @@ local outbox and retries the owning app shard until it returns.
   `feasible_ingest_buffer_oldest_seconds` rises.
 - Other app shards keep receiving batches and their account dashboards remain
   current.
-- Public `/api/event` continues returning `202` while ingester disks, routing
-  snapshots, and fingerprint salts are healthy.
+- Public `/api/event` continues returning `202` while ingester disks and routing
+  snapshots are healthy.
 
 ## Diagnosis
 
 1. Query the failed app's private `/health/ready` endpoint and inspect
-   `system_db`, `account_directory`, `salts`, and `routing_map`.
+   `system_db`, `account_directory`, and `routing_map`.
 2. Check its local `system.db`, account volume, permissions, and free space.
 3. Call `/internal/domains` with an authenticated operator client and confirm
    the shard still publishes its owned domains. A failed poll must leave each

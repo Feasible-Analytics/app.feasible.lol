@@ -35,10 +35,9 @@ type Options struct {
 	// X-Forwarded-For. Empty means all forwarded headers are ignored.
 	TrustedProxies []string
 
-	// SaltKey is the hex-encoded key that encrypts the salts table. Empty means
-	// generate one under the data directory on first run, so a self-hoster who
-	// configures nothing still gets encryption at rest.
-	SaltKey string
+	// IngestSalt is the shared input used to derive the current and previous UTC
+	// day's fingerprint salts without contacting an app shard.
+	IngestSalt string
 
 	BufferSize    int
 	FlushInterval time.Duration
@@ -50,9 +49,7 @@ type Options struct {
 
 	// Now replaces the system clock everywhere in the pipeline. It exists for
 	// the replay harness, which has to drive a stream across a UTC midnight
-	// without waiting for one, and it has to reach the salt store before its
-	// first refresh — a store built on the real clock would create the wrong
-	// day's salt and then refuse to load it.
+	// without waiting for one, including the local daily salt derivation.
 	Now func() time.Time
 
 	Log *logger.Logger
@@ -62,17 +59,9 @@ type Options struct {
 // in-memory batch, and either a direct writer or the standalone durable outbox.
 // It exists so both serving modes share one pipeline rather than two wirings
 // that drift.
-// RunningSaltSource is the lifecycle contract shared by the local encrypted
-// salt store and the standalone ingester's in-memory remote cache.
-type RunningSaltSource interface {
-	SaltSource
-	Refresh(context.Context) (salts.Pair, error)
-	Run(context.Context, func(error))
-}
-
 type Service struct {
 	Sites    *sites.Cache
-	Salts    RunningSaltSource
+	Salts    SaltSource
 	Geo      geo.Locator
 	Agents   *useragent.Cache
 	Bots     *BotFilter
@@ -97,18 +86,12 @@ type Service struct {
 }
 
 // NewService builds the pipeline over an already-open system database and
-// account manager. It reads the site list and the salts before returning,
-// because a process that starts accepting traffic before it knows which domains
-// it serves would drop everything as an unknown site.
+// account manager. It reads the site list before returning because a process
+// that accepts traffic before it knows its domains would drop everything.
 func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager, opts Options) (*Service, error) {
 	trusted, err := ParseTrustedProxies(opts.TrustedProxies)
 	if err != nil {
 		return nil, fmt.Errorf("trusted proxies: %w", err)
-	}
-
-	key, err := salts.LoadKey(opts.DataDir, opts.SaltKey)
-	if err != nil {
-		return nil, err
 	}
 
 	now := opts.Now
@@ -116,17 +99,11 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 		now = func() time.Time { return time.Now().UTC() }
 	}
 
-	saltStore, err := salts.NewStore(control, key)
+	saltSource, err := salts.New(opts.IngestSalt)
 	if err != nil {
 		return nil, err
 	}
-	saltStore.SetClock(now)
-
-	initialPair, err := saltStore.Refresh(ctx)
-	initialPair.Erase()
-	if err != nil {
-		return nil, err
-	}
+	saltSource.SetClock(now)
 
 	siteCache := sites.New(control)
 	if err := siteCache.Refresh(ctx); err != nil {
@@ -158,7 +135,7 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 
 	service := &Service{
 		Sites:    siteCache,
-		Salts:    saltStore,
+		Salts:    saltSource,
 		Geo:      locator,
 		Agents:   useragent.NewCache(useragent.DefaultCapacity, useragent.DefaultTTL),
 		Bots:     bots,
@@ -170,7 +147,7 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 
 	service.Pipeline = &Pipeline{
 		Sites:     siteCache,
-		Salts:     saltStore,
+		Salts:     saltSource,
 		Geo:       locator,
 		Agents:    service.Agents,
 		Bots:      bots,
@@ -204,9 +181,9 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 }
 
 // NewRemoteService builds the standalone production ingest role. It owns no
-// system or account database handle: routing and salts arrive over the private
-// app protocol, while accepted events cross a local SQLite outbox before 202.
-func NewRemoteService(ctx context.Context, outbox *Outbox, saltURL string, opts Options) (*Service, error) {
+// system or account database handle: routing arrives over the signed app
+// protocol, while salts derive locally and events cross SQLite before 202.
+func NewRemoteService(ctx context.Context, outbox *Outbox, opts Options) (*Service, error) {
 	trusted, err := ParseTrustedProxies(opts.TrustedProxies)
 	if err != nil {
 		return nil, fmt.Errorf("trusted proxies: %w", err)
@@ -215,12 +192,11 @@ func NewRemoteService(ctx context.Context, outbox *Outbox, saltURL string, opts 
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	remoteSalts := &RemoteSalts{URL: saltURL, Signer: outbox.Signer, Now: now}
-	pair, err := remoteSalts.Refresh(ctx)
-	pair.Erase()
+	saltSource, err := salts.New(opts.IngestSalt)
 	if err != nil {
 		return nil, err
 	}
+	saltSource.SetClock(now)
 	if err := outbox.Router.RefreshAll(ctx); err != nil && outbox.Router.Cache.Len() == 0 && opts.Log != nil {
 		opts.Log.Warn("no app shard routing snapshot is currently reachable — unknown domains will be held", "error", err)
 	}
@@ -238,13 +214,13 @@ func NewRemoteService(ctx context.Context, outbox *Outbox, saltURL string, opts 
 	}
 	counters := NewCounters()
 	service := &Service{
-		Sites: outbox.Router.Cache, Salts: remoteSalts, Geo: locator,
+		Sites: outbox.Router.Cache, Salts: saltSource, Geo: locator,
 		Agents: useragent.NewCache(useragent.DefaultCapacity, useragent.DefaultTTL),
 		Bots:   bots, Counters: counters, Limiter: NewRateLimiter(DefaultEventRate, DefaultEventBurst),
 		Outbox: outbox, log: opts.Log,
 	}
 	service.Pipeline = &Pipeline{
-		Sites: outbox.Router, Salts: remoteSalts, Geo: locator, Agents: service.Agents,
+		Sites: outbox.Router, Salts: saltSource, Geo: locator, Agents: service.Agents,
 		Bots: bots, Trusted: trusted, Shards: outbox.Router, Shield: outbox.Router,
 		Hostnames: outbox.Router, Counters: counters, Now: now,
 	}
@@ -272,7 +248,7 @@ func (s *Service) SetObserver(observer Observer) {
 	}
 }
 
-// Start launches the buffer, salt, site, and source-address limiter loops. Live
+// Start launches the buffer, site, delivery, and source-address limiter loops. Live
 // session ownership is transactional account state, so there is no process-
 // local session sweep to coordinate across serving processes.
 func (s *Service) Start(ctx context.Context) {
@@ -281,7 +257,6 @@ func (s *Service) Start(ctx context.Context) {
 		s.cancel = cancel
 
 		s.run(func() { s.Buffer.Run(runCtx) })
-		s.run(func() { s.Salts.Run(runCtx, s.logError("salt refresh failed")) })
 		if s.routing != nil {
 			s.run(func() { s.routing(runCtx, s.logError("shard routing refresh failed")) })
 		} else {

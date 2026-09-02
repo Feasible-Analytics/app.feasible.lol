@@ -48,7 +48,6 @@ func runIngest(e *env, args []string) int {
 		"listen", e.cfg.Ingest.Listen,
 		"shards", e.cfg.Ingest.Shards,
 		"buffer_path", e.cfg.Ingest.BufferPath,
-		"salt_url", e.cfg.Ingest.SaltURL,
 		"internal_keys", len(e.cfg.Shared.InternalKeys),
 		"trusted_proxies", len(e.cfg.Ingest.TrustedProxies),
 		"env", e.cfg.Shared.Env,
@@ -79,8 +78,9 @@ func runIngest(e *env, args []string) int {
 		}
 		e.log.Info("parked ingest events returned to delivery", "events", count)
 	}
-	service, err := ingest.NewRemoteService(ctx, outbox, e.cfg.Ingest.SaltURL, ingest.Options{
-		DataDir: *dataDir, TrustedProxies: e.cfg.Ingest.TrustedProxies, Log: e.log,
+	service, err := ingest.NewRemoteService(ctx, outbox, ingest.Options{
+		DataDir: *dataDir, TrustedProxies: e.cfg.Ingest.TrustedProxies,
+		IngestSalt: e.cfg.Shared.IngestSalt, Log: e.log,
 	})
 	if err != nil {
 		_ = outbox.Close()
@@ -90,11 +90,6 @@ func runIngest(e *env, args []string) int {
 
 	checks := &health.Set{}
 	checks.Require("outbox", health.Database(outbox.DB))
-	checks.Require("salts", func(ctx context.Context) error {
-		pair, err := service.Salts.Pair(ctx)
-		pair.Erase()
-		return err
-	})
 	checks.Require("routing_map", health.Condition(
 		func() bool { return !service.Sites.BuiltAt().IsZero() },
 		"no live or disk-cached routing snapshot has been built"))
@@ -108,15 +103,12 @@ func runIngest(e *env, args []string) int {
 }
 
 // validateIngestTopology rejects a standalone ingester that has no complete
-// destination list, salt authority, or signing identity. These values are not
+// destination list, shared salt, or signing identity. These values are not
 // required by a direct-mode app, so validation belongs to this command rather
 // than the shared configuration loader.
 func validateIngestTopology(e *env) error {
 	if len(e.cfg.Ingest.Shards) == 0 {
 		return fmt.Errorf("FEASIBLE_INGEST_SHARDS: ingest requires at least one app shard")
-	}
-	if e.cfg.Ingest.SaltURL == "" {
-		return fmt.Errorf("FEASIBLE_INGEST_SALT_URL: ingest requires a private salt authority URL")
 	}
 	if len(e.cfg.Shared.InternalKeys) == 0 {
 		return fmt.Errorf("FEASIBLE_INTERNAL_KEYS: ingest requires at least one signing key")

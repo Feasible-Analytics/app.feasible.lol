@@ -67,9 +67,7 @@ type SiteResolver interface {
 	Refresh(context.Context) error
 }
 
-// SaltSource supplies the two live fingerprint salts. The app reads encrypted
-// rows from system.db; standalone ingesters keep an in-memory copy fetched from
-// the private salt endpoint.
+// SaltSource supplies the current and previous UTC-day fingerprint salts.
 type SaltSource interface {
 	Pair(context.Context) (salts.Pair, error)
 }
