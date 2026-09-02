@@ -37,6 +37,13 @@ const (
 	DefaultAppMailFrom      = "feasible.lol <hello@feasible.lol>"
 	DefaultAppSalesEmail    = "sales@feasible.lol"
 	DefaultSMTPPort         = 587
+
+	// DefaultSESRegion is where feasible.lol's own sending domain is verified.
+	// A region has no safe empty value — it becomes part of the endpoint host —
+	// so the default is the one the hosted service actually uses rather than a
+	// blank that would fail at the moment a password reset is due.
+	DefaultSESRegion = "us-east-1"
+
 	DefaultIngestListen     = "127.0.0.1:19302"
 	DefaultIngestShards     = `["http://127.0.0.1:19301"]`
 	DefaultIngestBufferPath = "./data/ingest/buffer.db"
@@ -97,10 +104,13 @@ const (
 )
 
 // Mail transports. The log transport keeps local development free of an SMTP
-// service by printing the message and writing the rendered body to disk.
+// service by printing the message and writing the rendered body to disk. The
+// ses transport is what the hosted service sends through; a self-hoster who
+// already has a relay wants smtp instead.
 const (
 	MailTransportLog  = "log"
 	MailTransportSMTP = "smtp"
+	MailTransportSES  = "ses"
 )
 
 // Environments. Production is singled out because it changes logging defaults
@@ -168,8 +178,31 @@ type App struct {
 	Worker bool
 
 	SMTP   SMTP
+	AWS    AWS
 	Google GoogleOAuth
 	Stripe Stripe
+}
+
+// AWS is one account's credentials plus a region per service.
+//
+// The region is per service rather than global because AWS services are not
+// deployed together: SES lives wherever the sending domain was verified, and
+// object storage or anything else added later will sit somewhere chosen for
+// latency or price. One shared region variable would force every future service
+// into whichever region email happened to pick.
+type AWS struct {
+	AccessKeyID     string
+	SecretAccessKey string
+
+	// SESRegion is where the sending identity is verified. An identity verified
+	// in one region does not exist in another, so pointing this at the wrong
+	// one produces a rejection that names neither the region nor the identity.
+	SESRegion string
+
+	// SESConfigurationSet publishes bounce, complaint and delivery events.
+	// Empty means send without one, which is what an installation that has not
+	// set up event publishing wants.
+	SESConfigurationSet string
 }
 
 // SMTP is the relay the smtp mail transport uses. It is a nested struct so that
@@ -595,6 +628,12 @@ func LoadFrom(l *Loader) (*Config, error) {
 				Password: l.String("FEASIBLE_SMTP_PASSWORD", ""),
 				StartTLS: startTLS,
 			},
+			AWS: AWS{
+				AccessKeyID:         strings.TrimSpace(l.String("FEASIBLE_AWS_ACCESS_KEY_ID", "")),
+				SecretAccessKey:     strings.TrimSpace(l.String("FEASIBLE_AWS_SECRET_ACCESS_KEY", "")),
+				SESRegion:           strings.ToLower(strings.TrimSpace(l.String("FEASIBLE_AWS_SES_REGION", DefaultSESRegion))),
+				SESConfigurationSet: strings.TrimSpace(l.String("FEASIBLE_AWS_SES_CONFIGURATION_SET", "")),
+			},
 			Google: GoogleOAuth{
 				ClientID:     strings.TrimSpace(l.String("FEASIBLE_GOOGLE_CLIENT_ID", "")),
 				ClientSecret: strings.TrimSpace(l.String("FEASIBLE_GOOGLE_CLIENT_SECRET", "")),
@@ -751,15 +790,34 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.App.MailTransport {
-	case MailTransportLog, MailTransportSMTP:
+	case MailTransportLog, MailTransportSMTP, MailTransportSES:
 	default:
-		return fmt.Errorf("FEASIBLE_APP_MAIL_TRANSPORT: %q is not log or smtp", c.App.MailTransport)
+		return fmt.Errorf("FEASIBLE_APP_MAIL_TRANSPORT: %q is not log, smtp or ses", c.App.MailTransport)
 	}
 
 	// A relay with no host cannot send anything, and finding that out at the
 	// moment a deletion warning is due is far too late.
 	if c.App.MailTransport == MailTransportSMTP && c.App.SMTP.Host == "" {
 		return fmt.Errorf("FEASIBLE_APP_MAIL_TRANSPORT is smtp but FEASIBLE_SMTP_HOST is empty")
+	}
+
+	// The same rule for SES. Unlike a relay these are refused as a set: a key
+	// with no secret authenticates nothing, and the failure arrives as a
+	// signature mismatch that names neither variable.
+	if c.App.MailTransport == MailTransportSES {
+		var missing []string
+		if c.App.AWS.AccessKeyID == "" {
+			missing = append(missing, "FEASIBLE_AWS_ACCESS_KEY_ID")
+		}
+		if c.App.AWS.SecretAccessKey == "" {
+			missing = append(missing, "FEASIBLE_AWS_SECRET_ACCESS_KEY")
+		}
+		if c.App.AWS.SESRegion == "" {
+			missing = append(missing, "FEASIBLE_AWS_SES_REGION")
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("FEASIBLE_APP_MAIL_TRANSPORT is ses but %s is empty", strings.Join(missing, ", "))
+		}
 	}
 
 	if c.App.Hosted {

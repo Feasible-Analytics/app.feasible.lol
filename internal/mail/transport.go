@@ -327,15 +327,31 @@ func envelopeAddress(value string) string {
 	return strings.TrimSpace(value)
 }
 
-// Render builds the RFC 5322 message: headers, a multipart/alternative body,
-// and CRLF line endings throughout. The plain-text part comes first because
-// that is the order the standard defines as least-to-most preferred, and a
-// client that renders the wrong one is showing HTML source to a customer.
+// Render builds the message for an SMTP DATA stream: headers, a
+// multipart/alternative body, CRLF line endings, and dot-stuffing.
+func Render(from string, msg Message) string {
+	return renderMessage(from, msg, dotStuff)
+}
+
+// RenderMIME builds the same message as a standalone MIME document, for an API
+// that takes one rather than a DATA stream.
+//
+// It exists because dot-stuffing is a property of the SMTP wire, not of the
+// message: a relay strips the doubled full stop back off, and an API that never
+// saw a DATA command delivers it to the reader.
+func RenderMIME(from string, msg Message) string {
+	return renderMessage(from, msg, crlf)
+}
+
+// renderMessage assembles the RFC 5322 message, escaping each body with the
+// supplied function. The plain-text part comes first because that is the order
+// the standard defines as least-to-most preferred, and a client that renders the
+// wrong one is showing HTML source to a customer.
 //
 // The Date header is not optional in practice. A message without one is scored
 // as spam by most filters, which for a deletion warning means the message left
 // the building and still did not arrive.
-func Render(from string, msg Message) string {
+func renderMessage(from string, msg Message, escape func(string) string) string {
 	boundary := "feasible-" + safeName(msg.Tag) + "-boundary"
 
 	var b strings.Builder
@@ -353,12 +369,12 @@ func Render(from string, msg Message) string {
 
 	b.WriteString("--" + boundary + "\r\n")
 	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n\r\n")
-	b.WriteString(dotStuff(msg.Text))
+	b.WriteString(escape(msg.Text))
 	b.WriteString("\r\n")
 
 	b.WriteString("--" + boundary + "\r\n")
 	b.WriteString("Content-Type: text/html; charset=UTF-8\r\n\r\n")
-	b.WriteString(dotStuff(msg.HTML))
+	b.WriteString(escape(msg.HTML))
 	b.WriteString("\r\n")
 
 	b.WriteString("--" + boundary + "--\r\n")
@@ -412,4 +428,14 @@ func dotStuff(body string) string {
 	}
 
 	return strings.Join(lines, "\r\n")
+}
+
+// crlf normalises line endings without dot-stuffing, for a transport that hands
+// over a MIME document rather than writing an SMTP DATA stream. RFC 5322 wants
+// CRLF regardless of who carries the message, so this half of the rewrite
+// applies either way.
+func crlf(body string) string {
+	body = strings.ReplaceAll(body, "\r\n", "\n")
+
+	return strings.ReplaceAll(body, "\n", "\r\n")
 }

@@ -206,7 +206,13 @@ func buildMailer(e *env) (*mail.Mailer, error) {
 		SMTPUser:     e.cfg.App.SMTP.Username,
 		SMTPPass:     e.cfg.App.SMTP.Password,
 		SMTPStartTLS: e.cfg.App.SMTP.StartTLS,
-		Log:          e.log,
+
+		AWSAccessKeyID:      e.cfg.App.AWS.AccessKeyID,
+		AWSSecretAccessKey:  e.cfg.App.AWS.SecretAccessKey,
+		SESRegion:           e.cfg.App.AWS.SESRegion,
+		SESConfigurationSet: e.cfg.App.AWS.SESConfigurationSet,
+
+		Log: e.log,
 	})
 }
 
