@@ -172,7 +172,15 @@ func newStack(t *testing.T) *stack {
 
 	com := buildCommerce(e, control, manager, service.Sites, mailer)
 
-	app, err := buildApp(e, control, manager, service, secret, mailer, com.Gate, com.Purger)
+	// The site rules are built the way serve builds them: the application reads
+	// the proxy allow-list off them, and the site configuration screens are
+	// mounted through them, which is what they are wrapped in under test.
+	site, err := buildSiteRules(ctx, e, service, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app, err := buildApp(e, control, manager, service, site, secret, mailer, com.Gate, com.Purger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,13 +203,6 @@ func newStack(t *testing.T) *stack {
 	}
 
 	public := buildPublic(e, control, service.Sites, manager, com.Gate)
-
-	// The site configuration screens are mounted the way serve mounts them,
-	// because what they are wrapped in is the thing under test here.
-	site, err := buildSiteRules(ctx, e, service, manager)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	data := buildData(e, control, manager, service, site)
 
@@ -616,7 +617,7 @@ func TestStatsCapabilitiesAreRevalidatedThroughTheAssembledRoute(t *testing.T) {
 		t.Fatalf("published site stats answered %d: %s", response.Code, response.Body.String())
 	}
 
-	if err := shares.SetPublic(ctx, 1, false); err != nil {
+	if err := shares.SetPublicForOwner(ctx, 1, lockedTeam, false); err != nil {
 		t.Fatal(err)
 	}
 	response = s.send(t, http.MethodPost, "/api/stats/example.com/query", body, map[string]string{
@@ -627,7 +628,7 @@ func TestStatsCapabilitiesAreRevalidatedThroughTheAssembledRoute(t *testing.T) {
 		t.Fatalf("private site direct stats answered %d, want 404: %s", response.Code, response.Body.String())
 	}
 
-	link, err := shares.CreateLink(ctx, 1, "temporary", "", 0, 1)
+	link, err := shares.CreateLinkForOwner(ctx, 1, lockedTeam, "temporary", "", 0, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -639,7 +640,7 @@ func TestStatsCapabilitiesAreRevalidatedThroughTheAssembledRoute(t *testing.T) {
 		t.Fatalf("live shared stats answered %d: %s", response.Code, response.Body.String())
 	}
 
-	if err := shares.RevokeLink(ctx, 1, link.ID); err != nil {
+	if err := shares.RevokeLinkForOwner(ctx, 1, lockedTeam, link.ID); err != nil {
 		t.Fatal(err)
 	}
 	response = s.send(t, http.MethodPost, "/api/stats/example.com/query", body, map[string]string{
@@ -650,7 +651,7 @@ func TestStatsCapabilitiesAreRevalidatedThroughTheAssembledRoute(t *testing.T) {
 		t.Fatalf("revoked link direct stats answered %d, want 404: %s", response.Code, response.Body.String())
 	}
 
-	protected, err := shares.CreateLink(ctx, 1, "protected", "hunter2", 0, 1)
+	protected, err := shares.CreateLinkForOwner(ctx, 1, lockedTeam, "protected", "hunter2", 0, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

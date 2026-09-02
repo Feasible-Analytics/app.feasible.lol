@@ -10,11 +10,13 @@ package auth
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
 )
 
@@ -244,4 +246,29 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 // RoundTrip calls the function.
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
+}
+
+// TestInstallationCheckCannotReachAPrivateAddress covers the half a domain
+// check cannot.
+//
+// The domain is a value the customer typed, and the result reports the status
+// code, the CSP header and the dial error back to them. Without a guarded
+// dialler, "Verify installation" is a way to ask the server what it can see on
+// its own network and read the answer.
+func TestInstallationCheckCannotReachAPrivateAddress(t *testing.T) {
+	handler, err := NewHandler(Options{Log: logger.New(logger.Options{Level: "error", Output: io.Discard})})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	for _, domain := range []string{"127.0.0.1", "169.254.169.254", "10.0.0.1"} {
+		result := VerifyInstallation(context.Background(), handler.Verifier, "https://feasible.lol", &Site{Domain: domain})
+
+		if result.Outcome != VerifyUnreachable {
+			t.Fatalf("%s was reachable: outcome = %q", domain, result.Outcome)
+		}
+		if result.StatusCode != 0 {
+			t.Fatalf("%s answered with status %d, so the dial was not refused", domain, result.StatusCode)
+		}
+	}
 }

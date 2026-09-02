@@ -219,8 +219,10 @@ func TestCustomEventWire(t *testing.T) {
 		t.Fatalf("props = %v", body["p"])
 	}
 
+	// The currency is upper-cased on the way out so that "usd" and "USD" do not
+	// become two rows on the same report.
 	revenue, ok := body["$"].(map[string]any)
-	if !ok || revenue["amount"] != 99.5 || revenue["currency"] != "usd" {
+	if !ok || revenue["amount"] != 99.5 || revenue["currency"] != "USD" {
 		t.Fatalf("revenue = %v", body["$"])
 	}
 
@@ -278,6 +280,28 @@ func TestValidation(t *testing.T) {
 			event:     NewEvent("Signup", "", NewVisitor("203.0.113.9", "curl/8.4.0")),
 			wantErr:   ErrMissingURL,
 			wantField: "Event.URL",
+		},
+		{
+			name: "empty revenue currency",
+			event: func() *Event {
+				event := NewEvent("Purchase", "https://example.com/", NewVisitor("203.0.113.9", "curl/8.4.0"))
+				event.Revenue = &Revenue{Amount: 99.5}
+
+				return event
+			}(),
+			wantErr:   ErrInvalidCurrency,
+			wantField: "Event.Revenue.Currency",
+		},
+		{
+			name: "revenue currency that is not a code",
+			event: func() *Event {
+				event := NewEvent("Purchase", "https://example.com/", NewVisitor("203.0.113.9", "curl/8.4.0"))
+				event.Revenue = &Revenue{Amount: 99.5, Currency: "dollars"}
+
+				return event
+			}(),
+			wantErr:   ErrInvalidCurrency,
+			wantField: "Event.Revenue.Currency",
 		},
 	}
 

@@ -12,6 +12,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/destructive"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/goals"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
@@ -130,14 +132,16 @@ func newHarness(t *testing.T) *harness {
 	// is paying, and the ones that care lock it with Set rather than by walking
 	// a ninety-day clock.
 	api := &API{
-		Keys:           keys,
-		Limiter:        apikeys.NewLimiter(0),
-		Access:         access.New(nil, nil, nil, nil),
-		Sites:          cache,
-		System:         NewSystemStore(control),
-		Teams:          teams.NewStore(control),
-		Sharing:        sharing.NewStore(control),
-		Accounts:       manager,
+		Keys:     keys,
+		Limiter:  apikeys.NewLimiter(0),
+		Access:   access.New(nil, nil, nil, nil),
+		Sites:    cache,
+		System:   NewSystemStore(control),
+		Teams:    teams.NewStore(control),
+		Sharing:  sharing.NewStore(control),
+		Accounts: manager,
+		CustomProperties: &accountProperties{control: control, accounts: manager,
+			now: func() time.Time { return testNow }},
 		SiteOperations: &destructive.Service{DB: control, Accounts: manager},
 		Webhooks:       hooks,
 		Dispatcher:     webhooks.NewDispatcher(hooks),
@@ -150,6 +154,94 @@ func newHarness(t *testing.T) *harness {
 	t.Cleanup(server.Close)
 
 	return &harness{API: api, Server: server, System: control, Key: plaintext, Other: otherPlaintext}
+}
+
+// accountProperties is the property allow-list as the API sees it: a registry
+// that lives in the account database, not in system.db.
+//
+// The binary's adapter lives in the command package, which cannot be imported
+// from here, so this is the same few calls made directly. It is a real store
+// rather than a fake because the behaviour under test — declaring a property
+// twice is a success — belongs to the registry, and a map would only prove
+// that the map does it.
+type accountProperties struct {
+	control  *sql.DB
+	accounts *accounts.Manager
+	now      func() time.Time
+}
+
+// lease opens the account database holding a site's registry.
+func (p *accountProperties) lease(ctx context.Context, siteID int64) (*accounts.Lease, error) {
+	var accountID int64
+
+	if err := p.control.QueryRowContext(ctx,
+		`SELECT COALESCE(owner_team_id, account_id) FROM sites WHERE id = ?`, siteID).Scan(&accountID); err != nil {
+		return nil, err
+	}
+
+	return p.accounts.Acquire(ctx, accountID)
+}
+
+// ListProperties reads a site's allowed properties in name order.
+func (p *accountProperties) ListProperties(ctx context.Context, siteID int64) ([]CustomProperty, error) {
+	lease, err := p.lease(ctx, siteID)
+	if err != nil {
+		return nil, err
+	}
+	defer lease.Release() //nolint:errcheck // the read error is more useful than an unlock error
+
+	list, err := goals.Allowed(ctx, lease.Account.Reader(), siteID)
+	if err != nil {
+		return nil, err
+	}
+
+	answer := make([]CustomProperty, 0, len(list))
+
+	for _, property := range list {
+		answer = append(answer, CustomProperty{ID: property.ID, Key: property.Name,
+			Scope: string(property.Scope), CreatedAt: property.CreatedAt})
+	}
+
+	return answer, nil
+}
+
+// CreateProperty registers a property, or re-scopes one already registered.
+func (p *accountProperties) CreateProperty(ctx context.Context, siteID int64, name, scope string) (*CustomProperty, error) {
+	lease, err := p.lease(ctx, siteID)
+	if err != nil {
+		return nil, err
+	}
+	defer lease.Release() //nolint:errcheck // the write error is more useful than an unlock error
+
+	property, err := goals.Allow(ctx, lease.Account.Writer(), siteID, name, goals.Scope(scope), p.now())
+	if err != nil {
+		return nil, err
+	}
+
+	return &CustomProperty{ID: property.ID, Key: property.Name,
+		Scope: string(property.Scope), CreatedAt: property.CreatedAt}, nil
+}
+
+// DeleteProperty stops allowing one registration, named by its id.
+func (p *accountProperties) DeleteProperty(ctx context.Context, siteID, propertyID int64) error {
+	lease, err := p.lease(ctx, siteID)
+	if err != nil {
+		return err
+	}
+	defer lease.Release() //nolint:errcheck // the delete error is more useful than an unlock error
+
+	var name string
+
+	if err := lease.Account.Reader().QueryRowContext(ctx,
+		`SELECT name FROM allowed_properties WHERE id = ? AND site_id = ?`, propertyID, siteID).Scan(&name); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+
+		return err
+	}
+
+	return goals.Disallow(ctx, lease.Account.Writer(), siteID, name)
 }
 
 // seedControl writes the teams, users and sites the tests act on.

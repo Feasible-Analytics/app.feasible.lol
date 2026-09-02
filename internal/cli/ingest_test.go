@@ -64,7 +64,7 @@ func TestStandaloneRecorderCoversRequestAndWriterSides(t *testing.T) {
 	}
 	recorder := &health.Recorder{}
 
-	attachIngestRecorder(service, recorder)
+	service.SetObserver(recorder)
 
 	if service.Handler.Observer != recorder {
 		t.Fatal("the standalone request pipeline does not use the health recorder")

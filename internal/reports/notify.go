@@ -67,12 +67,6 @@ type IdempotentMailSender interface {
 	SendIdempotent(ctx context.Context, message mail.Message, idempotencyKey string) (mail.Result, error)
 }
 
-// IdempotentSlackPoster is the equivalent optional provider capability for a
-// chat destination.
-type IdempotentSlackPoster interface {
-	PostIdempotent(ctx context.Context, webhookURL, text, idempotencyKey string) error
-}
-
 // Notifier owns both jobs.
 type Notifier struct {
 	Store  *Store
@@ -334,9 +328,9 @@ func deliveryTargets(recipients []string, webhookURL string) []DestinationTarget
 //
 // The residual guarantee is at-least-once: if a provider accepts a send and
 // this process dies before MarkDestinationSent commits, a later worker sends
-// it again. Providers with an idempotent interface receive a stable key and can
-// collapse that replay; claiming exactly-once without provider participation
-// would be false.
+// it again. A mail provider that takes an idempotency key receives a stable one
+// and can collapse that replay; claiming exactly-once without provider
+// participation would be false.
 func (n *Notifier) deliverClaim(ctx context.Context, rendered Rendered, claim DeliveryClaim,
 	dashboardURL, tag string) (int, error) {
 	for _, destination := range claim.Destinations {
@@ -359,11 +353,8 @@ func (n *Notifier) deliverClaim(ctx context.Context, rendered Rendered, claim De
 				if n.Slack == nil {
 					return errors.New("reports: no Slack poster is configured")
 				}
-				message := SlackText(rendered, dashboardURL)
-				if poster, ok := n.Slack.(IdempotentSlackPoster); ok {
-					return poster.PostIdempotent(sendCtx, destination.Target, message, key)
-				}
-				return n.Slack.Post(sendCtx, destination.Target, message)
+
+				return n.Slack.Post(sendCtx, destination.Target, SlackText(rendered, dashboardURL))
 
 			default:
 				return fmt.Errorf("reports: %q is not a delivery channel", destination.Channel)
@@ -433,36 +424,24 @@ func (n *Notifier) withLeaseHeartbeat(ctx context.Context, claim DeliveryClaim, 
 	return nil
 }
 
-// deliver sends one rendering to every configured destination and reports how
-// many it reached. Email and Slack are independent: a revoked webhook must not
-// stop the email, and a bounced address must not stop the channel.
+// mail sends one rendering to a list of addresses and reports how many it
+// reached. It is the preview path only: every scheduled and alert delivery
+// goes through deliverClaim, which writes each destination to the ledger as it
+// succeeds.
 //
 // One message goes out per recipient rather than one message with a recipient
 // list. That is what the shared mailer takes, and it is also the honest shape:
 // a relay that refuses one address should not cost the other four their report,
 // and a single failed send names the address it failed for.
-func (n *Notifier) deliver(ctx context.Context, rendered Rendered, recipients []string,
-	webhookURL, dashboardURL, tag string) (int, error) {
-	delivered := 0
-
+func (n *Notifier) mail(ctx context.Context, rendered Rendered, recipients []string, tag string) (int, error) {
 	if len(recipients) > 0 && n.Mail == nil {
 		return 0, errors.New("reports: no mailer is configured")
 	}
 
+	delivered := 0
+
 	for _, recipient := range recipients {
 		if _, err := n.Mail.Send(ctx, rendered.Message(recipient, tag)); err != nil {
-			return delivered, err
-		}
-
-		delivered++
-	}
-
-	if webhookURL != "" {
-		if n.Slack == nil {
-			return delivered, errors.New("reports: no Slack poster is configured")
-		}
-
-		if err := n.Slack.Post(ctx, webhookURL, SlackText(rendered, dashboardURL)); err != nil {
 			return delivered, err
 		}
 
@@ -507,21 +486,21 @@ func (n *Notifier) RunAlerts(ctx context.Context, job jobs.Job) (jobs.Outcome, e
 		recovered[alertDeliveryKey(claim.SiteID, claim.Kind)] = true
 		var alert Alert
 		if err := json.Unmarshal([]byte(claim.Payload), &alert); err != nil {
-			_ = n.Store.ReleaseDelivery(ctx, claim)
-			failures = append(failures, fmt.Sprintf("site %d %s snapshot: %v", claim.SiteID, claim.Kind, err))
+			failures = append(failures, n.releaseClaim(ctx, claim,
+				fmt.Sprintf("site %d %s snapshot: %v", claim.SiteID, claim.Kind, err)))
 			continue
 		}
 
 		rendered, err := RenderAlert(alert)
 		if err != nil {
-			_ = n.Store.ReleaseDelivery(ctx, claim)
-			failures = append(failures, fmt.Sprintf("site %d %s snapshot: %v", claim.SiteID, claim.Kind, err))
+			failures = append(failures, n.releaseClaim(ctx, claim,
+				fmt.Sprintf("site %d %s snapshot: %v", claim.SiteID, claim.Kind, err)))
 			continue
 		}
 		delivered, err := n.deliverClaim(ctx, rendered, claim, alert.DashboardURL, "alert_"+claim.Kind)
 		if err != nil {
-			_ = n.Store.ReleaseDelivery(ctx, claim)
-			failures = append(failures, fmt.Sprintf("site %d %s snapshot: %v", claim.SiteID, claim.Kind, err))
+			failures = append(failures, n.releaseClaim(ctx, claim,
+				fmt.Sprintf("site %d %s snapshot: %v", claim.SiteID, claim.Kind, err)))
 			continue
 		}
 		if delivered == 0 {
@@ -611,15 +590,15 @@ func (n *Notifier) RunAlerts(ctx context.Context, job jobs.Job) (jobs.Outcome, e
 
 		rendered, err := RenderAlert(alert)
 		if err != nil {
-			_ = n.Store.ReleaseDelivery(ctx, claim)
-			failures = append(failures, fmt.Sprintf("%s %s: %v", site.Domain, rule.Kind, err))
+			failures = append(failures, n.releaseClaim(ctx, claim,
+				fmt.Sprintf("%s %s: %v", site.Domain, rule.Kind, err)))
 			continue
 		}
 
 		delivered, err := n.deliverClaim(ctx, rendered, claim, alert.DashboardURL, "alert_"+rule.Kind)
 		if err != nil {
-			_ = n.Store.ReleaseDelivery(ctx, claim)
-			failures = append(failures, fmt.Sprintf("%s %s: %v", site.Domain, rule.Kind, err))
+			failures = append(failures, n.releaseClaim(ctx, claim,
+				fmt.Sprintf("%s %s: %v", site.Domain, rule.Kind, err)))
 			continue
 		}
 
@@ -641,6 +620,24 @@ func (n *Notifier) RunAlerts(ctx context.Context, job jobs.Job) (jobs.Outcome, e
 	}
 
 	return outcome, nil
+}
+
+// releaseClaim hands a leased delivery back after the work under it failed, so
+// the next run retries it rather than waiting out the lease. A release that
+// itself fails is folded into the reason the job reports: an alert nobody can
+// claim again is an alert that silently never arrives.
+func (n *Notifier) releaseClaim(ctx context.Context, claim DeliveryClaim, cause string) string {
+	err := n.Store.ReleaseDelivery(ctx, claim)
+	if err == nil {
+		return cause
+	}
+
+	if n.Log != nil {
+		n.Log.Error("a claimed alert delivery could not be released",
+			"site", claim.SiteID, "kind", claim.Kind, "error", err)
+	}
+
+	return fmt.Sprintf("%s (the delivery lease could not be released either: %v)", cause, err)
 }
 
 // alertDeliveryKey identifies one rule without exposing a site id as an
@@ -759,7 +756,7 @@ func (n *Notifier) SendNow(ctx context.Context, siteID int64, kind string, recip
 	}
 
 	if len(recipients) > 0 {
-		if _, err := n.deliver(ctx, rendered, recipients, "", n.dashboardURL(site.Domain), "report_preview"); err != nil {
+		if _, err := n.mail(ctx, rendered, recipients, "report_preview"); err != nil {
 			return rendered, err
 		}
 	}

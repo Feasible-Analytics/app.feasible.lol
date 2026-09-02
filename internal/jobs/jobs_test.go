@@ -313,3 +313,125 @@ func TestAPanickingWorkerFailsTheJobRatherThanTheProcess(t *testing.T) {
 		t.Fatalf("the row does not say the worker panicked: %q", job.LastError)
 	}
 }
+
+// TestTheOutcomeIsWrittenWhenTheRunnerIsShuttingDown is the shutdown case.
+//
+// The runner's context is cancelled by the shutdown signal, and database/sql
+// refuses a connection on a cancelled context before it reaches SQLite. Writing
+// the outcome on that context would leave the row claimed, the stale sweep would
+// hand the job to the next process, and a finished job would run a second time —
+// which for an import means a customer's history counted twice.
+func TestTheOutcomeIsWrittenWhenTheRunnerIsShuttingDown(t *testing.T) {
+	client := NewClient(newSystem(t))
+	runner := NewRunner(client)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	id, err := client.EnqueueOwned(ctx, 0, QueueImports, KindCSVImport, map[string]any{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The worker observes the shutdown the way a real one does: the signal
+	// arrives while it is running, and it returns as soon as it notices.
+	runner.Register(QueueImports, KindCSVImport, WorkerFunc(func(ctx context.Context, _ Job) error {
+		cancel()
+
+		return nil
+	}))
+
+	if _, err := runner.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	finished, err := client.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.State != StateCompleted {
+		t.Fatalf("a job that finished during shutdown is in %q, want completed — it will be run again", finished.State)
+	}
+}
+
+// TestAFailureDuringShutdownStillCountsAsAnAttempt is the same rule for the
+// failing half. An attempt that is never recorded means a job that can never
+// exhaust its retries, so a permanently broken one is retried for ever across
+// every restart instead of being discarded with a reason.
+func TestAFailureDuringShutdownStillCountsAsAnAttempt(t *testing.T) {
+	client := NewClient(newSystem(t))
+	runner := NewRunner(client)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	id, err := client.EnqueueOwned(ctx, 0, QueueImports, KindCSVImport, map[string]any{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runner.Register(QueueImports, KindCSVImport, WorkerFunc(func(ctx context.Context, _ Job) error {
+		cancel()
+
+		return errors.New("the upload could not be read")
+	}))
+
+	if _, err := runner.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	failed, err := client.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.State != StateAvailable {
+		t.Fatalf("a job that failed during shutdown is in %q, want available", failed.State)
+	}
+	if failed.LastError != "the upload could not be read" {
+		t.Fatalf("the stored reason is %q, want the worker's message", failed.LastError)
+	}
+}
+
+// TestRetryBackoffIsCapped covers the rows that do not carry DefaultMaxAttempts.
+// A job inserted directly takes the schema's default of twenty attempts, and an
+// uncapped doubling would schedule its last retry six days out; a large enough
+// attempt count would overflow into a negative delay and schedule it in the
+// past, which spins the runner instead of waiting.
+func TestRetryBackoffIsCapped(t *testing.T) {
+	ctx := context.Background()
+	client := NewClient(newSystem(t))
+
+	at := time.Unix(1_800_000_000, 0)
+	client.Now = func() time.Time { return at }
+
+	id, err := client.EnqueueOwned(ctx, 0, QueueImports, KindCSVImport, map[string]any{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, attempt := range []int{19, 62, 4096} {
+		job, err := client.Get(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		job.Attempt = attempt
+		job.MaxAttempts = attempt + 1
+
+		if err := client.Fail(ctx, job, errors.New("the disk was busy")); err != nil {
+			t.Fatal(err)
+		}
+
+		retried, err := client.Get(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		delay := time.Duration(retried.ScheduledAt-at.Unix()) * time.Second
+		if delay <= 0 {
+			t.Fatalf("attempt %d scheduled the retry %s in the past", attempt, -delay)
+		}
+		if delay > MaxRetryBackoff {
+			t.Fatalf("attempt %d backed off %s, want at most %s", attempt, delay, MaxRetryBackoff)
+		}
+	}
+}

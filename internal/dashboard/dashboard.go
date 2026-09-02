@@ -65,7 +65,11 @@ const bootstrapPlaceholder = "__BOOTSTRAP__"
 // because it carries the site list; the assets are addressed by a digest in the
 // query string and so can be held forever.
 const (
-	shellCacheControl = "no-cache, must-revalidate"
+	// The shell carries the site list, the signed-in person's name and email
+	// and the form token, and it has no validator a revalidation could answer
+	// with a 304 — so nothing is gained by letting it be stored, and a shared
+	// machine or a proxy holding one account's bootstrap is what it costs.
+	shellCacheControl = "no-store"
 	assetCacheControl = "public, max-age=31536000, immutable"
 
 	// A request for an asset without the digest is somebody's bookmark or a
@@ -88,11 +92,6 @@ type Handler struct {
 	// empty list, which renders the "no sites yet" screen rather than a broken
 	// one.
 	Sites DomainSource
-
-	// Domains replaces the global site list for an authenticated request. The
-	// serving process supplies a membership-aware resolver; shared/public shells
-	// pass their own single-site bootstrap directly to WriteShell.
-	Domains func(*http.Request) []string
 
 	// Resolve supplies authenticated navigation and account-lock context after
 	// the auth middleware has attached the current user. Shared/public callers
@@ -397,9 +396,7 @@ func (h *Handler) bootstrap(w http.ResponseWriter, r *http.Request) Bootstrap {
 	}
 
 	domains := []string{}
-	if h.Domains != nil {
-		domains = h.Domains(r)
-	} else if h.Sites != nil {
+	if h.Sites != nil {
 		domains = h.Sites.Domains()
 	}
 

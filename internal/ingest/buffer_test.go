@@ -124,7 +124,7 @@ func TestBufferedStaleRouteDrainsAfterDeletion(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
 	manager := accounts.NewManager(dataDir)
-	writer := NewWriter(manager, NewSessionCache())
+	writer := NewWriter(manager)
 	buffer := NewBuffer(NewDirect(writer), 100, time.Hour)
 
 	if _, err := manager.Open(ctx, 1); err != nil {

@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base32"
 	"encoding/json"
 	"fmt"
@@ -115,10 +116,21 @@ func QRCodePNG(key *otp.Key) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// VerifyTOTP checks a code against a user's stored secret without changing any
-// state. It is used both to finish enrolment and to answer the sign-in
-// challenge, so that the two paths cannot drift apart in what they accept.
-func (s *Store) VerifyTOTP(sealer *Sealer, user *User, code string) (bool, error) {
+// TOTPPeriod is the authenticator's step length in seconds. It is the value
+// every app defaults to, and changing it would invalidate every enrolled phone.
+const TOTPPeriod = 30
+
+// VerifyTOTP checks a code against a user's stored secret and spends it.
+//
+// It is used both to finish enrolment and to answer the sign-in challenge, so
+// that the two paths cannot drift apart in what they accept.
+//
+// A code stays valid for about ninety seconds, so accepting one twice means a
+// code read over a shoulder or replayed from a proxy log works a second time
+// inside that window. The step that matched is recorded and only a later one is
+// accepted afterwards. The write is conditional, so two requests racing with
+// the same code cannot both win.
+func (s *Store) VerifyTOTP(ctx context.Context, sealer *Sealer, user *User, code string) (bool, error) {
 	if user.TOTPSecret == "" {
 		return false, ErrNotFound
 	}
@@ -128,21 +140,68 @@ func (s *Store) VerifyTOTP(sealer *Sealer, user *User, code string) (bool, error
 		return false, err
 	}
 
-	code = strings.TrimSpace(strings.ReplaceAll(code, " ", ""))
-
-	valid, err := totp.ValidateCustom(code, secret, s.now(), totp.ValidateOpts{
-		Period:    30,
-		Skew:      TOTPSkew,
-		Digits:    otp.DigitsSix,
-		Algorithm: otp.AlgorithmSHA1,
-	})
-	if err != nil {
-		// A malformed code is a wrong code, not a server error: people paste
-		// their password into the box often enough that it must not 500.
+	step, ok := matchTOTPStep(secret, strings.TrimSpace(strings.ReplaceAll(code, " ", "")), s.now())
+	if !ok || step <= user.TOTPLastStep {
 		return false, nil
 	}
 
-	return valid, nil
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE users SET totp_last_used_step = ? WHERE id = ? AND totp_last_used_step < ?
+	`, step, user.ID, step)
+	if err != nil {
+		return false, fmt.Errorf("auth: record two-factor step: %w", err)
+	}
+
+	spent, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("auth: record two-factor step: %w", err)
+	}
+
+	if spent == 0 {
+		return false, nil
+	}
+
+	user.TOTPLastStep = step
+
+	return true, nil
+}
+
+// matchTOTPStep reports which time step a code belongs to, searching the window
+// TOTPSkew allows either side of now. The library's own validator answers only
+// yes or no, and the step number is what makes a code single-use.
+//
+// The newest step is tried first so a code that somehow matches twice is
+// recorded at the later one, and every candidate is compared in constant time
+// because an early exit on the first wrong digit leaks the code one digit at a
+// time.
+func matchTOTPStep(secret, code string, now time.Time) (int64, bool) {
+	if code == "" {
+		return 0, false
+	}
+
+	current := now.Unix() / TOTPPeriod
+
+	for offset := int64(TOTPSkew); offset >= -TOTPSkew; offset-- {
+		step := current + offset
+
+		expected, err := totp.GenerateCodeCustom(secret, time.Unix(step*TOTPPeriod, 0), totp.ValidateOpts{
+			Period:    TOTPPeriod,
+			Skew:      TOTPSkew,
+			Digits:    otp.DigitsSix,
+			Algorithm: otp.AlgorithmSHA1,
+		})
+		if err != nil {
+			// A secret this verifier cannot encode is a broken enrolment, not a
+			// wrong code, and no step can match it.
+			return 0, false
+		}
+
+		if subtle.ConstantTimeCompare([]byte(expected), []byte(code)) == 1 {
+			return step, true
+		}
+	}
+
+	return 0, false
 }
 
 // EnableTOTP finishes enrolment and returns the recovery codes.

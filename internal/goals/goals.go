@@ -538,10 +538,14 @@ func Rename(ctx context.Context, db *sql.DB, id int64, name string) error {
 	return nil
 }
 
-// Delete removes a goal and its property constraints. A funnel step still
-// pointing at it keeps the row alive through the foreign key, which is
-// deliberate: deleting a goal out from under a funnel would leave a chart with
-// a step nobody could explain.
+// Delete removes a goal and its property constraints. A goal that a funnel step
+// still points at is refused rather than removed: deleting it out from under a
+// funnel would leave a chart with a step nobody could explain.
+//
+// The step check and both deletes are one transaction. Dropping the property
+// constraints and then failing to drop the goal would silently widen it — a
+// goal that counted "Purchase where plan is growth" would start counting every
+// purchase, and the number on the report would go up for no visible reason.
 func Delete(ctx context.Context, db *sql.DB, id int64) error {
 	existing, err := Get(ctx, db, id)
 	if err != nil {
@@ -550,8 +554,15 @@ func Delete(ctx context.Context, db *sql.DB, id int64) error {
 	if existing.IsAutomatic {
 		return invalid("automatic goals cannot be deleted")
 	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("goals: delete: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // a rollback after a successful commit is a no-op
+
 	var steps int
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM funnel_steps WHERE goal_id = ?", id).Scan(&steps); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM funnel_steps WHERE goal_id = ?", id).Scan(&steps); err != nil {
 		return fmt.Errorf("goals: delete: %w", err)
 	}
 
@@ -559,11 +570,11 @@ func Delete(ctx context.Context, db *sql.DB, id int64) error {
 		return invalid("this goal is a step in %d funnel step(s) — remove it from the funnel first", steps)
 	}
 
-	if _, err := db.ExecContext(ctx, "DELETE FROM goal_properties WHERE goal_id = ?", id); err != nil {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM goal_properties WHERE goal_id = ?", id); err != nil {
 		return fmt.Errorf("goals: delete: %w", err)
 	}
 
-	result, err := db.ExecContext(ctx, "DELETE FROM goals WHERE id = ?", id)
+	result, err := tx.ExecContext(ctx, "DELETE FROM goals WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("goals: delete: %w", err)
 	}
@@ -575,6 +586,10 @@ func Delete(ctx context.Context, db *sql.DB, id int64) error {
 
 	if affected == 0 {
 		return ErrNotFound
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("goals: delete: %w", err)
 	}
 
 	return nil

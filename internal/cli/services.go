@@ -21,6 +21,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/outbound"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/reports"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/settings"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
@@ -82,7 +83,7 @@ func buildServices(e *env, control *sql.DB, manager *accounts.Manager,
 		Source:  reports.NewQuerySource(manager),
 		Sites:   reports.SystemSiteLookup(control),
 		Mail:    mailer,
-		Slack:   reports.NewSlack(),
+		Slack:   reports.NewSlack(outbound.PolicyFor(e.cfg)),
 		Log:     e.log,
 		BaseURL: e.cfg.App.BaseURL,
 	}
@@ -91,8 +92,10 @@ func buildServices(e *env, control *sql.DB, manager *accounts.Manager,
 
 	// The ingest path hands every derived request to the health recorder. This
 	// is the line that turns the counters into a panel that can name the
-	// hostname, the header and the tracker version behind a number.
-	attachIngestRecorder(service, s.Recorder)
+	// hostname, the header and the tracker version behind a number. Both
+	// topologies set the same observer, or the panel either loses diagnostics
+	// or claims buffered events were stored before the shard decided their fate.
+	service.SetObserver(s.Recorder)
 
 	return s
 }

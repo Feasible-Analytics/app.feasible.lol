@@ -35,8 +35,4 @@ func TestDescribeResolvesConfiguredPricesAndAdmitsCustomOnes(t *testing.T) {
 	if custom.Key != "custom" || custom.Label != "Custom plan" || custom.Amount != 0 {
 		t.Fatalf("unknown price described as %+v", custom)
 	}
-
-	if Monthly.Compact() != "$9.99/month" || Yearly.Compact() != "$100/year" {
-		t.Fatalf("compact labels are %q and %q", Monthly.Compact(), Yearly.Compact())
-	}
 }

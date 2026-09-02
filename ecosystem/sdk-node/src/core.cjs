@@ -99,6 +99,17 @@ function text(value) {
 	return typeof value === "string" ? value.trim() : "";
 }
 
+// currencyCode upper-cases a currency and reports whether it is the three-letter
+// shape the server stores. The check exists because the server ignores a revenue
+// object whose currency it cannot read, and revenue that is silently zero is the
+// hardest kind of missing data to notice. Upper-casing means "usd" and "USD" do
+// not become two rows on the same report.
+function currencyCode(value) {
+	const code = text(value).toUpperCase();
+
+	return /^[A-Z]{3}$/.test(code) ? code : "";
+}
+
 // envDisabled reads the no-op switch. It accepts the obvious spellings because
 // the value is typed into a CI configuration by hand, and "true" failing where
 // "1" works is a wasted afternoon.
@@ -357,8 +368,33 @@ class FeasibleClient {
 		if (typeof event.engagementTime === "number") body.e = event.engagementTime;
 		if (typeof event.viewportWidth === "number") body.w = event.viewportWidth;
 
-		if (event.revenue && typeof event.revenue.amount === "number") {
-			body.$ = { amount: event.revenue.amount, currency: text(event.revenue.currency) };
+		// Revenue is refused rather than trimmed away: an amount that is not a
+		// number, or a currency the server cannot read, produces an event that
+		// looks accepted and reports nothing.
+		if (event.revenue) {
+			const amount = event.revenue.amount;
+
+			if (typeof amount !== "number" || !Number.isFinite(amount)) {
+				throw new FeasibleValidationError(
+					"event.revenue.amount",
+					"invalid_revenue_amount",
+					"the revenue amount must be a finite number",
+					"It is in major units — 9.99 is nine dollars and ninety-nine cents — and the server ignores a revenue object it cannot read.",
+				);
+			}
+
+			const currency = currencyCode(event.revenue.currency);
+
+			if (!currency) {
+				throw new FeasibleValidationError(
+					"event.revenue.currency",
+					"invalid_revenue_currency",
+					"the revenue currency must be a three-letter ISO 4217 code",
+					`${JSON.stringify(event.revenue.currency)} is not a code such as USD or GBP, and the server ignores a revenue object it cannot read, leaving the revenue silently at zero.`,
+				);
+			}
+
+			body.$ = { amount, currency };
 		}
 
 		// The attribution overrides. A delayed or offline conversion has no

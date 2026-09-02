@@ -155,7 +155,10 @@ test("a custom event carries props, revenue and the attribution overrides", asyn
 		]);
 
 		assert.deepEqual(body.p, { plan: "annual", seats: 4 });
-		assert.deepEqual(body.$, { amount: 99.5, currency: "usd" });
+
+		// The currency is upper-cased on the way out so that "usd" and "USD" do
+		// not become two rows on the same report.
+		assert.deepEqual(body.$, { amount: 99.5, currency: "USD" });
 		assert.equal(body.i, false);
 		assert.equal(body.utm_source, "newsletter");
 	} finally {
@@ -190,6 +193,24 @@ test("it refuses to send without a client IP or a User-Agent", async () => {
 			event: { ...visitor },
 			field: "event.url",
 			code: "missing_url",
+		},
+		{
+			name: "revenue with no currency",
+			event: { url: "https://example.com/", ...visitor, revenue: { amount: 99.5 } },
+			field: "event.revenue.currency",
+			code: "invalid_revenue_currency",
+		},
+		{
+			name: "revenue currency that is not a code",
+			event: { url: "https://example.com/", ...visitor, revenue: { amount: 99.5, currency: "dollars" } },
+			field: "event.revenue.currency",
+			code: "invalid_revenue_currency",
+		},
+		{
+			name: "revenue amount that is not a number",
+			event: { url: "https://example.com/", ...visitor, revenue: { amount: "99.5", currency: "USD" } },
+			field: "event.revenue.amount",
+			code: "invalid_revenue_amount",
 		},
 	];
 

@@ -200,8 +200,8 @@ func TestSubscriptionSelectionAndBlockingAreDeterministic(t *testing.T) {
 
 // TestProviderListsPaginateAndVoidInvoiceUsesIdempotency covers the discovery
 // reads and recovery writes that close untracked Stripe objects: sessions are
-// listed for one customer, customers are found through metadata search, and
-// both walk every page.
+// listed account-wide and for one customer, customers are found through
+// metadata search, and all of them walk every page.
 func TestProviderListsPaginateAndVoidInvoiceUsesIdempotency(t *testing.T) {
 	var voidKey string
 	var deleteKey string
@@ -245,6 +245,21 @@ func TestProviderListsPaginateAndVoidInvoiceUsesIdempotency(t *testing.T) {
 	if len(sessionCustomers) != 2 || sessionCustomers[0] != "cus_1" || sessionCustomers[1] != "cus_1" {
 		t.Fatalf("session pages were filtered by customers %v, want cus_1 on every page", sessionCustomers)
 	}
+
+	// The account-wide listing is the only way to reach a session created
+	// before its customer existed, so it must send no customer filter at all.
+	sessionCustomers = nil
+	sessions, err = client.CheckoutSessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 || sessions[0].ID != "cs_1" || sessions[1].ID != "cs_2" {
+		t.Fatalf("account-wide checkout pages are %+v", sessions)
+	}
+	if len(sessionCustomers) != 2 || sessionCustomers[0] != "" || sessionCustomers[1] != "" {
+		t.Fatalf("account-wide session pages were filtered by customers %v, want none", sessionCustomers)
+	}
+
 	customers, err := client.SearchCustomersByTeam(context.Background(), 7)
 	if err != nil {
 		t.Fatal(err)

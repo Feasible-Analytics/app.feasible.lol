@@ -258,8 +258,14 @@ func TestDebugRequestReturnsEverything(t *testing.T) {
 	if debug.ClientIPSource != clientip.SourceForwardedFor {
 		t.Errorf("client_ip_source = %q, want %q", debug.ClientIPSource, clientip.SourceForwardedFor)
 	}
-	if debug.SiteID != 1 || debug.AccountID != 1 {
-		t.Errorf("site/account = %d/%d, want 1/1", debug.SiteID, debug.AccountID)
+	if debug.SiteID != 1 {
+		t.Errorf("site_id = %d, want 1", debug.SiteID)
+	}
+
+	// The account id is deliberately absent: it belongs to the customer rather
+	// than the caller, and the endpoint is open to anyone.
+	if debug.AccountID != 0 {
+		t.Errorf("account_id = %d, want it withheld from an open endpoint", debug.AccountID)
 	}
 	if debug.UserID == 0 {
 		t.Error("the fingerprint is missing from the debug view")
@@ -310,6 +316,27 @@ func TestServerSideCallerIsToldWhatIsMissing(t *testing.T) {
 		if !strings.Contains(message, want) {
 			t.Errorf("the error does not mention %s: %s", want, message)
 		}
+	}
+}
+
+// TestNoTrustedProxyDoesNotAskForAForwardedHeader keeps the advice honest. An
+// install that trusts no proxy ignores forwarded headers by design, so telling
+// a caller to send one would be telling them to do something that cannot work,
+// and a 400 they can never satisfy is worse than the classification it avoids.
+func TestNoTrustedProxyDoesNotAskForAForwardedHeader(t *testing.T) {
+	h := newHandlerHarness(t)
+	h.service.Bots.SetDatacenterRanges([]string{"192.0.2.0/24"})
+	h.service.Pipeline.Trusted = &clientip.TrustedProxies{}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/event", strings.NewReader(validBody))
+	req.Header.Set("Content-Type", "text/plain")
+	req.RemoteAddr = "192.0.2.44:41000"
+
+	recorder := httptest.NewRecorder()
+	h.service.Handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status %d, want 202: %s", recorder.Code, recorder.Body.String())
 	}
 }
 

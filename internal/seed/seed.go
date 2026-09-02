@@ -362,7 +362,6 @@ func (g *generator) open(ctx context.Context) error {
 		Bots:    bots,
 		Trusted: trusted,
 		Shards:  ingest.DirectShard{},
-		Shield:  ingest.NoShield{},
 		Now:     func() time.Time { return g.clock },
 	}
 
@@ -683,13 +682,6 @@ func removeSeeded(dataDir string) error {
 
 	if err := os.RemoveAll(filepath.Join(dataDir, config.AccountDatabaseDir)); err != nil {
 		return fmt.Errorf("seed: remove account databases: %w", err)
-	}
-
-	// The session snapshot belongs to whatever was running before. Restoring it
-	// on top of a freshly seeded dataset would resurrect visits that no longer
-	// have a database to live in.
-	if err := os.Remove(ingest.SessionFilePath(dataDir)); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("seed: remove session snapshot: %w", err)
 	}
 
 	return nil

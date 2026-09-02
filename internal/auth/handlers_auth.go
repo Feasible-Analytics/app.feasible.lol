@@ -70,7 +70,7 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -105,7 +105,7 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 	// Registration is rate limited per source. Without it, one script creates
 	// accounts as fast as bcrypt runs and every one of them sends an email from
 	// our domain to an address the script chose.
-	if !h.Limiter.Allow(ClientKey(r, "register"), LoginAttempts, LoginWindow) {
+	if !h.Limiter.Allow(ClientKey(r, h.Trusted, "register"), LoginAttempts, LoginWindow) {
 		fail(i18n.T(p.Lang, "auth.error.too_many_registrations"))
 		return
 	}
@@ -226,7 +226,7 @@ func (h *Handler) showLogin(w http.ResponseWriter, r *http.Request) {
 // find out who has an account here, which for an analytics product means
 // finding out which companies use us.
 func (h *Handler) doLogin(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -241,7 +241,7 @@ func (h *Handler) doLogin(w http.ResponseWriter, r *http.Request) {
 	// Both keys are checked: by source, so one machine cannot walk through
 	// every account, and by address, so a botnet cannot spread one account's
 	// guesses across a thousand sources.
-	sourceOK := h.Limiter.Allow(ClientKey(r, "login"), LoginAttempts, LoginWindow)
+	sourceOK := h.Limiter.Allow(ClientKey(r, h.Trusted, "login"), LoginAttempts, LoginWindow)
 	subjectOK := h.Limiter.Allow(SubjectKey(email, "login"), LoginAttempts, LoginWindow)
 
 	if !sourceOK || !subjectOK {
@@ -283,7 +283,7 @@ func (h *Handler) doLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.Limiter.Reset(ClientKey(r, "login"))
+	h.Limiter.Reset(ClientKey(r, h.Trusted, "login"))
 	h.Limiter.Reset(SubjectKey(email, "login"))
 
 	if user.TwoFactorEnabled() {
@@ -306,7 +306,7 @@ func (h *Handler) doLogin(w http.ResponseWriter, r *http.Request) {
 // doLogout ends the session. It is a POST rather than a GET so that a link on
 // another site, or a prefetching browser, cannot sign somebody out.
 func (h *Handler) doLogout(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -347,7 +347,7 @@ func (h *Handler) showVerify(w http.ResponseWriter, r *http.Request) {
 
 // doVerify consumes a typed code.
 func (h *Handler) doVerify(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -404,7 +404,7 @@ func (h *Handler) doVerify(w http.ResponseWriter, r *http.Request) {
 
 // doResendVerify issues a fresh code.
 func (h *Handler) doResendVerify(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -608,7 +608,7 @@ func (h *Handler) showForgot(w http.ResponseWriter, r *http.Request) {
 // account with that address" turns this form into a way to test whether a
 // company uses us, and it is a form anybody can submit without signing in.
 func (h *Handler) doForgot(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -617,7 +617,7 @@ func (h *Handler) doForgot(w http.ResponseWriter, r *http.Request) {
 	p := h.newPage(r, tr(r, "auth.title.forgot"), "")
 	p.Flash = i18n.T(p.Lang, "auth.flash.reset_sent", "email", email)
 
-	sourceOK := h.Limiter.Allow(ClientKey(r, "reset"), ResetAttempts, ResetWindowLimit)
+	sourceOK := h.Limiter.Allow(ClientKey(r, h.Trusted, "reset"), ResetAttempts, ResetWindowLimit)
 	subjectOK := h.Limiter.Allow(SubjectKey(email, "reset"), ResetAttempts, ResetWindowLimit)
 
 	// A limited request still gets the same confirmation. Telling the sender
@@ -672,7 +672,7 @@ func (h *Handler) showReset(w http.ResponseWriter, r *http.Request) {
 
 // doReset consumes the token and sets the new password.
 func (h *Handler) doReset(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -815,7 +815,7 @@ func (h *Handler) showTwoFactorChallenge(w http.ResponseWriter, r *http.Request)
 // to notice a link, click it, and land on a second form — and they are already
 // having the worst day this product can give them.
 func (h *Handler) doTwoFactorChallenge(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 
@@ -844,7 +844,7 @@ func (h *Handler) doTwoFactorChallenge(w http.ResponseWriter, r *http.Request) {
 
 	code := strings.TrimSpace(r.PostFormValue("code"))
 
-	valid, err := h.Store.VerifyTOTP(h.Sealer, user, code)
+	valid, err := h.Store.VerifyTOTP(r.Context(), h.Sealer, user, code)
 	if err != nil {
 		h.fail(w, r, err)
 		return

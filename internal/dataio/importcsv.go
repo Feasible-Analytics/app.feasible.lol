@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
@@ -122,7 +123,7 @@ func ImportCSV(ctx context.Context, db *sql.DB, cache *intern.Cache, record *Imp
 // carried. Every error names the file and the line, because "your import
 // failed" without either is a message the customer cannot act on and we cannot
 // answer a ticket about.
-func importOneFile(ctx context.Context, db *sql.DB, cache *intern.Cache, record *Import, source CSVSource, location *time.Location) (result []string, firstResult, lastResult, rowsResult int64, err error) {
+func importOneFile(ctx context.Context, db *sql.DB, cache *intern.Cache, record *Import, source CSVSource, location *time.Location) (dimensions []string, written, earliestResult, latestResult int64, err error) {
 	handle, err := source.Open()
 	if err != nil {
 		return nil, 0, 0, 0, fmt.Errorf("%s: could not be opened: %w", source.Name, err)
@@ -626,6 +627,12 @@ func sourcesFromZip(path string) ([]CSVSource, func() error, error) {
 	seen := map[string]bool{}
 	var expanded uint64
 
+	// One budget for the whole archive, spent as the entries are actually
+	// inflated. The header checks below read sizes the central directory
+	// declares, and a crafted archive can declare anything; this is the cap
+	// that holds when every entry lies about being small.
+	budget := &archiveBudget{remaining: MaxArchiveUncompressedBytes + 1}
+
 	for _, entry := range archive.File {
 		if entry.FileInfo().IsDir() || !strings.EqualFold(filepath.Ext(entry.Name), ".csv") {
 			continue
@@ -686,7 +693,7 @@ func sourcesFromZip(path string) ([]CSVSource, func() error, error) {
 					return nil, err
 				}
 
-				return &limitedEntry{ReadCloser: reader, name: filepath.Base(file.Name), remaining: MaxArchiveUncompressedBytes + 1}, nil
+				return &limitedEntry{ReadCloser: reader, name: filepath.Base(file.Name), budget: budget}, nil
 			},
 		})
 
@@ -716,27 +723,52 @@ func tooLarge(name string) error {
 		name, MaxArchiveUncompressedBytes>>20)
 }
 
-// limitedEntry stops reading a zip entry that has grown past the cap. The
-// central directory can claim any size it likes, so the check on the header is
-// not enough on its own; this is what holds when the header lies.
+// archiveBudget is how many inflated bytes one archive may still produce,
+// shared by every entry in it. A per-entry limit alone would let a hundred
+// entries that each under-declare their size inflate to a hundred times the
+// cap between them.
+type archiveBudget struct {
+	mu        sync.Mutex
+	remaining int64
+}
+
+// take reserves up to n bytes and reports how many are allowed.
+func (b *archiveBudget) take(n int64) int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if n > b.remaining {
+		n = b.remaining
+	}
+
+	return n
+}
+
+// spend records bytes that were actually read.
+func (b *archiveBudget) spend(n int64) {
+	b.mu.Lock()
+	b.remaining -= n
+	b.mu.Unlock()
+}
+
+// limitedEntry stops reading a zip entry once the archive's inflated budget is
+// gone. The central directory can claim any size it likes, so the check on the
+// header is not enough on its own; this is what holds when the header lies.
 type limitedEntry struct {
 	io.ReadCloser
-	name      string
-	remaining int64
+	name   string
+	budget *archiveBudget
 }
 
 // Read hands back at most the bytes still allowed and fails once they are gone.
 func (l *limitedEntry) Read(p []byte) (int, error) {
-	if l.remaining <= 0 {
+	allowed := l.budget.take(int64(len(p)))
+	if allowed <= 0 {
 		return 0, tooLarge(l.name)
 	}
 
-	if int64(len(p)) > l.remaining {
-		p = p[:l.remaining]
-	}
-
-	n, err := l.ReadCloser.Read(p)
-	l.remaining -= int64(n)
+	n, err := l.ReadCloser.Read(p[:allowed])
+	l.budget.spend(int64(n))
 
 	return n, err
 }

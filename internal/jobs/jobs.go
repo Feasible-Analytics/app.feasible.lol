@@ -28,7 +28,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"sync"
 	"time"
 )
@@ -63,6 +62,12 @@ const (
 // is failing for a reason a retry will not fix, and the customer is better
 // served by a readable failure than by a job that keeps almost-working.
 const DefaultMaxAttempts = 4
+
+// MaxRetryBackoff caps the doubling delay between attempts. Not every job row
+// carries DefaultMaxAttempts — rows inserted directly take the schema's own
+// default of twenty — and uncapped doubling would put a late retry six days
+// out, which for the customer is indistinguishable from the job never running.
+const MaxRetryBackoff = time.Hour
 
 // PollInterval is how long an idle runner waits before looking again. Two
 // seconds keeps a freshly-enqueued import feeling immediate without turning an
@@ -350,10 +355,25 @@ func (c *Client) Fail(ctx context.Context, job *Job, cause error) error {
 		return nil
 	}
 
-	// Backoff in whole seconds: 2, 4, 8, 16. Long enough that a database that
-	// is momentarily busy has recovered, short enough that a customer watching
-	// a progress bar does not conclude the import is stuck.
-	delay := time.Duration(math.Pow(2, float64(job.Attempt))) * time.Second
+	// Backoff in whole seconds, doubling each time: 2, 4, 8, 16. Long enough
+	// that a database that is momentarily busy has recovered, short enough that
+	// a customer watching a progress bar does not conclude the import is stuck.
+	//
+	// The exponent is clamped before the shift rather than raised as a float:
+	// a float wide enough to overflow int64 converts to a negative duration,
+	// which would schedule the retry in the past and spin the runner.
+	exponent := job.Attempt
+	if exponent < 0 {
+		exponent = 0
+	}
+	if exponent > 32 {
+		exponent = 32
+	}
+
+	delay := time.Duration(1<<uint(exponent)) * time.Second
+	if delay > MaxRetryBackoff {
+		delay = MaxRetryBackoff
+	}
 
 	_, err := c.db.ExecContext(ctx,
 		"UPDATE jobs SET state = 'available', scheduled_at = ?, last_error = ? WHERE id = ?",
@@ -576,6 +596,23 @@ func (r *Runner) Once(ctx context.Context) (bool, error) {
 	return worked, nil
 }
 
+// outcomeWriteTimeout bounds the detached write that records a job's result.
+// It is short because it runs during shutdown, where the alternative to a
+// bounded wait is a process that will not exit.
+const outcomeWriteTimeout = 5 * time.Second
+
+// outcomeContext is the context a job's terminal state is written on.
+//
+// It deliberately does not inherit cancellation. The runner's context is
+// cancelled by the shutdown signal, and database/sql refuses a connection on a
+// cancelled context before it reaches SQLite — so writing the outcome on it
+// would silently leave the row claimed. The stale sweep would then hand a
+// finished job to the next process and run it a second time, which is the one
+// thing this package exists to prevent.
+func outcomeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), outcomeWriteTimeout)
+}
+
 // dispatch runs one claimed job and records the outcome on its row.
 func (r *Runner) dispatch(ctx context.Context, job *Job) {
 	worker, ok := r.workerFor(job.Kind)
@@ -583,7 +620,10 @@ func (r *Runner) dispatch(ctx context.Context, job *Job) {
 		// Not an error to report upwards: this process simply does not run this
 		// kind. Discarding with the reason attached is more honest than
 		// retrying something that will never succeed here.
-		err := r.client.Fail(ctx, job, PermanentError(fmt.Errorf("no worker is registered for %q in this process", job.Kind)))
+		outcome, cancel := outcomeContext(ctx)
+		err := r.client.Fail(outcome, job, PermanentError(fmt.Errorf("no worker is registered for %q in this process", job.Kind)))
+		cancel()
+
 		if err != nil && r.OnError != nil {
 			r.OnError(err)
 		}
@@ -595,15 +635,18 @@ func (r *Runner) dispatch(ctx context.Context, job *Job) {
 	err := run(ctx, worker, *job)
 	stopHeartbeat()
 
+	outcome, cancel := outcomeContext(ctx)
+	defer cancel()
+
 	if err != nil {
-		if failErr := r.client.Fail(ctx, job, err); failErr != nil && r.OnError != nil {
+		if failErr := r.client.Fail(outcome, job, err); failErr != nil && r.OnError != nil {
 			r.OnError(failErr)
 		}
 
 		return
 	}
 
-	if err := r.client.Complete(ctx, job.ID); err != nil && r.OnError != nil {
+	if err := r.client.Complete(outcome, job.ID); err != nil && r.OnError != nil {
 		r.OnError(err)
 	}
 }

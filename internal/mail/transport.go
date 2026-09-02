@@ -225,11 +225,21 @@ func (t *SMTPTransport) Send(ctx context.Context, msg Message) (result Result, e
 	}()
 
 	if t.Config.StartTLS && t.Config.Port != 465 {
-		if ok, _ := client.Extension("STARTTLS"); ok {
-			if err := client.StartTLS(&tls.Config{ServerName: t.Config.Host, MinVersion: tls.VersionTLS12}); err != nil {
-				result.Detail = err.Error()
-				return result, fmt.Errorf("mail: starttls %s: %w", addr, err)
-			}
+		// A relay that does not offer STARTTLS after the operator asked for it
+		// is refused rather than continued in the clear. Every message this
+		// transport carries holds a password-reset link or a verification code,
+		// and sending one unencrypted because the server declined to advertise
+		// the extension is exactly the silent downgrade the setting exists to
+		// prevent.
+		ok, _ := client.Extension("STARTTLS")
+		if !ok {
+			result.Detail = "the relay does not offer STARTTLS"
+			return result, fmt.Errorf("mail: %s does not offer STARTTLS, and sending in the clear was not asked for", addr)
+		}
+
+		if err := client.StartTLS(&tls.Config{ServerName: t.Config.Host, MinVersion: tls.VersionTLS12}); err != nil {
+			result.Detail = err.Error()
+			return result, fmt.Errorf("mail: starttls %s: %w", addr, err)
 		}
 	}
 
@@ -359,8 +369,11 @@ func Render(from string, msg Message) string {
 // headerValue flattens a value onto one header line. A line break inside a
 // header ends that header, so a team name or an address carrying CR or LF
 // would otherwise inject a header of its own — a Bcc, say — into the message.
+//
+// A CRLF pair becomes one space rather than two, so the flattened line reads
+// the way the customer's own text does.
 func headerValue(value string) string {
-	value = strings.NewReplacer("\r", " ", "\n", " ").Replace(value)
+	value = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(value)
 
 	return strings.TrimSpace(value)
 }

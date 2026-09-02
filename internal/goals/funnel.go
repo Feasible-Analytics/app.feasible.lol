@@ -211,12 +211,22 @@ func validateFunnelSteps(ctx context.Context, db *sql.DB, siteID int64, steps []
 // DeleteFunnel removes a funnel and its steps. The goals it pointed at stay:
 // they are definitions in their own right and are almost always on the goals
 // report as well.
+//
+// Both deletes are one transaction. Removing the steps and then failing to
+// remove the funnel would leave a funnel with none, which every read path
+// rejects as malformed — a chart that can never be drawn and never be repaired.
 func DeleteFunnel(ctx context.Context, db *sql.DB, id int64) error {
-	if _, err := db.ExecContext(ctx, "DELETE FROM funnel_steps WHERE funnel_id = ?", id); err != nil {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("goals: delete funnel: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // a rollback after a successful commit is a no-op
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM funnel_steps WHERE funnel_id = ?", id); err != nil {
 		return fmt.Errorf("goals: delete funnel: %w", err)
 	}
 
-	result, err := db.ExecContext(ctx, "DELETE FROM funnels WHERE id = ?", id)
+	result, err := tx.ExecContext(ctx, "DELETE FROM funnels WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("goals: delete funnel: %w", err)
 	}
@@ -228,6 +238,10 @@ func DeleteFunnel(ctx context.Context, db *sql.DB, id int64) error {
 
 	if affected == 0 {
 		return ErrNotFound
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("goals: delete funnel: %w", err)
 	}
 
 	return nil

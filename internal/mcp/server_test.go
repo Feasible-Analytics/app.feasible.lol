@@ -55,16 +55,19 @@ func TestInitializeAnnouncesEverythingItHas(t *testing.T) {
 	}
 }
 
-// TestEveryToolAndResourceHasAnEnforcedScope makes the centralized policy
-// table complete and exercises each tool category before its handler runs.
+// TestEveryToolAndResourceHasAnEnforcedScope makes the authorization policy
+// complete and exercises each tool category before its handler runs.
 func TestEveryToolAndResourceHasAnEnforcedScope(t *testing.T) {
 	f := newFixture(t)
-	if len(toolScopes) != len(f.Server.tools) {
-		t.Fatalf("scope policy has %d tools, server registered %d", len(toolScopes), len(f.Server.tools))
-	}
 
-	for name, required := range toolScopes {
+	for name, tool := range f.Server.tools {
+		required := tool.Scope
+
 		t.Run(name, func(t *testing.T) {
+			if required == "" {
+				t.Fatalf("%s carries no scope classification", name)
+			}
+
 			wrong := apikeys.ScopeStatsRead
 			if required == wrong {
 				wrong = apikeys.ScopeSitesRead
@@ -227,8 +230,6 @@ func TestToolsListIsCompleteAndDescribed(t *testing.T) {
 		"list_funnels", "get_funnel",
 		"compare_periods", "explain_traffic_change",
 		"create_site", "update_site",
-		"list_shields", "add_shield_rule",
-		"create_annotation",
 	}
 
 	for _, name := range expected {
@@ -644,9 +645,6 @@ func TestMissingFeaturesSayWhatTheyAreRatherThanVanishing(t *testing.T) {
 		{"create_goal", `{"site_id":"example.com","event_name":"Signup"}`, "goals"},
 		{"list_funnels", `{"site_id":"example.com"}`, "funnels"},
 		{"get_funnel", `{"site_id":"example.com","funnel_id":1}`, "funnels"},
-		{"list_shields", `{"site_id":"example.com"}`, "shield"},
-		{"add_shield_rule", `{"site_id":"example.com","type":"ip","value":"203.0.113.4"}`, "shield"},
-		{"create_annotation", `{"site_id":"example.com","date":"2026-08-30","note":"Launched"}`, "annotations"},
 	}
 
 	for _, tc := range cases {
@@ -741,16 +739,15 @@ func TestSiteSchemaResourceTellsAModelWhatExists(t *testing.T) {
 		t.Fatal("the schema lists no metrics or dimensions")
 	}
 
-	// The custom property is the part nothing else can tell a model: no generic
-	// documentation knows that this particular site reports `plan`.
-	if len(schema.PropertyDimensions) != 1 || schema.PropertyDimensions[0] != "event:props:plan" {
-		t.Errorf("property dimensions = %v, want the site's own", schema.PropertyDimensions)
+	// The property names are the part nothing else can tell a model, and they
+	// come from the account-backed registry alone. This fixture wires none, so
+	// the list is empty rather than carrying anything from the control table.
+	if len(schema.PropertyDimensions) != 0 {
+		t.Errorf("property dimensions = %v, want none without a registry", schema.PropertyDimensions)
 	}
 
-	// An empty goals list has to say which kind of empty it is, or a model will
-	// confidently report that this site tracks no conversions.
-	if schema.GoalsAvailable {
-		t.Error("goals are not wired into this build but the schema claims they are")
+	if len(schema.Goals) != 0 {
+		t.Errorf("goals = %v, want none on a site that counts none", schema.Goals)
 	}
 }
 

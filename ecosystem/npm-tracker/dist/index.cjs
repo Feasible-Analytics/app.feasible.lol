@@ -194,11 +194,22 @@ function track(name, options = {}) {
 	});
 }
 
-// pageview sends a pageview. It is the same entry point as any other event
-// because a pageview is an event, and a second spelling would only be a second
-// thing to get wrong.
+// pageview sends a pageview. The script takes a pageview's overrides under
+// short keys — `p` for props, `r` for a corrected referrer — while a custom
+// event takes `props`, so the translation happens here: forwarding `props`
+// unchanged would leave it with nowhere to land and the properties would vanish
+// with nothing to say they had.
+//
+// A referrer of "" is forwarded deliberately, because that is how the script is
+// told the page has no referrer rather than to fall back to document.referrer.
 function pageview(options = {}) {
-	return track("pageview", options);
+	const { props, referrer, ...rest } = options;
+	const forwarded = { ...rest };
+
+	if (props) forwarded.p = props;
+	if (typeof referrer === "string") forwarded.r = referrer;
+
+	return track("pageview", forwarded);
 }
 
 // enable counts this browser again by clearing the opt-out. It returns whether

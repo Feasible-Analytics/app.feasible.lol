@@ -403,13 +403,15 @@ func (s *Service) reconcileLockedWithRecovery(ctx context.Context, lease lifecyc
 }
 
 // discoverAccountCustomers returns every provider customer known to belong to
-// an account: the durable billing_account_customers rows plus the ids the
-// caller already holds, each persisted before its subscriptions can affect
-// entitlement. A webhook stops there, so handling one costs calls proportional
-// to this account rather than to every customer in the Stripe account.
-// Permanent deletion also searches the provider by metadata, because a
-// customer created by a Checkout response that never reached system.db must
-// not outlive the account it belongs to.
+// an account: the durable billing_account_customers rows, the ids the caller
+// already holds, and the customers named by Checkout Sessions carrying this
+// account's metadata. Every discovered identity is persisted before its
+// subscriptions can affect entitlement, because a second customer with a paid
+// period is the difference between an account being deleted at day 90 and an
+// account that is still paying.
+//
+// Permanent deletion additionally searches customers by metadata, since a
+// customer must not outlive the account it belongs to.
 func (s *Service) discoverAccountCustomers(ctx context.Context, lease lifecycle.AccountLease, teamID int64, searchProvider bool, seeds ...string) (map[string]bool, error) {
 	customers := make(map[string]bool)
 	remember := func(customerID string) error {
@@ -435,20 +437,33 @@ func (s *Service) discoverAccountCustomers(ctx context.Context, lease lifecycle.
 			return nil, err
 		}
 	}
-	if !searchProvider {
-		return customers, nil
+	if searchProvider {
+		if err := lease.Renew(ctx); err != nil {
+			return nil, err
+		}
+		providerCustomers, err := s.Stripe.SearchCustomersByTeam(ctx, teamID)
+		if err != nil {
+			return nil, fmt.Errorf("billing: discover payment customers for account %d: %w", teamID, err)
+		}
+		for i := range providerCustomers {
+			if !providerCustomers[i].Deleted && providerCustomers[i].Meta.TeamID() == teamID {
+				if err := remember(providerCustomers[i].ID); err != nil {
+					return nil, err
+				}
+			}
+		}
 	}
 
 	if err := lease.Renew(ctx); err != nil {
 		return nil, err
 	}
-	providerCustomers, err := s.Stripe.SearchCustomersByTeam(ctx, teamID)
+	sessions, err := s.Stripe.CheckoutSessions(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("billing: discover payment customers for account %d: %w", teamID, err)
+		return nil, fmt.Errorf("billing: discover checkout customers for account %d: %w", teamID, err)
 	}
-	for i := range providerCustomers {
-		if !providerCustomers[i].Deleted && providerCustomers[i].Meta.TeamID() == teamID {
-			if err := remember(providerCustomers[i].ID); err != nil {
+	for i := range sessions {
+		if sessions[i].Metadata.TeamID() == teamID {
+			if err := remember(sessions[i].Customer); err != nil {
 				return nil, err
 			}
 		}
@@ -1085,25 +1100,33 @@ func settledInvoice(subscriptions []stripe.Subscription, invoices []stripe.Invoi
 }
 
 // cleanupCheckoutSessions expires every open provider session this account
-// could still complete: the late sessions recorded locally, plus every session
-// Stripe holds for the customers named by the caller. A completed orphan blocks
-// a first customer; historical completions are harmless once provider
-// subscription truth says an existing customer is fully terminal.
+// could still complete: the late sessions recorded locally, every session
+// carrying this account's metadata, and every session Stripe holds for the
+// customers named by the caller. A completed orphan blocks a first customer;
+// historical completions are harmless once provider subscription truth says an
+// existing customer is fully terminal.
 //
-// An account's first checkout has no customer until it completes, so its
-// session can only be found through the local claim and cleanup rows. That is
-// enough: every session this code creates is recorded or recoverable under its
-// idempotency key, and the account-wide listing that once covered the rest
-// cost a call per customer in the whole Stripe account on every checkout.
+// The account-wide listing is what covers an account's first checkout, whose
+// session has no customer to list it by until it completes. Without it a
+// replacement checkout could be created beside a live orphan.
 func (s *Service) cleanupCheckoutSessions(ctx context.Context, lease lifecycle.AccountLease, teamID int64, blockCompleted bool, verifyCustomerID string, deletionCustomers map[string]bool, expireOpen bool) (bool, error) {
 	pending, err := s.Store.CheckoutCleanupSessions(ctx, teamID)
 	if err != nil {
 		return false, err
 	}
+	sessions, err := s.Stripe.CheckoutSessions(ctx)
+	if err != nil {
+		return false, fmt.Errorf("billing: discover open checkout sessions for %d: %w", teamID, err)
+	}
 
-	ids := make(map[string]bool, len(pending))
+	ids := make(map[string]bool, len(pending)+len(sessions))
 	for _, id := range pending {
 		ids[id] = true
+	}
+	for i := range sessions {
+		if sessions[i].Metadata.TeamID() == teamID {
+			ids[sessions[i].ID] = true
+		}
 	}
 
 	listFor := []string{}
@@ -1117,12 +1140,12 @@ func (s *Service) cleanupCheckoutSessions(ctx context.Context, lease lifecycle.A
 		if err := lease.Renew(ctx); err != nil {
 			return false, err
 		}
-		sessions, err := s.Stripe.CheckoutSessionsForCustomer(ctx, customerID)
+		owned, err := s.Stripe.CheckoutSessionsForCustomer(ctx, customerID)
 		if err != nil {
 			return false, fmt.Errorf("billing: list checkout sessions for customer %s: %w", customerID, err)
 		}
-		for i := range sessions {
-			ids[sessions[i].ID] = true
+		for i := range owned {
+			ids[owned[i].ID] = true
 		}
 	}
 

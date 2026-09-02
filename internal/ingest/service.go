@@ -146,15 +146,15 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 	}
 
 	service.Pipeline = &Pipeline{
-		Sites:     siteCache,
-		Salts:     saltSource,
-		Geo:       locator,
-		Agents:    service.Agents,
-		Bots:      bots,
-		Trusted:   trusted,
-		Shards:    DirectShard{},
-		Counters:  counters,
-		Now:       now,
+		Sites:    siteCache,
+		Salts:    saltSource,
+		Geo:      locator,
+		Agents:   service.Agents,
+		Bots:     bots,
+		Trusted:  trusted,
+		Shards:   DirectShard{},
+		Counters: counters,
+		Now:      now,
 	}
 
 	// Direct mode flows accept → derive → buffer → account write. Hosted

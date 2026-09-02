@@ -51,19 +51,8 @@ func TestProcessListenerServesApplicationHealthAndInternalRoutes(t *testing.T) {
 
 	base := "http://" + server.Addr()
 
-	response, err := http.Get(base + "/metrics") //nolint:noctx // loopback test listener
-	if err != nil {
-		t.Fatal(err)
-	}
-	if closeErr := response.Body.Close(); closeErr != nil {
-		t.Fatal(closeErr)
-	}
-	if response.StatusCode != http.StatusNotFound {
-		t.Errorf("metrics endpoint = %d, want 404", response.StatusCode)
-	}
-
-	// The health probes come with every listener, so a scrape target that is
-	// answering is also a target that can be checked.
+	// The health probes come with every listener, so a process that is answering
+	// at all is also a process that can be checked.
 	if got := fetch(t, base+httpserver.PathReady); !strings.Contains(got, "system_db") {
 		t.Errorf("readiness did not name its components: %s", got)
 	}

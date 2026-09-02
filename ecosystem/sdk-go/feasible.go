@@ -65,6 +65,7 @@ var (
 	ErrMissingName      = errors.New("an event name is required")
 	ErrMissingURL       = errors.New("an event URL is required")
 	ErrMissingDomain    = errors.New("a site domain is required")
+	ErrInvalidCurrency  = errors.New("the revenue currency must be a three-letter ISO 4217 code")
 )
 
 // ValidationError is a refusal to send something the server would only reject
@@ -188,6 +189,27 @@ func hostOnly(value string) string {
 type Revenue struct {
 	Amount   float64 `json:"amount"`
 	Currency string  `json:"currency"`
+}
+
+// currencyCode upper-cases a currency and reports whether it is the three-letter
+// shape the server stores. The check is here because the server ignores a
+// revenue object whose currency it cannot read, and revenue that is silently
+// zero is the hardest kind of missing data to notice. Upper-casing means "usd"
+// and "USD" do not become two rows on the same report.
+func currencyCode(value string) (string, bool) {
+	code := strings.ToUpper(strings.TrimSpace(value))
+
+	if len(code) != 3 {
+		return code, false
+	}
+
+	for _, char := range code {
+		if char < 'A' || char > 'Z' {
+			return code, false
+		}
+	}
+
+	return code, true
 }
 
 // Attribution overrides where a conversion came from. A delayed or offline
@@ -603,6 +625,22 @@ func (c *Client) payload(event *Event) ([]byte, error) {
 		domain = c.domain
 	}
 
+	// The revenue is normalised into a copy so that validating it cannot mutate
+	// the caller's own struct, which they may well be reusing across events.
+	revenue := event.Revenue
+	if revenue != nil {
+		code, ok := currencyCode(revenue.Currency)
+		if !ok {
+			return nil, &ValidationError{
+				Field:  "Event.Revenue.Currency",
+				Reason: fmt.Sprintf("%q is not a code such as USD or GBP, and the server ignores a revenue object it cannot read, leaving the revenue silently at zero.", revenue.Currency),
+				err:    ErrInvalidCurrency,
+			}
+		}
+
+		revenue = &Revenue{Amount: revenue.Amount, Currency: code}
+	}
+
 	body := wirePayload{
 		Key:            newKey(),
 		Name:           event.Name,
@@ -615,7 +653,7 @@ func (c *Client) payload(event *Event) ([]byte, error) {
 		ScrollDepth:    event.ScrollDepth,
 		EngagementTime: event.EngagementTime,
 		ViewportWidth:  event.ViewportWidth,
-		Revenue:        event.Revenue,
+		Revenue:        revenue,
 
 		OverrideReferrer:    event.Attribution.Referrer,
 		OverrideUTMSource:   event.Attribution.UTMSource,

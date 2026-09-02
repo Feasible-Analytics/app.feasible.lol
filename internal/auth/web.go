@@ -20,10 +20,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/destructive"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/outbound"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
@@ -66,6 +68,12 @@ type Handler struct {
 	Limiter     *Limiter
 	Keyer       *tracker.Keyer
 
+	// Trusted is the proxy allow-list every rate limit resolves a client
+	// address through. Behind our own reverse proxy every connection arrives
+	// from the proxy, so without it ten bad passwords from anybody lock sign-in
+	// for everybody. Nil trusts no forwarded header, which is the safe default.
+	Trusted *clientip.TrustedProxies
+
 	// SiteCache is the routing map the ingest path reads. A newly created site
 	// is pushed into it directly rather than waiting for the next rebuild, so
 	// that the snippet somebody pastes seconds later already resolves.
@@ -100,7 +108,9 @@ type Handler struct {
 
 	// Verifier fetches a customer's page during the installation check. It is a
 	// field so a test can answer without a network, and so the timeout is set
-	// in one place.
+	// in one place. It dials through the outbound policy: the domain is a value
+	// the customer typed, so without that the check is a way to ask the server
+	// what it can see on its own network and read the answer back.
 	Verifier *http.Client
 
 	views *views
@@ -135,6 +145,7 @@ type Options struct {
 	Deleter             *Deleter
 	Destructive         *destructive.Service
 	Keyer               *tracker.Keyer
+	Trusted             *clientip.TrustedProxies
 	SiteCache           *sites.Cache
 	ProvisionSite       func(context.Context, int64, int64, time.Time) error
 	Access              func(accountID int64) bool
@@ -142,6 +153,11 @@ type Options struct {
 	DisableCommerce     bool
 	BaseURL             string
 	Log                 *logger.Logger
+
+	// OutboundPolicy bounds where the installation check may connect. Its zero
+	// value refuses loopback and every private range, which is the safe default
+	// for a build that forgets to set it.
+	OutboundPolicy outbound.Policy
 }
 
 // NewHandler builds the application and parses its templates.
@@ -171,6 +187,7 @@ func NewHandler(opts Options) (*Handler, error) {
 		Destructive:         opts.Destructive,
 		Limiter:             NewLimiter(),
 		Keyer:               opts.Keyer,
+		Trusted:             opts.Trusted,
 		SiteCache:           opts.SiteCache,
 		ProvisionSite:       opts.ProvisionSite,
 		Access:              opts.Access,
@@ -178,7 +195,7 @@ func NewHandler(opts Options) (*Handler, error) {
 		DisableCommerce:     opts.DisableCommerce,
 		BaseURL:             strings.TrimRight(opts.BaseURL, "/"),
 		Log:                 opts.Log,
-		Verifier:            &http.Client{Timeout: verifyTimeout},
+		Verifier:            opts.OutboundPolicy.NewClient(verifyTimeout),
 		views:               views,
 	}
 
@@ -367,7 +384,7 @@ func (h *Handler) CurrentAccount(r *http.Request) (int64, string, error) {
 // ValidateForm applies the same signed double-submit check used by every auth
 // form. It writes the 403 response itself when validation fails.
 func (h *Handler) ValidateForm(w http.ResponseWriter, r *http.Request) bool {
-	return h.checkCSRF(w, r)
+	return h.CheckFormToken(w, r)
 }
 
 // GuardSiteAPI protects a JSON endpoint with the same session, verification,
@@ -402,7 +419,7 @@ func (h *Handler) GuardSiteAPI(domainOf func(*http.Request) string, permission f
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
-			if !h.checkCSRF(w, r) {
+			if !h.CheckFormToken(w, r) {
 				return
 			}
 		}
@@ -535,6 +552,7 @@ func (h *Handler) routes() *http.ServeMux {
 	mux.HandleFunc("POST /settings/profile", h.require(h.doUpdateProfile))
 	mux.HandleFunc("POST /settings/password", h.require(h.doChangePassword))
 	mux.HandleFunc("POST /settings/delete", h.require(h.doDeleteAccount))
+	mux.HandleFunc("POST /settings/confirm-code", h.require(h.doSendConfirmation))
 	mux.HandleFunc("GET /settings/sessions", h.require(h.showSessions))
 	mux.HandleFunc("POST /settings/sessions/revoke", h.require(h.doRevokeSession))
 	mux.HandleFunc("GET /settings/security", h.require(h.showSecurity))
@@ -680,7 +698,7 @@ func (h *Handler) userRequiresTwoFactor(ctx context.Context, userID int64) (bool
 func (h *Handler) Protect(next http.Handler) http.Handler {
 	return http.HandlerFunc(h.require(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
-			if !h.checkCSRF(w, r) {
+			if !h.CheckFormToken(w, r) {
 				return
 			}
 		}
@@ -724,7 +742,7 @@ func (h *Handler) NavigationForDashboard(w http.ResponseWriter, r *http.Request)
 		SitesURL:   "/sites",
 		AccountURL: "/settings",
 		LogoutURL:  "/logout",
-		CSRF:       h.IssueCSRF(w, r),
+		CSRF:       h.FormToken(w, r),
 	}
 
 	trimmed := strings.TrimPrefix(r.URL.Path, "/dashboard/")
@@ -783,7 +801,7 @@ func (h *Handler) GuardTeam(permission teams.Permission, next http.Handler) http
 		}
 
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
-			if !h.checkCSRF(w, r) {
+			if !h.CheckFormToken(w, r) {
 				return
 			}
 		}

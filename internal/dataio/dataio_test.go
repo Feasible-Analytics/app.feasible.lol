@@ -1162,3 +1162,47 @@ func sheetBody(t *testing.T, path, name string) string {
 
 	return ""
 }
+
+// TestArchiveBudgetIsSharedAcrossEntries pins the cap that has to hold when a
+// zip's central directory lies about its sizes.
+//
+// Every size check before the read comes from the central directory, which an
+// attacker writes, so an archive whose entries each under-declare themselves
+// passes all of them. The inflated-byte budget is the only thing left, and one
+// budget per entry would let a hundred entries expand to a hundred times the
+// limit between them while each stayed individually within it.
+func TestArchiveBudgetIsSharedAcrossEntries(t *testing.T) {
+	const limit = 64
+
+	// The budget is the limit plus one, as in production: an archive that
+	// inflates to exactly the limit is allowed, and the extra byte is what
+	// turns "one more than allowed" into a refusal rather than a clean EOF.
+	budget := &archiveBudget{remaining: limit + 1}
+
+	first := &limitedEntry{
+		ReadCloser: io.NopCloser(strings.NewReader(strings.Repeat("a", limit))),
+		name:       "first.csv",
+		budget:     budget,
+	}
+
+	read, err := io.Copy(io.Discard, first)
+	if err != nil {
+		t.Fatalf("an entry inside the budget was refused: %v", err)
+	}
+	if read != limit {
+		t.Fatalf("first entry read %d bytes, want %d", read, limit)
+	}
+
+	// On its own this entry is one byte long and could not trouble any
+	// per-entry cap. It has to be refused because the archive as a whole has
+	// now gone past the limit.
+	second := &limitedEntry{
+		ReadCloser: io.NopCloser(strings.NewReader("b")),
+		name:       "second.csv",
+		budget:     budget,
+	}
+
+	if _, err := io.Copy(io.Discard, second); err == nil {
+		t.Fatal("a second entry inflated past the archive's shared budget")
+	}
+}

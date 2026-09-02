@@ -104,10 +104,12 @@ type Pipeline struct {
 // field. It exists so anyone can debug their proxy in one curl, rather than
 // filing a ticket about numbers that look wrong for a reason only we can see.
 //
-// The endpoint is open to any page on the internet, so the fields a third
-// party could use against a site — its account id and its visitors'
-// fingerprints — are kept out of the wire form. They are of no use for
-// debugging a proxy, which is what the view is for.
+// The endpoint is open to any page on the internet, so what it answers is
+// scoped to the caller's own request. The fingerprints below are the caller's,
+// derived from the address and agent they sent and salted per domain, so they
+// are answered: "why is one visitor counted as two" is the question the view
+// exists for. The account id is not the caller's, and probing several domains
+// with it would map which sites one customer owns, so it stays internal.
 type Debug struct {
 	// ClientIP is answered to the caller and goes no further: the observer
 	// receives this view with the address blanked, because the IP address
@@ -130,10 +132,10 @@ type Debug struct {
 	EventName string `json:"event_name"`
 	Timestamp int64  `json:"timestamp"`
 
-	UserID         int64  `json:"-"`
-	PreviousUserID int64  `json:"-"`
+	UserID         int64  `json:"user_id"`
+	PreviousUserID int64  `json:"previous_user_id"`
 	RootDomain     string `json:"root_domain"`
-	SaltDay        int64  `json:"-"`
+	SaltDay        int64  `json:"salt_day"`
 
 	Hostname  string `json:"hostname"`
 	Pathname  string `json:"pathname"`

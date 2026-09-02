@@ -9,10 +9,9 @@
 package billing
 
 // PlanPrice is what one of the two plans costs and how that is shown to a
-// customer. Every amount and label the product prints — preflight's check of
-// the configured Stripe prices, the billing screen, the lifecycle emails —
-// reads from here, so a price change is one edit and the copy cannot disagree
-// with the check.
+// customer. Preflight checks the configured Stripe prices against these amounts
+// and the billing screen labels a subscription from them, so the check and the
+// copy cannot disagree about what an account is paying.
 type PlanPrice struct {
 	// Key is the plan name used in URLs, the mirror and the claim table.
 	Key string
@@ -31,11 +30,6 @@ type PlanPrice struct {
 // Label renders the plan for a panel: "$9.99 / month".
 func (p PlanPrice) Label() string {
 	return p.Price + " / " + p.Interval
-}
-
-// Compact renders the plan for running copy: "$9.99/month".
-func (p PlanPrice) Compact() string {
-	return p.Price + "/" + p.Interval
 }
 
 // Monthly and Yearly are the catalogue. The yearly plan is priced as ten

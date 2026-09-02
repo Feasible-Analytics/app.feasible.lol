@@ -58,7 +58,7 @@ func newHandler(t *testing.T, baseURL string) (*Handler, *fixture, *recordingShe
 func TestAnEmbedOfAPasswordProtectedLinkIsRefused(t *testing.T) {
 	handler, f, shell := newHandler(t, "http://localhost:19300")
 
-	link, err := f.store.CreateLink(context.Background(), f.siteID, "client", "hunter2", 0, 0)
+	link, err := f.store.CreateLinkForOwner(context.Background(), f.siteID, f.teamID, "client", "hunter2", 0, 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestAnEmbedOfAPasswordProtectedLinkIsRefused(t *testing.T) {
 func TestAProtectedLinkAsksForItsPasswordAndThenRenders(t *testing.T) {
 	handler, f, shell := newHandler(t, "http://localhost:19300")
 
-	link, err := f.store.CreateLink(context.Background(), f.siteID, "client", "hunter2", 0, 0)
+	link, err := f.store.CreateLinkForOwner(context.Background(), f.siteID, f.teamID, "client", "hunter2", 0, 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestAProtectedLinkAsksForItsPasswordAndThenRenders(t *testing.T) {
 // exposes a bounded retry response without hiding the link as missing.
 func TestPasswordGateReturns429AfterTheSourceLinkBudget(t *testing.T) {
 	handler, f, _ := newHandler(t, "http://localhost:19300")
-	link, err := f.store.CreateLink(context.Background(), f.siteID, "client", "hunter2", 0, 0)
+	link, err := f.store.CreateLinkForOwner(context.Background(), f.siteID, f.teamID, "client", "hunter2", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestPasswordGateReturns429AfterTheSourceLinkBudget(t *testing.T) {
 func TestTheBootstrapCarriesTheSharePathSoFiltersKeepIt(t *testing.T) {
 	handler, f, shell := newHandler(t, "http://localhost:19300")
 
-	link, err := f.store.CreateLink(context.Background(), f.siteID, "open", "", 0, 0)
+	link, err := f.store.CreateLinkForOwner(context.Background(), f.siteID, f.teamID, "open", "", 0, 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestTheBootstrapCarriesTheSharePathSoFiltersKeepIt(t *testing.T) {
 func TestAnEmbedTellsTheFrontEndNotToTouchStorage(t *testing.T) {
 	handler, f, shell := newHandler(t, "http://localhost:19300")
 
-	link, err := f.store.CreateLink(context.Background(), f.siteID, "open", "", 0, 0)
+	link, err := f.store.CreateLinkForOwner(context.Background(), f.siteID, f.teamID, "open", "", 0, 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestAnEmbedTellsTheFrontEndNotToTouchStorage(t *testing.T) {
 func TestANonEmbeddedShareKeepsStorageAndChrome(t *testing.T) {
 	handler, f, shell := newHandler(t, "http://localhost:19300")
 
-	link, err := f.store.CreateLink(context.Background(), f.siteID, "open", "", 0, 0)
+	link, err := f.store.CreateLinkForOwner(context.Background(), f.siteID, f.teamID, "open", "", 0, 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestAPublicSiteServesWithoutAToken(t *testing.T) {
 		t.Fatalf("a private site answered %d on the public URL", before.Code)
 	}
 
-	if err := f.store.SetPublic(ctx, f.siteID, true); err != nil {
+	if err := f.store.SetPublicForOwner(ctx, f.siteID, f.teamID, true); err != nil {
 		t.Fatalf("set public: %v", err)
 	}
 
@@ -333,7 +333,7 @@ func TestAnUnknownLinkAnswersTheSameAsAPrivateOne(t *testing.T) {
 func TestThePasswordEndpointOnlyTakesPOST(t *testing.T) {
 	handler, f, _ := newHandler(t, "http://localhost:19300")
 
-	link, err := f.store.CreateLink(context.Background(), f.siteID, "client", "hunter2", 0, 0)
+	link, err := f.store.CreateLinkForOwner(context.Background(), f.siteID, f.teamID, "client", "hunter2", 0, 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

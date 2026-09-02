@@ -270,7 +270,10 @@ func exploreJourney(ctx context.Context, db *sql.DB, engine *query.Engine, req J
 			return nil, anchor, invalid("a goal journey anchor needs a positive goal id")
 		}
 		goal, err := Get(ctx, db, goalID)
-		if err != nil || goal.SiteID != req.SiteID {
+		if err != nil {
+			return nil, anchor, err
+		}
+		if goal.SiteID != req.SiteID {
 			return nil, anchor, ErrNotFound
 		}
 		anchorPredicate, err = goalPredicate(ctx, db, goal, pageviewID)
@@ -416,7 +419,10 @@ func journeyAnchorPredicate(ctx context.Context, db *sql.DB, siteID int64, ancho
 			goalID, _ = strconv.ParseInt(anchor.Value, 10, 64)
 		}
 		goal, err := Get(ctx, db, goalID)
-		if err != nil || goal.SiteID != siteID {
+		if err != nil {
+			return predicate{}, err
+		}
+		if goal.SiteID != siteID {
 			return predicate{}, ErrNotFound
 		}
 		compiled, err := goalPredicate(ctx, db, goal, pageviewID)
@@ -477,7 +483,10 @@ func journeyScrollPredicates(ctx context.Context, db *sql.DB, req JourneyRequest
 			continue
 		}
 		goal, err := Get(ctx, db, goalID)
-		if err != nil || goal.SiteID != req.SiteID {
+		if err != nil {
+			return nil, err
+		}
+		if goal.SiteID != req.SiteID {
 			return nil, ErrNotFound
 		}
 		if goal.Kind != KindScroll {

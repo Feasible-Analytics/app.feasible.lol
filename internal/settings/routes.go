@@ -104,6 +104,7 @@ var accountPaths = []string{
 	"/settings/profile",
 	"/settings/password",
 	"/settings/delete",
+	"/settings/confirm-code",
 	"/settings/sessions",
 	"/settings/sessions/revoke",
 	"/settings/security",

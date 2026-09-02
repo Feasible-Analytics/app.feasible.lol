@@ -147,10 +147,16 @@ func Reached(billable int64) []Level {
 // It returns zero for a month that has barely started, since a projection from
 // two hours of data is noise dressed up as a number.
 func Projection(billable int64, now time.Time) int64 {
+	// The month is read in UTC because that is the month being billed. Taking
+	// the calendar fields from whatever zone the caller's clock carries would
+	// pick a different month from the one the elapsed time is measured against,
+	// and near a month boundary the two disagree.
+	now = now.UTC()
+
 	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	next := start.AddDate(0, 1, 0)
 
-	elapsed := now.UTC().Sub(start)
+	elapsed := now.Sub(start)
 	total := next.Sub(start)
 
 	if elapsed < 24*time.Hour || elapsed >= total {

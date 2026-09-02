@@ -48,6 +48,13 @@ const (
 	// is guessable in a way the signature scheme cannot compensate for.
 	MinInternalKeyLength = 32
 
+	// MinIngestSaltLength is the shortest fingerprint salt production accepts.
+	// A short salt is enumerable, and anyone holding the fact rows could then
+	// recover the address behind every visitor hash — which is the one thing
+	// the salt exists to prevent. Rejecting only the shipped default leaves a
+	// one-character salt looking like a configured one.
+	MinIngestSaltLength = 32
+
 	// DefaultAPIRateLimit is how many public-API requests one key may make an
 	// hour. It is configurable at all because the incumbent's equivalent is
 	// hard-coded at 600 even in the build people run on their own hardware, and
@@ -734,6 +741,9 @@ func (c *Config) Validate() error {
 	if c.IsProduction() {
 		if c.Shared.IngestSalt == DefaultIngestSalt {
 			return fmt.Errorf("FEASIBLE_INGEST_SALT: production cannot run with the development default")
+		}
+		if len(c.Shared.IngestSalt) < MinIngestSaltLength {
+			return fmt.Errorf("FEASIBLE_INGEST_SALT: production requires at least %d characters, got %d", MinIngestSaltLength, len(c.Shared.IngestSalt))
 		}
 		if c.Shared.InternalKey != "" && len(c.Shared.InternalKey) < MinInternalKeyLength {
 			return fmt.Errorf("FEASIBLE_INTERNAL_KEY: production requires at least %d characters, got %d", MinInternalKeyLength, len(c.Shared.InternalKey))

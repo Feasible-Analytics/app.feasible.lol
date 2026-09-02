@@ -230,10 +230,12 @@ func (p *multiCustomerProvider) ServeHTTP(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "application/json")
 
 	switch {
-	case r.Method == http.MethodGet && r.URL.Path == "/v1/customers":
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/customers/search":
+		// Checkout cannot write metadata onto the customer it creates, so the
+		// metadata search finds nothing and the session scan is what has to
+		// discover the account's second customer.
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"object": "list", "has_more": false,
-			"data": []stripe.Customer{{ID: "cus_a", Meta: stripe.Meta{stripe.TeamMetadataKey: "1"}}},
+			"object": "search_result", "has_more": false, "data": []stripe.Customer{},
 		})
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/customers/"):
 		id := strings.TrimPrefix(r.URL.Path, "/v1/customers/")
@@ -372,6 +374,22 @@ func (h *harness) now() time.Time {
 	defer h.mu.Unlock()
 
 	return h.clock
+}
+
+// seedMirror writes the starting subscription row a fixture reasons from. The
+// ordering guard is asserted rather than ignored, so a fixture can never quietly
+// begin from an empty mirror because its evidence looked older than a row that
+// was already there.
+func (h *harness) seedMirror(ctx context.Context, sub Subscription) {
+	h.t.Helper()
+
+	applied, err := h.service.Store.SaveReconciled(ctx, sub)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if !applied {
+		h.t.Fatalf("seeding the mirror for team %d was rejected by the ordering guard", sub.TeamID)
+	}
 }
 
 // travel moves the clock forward.
@@ -1252,11 +1270,13 @@ func TestSessionlessCheckoutRecoveryHonorsAChangedPlan(t *testing.T) {
 	}
 }
 
-// TestIndeterminateCheckoutClaimFailsClosedAtTheBoundary exercises failure,
-// restart, exact retry-window expiry, concurrent attempts, and a late provider
-// response. No worker may replace the claim once Stripe can prune its original
-// idempotency result.
-func TestIndeterminateCheckoutClaimFailsClosedAtTheBoundary(t *testing.T) {
+// TestIndeterminateCheckoutClaimIsReplacedOnlyOnceAtTheBoundary exercises
+// failure, restart, exact retry-window expiry, concurrent attempts, and a late
+// provider response. Past the window the original idempotency result can no
+// longer be recovered, so the claim is replaced — but only after the orphan it
+// left behind is expired at the provider, and only once no matter how many
+// workers arrive together.
+func TestIndeterminateCheckoutClaimIsReplacedOnlyOnceAtTheBoundary(t *testing.T) {
 	h := newHarness(t)
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
@@ -1264,6 +1284,7 @@ func TestIndeterminateCheckoutClaimFailsClosedAtTheBoundary(t *testing.T) {
 	var providerMu sync.Mutex
 	var forms []url.Values
 	var keys []string
+	var createdWithOrphanOpen []string
 	expiredOld := 0
 	oldExpired := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1278,6 +1299,9 @@ func TestIndeterminateCheckoutClaimFailsClosedAtTheBoundary(t *testing.T) {
 			index := len(forms)
 			forms = append(forms, r.PostForm)
 			keys = append(keys, r.Header.Get("Idempotency-Key"))
+			if index > 0 && !oldExpired {
+				createdWithOrphanOpen = append(createdWithOrphanOpen, r.Header.Get("Idempotency-Key"))
+			}
 			providerMu.Unlock()
 			if index == 0 {
 				close(firstStarted)
@@ -1358,8 +1382,10 @@ func TestIndeterminateCheckoutClaimFailsClosedAtTheBoundary(t *testing.T) {
 	third.Store = NewStore(thirdControl)
 	third.Store.Now = func() time.Time { return h.now() }
 
-	// At the exact provider retry boundary, two restarted workers both fail
-	// closed. Neither may send a second create under an old or replacement key.
+	// At the exact provider retry boundary two restarted workers arrive
+	// together. Between them they may produce one replacement session and no
+	// more, and the second worker must recover that session rather than create
+	// its own.
 	h.travel(checkoutProviderRetryWindow - accountLeaseDuration + time.Second)
 	start := make(chan struct{})
 	results := make(chan *stripe.CheckoutSession, 2)
@@ -1380,13 +1406,13 @@ func TestIndeterminateCheckoutClaimFailsClosedAtTheBoundary(t *testing.T) {
 	close(results)
 	close(errors)
 	for err := range errors {
-		if err == nil || !strings.Contains(err.Error(), "indeterminate checkout") {
+		if err != nil {
 			t.Fatalf("boundary retry returned %v", err)
 		}
 	}
 	for session := range results {
-		if session != nil {
-			t.Fatalf("indeterminate checkout returned %+v", session)
+		if session == nil || session.ID != "cs_new" {
+			t.Fatalf("boundary retry returned %+v, want the single replacement", session)
 		}
 	}
 
@@ -1406,17 +1432,29 @@ func TestIndeterminateCheckoutClaimFailsClosedAtTheBoundary(t *testing.T) {
 	}
 	providerMu.Lock()
 	defer providerMu.Unlock()
-	if len(forms) != 1 || len(keys) != 1 {
-		t.Fatalf("provider creates forms=%d keys=%d, want only the original attempt", len(forms), len(keys))
+	if len(forms) != 2 || len(keys) != 2 {
+		t.Fatalf("provider creates forms=%d keys=%d, want the original attempt and one replacement", len(forms), len(keys))
 	}
-	if forms[0].Get("line_items[0][price]") != "price_monthly" {
-		t.Fatalf("provider plan attempt is %q", forms[0].Get("line_items[0][price]"))
+	if forms[0].Get("line_items[0][price]") != "price_monthly" || forms[1].Get("line_items[0][price]") != "price_yearly" {
+		t.Fatalf("provider plan attempts are %q and %q",
+			forms[0].Get("line_items[0][price]"), forms[1].Get("line_items[0][price]"))
 	}
-	if keys[0] == "" || claim.IdempotencyKey != keys[0] {
-		t.Fatalf("original key=%v stored=%q", keys, claim.IdempotencyKey)
+	if keys[0] == "" || keys[1] == "" || keys[0] == keys[1] {
+		t.Fatalf("provider idempotency keys are %v, want two distinct keys", keys)
 	}
-	if claim.Plan != "monthly" || claim.PriceID != "price_monthly" || claim.SessionID != "" || expiredOld != 1 || cleanupRows != 0 {
-		t.Fatalf("indeterminate claim=%+v expired_old=%d cleanup=%d", claim, expiredOld, cleanupRows)
+	if len(createdWithOrphanOpen) != 0 {
+		t.Fatalf("replacement sessions %v were created while the orphan was still open", createdWithOrphanOpen)
+	}
+	if claim.Plan != "yearly" || claim.PriceID != "price_yearly" || claim.SessionID != "cs_new" ||
+		claim.IdempotencyKey != keys[1] || cleanupRows != 0 {
+		t.Fatalf("replacement claim=%+v cleanup=%d", claim, cleanupRows)
+	}
+
+	// cs_old is expired twice: once by the sweep that clears the account before
+	// a replacement is created, and again when its own late response finds the
+	// claim gone.
+	if expiredOld != 2 {
+		t.Fatalf("orphan session expired %d times, want 2", expiredOld)
 	}
 }
 
@@ -1474,6 +1512,11 @@ func TestExpiredCheckoutRestartPersistsCleanupFailure(t *testing.T) {
 	t.Cleanup(server.Close)
 	h.service.Stripe = stripe.New("sk_test_fake")
 	h.service.Stripe.BaseURL = server.URL
+
+	// The injected expiration failure must reach the caller. The client's own
+	// retries would otherwise absorb it, and what this test is about is the
+	// cleanup row that survives the process, not the transport.
+	h.service.Stripe.Retry = stripe.RetryPolicy{Attempts: 1}
 
 	if _, err := h.service.Checkout(ctx, teamID, "yearly", "owner@example.com"); err == nil || !strings.Contains(err.Error(), "temporary") {
 		t.Fatalf("first orphan cleanup returned %v", err)
@@ -1587,13 +1630,11 @@ func TestCompletedCheckoutTruthBlocksOnlyAnUntrackedSubscription(t *testing.T) {
 			customer := ""
 			if tc.existingCustomer {
 				customer = customerID
-				if err := h.service.Store.Save(ctx, Subscription{
+				h.seedMirror(ctx, Subscription{
 					TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_terminal",
 					Status: stripe.StatusCanceled, Plan: "monthly", PriceID: "price_monthly",
 					PaymentState: PaymentFailed,
-				}); err != nil {
-					t.Fatal(err)
-				}
+				})
 			}
 			claim, err := h.service.Store.NewCheckoutClaim(ctx, teamID, "monthly", "price_monthly", customer, "owner@example.com")
 			if err != nil {
@@ -1653,13 +1694,11 @@ func TestPlanSwitchRechecksAConcurrentCheckoutCompletion(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
-	if err := h.service.Store.Save(ctx, Subscription{
+	h.seedMirror(ctx, Subscription{
 		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_terminal",
 		Status: stripe.StatusCanceled, Plan: "monthly", PriceID: "price_monthly",
 		PaymentState: PaymentFailed,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	claim, err := h.service.Store.NewCheckoutClaim(ctx, teamID, "monthly", "price_monthly", customerID, "owner@example.com")
 	if err != nil {
 		t.Fatal(err)
@@ -1806,7 +1845,7 @@ func TestCheckoutRefusesAnExistingChargeableSubscription(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
-	if err := h.service.Store.Save(ctx, Subscription{
+	h.seedMirror(ctx, Subscription{
 		TeamID:         teamID,
 		CustomerID:     customerID,
 		SubscriptionID: "sub_test_1",
@@ -1814,9 +1853,7 @@ func TestCheckoutRefusesAnExistingChargeableSubscription(t *testing.T) {
 		Plan:           "monthly",
 		PriceID:        "price_monthly",
 		PaymentState:   PaymentPaid,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 
 	if _, err := h.service.Checkout(ctx, teamID, "yearly", "owner@example.com"); err == nil || !strings.Contains(err.Error(), "billing portal") {
 		t.Fatalf("existing subscription checkout returned %v", err)
@@ -1872,13 +1909,11 @@ func TestMixedSubscriptionHistoryCannotHideChargeableTruth(t *testing.T) {
 	h.service.Stripe = stripe.New("sk_test_fake")
 	h.service.Stripe.BaseURL = server.URL
 
-	if err := h.service.Store.Save(ctx, Subscription{
+	h.seedMirror(ctx, Subscription{
 		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_old_annual",
 		Status: stripe.StatusCanceled, Plan: "yearly", PriceID: "price_yearly",
 		PaymentState: PaymentFailed,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	if _, err := h.service.Checkout(ctx, teamID, "monthly", "owner@example.com"); err == nil || !strings.Contains(err.Error(), "sub_new_monthly") {
 		t.Fatalf("mixed history checkout returned %v", err)
 	}
@@ -2515,13 +2550,11 @@ func TestLegacyPendingDeletionPersistsRecoveredPaymentMirror(t *testing.T) {
 	failureAt := h.now().Add(-lifecycle.DeletionDays * lifecycle.Day)
 	paidAt := h.now().Add(-time.Hour)
 
-	if err := h.service.Store.Save(ctx, Subscription{
+	h.seedMirror(ctx, Subscription{
 		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_test_1",
 		Status: stripe.StatusPastDue, Plan: "monthly", PriceID: "price_monthly",
 		PaymentState: PaymentFailed, PaymentFailedAt: failureAt,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	if _, err := h.service.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentFailed, failureAt); err != nil {
 		t.Fatal(err)
 	}
@@ -2584,13 +2617,11 @@ func TestLegacyPendingDeletionMirrorCrashKeepsAuditRetryable(t *testing.T) {
 	failureAt := h.now().Add(-lifecycle.DeletionDays * lifecycle.Day)
 	paidAt := h.now().Add(-time.Hour)
 
-	if err := h.service.Store.Save(ctx, Subscription{
+	h.seedMirror(ctx, Subscription{
 		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_test_1",
 		Status: stripe.StatusPastDue, Plan: "monthly", PriceID: "price_monthly",
 		PaymentState: PaymentFailed, PaymentFailedAt: failureAt,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	if _, err := h.service.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentFailed, failureAt); err != nil {
 		t.Fatal(err)
 	}
@@ -2661,13 +2692,11 @@ func TestDay90RecoversSettlementAtTheVoidFence(t *testing.T) {
 	failureAt := h.now().Add(-lifecycle.DeletionDays * lifecycle.Day)
 	paidAt := h.now().Add(-time.Second)
 
-	if err := h.service.Store.Save(ctx, Subscription{
+	h.seedMirror(ctx, Subscription{
 		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_test_1",
 		Status: stripe.StatusPastDue, Plan: "monthly", PriceID: "price_monthly",
 		PaymentState: PaymentFailed, PaymentFailedAt: failureAt,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	if _, err := h.service.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentFailed, failureAt); err != nil {
 		t.Fatal(err)
 	}
@@ -2723,13 +2752,11 @@ func TestDay90RestoresDurableQuiescenceAfterProcessCrash(t *testing.T) {
 	if _, err := h.service.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentFailed, failureAt); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.service.Store.Save(ctx, Subscription{
+	h.seedMirror(ctx, Subscription{
 		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_test_1",
 		Status: stripe.StatusActive, Plan: "monthly", PriceID: "price_monthly",
 		PaymentState: PaymentPaid, EvidenceEventAt: h.now().Add(-time.Minute).Unix(),
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	for _, object := range []QuiescenceObject{{CustomerID: customerID, Type: "subscription", ID: "sub_test_1"}, {CustomerID: customerID, Type: "invoice", ID: "in_test_1"}} {
 		if err := h.service.Store.RememberQuiescence(ctx, teamID, object.CustomerID, object.Type, object.ID); err != nil {
 			t.Fatal(err)
@@ -2776,13 +2803,11 @@ func TestDeletionFailsClosedWithoutStripeCredentials(t *testing.T) {
 	if _, err := h.service.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentFailed, failureAt); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.service.Store.Save(ctx, Subscription{
+	h.seedMirror(ctx, Subscription{
 		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_test_1",
 		Status: stripe.StatusCanceled, Plan: "monthly", PriceID: "price_monthly",
 		PaymentState: PaymentFailed, PaymentFailedAt: failureAt,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 
 	h.service.Stripe = stripe.New("")
 	h.service.Lifecycle.Purger.Payments = h.service
@@ -2823,13 +2848,11 @@ func TestPurgeLeaseWinsAgainstIndependentReconciliation(t *testing.T) {
 	ctx := context.Background()
 	failureAt := h.now().Add(-lifecycle.DeletionDays * lifecycle.Day)
 
-	if err := h.service.Store.Save(ctx, Subscription{
+	h.seedMirror(ctx, Subscription{
 		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_test_1",
 		Status: stripe.StatusPastDue, Plan: "monthly", PriceID: "price_monthly",
 		PaymentState: PaymentFailed, PaymentFailedAt: failureAt,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	if _, err := h.service.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentFailed, failureAt); err != nil {
 		t.Fatal(err)
 	}
@@ -2917,13 +2940,11 @@ func TestLostDeletionClaimRestoresProviderCollection(t *testing.T) {
 	if _, err := h.service.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentFailed, failureAt); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.service.Store.Save(ctx, Subscription{
+	h.seedMirror(ctx, Subscription{
 		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_test_1",
 		Status: stripe.StatusPastDue, Plan: "monthly", PriceID: "price_monthly",
 		PaymentState: PaymentPaid,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	h.provider.mu.Lock()
 	h.provider.status = stripe.StatusPastDue
 	h.provider.invoiceStatus = "open"
@@ -2969,13 +2990,11 @@ func TestIrreversibleProviderCleanupFollowsAuthoritativeClaim(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	failureAt := h.now().Add(-lifecycle.DeletionDays * lifecycle.Day)
-	if err := h.service.Store.Save(ctx, Subscription{
+	h.seedMirror(ctx, Subscription{
 		TeamID: teamID, CustomerID: customerID, SubscriptionID: "sub_test_1",
 		Status: stripe.StatusPastDue, Plan: "monthly", PriceID: "price_monthly",
 		PaymentState: PaymentFailed, PaymentFailedAt: failureAt,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	if _, err := h.service.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentFailed, failureAt); err != nil {
 		t.Fatal(err)
 	}
@@ -3056,13 +3075,11 @@ func TestAccountWideEntitlementBeatsStaleFailureAtDay90(t *testing.T) {
 	h.service.Stripe = stripe.New("sk_test_fake")
 	h.service.Stripe.BaseURL = server.URL
 
-	if err := h.service.Store.Save(ctx, Subscription{
+	h.seedMirror(ctx, Subscription{
 		TeamID: teamID, CustomerID: "cus_a", SubscriptionID: "sub_failed",
 		Status: stripe.StatusActive, Plan: "monthly", PriceID: "price_monthly",
 		PaymentState: PaymentFailed, PaymentFailedAt: failureAt,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	if _, err := h.service.Lifecycle.SignalAt(ctx, teamID, lifecycle.SignalPaymentFailed, failureAt); err != nil {
 		t.Fatal(err)
 	}
@@ -3127,6 +3144,11 @@ func TestMultiCustomerQuiescenceRecoveryRetainsPartialFailure(t *testing.T) {
 	t.Cleanup(server.Close)
 	h.service.Stripe = stripe.New("sk_test_fake")
 	h.service.Stripe.BaseURL = server.URL
+
+	// One injected failure must reach the caller. The client's own retries would
+	// otherwise absorb it, and this test is about what survives a crash, not
+	// about how many times a call is repeated.
+	h.service.Stripe.Retry = stripe.RetryPolicy{Attempts: 1}
 
 	for _, object := range []QuiescenceObject{
 		{CustomerID: "cus_a", Type: "subscription", ID: "sub_a"},

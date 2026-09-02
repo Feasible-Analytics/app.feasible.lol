@@ -178,7 +178,7 @@ you can log it — never swallowed, and never retried.
 
 | Type | When |
 |---|---|
-| `*ValidationError` | Something required was missing. Wraps `ErrMissingClientIP`, `ErrMissingUserAgent`, `ErrMissingName`, `ErrMissingURL` or `ErrMissingDomain`, so `errors.Is` works. |
+| `*ValidationError` | Something required was missing, or a revenue currency was not a code. Wraps `ErrMissingClientIP`, `ErrMissingUserAgent`, `ErrMissingName`, `ErrMissingURL`, `ErrMissingDomain` or `ErrInvalidCurrency`, so `errors.Is` works. |
 | `*APIError` | The server refused the request. Carries the status and the server's own sentence verbatim. |
 
 ```go

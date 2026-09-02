@@ -95,7 +95,7 @@ func TestShardShieldStopsAnEventReachingDisk(t *testing.T) {
 
 	counters := ingest.NewCounters()
 
-	writer := ingest.NewWriter(manager, ingest.NewSessionCache())
+	writer := ingest.NewWriter(manager)
 	writer.Now = func() time.Time { return now }
 	writer.Shield = cache
 	writer.Counters = counters
@@ -146,7 +146,7 @@ func TestDefaultHostnamePolicyStopsCopycatWithoutConfiguredRules(t *testing.T) {
 	if err := cache.Refresh(ctx); err != nil {
 		t.Fatal(err)
 	}
-	writer := ingest.NewWriter(manager, ingest.NewSessionCache())
+	writer := ingest.NewWriter(manager)
 	writer.Now = func() time.Time { return time.Unix(1_800_000_000, 0) }
 	writer.Shield = cache
 

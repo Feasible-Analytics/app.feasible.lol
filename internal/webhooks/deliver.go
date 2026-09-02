@@ -279,9 +279,13 @@ func (d *Dispatcher) Redeliver(ctx context.Context, teamID, deliveryID int64) (*
 type Worker struct {
 	store *Store
 
-	// Client is the HTTP client deliveries go out on. It refuses redirects: a
-	// receiver that answers 302 pointing somewhere else would have us POST a
-	// signed payload to an address the customer never registered.
+	// Client is the HTTP client deliveries go out on. It comes from
+	// outbound.Policy, so the endpoint URL is resolved and checked again at
+	// connect time and a redirect is never followed: an endpoint that resolved
+	// to a public address when it was saved and to 169.254.169.254 when it is
+	// used, or one that answers 302 pointing at loopback, is a way to make this
+	// process read something on its own network and put the answer in a
+	// delivery log the customer can open.
 	Client *http.Client
 
 	// Notifier is told when an endpoint is failing and when it is disabled.
@@ -297,21 +301,17 @@ type Worker struct {
 	Now func() time.Time
 }
 
-// NewWorker builds a worker with the default timeout.
+// NewWorker builds a worker with the default timeout, delivering through the
+// store's outbound policy.
 func NewWorker(store *Store, timeout time.Duration) *Worker {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
 
 	return &Worker{
-		store: store,
-		Client: &http.Client{
-			Timeout: timeout,
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
-		Now: store.Now,
+		store:  store,
+		Client: store.Policy.NewClient(timeout),
+		Now:    store.Now,
 	}
 }
 

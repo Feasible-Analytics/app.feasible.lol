@@ -46,25 +46,14 @@ type GoalProperty struct {
 	Value string `json:"value"`
 }
 
-// GoalStore is the goals feature as this API needs it.
+// GoalStore is the goals feature as this API needs it. Every method is
+// required: this product ships every feature in every build, so there is no
+// such thing as an installation that can list goals but not edit one.
 type GoalStore interface {
 	ListGoals(ctx context.Context, siteID int64) ([]Goal, error)
 	CreateGoal(ctx context.Context, siteID int64, goal Goal) (*Goal, error)
-	DeleteGoal(ctx context.Context, siteID, goalID int64) error
-}
-
-// GoalUpdater is the optional management extension for builds that support
-// changing a definition in place.
-type GoalUpdater interface {
 	UpdateGoal(ctx context.Context, siteID, goalID int64, goal Goal) (*Goal, error)
-}
-
-// FunnelManager is the optional write surface behind funnel settings and API
-// automation.
-type FunnelManager interface {
-	CreateFunnel(ctx context.Context, siteID int64, funnel Funnel) (*Funnel, error)
-	UpdateFunnel(ctx context.Context, siteID, funnelID int64, funnel Funnel) (*Funnel, error)
-	DeleteFunnel(ctx context.Context, siteID, funnelID int64) error
+	DeleteGoal(ctx context.Context, siteID, goalID int64) error
 }
 
 // FunnelStep is one stage of a funnel.
@@ -89,10 +78,14 @@ type FunnelReport struct {
 	StepRates     []float64 `json:"step_conversion_rates"`
 }
 
-// FunnelStore is the funnels feature as this API needs it.
+// FunnelStore is the funnels feature as this API needs it, reads and writes
+// together for the same reason GoalStore is one interface.
 type FunnelStore interface {
 	ListFunnels(ctx context.Context, siteID int64) ([]Funnel, error)
 	GetFunnel(ctx context.Context, siteID, funnelID int64, from, to string) (*FunnelReport, error)
+	CreateFunnel(ctx context.Context, siteID int64, funnel Funnel) (*Funnel, error)
+	UpdateFunnel(ctx context.Context, siteID, funnelID int64, funnel Funnel) (*Funnel, error)
+	DeleteFunnel(ctx context.Context, siteID, funnelID int64) error
 }
 
 // CustomPropertyStore manages the one property registry analytics queries use.

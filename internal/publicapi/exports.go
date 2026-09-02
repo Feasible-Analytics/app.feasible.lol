@@ -157,11 +157,13 @@ func (a *API) EditSite(ctx context.Context, key *apikeys.Key, site sites.Site, d
 }
 
 // AllowedProperties lists a site's custom property allow list, which is part of
-// what the MCP schema resource tells a model it may ask for. A build with no
-// property registry answers with none, and the schema says why.
+// what the MCP schema resource tells a model it may ask for. No registry means
+// no properties rather than an error: a site that has declared none and a build
+// that cannot declare any both leave a model with nothing it may ask for, and
+// only a failed read is a fault worth refusing the whole resource over.
 func (a *API) AllowedProperties(ctx context.Context, siteID int64) ([]CustomProperty, error) {
 	if a.CustomProperties == nil {
-		return nil, errors.New(unavailable("custom properties"))
+		return nil, nil
 	}
 
 	return a.CustomProperties.ListProperties(ctx, siteID)

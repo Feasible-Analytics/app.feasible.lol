@@ -869,7 +869,12 @@ func (o *OAuth) exchangeCode(w http.ResponseWriter, r *http.Request, authenticat
 		// intended client and another party may hold the code, so neither keeps
 		// tokens minted from it.
 		_ = tx.Rollback()
-		o.revokeGrant(r.Context(), clientID, teamID)
+
+		if err := o.revokeGrant(r.Context(), clientID, teamID); err != nil {
+			writeOAuthError(w, http.StatusInternalServerError, "server_error", "the replayed grant could not be revoked")
+			return
+		}
+
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "that authorisation code has already been used")
 		return
 	}
@@ -1097,10 +1102,19 @@ func (o *OAuth) writeTokenPair(w http.ResponseWriter, pair tokenPair) {
 
 // revokeGrant kills every live token for one client and team. It runs when a
 // code is replayed, which means somebody other than the real client has it.
-func (o *OAuth) revokeGrant(ctx context.Context, clientID string, teamID int64) {
-	_, _ = o.DB.ExecContext(ctx,
+//
+// The error is returned rather than dropped because this is the one write in
+// the flow that answers a theft. A failure that left the stolen tokens live
+// while the reply still read "already used" would look exactly like a
+// successful defence.
+func (o *OAuth) revokeGrant(ctx context.Context, clientID string, teamID int64) error {
+	if _, err := o.DB.ExecContext(ctx,
 		`UPDATE mcp_oauth_tokens SET revoked_at = ? WHERE client_id = ? AND team_id = ? AND revoked_at IS NULL`,
-		o.now().Unix(), clientID, teamID)
+		o.now().Unix(), clientID, teamID); err != nil {
+		return fmt.Errorf("mcp: revoke replayed grant: %w", err)
+	}
+
+	return nil
 }
 
 // Authenticate turns a bearer token from the MCP endpoint into a credential.

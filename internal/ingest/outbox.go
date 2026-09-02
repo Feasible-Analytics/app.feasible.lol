@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
@@ -34,6 +35,13 @@ const (
 	outboxUnroutedMaxByte = 50 * 1024 * 1024
 )
 
+// outboxFailureReportEvery is how many consecutive failing ticks pass between
+// repeat reports of the same broken destination. The first failure is reported
+// immediately; at the poll interval this is then roughly one line a minute,
+// which is often enough that a stuck queue is obvious in a log tail and rare
+// enough that a night-long outage does not bury everything else.
+const outboxFailureReportEvery = 240
+
 // Outbox owns every event after the public 202 and before the app shard's
 // commit acknowledgment.
 type Outbox struct {
@@ -44,7 +52,19 @@ type Outbox struct {
 	Signer *InternalSigner
 	Now    func() time.Time
 
+	// Log is how a stuck queue becomes visible. Store and forward hides failure
+	// by design — the client already has its 202 — so without this an ingester
+	// that can reach no shard at all accepts events forever and says nothing.
+	Log *logger.Logger
+
 	closeOnce sync.Once
+}
+
+// deliveryState tracks one loop's run of consecutive failures, so a broken
+// destination is reported when it breaks and when it recovers rather than on
+// every tick.
+type deliveryState struct {
+	failures int
 }
 
 // OpenOutbox opens the ingester's private database and creates its queue
@@ -141,19 +161,28 @@ func (o *Outbox) Run(ctx context.Context) {
 }
 
 // Len reports all active rows, including those waiting for route resolution.
-func (o *Outbox) Len() int {
+// A failed read is an error rather than a zero: an unreadable queue and a
+// drained one are the same number, and only one of them is good news.
+func (o *Outbox) Len() (int, error) {
 	var count int
-	_ = o.DB.QueryRow("SELECT COUNT(*) FROM outbox").Scan(&count)
+	if err := o.DB.QueryRow("SELECT COUNT(*) FROM outbox").Scan(&count); err != nil {
+		return 0, fmt.Errorf("outbox: count queued events: %w", err)
+	}
 
-	return count
+	return count, nil
 }
 
-// Parked reports rows removed from automatic delivery for operator review.
-func (o *Outbox) Parked() int {
+// Parked reports rows removed from automatic delivery for operator review. It
+// reports a failed read for the same reason Len does, and more sharply: this
+// number answers "is there anything waiting for me", and answering zero when
+// the truth is unknown is how a dead letter queue goes unread.
+func (o *Outbox) Parked() (int, error) {
 	var count int
-	_ = o.DB.QueryRow("SELECT COUNT(*) FROM outbox_parked").Scan(&count)
+	if err := o.DB.QueryRow("SELECT COUNT(*) FROM outbox_parked").Scan(&count); err != nil {
+		return 0, fmt.Errorf("outbox: count parked events: %w", err)
+	}
 
-	return count
+	return count, nil
 }
 
 // ReplayParked returns every operator-reviewed row to automatic delivery. UUID
@@ -187,14 +216,20 @@ func (o *Outbox) ReplayParked(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
-// OldestAge reports how long the oldest undelivered event has been retained.
-func (o *Outbox) OldestAge() time.Duration {
+// OldestAge reports how long the oldest undelivered event has been retained. A
+// NULL is a genuinely empty queue and reports zero; a failed read reports the
+// error, because zero here means "nothing is waiting" and that is the one
+// answer an unreadable queue must never give.
+func (o *Outbox) OldestAge() (time.Duration, error) {
 	var created sql.NullInt64
-	if err := o.DB.QueryRow("SELECT MIN(created_at) FROM outbox").Scan(&created); err != nil || !created.Valid {
-		return 0
+	if err := o.DB.QueryRow("SELECT MIN(created_at) FROM outbox").Scan(&created); err != nil {
+		return 0, fmt.Errorf("outbox: read oldest queued event: %w", err)
+	}
+	if !created.Valid {
+		return 0, nil
 	}
 
-	return o.clock().Sub(time.Unix(created.Int64, 0))
+	return o.clock().Sub(time.Unix(created.Int64, 0)), nil
 }
 
 // Close releases the private database after delivery workers have stopped.
@@ -251,12 +286,14 @@ type outboxRow struct {
 func (o *Outbox) runShard(ctx context.Context, shard int) {
 	ticker := time.NewTicker(outboxPoll)
 	defer ticker.Stop()
+	state := &deliveryState{}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_ = o.deliver(ctx, shard)
+			o.report(state, o.deliver(ctx, shard), "outbox delivery", "shard", shard+1,
+				"destination", o.Shards[shard])
 		}
 	}
 }
@@ -266,13 +303,37 @@ func (o *Outbox) runShard(ctx context.Context, shard int) {
 func (o *Outbox) runUnrouted(ctx context.Context) {
 	ticker := time.NewTicker(outboxPoll)
 	defer ticker.Stop()
+	state := &deliveryState{}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_ = o.resolveUnrouted(ctx)
+			o.report(state, o.resolveUnrouted(ctx), "outbox route resolution")
 		}
+	}
+}
+
+// report turns one tick's outcome into something a person can see. It reports
+// the tick a loop starts failing and the tick it recovers, and repeats while it
+// is still broken, because a queue that has been stuck since last night must
+// not look the same in a log as one that is fine.
+func (o *Outbox) report(state *deliveryState, err error, what string, attrs ...any) {
+	if err == nil {
+		if state.failures > 0 && o.Log != nil {
+			o.Log.Info(what+" recovered", append(attrs, "failed_attempts", state.failures)...)
+		}
+		state.failures = 0
+
+		return
+	}
+
+	state.failures++
+	if o.Log == nil {
+		return
+	}
+	if state.failures == 1 || state.failures%outboxFailureReportEvery == 0 {
+		o.Log.Error(what+" failed", append(attrs, "consecutive_failures", state.failures, "error", err)...)
 	}
 }
 
@@ -352,8 +413,12 @@ func (o *Outbox) deliver(ctx context.Context, shard int) error {
 
 // selectRows reads one fair, bounded batch for a destination.
 func (o *Outbox) selectRows(ctx context.Context, shard int) ([]outboxRow, error) {
+	age, err := o.OldestAge()
+	if err != nil {
+		return nil, err
+	}
 	limit := outboxBatchSize
-	if o.OldestAge() > outboxCatchUpAfter {
+	if age > outboxCatchUpAfter {
 		limit = outboxCatchUpBatch
 	}
 	rows, err := o.DB.QueryContext(ctx, `
@@ -404,12 +469,14 @@ func (o *Outbox) deleteCommitted(ctx context.Context, rows []outboxRow, ids []uu
 
 // retryRows schedules transient failures and parks repeated permanent failures.
 func (o *Outbox) retryRows(ctx context.Context, rows []outboxRow, reason string, permanent bool) error {
+	// Exhausted rows are parked together so a whole batch giving up is one
+	// entry in the log rather than five hundred.
+	var exhausted []int64
+
 	for _, row := range rows {
 		attempts := row.Attempts + 1
 		if permanent && attempts >= outboxMaxAttempts {
-			if err := o.parkIDs(ctx, []int64{row.ID}, reason); err != nil {
-				return err
-			}
+			exhausted = append(exhausted, row.ID)
 			continue
 		}
 		delay := time.Second << min(attempts-1, 5)
@@ -417,6 +484,12 @@ func (o *Outbox) retryRows(ctx context.Context, rows []outboxRow, reason string,
 			"UPDATE outbox SET attempts = ?, next_try_at = ?, last_error = ? WHERE id = ?",
 			attempts, o.clock().Add(delay).Unix(), reason, row.ID); err != nil {
 			return fmt.Errorf("outbox retry %d: %w", row.ID, err)
+		}
+	}
+
+	if len(exhausted) > 0 {
+		if err := o.parkIDs(ctx, exhausted, reason); err != nil {
+			return err
 		}
 	}
 
@@ -435,6 +508,10 @@ func (o *Outbox) parkRows(ctx context.Context, rows []outboxRow, reason string) 
 
 // parkIDs atomically copies rows to the operator-visible dead letter and
 // removes them from automatic delivery.
+//
+// Every park is logged, because parking is the point at which accepted events
+// stop being delivered and start waiting for a person. Nothing else in the
+// system will mention them again until somebody runs the replay command.
 func (o *Outbox) parkIDs(ctx context.Context, ids []int64, reason string) error {
 	tx, err := o.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -453,8 +530,17 @@ func (o *Outbox) parkIDs(ctx context.Context, ids []int64, reason string) error 
 			return fmt.Errorf("outbox remove parked %d: %w", id, err)
 		}
 	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
 
-	return tx.Commit()
+	if o.Log != nil {
+		o.Log.Error("ingest events parked for operator review",
+			"events", len(ids), "reason", reason,
+			"recover_with", "feasible ingest -replay-parked")
+	}
+
+	return nil
 }
 
 // handleNotMine reroutes against the merged map and returns undecidable rows

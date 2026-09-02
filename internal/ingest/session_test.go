@@ -11,8 +11,8 @@ package ingest
 import (
 	"math/rand"
 	"reflect"
+	"strconv"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -31,7 +31,7 @@ const (
 // and the dedupe meaningful.
 func event(name string, timestamp int64, path string) Event {
 	return Event{
-		UUID:        uuid.NewSHA1(uuid.NameSpaceURL, []byte(name+path+itoa(timestamp))),
+		UUID:        uuid.NewSHA1(uuid.NameSpaceURL, []byte(name+path+strconv.FormatInt(timestamp, 10))),
 		AccountID:   1,
 		SiteID:      testSite,
 		UserID:      testUser,
@@ -60,6 +60,21 @@ func applyAll(t *testing.T, events []Event) *Session {
 	}
 
 	return last
+}
+
+// liveSessions copies out everything the fold is currently holding. It is a
+// test helper rather than a method because nothing in production needs to walk
+// the fold: the writer takes the dirty set and throws the fold away.
+func liveSessions(cache *SessionCache) []Session {
+	var out []Session
+
+	for _, live := range cache.bucket.sessions {
+		for _, session := range live {
+			out = append(out, *session)
+		}
+	}
+
+	return out
 }
 
 // TestPageviewsCountOnlyPageviews covers the first row of the accumulation
@@ -403,8 +418,8 @@ func TestEngagementWithNoSessionIsDropped(t *testing.T) {
 		t.Fatal("an engagement ping with no live session created one")
 	}
 
-	if cache.Len() != 0 {
-		t.Fatalf("cache holds %d sessions, want 0", cache.Len())
+	if len(liveSessions(cache)) != 0 {
+		t.Fatalf("cache holds %d sessions, want 0", len(liveSessions(cache)))
 	}
 
 	// It is parked rather than thrown away, so a retry that delivered it ahead
@@ -472,8 +487,8 @@ func TestPreviousSaltFindsTheSession(t *testing.T) {
 	if after.UserID != testUser {
 		t.Fatalf("event user_id = %d, want the session's %d", after.UserID, testUser)
 	}
-	if cache.Len() != 1 {
-		t.Fatalf("cache holds %d sessions, want 1", cache.Len())
+	if len(liveSessions(cache)) != 1 {
+		t.Fatalf("cache holds %d sessions, want 1", len(liveSessions(cache)))
 	}
 }
 
@@ -493,8 +508,8 @@ func TestOutOfOrderEventMergesBridgedSessions(t *testing.T) {
 	if _, ok, _ := cache.Apply(&early); !ok {
 		t.Fatal("the early event was dropped")
 	}
-	if cache.Len() != 2 {
-		t.Fatalf("expected two sessions before the bridge, got %d", cache.Len())
+	if len(liveSessions(cache)) != 2 {
+		t.Fatalf("expected two sessions before the bridge, got %d", len(liveSessions(cache)))
 	}
 
 	// The bridging event sits within thirty minutes of both.
@@ -504,8 +519,8 @@ func TestOutOfOrderEventMergesBridgedSessions(t *testing.T) {
 		t.Fatal("the bridging event was dropped")
 	}
 
-	if cache.Len() != 1 {
-		t.Fatalf("the bridge left %d sessions, want 1", cache.Len())
+	if len(liveSessions(cache)) != 1 {
+		t.Fatalf("the bridge left %d sessions, want 1", len(liveSessions(cache)))
 	}
 	if session.Pageviews != 3 {
 		t.Fatalf("merged pageviews = %d, want 3", session.Pageviews)
@@ -574,9 +589,9 @@ func normalise(session *Session) Session {
 	return copied
 }
 
-// TestSweepDropsExpiredSessions checks the cache does not grow for the life of
-// the process. An abandoned session is never touched again by definition, so
-// nothing else would ever notice it.
+// TestSweepDropsExpiredSessions checks a long-running fold does not grow for
+// the life of the process. An abandoned session is never touched again by
+// definition, so nothing else would ever notice it.
 func TestSweepDropsExpiredSessions(t *testing.T) {
 	cache := NewSessionCache()
 
@@ -594,57 +609,19 @@ func TestSweepDropsExpiredSessions(t *testing.T) {
 	if removed := cache.Sweep(1000 + sessionTimeoutSeconds + 60); removed != 1 {
 		t.Fatalf("swept %d sessions, want 1", removed)
 	}
-	if cache.Len() != 0 {
-		t.Fatalf("cache holds %d sessions after the sweep, want 0", cache.Len())
+	if len(liveSessions(cache)) != 0 {
+		t.Fatalf("cache holds %d sessions after the sweep, want 0", len(liveSessions(cache)))
 	}
 }
 
-// TestSnapshotRoundTrip covers the shutdown path: the live cache has to come
-// back, or a restart splits every in-flight session in two.
-func TestSnapshotRoundTrip(t *testing.T) {
+// TestPreviousSaltAdoptsFromThePreviousKey is the midnight case for parked
+// pings. A ping parked under yesterday's fingerprint sits under that key, so a
+// session found through the previous salt has to adopt from both keys or every
+// engagement ping in flight across 00:00 UTC is dropped silently.
+func TestPreviousSaltAdoptsFromThePreviousKey(t *testing.T) {
 	cache := NewSessionCache()
 
-	first := event(EventPageview, 1000, "/")
-	second := event(EventPageview, 1030, "/pricing")
-	cache.Apply(&first)
-	cache.Apply(&second)
-
-	snapshot := cache.Snapshot()
-	if len(snapshot) != 1 {
-		t.Fatalf("snapshot holds %d sessions, want 1", len(snapshot))
-	}
-
-	restored := NewSessionCache()
-	if count := restored.Restore(snapshot, 1040); count != 1 {
-		t.Fatalf("restored %d sessions, want 1", count)
-	}
-
-	// A third event must join the restored session rather than start a new one.
-	third := event(EventPageview, 1060, "/checkout")
-	session, _, _ := restored.Apply(&third)
-
-	if session.Pageviews != 3 {
-		t.Fatalf("pageviews after restore = %d, want 3", session.Pageviews)
-	}
-	if session.EntryPage != "/" {
-		t.Fatalf("entry_page after restore = %q, want /", session.EntryPage)
-	}
-}
-
-// TestPreviousSaltAdoptsFromItsOwnShard is the midnight case for parked pings.
-// A ping parked under yesterday's fingerprint lives in that key's own bucket,
-// which is a different shard sixty-three times in sixty-four — so adopting it
-// from the current key's bucket silently drops every engagement ping in flight
-// across 00:00 UTC.
-func TestPreviousSaltAdoptsFromItsOwnShard(t *testing.T) {
-	cache := NewSessionCache()
-
-	// A rotated fingerprint that lands in a different bucket, which is what
-	// makes the bug visible rather than a coincidence.
 	rotated := testUser + 1
-	for cache.bucket(sessionKey{testSite, rotated}) == cache.bucket(sessionKey{testSite, testUser}) {
-		rotated++
-	}
 
 	// A ping too early for any session parks under yesterday's key.
 	ping := event(EventEngagement, 2000, "/")
@@ -676,96 +653,20 @@ func TestPreviousSaltAdoptsFromItsOwnShard(t *testing.T) {
 	}
 }
 
-// TestExpiredOrphanIsReported checks the one drop nobody can be told about at
-// request time is still told about. By the time a ping's visit is known never to
-// have arrived the response was sent half an hour ago, so the counter is the
-// only place the customer ever hears about it.
-func TestExpiredOrphanIsReported(t *testing.T) {
+// TestDirtySessionIsNeverSwept checks the fold cannot throw away a visit whose
+// last events have not reached SQLite yet. Losing rows silently is the thing we
+// do not do.
+func TestDirtySessionIsNeverSwept(t *testing.T) {
 	cache := NewSessionCache()
-
-	var expired []*Event
-	cache.OnOrphanExpired = func(event *Event) { expired = append(expired, event) }
-
-	ping := event(EventEngagement, 1000, "/")
-	cache.Apply(&ping)
-
-	// Still inside the window: the visit could yet arrive.
-	cache.Sweep(1000 + sessionTimeoutSeconds)
-	if len(expired) != 0 {
-		t.Fatalf("reported %d drops for a ping that can still be adopted", len(expired))
-	}
-
-	cache.Sweep(1000 + sessionTimeoutSeconds + 1)
-
-	if len(expired) != 1 {
-		t.Fatalf("reported %d expired pings, want 1", len(expired))
-	}
-	if expired[0].SiteID != testSite {
-		t.Fatalf("the drop was reported against site %d, want %d — a count nobody can attribute is not visibility",
-			expired[0].SiteID, testSite)
-	}
-}
-
-// TestAbandonedDirtySessionIsEvicted checks a wedged writer costs a session
-// rather than the process. A dirty session is held past the timeout because its
-// last events have not been written, but holding it forever turns one stuck
-// shard into a cache that grows until the box runs out of memory.
-func TestAbandonedDirtySessionIsEvicted(t *testing.T) {
-	cache := NewSessionCache()
-
-	var abandoned []*Session
-	cache.OnSessionAbandoned = func(session *Session) { abandoned = append(abandoned, session) }
 
 	first := event(EventPageview, 1000, "/")
 	cache.Apply(&first)
 
-	// Inside the grace period the session stays: the write may still land.
-	if removed := cache.Sweep(1000 + sessionTimeoutSeconds + 60); removed != 0 {
-		t.Fatalf("swept %d dirty sessions inside the grace period, want 0", removed)
+	if removed := cache.Sweep(1000 + sessionTimeoutSeconds*100); removed != 0 {
+		t.Fatalf("swept %d unwritten sessions, want 0", removed)
 	}
-
-	past := int64(1000) + sessionTimeoutSeconds + int64(DirtyGrace/time.Second) + 1
-	if removed := cache.Sweep(past); removed != 1 {
-		t.Fatalf("swept %d sessions past the grace period, want 1", removed)
-	}
-	if cache.Len() != 0 {
-		t.Fatalf("cache holds %d sessions, want 0 — a wedged writer would grow it without bound", cache.Len())
-	}
-	if len(abandoned) != 1 {
-		t.Fatalf("reported %d abandoned sessions, want 1 — losing rows silently is the thing we do not do", len(abandoned))
-	}
-}
-
-// TestRedirtyStaysWithinItsAccount checks a failed write for one customer does
-// not rewrite another's rows. Session ids are allocated per account, so id 7
-// exists in every account database and matching on the id alone dirties
-// unrelated accounts on every rollback.
-func TestRedirtyStaysWithinItsAccount(t *testing.T) {
-	cache := NewSessionCache()
-
-	mine := event(EventPageview, 1000, "/")
-	mine.AccountID = 1
-	mineSession, _, _ := cache.Apply(&mine)
-
-	theirs := event(EventPageview, 1000, "/")
-	theirs.AccountID = 2
-	theirs.SiteID = testSite + 1
-	theirs.UserID = testUser + 1
-	theirsSession, _, _ := cache.Apply(&theirs)
-
-	// Both are written and clean, and both happen to hold the same id — which
-	// is the normal state of two accounts, not a contrived one.
-	cache.TakeDirty(1)
-	cache.TakeDirty(2)
-	theirsSession.ID = mineSession.ID
-
-	cache.Redirty(1, []*Session{{ID: mineSession.ID, AccountID: 1}})
-
-	if len(cache.TakeDirty(1)) != 1 {
-		t.Fatal("the failed account's session was not put back in its dirty set")
-	}
-	if got := len(cache.TakeDirty(2)); got != 0 {
-		t.Fatalf("dirtied %d sessions in an unrelated account, want 0", got)
+	if len(liveSessions(cache)) != 1 {
+		t.Fatalf("fold holds %d sessions, want the unwritten one", len(liveSessions(cache)))
 	}
 }
 
@@ -815,7 +716,7 @@ func TestFoldIsOrderIndependentUnderMerges(t *testing.T) {
 				for _, i := range order {
 					a := arrivals[i]
 					cache.Apply(&Event{
-						UUID:      uuid.NewSHA1(uuid.NameSpaceURL, []byte(itoa(int64(i)))),
+						UUID:      uuid.NewSHA1(uuid.NameSpaceURL, []byte(strconv.FormatInt(int64(i), 10))),
 						AccountID: 1, SiteID: testSite, UserID: testUser,
 						Timestamp: a.timestamp, Name: a.name, Pathname: a.path,
 						Interactive: a.interactive, Source: a.path,
@@ -823,7 +724,7 @@ func TestFoldIsOrderIndependentUnderMerges(t *testing.T) {
 				}
 
 				got := folded{}
-				for _, session := range cache.Snapshot() {
+				for _, session := range liveSessions(cache) {
 					got.sessions++
 					if got.started == 0 || session.StartedAt < got.started {
 						got.started = session.StartedAt
@@ -856,19 +757,5 @@ func TestFoldIsOrderIndependentUnderMerges(t *testing.T) {
 		}
 
 		permute(0)
-	}
-}
-
-// TestRestoreSkipsExpiredSessions checks a process that was down for an hour
-// does not resurrect visits that ended while it was away.
-func TestRestoreSkipsExpiredSessions(t *testing.T) {
-	cache := NewSessionCache()
-
-	first := event(EventPageview, 1000, "/")
-	cache.Apply(&first)
-
-	restored := NewSessionCache()
-	if count := restored.Restore(cache.Snapshot(), 1000+sessionTimeoutSeconds+1); count != 0 {
-		t.Fatalf("restored %d expired sessions, want 0", count)
 	}
 }

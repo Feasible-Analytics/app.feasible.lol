@@ -393,12 +393,28 @@ func (c *Client) CreateCheckoutSession(ctx context.Context, params CheckoutParam
 	return &session, nil
 }
 
+// CheckoutSessions reads every provider session so a caller can match ours by
+// metadata. Stripe exposes no metadata filter on this list and no session
+// search endpoint, and a session created before its customer existed can be
+// found no other way — an orphan that already created a customer and a
+// subscription must still be reachable when its id never reached system.db.
+func (c *Client) CheckoutSessions(ctx context.Context) ([]CheckoutSession, error) {
+	return c.checkoutSessions(ctx, url.Values{})
+}
+
 // CheckoutSessionsForCustomer reads every session Stripe holds for one
-// customer. Completed sessions are included because one may have created a
-// subscription before its id reached system.db.
+// customer, including the ones that carry none of our metadata. Completed
+// sessions are included because one may have created a subscription before its
+// id reached system.db.
 func (c *Client) CheckoutSessionsForCustomer(ctx context.Context, customerID string) ([]CheckoutSession, error) {
 	form := url.Values{}
 	form.Set("customer", customerID)
+
+	return c.checkoutSessions(ctx, form)
+}
+
+// checkoutSessions walks every page of one checkout-session listing.
+func (c *Client) checkoutSessions(ctx context.Context, form url.Values) ([]CheckoutSession, error) {
 	form.Set("limit", "100")
 
 	var sessions []CheckoutSession

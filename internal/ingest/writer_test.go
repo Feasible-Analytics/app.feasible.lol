@@ -33,7 +33,7 @@ func TestWriterDropsAStaleRouteAfterCrossProcessDeletion(t *testing.T) {
 	t.Cleanup(func() { checkClose(t, "writer account manager", manager.CloseAll) })
 	t.Cleanup(func() { checkClose(t, "deletion account manager", deleter.CloseAll) })
 
-	writer := NewWriter(manager, NewSessionCache())
+	writer := NewWriter(manager)
 	first := writerEvent(1, EventPageview, fixtureStart.Unix(), "/before")
 	if _, err := writer.Write(ctx, []Event{first}); err != nil {
 		t.Fatal(err)
@@ -69,7 +69,7 @@ func TestWriterWriteAndBeginDeletionShareOneAccountFence(t *testing.T) {
 	manager := accounts.NewManager(dataDir)
 	t.Cleanup(func() { checkClose(t, "overlap account manager", manager.CloseAll) })
 
-	writer := NewWriter(manager, NewSessionCache())
+	writer := NewWriter(manager)
 	entered := make(chan struct{})
 	resume := make(chan struct{})
 	defer func() {
@@ -224,7 +224,7 @@ func newWriter(t testing.TB) (*Writer, *accounts.Manager) {
 	manager := accounts.NewManager(t.TempDir())
 	t.Cleanup(func() { checkClose(t, "account manager", manager.CloseAll) })
 
-	writer := NewWriter(manager, NewSessionCache())
+	writer := NewWriter(manager)
 	writer.Now = func() time.Time { return fixtureStart }
 
 	return writer, manager
@@ -390,8 +390,8 @@ func TestIndependentWritersClaimOneUUIDAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	first := NewWriter(firstManager, NewSessionCache())
-	second := NewWriter(secondManager, NewSessionCache())
+	first := NewWriter(firstManager)
+	second := NewWriter(secondManager)
 	first.Now = func() time.Time { return fixtureStart }
 	second.Now = first.Now
 	event := writerEvent(1, EventPageview, fixtureStart.Unix(), "/atomic")
@@ -443,8 +443,8 @@ func TestIndependentWritersReserveDistinctSessionOwnership(t *testing.T) {
 	if _, err := secondManager.Open(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-	first := NewWriter(firstManager, NewSessionCache())
-	second := NewWriter(secondManager, NewSessionCache())
+	first := NewWriter(firstManager)
+	second := NewWriter(secondManager)
 	first.Now = func() time.Time { return fixtureStart }
 	second.Now = first.Now
 
@@ -504,8 +504,8 @@ func TestIndependentWritersShareOneVisitorSession(t *testing.T) {
 	if _, err := secondManager.Open(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-	first := NewWriter(firstManager, NewSessionCache())
-	second := NewWriter(secondManager, NewSessionCache())
+	first := NewWriter(firstManager)
+	second := NewWriter(secondManager)
 	first.Now = func() time.Time { return fixtureStart }
 	second.Now = first.Now
 
@@ -649,9 +649,10 @@ func TestShardAllowsAHostnameNewlyValidAfterIngest(t *testing.T) {
 	writer, manager := newWriter(t)
 	writer.Shield = &recordingAllowShield{}
 	writer.Counters = NewCounters()
+	// A hostname the public tier refuses. The handler forwards it anyway, and
+	// the live shield below is the only thing entitled to decide.
 	event := writerEvent(1, EventPageview, fixtureStart.Unix(), "/rejected")
 	event.Hostname = "preview.example.net"
-	event.RejectReason = ReasonHostnameNotAllowed
 
 	for range 2 {
 		committed, err := writer.Write(ctx, []Event{event})
@@ -722,62 +723,40 @@ func TestWriterReportsOnlyFinalOutcomes(t *testing.T) {
 	}
 }
 
-// TestDedupeLookupSurvivesABatchPastTheBindLimit is the backed-up buffer.
+// TestBatchPastTheBindLimitStillDrains is the backed-up buffer.
 //
 // A batch is a few hundred events while everything is healthy, but the buffer
 // keeps accepting while a flush runs slow, so the batch that arrives after a
-// stall is tens of thousands. The lookup used to bind one parameter per id, and
-// SQLite refuses a statement with more than about thirty-two thousand: the
-// write failed, the batch was requeued unchanged, and it then failed
-// identically forever — a buffer that could never drain, on the one batch that
-// most needed to be written.
-//
-// It calls the lookup directly rather than writing the events, because the
-// statement is the thing under test and folding forty thousand events would
-// make a slow test out of a fast one.
-func TestDedupeLookupSurvivesABatchPastTheBindLimit(t *testing.T) {
+// stall is tens of thousands. SQLite refuses a statement with more than about
+// thirty-two thousand bound parameters, and a write that binds one per event
+// then fails on the one batch that most needs to be written, is requeued
+// unchanged, and fails identically forever. A buffer that can never drain is
+// worse than a slow one.
+func TestBatchPastTheBindLimitStillDrains(t *testing.T) {
 	ctx := context.Background()
-	_, manager := newWriter(t)
+	writer, manager := newWriter(t)
 
-	account, err := manager.Open(ctx, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Past SQLite's bind limit, which is where the unchunked statement failed.
+	// Past SQLite's bind limit, which is where a per-event parameter fails.
 	const events = 40_000
 
+	// One visitor inside one session window, so the batch exercises the write
+	// path's size rather than forty thousand separate visits.
 	batch := make([]Event, 0, events)
-	for i := 0; i < events; i++ {
-		batch = append(batch, writerEvent(1, EventPageview, fixtureStart.Unix()+int64(i), "/"))
+	for i := range events {
+		e := writerEvent(1, EventPageview, fixtureStart.Unix()+int64(i%600), "/")
+		e.UUID = uuid.New()
+		batch = append(batch, e)
 	}
 
-	seen, err := knownEventIDs(ctx, account.Reader(), batch)
+	committed, err := writer.Write(ctx, batch)
 	if err != nil {
-		t.Fatalf("looking up %d ids: %v", events, err)
+		t.Fatalf("writing %d events: %v", events, err)
 	}
-	if len(seen) != 0 {
-		t.Fatalf("found %d ids in an empty dedupe table", len(seen))
+	if len(committed) != events {
+		t.Fatalf("settled %d of %d events", len(committed), events)
 	}
-
-	// One id from the far end of the batch, to prove the chunking still finds
-	// what it is looking for rather than only asking about the first chunk.
-	last := batch[len(batch)-1].UUID
-
-	if _, err := account.Writer().ExecContext(ctx,
-		"INSERT INTO recent_event_ids (event_uuid, received_at) VALUES (?, ?)",
-		last[:], fixtureStart.Unix(),
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	seen, err = knownEventIDs(ctx, account.Reader(), batch)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, found := seen[last]; !found || len(seen) != 1 {
-		t.Fatalf("the lookup found %d ids and missed the one that was there", len(seen))
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events"); got != events {
+		t.Fatalf("stored %d events, want %d", got, events)
 	}
 }
 
@@ -996,6 +975,107 @@ func TestDedupeReceiptSurvivesReplayPastTwentyFourHours(t *testing.T) {
 	}
 }
 
+// TestAVisitContinuesAcrossARestart is the reason fold state is durable rather
+// than held in memory. A process that restarts mid-visit must fold the next
+// event into the same session, or every restart splits a visit in two and
+// nothing afterwards can tell the halves were one.
+func TestAVisitContinuesAcrossARestart(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	base := fixtureStart.Unix()
+
+	firstManager := accounts.NewManager(dir)
+	first := NewWriter(firstManager)
+	first.Now = func() time.Time { return fixtureStart }
+
+	if _, err := first.Write(ctx, []Event{writerEvent(1, EventPageview, base, "/")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := firstManager.CloseAll(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second process over the same files with an empty fold — exactly what a
+	// restart looks like — and an event still inside the visit's window.
+	secondManager := accounts.NewManager(dir)
+	t.Cleanup(func() { checkClose(t, "restarted account manager", secondManager.CloseAll) })
+	second := NewWriter(secondManager)
+	second.Now = first.Now
+
+	if _, err := second.Write(ctx, []Event{writerEvent(1, EventPageview, base+60, "/pricing")}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := countRows(t, secondManager, 1, "SELECT COUNT(*) FROM sessions"); got != 1 {
+		t.Fatalf("the restart left %d sessions, want the one visit", got)
+	}
+	if got := countRows(t, secondManager, 1, "SELECT pageviews FROM sessions"); got != 2 {
+		t.Fatalf("the continued visit holds %d pageviews, want 2", got)
+	}
+	if got := countRows(t, secondManager, 1, "SELECT started_at FROM sessions"); got != base {
+		t.Fatalf("the continued visit starts at %d, want %d — the restart lost where it began", got, base)
+	}
+}
+
+// TestExpiredOrphanIsReported checks the one drop nobody can be told about at
+// request time is still told about. A ping whose pageview never came is a
+// genuine drop, and by the time that is known its 202 went out an hour ago —
+// so the counter is the only place the customer ever hears about it.
+func TestExpiredOrphanIsReported(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+	writer.Counters = NewCounters()
+
+	var outcomes []Observation
+	writer.Observer = ObserverFunc(func(observation Observation) {
+		outcomes = append(outcomes, observation)
+	})
+
+	ping := writerEvent(1, EventEngagement, fixtureStart.Unix(), "/")
+	if _, err := writer.Write(ctx, []Event{ping}); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM ingest_orphan_engagements"); got != 1 {
+		t.Fatalf("the parked ping left %d rows, want 1", got)
+	}
+
+	// A later batch past the retention window, by which point the pageview is
+	// never arriving.
+	writer.Now = func() time.Time { return fixtureStart.Add(foldStateRetention + time.Minute) }
+	later := writerEvent(1, EventPageview, writer.clock().Unix(), "/")
+	if _, err := writer.Write(ctx, []Event{later}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM ingest_orphan_engagements"); got != 0 {
+		t.Fatalf("the expired ping left %d rows, want 0", got)
+	}
+
+	reported := int64(0)
+	for _, count := range writer.Counters.Snapshot().Dropped {
+		if count.Reason == ReasonNoSessionForEngage {
+			reported += count.Count
+			if count.SiteID != 1 {
+				t.Fatalf("the drop was reported against site %d, want 1 — a count nobody can attribute is not visibility",
+					count.SiteID)
+			}
+		}
+	}
+	if reported != 1 {
+		t.Fatalf("counted %d expired pings, want 1", reported)
+	}
+
+	observed := 0
+	for _, outcome := range outcomes {
+		if !outcome.Accepted && outcome.DropReason == ReasonNoSessionForEngage {
+			observed++
+		}
+	}
+	if observed != 1 {
+		t.Fatalf("the health panel saw %d expired pings, want 1", observed)
+	}
+}
+
 // TestSessionIDsSurviveARestart checks the durable allocator stays above the
 // identities already committed by a previous process.
 func TestSessionIDsSurviveARestart(t *testing.T) {
@@ -1003,7 +1083,7 @@ func TestSessionIDsSurviveARestart(t *testing.T) {
 	dir := t.TempDir()
 
 	first := accounts.NewManager(dir)
-	writerOne := NewWriter(first, NewSessionCache())
+	writerOne := NewWriter(first)
 	writerOne.Now = func() time.Time { return fixtureStart }
 
 	if _, err := writerOne.Write(ctx, []Event{writerEvent(1, EventPageview, fixtureStart.Unix(), "/")}); err != nil {
@@ -1018,7 +1098,7 @@ func TestSessionIDsSurviveARestart(t *testing.T) {
 	second := accounts.NewManager(dir)
 	t.Cleanup(func() { checkClose(t, "second account manager", second.CloseAll) })
 
-	writerTwo := NewWriter(second, NewSessionCache())
+	writerTwo := NewWriter(second)
 	writerTwo.Now = func() time.Time { return fixtureStart }
 
 	later := writerEvent(1, EventPageview, fixtureStart.Unix()+100000, "/after-restart")
@@ -1098,7 +1178,7 @@ func TestRestartedWriterAdoptsAnotherWritersOrphan(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	firstManager := accounts.NewManager(dir)
-	first := NewWriter(firstManager, NewSessionCache())
+	first := NewWriter(firstManager)
 	first.Now = func() time.Time { return fixtureStart }
 	base := fixtureStart.Unix()
 
@@ -1113,7 +1193,7 @@ func TestRestartedWriterAdoptsAnotherWritersOrphan(t *testing.T) {
 
 	secondManager := accounts.NewManager(dir)
 	t.Cleanup(func() { _ = secondManager.CloseAll() })
-	second := NewWriter(secondManager, NewSessionCache())
+	second := NewWriter(secondManager)
 	second.Now = first.Now
 	view := writerEvent(1, EventPageview, base+10, "/")
 	if _, err := second.Write(ctx, []Event{view}); err != nil {

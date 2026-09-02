@@ -291,6 +291,13 @@ func (f *Favicons) fetch(ctx context.Context, host string) (body []byte, content
 		return nil, "", fmt.Errorf("upstream answered %q, not an image", contentType)
 	}
 
+	// SVG is the one image type that is also a document: opened directly rather
+	// than through an <img>, a script inside one runs on this origin. No icon
+	// service answers with it, so refusing it costs nothing.
+	if strings.HasPrefix(contentType, "image/svg") {
+		return nil, "", errors.New("upstream answered with SVG, which is not served back as an icon")
+	}
+
 	return body, contentType, nil
 }
 

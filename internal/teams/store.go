@@ -1158,6 +1158,14 @@ func validateSiteTransferSchema(ctx context.Context, tx *sql.Tx) error {
 		}
 		names = append(names, name)
 	}
+	// A truncated scan here would hide a table from the completeness check and
+	// let an unclassified site_id table through, which is the exact failure
+	// this guard exists to make impossible. rows.Close reports the driver's
+	// close error, never the iteration error, so both have to be read.
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("teams: inspect transfer schema: %w", err)
+	}
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("teams: inspect transfer schema: %w", err)
 	}
@@ -1177,6 +1185,12 @@ func validateSiteTransferSchema(ctx context.Context, tx *sql.Tx) error {
 				return fmt.Errorf("teams: inspect %s: %w", name, err)
 			}
 			hasSiteID = hasSiteID || column == "site_id"
+		}
+		// Stopping short of the site_id column would report the table as not
+		// site-scoped and wave the transfer through.
+		if err := columns.Err(); err != nil {
+			_ = columns.Close()
+			return fmt.Errorf("teams: inspect %s: %w", name, err)
 		}
 		if err := columns.Close(); err != nil {
 			return fmt.Errorf("teams: inspect %s: %w", name, err)

@@ -20,6 +20,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/destructive"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mcp"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/outbound"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/publicapi"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
@@ -56,6 +57,12 @@ type publicStack struct {
 func buildPublic(e *env, control *sql.DB, cache *sites.Cache, manager *accounts.Manager, gate *access.Gate) *publicStack {
 	keys := apikeys.NewStore(control)
 	hooks := webhooks.NewStore(control)
+
+	// A webhook endpoint is a URL a customer types, so where it may reach is a
+	// deployment decision rather than a package default: hosted production
+	// refuses loopback and private ranges that a self-hoster relies on.
+	hooks.Policy = outbound.PolicyFor(e.cfg)
+
 	dispatcher := webhooks.NewDispatcher(hooks)
 
 	// A locked account's numbers must not leave by the back door either. An

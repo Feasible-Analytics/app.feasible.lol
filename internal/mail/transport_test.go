@@ -9,6 +9,7 @@
 package mail
 
 import (
+	"bufio"
 	"context"
 	"net"
 	"os"
@@ -248,10 +249,20 @@ func TestRenderKeepsEveryHeaderOnOneLine(t *testing.T) {
 
 	headers, _, _ := strings.Cut(raw, "\r\n\r\n")
 
-	for _, injected := range []string{"Bcc:", "X-Injected:"} {
-		if strings.Contains(headers, injected) {
-			t.Fatalf("an injected %s header survived into the message:\n%s", injected, headers)
+	// An injected name is only a header when it begins a line. The same text
+	// carried inline on the To or Subject line is inert, and is what
+	// flattening is meant to produce — so the check is per line rather than
+	// over the whole block.
+	for _, line := range strings.Split(headers, "\r\n") {
+		for _, injected := range []string{"Bcc:", "X-Injected:"} {
+			if strings.HasPrefix(line, injected) {
+				t.Fatalf("an injected %s header survived into the message:\n%s", injected, headers)
+			}
 		}
+	}
+
+	if !strings.Contains(headers, "To: owner@example.com Bcc: everyone@example.com\r\n") {
+		t.Fatalf("the recipient was not flattened onto one line:\n%s", headers)
 	}
 
 	if !strings.Contains(headers, "Subject: You're invited to Acme Bcc: list@example.com X-Injected: yes on feasible.lol\r\n") {
@@ -385,4 +396,87 @@ type transportFunc func(ctx context.Context, msg Message) (Result, error)
 // Send calls the function.
 func (f transportFunc) Send(ctx context.Context, msg Message) (Result, error) {
 	return f(ctx, msg)
+}
+
+// TestStartTLSIsNotSilentlySkipped answers a relay that greets but never
+// advertises STARTTLS. Every message this transport carries holds a
+// password-reset link or a verification code, so continuing in the clear
+// because the server declined to offer the extension is exactly the silent
+// downgrade the setting exists to prevent.
+func TestStartTLSIsNotSilentlySkipped(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close SMTP listener: %v", err)
+		}
+	})
+
+	delivered := make(chan struct{}, 1)
+
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		reader := bufio.NewReader(conn)
+		write := func(line string) { _, _ = conn.Write([]byte(line + "\r\n")) }
+
+		write("220 relay.example ESMTP")
+
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+
+			switch verb := strings.ToUpper(strings.TrimSpace(line)); {
+			case strings.HasPrefix(verb, "EHLO"):
+				// Deliberately no STARTTLS in the extension list.
+				write("250-relay.example")
+				write("250 SIZE 10240000")
+
+			case strings.HasPrefix(verb, "MAIL FROM"), strings.HasPrefix(verb, "RCPT TO"):
+				write("250 OK")
+
+			case verb == "DATA":
+				delivered <- struct{}{}
+				write("354 go ahead")
+
+			case verb == "QUIT":
+				write("221 bye")
+				return
+
+			default:
+				write("250 OK")
+			}
+		}
+	}()
+
+	address := listener.Addr().(*net.TCPAddr)
+	transport := &SMTPTransport{Config: SMTPConfig{
+		Host: "127.0.0.1", Port: address.Port, From: "sender@example.com",
+		StartTLS: true, Timeout: 2 * time.Second,
+	}}
+
+	result, err := transport.Send(context.Background(), Message{
+		To: "owner@example.com", Subject: "test", Text: "test", HTML: "<p>test</p>",
+	})
+	if err == nil {
+		t.Fatal("the message was sent in the clear to a relay that does not offer STARTTLS")
+	}
+
+	if result.Accepted {
+		t.Fatal("the result claims the relay accepted a message that was never sent")
+	}
+
+	select {
+	case <-delivered:
+		t.Fatal("the body reached the relay unencrypted")
+	default:
+	}
 }

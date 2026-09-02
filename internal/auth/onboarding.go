@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/outbound"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
 )
 
@@ -266,7 +267,7 @@ func VerifyInstallation(ctx context.Context, client *http.Client, baseURL string
 	result = VerifyResult{URL: target}
 
 	if client == nil {
-		client = &http.Client{Timeout: verifyTimeout}
+		client = outbound.Policy{}.NewClient(verifyTimeout)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)

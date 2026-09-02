@@ -33,6 +33,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/outbound"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/pathclean"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/rollup"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/settings"
@@ -133,7 +134,7 @@ func runServe(e *env, args []string) int {
 	// The signed-in application. It is built before the listener binds so that a
 	// broken template or an unreadable key is a start-up failure with a message,
 	// rather than a 500 on somebody's sign-in page.
-	app, err := buildApp(e, control, manager, service, secret, mailer, com.Gate, com.Purger)
+	app, err := buildApp(e, control, manager, service, site, secret, mailer, com.Gate, com.Purger)
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError
@@ -307,7 +308,7 @@ func (d *dataStack) background() func(context.Context, func(func())) {
 // missing key or an unparseable template stops the process with a message that
 // names the file — and so a test can build the same handler over a temporary
 // database.
-func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *ingest.Service, secret []byte, mailer *mail.Mailer, gate *access.Gate, purger auth.PermanentAccountDeleter) (*auth.Handler, error) {
+func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *ingest.Service, site *siteRules, secret []byte, mailer *mail.Mailer, gate *access.Gate, purger auth.PermanentAccountDeleter) (*auth.Handler, error) {
 	if err := provisionExistingSites(context.Background(), control, manager, time.Now().UTC()); err != nil {
 		return nil, err
 	}
@@ -332,6 +333,7 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 		Deleter:     auth.NewDeleter(purger, e.log),
 		Destructive: &destructive.Service{DB: control, Accounts: manager},
 		Keyer:       tracker.NewKeyer(secret, service.Sites),
+		Trusted:     site.trusted,
 		SiteCache:   service.Sites,
 		ProvisionSite: func(ctx context.Context, accountID, siteID int64, now time.Time) error {
 			lease, err := manager.Acquire(ctx, accountID)
@@ -347,6 +349,7 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 		DisableCommerce:     !e.cfg.App.Hosted,
 		BaseURL:             e.cfg.App.BaseURL,
 		Log:                 e.log,
+		OutboundPolicy:      outbound.PolicyFor(e.cfg),
 	})
 }
 
@@ -416,8 +419,8 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 
 	// Legacy per-site settings pages share the signed-in application's CSRF
 	// cookie and verifier even though their handlers live in another package.
-	site.CSRF = app.IssueCSRF
-	site.CheckCSRF = app.CheckCSRF
+	site.CSRF = app.FormToken
+	site.CheckCSRF = app.CheckFormToken
 	site.Role = func(r *http.Request, current sites.Site) teams.Role {
 		return app.RoleForSite(r, current.ID)
 	}

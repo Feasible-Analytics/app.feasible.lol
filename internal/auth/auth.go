@@ -27,7 +27,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -46,31 +45,6 @@ var (
 	ErrTwoFactorNeeded = errors.New("auth: a two-factor code is required")
 	ErrSignupDisabled  = errors.New("auth: public account registration is disabled on this installation")
 )
-
-// ValidationError is a refusal written for the person who typed the value. A
-// handler shows it as it is; every other error from the store is a failure of
-// ours, which the handler logs and replaces with a generic message, because a
-// database error rendered into a page is a description of our schema handed to
-// whoever triggered it.
-type ValidationError string
-
-// Error returns the message.
-func (e ValidationError) Error() string {
-	return string(e)
-}
-
-// validationMessage extracts the sentence to show when err is something the
-// user can fix, with its first letter capitalised for the page.
-func validationMessage(err error) (string, bool) {
-	var problem ValidationError
-	if !errors.As(err, &problem) || problem == "" {
-		return "", false
-	}
-
-	text := string(problem)
-
-	return strings.ToUpper(text[:1]) + text[1:], true
-}
 
 // Store is the system database plus the clock everything here reads. The clock
 // is injectable because half of this package is about expiry windows, and a

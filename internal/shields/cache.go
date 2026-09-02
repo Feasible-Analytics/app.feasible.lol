@@ -68,9 +68,10 @@ func (c *Cache) Refresh(ctx context.Context) error {
 	for accountID := range byAccount {
 		lease, err := c.accounts.Acquire(ctx, accountID)
 		if err != nil {
-			// One unreadable account must not blank every other account's
-			// rules. Skipping keeps the previous snapshot's entries for it,
-			// which is the safe direction: rules stay applied.
+			// The refresh is abandoned rather than published half-built, so the
+			// previous snapshot stays in force for every account. That is the
+			// safe direction: a rule the customer wrote keeps being applied
+			// rather than silently lapsing because one database was busy.
 			return fmt.Errorf("shields: refresh account %d: %w", accountID, err)
 		}
 

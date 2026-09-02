@@ -75,6 +75,32 @@ func TestQueryParametersAreStripped(t *testing.T) {
 	}
 }
 
+// TestHashRouteIsItsOwnPage covers the other half of the URL rule. The tracker
+// strips the fragment unless the site opted into hash routing, so a fragment
+// that does arrive is the page rather than a position on one — and dropping it
+// would file every route of such a site as "/".
+func TestHashRouteIsItsOwnPage(t *testing.T) {
+	h := newHandlerHarness(t)
+
+	debug := derive(t, h, pageview("https://example.com/#/pricing"), nil)
+	if debug.Pathname != "/#/pricing" {
+		t.Fatalf("pathname = %q, want /#/pricing", debug.Pathname)
+	}
+
+	// Two routes of the same hash-routed site stay two pages.
+	other := derive(t, h, pageview("https://example.com/#/about"), nil)
+	if other.Pathname == debug.Pathname {
+		t.Fatalf("two hash routes both stored as %q", other.Pathname)
+	}
+
+	// A query string is still stripped: the fragment is the page, the query is
+	// as private as it is anywhere else.
+	withQuery := derive(t, h, pageview("https://example.com/?session=secret#/pricing"), nil)
+	if withQuery.Pathname != "/#/pricing" {
+		t.Fatalf("pathname = %q, want the query stripped and the route kept", withQuery.Pathname)
+	}
+}
+
 // TestAcquisitionParameters checks the seven we recognise, and only those seven.
 func TestAcquisitionParameters(t *testing.T) {
 	h := newHandlerHarness(t)

@@ -119,7 +119,7 @@ func (h *Handler) reauthenticate(w http.ResponseWriter, r *http.Request, user *U
 // holder can see, but an unlimited one is still a way to fill your own inbox
 // by accident and, with a stolen session, somebody else's on purpose.
 func (h *Handler) doSendConfirmation(w http.ResponseWriter, r *http.Request) {
-	if !h.checkCSRF(w, r) {
+	if !h.CheckFormToken(w, r) {
 		return
 	}
 

@@ -288,6 +288,14 @@ func (w *Writer) writeAccountDurable(ctx context.Context, accountID int64, event
 		return committed, nil
 	}
 
+	// Pruning happens before the fold loads anything, so it can only ever
+	// remove state that predates this batch rather than state this transaction
+	// is about to write.
+	expired, err := w.pruneFoldState(ctx, tx, events)
+	if err != nil {
+		return committed, err
+	}
+
 	fold := newDurableSessionCache()
 	for key, span := range durableFoldRanges(fresh) {
 		if err := loadDurableFoldKey(ctx, tx, fold, accountID, key, span.first, span.last); err != nil {
@@ -339,10 +347,6 @@ func (w *Writer) writeAccountDurable(ctx context.Context, accountID int64, event
 		return committed, err
 	}
 	if err := persistDurableFoldState(ctx, tx, dirty, merges, adopted); err != nil {
-		return committed, err
-	}
-	expired, err := w.pruneFoldState(ctx, tx, events)
-	if err != nil {
 		return committed, err
 	}
 	if err := w.commitDurable(ctx, tx, rows, dirty, merges, ids); err != nil {
@@ -589,18 +593,36 @@ func loadLegacyFoldKey(ctx context.Context, tx *sql.Tx, cache *SessionCache, acc
 }
 
 // foldStateRetention is how long a visit's fold state and its unadopted pings
-// outlive the visit. Nothing arriving now can extend a session that ended a
-// full window ago, and the second window absorbs a delayed delivery from the
-// outbox. Past it a very late event hydrates the session approximately from
-// the sessions table, and a parked ping is a drop.
-const foldStateRetention = 2 * SessionTimeout
+// outlive the visit. It is two UTC days because the fold is keyed on the daily
+// visitor fingerprint and the lookup reaches exactly one salt day back: state
+// older than that can never be found again, because no arriving event can
+// derive the identity it is filed under. Anything shorter would throw away
+// state a later event could still have joined, which is a lost visit and a
+// silent one — the next event simply starts a new session.
+//
+// Past the window a very late event hydrates the session approximately from
+// the sessions table, and a parked ping is a drop with a reason.
+const foldStateRetention = 48 * time.Hour
 
 // pruneFoldState removes fold state past the retention window for the sites in
 // a batch and returns the parked pings that will now never find their pageview,
 // so they can be reported after commit. Without this both tables grow for the
 // life of the account, one row per visit.
+//
+// The cutoff trails the batch's own oldest event as well as the clock. A batch
+// replayed from the outbox carries timestamps the wall clock has long passed,
+// and measuring from the clock alone would delete the fold state of the very
+// visits that batch is still writing — which is data loss, and silent, because
+// the next event for those visitors would simply start a new session.
 func (w *Writer) pruneFoldState(ctx context.Context, tx *sql.Tx, events []Event) ([]Event, error) {
-	cutoff := w.clock().Add(-foldStateRetention).Unix()
+	cutoff := w.clock().Unix()
+	for i := range events {
+		if events[i].Timestamp < cutoff {
+			cutoff = events[i].Timestamp
+		}
+	}
+	cutoff -= int64(foldStateRetention / time.Second)
+
 	pruned := map[int64]struct{}{}
 
 	var expired []Event

@@ -9,11 +9,14 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,12 +24,38 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 )
 
 // testContext returns the non-cancelled context used by synchronous outbox
 // operations; Go 1.23 does not yet expose testing.T.Context.
 func testContext() context.Context { return context.Background() }
+
+// queued reads the active queue depth and fails the test if it cannot be read,
+// so an unreadable database can never be mistaken for a drained queue.
+func queued(t *testing.T, outbox *Outbox) int {
+	t.Helper()
+
+	count, err := outbox.Len()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return count
+}
+
+// parked reads the dead-letter depth, failing the test on an unreadable one.
+func parked(t *testing.T, outbox *Outbox) int {
+	t.Helper()
+
+	count, err := outbox.Parked()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return count
+}
 
 // closeTestOutbox registers a checked close for one temporary outbox.
 func closeTestOutbox(t *testing.T, outbox *Outbox) {
@@ -61,8 +90,8 @@ func TestOutboxTransportReleasesWaiterBeforeAppCommit(t *testing.T) {
 	if err := buffer.AddAndWait(testContext(), event); err != nil {
 		t.Fatal(err)
 	}
-	if outbox.Len() != 1 {
-		t.Fatalf("durable boundary retained %d rows, want 1", outbox.Len())
+	if queued(t, outbox) != 1 {
+		t.Fatalf("durable boundary retained %d rows, want 1", queued(t, outbox))
 	}
 }
 
@@ -119,11 +148,11 @@ func TestOutboxSurvivesAppFailureAndIngesterRestart(t *testing.T) {
 	}
 	event := Event{UUID: uuid.New(), Shard: 0, AccountID: 10, SiteID: 1, Domain: "known.example", Name: EventPageview}
 	committed, err := outbox.Send(testContext(), 0, []Event{event})
-	if err != nil || len(committed) != 1 || outbox.Len() != 1 {
-		t.Fatalf("append committed=%v len=%d err=%v", committed, outbox.Len(), err)
+	if err != nil || len(committed) != 1 || queued(t, outbox) != 1 {
+		t.Fatalf("append committed=%v len=%d err=%v", committed, queued(t, outbox), err)
 	}
-	if err := outbox.deliver(testContext(), 0); err == nil || outbox.Len() != 1 {
-		t.Fatalf("failed delivery err=%v len=%d", err, outbox.Len())
+	if err := outbox.deliver(testContext(), 0); err == nil || queued(t, outbox) != 1 {
+		t.Fatalf("failed delivery err=%v len=%d", err, queued(t, outbox))
 	}
 	if err := outbox.Close(); err != nil {
 		t.Fatal(err)
@@ -135,8 +164,8 @@ func TestOutboxSurvivesAppFailureAndIngesterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	closeTestOutbox(t, restarted)
-	if restarted.Len() != 1 {
-		t.Fatalf("restart retained %d events, want 1", restarted.Len())
+	if queued(t, restarted) != 1 {
+		t.Fatalf("restart retained %d events, want 1", queued(t, restarted))
 	}
 	if err := restarted.Router.RefreshAll(testContext()); err != nil {
 		t.Fatal(err)
@@ -145,8 +174,8 @@ func TestOutboxSurvivesAppFailureAndIngesterRestart(t *testing.T) {
 	if err := restarted.deliver(testContext(), 0); err != nil {
 		t.Fatal(err)
 	}
-	if restarted.Len() != 0 {
-		t.Fatalf("acknowledged event remained in outbox: %d", restarted.Len())
+	if queued(t, restarted) != 0 {
+		t.Fatalf("acknowledged event remained in outbox: %d", queued(t, restarted))
 	}
 }
 
@@ -176,8 +205,8 @@ func TestOutboxDeletesOnlyExactAcknowledgments(t *testing.T) {
 	if err := outbox.deliver(testContext(), 0); err == nil {
 		t.Fatal("partial acknowledgment was not reported for retry")
 	}
-	if outbox.Len() != 1 {
-		t.Fatalf("partial acknowledgment left %d rows, want 1", outbox.Len())
+	if queued(t, outbox) != 1 {
+		t.Fatalf("partial acknowledgment left %d rows, want 1", queued(t, outbox))
 	}
 }
 
@@ -194,8 +223,8 @@ func TestOutboxPersistsNoRawAddress(t *testing.T) {
 	if _, err := outbox.Send(testContext(), 0, []Event{event, event}); err != nil {
 		t.Fatal(err)
 	}
-	if outbox.Len() != 1 {
-		t.Fatalf("duplicate UUID created %d rows, want 1", outbox.Len())
+	if queued(t, outbox) != 1 {
+		t.Fatalf("duplicate UUID created %d rows, want 1", queued(t, outbox))
 	}
 	var payload []byte
 	if err := outbox.DB.QueryRow("SELECT payload FROM outbox WHERE event_uuid = ?", event.UUID.String()).Scan(&payload); err != nil {
@@ -235,11 +264,108 @@ func TestOutboxReplaysParkedRows(t *testing.T) {
 	if err := outbox.parkIDs(testContext(), []int64{id}, "review me"); err != nil {
 		t.Fatal(err)
 	}
-	if outbox.Len() != 0 || outbox.Parked() != 1 {
-		t.Fatalf("before replay active=%d parked=%d", outbox.Len(), outbox.Parked())
+	if queued(t, outbox) != 0 || parked(t, outbox) != 1 {
+		t.Fatalf("before replay active=%d parked=%d", queued(t, outbox), parked(t, outbox))
 	}
 	count, err := outbox.ReplayParked(testContext())
-	if err != nil || count != 1 || outbox.Len() != 1 || outbox.Parked() != 0 {
-		t.Fatalf("replay count=%d active=%d parked=%d err=%v", count, outbox.Len(), outbox.Parked(), err)
+	if err != nil || count != 1 || queued(t, outbox) != 1 || parked(t, outbox) != 0 {
+		t.Fatalf("replay count=%d active=%d parked=%d err=%v", count, queued(t, outbox), parked(t, outbox), err)
+	}
+}
+
+// TestParkingIsAnnounced checks the dead letter is not silent. A parked event
+// has been acknowledged to the browser and will never be delivered until a
+// person runs the replay command, so nothing may reach that table quietly.
+func TestParkingIsAnnounced(t *testing.T) {
+	var lines bytes.Buffer
+
+	outbox, err := OpenOutbox(testContext(), filepath.Join(t.TempDir(), "buffer.db"), []string{"http://127.0.0.1:1"},
+		&InternalSigner{Key: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeTestOutbox(t, outbox)
+	outbox.Log = logger.New(logger.Options{Level: "error", Output: &lines})
+
+	event := Event{UUID: uuid.New(), Shard: 0, AccountID: 10, SiteID: 1, Domain: "known.example"}
+	if _, err := outbox.Send(testContext(), 0, []Event{event}); err != nil {
+		t.Fatal(err)
+	}
+	var id int64
+	if err := outbox.DB.QueryRow("SELECT id FROM outbox WHERE event_uuid = ?", event.UUID.String()).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if err := outbox.parkIDs(testContext(), []int64{id}, "the destination refused it twenty times"); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(lines.String(), "ingest events parked for operator review") {
+		t.Fatalf("parking an event logged nothing: %q", lines.String())
+	}
+	if !strings.Contains(lines.String(), "refused it twenty times") {
+		t.Fatalf("the park was logged without the reason: %q", lines.String())
+	}
+}
+
+// TestStuckDeliveryIsReported is the store-and-forward blind spot. The client
+// already has its 202, so an ingester that can reach no shard at all accepts
+// events forever; without a log line nothing anywhere says the queue has
+// stopped moving.
+func TestStuckDeliveryIsReported(t *testing.T) {
+	var lines bytes.Buffer
+
+	// A destination that never answered the routing handshake, which is what a
+	// wrong URL or a mismatched signing key looks like from here.
+	outbox, err := OpenOutbox(testContext(), filepath.Join(t.TempDir(), "buffer.db"), []string{"http://127.0.0.1:1"},
+		&InternalSigner{Key: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeTestOutbox(t, outbox)
+	outbox.Log = logger.New(logger.Options{Level: "error", Output: &lines})
+
+	ctx, cancel := context.WithTimeout(testContext(), 4*outboxPoll)
+	defer cancel()
+	outbox.Run(ctx)
+
+	logged := strings.Count(lines.String(), "outbox delivery failed")
+	if logged == 0 {
+		t.Fatalf("a destination that never validated was never reported: %q", lines.String())
+	}
+
+	// Several ticks failed, and a stuck destination must not turn the log into
+	// a flood at the poll interval.
+	if logged != 1 {
+		t.Fatalf("one run of failures produced %d log lines, want 1", logged)
+	}
+}
+
+// TestDeliveryRecoveryIsReported checks the other half: a queue that starts
+// moving again says so, so nobody is left reading an hour-old error and
+// wondering whether it is still true.
+func TestDeliveryRecoveryIsReported(t *testing.T) {
+	var lines bytes.Buffer
+
+	outbox := &Outbox{Log: logger.New(logger.Options{Level: "info", Output: &lines})}
+	state := &deliveryState{}
+
+	outbox.report(state, errors.New("connection refused"), "outbox delivery", "shard", 1)
+	for range outboxFailureReportEvery - 1 {
+		outbox.report(state, errors.New("connection refused"), "outbox delivery", "shard", 1)
+	}
+	outbox.report(state, nil, "outbox delivery", "shard", 1)
+
+	if got := strings.Count(lines.String(), "outbox delivery failed"); got != 2 {
+		t.Fatalf("%d failures were reported across %d ticks, want the first and one repeat",
+			got, outboxFailureReportEvery)
+	}
+	if !strings.Contains(lines.String(), "outbox delivery recovered") {
+		t.Fatalf("a queue that started moving again said nothing: %q", lines.String())
+	}
+
+	// The run of failures is over, so the next one is news again.
+	outbox.report(state, errors.New("connection refused"), "outbox delivery", "shard", 1)
+	if got := strings.Count(lines.String(), "outbox delivery failed"); got != 3 {
+		t.Fatalf("a fresh failure after recovery was reported %d times, want 3 in total", got)
 	}
 }

@@ -37,6 +37,7 @@ type User struct {
 	TOTPSecret      string
 	TOTPRecovery    string
 	TOTPEnabledAt   int64
+	TOTPLastStep    int64
 	CreatedAt       int64
 	UpdatedAt       int64
 	LastSeenAt      int64
@@ -256,7 +257,7 @@ func nullUnix(value any) int64 {
 // otherwise drift.
 const userColumns = `id, email, name, password_hash, COALESCE(google_sub, ''),
 	email_verified_at, theme, totp_secret, totp_recovery_codes, totp_enabled_at,
-	created_at, updated_at, last_seen_at`
+	totp_last_used_step, created_at, updated_at, last_seen_at`
 
 // scanUser reads one row in the shape userColumns produces.
 func scanUser(row interface{ Scan(...any) error }) (*User, error) {
@@ -269,7 +270,7 @@ func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 
 	err := row.Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.GoogleSub,
 		&verifiedAt, &u.Theme, &u.TOTPSecret, &u.TOTPRecovery, &totpAt,
-		&u.CreatedAt, &u.UpdatedAt, &lastSeen)
+		&u.TOTPLastStep, &u.CreatedAt, &u.UpdatedAt, &lastSeen)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

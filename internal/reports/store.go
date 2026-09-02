@@ -189,6 +189,10 @@ func (s *Store) saveSubscription(ctx context.Context, subscription Subscription,
 		return fmt.Errorf("reports: %q is not weekly or monthly", subscription.Kind)
 	}
 
+	if err := ValidateWebhookURL(subscription.SlackWebhookURL); err != nil {
+		return err
+	}
+
 	recipients, err := encodeRecipients(subscription.Recipients)
 	if err != nil {
 		return err
@@ -368,6 +372,10 @@ func (s *Store) SaveAlertRuleForOwner(ctx context.Context, rule AlertRule, expec
 func (s *Store) saveAlertRule(ctx context.Context, rule AlertRule, expectedOwnerTeamID int64) error {
 	if rule.Kind != KindSpike && rule.Kind != KindDrop {
 		return fmt.Errorf("reports: %q is not spike or drop", rule.Kind)
+	}
+
+	if err := ValidateWebhookURL(rule.SlackWebhookURL); err != nil {
+		return err
 	}
 
 	if rule.Threshold <= 0 {

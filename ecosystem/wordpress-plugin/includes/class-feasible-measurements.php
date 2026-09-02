@@ -170,8 +170,8 @@ class Feasible_Measurements {
 		if ( is_404() && ! empty( $settings['track_404'] ) ) {
 			$props = self::not_found_props();
 
-			return 'window.feasible(' . wp_json_encode( self::EVENT_NOT_FOUND ) . ',{props:(function(){'
-				. 'var p=' . wp_json_encode( $props ) . ';'
+			return 'window.feasible(' . self::encode( self::EVENT_NOT_FOUND ) . ',{props:(function(){'
+				. 'var p=' . self::encode( $props ) . ';'
 				. 'if(document.referrer)p.referrer=document.referrer;'
 				. 'return p;})()});';
 		}
@@ -185,9 +185,27 @@ class Feasible_Measurements {
 				return '';
 			}
 
-			return 'window.feasible(' . wp_json_encode( self::EVENT_SEARCH ) . ',{props:' . wp_json_encode( $props ) . '});';
+			return 'window.feasible(' . self::encode( self::EVENT_SEARCH ) . ',{props:' . self::encode( $props ) . '});';
 		}
 
 		return '';
+	}
+
+	/**
+	 * encode renders a value as JSON that is safe inside an inline script tag.
+	 *
+	 * The search term is whatever the visitor typed into `?s=`, and it lands
+	 * between `<script>` and `</script>` on the page. Plain JSON leaves `<` and
+	 * `>` alone, so a term of `<!--<script>` puts the HTML parser into its
+	 * double-escaped state: the closing tag stops closing anything and the rest
+	 * of the document is swallowed as script source. Escaping the four HTML
+	 * characters as \u sequences produces identical JavaScript values with no
+	 * byte the tokeniser can act on.
+	 *
+	 * @param mixed $value Value to encode.
+	 * @return string
+	 */
+	public static function encode( $value ) {
+		return (string) wp_json_encode( $value, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT );
 	}
 }

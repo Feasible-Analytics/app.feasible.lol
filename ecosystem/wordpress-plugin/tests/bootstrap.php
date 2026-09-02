@@ -38,6 +38,21 @@ if ( ! function_exists( 'wp_generate_password' ) ) {
 	}
 }
 
+if ( ! function_exists( 'wp_json_encode' ) ) {
+	/**
+	 * wp_json_encode stands in for the WordPress wrapper, which for the depth
+	 * and the flags this plugin passes is json_encode with the same arguments.
+	 *
+	 * @param mixed $data    Value to encode.
+	 * @param int   $options Encoding flags.
+	 * @param int   $depth   Maximum depth.
+	 * @return string|false
+	 */
+	function wp_json_encode( $data, $options = 0, $depth = 512 ) {
+		return json_encode( $data, $options, $depth ); // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
+	}
+}
+
 require_once dirname( __DIR__ ) . '/includes/class-feasible-client-ip.php';
 require_once dirname( __DIR__ ) . '/includes/class-feasible-events.php';
 require_once dirname( __DIR__ ) . '/includes/class-feasible-measurements.php';

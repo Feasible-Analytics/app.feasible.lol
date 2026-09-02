@@ -77,23 +77,29 @@ func (w *Workers) Register(runner *jobs.Runner) {
 	runner.Register(jobs.QueueExports, jobs.KindSiteExport, jobs.WorkerFunc(w.RunExport))
 }
 
-// location resolves a site's timezone, falling back to UTC. A site whose zone
-// cannot be loaded is a site whose days would be silently wrong, so the
-// fallback is named in the log rather than assumed everywhere.
-func (w *Workers) location(siteID int64) *time.Location {
+// location resolves a site's timezone.
+//
+// It reports an error rather than falling back to UTC, because the timezone is
+// what decides which local day every imported row lands in and which day an
+// exported row is labelled with. Quietly using UTC for a site in Auckland does
+// not fail — it produces a whole history shifted by a day, which nobody would
+// ever trace back to here.
+func (w *Workers) location(siteID int64) (*time.Location, error) {
 	for _, site := range w.Sites.All() {
 		if site.ID != siteID {
 			continue
 		}
 
-		if loaded, err := time.LoadLocation(site.Timezone); err == nil {
-			return loaded
+		loaded, err := time.LoadLocation(site.Timezone)
+		if err != nil {
+			return nil, fmt.Errorf("this site's timezone %q could not be loaded, so its days cannot be worked out: %w",
+				site.Timezone, err)
 		}
 
-		break
+		return loaded, nil
 	}
 
-	return time.UTC
+	return nil, fmt.Errorf("site %d is not in this shard's site list, so its timezone is unknown", siteID)
 }
 
 // RunCSVImport reads an uploaded file into imported roll-up rows.
@@ -125,14 +131,18 @@ func (w *Workers) RunCSVImport(ctx context.Context, job jobs.Job) error {
 			"the uploaded file is missing — start the import again")
 	}
 
+	location, err := w.location(record.SiteID)
+	if err != nil {
+		return w.failImport(ctx, account.Writer(), record.ID, err.Error())
+	}
+
 	sources, closeArchive, err := SourcesFromUpload(record.UploadPath)
 	if err != nil {
 		return w.failImport(ctx, account.Writer(), record.ID, err.Error())
 	}
 	defer closeArchive() //nolint:errcheck // closing a read-only archive cannot lose anything
 
-	err = ImportCSV(ctx, account.Writer(), account.Intern, record, sources,
-		w.location(record.SiteID), w.now)
+	err = ImportCSV(ctx, account.Writer(), account.Intern, record, sources, location, w.now)
 	if err != nil {
 		return w.failImport(ctx, account.Writer(), record.ID, err.Error())
 	}
@@ -294,7 +304,16 @@ func (w *Workers) RunExport(ctx context.Context, job jobs.Job) error {
 
 	destination := ExportPath(w.DataDir, args.AccountID, args.ExportID)
 
-	size, err := BuildExport(ctx, account.Reader(), args.SiteID, w.location(args.SiteID), destination)
+	location, err := w.location(args.SiteID)
+	if err != nil {
+		if failErr := FailExport(ctx, account.Writer(), args.ExportID, err.Error(), w.now()); failErr != nil {
+			return failErr
+		}
+
+		return jobs.PermanentError(err)
+	}
+
+	size, err := BuildExport(ctx, account.Reader(), args.SiteID, location, destination)
 	if err != nil {
 		if failErr := FailExport(ctx, account.Writer(), args.ExportID, err.Error(), w.now()); failErr != nil {
 			return failErr

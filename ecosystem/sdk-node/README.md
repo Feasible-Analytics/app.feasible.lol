@@ -163,7 +163,7 @@ so you can log it — never swallowed, and never retried.
 
 | Class | When |
 |---|---|
-| `FeasibleValidationError` | Something required was missing. Has `field` and a `code` — `missing_client_ip`, `missing_user_agent`, `missing_name`, `missing_url`, `missing_domain`. |
+| `FeasibleValidationError` | Something required was missing, or a revenue amount or currency was unusable. Has `field` and a `code` — `missing_client_ip`, `missing_user_agent`, `missing_name`, `missing_url`, `missing_domain`, `invalid_revenue_amount`, `invalid_revenue_currency`. |
 | `FeasibleApiError` | The server refused the request. Has `statusCode`, the server's own `body` verbatim, and `attempts`. |
 | `FeasibleTransportError` | The request never reached a server. Has `attempt` and `cause`. |
 

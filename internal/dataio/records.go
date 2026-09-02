@@ -27,7 +27,12 @@ const (
 	SourceSearchConsole = "search_console"
 )
 
-// Import and export statuses.
+// Import and export statuses. Every read and every write goes through these
+// rather than repeating the string, so renaming one cannot leave the SQL
+// writing a value the comparisons no longer recognise.
+//
+// StatusCancelled is the schema's fifth allowed value; nothing writes it,
+// because there is no way to cancel a running import.
 const (
 	StatusPending   = "pending"
 	StatusRunning   = "running"
@@ -84,7 +89,7 @@ func (i Import) Progress() int {
 func CreateImport(ctx context.Context, db *sql.DB, siteID int64, source, label string, now time.Time) (*Import, error) {
 	result, err := db.ExecContext(ctx, `
 		INSERT INTO imports (site_id, source, label, status, created_at)
-		VALUES (?, ?, ?, 'pending', ?)`, siteID, source, label, now.Unix())
+		VALUES (?, ?, ?, ?, ?)`, siteID, source, label, StatusPending, now.Unix())
 	if err != nil {
 		return nil, fmt.Errorf("dataio: create import: %w", err)
 	}
@@ -214,8 +219,8 @@ func StartImport(ctx context.Context, db *sql.DB, id int64, total int, now time.
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		UPDATE imports SET status = 'running', started_at = ?, progress_total = ?, failure = ''
-		, progress_done = 0, rows_written = 0, cursor = '' WHERE id = ?`, now.Unix(), total, id)
+		UPDATE imports SET status = ?, started_at = ?, progress_total = ?, failure = ''
+		, progress_done = 0, rows_written = 0, cursor = '' WHERE id = ?`, StatusRunning, now.Unix(), total, id)
 	if err != nil {
 		return fmt.Errorf("dataio: start import %d: %w", id, err)
 	}
@@ -253,9 +258,9 @@ func CompleteImport(ctx context.Context, db *sql.DB, id int64, dimensions []stri
 
 	_, err = db.ExecContext(ctx, `
 		UPDATE imports
-		SET status = 'completed', completed_at = ?, dimensions = ?, rows_written = ?,
+		SET status = ?, completed_at = ?, dimensions = ?, rows_written = ?,
 		    range_start = ?, range_end = ?, progress_done = progress_total, failure = ''
-		WHERE id = ?`, now.Unix(), string(encoded), rowsWritten, rangeStart, rangeEnd, id)
+		WHERE id = ?`, StatusCompleted, now.Unix(), string(encoded), rowsWritten, rangeStart, rangeEnd, id)
 	if err != nil {
 		return fmt.Errorf("dataio: complete import %d: %w", id, err)
 	}
@@ -281,8 +286,8 @@ func FailImport(ctx context.Context, db *sql.DB, id int64, reason string, now ti
 	}
 
 	_, err = tx.ExecContext(ctx,
-		"UPDATE imports SET status = 'failed', completed_at = ?, failure = ? WHERE id = ?",
-		now.Unix(), reason, id)
+		"UPDATE imports SET status = ?, completed_at = ?, failure = ? WHERE id = ?",
+		StatusFailed, now.Unix(), reason, id)
 	if err != nil {
 		return fmt.Errorf("dataio: fail import %d: %w", id, err)
 	}
@@ -303,17 +308,31 @@ func SetUploadPath(ctx context.Context, db *sql.DB, id int64, path string) error
 	return nil
 }
 
-// DeleteImport removes an import and, through the foreign key, every roll-up
-// row it brought in. Deleting the import is the only way to take imported
-// history back out, which is why it is scoped to one import id rather than to a
-// date range: a range delete could not tell imported rows apart from each other.
+// DeleteImport removes an import and every roll-up row it brought in. Deleting
+// the import is the only way to take imported history back out, which is why it
+// is scoped to one import id rather than to a date range: a range delete could
+// not tell imported rows apart from each other.
+//
+// Both deletes are one transaction. Removing the rows and then failing to
+// remove the import would leave a record claiming history the reports no longer
+// hold, and the reverse would leave rows no import owns.
 func DeleteImport(ctx context.Context, db *sql.DB, siteID, id int64) error {
-	if _, err := db.ExecContext(ctx, "DELETE FROM imported_rollups WHERE import_id = ? AND site_id = ?", id, siteID); err != nil {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("dataio: delete import %d: %w", id, err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM imported_rollups WHERE import_id = ? AND site_id = ?", id, siteID); err != nil {
 		return fmt.Errorf("dataio: delete imported rows: %w", err)
 	}
 
-	if _, err := db.ExecContext(ctx, "DELETE FROM imports WHERE id = ? AND site_id = ?", id, siteID); err != nil {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM imports WHERE id = ? AND site_id = ?", id, siteID); err != nil {
 		return fmt.Errorf("dataio: delete import: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("dataio: delete import %d: %w", id, err)
 	}
 
 	return nil
@@ -351,8 +370,8 @@ func CreateExport(ctx context.Context, db *sql.DB, siteID int64, now time.Time) 
 
 	result, err := db.ExecContext(ctx, `
 		INSERT INTO exports (site_id, token_hash, status, created_at, expires_at)
-		VALUES (?, ?, 'pending', ?, ?)`,
-		siteID, HashToken(token), now.Unix(), now.Add(ExportWindow).Unix())
+		VALUES (?, ?, ?, ?, ?)`,
+		siteID, HashToken(token), StatusPending, now.Unix(), now.Add(ExportWindow).Unix())
 	if err != nil {
 		return nil, "", fmt.Errorf("dataio: create export: %w", err)
 	}
@@ -438,8 +457,8 @@ func ListExports(ctx context.Context, db *sql.DB, siteID int64, limit int) ([]Ex
 // CompleteExport records a finished archive.
 func CompleteExport(ctx context.Context, db *sql.DB, id int64, path string, bytes int64, now time.Time) error {
 	_, err := db.ExecContext(ctx,
-		"UPDATE exports SET status = 'completed', path = ?, bytes = ?, completed_at = ? WHERE id = ?",
-		path, bytes, now.Unix(), id)
+		"UPDATE exports SET status = ?, path = ?, bytes = ?, completed_at = ? WHERE id = ?",
+		StatusCompleted, path, bytes, now.Unix(), id)
 	if err != nil {
 		return fmt.Errorf("dataio: complete export %d: %w", id, err)
 	}
@@ -450,8 +469,8 @@ func CompleteExport(ctx context.Context, db *sql.DB, id int64, path string, byte
 // FailExport records why an export could not be built.
 func FailExport(ctx context.Context, db *sql.DB, id int64, reason string, now time.Time) error {
 	_, err := db.ExecContext(ctx,
-		"UPDATE exports SET status = 'failed', failure = ?, completed_at = ? WHERE id = ?",
-		reason, now.Unix(), id)
+		"UPDATE exports SET status = ?, failure = ?, completed_at = ? WHERE id = ?",
+		StatusFailed, reason, now.Unix(), id)
 	if err != nil {
 		return fmt.Errorf("dataio: fail export %d: %w", id, err)
 	}

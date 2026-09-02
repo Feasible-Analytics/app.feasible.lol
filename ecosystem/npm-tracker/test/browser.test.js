@@ -229,3 +229,32 @@ test("storage that throws costs the opt-out, not the page", (t) => {
 	assert.equal(enable(), false);
 	assert.equal(isEnabled(), true);
 });
+
+test("a pageview's props reach the script under the key its pageview path reads", async (t) => {
+	installDom();
+	t.after(() => {
+		delete globalThis.window.feasible;
+		removeDom();
+	});
+
+	init({ domain: "example.com" });
+
+	const seen = [];
+	globalThis.window.feasible = (name, options) => {
+		seen.push([name, options]);
+		options.callback({ status: 202 });
+	};
+
+	await pageview({ props: { plan: "annual" }, referrer: "", u: "https://example.com/pricing" });
+
+	const [name, options] = seen[0];
+
+	assert.equal(name, "pageview");
+	assert.deepEqual(options.p, { plan: "annual" });
+	assert.equal(options.props, undefined);
+
+	// An empty referrer is forwarded rather than dropped: it is how the script
+	// is told the page has none instead of falling back to document.referrer.
+	assert.equal(options.r, "");
+	assert.equal(options.u, "https://example.com/pricing");
+});

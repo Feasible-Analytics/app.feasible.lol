@@ -10,6 +10,7 @@ package usage
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
@@ -215,6 +216,14 @@ func (s *Sweeper) sendThresholds(ctx context.Context, teamID int64, period strin
 
 		outcome, err := s.Notify.Notify(ctx, notice)
 		if err != nil {
+			// The claim goes back so the next sweep tries again. Keeping it
+			// would mark the rung delivered forever and the customer would
+			// never hear they are approaching their limit — a duplicate email
+			// is a far smaller cost than a warning that never arrives.
+			if releaseErr := s.Store.ReleaseNotice(ctx, teamID, period, level); releaseErr != nil {
+				return errors.Join(err, releaseErr)
+			}
+
 			return err
 		}
 
@@ -274,7 +283,14 @@ func (s *Sweeper) runOverage(ctx context.Context, teamID int64, period string, b
 			SalesEmail: s.SalesEmail, BillingURL: s.BillingURL,
 		})
 		if err != nil {
-			return err
+			// The deadline was stored before the message was sent, so leaving
+			// it would lock the dashboard of an account that was never asked
+			// anything. Both the claim and the deadline are taken back so the
+			// next sweep opens the conversation properly.
+			clearErr := s.Store.ClearOverage(ctx, teamID)
+			releaseErr := s.Store.ReleaseNotice(ctx, teamID, period, "second_month")
+
+			return errors.Join(err, clearErr, releaseErr)
 		}
 
 		if s.Log != nil {

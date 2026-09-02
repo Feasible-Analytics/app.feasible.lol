@@ -14,6 +14,7 @@
 package statsapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -172,9 +173,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	site, ok := h.Sites.Lookup(domain)
 	if !ok {
-		// Not found rather than forbidden: this endpoint has no authentication
-		// in front of it yet, and once it does, the answer for a site somebody
-		// may not read should be the same as for one that does not exist.
+		// Not found rather than forbidden, and Authorize refuses a site the
+		// caller may not read with the same status: otherwise the difference
+		// between the two answers is a way to enumerate which domains are
+		// registered on this install.
 		h.fail(w, http.StatusNotFound, "no site is registered for "+domain)
 		return
 	}
@@ -346,7 +348,7 @@ func (h *Handler) domain(r *http.Request) string {
 // misspelt field that is silently ignored is a filter that never applied and a
 // number nobody can explain, so an unknown key is a 400 naming the key.
 func decode(body []byte) (*request, error) {
-	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 
 	parsed := &request{}

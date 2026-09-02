@@ -428,6 +428,12 @@ func newHarness(t testing.TB, control *sql.DB, dataDir string, wrap func(Transpo
 		t.Fatal("the public direct-mode handler does not wait for a durable account commit")
 	}
 
+	// The serving command wires this; NewService does not. Without it every
+	// writer-side drop — a live shield, an engagement ping whose pageview never
+	// came — is invisible, and a replay that quietly loses events reads as a
+	// number that no longer matches with no reason attached.
+	service.Writer.Counters = service.Counters
+
 	// The buffer is built with the same bounds production runs with. A harness
 	// that raises them writes every event through a path production never
 	// takes: a buffer bigger than the stream can never flush on size, so the

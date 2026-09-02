@@ -344,13 +344,13 @@ func (s *Store) ownerMutation(ctx context.Context, siteID, expectedOwnerTeamID i
 	err = tx.QueryRowContext(ctx, `
 		SELECT COALESCE(owner_team_id, account_id) FROM sites WHERE id = ?
 	`, siteID).Scan(&ownerTeamID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		tx.Rollback() //nolint:errcheck // transaction cannot be reused
+		return nil, fmt.Errorf("sharing: verify site owner: %w", err)
+	}
 	if errors.Is(err, sql.ErrNoRows) || ownerTeamID != expectedOwnerTeamID {
 		tx.Rollback() //nolint:errcheck // transaction cannot be reused
 		return nil, ErrSiteOwnerChanged
-	}
-	if err != nil {
-		tx.Rollback() //nolint:errcheck // transaction cannot be reused
-		return nil, fmt.Errorf("sharing: verify site owner: %w", err)
 	}
 
 	return tx, nil
@@ -413,16 +413,15 @@ func (s *Store) CheckPasswordForSource(ctx context.Context, linkID int64, source
 }
 
 // reservePasswordAttempt reads the current credential and consumes one slot in
-// the source-link window under a SQLite writer reservation.
+// the source-link window. system.db is opened with an immediate transaction
+// lock, so the read and the decrement are already serialised against every
+// other guess by the time this transaction begins.
 func (s *Store) reservePasswordAttempt(ctx context.Context, linkID int64, sourceKey string) (string, string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", "", fmt.Errorf("sharing: reserve password attempt: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback after commit is harmless
-	if _, err := tx.ExecContext(ctx, `UPDATE share_password_attempts SET attempts = attempts WHERE link_id = -1`); err != nil {
-		return "", "", fmt.Errorf("sharing: reserve password attempt: %w", err)
-	}
 
 	var hash, salt string
 	err = tx.QueryRowContext(ctx, `

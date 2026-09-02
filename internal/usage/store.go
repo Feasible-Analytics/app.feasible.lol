@@ -256,6 +256,21 @@ func (s *Store) RecordNotice(ctx context.Context, teamID int64, period string, l
 	return affected > 0, nil
 }
 
+// ReleaseNotice takes back a claim whose email never went out. The claim is
+// made before the message is rendered so two sweeps cannot both send it, which
+// means a send that fails would otherwise leave the rung marked as delivered
+// and the customer never told they are near their limit.
+func (s *Store) ReleaseNotice(ctx context.Context, teamID int64, period string, level Level) error {
+	_, err := s.db.ExecContext(ctx, `
+		DELETE FROM usage_notices WHERE team_id = ? AND period = ? AND threshold = ?
+	`, teamID, period, string(level))
+	if err != nil {
+		return fmt.Errorf("usage: release notice %d/%s: %w", teamID, period, err)
+	}
+
+	return nil
+}
+
 // Overage reads the state of the conversation with one account. A missing row
 // is the zero value, which means no conversation is in progress.
 func (s *Store) Overage(ctx context.Context, teamID int64) (Overage, error) {

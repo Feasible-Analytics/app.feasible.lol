@@ -522,6 +522,11 @@ class Feasible_Proxy {
 	private static function refuse( $status, $reason, $message, $detail = '' ) {
 		self::send_header( self::ERROR_HEADER, $reason );
 
+		// The event route declares text/plain but sets nosniff only on a
+		// relayed answer, so a refusal would otherwise be the one response from
+		// this proxy a browser is free to sniff.
+		self::send_header( 'X-Content-Type-Options', 'nosniff' );
+
 		if ( '' !== $detail ) {
 			Feasible_Settings::record_error( 'proxy', $reason, $detail );
 		}

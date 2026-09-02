@@ -304,7 +304,11 @@ func TestSharedLinkIsUnguessable(t *testing.T) {
 	if passwordHash == "" || salt == "" {
 		t.Fatal("public API created a legacy unsalted password hash")
 	}
-	if err := h.API.Sharing.CheckPassword(context.Background(), protectedSlug, "wrong"); !errors.Is(err, sharing.ErrWrongPassword) {
+	protected, err := h.API.Sharing.Resolve(context.Background(), protectedSlug)
+	if err != nil {
+		t.Fatalf("resolve the link the API just created: %v", err)
+	}
+	if err := h.API.Sharing.CheckPasswordForSource(context.Background(), protected.ID, "test", "wrong"); !errors.Is(err, sharing.ErrWrongPassword) {
 		t.Fatalf("public API link accepted a wrong password: %v", err)
 	}
 	var afterHash, afterSalt string
@@ -317,7 +321,7 @@ func TestSharedLinkIsUnguessable(t *testing.T) {
 		t.Fatalf("failed API verification downgraded hash/salt %q/%q to %q/%q",
 			passwordHash, salt, afterHash, afterSalt)
 	}
-	if err := h.API.Sharing.CheckPassword(context.Background(), protectedSlug, "api-secret"); err != nil {
+	if err := h.API.Sharing.CheckPasswordForSource(context.Background(), protected.ID, "test", "api-secret"); err != nil {
 		t.Fatalf("public API link is not readable by the sharing verifier: %v", err)
 	}
 }

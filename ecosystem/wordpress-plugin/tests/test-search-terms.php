@@ -96,3 +96,23 @@ feasible_assert_same(
 	Feasible_Measurements::bucket_results( '42' ),
 	'a numeric string from the query object still buckets'
 );
+
+// A search term is whatever the visitor typed, and it is emitted between
+// <script> and </script>. Plain JSON leaves the HTML characters alone, and
+// "<!--<script>" is the sequence that puts the parser into its double-escaped
+// state and swallows the rest of the page.
+feasible_assert(
+	false === strpos( Feasible_Measurements::encode( array( 'search_term' => '<!--<script>' ) ), '<' ),
+	'no raw < survives into the inline script'
+);
+
+feasible_assert(
+	false === strpos( Feasible_Measurements::encode( array( 'search_term' => '</script><img src=x onerror=alert(1)>' ) ), '>' ),
+	'no raw > survives into the inline script'
+);
+
+feasible_assert_same(
+	array( 'search_term' => '<!--<script>' ),
+	json_decode( Feasible_Measurements::encode( array( 'search_term' => '<!--<script>' ) ), true ),
+	'the escaping changes the bytes on the page, never the value the browser reads'
+);

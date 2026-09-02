@@ -10,6 +10,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -282,19 +283,23 @@ func (s *Service) advance(ctx context.Context, account Account, now time.Time) e
 		}
 	}
 
-	if err := s.sendDue(ctx, account, now); err != nil {
-		return err
-	}
+	// A warning that could not be sent must never hold up the deletion itself.
+	// The promise is that the data is destroyed on day 90, and neither an
+	// unreachable mail relay nor an account with nobody left to write to is a
+	// reason to keep it past that. The failure still travels back to the sweep,
+	// which logs it, so the send is retried rather than forgotten.
+	sendErr := s.sendDue(ctx, account, now)
 
 	if !account.State.DueForDeletion(now) {
-		return nil
+		return sendErr
 	}
 
 	if s.Purger == nil {
-		return fmt.Errorf("lifecycle: account %d is due for deletion but no purger is configured", account.TeamID)
+		return errors.Join(sendErr,
+			fmt.Errorf("lifecycle: account %d is due for deletion but no purger is configured", account.TeamID))
 	}
 
-	return s.Purger.Purge(ctx, account, now)
+	return errors.Join(sendErr, s.Purger.Purge(ctx, account, now))
 }
 
 // sendDue sends every email whose day has arrived and which has not been sent

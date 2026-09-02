@@ -116,13 +116,10 @@ type siteSchema struct {
 	// two only mean anything together.
 	PropertyAggregates []string `json:"property_aggregates"`
 
+	// Goals is empty only when the site counts no conversions. A read that
+	// fails refuses the whole resource rather than reporting an empty list, so
+	// a model never presents our fault as this site's answer.
 	Goals []publicapi.Goal `json:"goals"`
-
-	// GoalsAvailable says whether the goals list is empty because there are
-	// none or because the feature is not in this build. An empty list with no
-	// explanation would have a model confidently reporting that a site tracks
-	// no conversions.
-	GoalsAvailable bool `json:"goals_available"`
 
 	DateRangePresets []string `json:"date_range_presets"`
 	FilterOperators  []string `json:"filter_operators"`
@@ -175,6 +172,11 @@ func (s *Server) readResource(ctx context.Context, key *apikeys.Key, request *rp
 		},
 	}
 
+	// Both registries are wired in every build, so the nil checks guard nothing
+	// a deployment can produce. A read that fails is ours, and it refuses the
+	// resource: a model handed a short list treats it as the site's answer and
+	// tells somebody the property or conversion they are asking about does not
+	// exist.
 	properties, err := s.API.AllowedProperties(ctx, site.ID)
 	if err != nil {
 		return failure(request.ID, codeInternalError, "the site's properties could not be read")
@@ -189,15 +191,12 @@ func (s *Server) readResource(ctx context.Context, key *apikeys.Key, request *rp
 	}
 
 	if s.API.Goals != nil {
-		schema.GoalsAvailable = true
-
 		goals, err := s.API.Goals.ListGoals(ctx, site.ID)
-		if err == nil {
-			schema.Goals = goals
+		if err != nil {
+			return failure(request.ID, codeInternalError, "the site's goals could not be read")
 		}
-	} else {
-		schema.Notes = append(schema.Notes,
-			"Goals are not available on this build, so the goals list is empty for that reason rather than because the site counts none.")
+
+		schema.Goals = goals
 	}
 
 	encoded, err := json.MarshalIndent(schema, "", "  ")

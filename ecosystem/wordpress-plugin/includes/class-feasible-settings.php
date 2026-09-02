@@ -28,6 +28,11 @@ class Feasible_Settings {
 	// can never race a settings save and lose a field.
 	const ERROR_OPTION = 'feasible_last_error';
 
+	// How much of a failure's explanation is kept. A 400 from the ingest
+	// endpoint is one sentence; anything longer came from something that is not
+	// the ingest endpoint and is not worth a row in wp_options.
+	const ERROR_DETAIL_MAX_LENGTH = 1000;
+
 	// How long the same failure goes unrecorded before it is written again.
 	// During an outage every beacon fails the same way, and a write per beacon
 	// would make the options table the busiest table on the site.
@@ -451,7 +456,11 @@ class Feasible_Settings {
 			array(
 				'route'  => (string) $route,
 				'reason' => (string) $reason,
-				'detail' => (string) $detail,
+				// The detail on the event route is the upstream response body,
+				// which nothing here controls the length of. It is a sentence
+				// for a human to read on the settings screen, so it is capped
+				// rather than stored whole and rendered whole.
+				'detail' => substr( (string) $detail, 0, self::ERROR_DETAIL_MAX_LENGTH ),
 				'time'   => time(),
 			),
 			false

@@ -199,6 +199,12 @@ func TestFailureFallsBackToATile(t *testing.T) {
 		{err: io.ErrUnexpectedEOF},
 		{status: http.StatusOK, contentType: "text/html", body: []byte("<html>an error page</html>")},
 		{status: http.StatusOK, contentType: "image/x-icon"},
+
+		// SVG is the one image type that is also a document. Echoed back on
+		// this origin it would run its own script for anybody who opened the
+		// icon URL directly, so it falls back to a tile like any other refusal.
+		{status: http.StatusOK, contentType: "image/svg+xml",
+			body: []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`)},
 	} {
 		f := newProxy(t, upstream)
 		w := fetch(t, f, "producthunt.com")

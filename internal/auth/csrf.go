@@ -48,7 +48,7 @@ func (h *Handler) csrfToken(r *http.Request) string {
 	raw := make([]byte, 24)
 	if _, err := rand.Read(raw); err != nil {
 		// Failing closed here would mean no form on the page can be submitted.
-		// Failing to an empty token means checkCSRF rejects everything, which
+		// Failing to an empty token means CheckFormToken rejects everything, which
 		// is the same outcome with a message the user can act on.
 		return ""
 	}
@@ -79,9 +79,11 @@ func (h *Handler) issueCSRF(w http.ResponseWriter, token string) {
 	})
 }
 
-// checkCSRF verifies a submission. It returns false and writes the response
-// itself, so a handler's first line can be a plain guard clause.
-func (h *Handler) checkCSRF(w http.ResponseWriter, r *http.Request) bool {
+// CheckFormToken verifies a submission against FormToken's cookie. It returns
+// false and writes the response itself, so a handler's first line can be a
+// plain guard clause, and it is exported so the settings screens served from
+// another package share one CSRF boundary with the ones served from here.
+func (h *Handler) CheckFormToken(w http.ResponseWriter, r *http.Request) bool {
 	cookie, err := r.Cookie(csrfCookieName)
 	if err != nil {
 		h.Log.Warn("form submitted with no csrf cookie", "path", requestLogPath(r))
