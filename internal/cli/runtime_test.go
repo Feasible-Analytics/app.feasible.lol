@@ -12,19 +12,17 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
-// TestProcessListenerServesApplicationMetricsHealthAndInternalRoutes checks all
-// four surfaces share one socket. The edge proxy controls external reachability
-// by path; a second listener must not quietly return through later refactoring.
-func TestProcessListenerServesApplicationMetricsHealthAndInternalRoutes(t *testing.T) {
+// TestProcessListenerServesApplicationHealthAndInternalRoutes checks all three
+// surfaces share one socket. A second listener must not quietly return through
+// later refactoring.
+func TestProcessListenerServesApplicationHealthAndInternalRoutes(t *testing.T) {
 	checks := &health.Set{}
 	checks.Require("system_db", func(context.Context) error { return nil })
 	application := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -53,9 +51,15 @@ func TestProcessListenerServesApplicationMetricsHealthAndInternalRoutes(t *testi
 
 	base := "http://" + server.Addr()
 
-	body := fetch(t, base+"/metrics")
-	if !strings.Contains(body, "feasible_") {
-		t.Errorf("the metrics endpoint served no series of ours:\n%s", body)
+	response, err := http.Get(base + "/metrics") //nolint:noctx // loopback test listener
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closeErr := response.Body.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if response.StatusCode != http.StatusNotFound {
+		t.Errorf("metrics endpoint = %d, want 404", response.StatusCode)
 	}
 
 	// The health probes come with every listener, so a scrape target that is
@@ -91,55 +95,4 @@ func fetch(t *testing.T, url string) string {
 	}
 
 	return string(body)
-}
-
-// TestJobCountsSplitsTheQueueByState checks the metrics endpoint's view of the
-// background queue, against the real schema.
-//
-// It runs the statement rather than asserting on its text because the point of
-// failure is the statement itself: a query that no longer matches the table
-// would report an empty queue forever, which reads as a healthy one.
-func TestJobCountsSplitsTheQueueByState(t *testing.T) {
-	dir := migratedDataDir(t)
-
-	db, err := store.Open(filepath.Join(dir, "system.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	rows := []struct {
-		state string
-		count int
-	}{
-		{"available", 3},
-		{"executing", 1},
-		{"completed", 5},
-	}
-
-	for _, row := range rows {
-		for i := 0; i < row.count; i++ {
-			if _, err := db.Exec(
-				"INSERT INTO jobs (queue, kind, args, state, scheduled_at) VALUES ('default', 'test', '{}', ?, 0)",
-				row.state,
-			); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-
-	counts, err := jobCounts(db)(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if counts.Available != 3 {
-		t.Errorf("available = %d, want 3", counts.Available)
-	}
-
-	// Completed jobs must not be counted: they are history, and a depth that
-	// only ever grows is a metric nobody can alert on.
-	if counts.Executing != 1 {
-		t.Errorf("executing = %d, want 1", counts.Executing)
-	}
 }

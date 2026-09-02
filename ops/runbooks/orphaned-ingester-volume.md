@@ -13,8 +13,7 @@ but an app shard has not committed. The host is disposable; the volume is not.
 
 ## Symptom
 
-- An ingester disappears with a non-zero last reported
-  `feasible_ingest_buffer_events` value.
+- An ingester disappears while its `buffer.db` still contains `outbox` rows.
 - The public load balancer has healthy replacement ingesters, so new traffic is
   safe, but the missing host's accepted events have not appeared in dashboards.
 
@@ -33,8 +32,8 @@ comes from configuration.
 3. Configure the complete `FEASIBLE_INGEST_SHARDS`, shared
    `FEASIBLE_INGEST_SALT`, and an accepted signing key.
 4. Start the replacement off the public load balancer. Watch the queue drain.
-5. When `feasible_ingest_buffer_events` and parked rows are zero, stop it and
-   retire the volume, or register it as a normal ingester.
+5. When both `outbox` and `outbox_parked` contain zero rows, stop it and retire
+   the volume, or register it as a normal ingester.
 
 UUID receipts make replay safe even when the old host died after the app commit
 but before its acknowledgment reached the ingester.

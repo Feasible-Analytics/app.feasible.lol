@@ -16,7 +16,6 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/metrics"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
 )
 
@@ -102,25 +101,13 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
-// once runs a pass, records how it went and logs whatever went wrong. A failed
+// once runs a pass and logs whatever went wrong. A failed
 // roll-up is not a failed request — the reports simply stay slow — so it never
 // stops the loop.
-//
-// The timestamp of the last complete pass is the number that answers "is the
-// worker behind": every dashboard reads summaries, and a worker that quietly
-// stopped is a dashboard that is slow today and wrong tomorrow. It is recorded
-// here rather than in Once, because the command runs Once for one deliberate
-// rebuild and that is not the same claim as "the loop is keeping up".
 func (w *Worker) once(ctx context.Context) {
-	started := w.now()
-
 	err := w.Once(ctx)
 
-	metrics.RollupDuration.Observe(w.now().Sub(started).Seconds())
-
 	if err != nil {
-		metrics.RollupRuns.WithLabelValues(metrics.OutcomeError).Inc()
-
 		if w.Log != nil {
 			w.Log.Error("roll-up build failed", "error", err)
 		}
@@ -128,8 +115,6 @@ func (w *Worker) once(ctx context.Context) {
 		return
 	}
 
-	metrics.RollupRuns.WithLabelValues(metrics.OutcomeOK).Inc()
-	metrics.RollupLastSuccess.Set(float64(w.now().Unix()))
 }
 
 // Once rebuilds every site that is due. It is exported so the command can run a

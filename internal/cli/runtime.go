@@ -26,7 +26,6 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/metrics"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/rollup"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
@@ -134,60 +133,16 @@ func ingestHealth(checks *health.Set, control *sql.DB, service *ingest.Service, 
 	}, "no geolocation database is loaded — countries will be unknown"))
 }
 
-// watchProcess tells the metrics endpoint what this process can report on. The
-// gauges are read on each scrape rather than pushed, so this is a set of
-// accessors rather than a copy of anything.
-//
-// The job queue is passed separately because only the process that runs the
-// worker should be reporting on it: an ingestor answering "no jobs are waiting"
-// about a queue it does not run would be an all-clear from the wrong place.
-func watchProcess(service *ingest.Service, manager *accounts.Manager, dataDir string, jobs func(context.Context) (metrics.JobCounts, error)) {
-	bufferDepth := func() int { return service.Buffer.Len() }
-	var bufferOldest func() time.Duration
-	var bufferParked func() int
-	var openAccounts func() int
-	if service.Outbox != nil {
-		bufferDepth = service.Outbox.Len
-		bufferOldest = service.Outbox.OldestAge
-		bufferParked = service.Outbox.Parked
-	}
-	if manager != nil {
-		openAccounts = manager.OpenCount
-	}
-	metrics.Watch(metrics.Sources{
-		BufferDepth: bufferDepth, BufferOldest: bufferOldest, BufferParked: bufferParked, Sites: service.Sites.Len,
-		OpenAccounts: openAccounts, Jobs: jobs, DataDir: dataDir,
-	})
-}
-
-// jobCounts reads the background queue's depth. The claim index covers the
-// state prefix, so this is the same access pattern the worker already makes
-// every few seconds rather than a new cost on the database.
-func jobCounts(control *sql.DB) func(context.Context) (metrics.JobCounts, error) {
-	return func(ctx context.Context) (metrics.JobCounts, error) {
-		var counts metrics.JobCounts
-
-		row := control.QueryRowContext(ctx, `
-			SELECT
-				COUNT(*) FILTER (WHERE state = 'available'),
-				COUNT(*) FILTER (WHERE state = 'executing')
-			FROM jobs`)
-
-		if err := row.Scan(&counts.Available, &counts.Executing); err != nil {
-			return metrics.JobCounts{}, fmt.Errorf("read the job queue: %w", err)
-		}
-
-		return counts, nil
-	}
-}
-
-// processRoutes combines a process's customer-facing and operational handlers
-// on one listener. Network policy and the edge proxy decide which paths are
-// reachable externally; signed internal routes still authenticate every
-// service request instead of treating socket placement as authentication.
+// processRoutes combines a process's customer-facing and signed internal
+// handlers on one listener. Signed internal routes authenticate every service
+// request instead of treating socket placement as authentication.
 func processRoutes(base http.Handler, internal ...http.Handler) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", metrics.Handler())
+
+	// Keep the retired observability path from falling through to an application
+	// catch-all. It no longer has a handler or instrumentation behind it, and a
+	// direct request to either process must make that absence explicit.
+	mux.HandleFunc("/metrics", http.NotFound)
 	if len(internal) > 0 && internal[0] != nil {
 		mux.Handle("/internal/", internal[0])
 	}
@@ -304,8 +259,8 @@ func serveUntilSignalWith(e *env, server *httpserver.Server, service *ingest.Ser
 // must not become a second code path with its own bugs.
 func ingestRoutes(service *ingest.Service) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/api/event", metrics.Instrument(metrics.HandlerEvent, service.Handler))
-	mux.Handle(tracker.PixelPath, metrics.Instrument(metrics.HandlerEvent, &tracker.Pixel{Events: service.Handler}))
+	mux.Handle("/api/event", service.Handler)
+	mux.Handle(tracker.PixelPath, &tracker.Pixel{Events: service.Handler})
 
 	return mux
 }

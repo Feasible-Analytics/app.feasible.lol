@@ -103,8 +103,7 @@ func buildServices(e *env, control *sql.DB, manager *accounts.Manager,
 // It is separate from buildServices because the runner is built beside the
 // import and export workers, and this is the line that puts both sets of work
 // on the same queue. A second runner would be a second answer to "is anything
-// stuck", and the metrics endpoint and the readiness probe can each only report
-// on one of them.
+// stuck", and the readiness probe can only report on one of them.
 func (s *services) Register(runner *jobs.Runner) {
 	if s.Notifier == nil || runner == nil {
 		return

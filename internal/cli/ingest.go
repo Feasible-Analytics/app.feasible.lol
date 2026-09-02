@@ -11,7 +11,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
@@ -93,8 +92,6 @@ func runIngest(e *env, args []string) int {
 	checks.Require("routing_map", health.Condition(
 		func() bool { return !service.Sites.BuiltAt().IsZero() },
 		"no live or disk-cached routing snapshot has been built"))
-
-	watchProcess(service, nil, filepath.Dir(e.cfg.Ingest.BufferPath), nil)
 
 	server := httpserver.New("ingest", e.cfg.Ingest.Listen, processRoutes(ingestRoutes(service)))
 	server.Health = checks

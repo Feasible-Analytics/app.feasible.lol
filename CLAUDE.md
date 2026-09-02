@@ -127,9 +127,9 @@ loopback wastes his time and yours.
    the bind address. Get this wrong and cookies will not set, redirects bounce, and Google OAuth
    rejects the redirect URI — all with no useful error message.
 
-Each process has one listener. Caddy still denies `/internal/*` and `/metrics` at the public edge;
-tests and operational checks that need those paths connect directly to the process port. Internal
-requests remain HMAC-authenticated because network placement is not authentication.
+Each process has one listener. Caddy denies `/internal/*` at the public edge; tests and operational
+checks that need those paths connect directly to the process port. Internal requests remain
+HMAC-authenticated because network placement is not authentication. There is no `/metrics` endpoint.
 
 **Find a pane by label, never by a hard-coded id** — herdr compacts ids when panes close:
 

@@ -10,25 +10,10 @@ Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 
 ## Symptom
 
-| Series | What it does |
-|---|---|
-| `feasible_rollup_last_success_timestamp_seconds` | Older than two hours, or **zero** — no pass has completed since start-up |
-| `feasible_rollup_runs_total{outcome="error"}` | Increasing |
-| `feasible_rollup_duration_seconds` | Approaching 3,600 — a pass that takes an hour cannot run hourly |
-| `feasible_query_duration_seconds{source="raw"}` | Count rising sharply |
-| `feasible_query_duration_seconds{source="rollup"}` | Count falling |
-| `feasible_http_request_duration_seconds{handler="stats"}` | p99 jumping from tenths of a second into seconds |
-
-In the log: `roll-up build failed`, at error, with the reason. Also `slow report`
-at warn for every report over a second, carrying the domain, the source it was
-answered from, the metrics, the dimensions and the date range.
-
-The alert is a query, not a gauge. The process publishes when the last complete
-pass finished; whether that counts as "behind" is the alert's decision:
-
-```
-time() - feasible_rollup_last_success_timestamp_seconds > 7200
-```
+`feasible rollup status` shows stale covered windows. The application log emits
+`roll-up build failed` at error with the reason, and `slow report` at warn for
+every report over a second with the domain, source, metrics, dimensions, and
+date range.
 
 ## What the numbers look like meanwhile
 
@@ -74,8 +59,8 @@ is keyed by. Two different answers, two different problems:
 A third possibility worth ruling out before touching anything: a report can be
 slow with perfectly current roll-ups, because a **filtered** raw report costs
 about what an unfiltered one costs — filtering by country does not narrow the
-scan. `feasible_query_duration_seconds{source="rollup"}` staying fast while the
-stats handler is slow means the problem is the query, not the worker.
+scan. The `slow report` log's source says whether the query used raw rows or a
+roll-up.
 
 ## Fix
 
@@ -97,9 +82,8 @@ a roll-up is a cache and never the truth.
 feasible rollup build
 ```
 
-One pass of exactly what the worker does hourly. Run it off-peak, then watch
-`feasible_rollup_last_success_timestamp_seconds` move and
-`feasible_query_duration_seconds{source="rollup"}` start counting again.
+One pass of exactly what the worker does hourly. Run it off-peak, then run
+`feasible rollup status` again and confirm the covered windows advance.
 
 **4. Gap longer than two days:** rebuild the affected sites rather than trusting
 the rework window. `feasible rollup rebuild` with no `-site` rebuilds every site,

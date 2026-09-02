@@ -24,13 +24,10 @@
 http://:{$FEASIBLE_CADDY_PORT:19300} {
 	bind {$FEASIBLE_CADDY_BIND:127.0.0.1}
 
-	# Service and observability paths share each process socket but are denied at
-	# the public edge. Trusted services and monitoring connect directly through
-	# the protected network instead of through Caddy.
+	# Signed service paths share the app socket but are denied at the public edge.
+	# Trusted services connect directly through the protected network instead of
+	# through Caddy.
 	handle /internal/* {
-		respond "404 page not found" 404
-	}
-	handle /metrics {
 		respond "404 page not found" 404
 	}
 

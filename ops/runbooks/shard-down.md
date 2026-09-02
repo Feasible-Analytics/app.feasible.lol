@@ -15,8 +15,8 @@ local outbox and retries the owning app shard until it returns.
 ## Symptom
 
 - Dashboard and API requests routed to the failed app shard return errors.
-- Every ingester's queue for that destination grows and
-  `feasible_ingest_buffer_oldest_seconds` rises.
+- Every ingester's `buffer.db` accumulates outbox rows for that destination and
+  the oldest row's `created_at` continues aging.
 - Other app shards keep receiving batches and their account dashboards remain
   current.
 - Public `/api/event` continues returning `202` while ingester disks and routing
@@ -43,8 +43,8 @@ the shard is out of the load balancer, then return it to service:
 feasible db migrate
 ```
 
-The ingesters drain automatically. Confirm buffer oldest age falls to zero and
-that repeated UUIDs create one permanent receipt and at most one fact.
+The ingesters drain automatically. Confirm their `outbox` tables return to zero
+rows and that repeated UUIDs create one permanent receipt and at most one fact.
 
 ## What makes it worse
 

@@ -16,18 +16,20 @@ yet.
 
 ## Symptom
 
-| Series or signal | Meaning |
-|---|---|
-| `feasible_ingest_buffer_events` | Derived events awaiting an app acknowledgment |
-| `feasible_ingest_buffer_oldest_seconds` | Customer-visible analytics delay |
-| `feasible_ingest_buffer_parked_events` | Permanently rejected or malformed rows awaiting review |
-| `feasible_ingest_flushes_total{outcome="error"}` | Delivery attempts are failing |
-| `feasible_ingest_flush_duration_seconds` | App-shard delivery latency |
-| `feasible_disk_available_bytes` | Remaining room for accepted events |
+Inspect the ingester's durable ownership record directly:
+
+```bash
+sqlite3 /home/feasible/data/ingest/buffer.db \
+  "SELECT COUNT(*) AS waiting, datetime(MIN(created_at), 'unixepoch') AS oldest_utc FROM outbox;"
+sqlite3 /home/feasible/data/ingest/buffer.db \
+  "SELECT COUNT(*) AS parked FROM outbox_parked;"
+```
 
 The total alone is not an outage: a burst naturally creates a shallow queue.
-The oldest age rising continuously means delivery is behind. One sender runs
-per configured app shard, so one failed shard must not stop healthy shards.
+An oldest timestamp that keeps aging means delivery is behind. Repeated delivery
+errors appear in the ingester log with the destination shard and reason. One
+sender runs per configured app shard, so one failed shard must not stop healthy
+shards.
 
 ## Diagnosis
 
@@ -58,7 +60,7 @@ Before a planned ingester restart, remove it from the public load balancer and
 wait for its local queue to reach zero:
 
 ```bash
-scripts/drain.sh http://127.0.0.1:19302/metrics
+scripts/drain.sh /home/feasible/data/ingest/buffer.db
 systemctl restart feasible-ingest
 ```
 

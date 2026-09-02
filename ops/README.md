@@ -8,10 +8,9 @@ Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 
 # Operations
 
-Everything in here is written against signals this build actually emits. A
-runbook that names a metric we do not export is worse than no runbook: it sends
-somebody looking for a number that will never appear, during the twenty minutes
-that matter most.
+Everything in here is written against health responses, application logs, and
+the durable SQLite state the process actually owns. A runbook must not depend on
+an HTTP metrics surface the product does not expose.
 
 | Document | When you need it |
 |---|---|
@@ -32,7 +31,7 @@ that matter most.
 Every one of them has the same four sections, and the fourth is the one that
 saves the outage:
 
-- **Symptom** — what it looks like in the metrics, in the exact series names.
+- **Symptom** — what the customer, health checks, logs, or durable state show.
 - **Diagnosis** — how to tell this from the three things that look like it.
 - **Fix** — the commands, in order.
 - **What makes it worse** — the plausible action that turns an incident into
@@ -47,88 +46,18 @@ which paths are externally reachable.
 |---|---|---|
 | Listen | `FEASIBLE_APP_LISTEN`, default `127.0.0.1:19301` | `FEASIBLE_INGEST_LISTEN`, default `127.0.0.1:19302` |
 
-Both processes answer `/health`, `/health/live`, `/health/ready`, and `/metrics`
-on that listener. `/health` is the compact serviceability answer for public
-uptime monitoring; the two longer paths remain the internal liveness and
-readiness probes.
+Both processes answer `/health`, `/health/live`, and `/health/ready` on that
+listener. `/health` is the compact serviceability answer for public uptime
+monitoring; the two longer paths remain the internal liveness and readiness
+probes.
 
 ```bash
-curl -s http://127.0.0.1:19301/metrics | grep '^feasible_'
 curl -s http://127.0.0.1:19301/health/ready | python3 -m json.tool
 ```
 
 A hosted deployment puts app listeners on a protected network so ingesters can
 reach the authenticated `/internal/domains` and `/internal/ingest` endpoints.
-The public edge must never expose those paths or `/metrics`.
-
-## The signal inventory
-
-This is the complete set of series the binary exports. If a procedure needs a
-number that is not on this list, the procedure is wrong or the metric has to be
-added first.
-
-**Ingest — is the front door working, and is anything lost**
-
-| Series | Labels |
-|---|---|
-| `feasible_ingest_events_accepted_total` | — |
-| `feasible_ingest_events_dropped_total` | `reason`: `hostname_not_allowed`, `unknown_site`, `account_dormant`, `site_deleted`, `shield_ip`, `shield_country`, `shield_page`, `no_session_for_engagement`, `rate_limited`, `invalid_payload`, `internal_error` |
-| `feasible_ingest_events_classified_total` | `reason`: `bot`, `datacenter_ip`, `referrer_spam` |
-| `feasible_ingest_fields_truncated_total` | `field`: `props_over_limit`, `prop_name_too_long`, `prop_value_too_long`, `prop_value_unsupported`, `url_too_long`, `engagement_time_clamped` |
-| `feasible_ingest_events_written_total` | — |
-
-A **dropped** event is gone. A **classified** event is stored with its reason
-set and the customer has a toggle for it. Confusing the two turns a working bot
-filter into a reported outage.
-
-**The write buffer**
-
-| Series | Labels |
-|---|---|
-| `feasible_ingest_buffer_events` | — |
-| `feasible_ingest_buffer_oldest_seconds` | — |
-| `feasible_ingest_buffer_parked_events` | — |
-| `feasible_ingest_flushes_total` | `outcome`: `ok`, `error` |
-| `feasible_ingest_flush_duration_seconds` | — |
-| `feasible_ingest_flush_batch_events` | — |
-
-**Roll-ups**
-
-| Series | Labels |
-|---|---|
-| `feasible_rollup_runs_total` | `outcome`: `ok`, `error` |
-| `feasible_rollup_duration_seconds` | — |
-| `feasible_rollup_last_success_timestamp_seconds` | — |
-
-**Reports and HTTP**
-
-| Series | Labels |
-|---|---|
-| `feasible_query_duration_seconds` | `source`: `raw`, `rollup`, `mixed`, `none` |
-| `feasible_query_failures_total` | `kind`: `caller`, `internal` |
-| `feasible_http_requests_total` | `handler`: `event`, `stats`, `dashboard`, `tracker`, `app`, `api`; `status`: `2xx`–`5xx` |
-| `feasible_http_request_duration_seconds` | `handler` |
-
-**Storage and routing**
-
-| Series | Labels |
-|---|---|
-| `feasible_database_bytes` | `database`: `system`, `accounts` |
-| `feasible_database_wal_bytes` | `database`: `system`, `accounts` |
-| `feasible_database_wal_bytes_max` | — |
-| `feasible_database_files` | — |
-| `feasible_database_directory_readable` | — |
-| `feasible_database_open_handles` | — |
-| `feasible_disk_total_bytes` | — |
-| `feasible_disk_available_bytes` | — |
-| `feasible_sites_routed` | — |
-| `feasible_jobs` | `state`: `available`, `executing` |
-
-Nothing on this endpoint carries a site, a domain, a path, a country or a
-visitor. That is a rule, not an omission: those belong to customers, and a label
-whose values come from the traffic grows a new time series for every URL a
-crawler invents. Per-site drop counts live on the customer's own ingestion
-health panel.
+The public edge must never expose those paths.
 
 ## The numbers these procedures are built on
 

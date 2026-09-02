@@ -32,7 +32,6 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/metrics"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/pathclean"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/rollup"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/settings"
@@ -206,15 +205,13 @@ func runServe(e *env, args []string) int {
 		func() bool { return !service.Sites.BuiltAt().IsZero() },
 		"the routing map has not been built yet"))
 
-	watchProcess(service, manager, e.cfg.App.DataDir, jobCounts(control))
-
 	// Importing and exporting a site's history: the screens that start the work
 	// and the runner that does it. Both halves are built here so an import can
 	// only ever be started by a process that is also willing to run it.
 	//
 	// The runner is the one that drains everything, the notifier's hourly ticks
 	// included. Two runners would be two answers to "is anything stuck", and the
-	// metrics endpoint and the readiness probe can each only report on one.
+	// readiness probe can only report on one.
 	data := buildData(e, control, manager, service, site)
 	extra.Register(data.runner)
 
@@ -424,15 +421,10 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 		return app.RoleForSite(r, current.ID)
 	}
 
-	// Every mount is wrapped with the name it is counted under. The name is
-	// given here rather than derived from the URL because a label taken from a
-	// path would carry a customer's domain and a visitor's page, and would
-	// grow a new series for every URL a crawler invents.
-	//
 	// The signed-in application is mounted at the root, so it owns every path
 	// the more specific patterns below do not claim. Go's mux picks the most
 	// specific pattern, so /api/event and /js/ still reach their own handlers.
-	mux.Handle("/", metrics.Instrument(metrics.HandlerApp, app))
+	mux.Handle("/", app)
 
 	// The settings surface: shields, path cleaning, import and export on one
 	// handler; the team screen, sharing, scheduled reports and the ingestion
@@ -498,8 +490,7 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	}
 	stats.SampleThreshold = e.cfg.API.QuerySampleThreshold
 
-	mux.Handle(statsapi.Pattern, metrics.Instrument(metrics.HandlerStats,
-		com.Gate.Protect(stats)))
+	mux.Handle(statsapi.Pattern, com.Gate.Protect(stats))
 
 	// Goal definitions need their own report wrapper, but every count inside it
 	// still runs through the same query engine and authorization choices as the
@@ -561,8 +552,7 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 
 		return boot
 	}
-	mux.Handle(dashboard.PathPrefix, metrics.Instrument(metrics.HandlerDashboard,
-		app.GuardDashboard(shell)))
+	mux.Handle(dashboard.PathPrefix, app.GuardDashboard(shell))
 
 	// The public dashboard, the shared links, the annotations endpoint and the
 	// health panel's API. The shared-link handler is handed the same shell the
@@ -596,14 +586,14 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	// a cacheable static asset with a database lookup behind it, and putting
 	// that on the front door would make the busiest process in the system do
 	// the one thing it is built to avoid.
-	mux.Handle(tracker.PathPrefix, metrics.Instrument(metrics.HandlerTracker, tracker.New(secret, service.Sites)))
+	mux.Handle(tracker.PathPrefix, tracker.New(secret, service.Sites))
 
 	// With the http transport a separate ingest tier owns /api/event, and
 	// answering it here too would mean two processes deriving the same event
 	// with two different site caches.
 	if e.cfg.App.Transport == config.TransportDirect {
-		mux.Handle("/api/event", metrics.Instrument(metrics.HandlerEvent, service.Handler))
-		mux.Handle(tracker.PixelPath, metrics.Instrument(metrics.HandlerEvent, &tracker.Pixel{Events: service.Handler}))
+		mux.Handle("/api/event", service.Handler)
+		mux.Handle(tracker.PixelPath, &tracker.Pixel{Events: service.Handler})
 	}
 
 	return mux

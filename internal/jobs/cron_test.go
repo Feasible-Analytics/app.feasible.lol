@@ -13,9 +13,6 @@ import (
 	"database/sql"
 	"testing"
 	"time"
-
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/metrics"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 // available counts the jobs waiting to be claimed.
@@ -28,33 +25,6 @@ func available(t *testing.T, db *sql.DB) int {
 	}
 
 	return count
-}
-
-// metricValue reads one unlabelled scheduler metric from the default registry.
-// Histograms return their sample count so duration observation is testable.
-func metricValue(t *testing.T, name string) float64 {
-	t.Helper()
-	families, err := prometheus.DefaultGatherer.Gather()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, family := range families {
-		if family.GetName() != name || len(family.GetMetric()) == 0 {
-			continue
-		}
-		metric := family.GetMetric()[0]
-		switch {
-		case metric.Counter != nil:
-			return metric.GetCounter().GetValue()
-		case metric.Gauge != nil:
-			return metric.GetGauge().GetValue()
-		case metric.Histogram != nil:
-			return float64(metric.GetHistogram().GetSampleCount())
-		}
-	}
-
-	t.Fatalf("metric %s was not registered", name)
-	return 0
 }
 
 // TestOneTickPerPeriodAcrossEveryProcess is the property that lets every
@@ -255,74 +225,4 @@ func TestCronCatchesUpDurableBucketsWithinItsBound(t *testing.T) {
 	if err := cron.Health(start.Add(4 * time.Minute)); err == nil {
 		t.Fatal("stale scheduler reported healthy")
 	}
-}
-
-// TestSchedulerMetricsDescribeSuccessCatchUpAndFailure checks every exported
-// scheduler signal against real enqueue passes and keeps the label set empty.
-func TestSchedulerMetricsDescribeSuccessCatchUpAndFailure(t *testing.T) {
-	db := newSystem(t)
-	cron := NewCron(NewClient(db), nil)
-	cron.AddCatchUp("notifications", "reports.schedule", time.Hour, 24*time.Hour)
-	ctx := context.Background()
-	start := time.Date(2026, 8, 31, 8, 0, 0, 0, time.UTC)
-
-	names := map[string]string{
-		"runs":       "feasible_scheduler_runs_total",
-		"failures":   "feasible_scheduler_failures_total",
-		"slots":      "feasible_scheduler_catch_up_slots_total",
-		"catch_jobs": "feasible_scheduler_catch_up_jobs_total",
-		"jobs":       "feasible_scheduler_created_jobs_total",
-		"duration":   "feasible_scheduler_duration_seconds",
-		"success":    "feasible_scheduler_last_success_timestamp_seconds",
-	}
-	before := map[string]float64{}
-	for key, name := range names {
-		before[key] = metricValue(t, name)
-	}
-
-	if created, err := cron.EnqueueDue(ctx, start); err != nil || created != 1 {
-		t.Fatalf("initial scheduler pass = %d, %v", created, err)
-	}
-	if created, err := cron.EnqueueDue(ctx, start.Add(3*time.Hour)); err != nil || created != 3 {
-		t.Fatalf("catch-up scheduler pass = %d, %v", created, err)
-	}
-	if got := metricValue(t, names["runs"]) - before["runs"]; got != 2 {
-		t.Fatalf("scheduler runs delta = %v, want 2", got)
-	}
-	if got := metricValue(t, names["jobs"]) - before["jobs"]; got != 4 {
-		t.Fatalf("scheduler created jobs delta = %v, want 4", got)
-	}
-	if got := metricValue(t, names["slots"]) - before["slots"]; got != 2 {
-		t.Fatalf("scheduler catch-up slots delta = %v, want 2", got)
-	}
-	if got := metricValue(t, names["catch_jobs"]) - before["catch_jobs"]; got != 2 {
-		t.Fatalf("scheduler catch-up jobs delta = %v, want 2", got)
-	}
-	if got := metricValue(t, names["duration"]) - before["duration"]; got != 2 {
-		t.Fatalf("scheduler duration samples delta = %v, want 2", got)
-	}
-	lastSuccess := metricValue(t, names["success"])
-	if lastSuccess != float64(start.Add(3*time.Hour).Unix()) {
-		t.Fatalf("scheduler last success = %.0f", lastSuccess)
-	}
-
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cron.EnqueueDue(ctx, start.Add(4*time.Hour)); err == nil {
-		t.Fatal("scheduler pass over a closed database reported success")
-	}
-	if got := metricValue(t, names["failures"]) - before["failures"]; got != 1 {
-		t.Fatalf("scheduler failures delta = %v, want 1", got)
-	}
-	if got := metricValue(t, names["runs"]) - before["runs"]; got != 3 {
-		t.Fatalf("scheduler runs after failure delta = %v, want 3", got)
-	}
-	if got := metricValue(t, names["success"]); got != lastSuccess {
-		t.Fatalf("failed run changed last success from %.0f to %.0f", lastSuccess, got)
-	}
-
-	// Referencing the collectors here also makes accidental removal from the
-	// metrics package a compile-time failure for scheduler code.
-	_ = metrics.SchedulerRuns
 }

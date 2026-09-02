@@ -156,15 +156,14 @@ deploy, deregister first.
 ```bash
 # 1. Deregister this instance from the load balancer (platform-specific).
 # 2. Wait until it owes nothing.
-scripts/drain.sh http://127.0.0.1:19302/metrics
+scripts/drain.sh /home/feasible/data/ingest/buffer.db
 # 3. Now send SIGTERM.
 ```
 
-`scripts/drain.sh` polls `feasible_ingest_buffer_events` until it reaches zero
-and **exits non-zero if it does not**. A buffer that will not drain means direct
-account storage is slow or unavailable; see
-[runbooks/write-buffer-growing.md](runbooks/write-buffer-growing.md). A metrics
-endpoint it cannot read is also a failure, not an empty buffer.
+`scripts/drain.sh` reads the durable outbox directly and **exits non-zero if it
+does not reach zero**. A buffer that will not drain means app storage is slow or
+unavailable; see [runbooks/write-buffer-growing.md](runbooks/write-buffer-growing.md).
+An outbox database it cannot read is also a failure, not an empty buffer.
 
 Only unplanned hardware failure should ever be exposed to this. Everything else
 is a deregistration, a drain, and then a termination.

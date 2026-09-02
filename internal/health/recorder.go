@@ -151,9 +151,8 @@ func (r *Recorder) now() time.Time {
 // Observe records one request. It is the ingest.Observer implementation and
 // runs inline on the hot path, so it does nothing but arithmetic under a mutex.
 //
-// An event with no site is skipped. There is no account database to write it
-// to and no customer it belongs to; an unknown domain is already counted by the
-// process-wide counters, which is where an operator looks for it.
+// An event with no site is skipped. There is no account database to write it to
+// and no customer health panel it belongs to.
 func (r *Recorder) Observe(o ingest.Observation) {
 	if o.SiteID == 0 || o.AccountID == 0 {
 		return

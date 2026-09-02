@@ -47,8 +47,9 @@ ingester's SQLite outbox even if the app has not seen them. Reattach the failed
 volume to a replacement and pass when every retried UUID has one receipt and at
 most one fact.
 
-Repeat after load-balancer deregistration and `scripts/drain.sh`; the graceful
-run must complete without connection resets.
+Repeat after load-balancer deregistration and a successful
+`scripts/drain.sh /home/feasible/data/ingest/buffer.db`; the graceful run must
+complete without connection resets.
 
 ## 2. Stop one app shard
 

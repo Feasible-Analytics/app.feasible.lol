@@ -10,15 +10,18 @@ Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 
 ## Symptom
 
-| Series | What it does |
-|---|---|
-| `feasible_disk_available_bytes` | Falling towards zero |
-| `feasible_database_bytes{database="accounts"}` | Growing — the normal cause |
-| `feasible_database_wal_bytes{database="accounts"}` | Growing and never falling — the abnormal one |
-| `feasible_database_wal_bytes_max` | One account far above the rest |
-| `feasible_ingest_buffer_events` | Climbing, once writes start failing |
-| Event endpoint 5xx | Increasing because failed commits are retryable |
-| `feasible_database_directory_readable` | Drops to 0 if the directory itself becomes unusable |
+The host's disk alert reports falling available space. Use the operating system
+and the actual data directory to locate the growth:
+
+```bash
+df -h /home/feasible/data
+du -sh /home/feasible/data/*
+find /home/feasible/data -name '*-wal' -type f -exec ls -lh {} \;
+```
+
+Growing account databases are normal. A write-ahead log that grows without
+shrinking is abnormal. Event endpoint 5xx responses and ingester delivery errors
+increase once commits cannot obtain more space.
 
 `/health/ready` fails on `account_directory` once the disk is genuinely full:
 the probe creates and removes a file, which is the only check that answers the
@@ -72,8 +75,8 @@ the answer. Favicons are a cache and refill themselves.
 `exports/` holds a prepared archive per export job. Once the customer has
 downloaded it, it is a file nobody will ask for again. `imports/` holds uploads;
 removing one that has not been imported loses the customer's file, so check the
-job first — `feasible_jobs{state="available"}` above zero means work is still
-queued.
+job first. Query `system.db` for available or executing import jobs before
+removing an upload.
 
 **3. The city database, if you need 60 MB right now.**
 
@@ -86,13 +89,13 @@ and countries keep working. It is a download, not data.
 
 **4. A write-ahead log that will not shrink.**
 
-`feasible_database_wal_bytes_max` far above the others is one account whose
-checkpoint is not completing, usually because a long-running read is holding the
-file. The log is truncated when the process closes the handle cleanly:
+A write-ahead log far larger than the others belongs to an account whose
+checkpoint is not completing, usually because a long-running read is holding
+the file. The log is truncated when the process closes the handle cleanly:
 
 ```bash
-scripts/drain.sh http://127.0.0.1:19302/metrics   # on each ingestor
-systemctl restart feasible                         # closes every handle, checkpointing each WAL
+scripts/drain.sh /home/feasible/data/ingest/buffer.db  # on each ingester
+systemctl restart feasible                             # closes every handle, checkpointing each WAL
 ```
 
 Shutdown closes every account handle so each write-ahead log is checkpointed on

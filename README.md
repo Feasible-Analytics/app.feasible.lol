@@ -50,7 +50,7 @@ stays readable:
 ```bash
 make caddy             # :19300 — the only port you open in a browser
 make app               # :19301 — application and signed internal routes
-make ingest            # :19302 — events, health and metrics
+make ingest            # :19302 — events and health
 make testsite          # :19303 — a real page with the snippet installed
 ```
 
@@ -58,8 +58,7 @@ make testsite          # :19303 — a real page with the snippet installed
 (`make app-ts`, `make dev-ts`) that binds to the Tailscale address and moves
 `FEASIBLE_APP_BASE_URL` with it, so the app is reachable from another machine.
 Each process has one listener. Caddy exposes customer paths and denies
-`/internal/*` and `/metrics`; trusted services and monitoring connect directly
-over the protected network.
+`/internal/*`; trusted services connect directly over the protected network.
 
 `make` on its own lists everything.
 
@@ -228,15 +227,12 @@ compiled before Go embeds them. Running never does.
 
 ## Watching it run
 
-Every process serves three health endpoints and a metrics endpoint on its single
-listener:
+Every process serves three health endpoints on its single listener:
 
 ```bash
 curl https://app.feasible.lol/health  # public: can customers use the site
 curl localhost:19301/health/live      # internal: is this process running
 curl localhost:19301/health/ready     # internal: may this process take traffic
-curl localhost:19301/metrics          # Prometheus text format (app)
-curl localhost:19302/metrics          # the ingest tier's own
 ```
 
 `/health` is the public endpoint for an external uptime monitor. It returns plain
@@ -259,11 +255,9 @@ for a new color to return HTTP 200 before retiring the old one. A failure return
 HTTP 503 with a JSON body naming every dependency and what was wrong with it, so
 it is both a traffic decision and a diagnosis.
 
-The metrics endpoint is loopback-only and carries no customer data — no site,
-domain, path or country appears as a label, and no IP address exists anywhere in
-this system to leak. Drop counts by reason, write-buffer depth, roll-up freshness
-and report latency are all there; per-site numbers belong to the customer and
-live on their own ingestion-health panel.
+There is deliberately no `/metrics` endpoint. Operational measurements will be
+collected outside the public HTTP application; customer-specific ingestion
+counts remain available on each site's ingestion-health panel.
 
 ### Team membership API
 
