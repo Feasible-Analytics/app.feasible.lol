@@ -228,19 +228,36 @@ compiled before Go embeds them. Running never does.
 
 ## Watching it run
 
-Every process serves two probes and a metrics endpoint on its single listener:
+Every process serves three health endpoints and a metrics endpoint on its single
+listener:
 
 ```bash
-curl localhost:19301/health/live     # is the process up
-curl localhost:19301/health/ready    # can it serve, component by component
-curl localhost:19301/metrics         # Prometheus text format (app)
-curl localhost:19302/metrics         # the ingest tier's own
+curl https://app.feasible.lol/health  # public: can customers use the site
+curl localhost:19301/health/live      # internal: is this process running
+curl localhost:19301/health/ready     # internal: may this process take traffic
+curl localhost:19301/metrics          # Prometheus text format (app)
+curl localhost:19302/metrics          # the ingest tier's own
 ```
 
-`/health/live` checks nothing on purpose: a liveness probe that failed on a slow
-database would turn one slow database into a restart loop everywhere at once.
-`/health/ready` returns 503 with a JSON body naming every dependency and what
-was wrong with it, so a failure is a diagnosis rather than a word.
+`/health` is the public endpoint for an external uptime monitor. It returns plain
+text `ok` with HTTP 200 only when the app is ready to serve customers. An app
+process returns `unhealthy` with HTTP 503 while it is draining or a required
+dependency has failed; the public proxy may replace that body with its maintenance
+page when the whole app pool is unavailable. Point the monitor at the public
+Caddy URL so it covers DNS, TLS, the proxy, and the app pool—not merely one
+process on one host. Check the status code; the body is only a convenient answer
+for a person using `curl`.
+
+`/health/live` is a process liveness probe. It checks nothing on purpose: a
+liveness probe that failed on a slow database would turn one slow database into
+a restart loop everywhere at once. Use it only when deciding whether a process
+needs to be restarted; it is not proof that the site works.
+
+`/health/ready` is the internal readiness probe for load balancing and blue/green
+deployments. Caddy removes an unready color from its pool, and deployment waits
+for a new color to return HTTP 200 before retiring the old one. A failure returns
+HTTP 503 with a JSON body naming every dependency and what was wrong with it, so
+it is both a traffic decision and a diagnosis.
 
 The metrics endpoint is loopback-only and carries no customer data — no site,
 domain, path or country appears as a label, and no IP address exists anywhere in

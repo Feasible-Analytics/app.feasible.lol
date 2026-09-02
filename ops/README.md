@@ -47,8 +47,10 @@ which paths are externally reachable.
 |---|---|---|
 | Listen | `FEASIBLE_APP_LISTEN`, default `127.0.0.1:19301` | `FEASIBLE_INGEST_LISTEN`, default `127.0.0.1:19302` |
 
-Both processes answer `/health/live`, `/health/ready`, and `/metrics` on that
-listener.
+Both processes answer `/health`, `/health/live`, `/health/ready`, and `/metrics`
+on that listener. `/health` is the compact serviceability answer for public
+uptime monitoring; the two longer paths remain the internal liveness and
+readiness probes.
 
 ```bash
 curl -s http://127.0.0.1:19301/metrics | grep '^feasible_'

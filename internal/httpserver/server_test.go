@@ -64,12 +64,15 @@ func get(t testing.TB, url string) (int, string) {
 	return resp.StatusCode, string(body)
 }
 
-// TestHealthProbes checks both paths answer, and that they answer different
-// questions. A deployment that conflates them either restarts a process that was
-// merely busy or sends traffic to one that is not ready.
+// TestHealthProbes checks all three paths answer. The public monitor is a small
+// serviceability answer, while the two internal probes distinguish a running
+// process from one that is safe to receive traffic.
 func TestHealthProbes(t *testing.T) {
 	_, base := newTestServer(t, http.NotFoundHandler())
 
+	if code, body := get(t, base+PathHealth); code != http.StatusOK || body != "ok\n" {
+		t.Errorf("monitoring health = %d %q, want 200 ok", code, body)
+	}
 	if code, _ := get(t, base+PathLive); code != http.StatusOK {
 		t.Errorf("liveness = %d, want 200", code)
 	}
@@ -99,6 +102,9 @@ func TestReadinessRespectsTheProcessDependencies(t *testing.T) {
 	if !strings.Contains(body, "routing_map") || !strings.Contains(body, "the routing map is empty") {
 		t.Errorf("the body does not say which dependency failed or why: %s", body)
 	}
+	if code, body := get(t, base+PathHealth); code != http.StatusServiceUnavailable || body != "unhealthy\n" {
+		t.Errorf("monitoring health = %d %q, want 503 unhealthy while a dependency is failing", code, body)
+	}
 
 	// Liveness must stay true regardless: a liveness probe that failed on a
 	// downstream dependency would turn one slow database into a restart loop
@@ -112,6 +118,9 @@ func TestReadinessRespectsTheProcessDependencies(t *testing.T) {
 	code, body = get(t, base+PathReady)
 	if code != http.StatusOK {
 		t.Fatalf("readiness = %d, want 200 once every dependency is up: %s", code, body)
+	}
+	if code, body := get(t, base+PathHealth); code != http.StatusOK || body != "ok\n" {
+		t.Errorf("monitoring health = %d %q, want 200 ok once every dependency is up", code, body)
 	}
 }
 
@@ -177,6 +186,9 @@ func TestShutdownDrainsBeforeClosing(t *testing.T) {
 	}
 	if code, _ := get(t, base+PathLive); code != http.StatusOK {
 		t.Fatal("the listener stopped accepting before the drain finished")
+	}
+	if code, _ := get(t, base+PathHealth); code != http.StatusServiceUnavailable {
+		t.Fatalf("monitoring health = %d during the drain, want 503", code)
 	}
 
 	select {
