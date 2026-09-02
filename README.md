@@ -96,6 +96,41 @@ password once. It generates the password rather than accepting one on the
 command line so the credential is not saved in shell history or exposed in the
 process list. Save it, sign in, and change it from account settings.
 
+### Ingestion transport and app shard identity
+
+`FEASIBLE_APP_TRANSPORT` decides which process owns the public `/api/event`
+endpoint. It accepts two values:
+
+- `direct` mounts the event endpoint in `feasible serve` and writes accepted
+  events directly to the account database. This is the default and the normal
+  self-hosted configuration.
+- `http` leaves the event endpoint to one or more separate `feasible ingest`
+  processes. Each ingester durably records an event in its local `buffer.db`
+  before forwarding a signed batch to the app shard that owns the site. Use
+  this for the separated hosted topology or for testing that topology locally.
+
+A single-process self-hosted installation should use:
+
+```dotenv
+FEASIBLE_APP_TRANSPORT=direct
+FEASIBLE_APP_SHARD_ID=1
+```
+
+`FEASIBLE_APP_SHARD_ID` is the app's one-based stable identity. In `http` mode,
+it must equal the app's position in every ingester's ordered
+`FEASIBLE_INGEST_SHARDS` array. For example:
+
+```dotenv
+FEASIBLE_INGEST_SHARDS='["http://app-one:19301","http://app-two:19301"]'
+```
+
+The app at `http://app-one:19301` uses `FEASIBLE_APP_SHARD_ID=1`; the app at
+`http://app-two:19301` uses `FEASIBLE_APP_SHARD_ID=2`. The ingest processes
+verify this identity before delivering queued events, so swapping two shard
+addresses cannot send pageviews to the wrong app. `http` transport also
+requires the same `FEASIBLE_INTERNAL_KEY` on every app and ingester so their
+private requests can be authenticated.
+
 ### Hosted topology
 
 The single-process self-hosted mode writes directly to account SQLite. Hosted
