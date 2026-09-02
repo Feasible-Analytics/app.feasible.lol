@@ -109,15 +109,16 @@ type Message struct {
 // recording the detail is what lets somebody answer "did they actually get it"
 // three weeks later.
 type Result struct {
-	// Transport names which one handled it — "log" or "smtp".
+	// Transport names which one handled it — "log", "smtp" or "ses".
 	Transport string
 
 	// Accepted is whether the transport took responsibility for the message.
 	// It is still not proof of delivery, which is why Detail exists.
 	Accepted bool
 
-	// Detail is the transport's own words: the file a log transport wrote, or
-	// the relay and response an SMTP transport saw.
+	// Detail is the transport's own words: the file a log transport wrote, the
+	// relay and response an SMTP transport saw, or the identifier SES filed the
+	// message under.
 	Detail string
 }
 
@@ -174,7 +175,13 @@ type Options struct {
 	SMTPUser     string
 	SMTPPass     string
 	SMTPStartTLS bool
-	Log          *logger.Logger
+
+	AWSAccessKeyID      string
+	AWSSecretAccessKey  string
+	SESRegion           string
+	SESConfigurationSet string
+
+	Log *logger.Logger
 }
 
 // New builds a mailer for the configured transport. An unknown transport is an
@@ -208,6 +215,27 @@ func New(opts Options) (*Mailer, error) {
 				From:     from,
 				StartTLS: opts.SMTPStartTLS,
 				Timeout:  dialTimeout,
+			},
+			Log: opts.Log,
+		}
+
+	case config.MailTransportSES:
+		if opts.AWSAccessKeyID == "" || opts.AWSSecretAccessKey == "" {
+			return nil, fmt.Errorf("mail: the ses transport needs FEASIBLE_AWS_ACCESS_KEY_ID and FEASIBLE_AWS_SECRET_ACCESS_KEY")
+		}
+
+		if _, err := sesRegion(opts.SESRegion); err != nil {
+			return nil, fmt.Errorf("mail: %w", err)
+		}
+
+		transport = &SESTransport{
+			Config: SESConfig{
+				Region:           opts.SESRegion,
+				AccessKeyID:      opts.AWSAccessKeyID,
+				SecretAccessKey:  opts.AWSSecretAccessKey,
+				From:             from,
+				ConfigurationSet: opts.SESConfigurationSet,
+				Timeout:          dialTimeout,
 			},
 			Log: opts.Log,
 		}

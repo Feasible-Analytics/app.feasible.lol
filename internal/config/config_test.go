@@ -621,3 +621,48 @@ func chdir(t *testing.T, dir string) {
 		}
 	})
 }
+
+// TestSESTransportNeedsItsCredentials refuses a half-configured SES setup at
+// start-up. AWS answers an unsigned or half-signed request with a signature
+// complaint that names no variable, so the missing ones are listed here while
+// somebody is still looking at the configuration.
+func TestSESTransportNeedsItsCredentials(t *testing.T) {
+	t.Setenv("FEASIBLE_APP_MAIL_TRANSPORT", "ses")
+
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = LoadFrom(loader)
+	if err == nil {
+		t.Fatal("the ses transport was accepted with no credentials")
+	}
+	for _, want := range []string{"FEASIBLE_AWS_ACCESS_KEY_ID", "FEASIBLE_AWS_SECRET_ACCESS_KEY"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not name %s", err, want)
+		}
+	}
+
+	t.Setenv("FEASIBLE_AWS_ACCESS_KEY_ID", "AKIAEXAMPLEKEYID0000")
+	t.Setenv("FEASIBLE_AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+
+	loader, err = NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(loader)
+	if err != nil {
+		t.Fatalf("a complete ses configuration was refused: %v", err)
+	}
+
+	// The region defaults rather than being required, because it has no safe
+	// empty value: it becomes part of the endpoint hostname.
+	if cfg.App.AWS.SESRegion != DefaultSESRegion {
+		t.Fatalf("ses region = %q, want %q", cfg.App.AWS.SESRegion, DefaultSESRegion)
+	}
+	if cfg.App.AWS.SESConfigurationSet != "" {
+		t.Fatalf("ses configuration set = %q, want it empty by default", cfg.App.AWS.SESConfigurationSet)
+	}
+}
