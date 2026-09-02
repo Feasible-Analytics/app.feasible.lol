@@ -5,7 +5,7 @@
 -- Created: 2026-08-31
 -- Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 --
--- Existing rows are invalidated deliberately. The consolidated runtime creates
+-- Existing rows are invalidated deliberately. The app salt authority creates
 -- fresh random current and next-day material marked as authority-owned before
 -- it becomes ready.
 

@@ -36,11 +36,11 @@ const SessionIdleWindow = 14 * 24 * time.Hour
 
 // sessionTokenBytes is the entropy in a session token. Thirty-two bytes is far
 // past guessing and is what the cookie carries; the database stores only its
-// SHA-256, so a stolen copy of control.db cannot be replayed at the login page.
+// SHA-256, so a stolen copy of system.db cannot be replayed at the login page.
 const sessionTokenBytes = 32
 
 // touchInterval is how stale the last-seen timestamp is allowed to get before a
-// request writes it. Writing on every request would put a control-database
+// request writes it. Writing on every request would put a system-database
 // write on every page load and every dashboard XHR, all contending for the one
 // writer connection, to move a timestamp nobody reads to the second.
 const touchInterval = 5 * time.Minute

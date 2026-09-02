@@ -25,12 +25,12 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
-// newRouting builds a control database holding one team and one site, which is
+// newRouting builds a system database holding one team and one site, which is
 // what the shield cache walks to find the accounts it has to read.
 func newRouting(t *testing.T) *sites.Cache {
 	t.Helper()
 
-	db, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func newRouting(t *testing.T) *sites.Cache {
 
 	ctx := context.Background()
 
-	if _, err := migrate.Run(ctx, db, migrate.Control()); err != nil {
+	if _, err := migrate.Run(ctx, db, migrate.System()); err != nil {
 		t.Fatal(err)
 	}
 

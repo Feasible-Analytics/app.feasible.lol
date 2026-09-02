@@ -43,7 +43,7 @@ func TestJSONFormat(t *testing.T) {
 	var buf bytes.Buffer
 
 	log := New(Options{Level: "debug", Format: "json", Output: &buf})
-	log.ShardPoll("http://127.0.0.1:19401", true, 12, 3*time.Millisecond)
+	log.ShardPoll("http://127.0.0.1:19301", true, 12, 3*time.Millisecond)
 
 	var line map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &line); err != nil {

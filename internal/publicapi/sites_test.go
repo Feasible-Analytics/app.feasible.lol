@@ -96,7 +96,7 @@ func TestSiteLifecycle(t *testing.T) {
 func TestDirectAPIDeletionRetriesTheDurableWorkflow(t *testing.T) {
 	h := newHarness(t)
 	now := time.Now().UTC().Unix()
-	if _, err := h.Control.Exec(`
+	if _, err := h.System.Exec(`
 		INSERT INTO destructive_operations
 			(resource_type, resource_id, kind, owner_team_id, storage_account_id,
 			 state, lease_token, lease_until, created_at, updated_at)
@@ -109,7 +109,7 @@ func TestDirectAPIDeletionRetriesTheDurableWorkflow(t *testing.T) {
 	if status != http.StatusConflict {
 		t.Fatalf("live operation status = %d, want 409 (%s)", status, body)
 	}
-	if _, err := h.Control.Exec(`UPDATE destructive_operations SET lease_until = 0 WHERE resource_id = ?`, siteID); err != nil {
+	if _, err := h.System.Exec(`UPDATE destructive_operations SET lease_until = 0 WHERE resource_id = ?`, siteID); err != nil {
 		t.Fatal(err)
 	}
 	status, body = h.do(t, http.MethodDelete, "/api/v1/sites/example.com", "", h.Key)
@@ -118,7 +118,7 @@ func TestDirectAPIDeletionRetriesTheDurableWorkflow(t *testing.T) {
 	}
 
 	var sites, sessions int
-	if err := h.Control.QueryRow(`SELECT COUNT(*) FROM sites WHERE id = ?`, siteID).Scan(&sites); err != nil {
+	if err := h.System.QueryRow(`SELECT COUNT(*) FROM sites WHERE id = ?`, siteID).Scan(&sites); err != nil {
 		t.Fatal(err)
 	}
 	account, err := h.API.Accounts.Open(context.Background(), teamID)
@@ -296,7 +296,7 @@ func TestSharedLinkIsUnguessable(t *testing.T) {
 	}
 	protectedSlug, _ := decode(t, protectedBody)["slug"].(string)
 	var passwordHash, salt string
-	if err := h.Control.QueryRow(`
+	if err := h.System.QueryRow(`
 		SELECT password_hash, password_salt FROM shared_links WHERE slug = ?
 	`, protectedSlug).Scan(&passwordHash, &salt); err != nil {
 		t.Fatal(err)
@@ -308,7 +308,7 @@ func TestSharedLinkIsUnguessable(t *testing.T) {
 		t.Fatalf("public API link accepted a wrong password: %v", err)
 	}
 	var afterHash, afterSalt string
-	if err := h.Control.QueryRow(`
+	if err := h.System.QueryRow(`
 		SELECT password_hash, password_salt FROM shared_links WHERE slug = ?
 	`, protectedSlug).Scan(&afterHash, &afterSalt); err != nil {
 		t.Fatal(err)
@@ -393,7 +393,7 @@ func TestGuestsAndMemberships(t *testing.T) {
 		t.Fatalf("expiry invitation status = %d (%s)", status, body)
 	}
 	expiring := decode(t, body)
-	if _, err := h.Control.Exec(`UPDATE team_invitations SET expires_at = ? WHERE id = ?`,
+	if _, err := h.System.Exec(`UPDATE team_invitations SET expires_at = ? WHERE id = ?`,
 		testNow.Unix(), int64(expiring["invitation_id"].(float64))); err != nil {
 		t.Fatal(err)
 	}
@@ -424,7 +424,7 @@ func TestMembershipWriteCreatesAnInvitationWithoutEnumeratingAccounts(t *testing
 		}
 
 		var members int
-		if err := h.Control.QueryRow(`SELECT COUNT(*) FROM team_memberships WHERE team_id = ? AND user_id = 3`, teamID).
+		if err := h.System.QueryRow(`SELECT COUNT(*) FROM team_memberships WHERE team_id = ? AND user_id = 3`, teamID).
 			Scan(&members); err != nil {
 			t.Fatal(err)
 		}

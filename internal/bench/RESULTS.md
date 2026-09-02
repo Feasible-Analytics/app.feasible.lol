@@ -50,10 +50,9 @@ account. Three runs of each, reported as median (range).
   That is the property that matters most: the visitor's page never waits on our
   disk. If that number ever tracks the flush numbers, the write has leaked onto
   the request path.
-- **Flush latency is the thing to watch**, not accept latency. Flushes measured
-  in seconds mean the buffer grew far past 250 events while it waited — which is
-  exactly what `feasible_ingest_flush_batch_events` and
-  `feasible_ingest_buffer_events` exist to make visible.
+- **Flush latency is the thing to investigate**, not accept latency. Flushes
+  measured in seconds mean the buffer grew far past 250 events while it waited;
+  the durable outbox depth and oldest row show that backlog directly.
 
 This benchmark found a real bug the first time it was run at these sizes: with a
 backed-up buffer the batch grows past SQLite's bind limit, and the dedupe lookup
@@ -111,7 +110,7 @@ The same dataset on disk, with every index and both roll-up grains built:
 | | |
 |---|---:|
 | Account database | 293.8 MB |
-| Control database | 4.2 MB |
+| System database | 4.2 MB |
 | Per event, all in | ~210 bytes |
 
 A million pageviews is about 300 MB once it is indexed and summarised. Raw rows

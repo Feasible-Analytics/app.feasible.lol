@@ -35,18 +35,18 @@ func seededShop(t *testing.T) (*sql.DB, int64) {
 	dir := t.TempDir()
 
 	if _, err := Run(context.Background(), Options{
-		DataDir:           dir,
-		Pageviews:         8000,
-		Days:              14,
-		Sites:             3,
-		Seed:              7,
-		Now:               fixedNow,
-		ControlMigrations: migrate.Control(),
+		DataDir:          dir,
+		Pageviews:        8000,
+		Days:             14,
+		Sites:            3,
+		Seed:             7,
+		Now:              fixedNow,
+		SystemMigrations: migrate.System(),
 	}); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
 
-	control, err := store.Open(filepath.Join(dir, config.ControlDatabaseName))
+	control, err := store.Open(filepath.Join(dir, config.SystemDatabaseName))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -136,7 +136,7 @@ func (s *Store) CreateAPIKey(ctx context.Context, actorID, teamID int64, name st
 	key.ID, _ = result.LastInsertId()
 
 	// The secret is returned here and never again. Storing something we could
-	// show a second time would mean a stolen control.db is a stolen set of live
+	// show a second time would mean a stolen system.db is a stolen set of live
 	// credentials.
 	return secret, key, nil
 }

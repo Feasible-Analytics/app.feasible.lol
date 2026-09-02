@@ -90,7 +90,8 @@ func (h *Handler) finishGoogle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, created, err := h.Store.ResolveProfile(r.Context(), profile)
+	_, invited := h.pendingInvitation(r)
+	user, created, err := h.Store.resolveProfile(r.Context(), profile, !h.DisableRegistration || invited)
 	if err != nil {
 		h.Log.Warn("google profile could not be resolved", "error", err)
 		h.googleError(w, r, err.Error())

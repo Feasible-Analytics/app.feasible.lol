@@ -22,10 +22,10 @@ var testSalt = []byte("feasible-salt-16")
 const testUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
 	"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-// TestFingerprintExactOutput pins the hash to known values. Every number in the
-// product is derived from this function, and a change to it cannot be detected
-// after the fact or recomputed from stored data — there is no salt to redo it
-// with, by design. If this test fails, the change is wrong.
+// TestFingerprintExactOutput pins the hash to known values. Every visitor
+// number is derived from this function, so an unnoticed change would split
+// counts across simultaneously deployed ingesters. If this test fails, the
+// change is wrong.
 func TestFingerprintExactOutput(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -119,9 +119,8 @@ func TestSubdomainsShareAVisitor(t *testing.T) {
 	}
 }
 
-// TestFingerprintChangesWithTheSalt is what makes the identifier unreconstructable
-// after 48 hours. The same visitor under a different salt has to be a different
-// number, or rotating the salt would achieve nothing.
+// TestFingerprintChangesWithTheSalt proves UTC-day derivation separates the
+// same visitor's identifiers across days.
 func TestFingerprintChangesWithTheSalt(t *testing.T) {
 	today := Fingerprint(testSalt, testUserAgent, "203.0.113.7", "example.com", "example.com")
 	yesterday := Fingerprint([]byte("yesterday-salt16"), testUserAgent, "203.0.113.7", "example.com", "example.com")

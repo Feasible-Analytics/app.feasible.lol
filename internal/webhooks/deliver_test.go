@@ -26,17 +26,17 @@ import (
 // clockStart is the instant the fake clock in these tests begins at.
 var clockStart = time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 
-// testControl builds a migrated control database with one team in it.
+// testControl builds a migrated system database with one team in it.
 func testControl(t *testing.T) *sql.DB {
 	t.Helper()
 
-	db, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), db, migrate.System()); err != nil {
 		t.Fatal(err)
 	}
 

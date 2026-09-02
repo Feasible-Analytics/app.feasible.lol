@@ -42,7 +42,7 @@ func (a *seededAccount) trafficSites() []*seededSite {
 	return sites
 }
 
-// ensureFixture writes the accounts, people and sites into control.db and
+// ensureFixture writes the accounts, people and sites into system.db and
 // returns them with their ids. It is written to be re-runnable: every insert is
 // keyed on something unique and reads the id back, so seeding twice into one
 // data directory adds traffic to the sites that are already there instead of

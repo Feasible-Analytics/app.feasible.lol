@@ -43,11 +43,9 @@ Usage:
 Commands:
   serve        Run the whole product in one process. The default, and the only
                thing a self-hoster ever runs.
-  ingest       Run the event endpoint separately over the shared databases.
-  db migrate   Migrate control.db and every account database. Never automatic.
+  ingest       Durably buffer events and deliver them to the owning app shard.
+  db migrate   Migrate system.db and every account database. Never automatic.
   db backup    Write a consistent snapshot of every database.
-  litestream   Generate and check the continuous replication configuration,
-               which has to be regenerated whenever an account is created.
   rollup       Build, rebuild or inspect the pre-aggregated report tables.
   seed         Generate realistic fake traffic to build and measure against.
   api-key      Create, list and revoke public API keys. One key type, and it
@@ -56,6 +54,7 @@ Commands:
                desktop assistant. The remote transport is POST /mcp on serve.
   billing      Inspect and drive the account lifecycle: status, trial, sweep.
   comp         Grant durable complimentary access by account owner email.
+  account      Create verified accounts on a self-hosted installation.
 
 Flags:
   --version         Print version, commit and build date, then exit.
@@ -70,21 +69,21 @@ Configuration is read from $CONFIG_DIR/<NAME> first, then the environment, then
 // and the streams to write to. Passing one struct keeps subcommand signatures
 // stable as the foundation grows.
 type env struct {
-	cfg               *config.Config
-	log               *logger.Logger
-	stdout            io.Writer
-	stderr            io.Writer
-	controlMigrations migrate.Set
+	cfg              *config.Config
+	log              *logger.Logger
+	stdout           io.Writer
+	stderr           io.Writer
+	systemMigrations migrate.Set
 }
 
 // Options are the inputs to Run. Tests supply their own streams and arguments;
 // main supplies the real ones. Making these explicit is what keeps the command
 // testable without a subprocess.
 type Options struct {
-	Args              []string
-	Stdout            io.Writer
-	Stderr            io.Writer
-	ControlMigrations migrate.Set
+	Args             []string
+	Stdout           io.Writer
+	Stderr           io.Writer
+	SystemMigrations migrate.Set
 }
 
 // Main is the entry point package main calls. It exists so main.go stays three
@@ -104,8 +103,8 @@ func Run(opts Options) int {
 	if stderr == nil {
 		stderr = os.Stderr
 	}
-	if opts.ControlMigrations.Name == "" {
-		opts.ControlMigrations = migrate.Control()
+	if opts.SystemMigrations.Name == "" {
+		opts.SystemMigrations = migrate.System()
 	}
 
 	root := flag.NewFlagSet("feasible", flag.ContinueOnError)
@@ -168,9 +167,9 @@ func Run(opts Options) int {
 			TraceEvents: cfg.Shared.TraceEvents,
 			Output:      stdout,
 		}),
-		stdout:            stdout,
-		stderr:            stderr,
-		controlMigrations: opts.ControlMigrations,
+		stdout:           stdout,
+		stderr:           stderr,
+		systemMigrations: opts.SystemMigrations,
 	}
 
 	switch args[0] {
@@ -180,8 +179,6 @@ func Run(opts Options) int {
 		return runIngest(e, args[1:])
 	case "db":
 		return runDB(e, args[1:])
-	case "litestream":
-		return runLitestream(e, args[1:])
 	case "seed":
 		return runSeed(e, args[1:])
 	case "mcp":
@@ -194,6 +191,8 @@ func Run(opts Options) int {
 		return runBilling(e, args[1:])
 	case "comp":
 		return runComp(e, args[1:])
+	case "account":
+		return runAccount(e, args[1:])
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", args[0])
 		fmt.Fprint(stderr, usage)

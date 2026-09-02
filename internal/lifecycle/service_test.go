@@ -47,12 +47,12 @@ type harness struct {
 	sent []Notice
 }
 
-// applyLifecycleControlSchema applies the complete merged control chain used
+// applyLifecycleSystemSchema applies the complete merged control chain used
 // by lifecycle fixtures, including M9 topology and M8 cleanup checkpoints.
-func applyLifecycleControlSchema(t *testing.T, ctx context.Context, db *sql.DB) {
+func applyLifecycleSystemSchema(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
 
-	if _, err := migrate.Run(ctx, db, migrate.Control()); err != nil {
+	if _, err := migrate.Run(ctx, db, migrate.System()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -63,13 +63,13 @@ func newHarness(t *testing.T) *harness {
 
 	dataDir := t.TempDir()
 
-	control, err := store.Open(filepath.Join(dataDir, "control.db"))
+	control, err := store.Open(filepath.Join(dataDir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { control.Close() })
 
-	applyLifecycleControlSchema(t, context.Background(), control)
+	applyLifecycleSystemSchema(t, context.Background(), control)
 
 	now := day0.Unix()
 
@@ -461,7 +461,7 @@ func TestLifecycleOutboxRetriesExpiredClaimsAndExcludesLiveWorkers(t *testing.T)
 	started := day0
 	now := h.service.now()
 
-	secondControl, err := store.Open(filepath.Join(h.dataDir, "control.db"))
+	secondControl, err := store.Open(filepath.Join(h.dataDir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1407,17 +1407,17 @@ func TestLegacyCrashAfterTeamRemovalRemainsDiscoverable(t *testing.T) {
 func TestV10UpgradeFinishesLegacyOwnedCleanupWithoutLiveTeam(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
-	control, err := store.Open(filepath.Join(dataDir, "control.db"))
+	control, err := store.Open(filepath.Join(dataDir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		if err := control.Close(); err != nil {
-			t.Errorf("close legacy upgrade control database: %v", err)
+			t.Errorf("close legacy upgrade system database: %v", err)
 		}
 	})
 
-	throughNine := migrate.UpTo(migrate.Control(), 9)
+	throughNine := migrate.UpTo(migrate.System(), 9)
 	result, err := migrate.Run(ctx, control, throughNine)
 	if err != nil {
 		t.Fatal(err)
@@ -1477,12 +1477,12 @@ func TestV10UpgradeFinishesLegacyOwnedCleanupWithoutLiveTeam(t *testing.T) {
 		}
 	}
 
-	result, err = migrate.Run(ctx, control, migrate.Control())
+	result, err = migrate.Run(ctx, control, migrate.System())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 9 || result.To != 11 || fmt.Sprint(result.Applied) != "[10 11]" {
-		t.Fatalf("legacy cleanup migration result = %+v, want 9 through [10 11]", result)
+	if result.From != 9 || result.To != 12 || fmt.Sprint(result.Applied) != "[10 11 12]" {
+		t.Fatalf("legacy cleanup migration result = %+v, want 9 through [10 11 12]", result)
 	}
 
 	var completed, controlRemoved, localRemoved, artifactsIndexed, globalRemoved sql.NullInt64
@@ -1671,14 +1671,14 @@ func TestV10UpgradeFinishesLegacyOwnedCleanupWithoutLiveTeam(t *testing.T) {
 func TestUpgradeRetriesLegacyStripeDeletionFailures(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
-	control, err := store.Open(filepath.Join(dataDir, "control.db"))
+	control, err := store.Open(filepath.Join(dataDir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { control.Close() })
 
-	throughFive := migrate.Set{Name: "control"}
-	for _, migration := range migrate.Control().Migrations {
+	throughFive := migrate.Set{Name: "system"}
+	for _, migration := range migrate.System().Migrations {
 		if migration.Version <= 5 {
 			throughFive.Migrations = append(throughFive.Migrations, migration)
 		}
@@ -1691,12 +1691,12 @@ func TestUpgradeRetriesLegacyStripeDeletionFailures(t *testing.T) {
 			(team_id, stripe_customer_id, clock_started_at, started_at, notes)
 		VALUES
 			(99, 'cus_interrupted', 1, 10, 'claimed'),
-			(100, 'cus_failed', 2, 20, 'payment customer NOT removed: provider unavailable; control rows removed');
+			(100, 'cus_failed', 2, 20, 'payment customer NOT removed: provider unavailable; system rows removed');
 		UPDATE account_deletions SET completed_at = 21 WHERE team_id = 100
 	`); err != nil {
 		t.Fatal(err)
 	}
-	applyLifecycleControlSchema(t, ctx, control)
+	applyLifecycleSystemSchema(t, ctx, control)
 
 	var removed []string
 	purger := &Purger{

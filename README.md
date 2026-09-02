@@ -49,17 +49,123 @@ stays readable:
 
 ```bash
 make caddy             # :19300 — the only port you open in a browser
-make app               # :19301, plus :19401 internal, loopback only
-make ingest            # :19302, plus :19402 internal, loopback only
+make app               # :19301 — application and signed internal routes
+make ingest            # :19302 — events and health
 make testsite          # :19303 — a real page with the snippet installed
 ```
 
 `make dev` runs all three at once. Every runnable target has a `-ts` twin
 (`make app-ts`, `make dev-ts`) that binds to the Tailscale address and moves
 `FEASIBLE_APP_BASE_URL` with it, so the app is reachable from another machine.
-The internal listeners stay on `127.0.0.1` in every mode.
+Each process has one listener. Caddy exposes customer paths and denies
+`/internal/*`; trusted services connect directly over the protected network.
 
 `make` on its own lists everything.
+
+### Hosted and self-hosted mode
+
+`FEASIBLE_APP_HOSTED` is a safety boundary, not a branding switch. The binary
+defaults it to `true`. Cloudmanic Labs' hosted service leaves it true, which
+enables public account registration, trials, Stripe billing, usage limits,
+payment locks and the payment lifecycle.
+
+A self-hosted installation must explicitly set:
+
+```dotenv
+FEASIBLE_APP_HOSTED=false
+```
+
+In that mode every product feature is free and unrestricted. Feasible does not
+start billing, usage metering, account locks or payment-driven deletion, even if
+Stripe variables are present. Public password and Google signup are disabled so
+exposing the login page to the internet does not let strangers create accounts.
+Invited team members can still complete an invitation, and existing users can
+sign in or reset their passwords normally.
+
+The server operator creates each account from the machine that holds
+`system.db`. Create as many independent accounts as the installation needs:
+
+```bash
+feasible db migrate
+feasible account create --email owner@example.com --name "Account owner"
+```
+
+The command creates a verified owner with no trial dates and prints a generated
+password once. It generates the password rather than accepting one on the
+command line so the credential is not saved in shell history or exposed in the
+process list. Save it, sign in, and change it from account settings.
+
+### Ingestion transport and app shard identity
+
+`FEASIBLE_APP_TRANSPORT` decides which process owns the public `/api/event`
+endpoint. It accepts two values:
+
+- `direct` mounts the event endpoint in `feasible serve` and writes accepted
+  events directly to the account database. This is the default and the normal
+  self-hosted configuration.
+- `http` leaves the event endpoint to one or more separate `feasible ingest`
+  processes. Each ingester durably records an event in its local `buffer.db`
+  before forwarding a signed batch to the app shard that owns the site. Use
+  this for the separated hosted topology or for testing that topology locally.
+
+A single-process self-hosted installation should use:
+
+```dotenv
+FEASIBLE_APP_TRANSPORT=direct
+FEASIBLE_APP_SHARD_ID=1
+```
+
+`FEASIBLE_APP_SHARD_ID` is the app's one-based stable identity. In `http` mode,
+it must equal the app's position in every ingester's ordered
+`FEASIBLE_INGEST_SHARDS` array. For example:
+
+```dotenv
+FEASIBLE_INGEST_SHARDS='["http://app-one:19301","http://app-two:19301"]'
+```
+
+The app at `http://app-one:19301` uses `FEASIBLE_APP_SHARD_ID=1`; the app at
+`http://app-two:19301` uses `FEASIBLE_APP_SHARD_ID=2`. The ingest processes
+verify this identity before delivering queued events, so swapping two shard
+addresses cannot send pageviews to the wrong app. `http` transport also
+requires the same `FEASIBLE_INTERNAL_KEY` on every app and ingester so their
+private requests can be authenticated.
+
+### Hosted topology
+
+The single-process self-hosted mode writes directly to account SQLite. Hosted
+production separates the failure domains:
+
+```text
+public load balancer -> any ingester -> owning app shard -> account SQLite
+                              |
+                              +-> local persistent buffer.db
+```
+
+Each ingester derives the privacy-safe event, discards the raw IP address,
+commits the event to its own `FEASIBLE_INGEST_BUFFER_PATH`, and only then
+returns `202`. It polls the complete ordered `FEASIBLE_INGEST_SHARDS` list for
+domain ownership and removes an outbox row only when the owning app names that
+UUID after commit. An app outage delays dashboards while ingesters keep pageviews.
+The shard list is a JSON array because its order defines stable shard identity.
+
+App listeners publish authenticated domain snapshots and accept durable batches
+alongside dashboard traffic. `FEASIBLE_APP_SHARD_ID` is the
+app's one-based stable position in the ingester list. In hosted production these
+listeners are reachable only over protected networking and internal requests
+use `FEASIBLE_INTERNAL_KEY`; `/internal/*` is never exposed by the public load
+balancer. See [.env.sample](.env.sample) for the complete app
+and ingester configuration and [ops/load-balancer.md](ops/load-balancer.md) for
+failure and drain behavior.
+
+Every ingester receives the same `FEASIBLE_INGEST_SALT` and combines it with
+the UTC day locally. That small, deterministic measure keeps visitor hashes
+separate across days without making ingestion depend on an app, database row,
+rotation worker, or private salt endpoint.
+
+The shared metadata file on each app shard is `system.db`. An installation from
+before that rename must stop all Feasible processes and run `feasible db migrate`
+once; the command moves the former filename and SQLite sidecars before applying
+migrations.
 
 ### Local services you do not need
 
@@ -110,7 +216,9 @@ SQLite can write its way out of.
 **Throughput.** One process sustains around six thousand events a second through
 the whole accept path, which is far more than a site sending a million pageviews
 a month generates — that is under half an event a second on average. Accepting
-an event costs about thirteen microseconds and never waits on the disk. Reports
+and deriving an event costs about thirteen microseconds; a success response
+still waits for a durable transaction, either the direct account commit or the
+hosted ingester outbox commit. Reports
 read from summary tables in under a tenth of a second over a year of data; the
 same report from raw rows takes seconds, which is why the roll-up worker exists.
 
@@ -119,26 +227,37 @@ compiled before Go embeds them. Running never does.
 
 ## Watching it run
 
-Every process serves two probes and, on its loopback listener, a metrics
-endpoint:
+Every process serves three health endpoints on its single listener:
 
 ```bash
-curl localhost:19301/health/live     # is the process up
-curl localhost:19301/health/ready    # can it serve, component by component
-curl localhost:19401/metrics         # Prometheus text format (app)
-curl localhost:19402/metrics         # the ingest tier's own
+curl https://app.feasible.lol/health  # public: can customers use the site
+curl localhost:19301/health/live      # internal: is this process running
+curl localhost:19301/health/ready     # internal: may this process take traffic
 ```
 
-`/health/live` checks nothing on purpose: a liveness probe that failed on a slow
-database would turn one slow database into a restart loop everywhere at once.
-`/health/ready` returns 503 with a JSON body naming every dependency and what
-was wrong with it, so a failure is a diagnosis rather than a word.
+`/health` is the public endpoint for an external uptime monitor. It returns plain
+text `ok` with HTTP 200 only when the app is ready to serve customers. An app
+process returns `unhealthy` with HTTP 503 while it is draining or a required
+dependency has failed; the public proxy may replace that body with its maintenance
+page when the whole app pool is unavailable. Point the monitor at the public
+Caddy URL so it covers DNS, TLS, the proxy, and the app pool—not merely one
+process on one host. Check the status code; the body is only a convenient answer
+for a person using `curl`.
 
-The metrics endpoint is loopback-only and carries no customer data — no site,
-domain, path or country appears as a label, and no IP address exists anywhere in
-this system to leak. Drop counts by reason, write-buffer depth, roll-up freshness
-and report latency are all there; per-site numbers belong to the customer and
-live on their own ingestion-health panel.
+`/health/live` is a process liveness probe. It checks nothing on purpose: a
+liveness probe that failed on a slow database would turn one slow database into
+a restart loop everywhere at once. Use it only when deciding whether a process
+needs to be restarted; it is not proof that the site works.
+
+`/health/ready` is the internal readiness probe for load balancing and blue/green
+deployments. Caddy removes an unready color from its pool, and deployment waits
+for a new color to return HTTP 200 before retiring the old one. A failure returns
+HTTP 503 with a JSON body naming every dependency and what was wrong with it, so
+it is both a traffic decision and a diagnosis.
+
+There is deliberately no `/metrics` endpoint. Operational measurements will be
+collected outside the public HTTP application; customer-specific ingestion
+counts remain available on each site's ingestion-health panel.
 
 ### Team membership API
 
@@ -159,11 +278,11 @@ revokes an outstanding site invitation.
 
 ### When it goes wrong
 
-[`ops/`](ops/) holds the operational half: continuous replication with
-Litestream, the load balancer's health-check settings, a runbook per failure this
-system actually has, and the game day that breaks things on purpose to check the
-runbooks are true. [`ops/README.md`](ops/README.md) lists every metric the binary
-emits, which is also the list a runbook is allowed to name.
+[`ops/`](ops/) holds the operational half: the load balancer's health-check
+settings, a runbook per failure this system actually has, and the game day that
+breaks things on purpose to check the runbooks are true. [`ops/README.md`](ops/README.md)
+lists every metric the binary emits, which is also the list a runbook is allowed
+to name.
 
 ## Cutting a release
 

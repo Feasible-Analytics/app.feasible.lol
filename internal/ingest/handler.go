@@ -145,9 +145,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.Pipeline.Derive(r.Context(), r, payload)
 	if err != nil && h.Log != nil {
-		// The sender can do nothing about a salt store that will not open or a
-		// props object it cannot see, so the detail belongs in our log and only
-		// the reason travels back.
+		// The sender can do nothing about a fingerprint dependency or props
+		// object it cannot see, so the detail belongs in our log and only the
+		// reason travels back.
 		h.Log.Error("event could not be derived", "domain", payload.Domain, "error", err)
 	}
 

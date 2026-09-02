@@ -302,6 +302,23 @@ func (r *Ruleset) AllowedHostnames() []string {
 	return hostnames
 }
 
+// BlockedIPPrefixes lists the canonical address ranges that must be evaluated
+// before an ingester discards the raw visitor address. It returns strings so
+// the private routing response never exposes this package's compiled state.
+func (r *Ruleset) BlockedIPPrefixes() []string {
+	if r == nil || len(r.prefixes) == 0 {
+		return nil
+	}
+
+	prefixes := make([]string, 0, len(r.prefixes))
+	for _, prefix := range r.prefixes {
+		prefixes = append(prefixes, prefix.String())
+	}
+	sort.Strings(prefixes)
+
+	return prefixes
+}
+
 // HostnameAllowed exposes the hostname decision without evaluating other
 // shield kinds.
 func (r *Ruleset) HostnameAllowed(hostname string) bool {

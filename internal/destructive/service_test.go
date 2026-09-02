@@ -27,7 +27,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
-// destructiveFixture is one control database and its immutable analytics
+// destructiveFixture is one system database and its immutable analytics
 // account, shared by the workflow and transfer store under test.
 type destructiveFixture struct {
 	db       *sql.DB
@@ -47,13 +47,13 @@ func newDestructiveFixture(t *testing.T) *destructiveFixture {
 	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
-	controlPath := filepath.Join(dir, "control.db")
+	controlPath := filepath.Join(dir, "system.db")
 	db, err := store.Open(controlPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	if _, err := migrate.Run(ctx, db, migrate.Control()); err != nil {
+	if _, err := migrate.Run(ctx, db, migrate.System()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -233,11 +233,11 @@ func TestResetPreservesConfigurationAndDeleteErasesEverything(t *testing.T) {
 // TestResetFailsClosedForNewSiteScopedTables proves schema growth cannot turn
 // an analytics reset into an accidental configuration deletion.
 func TestResetFailsClosedForNewSiteScopedTables(t *testing.T) {
-	for _, database := range []string{"account", "control"} {
+	for _, database := range []string{"account", "system"} {
 		t.Run(database, func(t *testing.T) {
 			f := newDestructiveFixture(t)
 			db := f.account.Writer()
-			if database == "control" {
+			if database == "system" {
 				db = f.db
 			}
 			if _, err := db.Exec(`

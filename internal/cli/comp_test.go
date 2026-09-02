@@ -30,7 +30,7 @@ func TestCompByOwnerEmail(t *testing.T) {
 		t.Fatalf("stdout is %q", stdout)
 	}
 
-	control, err := store.Open(filepath.Join(dir, "control.db"))
+	control, err := store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestCompByOwnerEmail(t *testing.T) {
 		t.Fatalf("repeat: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 
-	control, err = store.Open(filepath.Join(dir, "control.db"))
+	control, err = store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestCompRejectsUnknownAndAmbiguousOwners(t *testing.T) {
 		t.Fatalf("unknown owner: code=%d stderr=%q", code, stderr)
 	}
 
-	control, err := store.Open(filepath.Join(dir, "control.db"))
+	control, err := store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestCompRejectsUnknownAndAmbiguousOwners(t *testing.T) {
 // billing portal while the payment provider can still charge the account.
 func TestCompRejectsAnActiveSubscription(t *testing.T) {
 	dir := billingDataDir(t)
-	control, err := store.Open(filepath.Join(dir, "control.db"))
+	control, err := store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestCompRejectsAnActiveSubscription(t *testing.T) {
 		t.Fatalf("active subscription: code=%d stderr=%q", code, stderr)
 	}
 
-	control, err = store.Open(filepath.Join(dir, "control.db"))
+	control, err = store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

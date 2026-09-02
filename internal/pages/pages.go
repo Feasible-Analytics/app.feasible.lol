@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/billing"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
@@ -49,12 +48,11 @@ var assetFS embed.FS
 // footer — which carries the postal address the law requires — cannot be left
 // off one of them.
 var (
-	pricingPage       = mustParse("pricing.html")
-	billingPage       = mustParse("billing.html")
-	docsPage          = mustParse("docs.html")
-	docPage           = mustParse("doc.html")
-	messagePage       = mustParse("message.html")
-	subprocessorsPage = mustParse("subprocessors.html")
+	pricingPage = mustParse("pricing.html")
+	billingPage = mustParse("billing.html")
+	docsPage    = mustParse("docs.html")
+	docPage     = mustParse("doc.html")
+	messagePage = mustParse("message.html")
 )
 
 // mustParse builds one page template. A broken template is a programmer error
@@ -90,10 +88,8 @@ type Handler struct {
 	// SalesEmail is where the "talk to us about volume" links point.
 	SalesEmail string
 
-	// Hosted and Subprocessors make the legal provider inventory describe the
-	// running deployment rather than guesses embedded in source code.
+	// Hosted selects the hosted-service legal identity and commercial pages.
 	Hosted          bool
-	Subprocessors   []config.Subprocessor
 	OperatorName    string
 	OperatorAddress string
 	OperatorEmail   string
@@ -147,7 +143,6 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /billing/assets/pages.css", h.stylesheet)
 	mux.HandleFunc("GET /docs", h.docs)
 	mux.HandleFunc("GET /docs/{slug}", h.doc)
-	mux.HandleFunc("GET /legal/subprocessors", h.subprocessors)
 	mux.HandleFunc("GET /legal/{slug}", h.legal)
 }
 
@@ -809,24 +804,6 @@ func (h *Handler) selfHostedLegal(page Doc) Doc {
 
 	page.Body = template.HTML(body) //nolint:gosec // operator values were escaped before substitution
 	return page
-}
-
-// subprocessors renders the deployment's configured legal provider inventory.
-// Self-hosted installs identify the operator as responsible for its choices;
-// hosted production cannot reach this handler without the required entries
-// because configuration validation fails first.
-func (h *Handler) subprocessors(w http.ResponseWriter, r *http.Request) {
-	lang := h.proseLanguage(w, r)
-
-	h.render(w, subprocessorsPage, struct {
-		shell
-		Hosted        bool
-		Subprocessors []config.Subprocessor
-	}{
-		shell:         h.titled(w, r, lang, "Subprocessors", "legal", Account{}),
-		Hosted:        h.Hosted,
-		Subprocessors: h.Subprocessors,
-	})
 }
 
 // link is one button on a message page.

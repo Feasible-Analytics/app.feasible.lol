@@ -12,26 +12,30 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
-// TestInternalListenerServesMetricsAndHealth checks the loopback listener every
-// process runs beside its public one. It is assembled in one place for both
-// process shapes, so a mistake here would silently cost the whole system its
-// monitoring while everything else kept working.
-func TestInternalListenerServesMetricsAndHealth(t *testing.T) {
+// TestProcessListenerServesApplicationHealthAndInternalRoutes checks all three
+// surfaces share one socket. A second listener must not quietly return through
+// later refactoring.
+func TestProcessListenerServesApplicationHealthAndInternalRoutes(t *testing.T) {
 	checks := &health.Set{}
-	checks.Require("control_db", func(context.Context) error { return nil })
+	checks.Require("system_db", func(context.Context) error { return nil })
+	application := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("application"))
+	})
+	internal := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("internal"))
+	})
 
 	// Port zero, because a test that hard-coded one would fail whenever
 	// anything else on the machine happened to hold it.
-	server := internalServer("test-internal", "127.0.0.1:0", checks)
+	server := httpserver.New("test-process", "127.0.0.1:0", processRoutes(application, internal))
+	server.Health = checks
 
 	if err := server.Listen(); err != nil {
 		t.Fatal(err)
@@ -47,15 +51,27 @@ func TestInternalListenerServesMetricsAndHealth(t *testing.T) {
 
 	base := "http://" + server.Addr()
 
-	body := fetch(t, base+"/metrics")
-	if !strings.Contains(body, "feasible_") {
-		t.Errorf("the metrics endpoint served no series of ours:\n%s", body)
+	response, err := http.Get(base + "/metrics") //nolint:noctx // loopback test listener
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closeErr := response.Body.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if response.StatusCode != http.StatusNotFound {
+		t.Errorf("metrics endpoint = %d, want 404", response.StatusCode)
 	}
 
 	// The health probes come with every listener, so a scrape target that is
 	// answering is also a target that can be checked.
-	if got := fetch(t, base+httpserver.PathReady); !strings.Contains(got, "control_db") {
+	if got := fetch(t, base+httpserver.PathReady); !strings.Contains(got, "system_db") {
 		t.Errorf("readiness did not name its components: %s", got)
+	}
+	if got := fetch(t, base+"/internal/domains"); got != "internal" {
+		t.Errorf("internal route returned %q", got)
+	}
+	if got := fetch(t, base+"/"); got != "application" {
+		t.Errorf("application route returned %q", got)
 	}
 }
 
@@ -79,55 +95,4 @@ func fetch(t *testing.T, url string) string {
 	}
 
 	return string(body)
-}
-
-// TestJobCountsSplitsTheQueueByState checks the metrics endpoint's view of the
-// background queue, against the real schema.
-//
-// It runs the statement rather than asserting on its text because the point of
-// failure is the statement itself: a query that no longer matches the table
-// would report an empty queue forever, which reads as a healthy one.
-func TestJobCountsSplitsTheQueueByState(t *testing.T) {
-	dir := migratedDataDir(t)
-
-	db, err := store.Open(filepath.Join(dir, "control.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	rows := []struct {
-		state string
-		count int
-	}{
-		{"available", 3},
-		{"executing", 1},
-		{"completed", 5},
-	}
-
-	for _, row := range rows {
-		for i := 0; i < row.count; i++ {
-			if _, err := db.Exec(
-				"INSERT INTO jobs (queue, kind, args, state, scheduled_at) VALUES ('default', 'test', '{}', ?, 0)",
-				row.state,
-			); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-
-	counts, err := jobCounts(db)(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if counts.Available != 3 {
-		t.Errorf("available = %d, want 3", counts.Available)
-	}
-
-	// Completed jobs must not be counted: they are history, and a depth that
-	// only ever grows is a metric nobody can alert on.
-	if counts.Executing != 1 {
-		t.Errorf("executing = %d, want 1", counts.Executing)
-	}
 }

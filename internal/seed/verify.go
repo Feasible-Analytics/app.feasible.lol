@@ -296,7 +296,7 @@ func dailyShape(ctx context.Context, db *sql.DB, siteID int64, start time.Time, 
 // people want after a seed is "how big did that get", and a database measured
 // without its write-ahead log answers a different question.
 func databaseSizes(dataDir string, runs []*accountRun) ([]DatabaseSize, error) {
-	paths := []string{filepath.Join(dataDir, config.ControlDatabaseName)}
+	paths := []string{filepath.Join(dataDir, config.SystemDatabaseName)}
 
 	for _, run := range runs {
 		paths = append(paths, accounts.Path(dataDir, run.account.ID))

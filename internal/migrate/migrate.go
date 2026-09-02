@@ -7,7 +7,7 @@
 //
 
 // Package migrate owns the schema. Every database in the system carries its own
-// version, because there is one control database and one more per account, and
+// version, because there is one system database and one more per account, and
 // a run that stops halfway through a thousand accounts has to be resumable by
 // re-running it. Migrations are embedded in the binary so that `feasible db
 // migrate` on a box with nothing but the binary on it does the right thing.
@@ -40,10 +40,10 @@ import (
 var files embed.FS
 
 // Directories inside the embedded tree. The two sets are versioned
-// independently: an account database and the control database have unrelated
+// independently: an account database and the system database have unrelated
 // schemas and there is no reason a change to one should renumber the other.
 const (
-	controlDir = "sql/control"
+	systemDir  = "sql/system"
 	accountDir = "sql/account"
 )
 
@@ -83,7 +83,7 @@ func (s Set) Version() int {
 // operator can cause, so panicking is honest: the binary is broken and should
 // not pretend it can migrate anything.
 var (
-	controlSet = mustLoad("control", controlDir)
+	systemSet  = mustLoad("system", systemDir)
 	accountSet = func() Set {
 		set := mustLoad("account", accountDir)
 		// Account 0006 was intentionally left unused before 0007 shipped. Declare
@@ -93,9 +93,9 @@ var (
 	}()
 )
 
-// Control returns the migrations for control.db.
-func Control() Set {
-	return controlSet
+// System returns the migrations for system.db.
+func System() Set {
+	return systemSet
 }
 
 // Account returns the migrations for one account's analytics.db.

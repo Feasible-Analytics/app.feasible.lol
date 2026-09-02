@@ -101,7 +101,7 @@ The three processes live in the **`Server` tab**, one per labelled pane:
 
 | Pane label | Runs | Port |
 |---|---|---|
-| **App** | `make app-ts` | 19301 (internal 19401, loopback only) |
+| **App** | `make app-ts` | 19301 |
 | **Ingest** | `make ingest-ts` | 19302 |
 | **Caddy** | `make caddy-ts` | 19300 |
 
@@ -127,9 +127,9 @@ loopback wastes his time and yours.
    the bind address. Get this wrong and cookies will not set, redirects bounce, and Google OAuth
    rejects the redirect URI — all with no useful error message.
 
-The **internal listener stays on `127.0.0.1` even in `-ts` mode.** Putting `/internal/*` on the
-tailnet would expose the salts endpoint — the one that can reverse visitor fingerprints — to every
-device on it.
+Each process has one listener. Caddy denies `/internal/*` at the public edge; tests and operational
+checks that need those paths connect directly to the process port. Internal requests remain
+HMAC-authenticated because network placement is not authentication. There is no `/metrics` endpoint.
 
 **Find a pane by label, never by a hard-coded id** — herdr compacts ids when panes close:
 
@@ -183,18 +183,17 @@ TAB=$(herdr tab create --workspace "$WS" --label "Server" --no-focus \
 
 Do not re-open these without a reason. Full reasoning is in the build plan.
 
-- **Storage** — one `control.db`, plus one SQLite database per *account* (not per site).
-- **Ingest** — direct durable writes. Every serving process resolves sites from the shared
-  `control.db`, writes the owning account database, and answers `202` only after the account
-  transaction commits. There is no network outbox or internal delivery protocol.
-- **Routing** — the site snapshot maps a claimed domain directly to an account database. A domain
-  in the snapshot is eligible for collection; a domain outside it is a named drop.
+- **Storage** — one `system.db` per app shard, plus one SQLite database per *account* (not per site).
+- **Ingest** — self-hosters use direct writes. Hosted production derives into a local SQLite outbox,
+  answers `202`, retries the owning app shard, and deletes only UUIDs acknowledged after commit.
+- **Routing** — every ingester polls every configured app shard. Failed polls retain the last list;
+  map completeness gates only destructive decisions about unknown domains.
 - **The IP address never reaches disk.** Geolocation and fingerprinting happen in the ingest tier, and
   the IP is discarded before anything is written.
 - **Front end** — React + TypeScript for the stats dashboard only; server-rendered Go templates
   everywhere else.
 - **Two things must be byte-exact** or every number drifts and it is unrecoverable later: the visitor
-  fingerprint and its salt rotation, and the session accumulation rules.
+  fingerprint and shared UTC-day salt derivation, and the session accumulation rules.
 - **Never fail silently.** Every dropped event, truncated field and failed job must be visible to the
   customer or to us. This is the single biggest thing we are fixing about the products we compete with.
 

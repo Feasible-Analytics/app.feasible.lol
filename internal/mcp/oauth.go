@@ -74,7 +74,7 @@ const (
 // OAuth serves the authorisation endpoints and issues the tokens the MCP
 // endpoint accepts.
 type OAuth struct {
-	// DB is control.db, where clients, codes and tokens live.
+	// DB is system.db, where clients, codes and tokens live.
 	DB *sql.DB
 
 	// Keys authenticates the API key somebody proves themselves with at the

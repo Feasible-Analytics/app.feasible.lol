@@ -93,7 +93,7 @@ func TestDemotedMembersCannotDeleteConversions(t *testing.T) {
 	h := newHarness(t)
 	store := &conversionStoreFixture{}
 	h.API.Goals, h.API.Funnels = store, store
-	if _, err := h.Control.Exec(`UPDATE team_memberships SET role = 'viewer' WHERE team_id = ? AND user_id = 1`, teamID); err != nil {
+	if _, err := h.System.Exec(`UPDATE team_memberships SET role = 'viewer' WHERE team_id = ? AND user_id = 1`, teamID); err != nil {
 		t.Fatal(err)
 	}
 

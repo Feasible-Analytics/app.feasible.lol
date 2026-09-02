@@ -1,6 +1,6 @@
 //
 // recorder.go
-// Counting billable events on the write path without touching control.db.
+// Counting billable events on the write path without touching system.db.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// FlushInterval is how often accumulated counts are written to control.db.
+// FlushInterval is how often accumulated counts are written to system.db.
 // Thirty seconds bounds how much is lost if a shard is killed uncleanly, and
 // keeps the busiest path in the system away from the file the dashboard, the
 // job queue and billing all contend for.
@@ -23,7 +23,7 @@ const FlushInterval = 30 * time.Second
 // Recorder accumulates billable counts in memory and flushes them in batches.
 //
 // The rule it exists to keep is that nothing on the ingest hot path may touch
-// control.db. A per-event UPDATE against the shared control database would put
+// system.db. A per-event UPDATE against the app shard system database would put
 // the busiest write in the product behind the one lock every other subsystem
 // is already queued on, and at a thousand events a second it would be the
 // bottleneck for all of them.
@@ -87,7 +87,7 @@ func (r *Recorder) now() time.Time {
 }
 
 // Flush writes everything accumulated so far. The pending map is swapped out
-// under the lock and written outside it, so a slow control database cannot
+// under the lock and written outside it, so a slow system database cannot
 // block the ingest path that is still calling Record.
 func (r *Recorder) Flush(ctx context.Context) error {
 	r.mu.Lock()

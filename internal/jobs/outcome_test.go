@@ -19,7 +19,7 @@ import (
 // nothing for months while every job row said completed.
 func TestASilentSuccessIsRecordedAsAFailure(t *testing.T) {
 	ctx := context.Background()
-	client := NewClient(newControl(t))
+	client := NewClient(newSystem(t))
 
 	id, err := client.Enqueue(ctx, "notifications", "reports.schedule", struct{}{}, "")
 	if err != nil {
@@ -55,7 +55,7 @@ func TestASilentSuccessIsRecordedAsAFailure(t *testing.T) {
 // check would be unusable and somebody would return a fake count to get past it.
 func TestNothingWithAReasonSucceeds(t *testing.T) {
 	ctx := context.Background()
-	client := NewClient(newControl(t))
+	client := NewClient(newSystem(t))
 
 	id, err := client.Enqueue(ctx, "notifications", "reports.schedule", struct{}{}, "")
 	if err != nil {
@@ -108,7 +108,7 @@ func TestValidateNamesTheRule(t *testing.T) {
 // real failure on its way to the row.
 func TestAnErrorFromAReportingHandlerStillFails(t *testing.T) {
 	ctx := context.Background()
-	client := NewClient(newControl(t))
+	client := NewClient(newSystem(t))
 
 	id, err := client.Enqueue(ctx, "notifications", "reports.alerts", struct{}{}, "")
 	if err != nil {

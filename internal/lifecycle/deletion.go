@@ -1,6 +1,6 @@
 //
 // deletion.go
-// Day 90: the database file, the control rows and the payment customer, irreversibly.
+// Day 90: the database file, the system rows and the payment customer, irreversibly.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -859,7 +859,7 @@ func (p *Purger) safeArtifactPath(path string) (string, error) {
 }
 
 // markArtifactsIndexed persists the ownership manifest before either the shard
-// or its control rows can be removed.
+// or its system rows can be removed.
 func (p *Purger) markArtifactsIndexed(ctx context.Context, teamID int64, manifest string, now time.Time) error {
 	if _, err := p.Store.DB().ExecContext(ctx, `
 		UPDATE account_deletions
@@ -908,11 +908,11 @@ func (p *Purger) markGlobalRemoved(ctx context.Context, teamID int64, now time.T
 func (p *Purger) removeControl(ctx context.Context, teamID int64, now time.Time) error {
 	tx, err := p.Store.DB().BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("lifecycle: remove control rows %d: %w", teamID, err)
+		return fmt.Errorf("lifecycle: remove system rows %d: %w", teamID, err)
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback after commit is harmless
 
-	// Reserve control.db's writer before validating the topology. Transfers
+	// Reserve system.db's writer before validating the topology. Transfers
 	// consult the same operation row, so one side wins before either can change
 	// ownership or remove the team.
 	if _, err := tx.ExecContext(ctx, `
@@ -964,15 +964,15 @@ func (p *Purger) removeControl(ctx context.Context, teamID int64, now time.Time)
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE account_deletions
 		SET control_removed_at = COALESCE(control_removed_at, ?),
-		    notes = CASE WHEN instr(notes, 'control rows removed') > 0 THEN notes
-		                 WHEN notes = '' THEN 'control rows removed'
-		                 ELSE notes || '; control rows removed' END
+		    notes = CASE WHEN instr(notes, 'system rows removed') > 0 THEN notes
+		                 WHEN notes = '' THEN 'system rows removed'
+		                 ELSE notes || '; system rows removed' END
 		WHERE team_id = ?
 	`, now.UTC().Unix(), teamID); err != nil {
 		return fmt.Errorf("lifecycle: checkpoint control removal %d: %w", teamID, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("lifecycle: remove control rows %d: %w", teamID, err)
+		return fmt.Errorf("lifecycle: remove system rows %d: %w", teamID, err)
 	}
 
 	return nil
@@ -1177,7 +1177,7 @@ func (p *Purger) claim(ctx context.Context, account Account, now time.Time, cust
 	defer tx.Rollback() //nolint:errcheck // a rollback after a successful commit is a no-op
 
 	// Acquire SQLite's writer reservation before topology validation. A site
-	// transfer and a deletion claim therefore serialize on control.db instead of
+	// transfer and a deletion claim therefore serialize on system.db instead of
 	// both authorizing from stale reads.
 	if _, err := tx.ExecContext(ctx, `UPDATE destructive_operations SET updated_at = updated_at WHERE resource_id = -1`); err != nil {
 		return false, fmt.Errorf("lifecycle: fence deletion %d: %w", account.TeamID, err)
@@ -1329,7 +1329,7 @@ func claimTeamOperationTx(ctx context.Context, tx *sql.Tx, teamID int64, ownerRe
 }
 
 // validateTransferTopologyTx refuses either side of a cross-account site
-// transfer while the caller holds control.db's writer reservation.
+// transfer while the caller holds system.db's writer reservation.
 func validateTransferTopologyTx(ctx context.Context, tx *sql.Tx, teamID int64) error {
 	var transferred int
 	if err := tx.QueryRowContext(ctx, `
@@ -1372,7 +1372,7 @@ func (p *Purger) recordPaymentCustomers(ctx context.Context, tx *sql.Tx, account
 	return nil
 }
 
-// teamExists reports whether the account's control rows are still there. It is
+// teamExists reports whether the account's system rows are still there. It is
 // how a resumed deletion tells "nothing has happened yet" from "the cascade
 // already ran", which decides whether the clock row can still be written.
 func (p *Purger) teamExists(ctx context.Context, teamID int64) (bool, error) {

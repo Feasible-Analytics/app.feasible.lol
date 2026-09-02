@@ -39,11 +39,11 @@ func BenchmarkWrite(b *testing.B) {
 		b.Run(fmt.Sprintf("accounts-%d", count), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				result, err := RunWrite(context.Background(), WriteOptions{
-					DataDir:           b.TempDir(),
-					Accounts:          count,
-					Events:            writeEvents,
-					Visitors:          5_000,
-					ControlMigrations: migrate.Control(),
+					DataDir:          b.TempDir(),
+					Accounts:         count,
+					Events:           writeEvents,
+					Visitors:         5_000,
+					SystemMigrations: migrate.System(),
 				})
 				if err != nil {
 					b.Fatal(err)
@@ -72,13 +72,13 @@ func BenchmarkWrite(b *testing.B) {
 // number.
 func TestWriteLoadIsHonest(t *testing.T) {
 	result, err := RunWrite(context.Background(), WriteOptions{
-		DataDir:           t.TempDir(),
-		Accounts:          2,
-		Events:            1_200,
-		Visitors:          100,
-		BufferSize:        32,
-		Concurrency:       32,
-		ControlMigrations: migrate.Control(),
+		DataDir:          t.TempDir(),
+		Accounts:         2,
+		Events:           1_200,
+		Visitors:         100,
+		BufferSize:       32,
+		Concurrency:      32,
+		SystemMigrations: migrate.System(),
 	})
 	if err != nil {
 		t.Fatal(err)

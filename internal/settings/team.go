@@ -144,7 +144,7 @@ func (h *TeamHandler) teamPage(w http.ResponseWriter, r *http.Request, identity 
 		Tab:             "team",
 		Message:         notice,
 		Error:           problem,
-		Team:            teamSummary{ID: identity.TeamID, Name: teamName(ctx, h.Control, identity.TeamID)},
+		Team:            teamSummary{ID: identity.TeamID, Name: teamName(ctx, h.System, identity.TeamID)},
 		Role:            role,
 		Members:         members,
 		Guests:          guests,
@@ -170,7 +170,7 @@ func (h *TeamHandler) siteOptionsForRole(ctx context.Context, teamID int64, role
 
 // siteOptions lists a team's sites for the guest-invitation picker.
 func (h *TeamHandler) siteOptions(ctx context.Context, teamID int64) []siteOption {
-	rows, err := h.Control.QueryContext(ctx, `
+	rows, err := h.System.QueryContext(ctx, `
 		SELECT id, domain FROM sites
 		WHERE COALESCE(owner_team_id, account_id) = ?
 		ORDER BY domain
@@ -319,13 +319,13 @@ func (h *TeamHandler) invite(w http.ResponseWriter, r *http.Request, identity Id
 	}
 
 	var inviterName string
-	_ = h.Control.QueryRowContext(ctx, `SELECT name FROM users WHERE id = ?`, identity.UserID).Scan(&inviterName)
+	_ = h.System.QueryRowContext(ctx, `SELECT name FROM users WHERE id = ?`, identity.UserID).Scan(&inviterName)
 
 	if h.Mail == nil {
 		err = errors.New("settings: invitation mail is unavailable")
 	} else {
 		link := h.BaseURL + "/invitations/" + url.PathEscape(token)
-		err = h.Mail.SendInvitation(ctx, invitation.Email, teamName(ctx, h.Control, identity.TeamID),
+		err = h.Mail.SendInvitation(ctx, invitation.Email, teamName(ctx, h.System, identity.TeamID),
 			inviterName, teams.Label(invitation.Role), link, time.Unix(invitation.ExpiresAt, 0))
 	}
 	if err != nil {

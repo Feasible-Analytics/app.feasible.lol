@@ -133,7 +133,7 @@ type AlertRule struct {
 	Enabled         bool
 }
 
-// Store is the control-database side of reports and alerts.
+// Store is the system-database side of reports and alerts.
 type Store struct {
 	db *sql.DB
 
@@ -153,7 +153,7 @@ func (s *Store) leaseDuration() time.Duration {
 	return s.Lease
 }
 
-// NewStore builds a store over the control database.
+// NewStore builds a store over the system database.
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db, Now: func() time.Time { return time.Now().UTC() }}
 }

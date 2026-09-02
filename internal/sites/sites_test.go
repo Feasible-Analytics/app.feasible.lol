@@ -20,17 +20,17 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
-// newControlDB builds a migrated control database with one team.
-func newControlDB(t testing.TB) *sql.DB {
+// newSystemDB builds a migrated system database with one team.
+func newSystemDB(t testing.TB) *sql.DB {
 	t.Helper()
 
-	db, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), db, migrate.System()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -59,7 +59,7 @@ func addSite(t testing.TB, db *sql.DB, id int64, domain string) {
 // the only place routing comes from.
 func TestRefreshLoadsSites(t *testing.T) {
 	ctx := context.Background()
-	db := newControlDB(t)
+	db := newSystemDB(t)
 
 	addSite(t, db, 1, "example.com")
 	addSite(t, db, 2, "another.example")
@@ -91,7 +91,7 @@ func TestRefreshLoadsSites(t *testing.T) {
 // registered as example.com are the same site.
 func TestLookupNormalisesTheDomain(t *testing.T) {
 	ctx := context.Background()
-	db := newControlDB(t)
+	db := newSystemDB(t)
 
 	addSite(t, db, 1, "example.com")
 
@@ -112,7 +112,7 @@ func TestLookupNormalisesTheDomain(t *testing.T) {
 // the dashboard.
 func TestSiteRegisteredWithWWW(t *testing.T) {
 	ctx := context.Background()
-	db := newControlDB(t)
+	db := newSystemDB(t)
 
 	addSite(t, db, 1, "www.example.com")
 
@@ -130,7 +130,7 @@ func TestSiteRegisteredWithWWW(t *testing.T) {
 // was just created should not have to wait out a refresh interval for its first
 // event.
 func TestSetAddsWithoutARefresh(t *testing.T) {
-	cache := New(newControlDB(t))
+	cache := New(newSystemDB(t))
 
 	cache.Set(Site{ID: 9, AccountID: 1, Domain: "fresh.example"})
 
@@ -143,7 +143,7 @@ func TestSetAddsWithoutARefresh(t *testing.T) {
 // one and never a half-updated one, which is what makes a lookup lock-free.
 func TestSnapshotIsSwappedWhole(t *testing.T) {
 	ctx := context.Background()
-	db := newControlDB(t)
+	db := newSystemDB(t)
 
 	addSite(t, db, 1, "example.com")
 
@@ -189,7 +189,7 @@ func TestSnapshotIsSwappedWhole(t *testing.T) {
 // every new customer failing to send events.
 func TestBuiltAtMovesOnRefresh(t *testing.T) {
 	ctx := context.Background()
-	cache := New(newControlDB(t))
+	cache := New(newSystemDB(t))
 
 	if err := cache.Refresh(ctx); err != nil {
 		t.Fatal(err)
@@ -215,7 +215,7 @@ func TestBuiltAtMovesOnRefresh(t *testing.T) {
 // data they can never get back.
 func TestAcceptTrafficUntilIsCarried(t *testing.T) {
 	ctx := context.Background()
-	db := newControlDB(t)
+	db := newSystemDB(t)
 
 	addSite(t, db, 1, "example.com")
 
@@ -240,7 +240,7 @@ func TestAcceptTrafficUntilIsCarried(t *testing.T) {
 // BenchmarkLookup keeps the hottest read in the system honest. It runs once per
 // event and must be an atomic load and a map read, with no lock and no I/O.
 func BenchmarkLookup(b *testing.B) {
-	db := newControlDB(b)
+	db := newSystemDB(b)
 	addSite(b, db, 1, "example.com")
 
 	cache := New(db)

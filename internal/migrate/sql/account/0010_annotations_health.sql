@@ -10,7 +10,7 @@
 --
 -- Both of these are site-scoped configuration and history, which is why they
 -- live in the account database beside the events they describe rather than in
--- control.db. A health panel that had to open two files to answer "how many
+-- system.db. A health panel that had to open two files to answer "how many
 -- events did I drop yesterday" would be a cross-database join on the one page
 -- somebody opens when they already think the product is broken.
 

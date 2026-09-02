@@ -24,11 +24,9 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/billing"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/salts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/stripe"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
@@ -38,26 +36,26 @@ import (
 // pagesNow is the clock the screens render at.
 var pagesNow = time.Date(2026, time.March, 20, 12, 0, 0, 0, time.UTC)
 
-// applyPagesControlSchema applies the complete merged control chain so page
+// applyPagesSystemSchema applies the complete merged control chain so page
 // fixtures render against the same M9 and M8 schema as the runtime.
-func applyPagesControlSchema(t *testing.T, db *sql.DB) {
+func applyPagesSystemSchema(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), db, migrate.System()); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// newHandler builds the pages over a real control database with one team.
+// newHandler builds the pages over a real system database with one team.
 func newHandler(t *testing.T) (*Handler, *sql.DB) {
 	t.Helper()
 
-	control, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	control, err := store.Open(filepath.Join(t.TempDir(), "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { control.Close() })
 
-	applyPagesControlSchema(t, control)
+	applyPagesSystemSchema(t, control)
 
 	stamp := pagesNow.Unix()
 
@@ -110,7 +108,6 @@ func TestEveryPageRenders(t *testing.T) {
 		"/legal/privacy",
 		"/legal/terms",
 		"/legal/dpa",
-		"/legal/subprocessors",
 	}
 
 	for _, doc := range documentation {
@@ -181,7 +178,6 @@ func TestWritePublicBrowserFixtures(t *testing.T) {
 		"/legal/privacy",
 		"/legal/terms",
 		"/legal/dpa",
-		"/legal/subprocessors",
 	}
 	for _, doc := range documentation {
 		paths = append(paths, "/docs/"+doc.Slug)
@@ -233,24 +229,6 @@ func TestPublicHeaderHasNarrowViewportContainment(t *testing.T) {
 	}
 	if strings.Contains(css, "letter-spacing: -") {
 		t.Fatal("public CSS still uses negative letter spacing")
-	}
-}
-
-// TestSubprocessorPageUsesDeploymentConfiguration proves the public legal list
-// names configured entities and does not substitute generic provider labels.
-func TestSubprocessorPageUsesDeploymentConfiguration(t *testing.T) {
-	handler, _ := newHandler(t)
-	handler.Hosted = true
-	handler.Subprocessors = []config.Subprocessor{{
-		Role: "compute", LegalEntity: "Named Compute LLC", Service: "Virtual machines",
-		Data: "Encrypted visitor analytics", Region: "United States",
-	}}
-
-	body := render(t, handler, "/legal/subprocessors").Body.String()
-	for _, want := range []string{"Named Compute LLC", "Virtual machines", "Encrypted visitor analytics", "United States"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("subprocessor page is missing %q", want)
-		}
 	}
 }
 
@@ -559,7 +537,7 @@ func TestPricingPublishesTheLifecycleTimetable(t *testing.T) {
 
 	body := render(t, handler, "/pricing").Body.String()
 
-	for _, want := range []string{"Days 0 – 30", "Days 30 – 60", "Days 60 – 90", "Day 90", "we keep collecting", "live systems", "72 hours", "retried hourly"} {
+	for _, want := range []string{"Days 0 – 30", "Days 30 – 60", "Days 60 – 90", "Day 90", "we keep collecting", "live systems", "outside the application", "retried hourly"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the pricing page never mentions %q", want)
 		}
@@ -921,8 +899,7 @@ func TestTheLegalPagesNameTheController(t *testing.T) {
 }
 
 // TestDeletionCopyMatchesOperationalRetention prevents the legal pages from
-// promising immediate backup erasure or a day-90 state the lifecycle worker
-// cannot guarantee while object retention and provider retries are external.
+// promising that the application controls storage operated outside itself.
 func TestDeletionCopyMatchesOperationalRetention(t *testing.T) {
 	for _, page := range []Doc{
 		mustFind(t, documentation, "privacy"),
@@ -931,17 +908,14 @@ func TestDeletionCopyMatchesOperationalRetention(t *testing.T) {
 		mustFind(t, legal, "dpa"),
 	} {
 		body := strings.ToLower(strings.Join(strings.Fields(string(page.Body)), " "))
-		if !strings.Contains(body, "72 hours") {
-			t.Errorf("%s does not state the replica retention window", page.Slug)
-		}
-		for _, required := range []string{"immediate", "hourly", "being written", "60 seconds"} {
+		for _, required := range []string{"live", "hourly", "outside"} {
 			if !strings.Contains(body, required) {
 				t.Errorf("%s does not state day-90 %s behavior", page.Slug, required)
 			}
 		}
-		for _, contradiction := range []string{"no backup", "nothing left to restore"} {
+		for _, contradiction := range []string{"60 seconds", "replica", "replication"} {
 			if strings.Contains(body, contradiction) {
-				t.Errorf("%s still claims %q during the restorable replica window", page.Slug, contradiction)
+				t.Errorf("%s still claims application-owned storage behavior with %q", page.Slug, contradiction)
 			}
 		}
 	}
@@ -968,13 +942,13 @@ func TestPathCleaningDocsDiscloseTheLegacyBoundary(t *testing.T) {
 	}
 }
 
-// TestDPALinksConfiguredSubprocessors keeps legal copy tied to the deployment
-// inventory while retaining the documented hosted and self-hosted boundaries.
-func TestDPALinksConfiguredSubprocessors(t *testing.T) {
+// TestDPALinksPublicSubprocessors keeps the legal inventory on the public
+// website while retaining the documented hosted and self-hosted boundaries.
+func TestDPALinksPublicSubprocessors(t *testing.T) {
 	body := strings.ToLower(string(mustFind(t, legal, "dpa").Body))
 
 	for _, want := range []string{
-		"/legal/subprocessors",
+		"https://feasible.lol/legal/subprocessors",
 		"legal entities",
 		"data category",
 		"tls terminates",
@@ -1077,20 +1051,14 @@ func TestEveryInternalDocLinkResolves(t *testing.T) {
 	}
 }
 
-// TestThePrivacyDocMatchesTheSaltRetention keeps the one number in the privacy
-// story tied to the code that enforces it. A page claiming a shorter retention
-// than the store actually keeps is a promise we are not keeping.
-func TestThePrivacyDocMatchesTheSaltRetention(t *testing.T) {
-	want := fmt.Sprintf("%d hours", int(salts.Retention.Hours()))
-
+// TestThePrivacyDocsDescribeSharedDailySaltDerivation keeps the public privacy
+// story aligned with the stateless implementation used by every ingester.
+func TestThePrivacyDocsDescribeSharedDailySaltDerivation(t *testing.T) {
 	for _, page := range []Doc{mustFind(t, documentation, "privacy"), mustFind(t, legal, "privacy"), mustFind(t, legal, "dpa")} {
-		if !strings.Contains(string(page.Body), want) {
-			t.Errorf("%s does not state the real salt retention of %s", page.Slug, want)
-		}
 		body := strings.ToLower(string(page.Body))
-		for _, disclosure := range []string{"control", "replica", "72", "restore", "expired salts"} {
+		for _, disclosure := range []string{"shared", "utc", "not stored"} {
 			if !strings.Contains(body, disclosure) {
-				t.Errorf("%s does not disclose salt replica detail %q", page.Slug, disclosure)
+				t.Errorf("%s does not disclose shared salt detail %q", page.Slug, disclosure)
 			}
 		}
 	}

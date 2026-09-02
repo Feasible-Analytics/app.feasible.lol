@@ -1,67 +1,82 @@
 <!--
 write-buffer-growing.md
-Diagnosing direct account writes that are slow or failing.
+Diagnosing an ingester outbox that is not reaching app shards.
 
-Created: 2026-08-31
+Created: 2026-09-01
 Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 -->
 
-# The write buffer is growing
+# The ingest outbox is growing
 
-The consolidated runtime has no acknowledged store-and-forward backlog. An
-event request joins the in-memory batch, waits for its account transaction, and
-receives `202` only after that transaction commits. A failed write receives
-`503`; the tracker retains its UUID-tagged body and retries it later.
+A standalone ingester returns `202` only after the derived event is committed
+to its local `buffer.db`. It then keeps that row until the owning app shard
+names the UUID in a successful commit response. A growing queue means accepted
+pageviews are safe on the ingester volume but are not visible in the dashboard
+yet.
 
 ## Symptom
 
-| Series or signal | Meaning |
-|---|---|
-| `feasible_ingest_buffer_events` | Requests are waiting for a direct account write |
-| `feasible_ingest_flush_duration_seconds` | SQLite commit latency |
-| `feasible_ingest_flushes_total{outcome="error"}` | Direct account writes are failing |
-| Event endpoint 5xx rate | Browsers are being asked to retry |
-| `feasible_disk_available_bytes` | A full shared volume may be blocking every account |
-| `feasible_database_wal_bytes_max` | One account may have a stalled checkpoint |
+Inspect the ingester's durable ownership record directly:
 
-A healthy buffer is a shallow sawtooth that drains at least every 500 ms. A
-sustained ramp means request latency is rising; unlike the retired outbox
-architecture, those events have not received a success response.
+```bash
+sqlite3 /home/feasible/data/ingest/buffer.db \
+  "SELECT COUNT(*) AS waiting, datetime(MIN(created_at), 'unixepoch') AS oldest_utc FROM outbox;"
+sqlite3 /home/feasible/data/ingest/buffer.db \
+  "SELECT COUNT(*) AS parked FROM outbox_parked;"
+```
+
+The total alone is not an outage: a burst naturally creates a shallow queue.
+An oldest timestamp that keeps aging means delivery is behind. Repeated delivery
+errors appear in the ingester log with the destination shard and reason. One
+sender runs per configured app shard, so one failed shard must not stop healthy
+shards.
 
 ## Diagnosis
 
-1. Check `/health/ready`. A failed `account_directory` or `control_db` names a
-   shared-storage incident.
-2. Compare flush errors with duration. Errors point to an unavailable, locked,
-   corrupt, or full account database. Long successful flushes point to storage
-   latency or a checkpoint held by a reader.
-3. Check `feasible_database_wal_bytes_max` and free disk. Follow
-   [disk-filling.md](disk-filling.md) before attempting database maintenance.
-4. Identify whether one account fails while others continue. Readiness checks
-   the directory, not every account file; one corrupt account remains isolated.
+1. Query the ingester directly on its protected service address. Its readiness must remain healthy
+   while an app is down as long as `buffer.db` and the cached routing snapshot
+   remain usable.
+2. Compare several ingesters. A queue rising everywhere for one destination is
+   an app-shard incident. A queue rising on one ingester is its network, disk,
+   signing key, clock, or cached route.
+3. Check app logs for HMAC failures, `not_mine`, account SQLite
+   errors, and partial commit responses. Verify clocks are within five minutes.
+4. Check free space on the ingester volume. Unknown domains are held only while
+   the static shard map is incomplete and are bounded at 100,000 rows or 50 MB;
+   reaching that boundary returns retryable `503` rather than claiming data.
+
+Inspect parked rows before replaying them. After correcting the permanent
+request or configuration problem, restart that ingester with
+`feasible ingest -replay-parked`; it moves the rows back atomically.
 
 ## Fix
 
-Restore the direct write dependency: free or grow the volume, restore the
-affected account database, end the reader holding a checkpoint, or repair the
-shared mount. Keep healthy serving processes running so tracker retries have a
-destination.
+Restore the destination app shard or the private network first. Do not restart
+healthy ingesters merely because they are doing their job and retaining data.
+Once the app returns, normal workers drain automatically and use larger catch-up
+batches after the oldest event is five minutes behind.
 
-For a planned restart, remove the instance from the load balancer and drain it:
+Before a planned ingester restart, remove it from the public load balancer and
+wait for its local queue to reach zero:
 
 ```bash
-scripts/drain.sh http://127.0.0.1:19402/metrics
+scripts/drain.sh /home/feasible/data/ingest/buffer.db
 systemctl restart feasible-ingest
 ```
 
-Confirm the buffer returns to its normal sawtooth and the event endpoint's 5xx
-rate stops. Permanent UUID receipts make browser replay safe at any age.
+If the process will not restart but its volume survives, attach that volume to
+a replacement with the same shard list and shared internal key. Follow
+[orphaned-ingester-volume.md](orphaned-ingester-volume.md).
 
 ## What makes it worse
 
-- Restarting every process at once removes every retry destination.
-- Deleting a WAL file loses committed transactions and can corrupt its database.
-- Increasing the flush timeout hides slow writes while requests wait longer.
-- Treating a 503 as an accepted drop destroys the browser's recovery path.
-- Looking for an ingest outbox or internal shard sender wastes incident time;
-  neither exists in the consolidated runtime.
+- Deleting, truncating, or recreating `buffer.db` loses pageviews that already
+  received `202`.
+- Removing an app URL from `FEASIBLE_INGEST_SHARDS` while it still owns accounts
+  makes the routing map falsely complete.
+- Pointing a shard entry at a load-balanced group destroys deterministic account
+  ownership; each entry must address that shard's protected service address.
+- Returning synthetic `202` responses at the edge acknowledges data no ingester
+  owns.
+- Terminating an ingester before its outbox is empty without preserving its
+  volume strands accepted events.

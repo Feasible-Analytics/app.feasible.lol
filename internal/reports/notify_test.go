@@ -276,7 +276,7 @@ func newNotifier(t *testing.T) *notifierFixture {
 	f.notifier = &Notifier{
 		Store:   base.store,
 		Source:  f.source,
-		Sites:   ControlSiteLookup(base.db),
+		Sites:   SystemSiteLookup(base.db),
 		Mail:    f.mail,
 		Slack:   f.slack,
 		BaseURL: "https://feasible.lol",

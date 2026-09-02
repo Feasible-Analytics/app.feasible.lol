@@ -303,6 +303,14 @@ func (g *Google) client() *http.Client {
 //  3. Otherwise it is a new signup, and it starts verified because Google has
 //     already proven the address.
 func (s *Store) ResolveProfile(ctx context.Context, profile *Profile) (*User, bool, error) {
+	return s.resolveProfile(ctx, profile, true)
+}
+
+// resolveProfile applies the Google identity rules while allowing the web
+// layer to prohibit creation for a new self-hosted visitor. Existing subject
+// ids and verified email links remain valid because they are sign-in paths,
+// not public registration.
+func (s *Store) resolveProfile(ctx context.Context, profile *Profile, allowCreate bool) (*User, bool, error) {
 	user, err := s.UserByGoogleSub(ctx, profile.Sub)
 	if err == nil {
 		return user, false, nil
@@ -330,6 +338,10 @@ func (s *Store) ResolveProfile(ctx context.Context, profile *Profile) (*User, bo
 		return existing, false, nil
 
 	case ErrNotFound:
+		if !allowCreate {
+			return nil, false, ErrSignupDisabled
+		}
+
 		// A new account with no password at all. That is a complete identity:
 		// the person signs in with Google, and can set a password later from
 		// settings if they want a second way in.

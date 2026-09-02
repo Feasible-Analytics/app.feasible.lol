@@ -1,6 +1,6 @@
 //
 // store.go
-// The control-database reads and writes the provisioning endpoints need.
+// The system-database reads and writes the provisioning endpoints need.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -28,14 +28,14 @@ var ErrNotFound = errors.New("not found")
 // fix — a domain that is already registered, a guest who is already a guest.
 var ErrConflict = errors.New("already exists")
 
-// ControlStore is the provisioning endpoints' access to control.db.
+// SystemStore is the provisioning endpoints' access to system.db.
 //
 // It is a type of its own rather than raw SQL in the handlers because every one
 // of these queries carries a team-id predicate, and a handler that forgets one
 // is a handler that returns somebody else's site. Keeping them here means the
 // predicate is written next to the query it belongs to and can be read in one
 // place.
-type ControlStore struct {
+type SystemStore struct {
 	db *sql.DB
 
 	// Now is the clock, injectable so a test can assert on created_at without
@@ -43,13 +43,13 @@ type ControlStore struct {
 	Now func() time.Time
 }
 
-// NewControlStore builds a store over the control database.
-func NewControlStore(db *sql.DB) *ControlStore {
-	return &ControlStore{db: db, Now: func() time.Time { return time.Now().UTC() }}
+// NewSystemStore builds a store over the system database.
+func NewSystemStore(db *sql.DB) *SystemStore {
+	return &SystemStore{db: db, Now: func() time.Time { return time.Now().UTC() }}
 }
 
 // now reads the store's clock.
-func (c *ControlStore) now() time.Time {
+func (c *SystemStore) now() time.Time {
 	if c.Now == nil {
 		return time.Now().UTC()
 	}
@@ -102,7 +102,7 @@ func scanSite(scan func(...any) error) (*Site, error) {
 // a site created as "WWW.Example.com" and a tracker snippet that says
 // "example.com" are the same site. Registering them as two would be a silent,
 // total data loss for whichever one is not in the map.
-func (c *ControlStore) CreateSite(ctx context.Context, teamID int64, domain, displayName, timezone string) (*Site, error) {
+func (c *SystemStore) CreateSite(ctx context.Context, teamID int64, domain, displayName, timezone string) (*Site, error) {
 	normalised := sites.Normalise(domain)
 	now := c.now().Unix()
 
@@ -143,7 +143,7 @@ func isUniqueViolation(err error) bool {
 }
 
 // GetSite reads one site belonging to a team.
-func (c *ControlStore) GetSite(ctx context.Context, teamID int64, domain string) (*Site, error) {
+func (c *SystemStore) GetSite(ctx context.Context, teamID int64, domain string) (*Site, error) {
 	row := c.db.QueryRowContext(ctx,
 		`SELECT `+siteColumns+` FROM sites WHERE COALESCE(owner_team_id, account_id) = ? AND domain = ?`, teamID, sites.Normalise(domain))
 
@@ -161,7 +161,7 @@ func (c *ControlStore) GetSite(ctx context.Context, teamID int64, domain string)
 // ListSites returns one page of a team's sites, in domain order. The order is
 // stable because pagination over an unordered list returns a second page that is
 // not the rest of the first.
-func (c *ControlStore) ListSites(ctx context.Context, teamID int64, limit, offset int) ([]*Site, int, error) {
+func (c *SystemStore) ListSites(ctx context.Context, teamID int64, limit, offset int) ([]*Site, int, error) {
 	var total int
 	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sites WHERE COALESCE(owner_team_id, account_id) = ?`, teamID).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("publicapi: list sites: %w", err)
@@ -192,7 +192,7 @@ func (c *ControlStore) ListSites(ctx context.Context, teamID int64, limit, offse
 // UpdateSite changes the fields a customer may change. The domain is one of
 // them: renaming a site keeps its history, where deleting and recreating would
 // throw it away, and people do rename domains.
-func (c *ControlStore) UpdateSite(ctx context.Context, teamID, siteID int64, domain, displayName, timezone *string, isPublic *bool) (*Site, error) {
+func (c *SystemStore) UpdateSite(ctx context.Context, teamID, siteID int64, domain, displayName, timezone *string, isPublic *bool) (*Site, error) {
 	sets := []string{"updated_at = ?"}
 	args := []any{c.now().Unix()}
 
@@ -268,7 +268,7 @@ type TrackerConfig struct {
 // a site that has never been configured. A missing row is not an error: every
 // site has a tracker configuration, and the row only exists once somebody has
 // changed something.
-func (c *ControlStore) TrackerConfig(ctx context.Context, siteID int64) (*TrackerConfig, error) {
+func (c *SystemStore) TrackerConfig(ctx context.Context, siteID int64) (*TrackerConfig, error) {
 	var (
 		config                                             TrackerConfig
 		hash, manual, outbound, downloads, notFound, local int
@@ -299,7 +299,7 @@ func (c *ControlStore) TrackerConfig(ctx context.Context, siteID int64) (*Tracke
 }
 
 // SaveTrackerConfig writes a site's script configuration.
-func (c *ControlStore) SaveTrackerConfig(ctx context.Context, siteID int64, config *TrackerConfig) error {
+func (c *SystemStore) SaveTrackerConfig(ctx context.Context, siteID int64, config *TrackerConfig) error {
 	_, err := c.db.ExecContext(ctx, `
 		INSERT INTO site_tracker_config
 			(site_id, api_endpoint, hash_routing, manual_tagging, outbound_links, file_downloads,
@@ -344,7 +344,7 @@ type CustomProperty struct {
 }
 
 // CustomProperties lists a site's allowed properties.
-func (c *ControlStore) CustomProperties(ctx context.Context, siteID int64) ([]CustomProperty, error) {
+func (c *SystemStore) CustomProperties(ctx context.Context, siteID int64) ([]CustomProperty, error) {
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT id, key, created_at FROM site_custom_properties WHERE site_id = ? ORDER BY key`, siteID)
 	if err != nil {
@@ -370,7 +370,7 @@ func (c *ControlStore) CustomProperties(ctx context.Context, siteID int64) ([]Cu
 // allowed is a success rather than a conflict, because an integration that
 // declares its properties on every deploy should not have to remember which of
 // them it declared last time.
-func (c *ControlStore) AddCustomProperty(ctx context.Context, siteID int64, key string) (*CustomProperty, error) {
+func (c *SystemStore) AddCustomProperty(ctx context.Context, siteID int64, key string) (*CustomProperty, error) {
 	now := c.now().Unix()
 
 	if _, err := c.db.ExecContext(ctx,
@@ -390,7 +390,7 @@ func (c *ControlStore) AddCustomProperty(ctx context.Context, siteID int64, key 
 }
 
 // DeleteCustomProperty stops allowing a property.
-func (c *ControlStore) DeleteCustomProperty(ctx context.Context, siteID, id int64) error {
+func (c *SystemStore) DeleteCustomProperty(ctx context.Context, siteID, id int64) error {
 	return c.deleteScoped(ctx, "site_custom_properties", "site_id", siteID, id)
 }
 
@@ -405,7 +405,7 @@ type SharedLink struct {
 }
 
 // SharedLinks lists a site's shared links.
-func (c *ControlStore) SharedLinks(ctx context.Context, siteID int64) ([]SharedLink, error) {
+func (c *SystemStore) SharedLinks(ctx context.Context, siteID int64) ([]SharedLink, error) {
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT id, name, slug, password_hash, created_at FROM shared_links WHERE site_id = ? ORDER BY id`, siteID)
 	if err != nil {
@@ -433,7 +433,7 @@ func (c *ControlStore) SharedLinks(ctx context.Context, siteID int64) ([]SharedL
 }
 
 // DeleteSharedLink revokes a link.
-func (c *ControlStore) DeleteSharedLink(ctx context.Context, siteID, id int64) error {
+func (c *SystemStore) DeleteSharedLink(ctx context.Context, siteID, id int64) error {
 	return c.deleteScoped(ctx, "shared_links", "site_id", siteID, id)
 }
 
@@ -446,7 +446,7 @@ type Guest struct {
 }
 
 // Guests lists a site's guests.
-func (c *ControlStore) Guests(ctx context.Context, siteID int64) ([]Guest, error) {
+func (c *SystemStore) Guests(ctx context.Context, siteID int64) ([]Guest, error) {
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT g.id, u.email, g.role, g.created_at
 		FROM guest_memberships g JOIN users u ON u.id = g.user_id
@@ -471,7 +471,7 @@ func (c *ControlStore) Guests(ctx context.Context, siteID int64) ([]Guest, error
 }
 
 // DeleteGuest removes a guest's access.
-func (c *ControlStore) DeleteGuest(ctx context.Context, siteID, id int64) error {
+func (c *SystemStore) DeleteGuest(ctx context.Context, siteID, id int64) error {
 	return c.deleteScoped(ctx, "guest_memberships", "site_id", siteID, id)
 }
 
@@ -485,7 +485,7 @@ type Member struct {
 }
 
 // Members lists a team.
-func (c *ControlStore) Members(ctx context.Context, teamID int64) ([]Member, error) {
+func (c *SystemStore) Members(ctx context.Context, teamID int64) ([]Member, error) {
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT m.id, u.email, u.name, m.role, m.created_at
 		FROM team_memberships m JOIN users u ON u.id = m.user_id
@@ -512,7 +512,7 @@ func (c *ControlStore) Members(ctx context.Context, teamID int64) ([]Member, err
 // MembershipTarget reads the target user and role for a team-scoped membership
 // id. The HTTP layer uses the role for a clear refusal, while the teams store
 // repeats hierarchy and last-owner enforcement for the user inside its API.
-func (c *ControlStore) MembershipTarget(ctx context.Context, teamID, id int64) (int64, string, error) {
+func (c *SystemStore) MembershipTarget(ctx context.Context, teamID, id int64) (int64, string, error) {
 	var userID int64
 	var role string
 
@@ -531,7 +531,7 @@ func (c *ControlStore) MembershipTarget(ctx context.Context, teamID, id int64) (
 // deleteScoped removes one row by id, but only when it belongs to the scope the
 // caller is authorised for. Every delete in this file goes through it so that an
 // endpoint cannot delete another team's row by guessing an id.
-func (c *ControlStore) deleteScoped(ctx context.Context, table, scopeColumn string, scope, id int64) error {
+func (c *SystemStore) deleteScoped(ctx context.Context, table, scopeColumn string, scope, id int64) error {
 	// The table and column names are constants from this file's call sites, not
 	// caller input; the values that came from a caller travel as parameters.
 	result, err := c.db.ExecContext(ctx,

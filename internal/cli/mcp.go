@@ -51,7 +51,7 @@ Flags:
 // the session down with no explanation the person can see.
 func runMCP(e *env, args []string) int {
 	fs := newFlagSet("mcp", e, mcpHelp)
-	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding control.db and the account databases")
+	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding system.db and the account databases")
 	apiKey := fs.String("api-key", e.cfg.API.MCPKey, "the API key this session runs as")
 
 	if code, ok := parseFlags(fs, args); !ok {
@@ -66,7 +66,7 @@ func runMCP(e *env, args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	control, err := openControl(ctx, *dataDir)
+	control, err := openSystem(ctx, *dataDir)
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError
@@ -141,7 +141,7 @@ func runAPIKeys(e *env, args []string) int {
 	action := args[0]
 
 	fs := newFlagSet("api-key "+action, e, apiKeyHelp)
-	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding control.db")
+	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding system.db")
 	team := fs.Int64("team", 0, "the team the key belongs to")
 	user := fs.Int64("user", 0, "the user the key is issued to")
 	id := fs.Int64("id", 0, "the key to revoke")
@@ -159,7 +159,7 @@ func runAPIKeys(e *env, args []string) int {
 
 	ctx := context.Background()
 
-	control, err := openControl(ctx, *dataDir)
+	control, err := openSystem(ctx, *dataDir)
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError

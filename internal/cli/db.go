@@ -27,7 +27,7 @@ import (
 const dbHelp = `feasible db — database maintenance.
 
 Commands:
-  migrate   Migrate control.db and every account database.
+  migrate   Migrate system.db and every account database.
   backup    Write a consistent snapshot of every database with VACUUM INTO.
 `
 
@@ -37,7 +37,7 @@ Migrations never run on boot. Two processes racing migrations is a classic
 self-hosting failure, and with one database per account the operation has to be
 deliberate and resumable, so it is always an explicit command.
 
-control.db is created if it does not exist yet, which is what makes this the
+system.db is created if it does not exist yet, which is what makes this the
 first command a fresh install runs. Account databases are migrated where they
 already exist; a new account's database is created when the account is.
 
@@ -74,7 +74,7 @@ func runDB(e *env, args []string) int {
 }
 
 // target is one database to migrate, paired with the migrations that belong to
-// it. Control and account databases have unrelated schemas and independent
+// it. System and account databases have unrelated schemas and independent
 // version numbers, so the set travels with the path rather than being decided
 // again inside the loop.
 type target struct {
@@ -82,7 +82,7 @@ type target struct {
 	set  migrate.Set
 }
 
-// runDBMigrate brings control.db and every account database up to date. It
+// runDBMigrate brings system.db and every account database up to date. It
 // stops at the first failure and says which database it stopped on: with one
 // database per account a partial run is normal and recoverable, but only if you
 // can see where it got to.
@@ -102,8 +102,12 @@ func runDBMigrate(e *env, args []string) int {
 	}
 
 	ctx := context.Background()
+	if err := renameLegacySystemDatabase(e.cfg.App.DataDir); err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return ExitError
+	}
 
-	targets, err := migrateTargets(e.cfg.App.DataDir, e.controlMigrations)
+	targets, err := migrateTargets(e.cfg.App.DataDir, e.systemMigrations)
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError
@@ -122,6 +126,49 @@ func runDBMigrate(e *env, args []string) int {
 	)
 
 	return ExitOK
+}
+
+// renameLegacySystemDatabase performs the one-time filename upgrade before
+// migrations open anything. Renaming the WAL and shared-memory sidecars with
+// the database keeps a cleanly stopped WAL database intact; refusing two main
+// files prevents an ambiguous merge from silently choosing one history.
+func renameLegacySystemDatabase(dataDir string) error {
+	legacy := filepath.Join(dataDir, config.LegacyDatabaseName)
+	current := filepath.Join(dataDir, config.SystemDatabaseName)
+
+	_, legacyErr := os.Stat(legacy)
+	_, currentErr := os.Stat(current)
+	if legacyErr != nil {
+		if os.IsNotExist(legacyErr) {
+			return nil
+		}
+		return fmt.Errorf("inspect legacy system database %s: %w", legacy, legacyErr)
+	}
+	if currentErr == nil {
+		return fmt.Errorf("both %s and %s exist — refusing to guess which system database is authoritative", legacy, current)
+	}
+	if !os.IsNotExist(currentErr) {
+		return fmt.Errorf("inspect system database %s: %w", current, currentErr)
+	}
+
+	// Move sidecars first and the authoritative main file last. If any rename
+	// fails, the legacy main filename remains as the retry marker and another
+	// `db migrate` can finish instead of mistaking a partial move for success.
+	for _, suffix := range []string{"-wal", "-shm", ""} {
+		source := legacy + suffix
+		destination := current + suffix
+		if _, err := os.Stat(source); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("inspect legacy database file %s: %w", source, err)
+		}
+		if err := os.Rename(source, destination); err != nil {
+			return fmt.Errorf("rename %s to %s: %w", source, destination, err)
+		}
+	}
+
+	return nil
 }
 
 // migrateOne migrates a single database and reports what it did. Each database
@@ -179,15 +226,15 @@ func migrateOne(ctx context.Context, e *env, item target, fresh bool) (err error
 	return nil
 }
 
-// migrateTargets lists what a migration run has to visit. control.db is always
+// migrateTargets lists what a migration run has to visit. system.db is always
 // included, existing or not, because creating it is how a fresh install gets a
 // schema at all. Account databases are only visited where they already exist —
 // an account's database is created with the account, and inventing one here
 // would mean guessing an id.
-func migrateTargets(dataDir string, controlMigrations migrate.Set) ([]target, error) {
+func migrateTargets(dataDir string, systemMigrations migrate.Set) ([]target, error) {
 	targets := []target{{
-		path: filepath.Join(dataDir, config.ControlDatabaseName),
-		set:  controlMigrations,
+		path: filepath.Join(dataDir, config.SystemDatabaseName),
+		set:  systemMigrations,
 	}}
 
 	ids, err := accounts.Discover(dataDir)
@@ -269,13 +316,18 @@ func snapshotName(path string) string {
 
 // discoverDatabases lists the database files that already exist under the data
 // directory. It is used by the commands that must never create anything —
-// unlike migrate, which creates control.db on purpose.
+// unlike migrate, which creates system.db on purpose.
 func discoverDatabases(dataDir string) ([]string, error) {
 	var found []string
 
-	control := filepath.Join(dataDir, config.ControlDatabaseName)
-	if _, err := os.Stat(control); err == nil {
-		found = append(found, control)
+	system := filepath.Join(dataDir, config.SystemDatabaseName)
+	if _, err := os.Stat(system); err == nil {
+		found = append(found, system)
+	} else if os.IsNotExist(err) {
+		legacy := filepath.Join(dataDir, config.LegacyDatabaseName)
+		if _, legacyErr := os.Stat(legacy); legacyErr == nil {
+			return nil, fmt.Errorf("legacy database %s must be renamed before backup — stop every feasible process and run `feasible db migrate`", legacy)
+		}
 	}
 
 	ids, err := accounts.Discover(dataDir)

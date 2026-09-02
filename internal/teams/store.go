@@ -1,6 +1,6 @@
 //
 // store.go
-// Membership, invitations and ownership transfer, against control.db.
+// Membership, invitations and ownership transfer, against system.db.
 //
 // Created: 2026-08-31
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -67,7 +67,7 @@ var (
 	ErrStaleTransfer = errors.New("teams: the site owner changed; reload before transferring it again")
 )
 
-// Store is the control-database half of this package. Every method takes the
+// Store is the system-database half of this package. Every method takes the
 // acting user rather than trusting the caller to have checked a permission
 // first: an authorisation check that lives at the call site is one that gets
 // forgotten on the second call site.
@@ -79,7 +79,7 @@ type Store struct {
 	Now func() time.Time
 }
 
-// NewStore builds a store over an open control database.
+// NewStore builds a store over an open system database.
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db, Now: func() time.Time { return time.Now().UTC() }}
 }
@@ -509,7 +509,7 @@ func refuseLastOwnerTx(ctx context.Context, tx *sql.Tx, teamID, userID int64) er
 
 // Invite offers a role to an email address, whether or not anybody holds that
 // address yet. The returned token is the only time the secret exists in a
-// readable form: what is stored is its hash, so a stolen copy of control.db
+// readable form: what is stored is its hash, so a stolen copy of system.db
 // cannot be replayed into somebody's account.
 //
 // Re-inviting an address that already has an outstanding invitation replaces it

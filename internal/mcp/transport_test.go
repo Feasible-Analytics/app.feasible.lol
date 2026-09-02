@@ -62,7 +62,7 @@ func newHTTPFixture(t *testing.T) *httpFixture {
 	// The base URL is only known once the test server is listening, and the
 	// metadata documents are built from it, so the OAuth server is created here
 	// and its base filled in below.
-	oauth := &OAuth{DB: f.Control, Keys: f.API.Keys, Now: func() time.Time { return testNow }}
+	oauth := &OAuth{DB: f.System, Keys: f.API.Keys, Now: func() time.Time { return testNow }}
 
 	mux.Handle(Path, &Handler{
 		Server:              f.Server,
@@ -208,7 +208,7 @@ func TestLeavingTheTeamEndsPlainAndOAuthMCPAccess(t *testing.T) {
 		}
 	}
 
-	if _, err := h.Control.Exec(`DELETE FROM team_memberships WHERE team_id = ? AND user_id = 1`, teamID); err != nil {
+	if _, err := h.System.Exec(`DELETE FROM team_memberships WHERE team_id = ? AND user_id = 1`, teamID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -232,7 +232,7 @@ func TestRoleDemotionRestrictsPlainAndOAuthMCPTools(t *testing.T) {
 		"code_verifier": {verifier},
 	})
 
-	if _, err := h.Control.Exec(`
+	if _, err := h.System.Exec(`
 		UPDATE team_memberships SET role = 'billing' WHERE team_id = ? AND user_id = 1
 	`, teamID); err != nil {
 		t.Fatal(err)
@@ -257,7 +257,7 @@ func TestRoleDemotionRestrictsPlainAndOAuthMCPTools(t *testing.T) {
 	}
 
 	var created int
-	if err := h.Control.QueryRow(`SELECT COUNT(*) FROM sites WHERE domain = 'denied.example.com'`).Scan(&created); err != nil {
+	if err := h.System.QueryRow(`SELECT COUNT(*) FROM sites WHERE domain = 'denied.example.com'`).Scan(&created); err != nil {
 		t.Fatal(err)
 	}
 	if created != 0 {
@@ -362,7 +362,7 @@ func TestStdioNeedsAKey(t *testing.T) {
 func TestStdioRevalidatesMembershipBeforeMessages(t *testing.T) {
 	f := newFixture(t)
 
-	if _, err := f.Control.Exec(`DELETE FROM team_memberships WHERE team_id = ? AND user_id = 1`, teamID); err != nil {
+	if _, err := f.System.Exec(`DELETE FROM team_memberships WHERE team_id = ? AND user_id = 1`, teamID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -786,7 +786,7 @@ func TestOAuthUsesDistinctExpiryBoundaries(t *testing.T) {
 	t.Run("authorization code", func(t *testing.T) {
 		h := newHTTPFixture(t)
 		clientID, code, verifier := h.authorize(t)
-		if _, err := h.Control.Exec(`UPDATE mcp_oauth_codes SET expires_at = ? WHERE code_hash = ?`,
+		if _, err := h.System.Exec(`UPDATE mcp_oauth_codes SET expires_at = ? WHERE code_hash = ?`,
 			testNow.Unix(), hashToken(code)); err != nil {
 			t.Fatal(err)
 		}
@@ -808,7 +808,7 @@ func TestOAuthUsesDistinctExpiryBoundaries(t *testing.T) {
 		})
 		access := pair["access_token"].(string)
 		refresh := pair["refresh_token"].(string)
-		if _, err := h.Control.Exec(`UPDATE mcp_oauth_tokens SET expires_at = ? WHERE token_hash = ?`,
+		if _, err := h.System.Exec(`UPDATE mcp_oauth_tokens SET expires_at = ? WHERE token_hash = ?`,
 			testNow.Unix(), hashToken(access)); err != nil {
 			t.Fatal(err)
 		}
@@ -823,7 +823,7 @@ func TestOAuthUsesDistinctExpiryBoundaries(t *testing.T) {
 		}
 
 		newRefresh := refreshed["refresh_token"].(string)
-		if _, err := h.Control.Exec(`UPDATE mcp_oauth_tokens SET refresh_expires_at = ? WHERE refresh_token_hash = ?`,
+		if _, err := h.System.Exec(`UPDATE mcp_oauth_tokens SET refresh_expires_at = ? WHERE refresh_token_hash = ?`,
 			testNow.Unix(), hashToken(newRefresh)); err != nil {
 			t.Fatal(err)
 		}
@@ -944,7 +944,7 @@ func secondOAuthServer(t *testing.T, h *httpFixture) *httptest.Server {
 	t.Helper()
 	var sequence int
 	var name, path string
-	if err := h.Control.QueryRow(`PRAGMA database_list`).Scan(&sequence, &name, &path); err != nil {
+	if err := h.System.QueryRow(`PRAGMA database_list`).Scan(&sequence, &name, &path); err != nil {
 		t.Fatal(err)
 	}
 	db, err := store.Open(path)

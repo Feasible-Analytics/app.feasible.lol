@@ -52,6 +52,11 @@ const ShutdownGrace = 15 * time.Second
 // questions, and a deployment that conflates them either restarts a process
 // that was merely busy or sends traffic to one that is not ready.
 const (
+	// PathHealth answers "is this service able to serve customers" in the small,
+	// stable format expected by a public uptime monitor. It uses the same
+	// decision as readiness without exposing the component report.
+	PathHealth = "/health"
+
 	// PathLive answers "is this process alive". It is true from the moment the
 	// listener is up and stays true until the process exits.
 	PathLive = "/health/live"
@@ -83,13 +88,14 @@ type Server struct {
 	listener net.Listener
 }
 
-// New builds a server around a handler, wrapping it with the health probes.
-// The probes are added here rather than by each caller so that every process in
-// the system answers the same two paths in the same way.
+// New builds a server around a handler, wrapping it with the health endpoints.
+// They are added here rather than by each caller so that every process in the
+// system answers the same three paths in the same way.
 func New(name, addr string, handler http.Handler) *Server {
 	s := &Server{name: name}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc(PathHealth, s.handleHealth)
 	mux.HandleFunc(PathLive, s.handleLive)
 	mux.HandleFunc(PathReady, s.handleReady)
 	mux.Handle("/", handler)
@@ -184,16 +190,30 @@ func (s *Server) handleLive(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok\n"))
 }
 
-// handleReady answers the readiness probe with a component-by-component body.
-//
-// The body is the point. A load balancer only reads the status code, but the
-// person it wakes up reads this, and "not ready" on its own is twenty minutes
-// of guessing which dependency it meant.
-//
-// A draining process is unready before it is anything else: shutdown has begun,
-// and probing its dependencies would only report on a process that is going
-// away regardless.
-func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+// handleHealth answers the public uptime-monitoring endpoint. Its status uses
+// the complete readiness decision because a running process with an unusable
+// required dependency does not mean the customer-facing service is up. The
+// intentionally small body gives external monitors a stable contract while
+// the internal readiness endpoint retains the diagnostic component report.
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "text/plain")
+
+	if !s.readiness(r.Context()).Ready() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("unhealthy\n"))
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok\n"))
+}
+
+// readiness produces the one serviceability decision shared by the public
+// monitor and the internal load-balancer probe. A draining process is unready
+// before it is anything else: shutdown has begun, and probing its dependencies
+// would only report on a process that is going away regardless.
+func (s *Server) readiness(ctx context.Context) health.Report {
 	report := health.Report{Status: health.StatusReady, Components: []health.Component{}}
 
 	switch {
@@ -201,8 +221,19 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		report.Status = health.StatusDraining
 
 	case s.Health != nil:
-		report = s.Health.Run(r.Context())
+		report = s.Health.Run(ctx)
 	}
+
+	return report
+}
+
+// handleReady answers the readiness probe with a component-by-component body.
+//
+// The body is the point. A load balancer only reads the status code, but the
+// person it wakes up reads this, and "not ready" on its own is twenty minutes
+// of guessing which dependency it meant.
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	report := s.readiness(r.Context())
 
 	status := http.StatusOK
 	if !report.Ready() {

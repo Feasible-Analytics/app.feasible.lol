@@ -15,7 +15,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
-// migratedDataDir builds a data directory whose control database is at the
+// migratedDataDir builds a data directory whose system database is at the
 // current schema, which is what every roll-up command needs before it can list
 // a single site.
 func migratedDataDir(t *testing.T) string {
@@ -23,13 +23,13 @@ func migratedDataDir(t *testing.T) string {
 
 	dir := seedDataDir(t)
 
-	db, err := store.Open(dir + "/control.db")
+	db, err := store.Open(dir + "/system.db")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 
-	applyControlMigrations(t, db)
+	applySystemMigrations(t, db)
 
 	return dir
 }
@@ -98,7 +98,7 @@ func TestRollupStatusListsWhatItIsKeyedBy(t *testing.T) {
 }
 
 // TestRollupRefusesADataDirectoryItCannotRead checks the failure path. A
-// control database that has not been migrated is the most common mistake on a
+// system database that has not been migrated is the most common mistake on a
 // fresh box, and the message has to say so rather than crash.
 func TestRollupRefusesADataDirectoryItCannotRead(t *testing.T) {
 	dir := seedDataDir(t)

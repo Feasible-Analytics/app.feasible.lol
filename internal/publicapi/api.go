@@ -71,12 +71,12 @@ type API struct {
 	Access *access.Gate
 
 	// Sites is the in-memory routing snapshot. Reading it rather than
-	// control.db keeps an authenticated query off the shared write lock.
+	// system.db keeps an authenticated query off the shared write lock.
 	Sites *sites.Cache
 
-	// Control is the control database, for the provisioning endpoints that
+	// System is the installation-wide database, for provisioning endpoints that
 	// genuinely have to write to it.
-	Control *ControlStore
+	System *SystemStore
 
 	// Teams creates invitations for membership changes. Public API membership
 	// writes never insert a membership directly; the verified recipient accepts

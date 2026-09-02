@@ -7,11 +7,11 @@ exists in the hosted version. The software is AGPL-3.0-or-later.</p>
 <p>That is the whole deployment. <code>serve</code> runs the dashboard, the API, the tracker and
 ingestion in one process, which is what almost every self-hoster should run. The other commands are
 <code>ingest</code> (a standalone collector; see its current limitation below), <code>db backup</code>,
-<code>litestream</code>, <code>rollup</code>, <code>seed</code>, <code>api-key</code>,
+<code>rollup</code>, <code>seed</code>, <code>api-key</code>,
 <code>mcp</code> and <code>billing</code>.</p>
 
 <h3>The data directory</h3>
-<p>Everything lives under <code>FEASIBLE_APP_DATA_DIR</code>: <code>control.db</code>, one SQLite
+<p>Everything lives under <code>FEASIBLE_APP_DATA_DIR</code>: <code>system.db</code>, one SQLite
 database per account, the geolocation files, the bot and spam lists, and the two keys. Back up that
 directory and you have backed up the entire install.</p>
 <p>Use <code>./feasible db backup</code> rather than copying files. It takes a proper consistent
@@ -29,15 +29,13 @@ that is not in that file does not exist — the build fails if the source reads 
 Values resolve from <code>$CONFIG_DIR/&lt;NAME&gt;</code> (for Docker and systemd secrets), then the
 environment, then <code>.env</code> outside production.</p>
 
-<h3>Two keys, generated for you</h3>
-<p><code>FEASIBLE_SALT_KEY</code> encrypts the visitor-fingerprint salts, and
-<code>FEASIBLE_APP_SECRET_KEY</code> encrypts two-factor secrets and signs the short-lived cookies.
-Leave either unset and one is generated on first run into <code>salt.key</code> or
-<code>app.key</code> in the data directory, mode <code>0600</code>. That is what makes "encrypted at
-rest" true by default rather than only when somebody remembered to set it.</p>
-<p>Treat the salt key as being as sensitive as raw address logs: the key plus the stored hashes is
-enough to brute-force a visitor's address and user agent back out for as long as a salt row survives.
-Lose the app key and every enrolled authenticator app stops working.</p>
+<h3>Shared ingest salt and app key</h3>
+<p>Set the same <code>FEASIBLE_INGEST_SALT</code> on every ingester. Each process combines it with
+the UTC date locally, so daily visitor identifiers agree without contacting an app shard. It is a
+small protection for visitor hashes, not an encryption key or a replacement for network security.</p>
+<p><code>FEASIBLE_APP_SECRET_KEY</code> encrypts two-factor secrets and signs short-lived cookies.
+Leave it unset and one is generated on first run into <code>app.key</code> in the data directory with
+mode <code>0600</code>. Lose the app key and every enrolled authenticator app stops working.</p>
 
 <h3>Email</h3>
 <p>Set <code>FEASIBLE_APP_MAIL_TRANSPORT=smtp</code> and point it at a relay. The default
@@ -92,21 +90,20 @@ visitor. That handles proxies which append to an existing chain without acceptin
 the left by a direct client. Configure every trusted edge to strip or overwrite client-supplied
 <code>X-Feasible-IP</code> and <code>CF-Connecting-IP</code>; an allow-list cannot distinguish a header
 the proxy created from one it passed through unchanged.</p>
-<p>Keep <code>FEASIBLE_APP_INTERNAL_LISTEN</code> on loopback, and the ingest tier's
-<code>FEASIBLE_INGEST_INTERNAL_LISTEN</code> with it. Every process runs a second, private listener
-beside its public one, and <code>/metrics</code> is on it. Nothing there is customer data — the series
-deliberately carry no site, domain, path or country — but your event rate, error rate and account
-count are not the internet's business, and no operator should have to firewall a path. It must not be
-routable from anywhere, including a private tailnet.</p>
-<p>The metrics are Prometheus-shaped: accepted, dropped, classified and written events, flush counts
-and durations, roll-up and query timings, HTTP request counts and latencies, plus gauges sampled at
-scrape time for the ingest buffer, live sessions, routed sites, open database handles, queued jobs and
-database and WAL sizes.</p>
+<p>Each process uses one listener. The app serves signed <code>/internal/*</code> routes beside the
+dashboard. Put the app sockets on a protected service network and configure the public proxy to deny
+<code>/internal/*</code>. Internal requests remain HMAC-authenticated; the firewall limits reachability
+but is not itself treated as authentication.</p>
+<p>There is no HTTP metrics endpoint. Collect host and process measurements outside Feasible, and use
+the site's ingestion-health panel for customer-specific accepted, dropped, and truncated event
+counts.</p>
 
 <h3>Health probes</h3>
-<p>Two, on both listeners, because they answer different questions and conflating them either restarts
-a process that was merely busy or sends traffic to one that is draining.</p>
+<p>Three on each process listener, because public monitoring, process liveness, and traffic readiness
+answer different questions.</p>
 <ul>
+  <li><code>GET /health</code> — can customers use the service. This is the small public response an
+      external uptime monitor checks.</li>
   <li><code>GET /health/live</code> — is this process alive. True from the moment the listener is up
       until it exits. This is what a supervisor restarts on.</li>
   <li><code>GET /health/ready</code> — may this process take traffic. It goes false the instant a
@@ -116,12 +113,12 @@ a process that was merely busy or sends traffic to one that is draining.</p>
 </ul>
 
 <h3>Running the ingest tier separately</h3>
-<p>Do not split it in this build. <code>FEASIBLE_APP_TRANSPORT=direct</code> runs ingestion inside
-<code>serve</code>, and that is the supported deployment shape. The standalone <code>ingest</code>
-command exists, but it currently opens the account databases in its own data directory and writes
-through the same direct transport. <code>FEASIBLE_INGEST_SHARDS</code>,
-<code>FEASIBLE_INGEST_BUFFER_PATH</code> and <code>FEASIBLE_INTERNAL_KEYS</code> are parsed and reported
-by <code>ingest --check</code>, but the SQLite outbox and remote shard forwarding are not wired yet.</p>
+<p><code>FEASIBLE_APP_TRANSPORT=direct</code> runs ingestion inside <code>serve</code> for the simple
+self-hosted shape. Hosted deployments run <code>feasible ingest</code> separately. It commits each
+privacy-safe event to <code>FEASIBLE_INGEST_BUFFER_PATH</code> before answering 202, learns ownership
+from every URL in <code>FEASIBLE_INGEST_SHARDS</code>, and retries delivery to the owning app until
+that shard acknowledges the exact event UUID. The standalone ingester never opens
+<code>system.db</code> or an account database.</p>
 
 <h3>Billing on a self-hosted install</h3>
 <p>There is none, and nothing is limited because of it. With no payment provider configured the

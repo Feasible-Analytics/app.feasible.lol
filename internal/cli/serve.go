@@ -32,7 +32,6 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/metrics"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/pathclean"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/rollup"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/settings"
@@ -57,9 +56,8 @@ Flags:
 // deployment: one binary, one data directory, no queue and no second service.
 func runServe(e *env, args []string) int {
 	fs := newFlagSet("serve", e, serveHelp)
-	listen := fs.String("listen", e.cfg.App.Listen, "public listen address (host:port)")
-	internalListen := fs.String("internal-listen", e.cfg.App.InternalListen, "private listen address for /internal/*")
-	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding control.db and the account databases")
+	listen := fs.String("listen", e.cfg.App.Listen, "listen address (host:port)")
+	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding system.db and the account databases")
 	check := fs.Bool("check", false, "resolve and print the configuration, then exit without listening")
 
 	if code, ok := parseFlags(fs, args); !ok {
@@ -67,7 +65,6 @@ func runServe(e *env, args []string) int {
 	}
 
 	e.cfg.App.Listen = *listen
-	e.cfg.App.InternalListen = *internalListen
 	e.cfg.App.DataDir = *dataDir
 
 	// The configuration is reported before anything is opened, so that
@@ -75,10 +72,10 @@ func runServe(e *env, args []string) int {
 	// databases are not there yet — which is exactly when the question is asked.
 	e.log.Info("serve configuration",
 		"listen", e.cfg.App.Listen,
-		"internal_listen", e.cfg.App.InternalListen,
 		"base_url", e.cfg.App.BaseURL,
 		"data_dir", e.cfg.App.DataDir,
 		"transport", e.cfg.App.Transport,
+		"shard_id", e.cfg.App.ShardID,
 		"mail_transport", e.cfg.App.MailTransport,
 		"env", e.cfg.Shared.Env,
 		"trace_events", e.cfg.Shared.TraceEvents,
@@ -168,7 +165,7 @@ func runServe(e *env, args []string) int {
 	// same context they are.
 	worker := &rollup.Worker{
 		Accounts: manager,
-		Sites:    rollup.ControlLister(control),
+		Sites:    rollup.SystemLister(control),
 		Log:      e.log,
 	}
 
@@ -179,7 +176,7 @@ func runServe(e *env, args []string) int {
 
 	e.log.Info("billing configuration",
 		"payments", com.Billing.Enabled(),
-		"webhooks", e.cfg.App.Stripe.WebhookSecret != "",
+		"webhooks", com.Billing.Enabled(),
 		"mail_from", e.cfg.App.MailFrom,
 		"sales_email", e.cfg.App.SalesEmail,
 	)
@@ -208,28 +205,31 @@ func runServe(e *env, args []string) int {
 		func() bool { return !service.Sites.BuiltAt().IsZero() },
 		"the routing map has not been built yet"))
 
-	watchProcess(service, manager, e.cfg.App.DataDir, jobCounts(control))
-
 	// Importing and exporting a site's history: the screens that start the work
 	// and the runner that does it. Both halves are built here so an import can
 	// only ever be started by a process that is also willing to run it.
 	//
 	// The runner is the one that drains everything, the notifier's hourly ticks
 	// included. Two runners would be two answers to "is anything stuck", and the
-	// metrics endpoint and the readiness probe can each only report on one.
+	// readiness probe can only report on one.
 	data := buildData(e, control, manager, service, site)
 	extra.Register(data.runner)
 
-	server := httpserver.New("app", e.cfg.App.Listen,
-		serveRoutes(e, service, manager, secret, e.cfg.App.DataDir, app, public, com, data.settings, extra))
+	privateShard := &ingest.InternalShard{
+		ID: e.cfg.App.ShardID, Sites: service.Sites, Shields: site.shields,
+		Writer: service.Writer,
+	}
+	privateRoutes := ingest.VerifyInternal(e.cfg.Shared.InternalKey, privateShard.Handler())
+	server := httpserver.New("app", e.cfg.App.Listen, processRoutes(
+		serveRoutes(e, service, manager, secret, e.cfg.App.DataDir, app, public, com, data.settings, extra),
+		privateRoutes,
+	))
 	server.Health = checks
-
-	internal := internalServer("app-internal", e.cfg.App.InternalListen, checks)
 
 	pruneCtx, stopPrune := context.WithCancel(context.Background())
 	go app.RunPrune(pruneCtx)
 
-	return serveUntilSignalWith(e, server, internal, service, worker,
+	return serveUntilSignalWith(e, server, service, worker,
 		backgroundLoops(com.Start, site.background(e), data.background(), extra.background(e)),
 		func() error { stopPrune(); stopWorker(); return nil }, manager.CloseAll, control.Close)
 }
@@ -341,9 +341,11 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 			_, err = goals.EnsureAutomatic(ctx, lease.Account.Writer(), siteID, now)
 			return err
 		},
-		Access:  gate.Blocked,
-		BaseURL: e.cfg.App.BaseURL,
-		Log:     e.log,
+		Access:              gate.Blocked,
+		DisableRegistration: !e.cfg.App.Hosted,
+		DisableCommerce:     !e.cfg.App.Hosted,
+		BaseURL:             e.cfg.App.BaseURL,
+		Log:                 e.log,
 	})
 }
 
@@ -419,15 +421,10 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 		return app.RoleForSite(r, current.ID)
 	}
 
-	// Every mount is wrapped with the name it is counted under. The name is
-	// given here rather than derived from the URL because a label taken from a
-	// path would carry a customer's domain and a visitor's page, and would
-	// grow a new series for every URL a crawler invents.
-	//
 	// The signed-in application is mounted at the root, so it owns every path
 	// the more specific patterns below do not claim. Go's mux picks the most
 	// specific pattern, so /api/event and /js/ still reach their own handlers.
-	mux.Handle("/", metrics.Instrument(metrics.HandlerApp, app))
+	mux.Handle("/", app)
 
 	// The settings surface: shields, path cleaning, import and export on one
 	// handler; the team screen, sharing, scheduled reports and the ingestion
@@ -453,7 +450,7 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 
 	// Every report in the product is this one endpoint with different metrics
 	// and dimensions. It reads the same in-memory site snapshot the ingest path
-	// does, so a dashboard query never touches control.db.
+	// does, so a dashboard query never touches system.db.
 	//
 	// The access gate wraps it as well as the dashboard, and that is the point:
 	// the numbers come from here, so a lock that only covered the HTML would be
@@ -493,8 +490,7 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	}
 	stats.SampleThreshold = e.cfg.API.QuerySampleThreshold
 
-	mux.Handle(statsapi.Pattern, metrics.Instrument(metrics.HandlerStats,
-		com.Gate.Protect(stats)))
+	mux.Handle(statsapi.Pattern, com.Gate.Protect(stats))
 
 	// Goal definitions need their own report wrapper, but every count inside it
 	// still runs through the same query engine and authorization choices as the
@@ -556,8 +552,7 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 
 		return boot
 	}
-	mux.Handle(dashboard.PathPrefix, metrics.Instrument(metrics.HandlerDashboard,
-		app.GuardDashboard(shell)))
+	mux.Handle(dashboard.PathPrefix, app.GuardDashboard(shell))
 
 	// The public dashboard, the shared links, the annotations endpoint and the
 	// health panel's API. The shared-link handler is handed the same shell the
@@ -591,14 +586,14 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	// a cacheable static asset with a database lookup behind it, and putting
 	// that on the front door would make the busiest process in the system do
 	// the one thing it is built to avoid.
-	mux.Handle(tracker.PathPrefix, metrics.Instrument(metrics.HandlerTracker, tracker.New(secret, service.Sites)))
+	mux.Handle(tracker.PathPrefix, tracker.New(secret, service.Sites))
 
 	// With the http transport a separate ingest tier owns /api/event, and
 	// answering it here too would mean two processes deriving the same event
 	// with two different site caches.
 	if e.cfg.App.Transport == config.TransportDirect {
-		mux.Handle("/api/event", metrics.Instrument(metrics.HandlerEvent, service.Handler))
-		mux.Handle(tracker.PixelPath, metrics.Instrument(metrics.HandlerEvent, &tracker.Pixel{Events: service.Handler}))
+		mux.Handle("/api/event", service.Handler)
+		mux.Handle(tracker.PixelPath, &tracker.Pixel{Events: service.Handler})
 	}
 
 	return mux

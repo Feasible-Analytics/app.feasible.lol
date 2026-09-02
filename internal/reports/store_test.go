@@ -22,7 +22,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
-// storeFixture is a control database with one team and two sites.
+// storeFixture is a system database with one team and two sites.
 type storeFixture struct {
 	db     *sql.DB
 	store  *Store
@@ -36,14 +36,14 @@ type storeFixture struct {
 func newStoreFixture(t *testing.T) *storeFixture {
 	t.Helper()
 
-	db, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "system.db"))
 	if err != nil {
 		t.Fatalf("open control: %v", err)
 	}
 
 	t.Cleanup(func() { db.Close() })
 
-	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), db, migrate.System()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 

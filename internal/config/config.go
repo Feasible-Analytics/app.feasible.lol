@@ -22,28 +22,26 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/replica"
 )
 
 // Defaults are the values used when a variable is absent. They are deliberately
 // the safe, single-machine, self-hoster values: someone who runs the binary with
 // no configuration at all gets a working process bound to loopback.
 const (
-	DefaultEnv                  = "development"
-	DefaultAppListen            = "127.0.0.1:19301"
-	DefaultAppInternalListen    = "127.0.0.1:19401"
-	DefaultAppDataDir           = "./data"
-	DefaultAppBaseURL           = "http://localhost:19300"
-	DefaultAppTransport         = TransportDirect
-	DefaultAppMailTransport     = MailTransportLog
-	DefaultAppMailFrom          = "feasible.lol <hello@feasible.lol>"
-	DefaultAppSalesEmail        = "sales@feasible.lol"
-	DefaultSMTPPort             = 587
-	DefaultIngestListen         = "127.0.0.1:19302"
-	DefaultIngestInternalListen = "127.0.0.1:19402"
-	DefaultIngestShards         = "http://127.0.0.1:19401"
-	DefaultIngestBufferPath     = "./data/ingest/buffer.db"
+	DefaultEnv              = "development"
+	DefaultAppListen        = "127.0.0.1:19301"
+	DefaultAppDataDir       = "./data"
+	DefaultAppBaseURL       = "http://localhost:19300"
+	DefaultAppTransport     = TransportDirect
+	DefaultAppMailTransport = MailTransportLog
+	DefaultAppMailFrom      = "feasible.lol <hello@feasible.lol>"
+	DefaultAppSalesEmail    = "sales@feasible.lol"
+	DefaultSMTPPort         = 587
+	DefaultIngestListen     = "127.0.0.1:19302"
+	DefaultIngestShards     = `["http://127.0.0.1:19301"]`
+	DefaultIngestBufferPath = "./data/ingest/buffer.db"
+	DefaultIngestSalt       = "dev-only-shared-salt-change-me"
+	DefaultAppShardID       = 1
 
 	// DefaultAPIRateLimit is how many public-API requests one key may make an
 	// hour. It is configurable at all because the incumbent's equivalent is
@@ -58,25 +56,6 @@ const (
 	// empty, in seconds. It loops without pausing while there is work.
 	DefaultWebhookPoll = 5
 
-	// DefaultLitestreamConfig is where the generated replication configuration
-	// is written. It is outside the data directory on purpose: the file
-	// describes how to recover the data directory, and a copy that only exists
-	// inside the thing it recovers is not a recovery plan.
-	DefaultLitestreamConfig = "/etc/litestream.yml"
-
-	// DefaultLitestreamSync is how often each database's new write-ahead log
-	// pages are shipped, in seconds. One second is the replica recovery point;
-	// the public 202 already waited for the local account commit.
-	DefaultLitestreamSync = 1
-
-	// DefaultLitestreamSnapshot is how often a full copy is taken, in hours.
-	DefaultLitestreamSnapshot = 6
-
-	// DefaultLitestreamWatch is how often the watcher re-reads the account
-	// directory, in seconds. It is the window in which a brand-new account's
-	// database is on disk and not yet replicated.
-	DefaultLitestreamWatch = 60
-
 	// DefaultQuerySampleThreshold leaves the sampling ceiling to the query
 	// engine, which is the one place the number is written down. Zero is the
 	// sentinel for that rather than a copy of the figure: two constants that
@@ -88,13 +67,18 @@ const (
 // and backup commands have to agree on where a database lives, and a mismatch
 // would silently skip every account.
 const (
-	ControlDatabaseName = "control.db"
-	AccountDatabaseDir  = "accounts"
+	SystemDatabaseName = "system.db"
+	AccountDatabaseDir = "accounts"
+
+	// LegacyDatabaseName is the filename used before the system database was
+	// named for what it contains. Maintenance commands use it only to perform a
+	// one-time, explicit layout upgrade; serving processes never open it.
+	LegacyDatabaseName = "control.db"
 )
 
 // Transport names which public process owns the event endpoint. Direct mounts
-// it in the app process; http leaves it to a separate ingest process that uses
-// the same shared control and account storage.
+// it in the app process; http leaves it to a separate store-and-forward ingest
+// process that delivers durable batches to the owning app shard.
 const (
 	TransportDirect = "direct"
 	TransportHTTP   = "http"
@@ -114,40 +98,33 @@ const (
 	EnvDevelopment = "development"
 )
 
-// InternalKey is retained only for configuration compatibility with retired
-// internal delivery deployments. The consolidated runtime does not sign an
-// ingest-to-writer network hop.
-type InternalKey struct {
-	ID     string `json:"id"`
-	Secret string `json:"secret"`
-}
-
 // Shared holds the values both processes read. Their values must match on every
 // machine in a deployment, which is why they live in their own section of
 // .env.sample rather than being duplicated per app.
 type Shared struct {
-	Env          string
-	LogLevel     string
-	LogFormat    string
-	InternalKeys []InternalKey
-	TraceEvents  bool
+	Env         string
+	LogLevel    string
+	LogFormat   string
+	InternalKey string
+	TraceEvents bool
 
-	// SaltKey encrypts the fingerprint salts at rest, as 32 hex-encoded bytes.
-	// Empty means one is generated under the data directory on first run, so
-	// encryption at rest is true by default rather than only when somebody
-	// remembered to set a variable.
-	SaltKey string
+	// IngestSalt is shared by every ingest process. Each process combines it
+	// with the UTC day locally, so daily visitor identifiers agree without an
+	// app-side salt authority or network request.
+	IngestSalt string
 }
 
 // App holds the values only the `serve` process reads.
 type App struct {
-	Listen         string
-	InternalListen string
-	DataDir        string
-	BaseURL        string
-	Transport      string
-	MailTransport  string
-	Hosted         bool
+	Listen        string
+	DataDir       string
+	BaseURL       string
+	Transport     string
+	MailTransport string
+	Hosted        bool
+	// ShardID is this app's one-based stable position in every ingester's
+	// ordered FEASIBLE_INGEST_SHARDS list.
+	ShardID int
 
 	// MailFrom is the envelope sender on every message the product sends. A
 	// relay rejects a From it does not own, and that rejection is the most
@@ -181,21 +158,6 @@ type App struct {
 	SMTP   SMTP
 	Google GoogleOAuth
 	Stripe Stripe
-
-	// Subprocessors is the deployment's public legal inventory. Source code
-	// cannot know which infrastructure a hosted operator chose, so production
-	// hosted mode requires these facts explicitly instead of publishing category
-	// placeholders as though they were legal entities.
-	Subprocessors []Subprocessor
-}
-
-// Subprocessor is one legal entity that can process hosted-service data.
-type Subprocessor struct {
-	Role        string `json:"role"`
-	LegalEntity string `json:"legal_entity"`
-	Service     string `json:"service"`
-	Data        string `json:"data"`
-	Region      string `json:"region"`
 }
 
 // SMTP is the relay the smtp mail transport uses. It is a nested struct so that
@@ -266,15 +228,6 @@ func (s Stripe) Enabled() bool {
 type Ingest struct {
 	Listen string
 
-	// InternalListen is the loopback address serving /metrics and the health
-	// probes. It is a second listener rather than a path on the first because
-	// the first is the public front door, and an endpoint that tells the
-	// internet our event rate, error rate and account count is free
-	// reconnaissance for anybody deciding whether we are worth attacking.
-	InternalListen string
-
-	// Shards and BufferPath retain environment parsing compatibility with the
-	// retired forwarding topology. Direct account writes do not consume them.
 	Shards     []string
 	BufferPath string
 
@@ -318,48 +271,14 @@ type API struct {
 	QuerySampleThreshold int64
 }
 
-// Litestream holds the values the `litestream` command reads. It is its own
-// section because no serving process reads any of it: replication is a daemon
-// beside us, and this binary's only part in it is writing the file that daemon
-// reads.
-type Litestream struct {
-	// ConfigPath is the file to generate.
-	ConfigPath string
-
-	// ReplicaURL is the prefix every database is replicated under. Empty means
-	// replication is not configured, which is normal for a self-hoster and an
-	// error for a hosted storage group.
-	ReplicaURL string
-
-	SyncInterval     time.Duration
-	SnapshotInterval time.Duration
-
-	// WatchInterval is how often `litestream config -watch` re-reads the
-	// account directory.
-	WatchInterval time.Duration
-
-	// OnChange is the shell command run after the file changes, which is how
-	// the daemon picks up a newly created account database. It is empty by
-	// default because the right command depends on how Litestream is
-	// supervised, and guessing would produce a watcher that silently reloads
-	// nothing.
-	OnChange string
-
-	// AttestationPath is one atomically published provider-evidence bundle.
-	// Production validates its freshness and exact bucket/prefix binding before
-	// writing replication configuration.
-	AttestationPath string
-}
-
 // Config is the whole configuration for the binary. Both sections are always
 // loaded, even in single-process mode, because `serve` with the direct
 // transport runs the ingest path in-process.
 type Config struct {
-	Shared     Shared
-	App        App
-	API        API
-	Ingest     Ingest
-	Litestream Litestream
+	Shared Shared
+	App    App
+	API    API
+	Ingest Ingest
 }
 
 // IsProduction reports whether this process is running in production, which is
@@ -573,7 +492,7 @@ func LoadFrom(l *Loader) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	hosted, err := l.Bool("FEASIBLE_APP_HOSTED", false)
+	hosted, err := l.Bool("FEASIBLE_APP_HOSTED", true)
 	if err != nil {
 		return nil, err
 	}
@@ -600,16 +519,17 @@ func LoadFrom(l *Loader) (*Config, error) {
 			LogLevel:    strings.ToLower(l.String("FEASIBLE_LOG_LEVEL", defaultLevel)),
 			LogFormat:   strings.ToLower(l.String("FEASIBLE_LOG_FORMAT", defaultFormat)),
 			TraceEvents: traceEvents,
-			SaltKey:     strings.TrimSpace(l.String("FEASIBLE_SALT_KEY", "")),
+			InternalKey: strings.TrimSpace(l.String("FEASIBLE_INTERNAL_KEY", "")),
+			IngestSalt:  l.String("FEASIBLE_INGEST_SALT", DefaultIngestSalt),
 		},
 		App: App{
 			Listen:          l.String("FEASIBLE_APP_LISTEN", DefaultAppListen),
-			InternalListen:  l.String("FEASIBLE_APP_INTERNAL_LISTEN", DefaultAppInternalListen),
 			DataDir:         l.String("FEASIBLE_APP_DATA_DIR", DefaultAppDataDir),
 			BaseURL:         strings.TrimRight(l.String("FEASIBLE_APP_BASE_URL", DefaultAppBaseURL), "/"),
 			Transport:       strings.ToLower(l.String("FEASIBLE_APP_TRANSPORT", DefaultAppTransport)),
 			MailTransport:   strings.ToLower(l.String("FEASIBLE_APP_MAIL_TRANSPORT", DefaultAppMailTransport)),
 			Hosted:          hosted,
+			ShardID:         l.Int("FEASIBLE_APP_SHARD_ID", DefaultAppShardID),
 			MailFrom:        l.String("FEASIBLE_APP_MAIL_FROM", DefaultAppMailFrom),
 			SalesEmail:      l.String("FEASIBLE_APP_SALES_EMAIL", DefaultAppSalesEmail),
 			OperatorName:    strings.TrimSpace(l.String("FEASIBLE_OPERATOR_NAME", "")),
@@ -645,34 +565,12 @@ func LoadFrom(l *Loader) (*Config, error) {
 
 			QuerySampleThreshold: int64(l.Int("FEASIBLE_QUERY_SAMPLE_THRESHOLD", DefaultQuerySampleThreshold)),
 		},
-		Litestream: Litestream{
-			ConfigPath:       l.String("FEASIBLE_LITESTREAM_CONFIG", DefaultLitestreamConfig),
-			ReplicaURL:       strings.TrimSpace(l.String("FEASIBLE_LITESTREAM_REPLICA_URL", "")),
-			SyncInterval:     time.Duration(l.Int("FEASIBLE_LITESTREAM_SYNC_SECONDS", DefaultLitestreamSync)) * time.Second,
-			SnapshotInterval: time.Duration(l.Int("FEASIBLE_LITESTREAM_SNAPSHOT_HOURS", DefaultLitestreamSnapshot)) * time.Hour,
-			WatchInterval:    time.Duration(l.Int("FEASIBLE_LITESTREAM_WATCH_SECONDS", DefaultLitestreamWatch)) * time.Second,
-			OnChange:         strings.TrimSpace(l.String("FEASIBLE_LITESTREAM_ON_CHANGE", "")),
-			AttestationPath:  strings.TrimSpace(l.String("FEASIBLE_LITESTREAM_ATTESTATION", "")),
-		},
 		Ingest: Ingest{
 			Listen:         l.String("FEASIBLE_INGEST_LISTEN", DefaultIngestListen),
-			InternalListen: l.String("FEASIBLE_INGEST_INTERNAL_LISTEN", DefaultIngestInternalListen),
 			BufferPath:     l.String("FEASIBLE_INGEST_BUFFER_PATH", DefaultIngestBufferPath),
 			TrustedProxies: parseList(l.String("FEASIBLE_INGEST_TRUSTED_PROXIES", "")),
 		},
 	}
-
-	keys, err := parseInternalKeys(l.String("FEASIBLE_INTERNAL_KEYS", ""))
-	if err != nil {
-		return nil, err
-	}
-	cfg.Shared.InternalKeys = keys
-
-	subprocessors, err := parseSubprocessors(l.String("FEASIBLE_HOSTED_SUBPROCESSORS_JSON", ""))
-	if err != nil {
-		return nil, err
-	}
-	cfg.App.Subprocessors = subprocessors
 
 	shards, err := parseShards(l.String("FEASIBLE_INGEST_SHARDS", DefaultIngestShards))
 	if err != nil {
@@ -698,62 +596,25 @@ func LoadFrom(l *Loader) (*Config, error) {
 	return cfg, nil
 }
 
-// parseInternalKeys decodes the signing keys. They are carried as JSON rather
-// than a delimited string because a key list has to hold two fields per entry
-// and survive rotation, and inventing a second mini-format for that is how you
-// end up unable to put a comma in a secret.
-func parseInternalKeys(raw string) ([]InternalKey, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil, nil
-	}
-
-	var keys []InternalKey
-	if err := json.Unmarshal([]byte(raw), &keys); err != nil {
-		return nil, fmt.Errorf("FEASIBLE_INTERNAL_KEYS: not valid JSON: %w", err)
-	}
-
-	for i, key := range keys {
-		if key.ID == "" || key.Secret == "" {
-			return nil, fmt.Errorf("FEASIBLE_INTERNAL_KEYS: entry %d needs both an id and a secret", i)
-		}
-	}
-
-	return keys, nil
-}
-
-// parseSubprocessors decodes the public hosted-provider inventory. JSON keeps
-// the five fields in each legal disclosure together and avoids a parallel set
-// of numbered environment variables that can drift across deployments.
-func parseSubprocessors(raw string) ([]Subprocessor, error) {
-	if strings.TrimSpace(raw) == "" {
-		return nil, nil
-	}
-
-	var subprocessors []Subprocessor
-	if err := json.Unmarshal([]byte(raw), &subprocessors); err != nil {
-		return nil, fmt.Errorf("FEASIBLE_HOSTED_SUBPROCESSORS_JSON: not valid JSON: %w", err)
-	}
-
-	for i, entry := range subprocessors {
-		if strings.TrimSpace(entry.Role) == "" || strings.TrimSpace(entry.LegalEntity) == "" ||
-			strings.TrimSpace(entry.Service) == "" || strings.TrimSpace(entry.Data) == "" || strings.TrimSpace(entry.Region) == "" {
-			return nil, fmt.Errorf("FEASIBLE_HOSTED_SUBPROCESSORS_JSON: entry %d needs role, legal_entity, service, data and region", i)
-		}
-	}
-
-	return subprocessors, nil
-}
-
-// parseShards validates the retired compatibility list so an existing deploy
-// does not silently accept malformed configuration during migration.
+// parseShards validates the complete, ordered JSON array of app-shard URLs.
+// Completeness is what lets an ingester distinguish an unknown domain from a
+// domain hidden behind an unavailable shard, while explicit JSON preserves the
+// order that defines each shard's stable identity.
 func parseShards(raw string) ([]string, error) {
-	var out []string
+	var entries []string
+	if strings.TrimSpace(raw) == "" || !strings.HasPrefix(strings.TrimSpace(raw), "[") {
+		return nil, fmt.Errorf("FEASIBLE_INGEST_SHARDS: expected a JSON array of absolute URLs")
+	}
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return nil, fmt.Errorf("FEASIBLE_INGEST_SHARDS: expected a JSON array of absolute URLs: %w", err)
+	}
 
-	for _, part := range strings.Split(raw, ",") {
+	out := make([]string, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, part := range entries {
 		part = strings.TrimSpace(part)
 		if part == "" {
-			continue
+			return nil, fmt.Errorf("FEASIBLE_INGEST_SHARDS: entries cannot be empty")
 		}
 
 		parsed, err := url.Parse(part)
@@ -761,7 +622,12 @@ func parseShards(raw string) ([]string, error) {
 			return nil, fmt.Errorf("FEASIBLE_INGEST_SHARDS: %q is not an absolute URL", part)
 		}
 
-		out = append(out, strings.TrimRight(part, "/"))
+		part = strings.TrimRight(part, "/")
+		if _, exists := seen[part]; exists {
+			return nil, fmt.Errorf("FEASIBLE_INGEST_SHARDS: duplicate shard URL %q", part)
+		}
+		seen[part] = struct{}{}
+		out = append(out, part)
 	}
 
 	return out, nil
@@ -810,6 +676,11 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("FEASIBLE_APP_TRANSPORT: %q is not direct or http", c.App.Transport)
 	}
+	if c.App.Transport == TransportHTTP {
+		if c.Shared.InternalKey == "" {
+			return fmt.Errorf("FEASIBLE_INTERNAL_KEY: http transport requires a signing key")
+		}
+	}
 
 	switch c.App.MailTransport {
 	case MailTransportLog, MailTransportSMTP:
@@ -823,64 +694,31 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("FEASIBLE_APP_MAIL_TRANSPORT is smtp but FEASIBLE_SMTP_HOST is empty")
 	}
 
-	// Any billing value opts into hosted billing, and hosted billing is usable
-	// only as one complete unit. In particular, accepting checkout without the
-	// signing secret charges a customer while rejecting the fulfillment event.
-	stripeValues := []string{
-		c.App.Stripe.SecretKey,
-		c.App.Stripe.Product,
-		c.App.Stripe.PriceMonthly,
-		c.App.Stripe.PriceYearly,
-		c.App.Stripe.WebhookSecret,
-	}
-	stripeConfigured := false
-	stripeComplete := true
-	for _, value := range stripeValues {
-		stripeConfigured = stripeConfigured || value != ""
-		stripeComplete = stripeComplete && value != ""
-	}
-	if stripeConfigured && !stripeComplete {
-		return fmt.Errorf("Stripe billing requires FEASIBLE_STRIPE_SECRET_KEY, FEASIBLE_STRIPE_PRODUCT, FEASIBLE_STRIPE_PRICE_MONTHLY, FEASIBLE_STRIPE_PRICE_YEARLY and FEASIBLE_STRIPE_WEBHOOK_SECRET together")
+	if c.App.Hosted {
+		// Any billing value opts a hosted deployment into Stripe, and hosted
+		// billing is usable only as one complete unit. Self-hosted deployments
+		// ignore these variables because billing is disabled in that mode.
+		stripeValues := []string{
+			c.App.Stripe.SecretKey,
+			c.App.Stripe.Product,
+			c.App.Stripe.PriceMonthly,
+			c.App.Stripe.PriceYearly,
+			c.App.Stripe.WebhookSecret,
+		}
+		stripeConfigured := false
+		stripeComplete := true
+		for _, value := range stripeValues {
+			stripeConfigured = stripeConfigured || value != ""
+			stripeComplete = stripeComplete && value != ""
+		}
+		if stripeConfigured && !stripeComplete {
+			return fmt.Errorf("Stripe billing requires FEASIBLE_STRIPE_SECRET_KEY, FEASIBLE_STRIPE_PRODUCT, FEASIBLE_STRIPE_PRICE_MONTHLY, FEASIBLE_STRIPE_PRICE_YEARLY and FEASIBLE_STRIPE_WEBHOOK_SECRET together")
+		}
 	}
 
 	if c.IsProduction() && c.App.Hosted {
 		if c.App.MailTransport == MailTransportLog {
 			return fmt.Errorf("FEASIBLE_APP_MAIL_TRANSPORT: hosted production cannot use log-only mail")
-		}
-		required := []string{"compute", "object_storage", "email"}
-		if c.App.Stripe.Enabled() {
-			required = append(required, "billing")
-		}
-		present := make(map[string]bool, len(required))
-
-		for _, entry := range c.App.Subprocessors {
-			role := strings.ToLower(strings.TrimSpace(entry.Role))
-			for _, requiredRole := range required {
-				if role == requiredRole {
-					present[role] = true
-				}
-			}
-
-			text := strings.ToLower(entry.LegalEntity + " " + entry.Service + " " + entry.Data + " " + entry.Region)
-			if strings.Contains(text, "placeholder") || strings.Contains(text, "non-production") || strings.Contains(text, "example.invalid") {
-				return fmt.Errorf("FEASIBLE_HOSTED_SUBPROCESSORS_JSON: production entry %q is still a sample placeholder", entry.Role)
-			}
-		}
-
-		for _, role := range required {
-			if !present[role] {
-				return fmt.Errorf("FEASIBLE_HOSTED_SUBPROCESSORS_JSON: hosted production requires a %s entry", role)
-			}
-		}
-
-		if c.Litestream.ReplicaURL == "" {
-			return fmt.Errorf("FEASIBLE_LITESTREAM_REPLICA_URL: hosted production requires encrypted database replicas")
-		}
-		if c.Litestream.WatchInterval > time.Minute {
-			return fmt.Errorf("FEASIBLE_LITESTREAM_WATCH_SECONDS: hosted production must stop deleted-account replication within 60 seconds")
-		}
-		if c.Litestream.OnChange == "" {
-			return fmt.Errorf("FEASIBLE_LITESTREAM_ON_CHANGE: hosted production requires a Litestream reload command")
 		}
 	}
 	if c.IsProduction() && !c.App.Hosted {
@@ -900,19 +738,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("self-hosted production operator identity is incomplete; missing %s", strings.Join(missing, ", "))
 		}
 	}
-	// Any production deployment that configures replicas must prove the complete
-	// provider control bundle at startup. This makes stale, unreadable, or noncompliant
-	// exports a deployment failure, not merely a monitoring warning.
-	if c.IsProduction() && c.Litestream.ReplicaURL != "" {
-		if err := validateReplicaProviderState(c.Litestream); err != nil {
-			return err
-		}
+	if strings.TrimSpace(c.Shared.IngestSalt) == "" {
+		return fmt.Errorf("FEASIBLE_INGEST_SALT cannot be empty")
 	}
-
-	if c.Shared.SaltKey != "" && len(c.Shared.SaltKey) != 64 {
-		return fmt.Errorf("FEASIBLE_SALT_KEY: expected 64 hex characters, got %d", len(c.Shared.SaltKey))
-	}
-
 	if c.App.SecretKey != "" && len(c.App.SecretKey) != 64 {
 		return fmt.Errorf("FEASIBLE_APP_SECRET_KEY: expected 64 hex characters, got %d", len(c.App.SecretKey))
 	}
@@ -931,22 +759,16 @@ func (c *Config) Validate() error {
 	if err != nil || base.Scheme == "" || base.Host == "" {
 		return fmt.Errorf("FEASIBLE_APP_BASE_URL: %q is not an absolute URL", c.App.BaseURL)
 	}
-
-	return nil
-}
-
-// validateReplicaProviderState reads one atomic, fresh provider evidence bundle
-// and applies the same contract used by the deployment checker.
-func validateReplicaProviderState(cfg Litestream) error {
-	if cfg.AttestationPath == "" {
-		return fmt.Errorf("FEASIBLE_LITESTREAM_ATTESTATION: production replication requires fresh provider evidence")
-	}
-	body, err := os.ReadFile(cfg.AttestationPath)
-	if err != nil {
-		return fmt.Errorf("FEASIBLE_LITESTREAM_ATTESTATION: read provider evidence: %w", err)
-	}
-	if err := replica.ValidateAttestation(cfg.ReplicaURL, body, time.Now().UTC()); err != nil {
-		return fmt.Errorf("production replica attestation: %w", err)
+	if c.IsProduction() && c.App.Hosted && c.App.Transport == TransportHTTP {
+		for _, endpoint := range c.Ingest.Shards {
+			if endpoint == "" {
+				continue
+			}
+			parsed, _ := url.Parse(endpoint)
+			if parsed.Scheme != "https" {
+				return fmt.Errorf("private app-shard URL %q must use https in hosted production", endpoint)
+			}
+		}
 	}
 
 	return nil

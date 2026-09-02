@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-// Store is every read and write this package makes against control.db. It is a
+// Store is every read and write this package makes against system.db. It is a
 // type rather than loose functions so a caller holds one thing, and so the
 // clock can be injected: the two-week reply window and the month boundaries are
 // both time arithmetic that has to be testable without waiting.
@@ -28,7 +28,7 @@ type Store struct {
 	Now func() time.Time
 }
 
-// NewStore builds a store over the control database.
+// NewStore builds a store over the system database.
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
 }

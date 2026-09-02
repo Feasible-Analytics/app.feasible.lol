@@ -100,7 +100,7 @@ func Open(path string) (*sql.DB, error) {
 
 // SchemaVersion reads the database's own migration level. It lives in SQLite's
 // user_version header rather than a table because every database in the system
-// carries one — control.db and one per account — and a header field needs no
+// carries one — system.db and one per account — and a header field needs no
 // bootstrap migration to exist and survives VACUUM.
 func SchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 	var version int

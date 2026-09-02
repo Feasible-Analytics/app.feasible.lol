@@ -10,15 +10,18 @@ Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 
 ## Symptom
 
-| Series | What it does |
-|---|---|
-| `feasible_disk_available_bytes` | Falling towards zero |
-| `feasible_database_bytes{database="accounts"}` | Growing — the normal cause |
-| `feasible_database_wal_bytes{database="accounts"}` | Growing and never falling — the abnormal one |
-| `feasible_database_wal_bytes_max` | One account far above the rest |
-| `feasible_ingest_buffer_events` | Climbing, once writes start failing |
-| Event endpoint 5xx | Increasing because failed commits are retryable |
-| `feasible_database_directory_readable` | Drops to 0 if the directory itself becomes unusable |
+The host's disk alert reports falling available space. Use the operating system
+and the actual data directory to locate the growth:
+
+```bash
+df -h /home/feasible/data
+du -sh /home/feasible/data/*
+find /home/feasible/data -name '*-wal' -type f -exec ls -lh {} \;
+```
+
+Growing account databases are normal. A write-ahead log that grows without
+shrinking is abnormal. Event endpoint 5xx responses and ingester delivery errors
+increase once commits cannot obtain more space.
 
 `/health/ready` fails on `account_directory` once the disk is genuinely full:
 the probe creates and removes a file, which is the only check that answers the
@@ -43,8 +46,8 @@ ordered by how safe it is to remove.
 | `geoip/dbip-city-lite.mmdb` | City geolocation, ~60 MB | **Yes** — countries still work, cities go unknown |
 | `geoip/dbip-country-lite.mmdb` | Country geolocation | Yes, but it degrades every event's country |
 | `lists/` | Refreshed bot and spam lists | Yes — an embedded baseline is compiled in |
-| `salt.key`, `app.key`, `script.key` | Encryption keys | **Never** |
-| `control.db`, `control.db-wal` | Sites, users, keys, salts, jobs | **Never** |
+| `app.key`, `script.key` | Encryption keys | **Never** |
+| `system.db`, `system.db-wal` | Sites, users, keys, jobs | **Never** |
 | `accounts/*/analytics.db`, `-wal` | Customer data | **Never** |
 
 **Never delete a `-wal` file.** It is not a log in the "old and disposable"
@@ -72,8 +75,8 @@ the answer. Favicons are a cache and refill themselves.
 `exports/` holds a prepared archive per export job. Once the customer has
 downloaded it, it is a file nobody will ask for again. `imports/` holds uploads;
 removing one that has not been imported loses the customer's file, so check the
-job first — `feasible_jobs{state="available"}` above zero means work is still
-queued.
+job first. Query `system.db` for available or executing import jobs before
+removing an upload.
 
 **3. The city database, if you need 60 MB right now.**
 
@@ -86,13 +89,13 @@ and countries keep working. It is a download, not data.
 
 **4. A write-ahead log that will not shrink.**
 
-`feasible_database_wal_bytes_max` far above the others is one account whose
-checkpoint is not completing, usually because a long-running read is holding the
-file. The log is truncated when the process closes the handle cleanly:
+A write-ahead log far larger than the others belongs to an account whose
+checkpoint is not completing, usually because a long-running read is holding
+the file. The log is truncated when the process closes the handle cleanly:
 
 ```bash
-scripts/drain.sh http://127.0.0.1:19402/metrics   # on each ingestor
-systemctl restart feasible                         # closes every handle, checkpointing each WAL
+scripts/drain.sh /home/feasible/data/ingest/buffer.db  # on each ingester
+systemctl restart feasible                             # closes every handle, checkpointing each WAL
 ```
 
 Shutdown closes every account handle so each write-ahead log is checkpointed on
@@ -120,9 +123,9 @@ year is lower than multiplying by twelve suggests.
 it corrupts the file; on a closed one it silently loses whatever had not been
 checkpointed.
 
-**Looking for an ingest outbox to delete.** Current main writes account SQLite
-directly and acknowledges only after commit. There is no outbox file; use the
-inventory above rather than deleting an unfamiliar database.
+**Deleting an ingest outbox.** A hosted ingester's `buffer.db` contains events
+that may already have received `202` and are waiting for an app acknowledgment.
+Move or drain its persistent volume; never remove the file to reclaim space.
 
 **Deleting an account database that "looks stale".** There is no such thing here:
 a quiet account is a customer with a quiet website.
@@ -131,11 +134,7 @@ a quiet account is a customer with a quiet website.
 as the database itself, and it takes the write lock for the whole operation.
 `db backup -out` on another filesystem is the version that works.
 
-**Truncating the salts table to reclaim space.** It is a few rows and it is the
-only thing that can find yesterday's sessions. See
-[salt-rotation.md](salt-rotation.md).
-
 **Turning off `feasible db backup` because it fills the disk.** Point `-out`
-somewhere else and prune it. Replication is the recovery mechanism, but the
-snapshots are what you fall back to when the replica is unusable, and discovering
-you have neither is a bad day.
+somewhere else and prune it. The command creates the consistent snapshots this
+repository knows how to produce; moving those snapshots to durable storage is an
+operator responsibility.

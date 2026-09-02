@@ -106,6 +106,12 @@ type page struct {
 	// finish, so it is not shown.
 	GoogleEnabled bool
 
+	// RegistrationEnabled controls public sign-up links and hosted-only trial
+	// copy. An invitation remains usable when this is false, but strangers are
+	// directed to the installation operator instead of an account form.
+	RegistrationEnabled bool
+	CommerceEnabled     bool
+
 	BaseURL string
 	Now     time.Time
 
@@ -120,15 +126,17 @@ type page struct {
 // the base URL.
 func (h *Handler) newPage(r *http.Request, title, nav string) *page {
 	p := &page{
-		Title:         title,
-		Nav:           nav,
-		Lang:          i18n.Negotiate(r),
-		User:          userFrom(r),
-		CSRF:          h.csrfToken(r),
-		GoogleEnabled: h.Google.Configured(),
-		BaseURL:       h.BaseURL,
-		Now:           h.Store.Now(),
-		Data:          map[string]any{},
+		Title:               title,
+		Nav:                 nav,
+		Lang:                i18n.Negotiate(r),
+		User:                userFrom(r),
+		CSRF:                h.csrfToken(r),
+		GoogleEnabled:       h.Google.Configured(),
+		RegistrationEnabled: !h.DisableRegistration,
+		CommerceEnabled:     !h.DisableCommerce,
+		BaseURL:             h.BaseURL,
+		Now:                 h.Store.Now(),
+		Data:                map[string]any{},
 	}
 
 	if p.User != nil {

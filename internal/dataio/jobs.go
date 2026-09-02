@@ -40,7 +40,7 @@ type ExportArgs struct {
 }
 
 // Workers runs the import and export jobs. It holds the account manager and the
-// site snapshot rather than control.db, because everything it writes is
+// site snapshot rather than system.db, because everything it writes is
 // site-scoped and lives in one account database.
 type Workers struct {
 	Accounts *accounts.Manager

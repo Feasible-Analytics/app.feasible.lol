@@ -209,7 +209,7 @@ func post(ctx context.Context, client *http.Client, endpoint string, body []byte
 // the whole failure this exists to catch is an event that was accepted, said
 // nothing, and landed nowhere.
 func CountSince(ctx context.Context, dataDir, domain string, since time.Time) (int64, error) {
-	control, err := store.Open(filepath.Join(dataDir, config.ControlDatabaseName))
+	control, err := store.Open(filepath.Join(dataDir, config.SystemDatabaseName))
 	if err != nil {
 		return 0, err
 	}
@@ -259,25 +259,25 @@ func PrimaryDomain() string {
 	return ""
 }
 
-// EnsureFixture creates control.db, brings it up to date and registers the
+// EnsureFixture creates system.db, brings it up to date and registers the
 // accounts and sites, without generating any traffic. The wire check needs a
 // site that routes before it can send anything, and making somebody run the
 // bulk generator first would make the quick check the slow one.
 func EnsureFixture(ctx context.Context, dataDir string, now time.Time) error {
-	return EnsureFixtureWithMigrations(ctx, dataDir, now, migrate.Control())
+	return EnsureFixtureWithMigrations(ctx, dataDir, now, migrate.System())
 }
 
 // EnsureFixtureWithMigrations creates the HTTP fixture with an explicit set.
 // Tests may select an actual embedded prefix when they do not exercise newer
 // control tables; production keeps the complete embedded set and its gap check.
-func EnsureFixtureWithMigrations(ctx context.Context, dataDir string, now time.Time, controlMigrations migrate.Set) error {
-	control, err := store.Open(filepath.Join(dataDir, config.ControlDatabaseName))
+func EnsureFixtureWithMigrations(ctx context.Context, dataDir string, now time.Time, systemMigrations migrate.Set) error {
+	control, err := store.Open(filepath.Join(dataDir, config.SystemDatabaseName))
 	if err != nil {
 		return err
 	}
 	defer control.Close()
 
-	if _, err := migrate.Run(ctx, control, controlMigrations); err != nil {
+	if _, err := migrate.Run(ctx, control, systemMigrations); err != nil {
 		return fmt.Errorf("seed http: %w", err)
 	}
 

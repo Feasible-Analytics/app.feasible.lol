@@ -18,7 +18,7 @@ import (
 )
 
 // TestTOTPSecretIsEncryptedAtRest checks the stored value is not the secret. A
-// two-factor secret in plaintext means a stolen copy of control.db defeats
+// two-factor secret in plaintext means a stolen copy of system.db defeats
 // two-factor for every account that has it turned on.
 func TestTOTPSecretIsEncryptedAtRest(t *testing.T) {
 	s, db := newTestStore(t)

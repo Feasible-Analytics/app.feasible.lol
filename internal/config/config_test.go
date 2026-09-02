@@ -9,52 +9,19 @@
 package config
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/replica"
 )
-
-// setValidReplicaAttestation writes the atomic provider bundle required by
-// production startup. The canonical renderer keeps the fixture aligned with
-// the deployed lifecycle contract.
-func setValidReplicaAttestation(t *testing.T, replicaURL string) {
-	t.Helper()
-
-	policy, err := replica.Render(replicaURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	location, err := replica.ParseLocation(replicaURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bundle, err := json.Marshal(replica.Attestation{
-		Version: replica.AttestationVersion, FetchedAt: time.Now().UTC(), ReplicaURL: replicaURL,
-		Bucket: location.Bucket, Prefix: location.Prefix,
-		BucketLocation: json.RawMessage(`{"LocationConstraint":null}`),
-		Lifecycle:      policy, Versioning: json.RawMessage(`{}`), ObjectLock: json.RawMessage(`{}`),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(t.TempDir(), "replica-attestation.json")
-	if err := os.WriteFile(path, bundle, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("FEASIBLE_LITESTREAM_ATTESTATION", path)
-}
 
 // setProductionOperator supplies a concrete self-hosted legal identity to
 // production tests whose subject is unrelated to legal-mode validation.
 func setProductionOperator(t *testing.T) {
 	t.Helper()
+	t.Setenv("FEASIBLE_APP_HOSTED", "false")
 	t.Setenv("FEASIBLE_OPERATOR_NAME", "Example Operator, Inc.")
 	t.Setenv("FEASIBLE_OPERATOR_ADDRESS", "123 Example Street")
 	t.Setenv("FEASIBLE_OPERATOR_EMAIL", "privacy@example.test")
@@ -110,16 +77,15 @@ func TestLookupPrefersEnvironmentOverDotenv(t *testing.T) {
 	}
 }
 
-// TestParseDotenv covers the shapes people actually write by hand. The JSON key
-// list is the one that matters: it is full of quotes and colons, and losing its
-// surrounding quotes would turn a working config into an unparseable one.
+// TestParseDotenv covers the shapes people actually write by hand, including a
+// quoted shared key whose spaces must survive parsing.
 func TestParseDotenv(t *testing.T) {
 	body := `
 # a comment
 export FEASIBLE_ENV=production
 
 FEASIBLE_LOG_LEVEL = debug
-FEASIBLE_INTERNAL_KEYS='[{"id":"dev-01","secret":"s"}]'
+FEASIBLE_INTERNAL_KEY='secret with spaces'
 QUOTED="with spaces"
 `
 
@@ -129,10 +95,10 @@ QUOTED="with spaces"
 	}
 
 	want := map[string]string{
-		"FEASIBLE_ENV":           "production",
-		"FEASIBLE_LOG_LEVEL":     "debug",
-		"FEASIBLE_INTERNAL_KEYS": `[{"id":"dev-01","secret":"s"}]`,
-		"QUOTED":                 "with spaces",
+		"FEASIBLE_ENV":          "production",
+		"FEASIBLE_LOG_LEVEL":    "debug",
+		"FEASIBLE_INTERNAL_KEY": "secret with spaces",
+		"QUOTED":                "with spaces",
 	}
 
 	for name, value := range want {
@@ -214,6 +180,21 @@ func TestStripeConfigurationRequiresWebhookSecret(t *testing.T) {
 	}
 }
 
+// TestSelfHostedModeIgnoresStripeConfiguration makes the mode flag
+// authoritative even when a machine still carries an incomplete old secret.
+func TestSelfHostedModeIgnoresStripeConfiguration(t *testing.T) {
+	t.Setenv("FEASIBLE_APP_HOSTED", "false")
+	t.Setenv("FEASIBLE_STRIPE_SECRET_KEY", "stale-secret")
+
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFrom(loader); err != nil {
+		t.Fatalf("self-hosted configuration rejected an ignored Stripe secret: %v", err)
+	}
+}
+
 // FuzzBoolFailsClosed proves no malformed spelling is silently converted to a
 // fallback. Only values accepted by strconv.ParseBool may load successfully.
 func FuzzBoolFailsClosed(f *testing.F) {
@@ -252,11 +233,14 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.Shared.Env != DefaultEnv {
 		t.Errorf("env: got %q", cfg.Shared.Env)
 	}
-	if cfg.App.Listen != DefaultAppListen || cfg.App.InternalListen != DefaultAppInternalListen {
-		t.Errorf("listen addresses: got %q and %q", cfg.App.Listen, cfg.App.InternalListen)
+	if cfg.App.Listen != DefaultAppListen {
+		t.Errorf("listen address: got %q", cfg.App.Listen)
 	}
 	if cfg.App.Transport != TransportDirect {
-		t.Errorf("transport: got %q, want the self-hoster default", cfg.App.Transport)
+		t.Errorf("transport: got %q, want the single-process default", cfg.App.Transport)
+	}
+	if !cfg.App.Hosted {
+		t.Error("hosted mode should default to true")
 	}
 	if cfg.Shared.LogLevel != "debug" || cfg.Shared.LogFormat != "text" {
 		t.Errorf("development logging defaults: got %q/%q", cfg.Shared.LogLevel, cfg.Shared.LogFormat)
@@ -264,34 +248,14 @@ func TestLoadFromDefaults(t *testing.T) {
 	if len(cfg.Ingest.Shards) != 1 {
 		t.Errorf("shards: got %v", cfg.Ingest.Shards)
 	}
-	if cfg.Litestream.ReplicaURL != "" {
-		t.Errorf("replica URL: got %q, want empty — an install that configured no replication has none", cfg.Litestream.ReplicaURL)
+	if cfg.App.ShardID != DefaultAppShardID {
+		t.Errorf("app shard: got %d", cfg.App.ShardID)
 	}
-}
-
-// TestLoadFromReplicationDefaults covers the one pairing among these values that
-// produces a replica nobody can restore from: retention has to outlive the
-// snapshot interval, or the snapshot a restore replays onto is deleted before
-// its replacement exists.
-func TestLoadFromReplicationDefaults(t *testing.T) {
-	loader, err := NewLoader(t.TempDir(), "")
-	if err != nil {
-		t.Fatal(err)
+	if cfg.Shared.IngestSalt != DefaultIngestSalt {
+		t.Errorf("ingest salt: got %q", cfg.Shared.IngestSalt)
 	}
-
-	cfg, err := LoadFrom(loader)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if cfg.Litestream.ConfigPath != DefaultLitestreamConfig {
-		t.Errorf("config path: got %q", cfg.Litestream.ConfigPath)
-	}
-	if cfg.Litestream.SyncInterval != time.Second {
-		t.Errorf("sync interval: got %s, want the one second the durability claim quotes", cfg.Litestream.SyncInterval)
-	}
-	if cfg.Litestream.WatchInterval <= 0 {
-		t.Errorf("watch interval: got %s — a new account would never be picked up", cfg.Litestream.WatchInterval)
+	if cfg.Ingest.BufferPath != DefaultIngestBufferPath {
+		t.Errorf("outbox path: got %q", cfg.Ingest.BufferPath)
 	}
 }
 
@@ -325,6 +289,7 @@ func TestLoadFromProductionLoggingDefaults(t *testing.T) {
 // DPA pages from booting with a generic URL where a legal operator must appear.
 func TestSelfHostedProductionRequiresOperatorIdentity(t *testing.T) {
 	t.Setenv("FEASIBLE_ENV", EnvProduction)
+	t.Setenv("FEASIBLE_APP_HOSTED", "false")
 	loader, err := NewLoader("", "")
 	if err != nil {
 		t.Fatal(err)
@@ -339,147 +304,10 @@ func TestSelfHostedProductionRequiresOperatorIdentity(t *testing.T) {
 	}
 }
 
-// TestHostedProductionRequiresConcreteSubprocessors keeps the public legal list
-// from degrading into category placeholders on a real hosted deployment.
-func TestHostedProductionRequiresConcreteSubprocessors(t *testing.T) {
-	t.Setenv("FEASIBLE_ENV", EnvProduction)
-	t.Setenv("FEASIBLE_APP_HOSTED", "true")
-	t.Setenv("FEASIBLE_APP_MAIL_TRANSPORT", MailTransportSMTP)
-	t.Setenv("FEASIBLE_SMTP_HOST", "smtp.example.test")
-
-	loader, err := NewLoader("", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "compute") {
-		t.Fatalf("missing hosted inventory error = %v", err)
-	}
-
-	t.Setenv("FEASIBLE_HOSTED_SUBPROCESSORS_JSON", `[
-		{"role":"compute","legal_entity":"Compute Corp","service":"Virtual machines","data":"Encrypted visitor analytics","region":"US"},
-		{"role":"object_storage","legal_entity":"Storage Corp","service":"Object storage","data":"Encrypted database replicas","region":"US"},
-		{"role":"email","legal_entity":"Mail Corp","service":"Transactional email","data":"Account addresses and service messages","region":"US"}
-	]`)
-	replicaURL := "s3://replicas/shard-01"
-	t.Setenv("FEASIBLE_LITESTREAM_REPLICA_URL", replicaURL)
-	t.Setenv("FEASIBLE_LITESTREAM_ON_CHANGE", "systemctl restart litestream")
-	setValidReplicaAttestation(t, replicaURL)
-
-	cfg, err := LoadFrom(loader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.App.Subprocessors) != 3 || cfg.App.Subprocessors[1].Role != "object_storage" {
-		t.Fatalf("subprocessors = %+v", cfg.App.Subprocessors)
-	}
-}
-
-// TestHostedProductionRequiresReplicaEnforcement keeps the live legal promise
-// fail-closed when provider retention checks or timely Litestream reloads are
-// absent from a hosted deployment.
-func TestHostedProductionRequiresReplicaEnforcement(t *testing.T) {
-	t.Setenv("FEASIBLE_ENV", EnvProduction)
-	t.Setenv("FEASIBLE_APP_HOSTED", "true")
-	t.Setenv("FEASIBLE_APP_MAIL_TRANSPORT", MailTransportSMTP)
-	t.Setenv("FEASIBLE_SMTP_HOST", "smtp.example.test")
-	t.Setenv("FEASIBLE_HOSTED_SUBPROCESSORS_JSON", `[
-		{"role":"compute","legal_entity":"Compute Corp","service":"Virtual machines","data":"Encrypted visitor analytics","region":"US"},
-		{"role":"object_storage","legal_entity":"Storage Corp","service":"Object storage","data":"Encrypted database replicas","region":"US"},
-		{"role":"email","legal_entity":"Mail Corp","service":"Transactional email","data":"Account addresses and service messages","region":"US"}
-	]`)
-
-	loader, err := NewLoader("", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "REPLICA_URL") {
-		t.Fatalf("missing replica configuration error = %v", err)
-	}
-
-	t.Setenv("FEASIBLE_LITESTREAM_REPLICA_URL", "s3://replicas/shard-01")
-	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "ON_CHANGE") {
-		t.Fatalf("missing reload command error = %v", err)
-	}
-
-	t.Setenv("FEASIBLE_LITESTREAM_ON_CHANGE", "systemctl restart litestream")
-	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "ATTESTATION") {
-		t.Fatalf("missing provider attestation error = %v", err)
-	}
-
-	setValidReplicaAttestation(t, "s3://replicas/shard-01")
-	t.Setenv("FEASIBLE_LITESTREAM_WATCH_SECONDS", "61")
-	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "within 60 seconds") {
-		t.Fatalf("slow replica watch error = %v", err)
-	}
-}
-
-// TestProductionRejectsInvalidReplicaAttestation proves application startup is
-// itself fail-closed when a provider export is unreadable or no longer proves
-// the public expiry bound; a separate scheduled check is not the only guard.
-func TestProductionRejectsInvalidReplicaAttestation(t *testing.T) {
-	t.Setenv("FEASIBLE_ENV", EnvProduction)
-	setProductionOperator(t)
-	replicaURL := "s3://replicas/shard-01"
-	t.Setenv("FEASIBLE_LITESTREAM_REPLICA_URL", replicaURL)
-	t.Setenv("FEASIBLE_LITESTREAM_ATTESTATION", filepath.Join(t.TempDir(), "missing.json"))
-
-	loader, err := NewLoader("", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "read provider evidence") {
-		t.Fatalf("unreadable attestation error = %v", err)
-	}
-
-	setValidReplicaAttestation(t, replicaURL)
-	path := os.Getenv("FEASIBLE_LITESTREAM_ATTESTATION")
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var evidence replica.Attestation
-	if err := json.Unmarshal(body, &evidence); err != nil {
-		t.Fatal(err)
-	}
-	evidence.Versioning = json.RawMessage(`{"Status":"Enabled"}`)
-	body, err = json.Marshal(evidence)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, body, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "versioning") {
-		t.Fatalf("noncompliant attestation error = %v", err)
-	}
-}
-
-// TestHostedProductionRejectsSampleSubprocessors prevents the visibly local
-// sample from being copied into a hosted production environment unchanged.
-func TestHostedProductionRejectsSampleSubprocessors(t *testing.T) {
-	t.Setenv("FEASIBLE_ENV", EnvProduction)
-	t.Setenv("FEASIBLE_APP_HOSTED", "true")
-	t.Setenv("FEASIBLE_APP_MAIL_TRANSPORT", MailTransportSMTP)
-	t.Setenv("FEASIBLE_SMTP_HOST", "smtp.example.test")
-	t.Setenv("FEASIBLE_HOSTED_SUBPROCESSORS_JSON", `[
-		{"role":"compute","legal_entity":"LOCAL PLACEHOLDER","service":"VM","data":"data","region":"US"},
-		{"role":"object_storage","legal_entity":"Storage Corp","service":"objects","data":"replicas","region":"US"},
-		{"role":"email","legal_entity":"Mail Corp","service":"mail","data":"addresses","region":"US"}
-	]`)
-
-	loader, err := NewLoader("", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "placeholder") {
-		t.Fatalf("sample hosted inventory error = %v", err)
-	}
-}
-
-// TestLoadFromParsesInternalKeys covers the signing key list, including the
-// rotation case of more than one key being valid at once.
-func TestLoadFromParsesInternalKeys(t *testing.T) {
-	t.Setenv("FEASIBLE_INTERNAL_KEYS", `[{"id":"dev-01","secret":"a"},{"id":"dev-02","secret":"b"}]`)
+// TestLoadFromReadsInternalKey verifies both processes receive the same plain
+// signing value without a JSON wrapper or key identifier.
+func TestLoadFromReadsInternalKey(t *testing.T) {
+	t.Setenv("FEASIBLE_INTERNAL_KEY", "shared-signing-key")
 
 	loader, err := NewLoader("", "")
 	if err != nil {
@@ -491,8 +319,29 @@ func TestLoadFromParsesInternalKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(cfg.Shared.InternalKeys) != 2 || cfg.Shared.InternalKeys[1].ID != "dev-02" {
-		t.Fatalf("got %+v", cfg.Shared.InternalKeys)
+	if cfg.Shared.InternalKey != "shared-signing-key" {
+		t.Fatalf("internal key = %q", cfg.Shared.InternalKey)
+	}
+}
+
+// TestLoadFromParsesOrderedShardArray verifies JSON order becomes stable shard
+// identity and URL normalization does not disturb that order.
+func TestLoadFromParsesOrderedShardArray(t *testing.T) {
+	t.Setenv("FEASIBLE_INGEST_SHARDS", `["http://app-1:19301/","http://app-2:19301"]`)
+
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(loader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"http://app-1:19301", "http://app-2:19301"}
+	if !slices.Equal(cfg.Ingest.Shards, want) {
+		t.Fatalf("shards = %v, want %v", cfg.Ingest.Shards, want)
 	}
 }
 
@@ -507,7 +356,6 @@ func TestLoadFromRejectsBadValues(t *testing.T) {
 		"FEASIBLE_APP_MAIL_TRANSPORT": "pigeon",
 		"FEASIBLE_APP_BASE_URL":       "localhost:19300",
 		"FEASIBLE_INGEST_SHARDS":      "127.0.0.1:19401",
-		"FEASIBLE_INTERNAL_KEYS":      `[{"id":"dev-01"}]`,
 	}
 
 	for name, value := range cases {

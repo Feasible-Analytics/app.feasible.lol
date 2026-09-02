@@ -288,7 +288,7 @@ func TestPayingOnDayEightyNine(t *testing.T) {
 }
 
 // TestPayingOnDayNinetyOneCannotResurrect is the mirror image, and the reason
-// PhaseDeleted is terminal. By day 91 the database file, the control rows and
+// PhaseDeleted is terminal. By day 91 the database file, the system rows and
 // the payment customer are gone; marking the account active would leave it
 // pointing at nothing.
 func TestPayingOnDayNinetyOne(t *testing.T) {

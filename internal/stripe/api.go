@@ -388,7 +388,7 @@ func (c *Client) CreateCheckoutSession(ctx context.Context, params CheckoutParam
 // CheckoutSessions reads every provider session. Metadata filtering happens
 // locally because Stripe does not expose metadata as a list filter; completed
 // sessions matter too because an orphan may already have created a customer and
-// subscription before its id reached control.db.
+// subscription before its id reached system.db.
 func (c *Client) CheckoutSessions(ctx context.Context) ([]CheckoutSession, error) {
 	form := url.Values{}
 	form.Set("limit", "100")

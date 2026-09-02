@@ -16,7 +16,6 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/metrics"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
 )
 
@@ -40,7 +39,7 @@ type SiteRef struct {
 
 // Lister supplies the sites to build. It is a function rather than a table read
 // so that the worker does not have to know whether the list came from
-// control.db, from a command's flags, or from a test.
+// system.db, from a command's flags, or from a test.
 type Lister func(ctx context.Context) ([]SiteRef, error)
 
 // Worker rebuilds every site's summary on a timer.
@@ -102,25 +101,13 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
-// once runs a pass, records how it went and logs whatever went wrong. A failed
+// once runs a pass and logs whatever went wrong. A failed
 // roll-up is not a failed request — the reports simply stay slow — so it never
 // stops the loop.
-//
-// The timestamp of the last complete pass is the number that answers "is the
-// worker behind": every dashboard reads summaries, and a worker that quietly
-// stopped is a dashboard that is slow today and wrong tomorrow. It is recorded
-// here rather than in Once, because the command runs Once for one deliberate
-// rebuild and that is not the same claim as "the loop is keeping up".
 func (w *Worker) once(ctx context.Context) {
-	started := w.now()
-
 	err := w.Once(ctx)
 
-	metrics.RollupDuration.Observe(w.now().Sub(started).Seconds())
-
 	if err != nil {
-		metrics.RollupRuns.WithLabelValues(metrics.OutcomeError).Inc()
-
 		if w.Log != nil {
 			w.Log.Error("roll-up build failed", "error", err)
 		}
@@ -128,8 +115,6 @@ func (w *Worker) once(ctx context.Context) {
 		return
 	}
 
-	metrics.RollupRuns.WithLabelValues(metrics.OutcomeOK).Inc()
-	metrics.RollupLastSuccess.Set(float64(w.now().Unix()))
 }
 
 // Once rebuilds every site that is due. It is exported so the command can run a
@@ -299,10 +284,10 @@ func firstEvent(ctx context.Context, db *sql.DB, siteID int64) (time.Time, error
 	return time.Unix(earliest.Int64, 0).UTC(), nil
 }
 
-// ControlLister reads every site out of control.db. It is what `feasible serve`
+// SystemLister reads every site out of system.db. It is what `feasible serve`
 // and the rebuild command both hand the worker, so the set of sites that get
 // summarised is the same set that receives traffic.
-func ControlLister(control *sql.DB) Lister {
+func SystemLister(control *sql.DB) Lister {
 	return func(ctx context.Context) ([]SiteRef, error) {
 		rows, err := control.QueryContext(ctx,
 			"SELECT id, account_id, domain, timezone FROM sites ORDER BY account_id, id")

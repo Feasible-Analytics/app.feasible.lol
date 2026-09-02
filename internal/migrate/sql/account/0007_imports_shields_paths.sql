@@ -6,7 +6,7 @@
 -- Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 --
 -- Everything here is site-scoped configuration or site-scoped data, so it lives
--- in the account database rather than in control.db. That is the same rule the
+-- in the account database rather than in system.db. That is the same rule the
 -- first control migration states: only the routing index is central, so a
 -- dashboard query never has to open two files.
 
@@ -245,7 +245,7 @@ CREATE TABLE google_connections (
     site_id       INTEGER NOT NULL,
 
     -- The owning account, carried so a connection can be found and revoked
-    -- without a join back to the control database.
+    -- without a join back to the system database.
     account_id    INTEGER NOT NULL,
 
     provider      TEXT NOT NULL CHECK (provider IN ('ga4', 'search_console')),

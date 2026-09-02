@@ -8,15 +8,12 @@
 # Run `make` on its own for the list of targets.
 
 # ── Ports ─────────────────────────────────────────────────────────────────────
-# 193xx is public, 194xx is internal: the number says which side of the fence a
-# process sits on. They are deliberately away from 3000/4000/5000/8000/8080,
+# These ports are deliberately away from 3000/4000/5000/8000/8080,
 # which collide with everything else on a working machine.
 PORT_CADDY        ?= 19300
 PORT_APP          ?= 19301
 PORT_INGEST       ?= 19302
 PORT_SITE         ?= 19303
-PORT_APP_INTERNAL    ?= 19401
-PORT_INGEST_INTERNAL ?= 19402
 
 # ── Addresses ─────────────────────────────────────────────────────────────────
 # BIND_HOST is what the processes listen on; PUBLIC_HOST is what ends up in URLs.
@@ -29,11 +26,6 @@ PUBLIC_HOST ?= localhost
 
 BASE_URL      = http://$(PUBLIC_HOST):$(PORT_CADDY)
 SOLO_BASE_URL = http://$(PUBLIC_HOST):$(PORT_APP)
-
-# The health and metrics listeners never move off loopback, in any mode. Current
-# main has no internal event-delivery or salt-distribution API.
-INTERNAL_LISTEN        = 127.0.0.1:$(PORT_APP_INTERNAL)
-INGEST_INTERNAL_LISTEN = 127.0.0.1:$(PORT_INGEST_INTERNAL)
 
 # ── Tailscale ─────────────────────────────────────────────────────────────────
 # The App Store build does not put the CLI on PATH, hence the fallback path.
@@ -66,11 +58,10 @@ LDFLAGS := -s -w \
 # Every run target sets the same variables from the same place, so there is one
 # answer to "what is this process actually configured with".
 APP_ENV = FEASIBLE_APP_LISTEN=$(BIND_HOST):$(PORT_APP) \
-	FEASIBLE_APP_INTERNAL_LISTEN=$(INTERNAL_LISTEN) \
 	FEASIBLE_APP_BASE_URL=$(BASE_URL)
 
 INGEST_ENV = FEASIBLE_INGEST_LISTEN=$(BIND_HOST):$(PORT_INGEST) \
-	FEASIBLE_INGEST_INTERNAL_LISTEN=$(INGEST_INTERNAL_LISTEN)
+	FEASIBLE_INGEST_SHARDS='["http://$(BIND_HOST):$(PORT_APP)"]'
 
 CADDY_ENV = FEASIBLE_CADDY_BIND=$(BIND_HOST) \
 	FEASIBLE_CADDY_PORT=$(PORT_CADDY) \
@@ -97,7 +88,7 @@ FRESH ?= --fresh
 
 .DEFAULT_GOAL := help
 
-.PHONY: help assets tracker-deps tracker web-deps ui-css build test test-race test-web test-tracker test-integration test-ecosystem \
+.PHONY: help assets tracker-deps tracker web-deps ui-css binary build test test-race test-web test-tracker test-integration test-ecosystem \
 	bench lint check-env \
 	migrate migrate-fresh seed seed-big seed-http caddy app ingest testsite dev dev-solo \
 	caddy-ts app-ts ingest-ts testsite-ts dev-ts dev-solo-ts require-tailscale
@@ -110,7 +101,7 @@ help:
 	@echo
 	@echo "  Run one process each, in its own terminal, so its logs stay readable:"
 	@echo "    make caddy      reverse proxy on :$(PORT_CADDY) — the only port you open in a browser"
-	@echo "    make app        the app on :$(PORT_APP) (internal :$(PORT_APP_INTERNAL), loopback only)"
+	@echo "    make app        the app and signed internal routes on :$(PORT_APP)"
 	@echo "    make ingest     the ingest tier on :$(PORT_INGEST)"
 	@echo "    make testsite   a page with the snippet installed, on :$(PORT_SITE)"
 	@echo
@@ -123,6 +114,7 @@ help:
 	@echo
 	@echo "  Toolchain:"
 	@echo "    make build      build ./$(BINARY) (runs the asset build first)"
+	@echo "    make binary     build ./$(BINARY) from the committed embedded assets"
 	@echo "    make tracker    build the browser script and check it fits the size budget"
 	@echo "    make test       unit tests, including the tracker size budget"
 	@echo "    make test-web   the dashboard's unit tests on their own"
@@ -133,7 +125,7 @@ help:
 	@echo "    make lint       go vet and golangci-lint"
 	@echo "    make test-race  the same tests under the race detector"
 	@echo "    make check-env  every environment variable is in .env.sample"
-	@echo "    make migrate    migrate control.db and every account database"
+	@echo "    make migrate    migrate system.db and every account database"
 	@echo "    make migrate-fresh      drop everything and rebuild"
 	@echo
 	@echo "  Data to build and measure against:"
@@ -212,10 +204,20 @@ ui-css: web-deps
 		echo "tailwindcss is not installed — keeping the committed internal/auth/assets/app.css"; \
 	fi
 
-## build: compile the single binary
-build: assets
+## binary: compile the single binary from the committed embedded assets
+# Runtime-only processes use this target because the generated tracker and
+# dashboard files are already embedded in the repository. Keeping JavaScript
+# installation out of this path also lets app and ingest processes restart at
+# the same time without racing over their shared node_modules directories.
+binary:
 	@go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/$(BINARY)
 	@echo "built ./$(BINARY) $(VERSION) ($(COMMIT))"
+
+## build: rebuild the assets, then compile the single binary
+# The recursive target is intentionally invoked from the recipe so an explicit
+# parallel make cannot compile while the embedded asset files are being written.
+build: assets
+	@$(MAKE) --no-print-directory binary
 
 ## test: unit tests, and the tracker size budget
 # The tracker is rebuilt first so that the budget is measured against the source
@@ -295,7 +297,7 @@ lint:
 check-env:
 	@./scripts/check-env.sh
 
-## migrate: migrate control.db and every account database
+## migrate: migrate system.db and every account database
 migrate: build
 	@$(APP_ENV) ./$(BINARY) db migrate
 
@@ -343,7 +345,7 @@ app: build
 	@$(APP_ENV) FEASIBLE_APP_TRANSPORT=http ./$(BINARY) serve
 
 ## ingest: the ingest tier
-ingest: build
+ingest: binary
 	@echo "listening on http://$(PUBLIC_HOST):$(PORT_INGEST)"
 	@$(INGEST_ENV) ./$(BINARY) ingest
 
@@ -367,7 +369,6 @@ dev: build
 dev-solo: build
 	@echo "listening on $(SOLO_BASE_URL)"
 	@FEASIBLE_APP_LISTEN=$(BIND_HOST):$(PORT_APP) \
-		FEASIBLE_APP_INTERNAL_LISTEN=$(INTERNAL_LISTEN) \
 		FEASIBLE_APP_BASE_URL=$(SOLO_BASE_URL) \
 		FEASIBLE_APP_TRANSPORT=direct \
 		./$(BINARY) serve

@@ -51,7 +51,7 @@ type Subscription struct {
 	ReconciledEventAt int64
 }
 
-// Store is every read and write this package makes against control.db.
+// Store is every read and write this package makes against system.db.
 type Store struct {
 	db *sql.DB
 
@@ -79,7 +79,7 @@ const outcomeProcessing = "processing"
 const accountLeaseDuration = 5 * time.Minute
 
 // accountLeasePoll keeps a second process responsive without busy-spinning on
-// control.db while another process reconciles the same account.
+// system.db while another process reconciles the same account.
 const accountLeasePoll = 20 * time.Millisecond
 
 // checkoutProviderRetryWindow stops automatic provider retries before Stripe
@@ -88,7 +88,7 @@ const accountLeasePoll = 20 * time.Millisecond
 // retention floor could create a second live Checkout Session.
 const checkoutProviderRetryWindow = 23 * time.Hour
 
-// NewStore builds a store over the control database.
+// NewStore builds a store over the system database.
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
 }

@@ -59,6 +59,19 @@ type HostnamePolicy interface {
 	AllowsHostname(siteID int64, hostname string) bool
 }
 
+// SiteResolver maps a claimed tracking domain to the minimum routing record
+// required before the raw address is discarded. App processes use their local
+// snapshot; standalone ingesters use the merged snapshots polled from shards.
+type SiteResolver interface {
+	Lookup(domain string) (sites.Site, bool)
+	Refresh(context.Context) error
+}
+
+// SaltSource supplies the current and previous UTC-day fingerprint salts.
+type SaltSource interface {
+	Pair(context.Context) (salts.Pair, error)
+}
+
 // NoShield allows everything. It is the default so that an install with no
 // shield rules configured costs one interface call rather than a nil check on
 // the hot path.
@@ -77,8 +90,8 @@ func (NoHostnamePolicy) AllowsHostname(int64, string) bool { return false }
 // injected, because every one of these is a different licensing, deployment or
 // performance decision and none of them should be reachable from a call site.
 type Pipeline struct {
-	Sites     *sites.Cache
-	Salts     *salts.Store
+	Sites     SiteResolver
+	Salts     SaltSource
 	Geo       geo.Locator
 	Agents    *useragent.Cache
 	Bots      *BotFilter
@@ -285,8 +298,9 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 		return result, nil
 	}
 
-	// Not in the local partition map means drop by design. The consolidated
-	// runtime currently resolves every known account to partition zero.
+	// A direct app resolves every account to partition zero. A hosted ingester
+	// resolves the owning app shard, or partition -1 while the complete map is
+	// unavailable so the event can be held without a destructive decision.
 	shard, routed := p.Shards.Shard(site.AccountID)
 	if !routed && stop(ReasonSiteDeleted) {
 		return result, nil
@@ -378,6 +392,7 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 		Shard:     shard,
 		AccountID: site.AccountID,
 		SiteID:    site.ID,
+		Domain:    siteDomain,
 		Timestamp: now.Unix(),
 		DerivedAt: p.tick(now),
 

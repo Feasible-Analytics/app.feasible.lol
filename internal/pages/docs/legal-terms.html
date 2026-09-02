@@ -59,13 +59,10 @@ removes the account and its analytics from live systems. You are emailed nine ti
 each message naming the exact date of the next step. Paying at any point before day 90
 restores everything.</p>
 
-<p>At day 90 we remove the live account database and account records in that hourly sweep and stop replicating that
-database within the replication watch interval, currently at most 60 seconds. Encrypted
-disaster-recovery replica objects become eligible for provider removal within 72 hours of being
-written. The final object can be written during that stop interval, so it is eligible within 72
-hours and 60 seconds of live deletion. Physical removal is asynchronous with no published maximum, and replicas may remain
-restorable to authorised operators while it is pending; they are not used to reactivate a deleted account. If deletion of
-the payment-provider customer fails, we retain only its provider identifier and retry on every
+<p>At day 90 we remove the live account database and account records in that hourly sweep. Storage and
+recovery systems operated outside this application have their own retention and deletion controls and
+are not used to reactivate a deleted account. If deletion of the payment-provider customer fails, we
+retain only its provider identifier and retry on every
 hourly lifecycle sweep until it succeeds. The confirmation is sent after that external deletion succeeds.</p>
 
 <h3>7. Export</h3>

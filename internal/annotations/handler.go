@@ -38,7 +38,7 @@ type Handler struct {
 	Store *Store
 
 	// Sites is the same in-memory routing snapshot the ingest and stats paths
-	// read, so listing a site's markers never touches control.db.
+	// read, so listing a site's markers never touches system.db.
 	Sites *sites.Cache
 
 	// Identity is supplied by the authenticated application guard. Annotation

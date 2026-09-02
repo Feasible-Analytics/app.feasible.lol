@@ -85,6 +85,16 @@ type Handler struct {
 	// and nil locks nothing.
 	Access func(accountID int64) bool
 
+	// DisableRegistration closes only public account creation. Invitations can
+	// still add members to an operator-created account, and every existing
+	// identity can continue to sign in through password or Google.
+	DisableRegistration bool
+
+	// DisableCommerce removes billing navigation in the unrestricted
+	// self-hosted product. Routes may remain mounted for stable URLs, but the
+	// signed-in interface must not present an upgrade path where none applies.
+	DisableCommerce bool
+
 	BaseURL string
 	Log     *logger.Logger
 
@@ -116,20 +126,22 @@ type DashboardNavigation struct {
 
 // Options are the inputs to NewHandler.
 type Options struct {
-	Store         *Store
-	Teams         *teams.Store
-	Traffic       *Traffic
-	Mailer        *mail.Mailer
-	Sealer        *Sealer
-	Google        *Google
-	Deleter       *Deleter
-	Destructive   *destructive.Service
-	Keyer         *tracker.Keyer
-	SiteCache     *sites.Cache
-	ProvisionSite func(context.Context, int64, int64, time.Time) error
-	Access        func(accountID int64) bool
-	BaseURL       string
-	Log           *logger.Logger
+	Store               *Store
+	Teams               *teams.Store
+	Traffic             *Traffic
+	Mailer              *mail.Mailer
+	Sealer              *Sealer
+	Google              *Google
+	Deleter             *Deleter
+	Destructive         *destructive.Service
+	Keyer               *tracker.Keyer
+	SiteCache           *sites.Cache
+	ProvisionSite       func(context.Context, int64, int64, time.Time) error
+	Access              func(accountID int64) bool
+	DisableRegistration bool
+	DisableCommerce     bool
+	BaseURL             string
+	Log                 *logger.Logger
 }
 
 // NewHandler builds the application and parses its templates.
@@ -149,23 +161,25 @@ func NewHandler(opts Options) (*Handler, error) {
 	}
 
 	h := &Handler{
-		Store:         opts.Store,
-		Teams:         teamStore,
-		Traffic:       opts.Traffic,
-		Mailer:        opts.Mailer,
-		Sealer:        opts.Sealer,
-		Google:        opts.Google,
-		Deleter:       opts.Deleter,
-		Destructive:   opts.Destructive,
-		Limiter:       NewLimiter(),
-		Keyer:         opts.Keyer,
-		SiteCache:     opts.SiteCache,
-		ProvisionSite: opts.ProvisionSite,
-		Access:        opts.Access,
-		BaseURL:       strings.TrimRight(opts.BaseURL, "/"),
-		Log:           opts.Log,
-		Verifier:      &http.Client{Timeout: verifyTimeout},
-		views:         views,
+		Store:               opts.Store,
+		Teams:               teamStore,
+		Traffic:             opts.Traffic,
+		Mailer:              opts.Mailer,
+		Sealer:              opts.Sealer,
+		Google:              opts.Google,
+		Deleter:             opts.Deleter,
+		Destructive:         opts.Destructive,
+		Limiter:             NewLimiter(),
+		Keyer:               opts.Keyer,
+		SiteCache:           opts.SiteCache,
+		ProvisionSite:       opts.ProvisionSite,
+		Access:              opts.Access,
+		DisableRegistration: opts.DisableRegistration,
+		DisableCommerce:     opts.DisableCommerce,
+		BaseURL:             strings.TrimRight(opts.BaseURL, "/"),
+		Log:                 opts.Log,
+		Verifier:            &http.Client{Timeout: verifyTimeout},
+		views:               views,
 	}
 
 	h.mux = h.routes()
@@ -732,8 +746,10 @@ func (h *Handler) NavigationForDashboard(w http.ResponseWriter, r *http.Request)
 		navigation.ConversionsURL = "/settings/sites/" + site.Domain + "/conversions"
 	}
 	if role == teams.RoleOwner || role == teams.RoleAdmin || role == teams.RoleBilling {
-		navigation.BillingURL = "/billing?team=" + strconv.FormatInt(site.TeamID, 10)
 		navigation.ExportURL = "/billing/export?team=" + strconv.FormatInt(site.TeamID, 10)
+		if !h.DisableCommerce {
+			navigation.BillingURL = "/billing?team=" + strconv.FormatInt(site.TeamID, 10)
+		}
 	}
 
 	return navigation

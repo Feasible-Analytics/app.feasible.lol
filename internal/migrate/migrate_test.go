@@ -323,7 +323,7 @@ func tableExists(t *testing.T, db *sql.DB, name string) bool {
 // controlBase returns the real M9 prefix immediately before M8's 0010. Keeping
 // the boundary explicit lets migration tests exercise the final transition.
 func controlBase() Set {
-	return UpTo(Control(), 9)
+	return UpTo(System(), 9)
 }
 
 // assertTrialEnrollment verifies the lifecycle source and both hot-path team
@@ -390,7 +390,7 @@ func TestControlBaseMigratesAFreshDatabase(t *testing.T) {
 	for _, table := range []string{
 		"users", "user_sessions", "teams", "team_memberships", "team_invitations",
 		"site_folders", "sites", "guest_memberships", "subscriptions",
-		"usage_counters", "api_keys", "shared_links", "salts", "jobs",
+		"usage_counters", "api_keys", "shared_links", "jobs",
 		"email_verification_codes", "password_reset_tokens",
 		"billing_account_leases", "billing_account_customers", "billing_quiescence_objects", "billing_checkouts",
 		"billing_checkout_cleanup", "lifecycle_account_leases", "lifecycle_outbox",
@@ -398,7 +398,7 @@ func TestControlBaseMigratesAFreshDatabase(t *testing.T) {
 		"report_subscriptions", "alert_rules", "notification_claims", "cron_slots",
 	} {
 		if !tableExists(t, db, table) {
-			t.Errorf("control schema is missing %s", table)
+			t.Errorf("system schema is missing %s", table)
 		}
 	}
 
@@ -419,8 +419,8 @@ func TestRandomSaltAuthorityMigrationInvalidatesDeterministicRows(t *testing.T) 
 	ctx := context.Background()
 	db := newDatabase(t)
 
-	throughSix := Set{Name: "control"}
-	for _, migration := range Control().Migrations {
+	throughSix := Set{Name: "system"}
+	for _, migration := range System().Migrations {
 		if migration.Version <= 6 {
 			throughSix.Migrations = append(throughSix.Migrations, migration)
 		}
@@ -433,8 +433,8 @@ func TestRandomSaltAuthorityMigrationInvalidatesDeterministicRows(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	throughSeven := Set{Name: "control"}
-	for _, migration := range Control().Migrations {
+	throughSeven := Set{Name: "system"}
+	for _, migration := range System().Migrations {
 		if migration.Version <= 7 {
 			throughSeven.Migrations = append(throughSeven.Migrations, migration)
 		}
@@ -674,8 +674,8 @@ func TestControlBackfillsMissingLifecycleAtUpgradeTime(t *testing.T) {
 	ctx := context.Background()
 	db := newDatabase(t)
 
-	throughFive := Set{Name: "control"}
-	for _, migration := range Control().Migrations {
+	throughFive := Set{Name: "system"}
+	for _, migration := range System().Migrations {
 		if migration.Version <= 5 {
 			throughFive.Migrations = append(throughFive.Migrations, migration)
 		}
@@ -800,8 +800,8 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 	ctx := context.Background()
 	db := newDatabase(t)
 
-	throughFive := Set{Name: "control"}
-	for _, migration := range Control().Migrations {
+	throughFive := Set{Name: "system"}
+	for _, migration := range System().Migrations {
 		if migration.Version <= 5 {
 			throughFive.Migrations = append(throughFive.Migrations, migration)
 		}
@@ -860,7 +860,7 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 				(team_id, team_name, contact_email, stripe_customer_id,
 				 clock_started_at, started_at, completed_at, notified_at, notes)
 			VALUES (100, 'Failed provider deletion', 'failed@example.com', 'cus_failed',
-			        2, 92, 93, 94, 'payment customer NOT removed: provider unavailable; control rows removed');
+			        2, 92, 93, 94, 'payment customer NOT removed: provider unavailable; system rows removed');
 	`); err != nil {
 		t.Fatal(err)
 	}
@@ -893,7 +893,7 @@ func TestControlUpgradesPopulatedBillingFromFiveToSix(t *testing.T) {
 		"report_subscriptions", "alert_rules", "notification_claims", "cron_slots",
 	} {
 		if !tableExists(t, db, table) {
-			t.Errorf("upgraded control schema is missing %s", table)
+			t.Errorf("upgraded system schema is missing %s", table)
 		}
 	}
 
@@ -1111,16 +1111,16 @@ func TestAccountV7ToCurrentKeepsPopulatedSessionOwnership(t *testing.T) {
 }
 
 // TestCoordinatedMigrationNumbers pins the upgrade order requested by the
-// consolidated runtime: account ingest state and hostname authority follow the
-// deployed 0007 settings migration, while control salt authority follows Stripe
-// 0006.
+// app-shard runtime: account ingest state and hostname authority follow the
+// deployed 0007 settings migration, while the system chain preserves every
+// historical step before removing obsolete salt storage in migration 12.
 func TestCoordinatedMigrationNumbers(t *testing.T) {
 	for name, test := range map[string]struct {
 		set  Set
 		want []int
 	}{
 		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12}},
-		"control": {set: Control(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}},
+		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := make([]int, 0, len(test.set.Migrations))
@@ -1288,7 +1288,7 @@ func TestRunRequiresTheContiguousPendingSequence(t *testing.T) {
 }
 
 // TestControlFinalChainAppliesM8AfterM9 proves the merged chain advances from
-// the real M9 schema through M8's cleanup without a placeholder or version gap.
+// the real M9 schema through cleanup and obsolete-salt removal without a gap.
 func TestControlFinalChainAppliesM8AfterM9(t *testing.T) {
 	ctx := context.Background()
 	db := newDatabase(t)
@@ -1296,12 +1296,12 @@ func TestControlFinalChainAppliesM8AfterM9(t *testing.T) {
 	if _, err := Run(ctx, db, controlBase()); err != nil {
 		t.Fatal(err)
 	}
-	result, err := Run(ctx, db, Control())
+	result, err := Run(ctx, db, System())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 9 || result.To != 11 || fmt.Sprint(result.Applied) != "[10 11]" {
-		t.Fatalf("control upgrade = %+v, want 9 through [10 11]", result)
+	if result.From != 9 || result.To != 12 || fmt.Sprint(result.Applied) != "[10 11 12]" {
+		t.Fatalf("control upgrade = %+v, want 9 through [10 11 12]", result)
 	}
 }
 
@@ -1316,7 +1316,7 @@ func TestRunRefusesADatabaseFromANewerBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Run(ctx, db, Control()); err == nil {
+	if _, err := Run(ctx, db, System()); err == nil {
 		t.Fatal("expected an error for a database newer than the binary")
 	}
 }
@@ -1405,7 +1405,7 @@ func TestForeignKeysSurviveFresh(t *testing.T) {
 // version appearing twice, is a class of bug that only shows up on someone
 // else's filesystem.
 func TestSetsAreOrdered(t *testing.T) {
-	for _, set := range []Set{Control(), Account()} {
+	for _, set := range []Set{System(), Account()} {
 		if len(set.Migrations) == 0 {
 			t.Fatalf("%s has no migrations", set.Name)
 		}
@@ -1447,7 +1447,7 @@ func TestParseName(t *testing.T) {
 	}
 }
 
-// TestPublicAPIMigrationKeepsExistingKeys runs the control migrations in two
+// TestPublicAPIMigrationKeepsExistingKeys runs the system migrations in two
 // halves with data written in between.
 //
 // The 0004 migration rebuilds api_keys to change a column default, which SQLite
@@ -1457,7 +1457,7 @@ func TestParseName(t *testing.T) {
 func TestPublicAPIMigrationKeepsExistingKeys(t *testing.T) {
 	ctx := context.Background()
 
-	db, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1465,8 +1465,8 @@ func TestPublicAPIMigrationKeepsExistingKeys(t *testing.T) {
 
 	// Stop short of 0004, so the database is at the shape somebody upgrading
 	// from an earlier build actually has.
-	earlier := Set{Name: "control"}
-	for _, migration := range Control().Migrations {
+	earlier := Set{Name: "system"}
+	for _, migration := range System().Migrations {
 		if migration.Version < 3 {
 			earlier.Migrations = append(earlier.Migrations, migration)
 		}
@@ -1489,7 +1489,7 @@ func TestPublicAPIMigrationKeepsExistingKeys(t *testing.T) {
 		}
 	}
 
-	if _, err := Run(ctx, db, UpTo(Control(), 5)); err != nil {
+	if _, err := Run(ctx, db, UpTo(System(), 5)); err != nil {
 		t.Fatalf("the 0004 migration failed on a database with data in it: %v", err)
 	}
 
@@ -1582,12 +1582,12 @@ func TestAccountDeletionCleanupMigration0010(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err = Run(ctx, db, Control())
+	result, err = Run(ctx, db, System())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 9 || result.To != 11 || fmt.Sprint(result.Applied) != "[10 11]" {
-		t.Fatalf("deletion cleanup upgrade = %+v, want 9 through [10 11]", result)
+	if result.From != 9 || result.To != 12 || fmt.Sprint(result.Applied) != "[10 11 12]" {
+		t.Fatalf("deletion cleanup upgrade = %+v, want 9 through [10 11 12]", result)
 	}
 
 	tests := []struct {

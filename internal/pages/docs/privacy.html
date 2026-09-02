@@ -18,14 +18,15 @@ derived fresh on our side from what every HTTP request already carries.</p>
 <p>Three consequences are worth stating outright:</p>
 <ul>
   <li><strong>The salt changes every day at 00:00 UTC.</strong> The same person on the same device
-      is a different number tomorrow, so nothing can be joined across days.</li>
+      is a different number tomorrow, and reporting does not join those identifiers across days.</li>
   <li><strong>The site's domain is in the message.</strong> The same person on two of your sites is
       two unrelated numbers, and there is nothing to join across customers. The registrable domain is
       in there too, which is why <code>app.example.com</code> and <code>example.com</code> are the
       same visitor — subdomains share a visitor by design.</li>
-  <li><strong>Two salts exist at once and only one of them hashes.</strong> Today's salt computes
-      identifiers; yesterday's is kept solely so that a visit which began before midnight can still
-      be matched to its own session. Salt rows are deleted after 48 hours.</li>
+  <li><strong>Two day values are derived in memory.</strong> Today's value computes identifiers;
+      yesterday's is used solely so a visit which began before midnight can still be matched to its
+      own session. They are derived from one deployment setting and the UTC date, not stored as
+      database rows.</li>
 </ul>
 
 <h4>Why we call it pseudonymous</h4>
@@ -34,25 +35,10 @@ derived fresh on our side from what every HTTP request already carries.</p>
 than anonymous. The identifier is derived from personal data — an IP address is personal data, and a
 user agent is close enough that arguing about it is not worth your time.</p>
 
-<p>While a salt exists, somebody holding both that salt and the stored hashes could brute-force the
-inputs back out. There are only about four billion IPv4 addresses and a few thousand common user
-agent strings, so the search space is small enough to walk. That is not a flaw in the hash; it is
-what happens when you hash a value drawn from a small set.</p>
-
-<p>Deleting a salt from the live database after 48 hours closes that door in the live system. Every
-row is encrypted at rest with AES-256-GCM under a key held outside the database, and expired live
-rows are deleted outright rather than soft-deleted.</p>
-
-<p>The control database is continuously replicated. The bucket lifecycle makes each encrypted control
-replica object eligible for provider removal within 72 hours of being written. The decryption key is
-never stored with those replicas, but an authorised
-restoration using the separately backed-up key and the corresponding analytics database could
-re-identify a fingerprint while a snapshot remains. Provider removal after eligibility is
-asynchronous and has no published maximum completion time, so 72 hours is an eligibility bound, not
-a physical-erasure guarantee. A control restore is performed with the service stopped and expired salts
-are pruned before traffic resumes. Once the live salt and every retained replica containing it
-have actually been removed, the stored visitor number cannot be reversed by us. We say this plainly
-because "fully anonymous after 48 hours" would claim more than the storage and the maths allow.</p>
+<p>Somebody holding the shared deployment salt and the stored hashes could brute-force candidate
+inputs. There are only about four billion IPv4 addresses and a few thousand common user-agent
+strings, so the search space is small enough to walk. The shared salt is a modest protection against
+an analytics-database disclosure, not a claim that the identifier is irreversible or anonymous.</p>
 
 <h3>What we store</h3>
 <ul>
@@ -106,14 +92,9 @@ with an access or erasure request. A pseudonymous fingerprint alone usually prov
 to match a named requester to one stored row.</p>
 
 <h3>Deleting an account</h3>
-<p>At day 90 the hourly lifecycle sweep immediately removes the live analytics database and account records. The replication
-watcher stops the deleted database's active replication within at most 60 seconds. A provider-side
-lifecycle rule covering the whole shard prefix makes encrypted disaster-recovery replicas eligible
-for removal within 72 hours of each replica object's creation, including prefixes no longer in the
-Litestream configuration. The final object can be written during that 60-second stop interval, so it
-is eligible within 72 hours and 60 seconds of live deletion. Physical removal is asynchronous with no published maximum, and replicas
-may remain operationally restorable while it is pending; they are not used to reactivate the deleted
-account.</p>
+<p>At day 90 the hourly lifecycle sweep immediately removes the live analytics database and account
+records. Storage and recovery systems operated outside this application have their own retention and
+deletion controls and are not used to reactivate the deleted account.</p>
 <p>We also ask the payment provider to remove its customer record. If that external request fails,
 we retain only the provider identifier needed to retry it on every hourly lifecycle sweep until it
 succeeds, and send the deletion confirmation after it succeeds. Once the mail relay's acceptance is
@@ -125,7 +106,6 @@ plus invoices retained for tax obligations, remains. See the timetable on the
 
 <h3>Where the data lives</h3>
 <p>For the hosted service, in one SQLite database per account on encrypted volumes supplied by our
-compute host, with encrypted disaster-recovery replicas in object storage. Those infrastructure
-providers are subprocessors and are named with their data and region on the
-<a href="/legal/subprocessors">current subprocessor list</a>. There is no third-party data warehouse
+compute host. Infrastructure providers are subprocessors and are named with their data and region on the
+<a href="https://feasible.lol/legal/subprocessors">current subprocessor list</a>. There is no third-party data warehouse
 or analytics-on-our-analytics.</p>

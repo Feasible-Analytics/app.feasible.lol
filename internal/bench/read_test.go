@@ -73,12 +73,12 @@ func dataset(tb testing.TB) Dataset {
 			// One site, so the whole of the generated history lands in one
 			// database — which is the shape the estimates were written about.
 			if _, seededErr = seed.Run(context.Background(), seed.Options{
-				DataDir:           dir,
-				Pageviews:         *pageviews,
-				Days:              *days,
-				Sites:             1,
-				Seed:              seed.DefaultSeed,
-				ControlMigrations: migrate.Control(),
+				DataDir:          dir,
+				Pageviews:        *pageviews,
+				Days:             *days,
+				Sites:            1,
+				Seed:             seed.DefaultSeed,
+				SystemMigrations: migrate.System(),
 			}); seededErr != nil {
 				return
 			}

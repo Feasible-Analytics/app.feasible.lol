@@ -45,7 +45,7 @@ type publicStack struct {
 	Keys     *apikeys.Store
 }
 
-// buildPublic assembles the stack over an already-open control database.
+// buildPublic assembles the stack over an already-open system database.
 //
 // Nothing here is gated on a plan. The Stats API, the Sites API, the MCP server
 // and webhooks are in every build and every plan, which is the whole point: the
@@ -69,7 +69,7 @@ func buildPublic(e *env, control *sql.DB, cache *sites.Cache, manager *accounts.
 		Limiter:          apikeys.NewLimiter(e.cfg.API.RateLimit),
 		Access:           gate,
 		Sites:            cache,
-		Control:          publicapi.NewControlStore(control),
+		System:           publicapi.NewSystemStore(control),
 		Teams:            teams.NewStore(control),
 		Sharing:          sharing.NewStore(control),
 		Accounts:         manager,

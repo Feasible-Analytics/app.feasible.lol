@@ -36,7 +36,7 @@ const verifyMaxBytes = 1 << 20
 const FirstEventPollInterval = 3 * time.Second
 
 // RoutingDelay is the worst case between creating a site and every serving
-// process learning about it from the shared control database. This number is
+// process learning about it from the app shard system database. This number is
 // what the waiting screen tells the user while remote snapshots refresh.
 const RoutingDelay = 15 * time.Second
 

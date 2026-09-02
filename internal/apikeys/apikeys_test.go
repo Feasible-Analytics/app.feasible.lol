@@ -24,17 +24,17 @@ import (
 // now is the clock every test in this file runs against.
 var now = time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 
-// testStore builds a migrated control database with a team and a user in it.
+// testStore builds a migrated system database with a team and a user in it.
 func testStore(t *testing.T) (*Store, *sql.DB) {
 	t.Helper()
 
-	db, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), db, migrate.System()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -74,7 +74,7 @@ func TestKeyRoundTrips(t *testing.T) {
 	}
 
 	// The plaintext must not be anywhere in the database. A key found in a
-	// stolen copy of control.db is a key somebody can replay against the
+	// stolen copy of system.db is a key somebody can replay against the
 	// running service.
 	var stored string
 	if err := db.QueryRow(`SELECT key_hash FROM api_keys WHERE id = ?`, key.ID).Scan(&stored); err != nil {
@@ -248,7 +248,7 @@ func TestRevokingSomebodyElsesKeyFails(t *testing.T) {
 
 // TestLastUsedIsThrottled checks that the bookkeeping write does not happen on
 // every request. Without the throttle, every authenticated call would take the
-// single control.db write lock — the one lock the whole deployment shares — and
+// single system.db write lock — the one lock the whole deployment shares — and
 // a busy integration would serialise itself behind its own bookkeeping.
 func TestLastUsedIsThrottled(t *testing.T) {
 	keys, db := testStore(t)

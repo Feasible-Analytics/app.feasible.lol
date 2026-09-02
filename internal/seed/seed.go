@@ -70,7 +70,7 @@ const (
 // rather than only its size, which is why they are all explicit rather than
 // derived from a single "how big" number.
 type Options struct {
-	// DataDir holds control.db and the account databases.
+	// DataDir holds system.db and the account databases.
 	DataDir string
 
 	// Pageviews is the total across every site. Other event kinds are generated
@@ -98,10 +98,10 @@ type Options struct {
 	// Out receives the progress and the summary. Nil means no output.
 	Out io.Writer
 
-	// ControlMigrations lets tests select an actual embedded schema prefix when
+	// SystemMigrations lets tests select an actual embedded schema prefix when
 	// the scenario does not exercise later control tables. Zero uses the
 	// production control migration set and retains its gap validation.
-	ControlMigrations migrate.Set
+	SystemMigrations migrate.Set
 
 	Log *logger.Logger
 }
@@ -131,8 +131,8 @@ func (o *Options) withDefaults() {
 	if o.Out == nil {
 		o.Out = io.Discard
 	}
-	if o.ControlMigrations.Name == "" {
-		o.ControlMigrations = migrate.Control()
+	if o.SystemMigrations.Name == "" {
+		o.SystemMigrations = migrate.System()
 	}
 }
 
@@ -193,10 +193,8 @@ type siteRun struct {
 	pool int
 
 	// carry holds events that fell past midnight. They are emitted at the start
-	// of the next day so that the run's clock never goes backwards — the salt
-	// store rotates on the calendar and would refuse a day it had already
-	// passed — and so a visit that spans midnight is folded by the same
-	// previous-salt lookup that does it in production.
+	// of the next day so the run's clock never goes backwards and a visit that
+	// spans midnight is folded by the same previous-day lookup as production.
 	carry []pending
 
 	// index is the site's position in the traffic list, which is what decides
@@ -313,13 +311,13 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	return &g.stats, nil
 }
 
-// open brings up control.db, the account manager and the derive pipeline. The
+// open brings up system.db, the account manager and the derive pipeline. The
 // pipeline is assembled here rather than through ingest.NewService because two
 // of its parts are deliberately not the production ones: geolocation comes from
 // the distribution instead of the mmdb file, and there is no buffer, transport
 // or HTTP handler in front of it.
 func (g *generator) open(ctx context.Context) error {
-	control, err := store.Open(filepath.Join(g.opts.DataDir, config.ControlDatabaseName))
+	control, err := store.Open(filepath.Join(g.opts.DataDir, config.SystemDatabaseName))
 	if err != nil {
 		return err
 	}
@@ -328,22 +326,16 @@ func (g *generator) open(ctx context.Context) error {
 	// A seed run migrates on its own. It is a development command against a
 	// development database, and making somebody run two commands to get one
 	// dataset is how they end up with neither.
-	if _, err := migrate.Run(ctx, control, g.opts.ControlMigrations); err != nil {
+	if _, err := migrate.Run(ctx, control, g.opts.SystemMigrations); err != nil {
 		return fmt.Errorf("seed: %w", err)
 	}
 
-	key, err := salts.LoadKey(g.opts.DataDir, "")
+	saltSource, err := salts.New(fmt.Sprintf("seed-%d", g.opts.Seed))
 	if err != nil {
 		return err
 	}
 
-	saltStore, err := salts.NewStore(control, key)
-	if err != nil {
-		return err
-	}
-
-	saltStore.SetClock(func() time.Time { return g.clock })
-	saltStore.SetRandom(&byteSource{rng: rand.New(rand.NewPCG(uint64(g.opts.Seed), 0x1d872e4a))})
+	saltSource.SetClock(func() time.Time { return g.clock })
 
 	trusted, err := ingest.ParseTrustedProxies(nil)
 	if err != nil {
@@ -363,7 +355,7 @@ func (g *generator) open(ctx context.Context) error {
 
 	g.pipeline = &ingest.Pipeline{
 		Sites:   sites.New(control),
-		Salts:   saltStore,
+		Salts:   saltSource,
 		Geo:     newLocator(),
 		Agents:  useragent.NewCache(useragent.DefaultCapacity, useragent.DefaultTTL),
 		Bots:    bots,
@@ -409,9 +401,8 @@ func (g *generator) plan(ctx context.Context) error {
 	g.days = g.opts.Days
 	g.start = g.now.Truncate(24*time.Hour).AddDate(0, 0, -(g.days - 1))
 
-	// The clock starts at the beginning of history rather than at the real now,
-	// because the salt store creates the day's salt the first time it is asked
-	// and a run that started in the future would then refuse to go back.
+	// The clock starts at the beginning of history rather than at the real now so
+	// every generated timestamp and daily salt follows the replay calendar.
 	g.clock = g.start
 
 	selected := selectFixture(g.opts.Sites)
@@ -569,9 +560,7 @@ func selectFixture(n int) []accountFixture {
 }
 
 // generate walks the calendar. Days are the outer loop and accounts the inner
-// one, which is not an implementation detail: the salt rotates on the calendar
-// and refuses a day it has already passed, so every site has to finish a day
-// before any site starts the next one.
+// one so every site completes a UTC day before any site starts the next one.
 func (g *generator) generate(ctx context.Context) error {
 	for day := 0; day < g.days; day++ {
 		dayStart := g.start.AddDate(0, 0, day)
@@ -679,11 +668,11 @@ func (g *generator) restoreIndexes(ctx context.Context) {
 }
 
 // removeSeeded deletes the databases a previous run wrote. It removes the
-// control database and the account directory and nothing else: the salt key,
-// the geolocation databases and the refreshed bot lists are expensive to
+// system database and the account directory and nothing else: the geolocation
+// databases and the refreshed bot lists are expensive to
 // replace and have nothing to do with the seeded data.
 func removeSeeded(dataDir string) error {
-	control := filepath.Join(dataDir, config.ControlDatabaseName)
+	control := filepath.Join(dataDir, config.SystemDatabaseName)
 
 	for _, suffix := range []string{"", "-wal", "-shm"} {
 		if err := os.Remove(control + suffix); err != nil && !os.IsNotExist(err) {
@@ -705,10 +694,8 @@ func removeSeeded(dataDir string) error {
 	return nil
 }
 
-// byteSource turns a seeded generator into an io.Reader. Both the event ids and
-// the daily salts are drawn from one, because a reproducible dataset cannot have
-// a random number anywhere in it — and the salt in particular decides every
-// visitor id in the database.
+// byteSource turns a seeded generator into an io.Reader for reproducible event
+// IDs. Daily salts derive separately from the seed and UTC day.
 type byteSource struct {
 	rng *rand.Rand
 }

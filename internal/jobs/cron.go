@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/metrics"
 )
 
 // Cron turns "every hour" into rows in the jobs table.
@@ -24,8 +23,8 @@ import (
 // It is a producer for the one queue, not a scheduler of its own: it enqueues
 // through the same Client everything else does, and the Runner drains what it
 // writes. A second queue with its own claiming and its own retries would mean
-// two answers to "is anything stuck", and the metrics endpoint and the
-// readiness probe can each only report on one of them.
+// two answers to "is anything stuck", and the readiness probe can only report
+// on one of them.
 //
 // It deliberately knows nothing about local time. Everything that has to happen
 // at a customer's local hour is decided inside the job itself, by asking each
@@ -114,18 +113,6 @@ func (c *Cron) Queues() []string {
 // discarded so that a Cron which has silently stopped creating work is visible
 // in a log line instead of only in the absence of email.
 func (c *Cron) EnqueueDue(ctx context.Context, now time.Time) (created int, runErr error) {
-	started := time.Now()
-	defer func() {
-		metrics.SchedulerRuns.Inc()
-		metrics.SchedulerDuration.Observe(time.Since(started).Seconds())
-		metrics.SchedulerCreatedJobs.Add(float64(created))
-		if runErr != nil {
-			metrics.SchedulerFailures.Inc()
-			return
-		}
-		metrics.SchedulerLastSuccess.Set(float64(now.UTC().Unix()))
-	}()
-
 	for _, entry := range c.Entries {
 		if entry.Every <= 0 {
 			continue
@@ -149,10 +136,6 @@ func (c *Cron) EnqueueDue(ctx context.Context, now time.Time) (created int, runE
 		}
 
 		for bucketTime := start; !bucketTime.After(current); bucketTime = bucketTime.Add(entry.Every) {
-			catchUp := bucketTime.Before(current)
-			if catchUp {
-				metrics.SchedulerCatchUpSlots.Inc()
-			}
 			bucket := bucketTime.Unix()
 			_, made, err := c.Client.EnqueuePeriodic(ctx, entry.Queue, entry.Kind,
 				PeriodicArgs{ScheduledAt: bucket}, bucket)
@@ -162,9 +145,6 @@ func (c *Cron) EnqueueDue(ctx context.Context, now time.Time) (created int, runE
 
 			if made {
 				created++
-				if catchUp {
-					metrics.SchedulerCatchUpJobs.Inc()
-				}
 			}
 		}
 	}

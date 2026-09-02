@@ -18,11 +18,11 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 )
 
-// applyControlMigrations builds the complete merged control schema for command
+// applySystemMigrations builds the complete merged system schema for command
 // tests that seed records directly before exercising a process boundary.
-func applyControlMigrations(t *testing.T, db *sql.DB) {
+func applySystemMigrations(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), db, migrate.System()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -36,10 +36,10 @@ func run(t *testing.T, args ...string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
 
 	code := Run(Options{
-		Args:              args,
-		Stdout:            &stdout,
-		Stderr:            &stderr,
-		ControlMigrations: migrate.Control(),
+		Args:             args,
+		Stdout:           &stdout,
+		Stderr:           &stderr,
+		SystemMigrations: migrate.System(),
 	})
 
 	return code, stdout.String(), stderr.String()
@@ -49,6 +49,7 @@ func run(t *testing.T, args ...string) (int, string, string) {
 // command tests whose subject is a different fail-closed guard.
 func setProductionOperator(t *testing.T) {
 	t.Helper()
+	t.Setenv("FEASIBLE_APP_HOSTED", "false")
 	t.Setenv("FEASIBLE_OPERATOR_NAME", "Example Operator, Inc.")
 	t.Setenv("FEASIBLE_OPERATOR_ADDRESS", "123 Example Street")
 	t.Setenv("FEASIBLE_OPERATOR_EMAIL", "privacy@example.test")
@@ -87,7 +88,7 @@ func TestHelp(t *testing.T) {
 		t.Fatalf("exit code %d", code)
 	}
 
-	for _, want := range []string{"serve", "ingest", "db migrate", "db backup", "seed", "comp", "--trace-events"} {
+	for _, want := range []string{"serve", "ingest", "db migrate", "db backup", "seed", "comp", "account", "--trace-events"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("help does not mention %q", want)
 		}

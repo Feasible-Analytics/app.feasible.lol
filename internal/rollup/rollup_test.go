@@ -629,19 +629,19 @@ func seedDatabase(t *testing.T) (*accounts.Account, rollup.Site, time.Time) {
 	now := time.Date(2026, 8, 30, 19, 30, 0, 0, time.UTC)
 
 	if _, err := seed.Run(context.Background(), seed.Options{
-		DataDir:           dir,
-		Pageviews:         8_000,
-		Days:              9,
-		Sites:             1,
-		Seed:              414243,
-		Now:               func() time.Time { return now },
-		Out:               io.Discard,
-		ControlMigrations: migrate.Control(),
+		DataDir:          dir,
+		Pageviews:        8_000,
+		Days:             9,
+		Sites:            1,
+		Seed:             414243,
+		Now:              func() time.Time { return now },
+		Out:              io.Discard,
+		SystemMigrations: migrate.System(),
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	control, err := store.Open(filepath.Join(dir, config.ControlDatabaseName))
+	control, err := store.Open(filepath.Join(dir, config.SystemDatabaseName))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -762,7 +762,7 @@ func TestReportTimings(t *testing.T) {
 		t.Skipf("set %s to a seeded data directory to measure the reports", benchDirEnv)
 	}
 
-	control, err := store.Open(filepath.Join(dir, config.ControlDatabaseName))
+	control, err := store.Open(filepath.Join(dir, config.SystemDatabaseName))
 	if err != nil {
 		t.Fatal(err)
 	}

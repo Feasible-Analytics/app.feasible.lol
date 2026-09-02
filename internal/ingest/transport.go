@@ -1,6 +1,6 @@
 //
 // transport.go
-// The batching seam before a direct account database write.
+// The batching seam before either a direct write or a durable ingest outbox.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -15,9 +15,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// Transport commits derived events. The consolidated runtime has one direct
-// implementation; the interface keeps batching tests independent from SQLite
-// without describing a network architecture that no longer exists.
+// Transport takes durable ownership of derived events. Direct mode commits to
+// the account database; hosted ingest commits to its local SQLite outbox.
 type Transport interface {
 	// Send delivers a batch and returns the ids durably committed. Returning
 	// partial identities lets the buffer release successful waiters precisely.
@@ -29,8 +28,7 @@ type ShardResolver interface {
 	Shard(accountID int64) (int, bool)
 }
 
-// DirectShard is the only current resolver. Shared account storage is partition
-// zero in every process.
+// DirectShard resolves every account to the app process's local partition zero.
 type DirectShard struct{}
 
 // Shard always answers shard zero.

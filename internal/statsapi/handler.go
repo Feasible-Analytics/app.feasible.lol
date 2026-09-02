@@ -23,7 +23,6 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/metrics"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 )
@@ -47,7 +46,7 @@ const SlowReport = time.Second
 type Handler struct {
 	// Sites resolves a domain to a site and the account that owns it. It is
 	// the same in-memory snapshot the ingest path reads, so a dashboard query
-	// never touches control.db either.
+	// never touches system.db either.
 	Sites *sites.Cache
 
 	// Accounts hands out the per-account database handles.
@@ -260,12 +259,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var callerError *query.Error
 		if errors.As(err, &callerError) {
-			metrics.QueryFailures.WithLabelValues("caller").Inc()
 			h.failCode(w, http.StatusBadRequest, callerError.Message, callerError.Code)
 			return
 		}
 
-		metrics.QueryFailures.WithLabelValues("internal").Inc()
 		h.internal(w, "run query", err)
 		return
 	}
@@ -294,8 +291,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // than one per site.
 func (h *Handler) record(domain string, result *query.Result, took time.Duration) {
 	source := sourceLabel(result.Meta.Sources)
-
-	metrics.QueryDuration.WithLabelValues(source).Observe(took.Seconds())
 
 	if took >= SlowReport && h.Log != nil {
 		h.Log.SlowReport(domain, source, took,

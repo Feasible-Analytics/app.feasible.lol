@@ -19,8 +19,8 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
-// seedDataDir builds a data directory holding a control database and one
-// account database, in the layout every db command walks: control.db at the
+// seedDataDir builds a data directory holding a system database and one
+// account database, in the layout every db command walks: system.db at the
 // top, and one directory per account under accounts/.
 func seedDataDir(t *testing.T) string {
 	t.Helper()
@@ -28,7 +28,7 @@ func seedDataDir(t *testing.T) string {
 	dir := t.TempDir()
 
 	for _, path := range []string{
-		filepath.Join(dir, "control.db"),
+		filepath.Join(dir, "system.db"),
 		accounts.Path(dir, 1),
 	} {
 		db, err := store.Open(path)
@@ -88,7 +88,7 @@ func TestDBUnknownSubcommand(t *testing.T) {
 	}
 }
 
-// TestMigrateWalksEveryDatabase is the whole command: control.db and every
+// TestMigrateWalksEveryDatabase is the whole command: system.db and every
 // account database brought up to date in one run. An account that is missed is
 // an account whose events stop being accepted after a deploy.
 func TestMigrateWalksEveryDatabase(t *testing.T) {
@@ -100,18 +100,18 @@ func TestMigrateWalksEveryDatabase(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("exit code %d, stderr: %s", code, stderr)
 	}
-	if !strings.Contains(stdout, "control.db") || !strings.Contains(stdout, "000001") {
+	if !strings.Contains(stdout, "system.db") || !strings.Contains(stdout, "000001") {
 		t.Fatalf("not every database was visited: %q", stdout)
 	}
 
-	for _, path := range []string{filepath.Join(dir, "control.db"), accounts.Path(dir, 1)} {
+	for _, path := range []string{filepath.Join(dir, "system.db"), accounts.Path(dir, 1)} {
 		if version := schemaVersion(t, path); version < 1 {
 			t.Fatalf("%s is still at version %d", path, version)
 		}
 	}
 
 	// The schemas are real, not just a version stamp.
-	control, err := store.Open(filepath.Join(dir, "control.db"))
+	control, err := store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestMigrateWalksEveryDatabase(t *testing.T) {
 
 	var count int
 	if err := control.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM users").Scan(&count); err != nil {
-		t.Fatalf("the control schema was not applied: %v", err)
+		t.Fatalf("the system schema was not applied: %v", err)
 	}
 }
 
@@ -146,10 +146,10 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestMigrateCreatesTheControlDatabase covers a fresh install, where nothing
+// TestMigrateCreatesTheSystemDatabase covers a fresh install, where nothing
 // exists yet. This is the first command a new install runs, so it has to create
-// control.db rather than report that it is missing.
-func TestMigrateCreatesTheControlDatabase(t *testing.T) {
+// system.db rather than report that it is missing.
+func TestMigrateCreatesTheSystemDatabase(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("FEASIBLE_APP_DATA_DIR", dir)
 
@@ -162,8 +162,49 @@ func TestMigrateCreatesTheControlDatabase(t *testing.T) {
 		t.Fatalf("nothing was migrated: %q", stdout)
 	}
 
-	if version := schemaVersion(t, filepath.Join(dir, "control.db")); version < 1 {
-		t.Fatalf("control.db was left at version %d", version)
+	if version := schemaVersion(t, filepath.Join(dir, "system.db")); version < 1 {
+		t.Fatalf("system.db was left at version %d", version)
+	}
+}
+
+// TestMigrateRenamesTheLegacySystemDatabase verifies that the explicit
+// maintenance command moves the old filename and its SQLite sidecars before
+// opening anything under the new system.db name.
+func TestMigrateRenamesTheLegacySystemDatabase(t *testing.T) {
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, "control.db")
+	current := filepath.Join(dir, "system.db")
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if err := os.WriteFile(legacy+suffix, []byte("legacy"+suffix), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := renameLegacySystemDatabase(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if _, err := os.Stat(legacy + suffix); !os.IsNotExist(err) {
+			t.Fatalf("legacy file %s still exists", legacy+suffix)
+		}
+		body, err := os.ReadFile(current + suffix)
+		if err != nil || string(body) != "legacy"+suffix {
+			t.Fatalf("renamed file %s = %q, %v", current+suffix, body, err)
+		}
+	}
+}
+
+// TestMigrateRefusesAmbiguousSystemDatabases verifies that an operator must
+// resolve two competing histories instead of the command silently picking one.
+func TestMigrateRefusesAmbiguousSystemDatabases(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"control.db", "system.db"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := renameLegacySystemDatabase(dir); err == nil || !strings.Contains(err.Error(), "refusing to guess") {
+		t.Fatalf("ambiguous rename error = %v", err)
 	}
 }
 
@@ -178,7 +219,7 @@ func TestMigrateFreshRebuilds(t *testing.T) {
 		t.Fatalf("exit code %d, stderr: %s", code, stderr)
 	}
 
-	control, err := store.Open(filepath.Join(dir, "control.db"))
+	control, err := store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +238,7 @@ func TestMigrateFreshRebuilds(t *testing.T) {
 		t.Fatalf("a destructive run said nothing about it: %q", stdout)
 	}
 
-	rebuilt, err := store.Open(filepath.Join(dir, "control.db"))
+	rebuilt, err := store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

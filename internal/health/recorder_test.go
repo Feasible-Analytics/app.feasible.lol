@@ -23,7 +23,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
-// fixture is a control database, an account manager and the two stores, with a
+// fixture is a system database, an account manager and the two stores, with a
 // clock the test drives.
 type fixture struct {
 	control  *sql.DB
@@ -44,14 +44,14 @@ func newFixture(t *testing.T) *fixture {
 
 	dir := t.TempDir()
 
-	control, err := store.Open(filepath.Join(dir, "control.db"))
+	control, err := store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatalf("open control: %v", err)
 	}
 
 	t.Cleanup(func() { control.Close() })
 
-	if _, err := migrate.Run(context.Background(), control, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), control, migrate.System()); err != nil {
 		t.Fatalf("migrate control: %v", err)
 	}
 
