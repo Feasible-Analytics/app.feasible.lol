@@ -90,20 +90,25 @@ test("revenue is sent under the dollar key", async ({ page }) => {
 });
 
 // The queue exists so that a call made before the bundle arrives is neither a
-// ReferenceError nor silently lost, and the alias is how a migrating site keeps
-// its existing calls working.
-test("events queued before the bundle loads are replayed, under both names", async ({ page }) => {
+// ReferenceError nor silently lost. Both the built-in migration alias and a
+// site-configured alias keep existing calls working.
+test("events queued before the bundle loads are replayed under every API name", async ({ page }) => {
 	const state = await collect(page);
 
 	await page.goto("/queue.html");
 
 	await settledCount(state, "Queued Early", 1);
 	await settledCount(state, "Legacy Queued", 1);
+	await settledCount(state, "Plausible Queued", 1);
 
 	expect(named(state, "Queued Early")[0].p).toEqual({ when: "before" });
+	expect(named(state, "Plausible Queued")[0].p).toEqual({ when: "migration" });
 
 	await page.click("#after");
 	await settledCount(state, "Legacy Later", 1);
+
+	await page.click("#plausible-after");
+	await settledCount(state, "Plausible Later", 1);
 });
 
 // The pageview is drained after the queue, so a queued event never arrives
