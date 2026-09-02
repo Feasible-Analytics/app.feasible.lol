@@ -28,6 +28,12 @@ export default defineConfig({
 		trace: "retain-on-failure",
 	},
 
+	// All three engines, because the tracker does not run on our pages. It runs
+	// on a customer's site in whatever browser their visitors happen to have, and
+	// a feature detection that is only ever exercised in Chromium is a feature
+	// detection nobody has tested. WebKit is the one that matters most: it backs
+	// Safari and effectively every browser on iOS, and its `fetch` keepalive and
+	// storage behaviour are what send the tracker down its fallback paths.
 	projects: [
 		{
 			name: "chromium",
@@ -38,6 +44,8 @@ export default defineConfig({
 				launchOptions: { args: ["--enable-features=SoftNavigationHeuristics"] },
 			},
 		},
+		{ name: "webkit", use: { ...devices["Desktop Safari"] } },
+		{ name: "firefox", use: { ...devices["Desktop Firefox"] } },
 	],
 
 	// Playwright owns the fixture server's lifetime, which is the only way a
