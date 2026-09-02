@@ -1063,8 +1063,8 @@ func TestAccountV7ToCurrentKeepsPopulatedSessionOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 7 || result.To != 12 || fmt.Sprint(result.Applied) != "[8 9 10 11 12]" {
-		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 12 via [8 9 10 11 12]",
+	if result.From != 7 || result.To != 13 || fmt.Sprint(result.Applied) != "[8 9 10 11 12 13]" {
+		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 13 via [8 9 10 11 12 13]",
 			result.From, result.To, result.Applied)
 	}
 
@@ -1113,13 +1113,14 @@ func TestAccountV7ToCurrentKeepsPopulatedSessionOwnership(t *testing.T) {
 // TestCoordinatedMigrationNumbers pins the upgrade order requested by the
 // app-shard runtime: account ingest state and hostname authority follow the
 // deployed 0007 settings migration, while the system chain preserves every
-// historical step before removing obsolete salt storage in migration 12.
+// historical step before removing obsolete salt storage in migration 12. The
+// account chain then adds Plausible's lossless imported-rollup fields in 13.
 func TestCoordinatedMigrationNumbers(t *testing.T) {
 	for name, test := range map[string]struct {
 		set  Set
 		want []int
 	}{
-		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12}},
+		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13}},
 		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}},
 	} {
 		t.Run(name, func(t *testing.T) {

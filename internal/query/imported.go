@@ -61,7 +61,14 @@ var importedOrder = []string{
 	"visit:os",
 	"visit:os_version",
 	"visit:language",
+	ImportedPropertyDimension,
 }
+
+// ImportedPropertyDimension is the coverage bit used by Plausible property
+// marginals. It is intentionally a family marker rather than a queryable
+// dimension: the concrete query name remains event:props:<key>, while the key
+// and value live in their own imported-rollup columns.
+const ImportedPropertyDimension = "event:props"
 
 // importedColumns maps each of those dimensions to its column on the roll-up
 // table. Entry and exit page are session columns on the fact tables and plain
@@ -148,7 +155,7 @@ func ImportedCoverage(names []string) (uint64, error) {
 // could carry: a scroll depth is a distribution and an exit rate needs the
 // pageviews of a specific page in a specific visit.
 func ImportedMetricNames() []string {
-	return []string{"visitors", "visits", "pageviews", "events", "bounce_rate", "visit_duration", "views_per_visit", "time_on_page"}
+	return []string{"visitors", "visits", "pageviews", "events", "bounce_rate", "visit_duration", "views_per_visit", "time_on_page", "scroll_depth"}
 }
 
 // importedComponents returns the aggregate expressions that feed one metric
@@ -177,7 +184,16 @@ func importedComponents(name string) ([]expr, bool) {
 	case "views_per_visit":
 		return []expr{sum("pageviews"), sum("visits")}, true
 	case "time_on_page":
-		return []expr{sum("engagement_total"), sum("visits")}, true
+		return []expr{sum("engagement_total"), {
+			SQL: "CASE WHEN SUM(" + importedAlias + ".engagement_visits) > 0" +
+				" THEN SUM(" + importedAlias + ".engagement_visits) ELSE SUM(" + importedAlias + ".visits) END",
+		}}, true
+	case "scroll_depth":
+		return []expr{{
+			SQL: "CASE WHEN SUM(" + importedAlias + ".scroll_depth_visits) > 0" +
+				" THEN CAST(SUM(" + importedAlias + ".scroll_depth_total) AS REAL) /" +
+				" SUM(" + importedAlias + ".scroll_depth_visits) ELSE 0 END",
+		}}, true
 	}
 
 	return nil, false
@@ -308,6 +324,18 @@ func (x *executor) importedPass(ctx context.Context, r Resolved, groups *groupSe
 		selectionCondition(selected),
 	}
 
+	// A property coverage bit identifies the marginal shape, while the key
+	// identifies the concrete event:props:<key> dimension inside that shape.
+	// Constraining breakdowns here prevents equal values from two different
+	// Plausible properties being merged into one row.
+	for _, dimension := range x.plan.Dimensions {
+		if dimension.isProp() {
+			conditions = append(conditions, expr{
+				SQL: importedAlias + ".property_key = ?", Args: []any{dimension.PropKey},
+			})
+		}
+	}
+
 	filters, err := x.importedFilters()
 	if err != nil {
 		return err
@@ -356,11 +384,17 @@ func (x *executor) importCandidates(ctx context.Context, r Resolved) ([]importCa
 
 	args := append([]any{}, sites.Args...)
 	args = append(args, r.Start.Unix(), r.End.Unix())
+	propertyCondition := ""
+	if key, ok := x.importedPropertyKey(); ok {
+		propertyCondition = " AND " + importedAlias + ".property_key = ?"
+		args = append(args, key)
+	}
 
 	rows, err := x.engine.db.QueryContext(ctx,
 		"SELECT "+importedAlias+".import_id, "+importedAlias+".covered, COALESCE(SUM("+importedAlias+".pageviews), 0)"+
 			" FROM "+ImportedTable+" "+importedAlias+
 			" WHERE "+sites.SQL+" AND "+importedAlias+".timestamp >= ? AND "+importedAlias+".timestamp < ?"+
+			propertyCondition+
 			" GROUP BY "+importedAlias+".import_id, "+importedAlias+".covered", args...)
 	if err != nil {
 		return nil, fmt.Errorf("query: read imported shapes: %w", err)
@@ -386,6 +420,33 @@ func (x *executor) importCandidates(ctx context.Context, r Resolved) ([]importCa
 	}
 
 	return candidates, nil
+}
+
+// importedPropertyKey returns the one concrete custom-property key a query
+// asks imported marginals to answer. Multiple keys are deliberately reported
+// as an unanswerable gap elsewhere because Plausible exports them separately.
+func (x *executor) importedPropertyKey() (string, bool) {
+	keys := map[string]bool{}
+	for _, dimension := range x.plan.Dimensions {
+		if dimension.isProp() {
+			keys[dimension.PropKey] = true
+		}
+	}
+	for _, filter := range x.query.Filters {
+		dimension, err := resolveDimension(filter.Dimension)
+		if err == nil && dimension.isProp() {
+			keys[dimension.PropKey] = true
+		}
+	}
+
+	if len(keys) != 1 {
+		return "", false
+	}
+	for key := range keys {
+		return key, true
+	}
+
+	return "", false
 }
 
 // selectImports picks one shape per import and reports the imports that have
@@ -516,6 +577,7 @@ func describeMisses(missed []importCandidate, required []string) []ImportGap {
 // this query, and the gaps for anything they cannot express at all.
 func (x *executor) importedRequirements() ([]string, []ImportGap) {
 	seen := map[string]bool{}
+	propertyKeys := map[string]bool{}
 	var required []string
 	var gaps []ImportGap
 
@@ -533,10 +595,8 @@ func (x *executor) importedRequirements() ([]string, []ImportGap) {
 		}
 
 		if d.isProp() {
-			gaps = append(gaps, ImportGap{
-				Dimension: d.Name,
-				Reason:    "imported history carries no custom properties, so this breakdown covers natively-collected traffic only",
-			})
+			propertyKeys[d.PropKey] = true
+			add(ImportedPropertyDimension)
 			continue
 		}
 
@@ -566,10 +626,8 @@ func (x *executor) importedRequirements() ([]string, []ImportGap) {
 		}
 
 		if resolved.isProp() {
-			gaps = append(gaps, ImportGap{
-				Dimension: filter.Dimension,
-				Reason:    "imported history carries no custom properties, so this filter excludes all of it",
-			})
+			propertyKeys[resolved.PropKey] = true
+			add(ImportedPropertyDimension)
 			continue
 		}
 
@@ -582,6 +640,14 @@ func (x *executor) importedRequirements() ([]string, []ImportGap) {
 		}
 
 		add(resolved.Name)
+	}
+
+	if len(propertyKeys) > 1 {
+		gaps = append(gaps, ImportGap{
+			Dimension: "event:props",
+			Reason: "Plausible exports each custom property as a separate daily aggregate, so imported history cannot combine " +
+				"multiple property keys in one answer",
+		})
 	}
 
 	return required, gaps
@@ -599,6 +665,14 @@ func (x *executor) importedDimensionColumns() ([]compiledDim, error) {
 			compiled = append(compiled, compiledDim{
 				dim: d, alias: alias,
 				sql: bucketExpr(importedAlias+".timestamp", x.resolved.Interval, x.zoneSpans()),
+			})
+			continue
+		}
+
+		if d.isProp() {
+			compiled = append(compiled, compiledDim{
+				dim: d, alias: alias,
+				sql: expr{SQL: importedAlias + ".property_value"},
 			})
 			continue
 		}
@@ -637,6 +711,19 @@ func (x *executor) importedFilters() ([]expr, error) {
 		resolved, err := resolveDimension(filter.Dimension)
 		if err != nil {
 			return nil, err
+		}
+
+		if resolved.isProp() {
+			predicate, err := where.values(expr{SQL: importedAlias + ".property_value"}, filter)
+			if err != nil {
+				return nil, err
+			}
+
+			conditions = append(conditions, and([]expr{
+				{SQL: importedAlias + ".property_key = ?", Args: []any{resolved.PropKey}},
+				negate(predicate, filter.Negated()),
+			}))
+			continue
 		}
 
 		column, ok := ImportedColumn(resolved.Name)

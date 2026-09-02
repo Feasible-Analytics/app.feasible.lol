@@ -37,6 +37,13 @@ type Row struct {
 
 	Dimensions map[string]string
 	Metrics    map[string]int64
+
+	// PropertyKey and PropertyValue carry the one custom-property marginal in
+	// a Plausible custom-properties row, or Plausible's internal `url` property
+	// on an outbound-link event. Imported rows deliberately store one property
+	// pair because Plausible exports one pair per aggregate row.
+	PropertyKey   string
+	PropertyValue string
 }
 
 // rollupColumns is the roll-up table in bind order. The dimension block comes
@@ -49,8 +56,10 @@ var rollupColumns = []string{
 	"country_id", "region_id", "city_id",
 	"device_type_id", "screen_size_id", "browser_id", "browser_version_id",
 	"os_id", "os_version_id", "language_id",
+	"property_key", "property_value",
 	"visitors", "visits", "pageviews", "events", "exits", "bounces",
-	"duration_total", "engagement_total",
+	"duration_total", "engagement_total", "engagement_visits",
+	"scroll_depth_total", "scroll_depth_visits",
 }
 
 // Writer turns parsed rows into roll-up rows. It holds the interning cache
@@ -141,6 +150,8 @@ func (w *Writer) Add(ctx context.Context, row Row) error {
 		args = append(args, ids[column])
 	}
 
+	args = append(args, strings.TrimSpace(row.PropertyKey), strings.TrimSpace(row.PropertyValue))
+
 	args = append(args,
 		row.Metrics[FieldVisitors],
 		row.Metrics[FieldVisits],
@@ -150,6 +161,9 @@ func (w *Writer) Add(ctx context.Context, row Row) error {
 		row.Metrics[FieldBounces],
 		row.Metrics[FieldDuration],
 		row.Metrics[FieldEngagement],
+		row.Metrics[FieldEngagementVisits],
+		row.Metrics[FieldScrollDepth],
+		row.Metrics[FieldScrollVisits],
 	)
 
 	w.pending = append(w.pending, args)

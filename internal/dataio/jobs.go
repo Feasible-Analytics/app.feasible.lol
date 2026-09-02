@@ -47,6 +47,11 @@ type Workers struct {
 	Sites    *sites.Cache
 	DataDir  string
 
+	// Control is system.db. Plausible custom-property keys are registered here
+	// after their roll-ups land so the dashboard's property picker exposes the
+	// migrated history without a second manual setup step.
+	Control *sql.DB
+
 	// Now is injectable so a test can assert on the timestamps a finished
 	// import carries rather than on whatever the clock said.
 	Now func() time.Time
@@ -130,6 +135,10 @@ func (w *Workers) RunCSVImport(ctx context.Context, job jobs.Job) error {
 		return w.failImport(ctx, account.Writer(), record.ID, err.Error())
 	}
 
+	if err := w.registerImportedProperties(ctx, account.Reader(), record); err != nil {
+		return err
+	}
+
 	// An import brings in paths nobody has interned before, and a site with
 	// cleaning rules needs those paths in the map or its imported history is
 	// the only part of the site the rules do not apply to.
@@ -144,6 +153,45 @@ func (w *Workers) RunCSVImport(ctx context.Context, job jobs.Job) error {
 	}
 
 	return SetUploadPath(ctx, account.Writer(), record.ID, "")
+}
+
+// registerImportedProperties copies distinct Plausible property keys into the
+// site's system-database allow list. The insert is idempotent, which matters
+// when a worker retries after the account roll-ups have already committed.
+func (w *Workers) registerImportedProperties(ctx context.Context, account *sql.DB, record *Import) error {
+	if w.Control == nil || record.Source != SourcePlausible {
+		return nil
+	}
+
+	rows, err := account.QueryContext(ctx,
+		"SELECT DISTINCT property_key FROM imported_rollups WHERE import_id = ? AND property_key <> '' ORDER BY property_key",
+		record.ID)
+	if err != nil {
+		return fmt.Errorf("dataio: discover Plausible properties: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return fmt.Errorf("dataio: discover Plausible properties: %w", err)
+		}
+		if key == "url" {
+			continue
+		}
+
+		if _, err := w.Control.ExecContext(ctx, `
+			INSERT INTO site_custom_properties (site_id, key, created_at) VALUES (?, ?, ?)
+			ON CONFLICT (site_id, key) DO NOTHING`, record.SiteID, key, w.now().Unix()); err != nil {
+			return fmt.Errorf("dataio: register Plausible property %q: %w", key, err)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("dataio: discover Plausible properties: %w", err)
+	}
+
+	return nil
 }
 
 // failImport writes the reason onto the row and stops the job being retried.
