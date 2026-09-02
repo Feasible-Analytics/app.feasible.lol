@@ -249,6 +249,38 @@ var utmSourceAliases = map[string]Source{
 // company's front door, which is also the one whose icon exists.
 var hostsByName = buildHostsByName()
 
+// categoriesByName is the reverse category lookup used when an import already
+// carries a canonical source label but not the referrer URL that originally
+// produced it. Both source tables contribute because UTM-only names such as
+// Newsletter may never appear in the hostname table.
+var categoriesByName = buildCategoriesByName()
+
+// buildCategoriesByName indexes every canonical source name case-insensitively.
+// Repeated canonical names carry the same category in both source tables, so
+// assignment order cannot change the answer.
+func buildCategoriesByName() map[string]Category {
+	categories := make(map[string]Category, len(hosts)+len(utmSourceAliases))
+
+	for _, source := range hosts {
+		key := strings.ToLower(source.Name)
+		categories[key] = source.Category
+	}
+
+	for _, source := range utmSourceAliases {
+		key := strings.ToLower(source.Name)
+		categories[key] = source.Category
+	}
+
+	return categories
+}
+
+// CategoryForSource resolves the category of an already-canonical source
+// label. Unknown labels deliberately return CategoryUnknown, which the channel
+// classifier treats as ordinary referral traffic rather than dropping it.
+func CategoryForSource(name string) Category {
+	return categoriesByName[strings.ToLower(strings.TrimSpace(name))]
+}
+
 // buildHostsByName inverts the source table.
 func buildHostsByName() map[string]string {
 	byName := make(map[string]string, len(hosts))

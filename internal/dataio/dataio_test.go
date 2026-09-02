@@ -272,6 +272,17 @@ func TestPlausibleArchiveMigration(t *testing.T) {
 		t.Fatalf("page engagement result = %+v, want 30 seconds and 60%% scroll depth", pageResult.Results)
 	}
 
+	channelQuery := base
+	channelQuery.Metrics = []string{"visitors"}
+	channelQuery.Dimensions = []string{"visit:channel"}
+	channelResult, err := engine.Run(context.Background(), channelQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(channelResult.Results) != 1 || channelResult.Results[0].Dimensions[0] != "Email" || channelResult.Results[0].Metrics[0] != 2 {
+		t.Fatalf("derived Plausible channel result = %+v, want Email with two visitors", channelResult.Results)
+	}
+
 	propertyQuery := base
 	propertyQuery.Metrics = []string{"events"}
 	propertyQuery.Dimensions = []string{"event:props:position"}
@@ -644,6 +655,36 @@ func TestHeaderSpellingsAreTolerated(t *testing.T) {
 
 	if len(plan.dimensions) != 1 || plan.dimensions[0] != "event:page" {
 		t.Fatalf("dimensions = %v, want event:page", plan.dimensions)
+	}
+}
+
+// TestPlausibleSourcesDeriveTheirMissingChannel checks the provider's source
+// shape grows the dimension its dashboard makes the default tab, including a
+// spelled-out Direct label and campaign-tagged email traffic.
+func TestPlausibleSourcesDeriveTheirMissingChannel(t *testing.T) {
+	plan, err := planColumns("imported_sources_20260828_20260828.csv",
+		[]string{"date", "source", "referrer", "utm_source", "utm_medium", "utm_campaign", "visitors"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		fields []string
+		want   string
+	}{
+		{[]string{"2026-08-28", "Google", "google.com", "", "", "", "2"}, "Organic Search"},
+		{[]string{"2026-08-28", "Google", "google.com", "newsletter", "email", "launch", "2"}, "Email"},
+		{[]string{"2026-08-28", "Direct", "", "", "", "", "2"}, "Direct"},
+	}
+
+	for _, tc := range cases {
+		row, err := plan.row(tc.fields, time.UTC)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := row.Dimensions["visit:channel"]; got != tc.want {
+			t.Errorf("source row %v derived channel %q, want %q", tc.fields, got, tc.want)
+		}
 	}
 }
 
