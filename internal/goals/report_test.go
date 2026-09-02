@@ -124,6 +124,35 @@ func TestAGoalWithNoConversionsIsStillARow(t *testing.T) {
 	}
 }
 
+// TestAnImportedEventBackdatesWithoutReplacingItsGoal proves migration can
+// expose historical conversions without erasing a customer's existing name or
+// automatic-goal identity when the same event definition is already present.
+func TestAnImportedEventBackdatesWithoutReplacingItsGoal(t *testing.T) {
+	db, _ := newFixture(t)
+	ctx := context.Background()
+
+	existing, err := Create(ctx, db, Goal{
+		SiteID: siteID, Kind: KindEvent, EventName: "Signup",
+		DisplayName: "Signups", IsAutomatic: true,
+	}, fixtureNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := fixtureNow.AddDate(-2, 0, 0)
+	imported, err := EnsureImportedEvent(ctx, db, siteID, "Signup", first)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if imported.ID != existing.ID || imported.DisplayName != "Signups" || !imported.IsAutomatic {
+		t.Fatalf("import changed existing goal identity: before=%+v after=%+v", existing, imported)
+	}
+	if imported.CreatedAt != first.Unix() {
+		t.Fatalf("imported goal starts at %d, want %d", imported.CreatedAt, first.Unix())
+	}
+}
+
 // TestGoalsDoNotBackfill is the second support-ticket behaviour. Conversions
 // count from the goal's creation forward, so a goal created after the traffic
 // counts none of it — and the row says which instant it started from rather

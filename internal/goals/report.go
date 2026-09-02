@@ -202,6 +202,7 @@ func periodFor(ctx context.Context, engine *query.Engine, req ReportRequest, win
 		DateRange: customRange(window, loc),
 		Timezone:  req.Timezone,
 		Exact:     req.Exact,
+		Include:   query.Include{Imports: true},
 	}
 
 	result, err := engine.Run(ctx, q)
@@ -250,6 +251,7 @@ func countGoal(ctx context.Context, engine *query.Engine, req ReportRequest, goa
 		Timezone:  req.Timezone,
 		Currency:  reportCurrency(req, goal),
 		Exact:     req.Exact,
+		Include:   query.Include{Imports: true},
 	}
 
 	result, err := engine.Run(ctx, q)
@@ -368,13 +370,18 @@ func resolveRange(ctx context.Context, db *sql.DB, engine *query.Engine, siteID 
 	return dateRange.Resolve(now.In(location), location, earliest)
 }
 
-// earliestEvent finds a site's first event, which is where "all time" starts.
-// A site with no events answers the zero time, which the range resolver turns
-// into today rather than into 1970.
+// earliestEvent finds a site's first native or imported event, which is where
+// “all time” starts. A site with neither answers the zero time, which the range
+// resolver turns into today rather than into 1970.
 func earliestEvent(ctx context.Context, db *sql.DB, siteID int64) (time.Time, error) {
 	var earliest sql.NullInt64
 
-	if err := db.QueryRowContext(ctx, "SELECT MIN(timestamp) FROM events WHERE site_id = ?", siteID).Scan(&earliest); err != nil {
+	if err := db.QueryRowContext(ctx, `
+		SELECT MIN(timestamp) FROM (
+			SELECT timestamp FROM events WHERE site_id = ?
+			UNION ALL
+			SELECT timestamp FROM imported_rollups WHERE site_id = ?
+		)`, siteID, siteID).Scan(&earliest); err != nil {
 		return time.Time{}, fmt.Errorf("goals: first event: %w", err)
 	}
 

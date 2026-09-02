@@ -55,9 +55,10 @@ export function compact(value: number): string {
 	return t("dashboard.format.compact.billion", { value: trim(value / 1_000_000_000) });
 }
 
-/** trim drops a trailing ".0" so 1.0k reads as 1k. */
+/** trim keeps one useful decimal at every compact scale, while dropping a
+ *  trailing ".0" so an exact thousand still reads as 1k rather than 1.0k. */
 function trim(value: number): string {
-	const rounded = Math.abs(value) < 10 ? value.toFixed(1) : String(Math.round(value));
+	const rounded = value.toFixed(1);
 
 	return rounded.endsWith(".0") ? rounded.slice(0, -2) : rounded;
 }
@@ -240,12 +241,15 @@ export function rangeLabel(bounds: string[] | undefined): string {
 	const end = bounds[1]?.slice(0, 10) ?? "";
 
 	if (!start || !end) return "";
-	if (start === end) return prettyDate(start);
+	if (start === end) return calendarDate(start);
 
-	return t("dashboard.format.range", { from: prettyDate(start), to: prettyDate(end) });
+	return t("dashboard.format.range", { from: calendarDate(start), to: calendarDate(end) });
 }
 
-function prettyDate(iso: string): string {
+/** calendarDate renders an ISO calendar value without interpreting it as an
+ *  instant. It is used for date controls and resolved ranges so a date in the
+ *  site's timezone cannot slide backward in the reader's timezone. */
+export function calendarDate(iso: string): string {
 	const [y = "", m = "", d = ""] = iso.split("-");
 
 	return t("dashboard.format.date_long", { month: monthName(Number(m)), day: Number(d), year: y });

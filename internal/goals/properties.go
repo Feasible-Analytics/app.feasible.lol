@@ -313,6 +313,7 @@ func PropertyReport(ctx context.Context, db *sql.DB, engine *query.Engine, req P
 		SiteIDs: []int64{req.SiteID}, Metrics: []string{"visitors", "visits", "events"},
 		Dimensions: []string{"event:props:" + name}, Filters: req.Filters,
 		DateRange: req.DateRange, Timezone: req.Timezone, Exact: req.Exact,
+		Include:    query.Include{Imports: true},
 		Pagination: query.Pagination{Limit: limit},
 	})
 	if err != nil {
