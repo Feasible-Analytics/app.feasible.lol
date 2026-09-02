@@ -18,7 +18,12 @@
 	auto_https off
 }
 
-{$FEASIBLE_CADDY_BIND:127.0.0.1}:{$FEASIBLE_CADDY_PORT:19300} {
+# The site label carries only the port so MagicDNS and direct-IP Host headers
+# both match. `bind` limits the socket to loopback or Tailscale without turning
+# that interface address into an accidental HTTP Host matcher.
+http://:{$FEASIBLE_CADDY_PORT:19300} {
+	bind {$FEASIBLE_CADDY_BIND:127.0.0.1}
+
 	# Service and observability paths share each process socket but are denied at
 	# the public edge. Trusted services and monitoring connect directly through
 	# the protected network instead of through Caddy.
