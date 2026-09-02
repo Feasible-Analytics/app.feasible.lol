@@ -53,8 +53,10 @@
     </button>
   </form>
 
-  <p class="mt-6 text-center text-sm text-muted">
-    {{ t $.Lang "auth.login.no_account" }} <a href="/register?next={{ .Data.Next }}" class="font-medium text-accent-ink hover:text-accent">{{ t $.Lang "auth.login.create" }}</a>
-  </p>
+  {{ if .RegistrationEnabled }}
+    <p class="mt-6 text-center text-sm text-muted">
+      {{ t $.Lang "auth.login.no_account" }} <a href="/register?next={{ .Data.Next }}" class="font-medium text-accent-ink hover:text-accent">{{ t $.Lang "auth.login.create" }}</a>
+    </p>
+  {{ end }}
 </div>
 {{ end }}

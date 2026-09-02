@@ -177,7 +177,7 @@ func runServe(e *env, args []string) int {
 
 	e.log.Info("billing configuration",
 		"payments", com.Billing.Enabled(),
-		"webhooks", e.cfg.App.Stripe.WebhookSecret != "",
+		"webhooks", com.Billing.Enabled(),
 		"mail_from", e.cfg.App.MailFrom,
 		"sales_email", e.cfg.App.SalesEmail,
 	)
@@ -344,9 +344,11 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 			_, err = goals.EnsureAutomatic(ctx, lease.Account.Writer(), siteID, now)
 			return err
 		},
-		Access:  gate.Blocked,
-		BaseURL: e.cfg.App.BaseURL,
-		Log:     e.log,
+		Access:              gate.Blocked,
+		DisableRegistration: !e.cfg.App.Hosted,
+		DisableCommerce:     !e.cfg.App.Hosted,
+		BaseURL:             e.cfg.App.BaseURL,
+		Log:                 e.log,
 	})
 }
 

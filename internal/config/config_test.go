@@ -56,6 +56,7 @@ func setValidReplicaAttestation(t *testing.T, replicaURL string) {
 // production tests whose subject is unrelated to legal-mode validation.
 func setProductionOperator(t *testing.T) {
 	t.Helper()
+	t.Setenv("FEASIBLE_APP_HOSTED", "false")
 	t.Setenv("FEASIBLE_OPERATOR_NAME", "Example Operator, Inc.")
 	t.Setenv("FEASIBLE_OPERATOR_ADDRESS", "123 Example Street")
 	t.Setenv("FEASIBLE_OPERATOR_EMAIL", "privacy@example.test")
@@ -214,6 +215,21 @@ func TestStripeConfigurationRequiresWebhookSecret(t *testing.T) {
 	}
 }
 
+// TestSelfHostedModeIgnoresStripeConfiguration makes the mode flag
+// authoritative even when a machine still carries an incomplete old secret.
+func TestSelfHostedModeIgnoresStripeConfiguration(t *testing.T) {
+	t.Setenv("FEASIBLE_APP_HOSTED", "false")
+	t.Setenv("FEASIBLE_STRIPE_SECRET_KEY", "stale-secret")
+
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFrom(loader); err != nil {
+		t.Fatalf("self-hosted configuration rejected an ignored Stripe secret: %v", err)
+	}
+}
+
 // FuzzBoolFailsClosed proves no malformed spelling is silently converted to a
 // fallback. Only values accepted by strconv.ParseBool may load successfully.
 func FuzzBoolFailsClosed(f *testing.F) {
@@ -256,7 +272,10 @@ func TestLoadFromDefaults(t *testing.T) {
 		t.Errorf("listen address: got %q", cfg.App.Listen)
 	}
 	if cfg.App.Transport != TransportDirect {
-		t.Errorf("transport: got %q, want the self-hoster default", cfg.App.Transport)
+		t.Errorf("transport: got %q, want the single-process default", cfg.App.Transport)
+	}
+	if !cfg.App.Hosted {
+		t.Error("hosted mode should default to true")
 	}
 	if cfg.Shared.LogLevel != "debug" || cfg.Shared.LogFormat != "text" {
 		t.Errorf("development logging defaults: got %q/%q", cfg.Shared.LogLevel, cfg.Shared.LogFormat)
@@ -334,6 +353,7 @@ func TestLoadFromProductionLoggingDefaults(t *testing.T) {
 // DPA pages from booting with a generic URL where a legal operator must appear.
 func TestSelfHostedProductionRequiresOperatorIdentity(t *testing.T) {
 	t.Setenv("FEASIBLE_ENV", EnvProduction)
+	t.Setenv("FEASIBLE_APP_HOSTED", "false")
 	loader, err := NewLoader("", "")
 	if err != nil {
 		t.Fatal(err)

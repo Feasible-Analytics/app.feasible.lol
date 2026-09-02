@@ -17,6 +17,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/auth"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/billing"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/pages"
@@ -37,6 +38,7 @@ import (
 // order below is the dependency order, and it is the order somebody debugging
 // "why was this account not deleted" will want to read it in.
 type commerce struct {
+	Hosted         bool
 	Lifecycle      *lifecycle.Service
 	LifecycleStore *lifecycle.Store
 	Purger         *lifecycle.Purger
@@ -60,18 +62,34 @@ func buildCommerce(e *env, control *sql.DB, manager *accounts.Manager, siteCache
 	lifecycleStore := lifecycle.NewStore(control)
 	usageStore := volume.NewStore(control)
 
-	stripeClient := stripe.New(e.cfg.App.Stripe.SecretKey)
+	// Self-hosted mode ignores even accidentally inherited Stripe variables.
+	// This makes the mode switch authoritative: setting it false cannot leave a
+	// checkout button or webhook active because an old secret remains present.
+	stripeSecret := e.cfg.App.Stripe.SecretKey
+	stripeProduct := e.cfg.App.Stripe.Product
+	stripeMonthly := e.cfg.App.Stripe.PriceMonthly
+	stripeYearly := e.cfg.App.Stripe.PriceYearly
+	stripeWebhook := e.cfg.App.Stripe.WebhookSecret
+	if !e.cfg.App.Hosted {
+		stripeSecret = ""
+		stripeProduct = ""
+		stripeMonthly = ""
+		stripeYearly = ""
+		stripeWebhook = ""
+	}
+
+	stripeClient := stripe.New(stripeSecret)
 
 	billingService := &billing.Service{
 		Stripe: stripeClient,
 		Store:  billing.NewStore(control),
 		Plans: billing.Plans{
-			Product: e.cfg.App.Stripe.Product,
-			Monthly: e.cfg.App.Stripe.PriceMonthly,
-			Yearly:  e.cfg.App.Stripe.PriceYearly,
+			Product: stripeProduct,
+			Monthly: stripeMonthly,
+			Yearly:  stripeYearly,
 		},
 		Log:           e.log,
-		WebhookSecret: e.cfg.App.Stripe.WebhookSecret,
+		WebhookSecret: stripeWebhook,
 		BaseURL:       e.cfg.App.BaseURL,
 	}
 
@@ -115,7 +133,13 @@ func buildCommerce(e *env, control *sql.DB, manager *accounts.Manager, siteCache
 		BillingURL: e.cfg.App.BaseURL + "/billing",
 	}
 
+	gate := access.New(nil, nil, siteCache, e.log)
+	if e.cfg.App.Hosted {
+		gate = access.New(lifecycleStore, usageStore, siteCache, e.log)
+	}
+
 	return &commerce{
+		Hosted:         e.cfg.App.Hosted,
 		Lifecycle:      lifecycleService,
 		LifecycleStore: lifecycleStore,
 		Purger:         purger,
@@ -124,7 +148,7 @@ func buildCommerce(e *env, control *sql.DB, manager *accounts.Manager, siteCache
 		Usage:          usageStore,
 		Recorder:       recorder,
 		Volume:         sweeper,
-		Gate:           access.New(lifecycleStore, usageStore, siteCache, e.log),
+		Gate:           gate,
 		Pages: &pages.Handler{
 			Billing:         billingService,
 			Lifecycle:       lifecycleStore,
@@ -155,8 +179,13 @@ func (a ingestUsage) Record(accountID int64, pageviews, customEvents int64) {
 	a.recorder.Record(accountID, volume.Counts{Pageviews: pageviews, CustomEvents: customEvents})
 }
 
-// IngestRecorder is what the shard writer is given.
-func (c *commerce) IngestRecorder() ingestUsage {
+// IngestRecorder is what the shard writer is given. Self-hosted traffic is not
+// billable, so that mode returns no recorder and never accumulates usage rows.
+func (c *commerce) IngestRecorder() ingest.UsageRecorder {
+	if !c.Hosted {
+		return nil
+	}
+
 	return ingestUsage{recorder: c.Recorder}
 }
 
@@ -205,6 +234,10 @@ func (c *commerce) Routes(mux *http.ServeMux, app *auth.Handler) {
 // leaves the deletion clock running, and that is the one that must never stop
 // quietly.
 func (c *commerce) Start(ctx context.Context, run func(func())) {
+	if !c.Hosted {
+		return
+	}
+
 	run(func() { c.Recorder.Run(ctx) })
 	run(func() { c.Gate.Run(ctx) })
 	run(func() { c.Lifecycle.Run(ctx) })

@@ -100,6 +100,21 @@ func NormaliseEmail(email string) string {
 // possible outcome is an account that looks signed up and then 500s on every
 // page.
 func (s *Store) CreateUser(ctx context.Context, email, name, passwordHash, googleSub string) (*User, *Team, error) {
+	return s.createUser(ctx, email, name, passwordHash, googleSub, true, false)
+}
+
+// CreateOperatorUser inserts a verified self-hosted owner without starting a
+// commercial trial. The CLI is the trust boundary here: only an operator with
+// filesystem access can call it, so sending a verification email would add no
+// proof and could make a log-only installation impossible to enter.
+func (s *Store) CreateOperatorUser(ctx context.Context, email, name, passwordHash string) (*User, *Team, error) {
+	return s.createUser(ctx, email, name, passwordHash, "", false, true)
+}
+
+// createUser performs the atomic identity, team and ownership insert. Hosted
+// signups receive the commercial trial window; operator-created self-hosted
+// accounts store no lifecycle deadlines at all.
+func (s *Store) createUser(ctx context.Context, email, name, passwordHash, googleSub string, commercialTrial, verified bool) (*User, *Team, error) {
 	email = NormaliseEmail(email)
 	if email == "" {
 		return nil, nil, fmt.Errorf("auth: an email address is required")
@@ -120,11 +135,15 @@ func (s *Store) CreateUser(ctx context.Context, email, name, passwordHash, googl
 	if googleSub != "" {
 		sub = googleSub
 	}
+	var verifiedAt any
+	if verified {
+		verifiedAt = now.Unix()
+	}
 
 	result, err := tx.ExecContext(ctx, `
-		INSERT INTO users (email, name, password_hash, google_sub, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, email, name, passwordHash, sub, now.Unix(), now.Unix())
+		INSERT INTO users (email, name, password_hash, google_sub, email_verified_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, email, name, passwordHash, sub, verifiedAt, now.Unix(), now.Unix())
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, nil, ErrEmailTaken
@@ -142,7 +161,12 @@ func (s *Store) CreateUser(ctx context.Context, email, name, passwordHash, googl
 		teamName = email
 	}
 
-	trialEnds := now.AddDate(0, 0, TrialDays)
+	var trialEnds, acceptTrafficUntil any
+	if commercialTrial {
+		trial := now.AddDate(0, 0, TrialDays)
+		trialEnds = trial.Unix()
+		acceptTrafficUntil = trial.AddDate(0, 0, 30).Unix()
+	}
 
 	// SQLite may reuse the largest deleted INTEGER PRIMARY KEY. The sequence is
 	// independent of team rows, so every deletion path permanently reserves ids.
@@ -163,9 +187,23 @@ func (s *Store) CreateUser(ctx context.Context, email, name, passwordHash, googl
 	_, err = tx.ExecContext(ctx, `
 			INSERT INTO teams (id, name, trial_ends_at, accept_traffic_until, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?)
-		`, teamID, teamName, trialEnds.Unix(), trialEnds.AddDate(0, 0, 30).Unix(), now.Unix(), now.Unix())
+		`, teamID, teamName, trialEnds, acceptTrafficUntil, now.Unix(), now.Unix())
 	if err != nil {
 		return nil, nil, fmt.Errorf("auth: create team: %w", err)
+	}
+	if !commercialTrial {
+		// The schema trigger enrolls every ordinary team so future creation paths
+		// cannot forget billing. Operator-created teams are the deliberate
+		// exception, removed again inside the same transaction before they are
+		// ever observable.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM account_lifecycle WHERE team_id = ?`, teamID); err != nil {
+			return nil, nil, fmt.Errorf("auth: clear operator lifecycle: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE teams SET trial_ends_at = NULL, accept_traffic_until = NULL WHERE id = ?
+		`, teamID); err != nil {
+			return nil, nil, fmt.Errorf("auth: clear operator trial: %w", err)
+		}
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -180,26 +218,37 @@ func (s *Store) CreateUser(ctx context.Context, email, name, passwordHash, googl
 	}
 
 	user := &User{
-		ID:           userID,
-		Email:        email,
-		Name:         name,
-		PasswordHash: passwordHash,
-		GoogleSub:    googleSub,
-		Theme:        "system",
-		CreatedAt:    now.Unix(),
-		UpdatedAt:    now.Unix(),
+		ID:              userID,
+		Email:           email,
+		Name:            name,
+		PasswordHash:    passwordHash,
+		GoogleSub:       googleSub,
+		EmailVerifiedAt: nullUnix(verifiedAt),
+		Theme:           "system",
+		CreatedAt:       now.Unix(),
+		UpdatedAt:       now.Unix(),
 	}
 
 	team := &Team{
 		ID:                 teamID,
 		Name:               teamName,
-		TrialEndsAt:        trialEnds.Unix(),
-		AcceptTrafficUntil: trialEnds.AddDate(0, 0, 30).Unix(),
+		TrialEndsAt:        nullUnix(trialEnds),
+		AcceptTrafficUntil: nullUnix(acceptTrafficUntil),
 		CreatedAt:          now.Unix(),
 		UpdatedAt:          now.Unix(),
 	}
 
 	return user, team, nil
+}
+
+// nullUnix returns a unix timestamp stored in an optional SQL argument, or
+// zero when the row deliberately has no timestamp.
+func nullUnix(value any) int64 {
+	if timestamp, ok := value.(int64); ok {
+		return timestamp
+	}
+
+	return 0
 }
 
 // userColumns is the select list every user read shares, so a column added to

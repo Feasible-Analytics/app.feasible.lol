@@ -63,6 +63,39 @@ over the protected network.
 
 `make` on its own lists everything.
 
+### Hosted and self-hosted mode
+
+`FEASIBLE_APP_HOSTED` is a safety boundary, not a branding switch. The binary
+defaults it to `true`. Cloudmanic Labs' hosted service leaves it true, which
+enables public account registration, trials, Stripe billing, usage limits,
+payment locks and the payment lifecycle.
+
+A self-hosted installation must explicitly set:
+
+```dotenv
+FEASIBLE_APP_HOSTED=false
+```
+
+In that mode every product feature is free and unrestricted. Feasible does not
+start billing, usage metering, account locks or payment-driven deletion, even if
+Stripe variables are present. Public password and Google signup are disabled so
+exposing the login page to the internet does not let strangers create accounts.
+Invited team members can still complete an invitation, and existing users can
+sign in or reset their passwords normally.
+
+The server operator creates each account from the machine that holds
+`system.db`. Create as many independent accounts as the installation needs:
+
+```bash
+feasible db migrate
+feasible account create --email owner@example.com --name "Account owner"
+```
+
+The command creates a verified owner with no trial dates and prints a generated
+password once. It generates the password rather than accepting one on the
+command line so the credential is not saved in shell history or exposed in the
+process list. Save it, sign in, and change it from account settings.
+
 ### Hosted topology
 
 The single-process self-hosted mode writes directly to account SQLite. Hosted

@@ -43,6 +43,7 @@ var (
 	ErrTokenUsed       = errors.New("auth: this link has already been used")
 	ErrDomainTaken     = errors.New("auth: that domain is already registered")
 	ErrTwoFactorNeeded = errors.New("auth: a two-factor code is required")
+	ErrSignupDisabled  = errors.New("auth: public account registration is disabled on this installation")
 )
 
 // Store is the system database plus the clock everything here reads. The clock

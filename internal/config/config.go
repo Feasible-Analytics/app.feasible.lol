@@ -562,7 +562,7 @@ func LoadFrom(l *Loader) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	hosted, err := l.Bool("FEASIBLE_APP_HOSTED", false)
+	hosted, err := l.Bool("FEASIBLE_APP_HOSTED", true)
 	if err != nil {
 		return nil, err
 	}
@@ -802,24 +802,26 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("FEASIBLE_APP_MAIL_TRANSPORT is smtp but FEASIBLE_SMTP_HOST is empty")
 	}
 
-	// Any billing value opts into hosted billing, and hosted billing is usable
-	// only as one complete unit. In particular, accepting checkout without the
-	// signing secret charges a customer while rejecting the fulfillment event.
-	stripeValues := []string{
-		c.App.Stripe.SecretKey,
-		c.App.Stripe.Product,
-		c.App.Stripe.PriceMonthly,
-		c.App.Stripe.PriceYearly,
-		c.App.Stripe.WebhookSecret,
-	}
-	stripeConfigured := false
-	stripeComplete := true
-	for _, value := range stripeValues {
-		stripeConfigured = stripeConfigured || value != ""
-		stripeComplete = stripeComplete && value != ""
-	}
-	if stripeConfigured && !stripeComplete {
-		return fmt.Errorf("Stripe billing requires FEASIBLE_STRIPE_SECRET_KEY, FEASIBLE_STRIPE_PRODUCT, FEASIBLE_STRIPE_PRICE_MONTHLY, FEASIBLE_STRIPE_PRICE_YEARLY and FEASIBLE_STRIPE_WEBHOOK_SECRET together")
+	if c.App.Hosted {
+		// Any billing value opts a hosted deployment into Stripe, and hosted
+		// billing is usable only as one complete unit. Self-hosted deployments
+		// ignore these variables because billing is disabled in that mode.
+		stripeValues := []string{
+			c.App.Stripe.SecretKey,
+			c.App.Stripe.Product,
+			c.App.Stripe.PriceMonthly,
+			c.App.Stripe.PriceYearly,
+			c.App.Stripe.WebhookSecret,
+		}
+		stripeConfigured := false
+		stripeComplete := true
+		for _, value := range stripeValues {
+			stripeConfigured = stripeConfigured || value != ""
+			stripeComplete = stripeComplete && value != ""
+		}
+		if stripeConfigured && !stripeComplete {
+			return fmt.Errorf("Stripe billing requires FEASIBLE_STRIPE_SECRET_KEY, FEASIBLE_STRIPE_PRODUCT, FEASIBLE_STRIPE_PRICE_MONTHLY, FEASIBLE_STRIPE_PRICE_YEARLY and FEASIBLE_STRIPE_WEBHOOK_SECRET together")
+		}
 	}
 
 	if c.IsProduction() && c.App.Hosted {

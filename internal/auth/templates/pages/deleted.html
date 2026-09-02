@@ -12,9 +12,16 @@
     {{ t $.Lang "auth.deleted.body" }}
   </p>
 
-  <a href="{{ url $.Lang "/register" }}"
-     class="mt-6 inline-block rounded-xl border border-field px-5 py-2.5 text-sm font-semibold text-body hover:bg-hover">
-    {{ t $.Lang "auth.deleted.action" }}
-  </a>
+  {{ if .RegistrationEnabled }}
+    <a href="{{ url $.Lang "/register" }}"
+       class="mt-6 inline-block rounded-xl border border-field px-5 py-2.5 text-sm font-semibold text-body hover:bg-hover">
+      {{ t $.Lang "auth.deleted.action" }}
+    </a>
+  {{ else }}
+    <a href="{{ url $.Lang "/login" }}"
+       class="mt-6 inline-block rounded-xl border border-field px-5 py-2.5 text-sm font-semibold text-body hover:bg-hover">
+      {{ t $.Lang "auth.register.sign_in" }}
+    </a>
+  {{ end }}
 </div>
 {{ end }}

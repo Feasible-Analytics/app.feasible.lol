@@ -56,6 +56,7 @@ Commands:
                desktop assistant. The remote transport is POST /mcp on serve.
   billing      Inspect and drive the account lifecycle: status, trial, sweep.
   comp         Grant durable complimentary access by account owner email.
+  account      Create verified accounts on a self-hosted installation.
 
 Flags:
   --version         Print version, commit and build date, then exit.
@@ -194,6 +195,8 @@ func Run(opts Options) int {
 		return runBilling(e, args[1:])
 	case "comp":
 		return runComp(e, args[1:])
+	case "account":
+		return runAccount(e, args[1:])
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", args[0])
 		fmt.Fprint(stderr, usage)

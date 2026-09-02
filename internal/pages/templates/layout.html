@@ -29,8 +29,10 @@
   <div class="wrap">
     <a class="brand" href="/">feasible.lol</a>
     <nav>
+	  {{ if .Hosted }}
 	  <a href="/pricing{{ if .TeamID }}?team={{ .TeamID }}{{ end }}" {{ if eq .Nav "pricing" }}class="on"{{ end }}>{{ t .Lang "pages.nav.pricing" }}</a>
 	  <a href="/billing{{ if .TeamID }}?team={{ .TeamID }}{{ end }}" {{ if eq .Nav "billing" }}class="on"{{ end }}>{{ t .Lang "pages.nav.billing" }}</a>
+	  {{ end }}
 	  <a href="/docs" {{ if eq .Nav "docs" }}class="on"{{ end }}>{{ t .Lang "pages.nav.docs" }}</a>
 	  {{ if .SignedIn }}
 	  <a href="/dashboard/">{{ t .Lang "pages.nav.dashboard" }}</a>
@@ -52,7 +54,7 @@
 <footer class="bottom">
   <div class="wrap">
     <nav>
-	  <a href="/pricing{{ if .TeamID }}?team={{ .TeamID }}{{ end }}">{{ t .Lang "pages.footer.pricing" }}</a>
+	  {{ if .Hosted }}<a href="/pricing{{ if .TeamID }}?team={{ .TeamID }}{{ end }}">{{ t .Lang "pages.footer.pricing" }}</a>{{ end }}
 	  <a href="/docs">{{ t .Lang "pages.footer.docs" }}</a>
       <a href="/legal/privacy">{{ t .Lang "pages.footer.privacy" }}</a>
       <a href="/legal/terms">{{ t .Lang "pages.footer.terms" }}</a>

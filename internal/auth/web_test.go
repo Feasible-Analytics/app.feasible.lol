@@ -332,6 +332,7 @@ func TestInvitationLinkRedeemsThroughSignupAndVerification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create invitation: %v", err)
 	}
+	app.DisableRegistration = true
 
 	invited := newClient(t, app)
 	resp := invited.get("/invitations/" + token)
@@ -371,6 +372,72 @@ func TestInvitationLinkRedeemsThroughSignupAndVerification(t *testing.T) {
 	role, err := teamStore.RoleOf(context.Background(), team.ID, user.ID)
 	if err != nil || role != teams.RoleEditor {
 		t.Fatalf("accepted role = %q, %v; want editor", role, err)
+	}
+}
+
+// TestSelfHostedRegistrationIsClosed removes public signup forms and refuses
+// both registration methods while leaving the ordinary login page available.
+func TestSelfHostedRegistrationIsClosed(t *testing.T) {
+	app := newTestApp(t)
+	app.DisableRegistration = true
+	c := newClient(t, app)
+
+	login := c.body("/login")
+	if strings.Contains(login, "/register") {
+		t.Fatalf("self-hosted login still advertises registration: %s", login)
+	}
+
+	resp := c.get("/register")
+	closeResponseBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET registration status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+
+	resp = c.post("/register", url.Values{
+		"email": {"stranger@example.com"}, "password": {"a long enough password"},
+	})
+	closeResponseBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST registration status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	if _, err := app.store.UserByEmail(context.Background(), "stranger@example.com"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("disabled registration created a user: %v", err)
+	}
+}
+
+// TestSelfHostedNavigationHidesBillingButKeepsExports ensures removing the
+// paywall surface does not accidentally remove the unrestricted data export.
+func TestSelfHostedNavigationHidesBillingButKeepsExports(t *testing.T) {
+	app := newTestApp(t)
+	c := registerAndVerify(t, app)
+	app.DisableCommerce = true
+
+	body := c.body("/sites")
+	if strings.Contains(body, `href="/billing`) {
+		t.Fatalf("self-hosted sidebar still links to billing: %s", body)
+	}
+
+	user, err := app.store.UserByEmail(context.Background(), "person@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	team, err := app.store.TeamForUser(context.Background(), user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err := app.store.CreateSite(context.Background(), team.ID, "self-hosted.example", "", "UTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.SiteCache.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/"+site.Domain, nil)
+	req = req.WithContext(context.WithValue(req.Context(), contextUser, user))
+	nav := app.NavigationForDashboard(httptest.NewRecorder(), req)
+	if nav.BillingURL != "" || nav.ExportURL == "" {
+		t.Fatalf("self-hosted navigation billing=%q export=%q", nav.BillingURL, nav.ExportURL)
 	}
 }
 

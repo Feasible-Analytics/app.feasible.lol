@@ -39,6 +39,12 @@ func (h *Handler) showRegister(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, next, http.StatusFound)
 		return
 	}
+	if h.DisableRegistration {
+		if _, invited := h.pendingInvitation(r); !invited {
+			h.registrationDisabled(w, r)
+			return
+		}
+	}
 
 	p := h.newPage(r, tr(r, "auth.title.register"), "")
 	p.Data["Next"] = next
@@ -57,6 +63,13 @@ func (h *Handler) showRegister(w http.ResponseWriter, r *http.Request) {
 // screen, and the alternative — a sign-up that ends at a "check your email" dead
 // end — loses the people who close the tab.
 func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
+	if h.DisableRegistration {
+		if _, invited := h.pendingInvitation(r); !invited {
+			h.registrationDisabled(w, r)
+			return
+		}
+	}
+
 	if !h.checkCSRF(w, r) {
 		return
 	}
@@ -119,6 +132,15 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 	h.startSession(w, r, user)
 
 	http.Redirect(w, r, verificationPath(next), http.StatusFound)
+}
+
+// registrationDisabled explains the self-hosted account boundary without
+// revealing whether any account already exists. Operators create accounts with
+// the CLI, while invitations deliberately keep using the registration form.
+func (h *Handler) registrationDisabled(w http.ResponseWriter, r *http.Request) {
+	p := h.newPage(r, tr(r, "auth.title.register"), "")
+	p.Error = "Public account registration is disabled on this installation. Ask the operator to create an account with the feasible CLI."
+	h.render(w, r, "error", p, http.StatusForbidden)
 }
 
 // sendVerification issues a code and a link and emails both.

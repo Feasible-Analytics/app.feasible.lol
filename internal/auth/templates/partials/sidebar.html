@@ -26,7 +26,7 @@
          class="rounded-lg px-3 py-2 font-medium {{ if eq .Nav "settings" }}bg-accent/10 text-accent-ink{{ else }}text-muted hover:bg-hover{{ end }}">
         {{ t $.Lang "auth.sidebar.settings" }}
       </a>
-      {{ if .CanManageBilling }}
+      {{ if and .CommerceEnabled .CanManageBilling }}
       <a href="{{ if .Team }}{{ url $.Lang (printf "/billing?team=%d" .Team.ID) }}{{ else }}{{ url $.Lang "/billing" }}{{ end }}"
          class="rounded-lg px-3 py-2 font-medium text-muted hover:bg-hover">
         {{ t $.Lang "auth.sidebar.billing" }}
