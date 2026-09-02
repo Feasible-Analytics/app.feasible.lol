@@ -89,7 +89,7 @@ func TestPlanIncludesSystemBeforeItExists(t *testing.T) {
 }
 
 // TestPlanRefusesTheLegacySystemFilename verifies replication cannot silently
-// start from a new empty path while the real shared database sits beside it.
+// start from a new empty path while the real system database sits beside it.
 func TestPlanRefusesTheLegacySystemFilename(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, config.LegacyDatabaseName), []byte("legacy"), 0o600); err != nil {

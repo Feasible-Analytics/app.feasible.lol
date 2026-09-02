@@ -167,9 +167,9 @@ type Store struct {
 	Accounts *accounts.Manager
 	Sites    *sites.Cache
 
-	// System is the shared database, which is where the hostname allow-list
-	// lives — it has to be readable by the ingest tier without opening an
-	// account database, so it cannot live beside the health rows.
+	// System is the installation-wide database where the hostname allow-list
+	// originates. The app publishes that list to ingesters through its signed
+	// private endpoint; an ingester never opens this database itself.
 	System *sql.DB
 
 	// Now bounds the window, injectable for tests.

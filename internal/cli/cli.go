@@ -43,7 +43,7 @@ Usage:
 Commands:
   serve        Run the whole product in one process. The default, and the only
                thing a self-hoster ever runs.
-  ingest       Run the event endpoint separately over the shared databases.
+  ingest       Durably buffer events and deliver them to the owning app shard.
   db migrate   Migrate system.db and every account database. Never automatic.
   db backup    Write a consistent snapshot of every database.
   litestream   Generate and check the continuous replication configuration,

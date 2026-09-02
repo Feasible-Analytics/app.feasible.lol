@@ -74,7 +74,7 @@ type API struct {
 	// system.db keeps an authenticated query off the shared write lock.
 	Sites *sites.Cache
 
-	// System is the shared database, for the provisioning endpoints that
+	// System is the installation-wide database, for provisioning endpoints that
 	// genuinely have to write to it.
 	System *SystemStore
 
