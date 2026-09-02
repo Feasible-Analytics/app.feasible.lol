@@ -147,6 +147,16 @@ export function suspend() {
 export function flush() {
 	if (!page.t) return;
 
+	// The scroll position is read here rather than taken on trust from the
+	// listener. A scroll event is delivered at the next rendering opportunity,
+	// so a visit that ends in the same frame as its last scroll — blurred,
+	// hidden, or navigated away — would otherwise report the depth from before
+	// that scroll and quietly under-count the deepest point reached.
+	//
+	// The forced layout this may cost is the one place it does not matter: the
+	// page is being left, so there is no interaction left to delay.
+	record();
+
 	const reached = depth();
 	const total = engagedMs();
 	const delta = total - sentEngaged;

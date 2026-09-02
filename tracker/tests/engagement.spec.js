@@ -43,6 +43,26 @@ test("scrolling down reports a scroll depth", async ({ page }) => {
 	expect(engagement.u).toContain("/engagement.html");
 });
 
+// The deepest point reached, not the deepest point the scroll listener happened
+// to hear about. A scroll event is delivered at the next rendering opportunity,
+// so scrolling and leaving in one task is the case where a flush can outrun its
+// own input — and it under-reported in every engine, not just the slow ones.
+test("a flush in the same frame as the scroll still reports the depth", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/engagement.html");
+	await settledCount(state, "pageview", 1);
+
+	await page.evaluate(() => {
+		window.scrollTo(0, document.documentElement.scrollHeight);
+		window.dispatchEvent(new Event("blur"));
+	});
+
+	await settledCount(state, "engagement", 1);
+
+	expect(named(state, "engagement")[0].sd).toBeGreaterThan(90);
+});
+
 test("time on the page is reported once it is worth reporting", async ({ page }) => {
 	const state = await collect(page);
 
