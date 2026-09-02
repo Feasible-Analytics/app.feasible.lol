@@ -30,7 +30,7 @@ const DefaultHourlyLimit = 10000
 // this system can absorb.
 const window = time.Hour
 
-// Limiter counts requests per key. It is in memory rather than in control.db
+// Limiter counts requests per key. It is in memory rather than in system.db
 // because the alternative is a write on the busiest read path in the product,
 // taking the one lock the whole deployment shares.
 //

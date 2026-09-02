@@ -62,7 +62,7 @@ var domainSpellings = []string{
 var urlHosts = []string{"example.com", "www.example.com"}
 
 // fixtureSaltKey pins the salt encryption key, so both replays read the same
-// salt out of the same control database and therefore compute the same
+// salt out of the same system database and therefore compute the same
 // fingerprints.
 const fixtureSaltKey = "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
 
@@ -355,7 +355,7 @@ func expectedFor(sets int) coreMetrics {
 }
 
 // harness is one wired-up ingest service over its own account database, sharing
-// a control database with its twin so both runs see the same salt and the same
+// a system database with its twin so both runs see the same salt and the same
 // site.
 type harness struct {
 	service *Service
@@ -377,20 +377,20 @@ func (h *harness) setClock(at time.Time) {
 	h.clock.Store(at.Unix())
 }
 
-// newControl builds the shared control database with one team and one site. It
+// newSystem builds the app shard system database with one team and one site. It
 // is shared between the two runs on purpose: the salt is a fingerprint input,
 // so two independently generated salts would make the visitor ids differ for a
 // reason that has nothing to do with ordering.
-func newControl(t testing.TB, dir string) *sql.DB {
+func newSystem(t testing.TB, dir string) *sql.DB {
 	t.Helper()
 
-	db, err := store.Open(filepath.Join(dir, "control.db"))
+	db, err := store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), db, migrate.System()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -729,7 +729,7 @@ func (d *duplicating) Send(ctx context.Context, shard int, batch []Event) ([]uui
 // than from the code under test.
 func TestReplayInOrder(t *testing.T) {
 	dir := t.TempDir()
-	control := newControl(t, dir)
+	control := newSystem(t, dir)
 
 	h := newHarness(t, control, filepath.Join(dir, "run-a"), nil)
 	h.replay(t, stream())
@@ -752,7 +752,7 @@ func TestReplayInOrder(t *testing.T) {
 // with retries and a duplicated pageview is a wrong number with no cause.
 func TestReplayShuffledWithDuplicatesMatches(t *testing.T) {
 	dir := t.TempDir()
-	control := newControl(t, dir)
+	control := newSystem(t, dir)
 
 	ordered := newHarness(t, control, filepath.Join(dir, "run-a"), nil)
 	ordered.replay(t, stream())
@@ -871,7 +871,7 @@ func assertNothingDropped(t testing.TB, h *harness) {
 // number of people replaying the fixture at once.
 func TestReplayAtProductionBufferBounds(t *testing.T) {
 	dir := t.TempDir()
-	control := newControl(t, dir)
+	control := newSystem(t, dir)
 
 	// Enough sets that the stream is comfortably longer than the buffer, so the
 	// size trigger fires several times rather than once at the very end.
@@ -912,7 +912,7 @@ func TestReplayAtProductionBufferBounds(t *testing.T) {
 // fallback they would get a new session too and be counted as two people.
 func TestSessionSurvivesSaltRotation(t *testing.T) {
 	dir := t.TempDir()
-	control := newControl(t, dir)
+	control := newSystem(t, dir)
 
 	h := newHarness(t, control, filepath.Join(dir, "midnight"), nil)
 
@@ -969,7 +969,7 @@ func TestSessionSurvivesSaltRotation(t *testing.T) {
 // per-click identifier and is not ours to keep without consent.
 func TestClickIDValueIsNeverStored(t *testing.T) {
 	dir := t.TempDir()
-	control := newControl(t, dir)
+	control := newSystem(t, dir)
 
 	h := newHarness(t, control, filepath.Join(dir, "clickid"), nil)
 	h.replay(t, stream())
@@ -1028,7 +1028,7 @@ func (f fixedGeo) Close() error { return nil }
 // cannot tell these pageviews apart on it alone.
 func TestEveryEventCarriesItsSessionsAcquisition(t *testing.T) {
 	dir := t.TempDir()
-	control := newControl(t, dir)
+	control := newSystem(t, dir)
 
 	h := newHarness(t, control, filepath.Join(dir, "acquisition"), nil)
 

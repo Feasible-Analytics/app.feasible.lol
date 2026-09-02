@@ -36,7 +36,7 @@ Flags:
 func runComp(e *env, args []string) int {
 	fs := newFlagSet("comp", e, compHelp)
 	email := fs.String("email", "", "email address of the account owner")
-	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding control.db and the account databases")
+	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding system.db and the account databases")
 
 	if code, ok := parseFlags(fs, args); !ok {
 		return code
@@ -52,7 +52,7 @@ func runComp(e *env, args []string) int {
 		return ExitUsage
 	}
 
-	control, err := openControl(context.Background(), *dataDir)
+	control, err := openSystem(context.Background(), *dataDir)
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError

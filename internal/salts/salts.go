@@ -68,7 +68,7 @@ type Pair struct {
 	// cached Pair apart from one that rotation has made stale.
 	Day int64
 
-	// SourceShard identifies the consolidated deployment authority. Only zero
+	// SourceShard identifies the app deployment's salt authority. Only zero
 	// may generate material; any other marker is refused during loading.
 	SourceShard int
 }
@@ -83,7 +83,7 @@ func (p *Pair) Erase() {
 	*p = Pair{}
 }
 
-// Store reads and rotates the salts in control.db. It is safe for concurrent
+// Store reads and rotates the salts in system.db. It is safe for concurrent
 // use and is read on the ingest hot path, so the common case is an atomic read
 // of a cached pair with no lock held across any I/O.
 type Store struct {
@@ -105,7 +105,7 @@ type Store struct {
 	cached Pair
 }
 
-// NewStore builds a store over control.db with the key that encrypts the rows.
+// NewStore builds a store over system.db with the key that encrypts the rows.
 // The key is required rather than optional: a store that silently fell back to
 // plaintext would make the encryption claim depend on configuration nobody
 // checks.

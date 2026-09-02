@@ -44,7 +44,7 @@ const SlugBytes = 16
 //
 // A share password is typed by a person and handed to other people, so it is a
 // real password with all a password's weaknesses — reused, short, and worth
-// running a dictionary against if control.db ever leaks. A bare digest would
+// running a dictionary against if system.db ever leaks. A bare digest would
 // fall to a wordlist in seconds. Two hundred thousand iterations costs a few
 // milliseconds on the one request that checks it and turns that wordlist into
 // weeks.
@@ -119,7 +119,7 @@ func (l Link) Embeddable() bool {
 	return !l.HasPassword
 }
 
-// Store is the control-database side of sharing.
+// Store is the system-database side of sharing.
 type Store struct {
 	db *sql.DB
 
@@ -127,7 +127,7 @@ type Store struct {
 	Now func() time.Time
 }
 
-// NewStore builds a store over the control database.
+// NewStore builds a store over the system database.
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db, Now: func() time.Time { return time.Now().UTC() }}
 }
@@ -393,7 +393,7 @@ func (s *Store) revokeLink(ctx context.Context, siteID, expectedOwnerTeamID, lin
 	return nil
 }
 
-// ownerMutation reserves control.db's writer and validates current ownership
+// ownerMutation reserves system.db's writer and validates current ownership
 // before returning the transaction for a publication mutation.
 func (s *Store) ownerMutation(ctx context.Context, siteID, expectedOwnerTeamID int64) (*sql.Tx, error) {
 	tx, err := s.db.BeginTx(ctx, nil)

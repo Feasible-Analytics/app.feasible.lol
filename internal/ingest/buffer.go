@@ -35,7 +35,8 @@ const DefaultFlushInterval = 500 * time.Millisecond
 const FlushTimeout = 30 * time.Second
 
 // Buffer holds derived events until there are enough to justify a transaction.
-// Public request waiters are released only after the direct account write.
+// Public request waiters are released only after the configured transport has
+// taken durable ownership, either in an account database or local buffer.db.
 type Buffer struct {
 	transport Transport
 

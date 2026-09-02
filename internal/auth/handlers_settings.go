@@ -451,7 +451,7 @@ func (h *Handler) doTeamSettings(w http.ResponseWriter, r *http.Request) {
 // doDeleteAccount deletes everything.
 //
 // It demands the password and the typed word, because there is nothing after
-// this: the account database file is unlinked, the control rows are gone and
+// this: the account database file is unlinked, the system rows are gone and
 // the payment provider's customer record is deleted. No support process can put
 // any of it back.
 func (h *Handler) doDeleteAccount(w http.ResponseWriter, r *http.Request) {

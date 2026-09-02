@@ -18,17 +18,15 @@ laptop is the routing bug production would have had.
 
 | Path | Target group | Why |
 |---|---|---|
-| `/internal/*` | **none — return 404** | Health and metrics belong on the loopback listener |
+| `/internal/*` | **none — return 404** | Private protocol and operations endpoints never reach the public edge |
 | `/api/event*` | ingest tier | The front door scales without dragging the dashboard along |
 | everything else | app tier | Dashboard, API, tracker script, static assets |
 
-The edge denies `/internal/*`, and operational routes live on a second listener
-bound to `127.0.0.1`. Current main exposes health and metrics there; it has no
-internal delivery, routing, or salt-distribution endpoint.
-
-This holds in Tailscale mode too. `FEASIBLE_APP_INTERNAL_LISTEN` and
-`FEASIBLE_INGEST_INTERNAL_LISTEN` stay on loopback there, so the internal
-listener is not reachable from any device on the tailnet either.
+The edge denies `/internal/*`. In local and single-host deployments the second
+listener stays on loopback. Hosted app shards bind it to a private interface
+with TLS and HMAC authentication because ingesters poll `/internal/domains` and
+`/internal/salts` and deliver batches to `/internal/ingest`. Each configured
+shard URL addresses one owning shard; it is not a round-robin app URL.
 
 ## Liveness and readiness are different questions
 
@@ -57,17 +55,18 @@ Registered in code, not configurable, and different per process on purpose.
 
 | Component | App (`serve`) | Ingest (`ingest`) | If it fails |
 |---|---|---|---|
-| `control_db` | required | required | 503 |
-| `account_directory` | required | required | 503 |
-| `salts` | required | required | 503 |
+| `system_db` | required | **not opened** | app 503 |
+| `account_directory` | required | **not opened** | app 503 |
+| `outbox` | not used in direct mode | required | ingest 503 |
+| `salts` | required | required from memory; refreshed privately | 503 when no current salt remains |
 | `geolocation` | **optional** | **optional** | still 200 |
-| `routing_map` | required — **built** | required — **not empty** | 503 |
+| `routing_map` | required — **built** | required — live or disk-cached snapshot built | 503 |
 
-`routing_map` is the one place the two shapes genuinely differ. **An ingestor
-with an empty map answers 202 to everything and drops it all**, so an empty map
-is unready. **An app with no sites is a fresh install**, and refusing it traffic
-would mean nobody could reach the page where they add the first site — so the app
-only asks whether the map has been built.
+`routing_map` is the one place the two shapes genuinely differ. An app with no
+sites is a fresh install. An ingester with an incomplete map retains known
+routes and holds unknown claims in `buffer.db`; it drops an unknown domain only
+after every configured shard has checked in within 60 seconds. App unavailability
+therefore does not remove a healthy ingester from the event load balancer.
 
 ## Degraded is not dead
 
@@ -78,7 +77,7 @@ process answers 200 and keeps taking traffic.
 {
   "status": "ready",
   "components": [
-    {"name": "control_db", "status": "ok"},
+    {"name": "system_db", "status": "ok"},
     {"name": "account_directory", "status": "ok"},
     {"name": "salts", "status": "ok"},
     {"name": "geolocation", "status": "degraded",
@@ -106,7 +105,7 @@ A failed **required** component is a different thing entirely: status
 {
   "status": "not_ready",
   "components": [
-    {"name": "control_db", "status": "ok"},
+    {"name": "system_db", "status": "ok"},
     {"name": "account_directory", "status": "ok"},
     {"name": "salts", "status": "ok"},
     {"name": "geolocation", "status": "ok"},
@@ -140,12 +139,12 @@ reusing a connection the app has already closed, which surfaces as sporadic 502s
 under low traffic and nothing at all under load — one of the hardest failures to
 reproduce on purpose.
 
-**Fail open matters because readiness failures here are correlated.** Every
-instance in a tier reads the same `control.db` and the same data directory, so a
-required component that fails tends to fail everywhere at once. A load balancer
-that removes every target and then serves nothing has converted a degraded tier
-into a total outage. Where the platform offers it, prefer sending traffic to
-unhealthy targets over sending it nowhere.
+**Fail open matters because readiness failures can be correlated.** App shards
+have separate account storage, while each ingester has a separate durable
+outbox volume. A load balancer that removes every event target on a shared
+configuration or salt failure has converted retryable backpressure into a total
+edge outage. Where the platform offers it, prefer sending traffic to unhealthy
+targets over sending it nowhere.
 
 ## Draining, and why the deploy script deregisters explicitly
 
@@ -173,13 +172,13 @@ endpoint it cannot read is also a failure, not an empty buffer.
 Only unplanned hardware failure should ever be exposed to this. Everything else
 is a deregistration, a drain, and then a termination.
 
-## Event-serving processes share authoritative storage
+## Event-serving processes own separate durable storage
 
-Every process that can receive `/api/event` must see the same `control.db`,
-account directories, and salt key. A 202 follows the account commit, so there is
-no per-instance outbox volume to recover. Pointing replicas at separate local
-directories creates divergent routing, receipts, sessions, and salts and is not
-a supported high-availability shape.
+Every ingester has its own persistent `buffer.db` volume and never opens an app
+shard's `system.db` or account databases. A public `202` follows the local
+outbox commit. The ingester removes that row only after the owning app responds
+with the exact UUID it committed. An ingester may be replaced freely only after
+its queue drains or its volume moves with it.
 
 ## Two things to verify after any load-balancer change
 

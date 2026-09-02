@@ -91,7 +91,7 @@ func (a *API) NewSite(ctx context.Context, key *apikeys.Key, domain, displayName
 		return nil, badParam("timezone must be an IANA name such as America/Los_Angeles, not %q", timezone)
 	}
 
-	site, err := a.Control.CreateSite(ctx, key.TeamID, clean, displayName, timezone)
+	site, err := a.System.CreateSite(ctx, key.TeamID, clean, displayName, timezone)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +144,7 @@ func (a *API) EditSite(ctx context.Context, key *apikeys.Key, site sites.Site, d
 		}
 	}
 
-	record, err := a.Control.UpdateSite(ctx, key.TeamID, site.ID, domain, displayName, timezone, isPublic)
+	record, err := a.System.UpdateSite(ctx, key.TeamID, site.ID, domain, displayName, timezone, isPublic)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +164,7 @@ func (a *API) AllowedProperties(ctx context.Context, siteID int64) ([]CustomProp
 	if a.CustomProperties != nil {
 		return a.CustomProperties.ListProperties(ctx, siteID)
 	}
-	return a.Control.CustomProperties(ctx, siteID)
+	return a.System.CustomProperties(ctx, siteID)
 }
 
 // ValidateGoalDefinition checks the complete goal shape used by MCP and other

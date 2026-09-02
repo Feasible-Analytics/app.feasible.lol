@@ -28,6 +28,12 @@ type Sources struct {
 	// BufferDepth is how many accepted events are still waiting to be written.
 	BufferDepth func() int
 
+	// BufferOldest is the age of the oldest event still owed to an app shard.
+	BufferOldest func() time.Duration
+
+	// BufferParked is the number of rows requiring operator review.
+	BufferParked func() int
+
 	// Sessions is how many visits the fold is holding open.
 	Sessions func() int
 
@@ -70,6 +76,8 @@ type sampler struct {
 	sources Sources
 
 	bufferDepth  *prometheus.Desc
+	bufferOldest *prometheus.Desc
+	bufferParked *prometheus.Desc
 	sessions     *prometheus.Desc
 	sites        *prometheus.Desc
 	openAccounts *prometheus.Desc
@@ -95,6 +103,14 @@ func newSampler(sources Sources) *sampler {
 			"feasible_ingest_buffer_events",
 			"Accepted events waiting to be written. A number that only grows is a transport that has stopped accepting.",
 			nil, nil),
+
+		bufferOldest: prometheus.NewDesc(
+			"feasible_ingest_buffer_oldest_seconds",
+			"Age of the oldest event not yet committed by its app shard.", nil, nil),
+
+		bufferParked: prometheus.NewDesc(
+			"feasible_ingest_buffer_parked_events",
+			"Events held outside automatic delivery because ownership or payload validity needs review.", nil, nil),
 
 		sessions: prometheus.NewDesc(
 			"feasible_ingest_sessions_live",
@@ -160,7 +176,7 @@ func newSampler(sources Sources) *sampler {
 // is exactly what a process with no buffer does.
 func (s *sampler) Describe(out chan<- *prometheus.Desc) {
 	for _, desc := range []*prometheus.Desc{
-		s.bufferDepth, s.sessions, s.sites, s.openAccounts, s.jobs,
+		s.bufferDepth, s.bufferOldest, s.bufferParked, s.sessions, s.sites, s.openAccounts, s.jobs,
 		s.databaseBytes, s.walBytes, s.walBytesMax, s.databaseCount, s.databaseReadable,
 		s.diskTotal, s.diskAvailable,
 	} {
@@ -172,6 +188,12 @@ func (s *sampler) Describe(out chan<- *prometheus.Desc) {
 func (s *sampler) Collect(out chan<- prometheus.Metric) {
 	if s.sources.BufferDepth != nil {
 		out <- prometheus.MustNewConstMetric(s.bufferDepth, prometheus.GaugeValue, float64(s.sources.BufferDepth()))
+	}
+	if s.sources.BufferOldest != nil {
+		out <- prometheus.MustNewConstMetric(s.bufferOldest, prometheus.GaugeValue, s.sources.BufferOldest().Seconds())
+	}
+	if s.sources.BufferParked != nil {
+		out <- prometheus.MustNewConstMetric(s.bufferParked, prometheus.GaugeValue, float64(s.sources.BufferParked()))
 	}
 	if s.sources.Sessions != nil {
 		out <- prometheus.MustNewConstMetric(s.sessions, prometheus.GaugeValue, float64(s.sources.Sessions()))
@@ -221,10 +243,10 @@ func (s *sampler) collectStorage(out chan<- prometheus.Metric) {
 		out <- prometheus.MustNewConstMetric(s.diskAvailable, prometheus.GaugeValue, float64(available))
 	}
 
-	control := filepath.Join(s.sources.DataDir, config.ControlDatabaseName)
+	system := filepath.Join(s.sources.DataDir, config.SystemDatabaseName)
 
-	out <- prometheus.MustNewConstMetric(s.databaseBytes, prometheus.GaugeValue, float64(sizeOf(control)), "control")
-	out <- prometheus.MustNewConstMetric(s.walBytes, prometheus.GaugeValue, float64(sizeOf(control+"-wal")), "control")
+	out <- prometheus.MustNewConstMetric(s.databaseBytes, prometheus.GaugeValue, float64(sizeOf(system)), "system")
+	out <- prometheus.MustNewConstMetric(s.walBytes, prometheus.GaugeValue, float64(sizeOf(system+"-wal")), "system")
 
 	ids, err := accounts.Discover(s.sources.DataDir)
 	if err != nil {

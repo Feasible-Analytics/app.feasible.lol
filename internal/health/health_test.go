@@ -35,7 +35,7 @@ func find(t *testing.T, report Report, name string) Component {
 // and says which one it was.
 func TestRequiredFailureIsNotReady(t *testing.T) {
 	set := &Set{}
-	set.Require("control_db", func(context.Context) error { return errors.New("the file is gone") })
+	set.Require("system_db", func(context.Context) error { return errors.New("the file is gone") })
 	set.Require("salts", func(context.Context) error { return nil })
 
 	report := set.Run(context.Background())
@@ -47,7 +47,7 @@ func TestRequiredFailureIsNotReady(t *testing.T) {
 		t.Errorf("status = %q, want %q", report.Status, StatusNotReady)
 	}
 
-	failed := find(t, report, "control_db")
+	failed := find(t, report, "system_db")
 	if failed.Status != StatusFailed || failed.Detail != "the file is gone" {
 		t.Errorf("component = %+v, want failed with the reason attached", failed)
 	}

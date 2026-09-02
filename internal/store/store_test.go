@@ -19,7 +19,7 @@ import (
 // run: the data directory does not exist yet. Failing there would make a fresh
 // install look broken.
 func TestOpenCreatesTheDirectory(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nested", "control.db")
+	path := filepath.Join(t.TempDir(), "nested", "system.db")
 
 	db, err := Open(path)
 	if err != nil {
@@ -37,7 +37,7 @@ func TestOpenCreatesTheDirectory(t *testing.T) {
 // that did not persist would make a resumable migration impossible.
 func TestSchemaVersionRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "control.db")
+	path := filepath.Join(t.TempDir(), "system.db")
 
 	db, err := Open(path)
 	if err != nil {
@@ -78,7 +78,7 @@ func TestSchemaVersionRoundTrip(t *testing.T) {
 func TestBackup(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	source := filepath.Join(dir, "control.db")
+	source := filepath.Join(dir, "system.db")
 
 	db, err := Open(source)
 	if err != nil {
@@ -130,7 +130,7 @@ func TestBackup(t *testing.T) {
 func TestBackupRefusesToOverwrite(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	source := filepath.Join(dir, "control.db")
+	source := filepath.Join(dir, "system.db")
 
 	db, err := Open(source)
 	if err != nil {

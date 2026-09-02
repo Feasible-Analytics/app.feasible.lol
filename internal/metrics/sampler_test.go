@@ -135,8 +135,8 @@ func TestSamplerSkipsAQueueItCannotRead(t *testing.T) {
 func TestSamplerSizesTheDatabases(t *testing.T) {
 	dir := t.TempDir()
 
-	write(t, filepath.Join(dir, "control.db"), 100)
-	write(t, filepath.Join(dir, "control.db-wal"), 10)
+	write(t, filepath.Join(dir, "system.db"), 100)
+	write(t, filepath.Join(dir, "system.db-wal"), 10)
 
 	for _, account := range []int64{1, 2} {
 		path := accounts.Path(dir, account)
@@ -151,8 +151,8 @@ func TestSamplerSizesTheDatabases(t *testing.T) {
 
 	values := gather(t, newSampler(Sources{DataDir: dir}))
 
-	if got := values["feasible_database_bytes/control"]; got != 100 {
-		t.Errorf("control size = %v, want 100", got)
+	if got := values["feasible_database_bytes/system"]; got != 100 {
+		t.Errorf("system size = %v, want 100", got)
 	}
 	if got := values["feasible_database_bytes/accounts"]; got != 2000 {
 		t.Errorf("account size = %v, want 2000", got)

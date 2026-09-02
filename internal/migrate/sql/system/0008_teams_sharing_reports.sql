@@ -205,7 +205,7 @@ CREATE INDEX team_invitations_expiry ON team_invitations(expires_at);
 -- customer sets when somebody has copied their snippet onto a staging domain
 -- or a scraper mirror and polluted their numbers.
 --
--- It lives in the control database rather than the account one because the
+-- It lives in the system database rather than the account one because the
 -- ingest tier has to consult it per event, and the ingest tier never opens an
 -- account database. It reaches the hot path inside the same in-memory routing
 -- snapshot the domain lookup uses.
@@ -229,7 +229,7 @@ ALTER TABLE shared_links ADD COLUMN password_salt TEXT NOT NULL DEFAULT '';
 ALTER TABLE shared_links ADD COLUMN created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
 
 -- Saved segments are immutable filter sets a shared link may pin. Keeping the
--- filters in control.db lets the authorization layer apply them before a stats
+-- filters in system.db lets the authorization layer apply them before a stats
 -- request reaches the account database; trusting the browser to resend them
 -- would let a reader delete the filters and widen the shared view.
 CREATE TABLE saved_segments (

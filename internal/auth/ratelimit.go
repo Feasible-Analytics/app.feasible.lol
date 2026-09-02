@@ -49,7 +49,7 @@ const sweepInterval = 10 * time.Minute
 // Limiter is a fixed-window attempt counter, keyed by a caller-chosen string.
 //
 // It is in-process and deliberately so. The alternative is a table in
-// control.db, which puts a write on the shared writer connection for every
+// system.db, which puts a write on the shared writer connection for every
 // failed password in the system — and the thing being defended is an online
 // guessing attack, which is per-process by definition because every process
 // sees the requests it is serving. A restart resets the counters; an attacker

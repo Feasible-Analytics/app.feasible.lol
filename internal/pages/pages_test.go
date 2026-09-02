@@ -38,26 +38,26 @@ import (
 // pagesNow is the clock the screens render at.
 var pagesNow = time.Date(2026, time.March, 20, 12, 0, 0, 0, time.UTC)
 
-// applyPagesControlSchema applies the complete merged control chain so page
+// applyPagesSystemSchema applies the complete merged control chain so page
 // fixtures render against the same M9 and M8 schema as the runtime.
-func applyPagesControlSchema(t *testing.T, db *sql.DB) {
+func applyPagesSystemSchema(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), db, migrate.System()); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// newHandler builds the pages over a real control database with one team.
+// newHandler builds the pages over a real system database with one team.
 func newHandler(t *testing.T) (*Handler, *sql.DB) {
 	t.Helper()
 
-	control, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	control, err := store.Open(filepath.Join(t.TempDir(), "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { control.Close() })
 
-	applyPagesControlSchema(t, control)
+	applyPagesSystemSchema(t, control)
 
 	stamp := pagesNow.Unix()
 
@@ -1088,7 +1088,7 @@ func TestThePrivacyDocMatchesTheSaltRetention(t *testing.T) {
 			t.Errorf("%s does not state the real salt retention of %s", page.Slug, want)
 		}
 		body := strings.ToLower(string(page.Body))
-		for _, disclosure := range []string{"control", "replica", "72", "restore", "expired salts"} {
+		for _, disclosure := range []string{"system", "replica", "72", "restore", "expired salts"} {
 			if !strings.Contains(body, disclosure) {
 				t.Errorf("%s does not disclose salt replica detail %q", page.Slug, disclosure)
 			}

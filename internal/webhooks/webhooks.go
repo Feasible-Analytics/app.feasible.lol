@@ -172,7 +172,7 @@ const (
 	StateFailed    = "failed"
 )
 
-// Store reads and writes endpoints and deliveries in control.db.
+// Store reads and writes endpoints and deliveries in system.db.
 type Store struct {
 	db *sql.DB
 
@@ -181,7 +181,7 @@ type Store struct {
 	Now func() time.Time
 }
 
-// NewStore builds a store over the control database.
+// NewStore builds a store over the system database.
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db, Now: func() time.Time { return time.Now().UTC() }}
 }

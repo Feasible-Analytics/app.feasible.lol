@@ -41,8 +41,8 @@ func TestSeedGeneratesADataset(t *testing.T) {
 		t.Fatalf("the run said nothing about what it generated: %q", stdout)
 	}
 
-	if _, err := os.Stat(filepath.Join(dir, "control.db")); err != nil {
-		t.Fatalf("no control database: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, "system.db")); err != nil {
+		t.Fatalf("no system database: %v", err)
 	}
 
 	if _, err := os.Stat(accounts.Path(dir, 1)); err != nil {

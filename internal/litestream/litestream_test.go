@@ -15,16 +15,17 @@ import (
 	"testing"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 )
 
-// dataDir builds a data directory holding a control database and the account
+// dataDir builds a data directory holding a system database and the account
 // directories named, in the layout every command walks.
 func dataDir(t *testing.T, ids ...int64) string {
 	t.Helper()
 
 	dir := t.TempDir()
 
-	if err := os.WriteFile(filepath.Join(dir, "control.db"), []byte("x"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "system.db"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -47,10 +48,10 @@ func options(dir string) Options {
 	return Options{DataDir: dir, ReplicaURL: "s3://bucket/shard-01"}
 }
 
-// TestPlanCoversControlAndEveryAccount is the whole promise of generating this
+// TestPlanCoversSystemAndEveryAccount is the whole promise of generating this
 // file: an account that is missed is an account with no replication and no
 // error message anywhere.
-func TestPlanCoversControlAndEveryAccount(t *testing.T) {
+func TestPlanCoversSystemAndEveryAccount(t *testing.T) {
 	dir := dataDir(t, 1, 42)
 
 	plan, err := Plan(options(dir))
@@ -62,7 +63,7 @@ func TestPlanCoversControlAndEveryAccount(t *testing.T) {
 		t.Fatalf("planned %d databases, want 3", len(plan))
 	}
 
-	want := []string{"control", "account-000001", "account-000042"}
+	want := []string{"system", "account-000001", "account-000042"}
 	for i, name := range want {
 		if plan[i].Name != name {
 			t.Fatalf("database %d is named %q, want %q", i, plan[i].Name, name)
@@ -74,16 +75,28 @@ func TestPlanCoversControlAndEveryAccount(t *testing.T) {
 	}
 }
 
-// TestPlanIncludesControlBeforeItExists keeps a brand-new shard covered from
+// TestPlanIncludesSystemBeforeItExists keeps a brand-new shard covered from
 // the moment it is built rather than from its first customer.
-func TestPlanIncludesControlBeforeItExists(t *testing.T) {
+func TestPlanIncludesSystemBeforeItExists(t *testing.T) {
 	plan, err := Plan(options(t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if len(plan) != 1 || plan[0].Name != ControlName {
+	if len(plan) != 1 || plan[0].Name != SystemName {
 		t.Fatalf("an empty install planned %d databases", len(plan))
+	}
+}
+
+// TestPlanRefusesTheLegacySystemFilename verifies replication cannot silently
+// start from a new empty path while the real shared database sits beside it.
+func TestPlanRefusesTheLegacySystemFilename(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, config.LegacyDatabaseName), []byte("legacy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Plan(options(dir)); err == nil || !strings.Contains(err.Error(), "db migrate") {
+		t.Fatalf("legacy plan error = %v", err)
 	}
 }
 

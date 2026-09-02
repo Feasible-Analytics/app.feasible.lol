@@ -32,7 +32,7 @@ func newHandlerHarness(t testing.TB) *harness {
 
 	dir := t.TempDir()
 
-	return newHarness(t, newControl(t, dir), filepath.Join(dir, "shard"), nil)
+	return newHarness(t, newSystem(t, dir), filepath.Join(dir, "shard"), nil)
 }
 
 // post sends a body with a content type and the headers a browser would send.
@@ -454,7 +454,7 @@ func TestMalformedBodyIsRefused(t *testing.T) {
 // the ticker ever writes and every size-triggered batch fails and requeues.
 func TestSizeTriggeredFlushSurvivesTheRequestEnding(t *testing.T) {
 	dir := t.TempDir()
-	h := newHarness(t, newControl(t, dir), filepath.Join(dir, "shard"), nil)
+	h := newHarness(t, newSystem(t, dir), filepath.Join(dir, "shard"), nil)
 
 	// A production-shaped buffer: small enough that the size trigger fires,
 	// with an interval long enough that only the size trigger can run.
@@ -519,7 +519,7 @@ func TestSaltFailureIsRetryableWithoutAcceptingOrDropping(t *testing.T) {
 
 	// A store over a database that is already closed is the cheapest honest
 	// version of "the salts are unavailable".
-	closed, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	closed, err := store.Open(filepath.Join(t.TempDir(), "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

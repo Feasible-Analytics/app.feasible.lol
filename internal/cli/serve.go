@@ -59,7 +59,7 @@ func runServe(e *env, args []string) int {
 	fs := newFlagSet("serve", e, serveHelp)
 	listen := fs.String("listen", e.cfg.App.Listen, "public listen address (host:port)")
 	internalListen := fs.String("internal-listen", e.cfg.App.InternalListen, "private listen address for /internal/*")
-	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding control.db and the account databases")
+	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding system.db and the account databases")
 	check := fs.Bool("check", false, "resolve and print the configuration, then exit without listening")
 
 	if code, ok := parseFlags(fs, args); !ok {
@@ -79,6 +79,7 @@ func runServe(e *env, args []string) int {
 		"base_url", e.cfg.App.BaseURL,
 		"data_dir", e.cfg.App.DataDir,
 		"transport", e.cfg.App.Transport,
+		"shard_id", e.cfg.App.ShardID,
 		"mail_transport", e.cfg.App.MailTransport,
 		"env", e.cfg.Shared.Env,
 		"trace_events", e.cfg.Shared.TraceEvents,
@@ -168,7 +169,7 @@ func runServe(e *env, args []string) int {
 	// same context they are.
 	worker := &rollup.Worker{
 		Accounts: manager,
-		Sites:    rollup.ControlLister(control),
+		Sites:    rollup.SystemLister(control),
 		Log:      e.log,
 	}
 
@@ -224,7 +225,12 @@ func runServe(e *env, args []string) int {
 		serveRoutes(e, service, manager, secret, e.cfg.App.DataDir, app, public, com, data.settings, extra))
 	server.Health = checks
 
-	internal := internalServer("app-internal", e.cfg.App.InternalListen, checks)
+	privateShard := &ingest.InternalShard{
+		ID: e.cfg.App.ShardID, Sites: service.Sites, Shields: site.shields,
+		Salts: service.Salts, Writer: service.Writer,
+	}
+	privateRoutes := ingest.VerifyInternal(internalKeys(e.cfg.Shared.InternalKeys), privateShard.Handler())
+	internal := internalServer("app-internal", e.cfg.App.InternalListen, checks, privateRoutes)
 
 	pruneCtx, stopPrune := context.WithCancel(context.Background())
 	go app.RunPrune(pruneCtx)
@@ -453,7 +459,7 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 
 	// Every report in the product is this one endpoint with different metrics
 	// and dimensions. It reads the same in-memory site snapshot the ingest path
-	// does, so a dashboard query never touches control.db.
+	// does, so a dashboard query never touches system.db.
 	//
 	// The access gate wraps it as well as the dashboard, and that is the point:
 	// the numbers come from here, so a lock that only covered the HTML would be

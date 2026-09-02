@@ -264,6 +264,15 @@ func TestLoadFromDefaults(t *testing.T) {
 	if len(cfg.Ingest.Shards) != 1 {
 		t.Errorf("shards: got %v", cfg.Ingest.Shards)
 	}
+	if cfg.App.ShardID != DefaultAppShardID {
+		t.Errorf("app shard: got %d", cfg.App.ShardID)
+	}
+	if cfg.Ingest.SaltURL != cfg.Ingest.Shards[0] {
+		t.Errorf("salt authority: got %q, want first shard %q", cfg.Ingest.SaltURL, cfg.Ingest.Shards[0])
+	}
+	if cfg.Ingest.BufferPath != DefaultIngestBufferPath {
+		t.Errorf("outbox path: got %q", cfg.Ingest.BufferPath)
+	}
 	if cfg.Litestream.ReplicaURL != "" {
 		t.Errorf("replica URL: got %q, want empty — an install that configured no replication has none", cfg.Litestream.ReplicaURL)
 	}

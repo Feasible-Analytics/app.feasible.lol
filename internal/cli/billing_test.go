@@ -18,20 +18,20 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
-// billingDataDir builds a migrated control database with one team and an owner,
+// billingDataDir builds a migrated system database with one team and an owner,
 // which is the smallest install any of these commands can act on.
 func billingDataDir(t *testing.T) string {
 	t.Helper()
 
 	dir := t.TempDir()
 
-	control, err := store.Open(filepath.Join(dir, "control.db"))
+	control, err := store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer control.Close()
 
-	applyControlMigrations(t, control)
+	applySystemMigrations(t, control)
 
 	now := time.Now().UTC().Unix()
 
@@ -182,7 +182,7 @@ func TestBillingEventsReadsTheWebhookLog(t *testing.T) {
 		t.Fatalf("an empty log reported %q", stdout)
 	}
 
-	control, err := store.Open(filepath.Join(dir, "control.db"))
+	control, err := store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestBillingEventsReadsTheWebhookLog(t *testing.T) {
 func TestBillingRepliedUnlocks(t *testing.T) {
 	dir := billingDataDir(t)
 
-	control, err := store.Open(filepath.Join(dir, "control.db"))
+	control, err := store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

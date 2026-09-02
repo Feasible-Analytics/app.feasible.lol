@@ -1,6 +1,6 @@
 //
 // services.go
-// Assembling the pieces that need control.db: sharing, reports, health and the worker.
+// Assembling the pieces that need system.db: sharing, reports, health and the worker.
 //
 // Created: 2026-08-31
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -56,7 +56,7 @@ type services struct {
 	siteCache *sites.Cache
 }
 
-// buildServices assembles them over an open control database.
+// buildServices assembles them over an open system database.
 //
 // The mailer is the process's one mailer rather than a transport of this
 // package's own. Every guarantee about outgoing mail — the body wrapped below
@@ -80,7 +80,7 @@ func buildServices(e *env, control *sql.DB, manager *accounts.Manager,
 	s.Notifier = &reports.Notifier{
 		Store:   s.Reports,
 		Source:  reports.NewQuerySource(manager),
-		Sites:   reports.ControlSiteLookup(control),
+		Sites:   reports.SystemSiteLookup(control),
 		Mail:    mailer,
 		Slack:   reports.NewSlack(),
 		Log:     e.log,
@@ -146,7 +146,7 @@ func (s *services) background(e *env) func(context.Context, func(func())) {
 // one of those is a decision about who is asking.
 func (s *services) screens(e *env, app *auth.Handler) http.Handler {
 	return settings.NewTeamHandler(&settings.TeamHandler{
-		Control:  s.control,
+		System:   s.control,
 		Teams:    s.Teams,
 		Sharing:  s.Sharing,
 		Reports:  s.Reports,

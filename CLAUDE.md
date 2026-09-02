@@ -183,12 +183,11 @@ TAB=$(herdr tab create --workspace "$WS" --label "Server" --no-focus \
 
 Do not re-open these without a reason. Full reasoning is in the build plan.
 
-- **Storage** — one `control.db`, plus one SQLite database per *account* (not per site).
-- **Ingest** — direct durable writes. Every serving process resolves sites from the shared
-  `control.db`, writes the owning account database, and answers `202` only after the account
-  transaction commits. There is no network outbox or internal delivery protocol.
-- **Routing** — the site snapshot maps a claimed domain directly to an account database. A domain
-  in the snapshot is eligible for collection; a domain outside it is a named drop.
+- **Storage** — one `system.db` per app shard, plus one SQLite database per *account* (not per site).
+- **Ingest** — self-hosters use direct writes. Hosted production derives into a local SQLite outbox,
+  answers `202`, retries the owning app shard, and deletes only UUIDs acknowledged after commit.
+- **Routing** — every ingester polls every configured app shard. Failed polls retain the last list;
+  map completeness gates only destructive decisions about unknown domains.
 - **The IP address never reaches disk.** Geolocation and fingerprinting happen in the ingest tier, and
   the IP is discarded before anything is written.
 - **Front end** — React + TypeScript for the stats dashboard only; server-rendered Go templates

@@ -44,6 +44,7 @@ const (
 	DefaultIngestInternalListen = "127.0.0.1:19402"
 	DefaultIngestShards         = "http://127.0.0.1:19401"
 	DefaultIngestBufferPath     = "./data/ingest/buffer.db"
+	DefaultAppShardID           = 1
 
 	// DefaultAPIRateLimit is how many public-API requests one key may make an
 	// hour. It is configurable at all because the incumbent's equivalent is
@@ -88,13 +89,18 @@ const (
 // and backup commands have to agree on where a database lives, and a mismatch
 // would silently skip every account.
 const (
-	ControlDatabaseName = "control.db"
-	AccountDatabaseDir  = "accounts"
+	SystemDatabaseName = "system.db"
+	AccountDatabaseDir = "accounts"
+
+	// LegacyDatabaseName is the filename used before the system database was
+	// named for what it contains. Maintenance commands use it only to perform a
+	// one-time, explicit layout upgrade; serving processes never open it.
+	LegacyDatabaseName = "control.db"
 )
 
 // Transport names which public process owns the event endpoint. Direct mounts
-// it in the app process; http leaves it to a separate ingest process that uses
-// the same shared control and account storage.
+// it in the app process; http leaves it to a separate store-and-forward ingest
+// process that delivers durable batches to the owning app shard.
 const (
 	TransportDirect = "direct"
 	TransportHTTP   = "http"
@@ -114,9 +120,8 @@ const (
 	EnvDevelopment = "development"
 )
 
-// InternalKey is retained only for configuration compatibility with retired
-// internal delivery deployments. The consolidated runtime does not sign an
-// ingest-to-writer network hop.
+// InternalKey authenticates one generation of private app-shard traffic.
+// Ordered lists permit overlap during rotation without coordinated restarts.
 type InternalKey struct {
 	ID     string `json:"id"`
 	Secret string `json:"secret"`
@@ -148,6 +153,9 @@ type App struct {
 	Transport      string
 	MailTransport  string
 	Hosted         bool
+	// ShardID is this app's one-based stable position in every ingester's
+	// ordered FEASIBLE_INGEST_SHARDS list.
+	ShardID int
 
 	// MailFrom is the envelope sender on every message the product sends. A
 	// relay rejects a From it does not own, and that rejection is the most
@@ -273,10 +281,9 @@ type Ingest struct {
 	// reconnaissance for anybody deciding whether we are worth attacking.
 	InternalListen string
 
-	// Shards and BufferPath retain environment parsing compatibility with the
-	// retired forwarding topology. Direct account writes do not consume them.
 	Shards     []string
 	BufferPath string
+	SaltURL    string
 
 	// TrustedProxies may supply client-address headers. Empty means all
 	// forwarded headers are ignored so a direct client cannot forge its
@@ -610,6 +617,7 @@ func LoadFrom(l *Loader) (*Config, error) {
 			Transport:       strings.ToLower(l.String("FEASIBLE_APP_TRANSPORT", DefaultAppTransport)),
 			MailTransport:   strings.ToLower(l.String("FEASIBLE_APP_MAIL_TRANSPORT", DefaultAppMailTransport)),
 			Hosted:          hosted,
+			ShardID:         l.Int("FEASIBLE_APP_SHARD_ID", DefaultAppShardID),
 			MailFrom:        l.String("FEASIBLE_APP_MAIL_FROM", DefaultAppMailFrom),
 			SalesEmail:      l.String("FEASIBLE_APP_SALES_EMAIL", DefaultAppSalesEmail),
 			OperatorName:    strings.TrimSpace(l.String("FEASIBLE_OPERATOR_NAME", "")),
@@ -658,6 +666,7 @@ func LoadFrom(l *Loader) (*Config, error) {
 			Listen:         l.String("FEASIBLE_INGEST_LISTEN", DefaultIngestListen),
 			InternalListen: l.String("FEASIBLE_INGEST_INTERNAL_LISTEN", DefaultIngestInternalListen),
 			BufferPath:     l.String("FEASIBLE_INGEST_BUFFER_PATH", DefaultIngestBufferPath),
+			SaltURL:        strings.TrimRight(l.String("FEASIBLE_INGEST_SALT_URL", ""), "/"),
 			TrustedProxies: parseList(l.String("FEASIBLE_INGEST_TRUSTED_PROXIES", "")),
 		},
 	}
@@ -679,6 +688,9 @@ func LoadFrom(l *Loader) (*Config, error) {
 		return nil, err
 	}
 	cfg.Ingest.Shards = shards
+	if cfg.Ingest.SaltURL == "" && len(shards) > 0 {
+		cfg.Ingest.SaltURL = shards[0]
+	}
 	if !cfg.App.Hosted && cfg.Shared.Env == EnvDevelopment {
 		if cfg.App.OperatorName == "" {
 			cfg.App.OperatorName = "Operator of " + cfg.App.BaseURL
@@ -745,8 +757,9 @@ func parseSubprocessors(raw string) ([]Subprocessor, error) {
 	return subprocessors, nil
 }
 
-// parseShards validates the retired compatibility list so an existing deploy
-// does not silently accept malformed configuration during migration.
+// parseShards validates the complete, static app-shard list. Completeness of
+// that list is what lets an ingester distinguish an unknown domain from a
+// domain hidden behind an unavailable shard.
 func parseShards(raw string) ([]string, error) {
 	var out []string
 
@@ -809,6 +822,11 @@ func (c *Config) Validate() error {
 	case TransportDirect, TransportHTTP:
 	default:
 		return fmt.Errorf("FEASIBLE_APP_TRANSPORT: %q is not direct or http", c.App.Transport)
+	}
+	if c.App.Transport == TransportHTTP {
+		if len(c.Shared.InternalKeys) == 0 {
+			return fmt.Errorf("FEASIBLE_INTERNAL_KEYS: http transport requires at least one signing key")
+		}
 	}
 
 	switch c.App.MailTransport {
@@ -930,6 +948,23 @@ func (c *Config) Validate() error {
 	base, err := url.Parse(c.App.BaseURL)
 	if err != nil || base.Scheme == "" || base.Host == "" {
 		return fmt.Errorf("FEASIBLE_APP_BASE_URL: %q is not an absolute URL", c.App.BaseURL)
+	}
+	if c.Ingest.SaltURL != "" {
+		saltURL, err := url.Parse(c.Ingest.SaltURL)
+		if err != nil || saltURL.Scheme == "" || saltURL.Host == "" {
+			return fmt.Errorf("FEASIBLE_INGEST_SALT_URL: %q is not an absolute URL", c.Ingest.SaltURL)
+		}
+	}
+	if c.IsProduction() && c.App.Hosted && c.App.Transport == TransportHTTP {
+		for _, endpoint := range append(append([]string(nil), c.Ingest.Shards...), c.Ingest.SaltURL) {
+			if endpoint == "" {
+				continue
+			}
+			parsed, _ := url.Parse(endpoint)
+			if parsed.Scheme != "https" {
+				return fmt.Errorf("private app-shard URL %q must use https in hosted production", endpoint)
+			}
+		}
 	}
 
 	return nil

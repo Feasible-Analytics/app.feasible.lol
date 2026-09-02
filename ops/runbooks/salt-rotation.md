@@ -8,7 +8,7 @@ Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 
 # A salt rotation went wrong
 
-Salt material is random and stored encrypted in the shared `control.db`.
+Salt material is random and stored encrypted in the shared `system.db`.
 Authority source `0` pre-provisions tomorrow's value, so the table normally
 contains previous, current, and next-day rows while only previous and current
 are usable for fingerprinting. Rows at the 48-hour boundary are deleted and the
@@ -20,7 +20,7 @@ rest on it, and both break here:
 - **Visitor counts are right.** The same person on the same site on the same day
   is one visitor, because the same salt produced the same hash.
 - **After 48 hours the live system cannot reconstruct a fingerprint.** The salt
-  that produced the hash has been deleted from the live control database.
+  that produced the hash has been deleted from the live system database.
   Each encrypted replica object becomes eligible for provider removal within
   72 hours of being written, as described below. Provider removal is
   asynchronous with no published maximum, and an authorised restore with the
@@ -43,7 +43,7 @@ deleted, not archived.** Everything below is one of those rules having failed.
 ## Diagnosis
 
 ```bash
-sqlite3 /var/lib/feasible/control.db \
+sqlite3 /var/lib/feasible/system.db \
   "SELECT created_at, source_shard, length(salt)
    FROM salts ORDER BY created_at;"
 ```
@@ -66,8 +66,10 @@ done
 ## Fix
 
 Restore `FEASIBLE_SALT_KEY`, or the generated `salt.key`, if rows cannot be
-decrypted. All event-serving processes must use the same shared control database
-and key. There is no `/internal/salts` replication endpoint.
+decrypted. App shards own the system database; ingesters fetch only the current
+and previous salts over the authenticated `/internal/salts` endpoint and keep
+them in memory. Every app shard must serve the same salt authority, and every
+ingester must use an accepted HMAC key.
 
 If expired rows remain, first repair the disk, permissions, or lock preventing
 the delete and WAL checkpoint. Let the normal refresh prune them, then verify no
@@ -81,7 +83,7 @@ State that impact explicitly.
 ## Backups
 
 The live system deletes salts after 48 hours. **Replication does not** —
-snapshots of `control.db` can contain salt rows the live database has already
+snapshots of `system.db` can contain salt rows the live database has already
 deleted. Generated Litestream configuration disables remote retention deletion,
 and the mandatory provider lifecycle is the sole remote removal authority. The
 mandatory bucket lifecycle makes each snapshot eligible for provider removal no
@@ -102,10 +104,10 @@ So:
   credentials that can read the replica. The two halves in one place unseal every
   historical snapshot at once, and that is a promise broken retroactively for
   every visitor in the window.
-- **Restore `control.db` only while the service is stopped.** Before either app
+- **Restore `system.db` only while the service is stopped.** Before either app
   or ingest starts, prune expired salts by running `DELETE FROM salts WHERE created_at <
   strftime('%s','now') - 172800;` against the restored file. Starting first
-  resurrects salts that live retention deleted on purpose. A control restore
+  resurrects salts that live retention deleted on purpose. A system restore
   also rolls back sites, users and API keys created since, none of which is
   recoverable from an account database.
 - Changing the replica window means versioning and revalidating the provider

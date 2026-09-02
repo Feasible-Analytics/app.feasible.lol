@@ -26,15 +26,21 @@ type Event struct {
 	// makes a redelivery harmless: the account receipt exists or it does not.
 	UUID uuid.UUID
 
-	// Shard is the local buffer partition. The consolidated runtime always uses
-	// zero, and the field remains to keep the batching seam stable.
+	// Shard is the destination app shard's position in the ingester's static
+	// shard list. Minus one means routing was incomplete when the event arrived;
+	// the durable resolver will attach ownership before delivery.
 	Shard int
 
 	// AccountID names the database this is written to; SiteID is the site
-	// within it. Both are resolved from the site cache, never from control.db
+	// within it. Both are resolved from the site cache, never from system.db
 	// on the hot path.
 	AccountID int64
 	SiteID    int64
+
+	// Domain is the claimed tracking domain. It survives derivation so a row
+	// accepted while one app shard is unreachable can be routed after the
+	// shard map becomes complete, without retaining the visitor's address.
+	Domain string
 
 	// Timestamp is unix seconds in UTC. Every accumulation rule keys off this
 	// rather than arrival order, which is what makes a retry harmless.

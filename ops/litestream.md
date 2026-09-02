@@ -1,6 +1,6 @@
 <!--
 litestream.md
-Continuous replication of control.db and every account database.
+Continuous replication of system.db and every account database.
 
 Created: 2026-08-31
 Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -22,13 +22,13 @@ replicator role below.
 
 | File | Replica name |
 |---|---|
-| `$FEASIBLE_APP_DATA_DIR/control.db` | `control` |
+| `$FEASIBLE_APP_DATA_DIR/system.db` | `system` |
 | `$FEASIBLE_APP_DATA_DIR/accounts/000001/analytics.db` | `account-000001` |
 | …one per account directory | `account-<id>` |
 
-The account list is read from the **disk**, not from `control.db`. It is the same
+The account list is read from the **disk**, not from `system.db`. It is the same
 choice `feasible db migrate` and `feasible db backup` make, for the same reason:
-a box whose control database is unreadable is exactly when somebody is trying to
+a box whose system database is unreadable is exactly when somebody is trying to
 work out what is on it.
 
 Nothing else in the data directory is replicated, and that is deliberate — see
@@ -142,7 +142,7 @@ Litestream can no longer clean a prefix after its database leaves the file.
 The durable removal control is the bucket lifecycle rule
 `feasible-replica-expiration-v1`, not Litestream's configuration. It filters the
 entire shard prefix, so it continues to cover a deleted `account-*` prefix and
-old `control` snapshots containing expired salts after either database stops
+old `system` snapshots containing expired salts after either database stops
 changing. Render the exact provider JSON with:
 
 ```bash
@@ -194,24 +194,24 @@ the bucket afterwards.
 ## What must never reach the bucket
 
 **`salt.key`.** It sits at `$FEASIBLE_APP_DATA_DIR/salt.key` and it decrypts the
-fingerprint salts in `control.db`. The live database deletes salts after 48
-hours, but an encrypted control snapshot can retain the deleted row until the
+fingerprint salts in `system.db`. The live database deletes salts after 48
+hours, but an encrypted system snapshot can retain the deleted row until the
 provider removes it. The lifecycle rule makes each replica object eligible
 within 72 hours of being written; asynchronous removal has no published maximum.
 Litestream only replicates the SQLite
 files the configuration names, so the key is not in the bucket by default —
 **and it must never be put there.** Separate key storage reduces exposure, but
 it does not erase the replica re-identification capability: an authorised
-operator restoring both the control replica and its separately backed-up key,
+operator restoring both the system replica and its separately backed-up key,
 together with matching analytics data, could test a fingerprint while a
 provider-retained snapshot remains.
 
 Back the key up separately, to somewhere the replica credentials cannot reach. A
-restored `control.db` without its key is a shard that cannot read any salt, which
-is a fixable outage. A restored `control.db` with the key stored next to it is
+restored `system.db` without its key is a shard that cannot read any salt, which
+is a fixable outage. A restored `system.db` with the key stored next to it is
 not fixable, because it collapses the separation that limits replica exposure.
 
-Restore `control.db` only while the service is stopped. Before any app or ingest
+Restore `system.db` only while the service is stopped. Before any app or ingest
 process starts, prune expired salts older than 48 hours from the restored database;
 otherwise the restore extends their live availability beyond the published
 window. Then start the service and verify the normal two-row salt state.

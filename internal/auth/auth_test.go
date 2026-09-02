@@ -20,21 +20,21 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
-// newTestStore builds a store over a migrated control database in a temporary
+// newTestStore builds a store over a migrated system database in a temporary
 // directory. Every test gets its own file, so nothing leaks between them and a
 // failure names a path somebody can open.
 func newTestStore(t *testing.T) (*Store, *sql.DB) {
 	t.Helper()
 
-	db, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "system.db"))
 	if err != nil {
-		t.Fatalf("open control database: %v", err)
+		t.Fatalf("open system database: %v", err)
 	}
 
-	t.Cleanup(func() { checkClose(t, "control database", db.Close) })
+	t.Cleanup(func() { checkClose(t, "system database", db.Close) })
 
-	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
-		t.Fatalf("migrate control database: %v", err)
+	if _, err := migrate.Run(context.Background(), db, migrate.System()); err != nil {
+		t.Fatalf("migrate system database: %v", err)
 	}
 	return NewStore(db), db
 }

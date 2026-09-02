@@ -61,7 +61,7 @@ func metricValue(t *testing.T, name string) float64 {
 // replica run its own Cron with no leader election. They all try, one insert
 // wins, and the rest are no-ops.
 func TestOneTickPerPeriodAcrossEveryProcess(t *testing.T) {
-	db := newControl(t)
+	db := newSystem(t)
 	ctx := context.Background()
 
 	now := time.Date(2026, 8, 30, 12, 5, 0, 0, time.UTC)
@@ -93,7 +93,7 @@ func TestOneTickPerPeriodAcrossEveryProcess(t *testing.T) {
 // TestTheNextPeriodGetsItsOwnTick checks that the bucket key advances, so an
 // hourly job actually runs every hour rather than once ever.
 func TestTheNextPeriodGetsItsOwnTick(t *testing.T) {
-	db := newControl(t)
+	db := newSystem(t)
 	client := NewClient(db)
 	ctx := context.Background()
 
@@ -137,7 +137,7 @@ func TestTheNextPeriodGetsItsOwnTick(t *testing.T) {
 func TestASecondEntryTicksOnItsOwnPeriod(t *testing.T) {
 	ctx := context.Background()
 
-	cron := NewCron(NewClient(newControl(t)), nil)
+	cron := NewCron(NewClient(newSystem(t)), nil)
 	cron.Add("notifications", "reports.schedule", time.Hour)
 	cron.Add("notifications", "reports.alerts", 10*time.Minute)
 
@@ -154,7 +154,7 @@ func TestASecondEntryTicksOnItsOwnPeriod(t *testing.T) {
 // TestAnEntryWithNoPeriodIsSkipped checks that a misconfigured entry is ignored
 // rather than enqueueing a job every time Cron looks.
 func TestAnEntryWithNoPeriodIsSkipped(t *testing.T) {
-	cron := NewCron(NewClient(newControl(t)), nil)
+	cron := NewCron(NewClient(newSystem(t)), nil)
 	cron.Add("notifications", "broken", 0)
 
 	made, err := cron.EnqueueDue(context.Background(), time.Now().UTC())
@@ -173,7 +173,7 @@ func TestAnEntryWithNoPeriodIsSkipped(t *testing.T) {
 // queue nothing is draining.
 func TestCronTicksOntoTheQueueTheRunnerDrains(t *testing.T) {
 	ctx := context.Background()
-	client := NewClient(newControl(t))
+	client := NewClient(newSystem(t))
 
 	cron := NewCron(client, nil)
 	cron.Add("notifications", "reports.schedule", time.Hour)
@@ -206,7 +206,7 @@ func TestCronTicksOntoTheQueueTheRunnerDrains(t *testing.T) {
 // worker for. A tick on a queue nothing claims is work that never happens and
 // says nothing about it.
 func TestCronQueuesAreDrainableByTheSameProcess(t *testing.T) {
-	cron := NewCron(NewClient(newControl(t)), nil)
+	cron := NewCron(NewClient(newSystem(t)), nil)
 	cron.Add("notifications", "reports.schedule", time.Hour)
 	cron.Add("notifications", "reports.alerts", time.Hour)
 
@@ -220,7 +220,7 @@ func TestCronQueuesAreDrainableByTheSameProcess(t *testing.T) {
 // TestCronCatchesUpDurableBucketsWithinItsBound proves outage recovery, a
 // duplicate pass, and the bounded ceiling used by report scheduling.
 func TestCronCatchesUpDurableBucketsWithinItsBound(t *testing.T) {
-	client := NewClient(newControl(t))
+	client := NewClient(newSystem(t))
 	cron := NewCron(client, nil)
 	cron.AddCatchUp("notifications", "reports.schedule", time.Hour, 32*24*time.Hour)
 	ctx := context.Background()
@@ -260,7 +260,7 @@ func TestCronCatchesUpDurableBucketsWithinItsBound(t *testing.T) {
 // TestSchedulerMetricsDescribeSuccessCatchUpAndFailure checks every exported
 // scheduler signal against real enqueue passes and keeps the label set empty.
 func TestSchedulerMetricsDescribeSuccessCatchUpAndFailure(t *testing.T) {
-	db := newControl(t)
+	db := newSystem(t)
 	cron := NewCron(NewClient(db), nil)
 	cron.AddCatchUp("notifications", "reports.schedule", time.Hour, 24*time.Hour)
 	ctx := context.Background()

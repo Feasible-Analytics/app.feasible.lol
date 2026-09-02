@@ -70,14 +70,14 @@ func newFixture(t *testing.T) *fixture {
 	dir := t.TempDir()
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 
-	control, err := store.Open(filepath.Join(dir, "control.db"))
+	control, err := store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatalf("open control: %v", err)
 	}
 
 	t.Cleanup(func() { control.Close() })
 
-	if _, err := migrate.Run(context.Background(), control, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), control, migrate.System()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -120,7 +120,7 @@ func newFixture(t *testing.T) *fixture {
 	f.recorder.Now = func() time.Time { return now }
 
 	f.handler = NewTeamHandler(&TeamHandler{
-		Control: control,
+		System:  control,
 		Teams:   teams.NewStore(control),
 		Sharing: sharing.NewStore(control),
 		Reports: reports.NewStore(control),

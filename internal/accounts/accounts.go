@@ -64,7 +64,7 @@ var ErrDeleted = errors.New("account permanently deleted")
 // Account is one open account database with everything the ingest and query
 // paths need to use it.
 type Account struct {
-	// ID is the account id, which is also teams.id in the control database.
+	// ID is the account id, which is also teams.id in the system database.
 	ID int64
 
 	// DB carries the single writer and the reader pool for this account.
@@ -858,8 +858,8 @@ func (m *Manager) OpenCount() int {
 }
 
 // Discover lists the account ids that already have a database on disk. The
-// migration and backup commands walk this rather than the control database so
-// that they still work on a box whose control database is unreadable — which is
+// migration and backup commands walk this rather than the system database so
+// that they still work on a box whose system database is unreadable — which is
 // exactly when someone is running maintenance commands.
 func Discover(dataDir string) ([]int64, error) {
 	root := filepath.Join(dataDir, config.AccountDatabaseDir)

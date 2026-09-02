@@ -6,10 +6,10 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-// Package destructive coordinates operations that span control.db and an
+// Package destructive coordinates operations that span system.db and an
 // account analytics database. SQLite cannot transact across those files, so a
 // durable control-row claim is the lock transfers consult while analytics are
-// erased and the control mutation is committed.
+// erased and the system mutation is committed.
 package destructive
 
 import (
@@ -117,7 +117,7 @@ func (s *Service) DeleteSite(ctx context.Context, ownerTeamID, siteID int64) err
 	return s.finishDelete(ctx, operation)
 }
 
-// claimSite validates current ownership after taking control.db's writer lock
+// claimSite validates current ownership after taking system.db's writer lock
 // and creates or reclaims the durable tombstone. A different operation cannot
 // replace a tombstone because analytics may already have been erased.
 func (s *Service) claimSite(ctx context.Context, ownerTeamID, siteID int64, kind string) (claim, error) {
@@ -411,7 +411,7 @@ func (s *Service) finishDelete(ctx context.Context, operation claim) error {
 	return s.finishSite(ctx, operation, true)
 }
 
-// finishSite commits the final control mutation and tombstone removal in one
+// finishSite commits the final system mutation and tombstone removal in one
 // transaction so no transfer can enter between them.
 func (s *Service) finishSite(ctx context.Context, operation claim, remove bool) error {
 	tx, err := s.DB.BeginTx(ctx, nil)

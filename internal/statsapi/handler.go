@@ -47,7 +47,7 @@ const SlowReport = time.Second
 type Handler struct {
 	// Sites resolves a domain to a site and the account that owns it. It is
 	// the same in-memory snapshot the ingest path reads, so a dashboard query
-	// never touches control.db either.
+	// never touches system.db either.
 	Sites *sites.Cache
 
 	// Accounts hands out the per-account database handles.

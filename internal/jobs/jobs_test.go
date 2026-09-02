@@ -21,18 +21,18 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
-// newControl opens a migrated control database.
-func newControl(t *testing.T) *sql.DB {
+// newSystem opens a migrated system database.
+func newSystem(t *testing.T) *sql.DB {
 	t.Helper()
 
-	db, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	t.Cleanup(func() { db.Close() })
 
-	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), db, migrate.System()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -52,7 +52,7 @@ func newControl(t *testing.T) *sql.DB {
 // id in its arguments is not reported as one.
 func TestFailedJobsAreFoundByWorkerType(t *testing.T) {
 	ctx := context.Background()
-	client := NewClient(newControl(t))
+	client := NewClient(newSystem(t))
 
 	// A genuine import that failed.
 	importID, err := client.Enqueue(ctx, QueueImports, KindCSVImport, map[string]any{"import_id": 7}, "")
@@ -104,7 +104,7 @@ func TestFailedJobsAreFoundByWorkerType(t *testing.T) {
 // discarded with a message rather than retried until the attempts run out.
 func TestRunnerDispatchesByKind(t *testing.T) {
 	ctx := context.Background()
-	client := NewClient(newControl(t))
+	client := NewClient(newSystem(t))
 	runner := NewRunner(client)
 
 	ran := map[string]int{}
@@ -148,7 +148,7 @@ func TestRunnerDispatchesByKind(t *testing.T) {
 // can tell which half was the duplicate.
 func TestUniqueKeyStopsDoubleEnqueue(t *testing.T) {
 	ctx := context.Background()
-	client := NewClient(newControl(t))
+	client := NewClient(newSystem(t))
 
 	if _, err := client.Enqueue(ctx, QueueImports, KindCSVImport, map[string]any{}, "import-4"); err != nil {
 		t.Fatal(err)
@@ -164,7 +164,7 @@ func TestUniqueKeyStopsDoubleEnqueue(t *testing.T) {
 // and retrying it only delays telling the customer what is wrong with it.
 func TestFailBacksOffThenDiscards(t *testing.T) {
 	ctx := context.Background()
-	client := NewClient(newControl(t))
+	client := NewClient(newSystem(t))
 
 	at := time.Unix(1_800_000_000, 0)
 	client.Now = func() time.Time { return at }
@@ -221,7 +221,7 @@ func TestFailBacksOffThenDiscards(t *testing.T) {
 // the customer watched a progress bar that was never going to move.
 func TestStaleClaimsAreReleased(t *testing.T) {
 	ctx := context.Background()
-	client := NewClient(newControl(t))
+	client := NewClient(newSystem(t))
 
 	at := time.Unix(1_800_000_000, 0)
 	client.Now = func() time.Time { return at }
@@ -277,7 +277,7 @@ func TestStaleClaimsAreReleased(t *testing.T) {
 // every minute on every box.
 func TestEnqueueRefusesADuplicateAndEnqueueUniqueDoesNot(t *testing.T) {
 	ctx := context.Background()
-	client := NewClient(newControl(t))
+	client := NewClient(newSystem(t))
 
 	if _, err := client.Enqueue(ctx, QueueImports, KindCSVImport, struct{}{}, "import:7"); err != nil {
 		t.Fatal(err)
@@ -304,7 +304,7 @@ func TestEnqueueRefusesADuplicateAndEnqueueUniqueDoesNot(t *testing.T) {
 // TestEnqueueUniqueNeedsAKey refuses the call that would otherwise enqueue an
 // unbounded number of identical rows, one per look.
 func TestEnqueueUniqueNeedsAKey(t *testing.T) {
-	client := NewClient(newControl(t))
+	client := NewClient(newSystem(t))
 
 	if _, _, err := client.EnqueueUnique(context.Background(), "notifications", "reports.schedule", struct{}{}, ""); err == nil {
 		t.Fatal("a unique enqueue with no key was accepted")
@@ -318,7 +318,7 @@ func TestEnqueueUniqueNeedsAKey(t *testing.T) {
 // so the next boot picks up the same job and panics again.
 func TestAPanickingWorkerFailsTheJobRatherThanTheProcess(t *testing.T) {
 	ctx := context.Background()
-	client := NewClient(newControl(t))
+	client := NewClient(newSystem(t))
 
 	id, err := client.Enqueue(ctx, QueueImports, KindCSVImport, struct{}{}, "")
 	if err != nil {

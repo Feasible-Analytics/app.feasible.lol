@@ -61,6 +61,36 @@ The internal listeners stay on `127.0.0.1` in every mode.
 
 `make` on its own lists everything.
 
+### Hosted topology
+
+The single-process self-hosted mode writes directly to account SQLite. Hosted
+production separates the failure domains:
+
+```text
+public load balancer -> any ingester -> owning app shard -> account SQLite
+                              |
+                              +-> local persistent buffer.db
+```
+
+Each ingester derives the privacy-safe event, discards the raw IP address,
+commits the event to its own `FEASIBLE_INGEST_BUFFER_PATH`, and only then
+returns `202`. It polls the complete ordered `FEASIBLE_INGEST_SHARDS` list for
+domain ownership and removes an outbox row only when the owning app names that
+UUID after commit. An app outage delays dashboards while ingesters keep pageviews.
+
+App private listeners publish authenticated domain and salt snapshots and
+accept durable batches. `FEASIBLE_APP_SHARD_ID` is the app's one-based stable
+position in the ingester list. In hosted production these listeners use private
+TLS networking and `FEASIBLE_INTERNAL_KEYS`; `/internal/*` is never exposed by
+the public load balancer. See [.env.sample](.env.sample) for the complete app
+and ingester configuration and [ops/load-balancer.md](ops/load-balancer.md) for
+failure and drain behavior.
+
+The shared metadata file on each app shard is `system.db`. An installation from
+before that rename must stop all Feasible processes and run `feasible db migrate`
+once; the command moves the former filename and SQLite sidecars before applying
+migrations.
+
 ### Local services you do not need
 
 - **Email.** `FEASIBLE_APP_MAIL_TRANSPORT=log` prints the message to stdout and
@@ -110,7 +140,9 @@ SQLite can write its way out of.
 **Throughput.** One process sustains around six thousand events a second through
 the whole accept path, which is far more than a site sending a million pageviews
 a month generates — that is under half an event a second on average. Accepting
-an event costs about thirteen microseconds and never waits on the disk. Reports
+and deriving an event costs about thirteen microseconds; a success response
+still waits for a durable transaction, either the direct account commit or the
+hosted ingester outbox commit. Reports
 read from summary tables in under a tenth of a second over a year of data; the
 same report from raw rows takes seconds, which is why the roll-up worker exists.
 

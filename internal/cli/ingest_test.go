@@ -16,10 +16,18 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 )
 
+// configureStandaloneIngest supplies the private signing identity required by
+// every standalone ingester, while leaving individual tests free to vary URLs.
+func configureStandaloneIngest(t *testing.T) {
+	t.Helper()
+	t.Setenv("FEASIBLE_INTERNAL_KEYS", `[{"id":"test","secret":"test-secret"}]`)
+}
+
 // TestIngestReportsShards checks the shard list is parsed and reported. An
 // ingestor pointed at the wrong shards drops every event it receives, so the
 // list has to be visible at boot rather than discovered from missing data.
 func TestIngestReportsShards(t *testing.T) {
+	configureStandaloneIngest(t)
 	t.Setenv("FEASIBLE_INGEST_SHARDS", "http://127.0.0.1:19401, http://127.0.0.1:19402")
 
 	code, stdout, stderr := run(t, "ingest", "-check")
@@ -37,6 +45,7 @@ func TestIngestReportsShards(t *testing.T) {
 // app's so that both processes can run on one machine, and a collision would
 // otherwise only show up as a process that refuses to start.
 func TestIngestReportsItsInternalListener(t *testing.T) {
+	configureStandaloneIngest(t)
 	code, stdout, stderr := run(t, "ingest", "-check")
 
 	if code != ExitOK {
@@ -50,6 +59,7 @@ func TestIngestReportsItsInternalListener(t *testing.T) {
 // TestIngestListenFlagOverrides covers the same override the app has, since
 // running two ingestors side by side is the normal way to test forwarding.
 func TestIngestListenFlagOverrides(t *testing.T) {
+	configureStandaloneIngest(t)
 	code, stdout, _ := run(t, "ingest", "-check", "-listen", "127.0.0.1:29302")
 
 	if code != ExitOK {

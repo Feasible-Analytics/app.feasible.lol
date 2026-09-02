@@ -41,7 +41,7 @@ type StatsAccess struct {
 	CacheKey string
 }
 
-// StatsAuthorizer validates public and shared-link access against control.db.
+// StatsAuthorizer validates public and shared-link access against system.db.
 // It deliberately holds no cache: revoking a link, making a site private, or
 // adding a password must take effect on the very next stats request.
 type StatsAuthorizer struct {

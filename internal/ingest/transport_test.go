@@ -84,7 +84,7 @@ func TestEmptyBatchIsFree(t *testing.T) {
 }
 
 // TestEventCarriesItsShard checks the compatibility partition travels with the
-// event while the consolidated runtime consistently assigns zero.
+// event while direct mode consistently assigns zero.
 func TestEventCarriesItsShard(t *testing.T) {
 	event := writerEvent(1, EventPageview, fixtureStart.Unix(), "/")
 

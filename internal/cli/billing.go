@@ -42,7 +42,7 @@ Flags:
 // box, without a dashboard and without guessing at SQL.
 func runBilling(e *env, args []string) int {
 	fs := newFlagSet("billing", e, billingHelp)
-	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding control.db and the account databases")
+	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding system.db and the account databases")
 
 	if code, ok := parseFlags(fs, args); !ok {
 		return code
@@ -72,7 +72,7 @@ func runBilling(e *env, args []string) int {
 		return billingPreflight(ctx, e, rest[1:])
 	}
 
-	control, err := openControl(ctx, e.cfg.App.DataDir)
+	control, err := openSystem(ctx, e.cfg.App.DataDir)
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError
@@ -122,7 +122,7 @@ expires it.
 Flags:
 `
 
-// billingPreflight runs without opening control.db, so it can gate a deployment
+// billingPreflight runs without opening system.db, so it can gate a deployment
 // before migrations, process startup, or customer traffic.
 func billingPreflight(ctx context.Context, e *env, args []string) int {
 	fs := newFlagSet("billing preflight", e, billingPreflightHelp)

@@ -59,7 +59,7 @@ type UsageRecorder interface {
 	Record(accountID int64, pageviews, customEvents int64)
 }
 
-// Writer applies batches to the shared account databases. Everything above it
+// Writer applies batches to the app shard's account databases. Everything above it
 // deals in HTTP and derived events; this is the durable fact authority.
 type Writer struct {
 	accounts *accounts.Manager

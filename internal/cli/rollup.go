@@ -86,7 +86,7 @@ func runRollup(e *env, args []string) int {
 // from the automatic one.
 func runRollupBuild(e *env, args []string) int {
 	fs := newFlagSet("rollup build", e, rollupBuildHelp)
-	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding control.db and the account databases")
+	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding system.db and the account databases")
 
 	if code, ok := parseFlags(fs, args); !ok {
 		return code
@@ -116,7 +116,7 @@ func runRollupBuild(e *env, args []string) int {
 // runRollupRebuild throws one site's summary away and builds it again.
 func runRollupRebuild(e *env, args []string) int {
 	fs := newFlagSet("rollup rebuild", e, rollupRebuildHelp)
-	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding control.db and the account databases")
+	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding system.db and the account databases")
 	domain := fs.String("site", "", "the site to rebuild; empty means every site")
 
 	if code, ok := parseFlags(fs, args); !ok {
@@ -184,7 +184,7 @@ func runRollupRebuild(e *env, args []string) int {
 // "that dimension is not summarised".
 func runRollupStatus(e *env, args []string) int {
 	fs := newFlagSet("rollup status", e, rollupStatusHelp)
-	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding control.db and the account databases")
+	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding system.db and the account databases")
 
 	if code, ok := parseFlags(fs, args); !ok {
 		return code
@@ -241,11 +241,11 @@ func runRollupStatus(e *env, args []string) int {
 	return ExitOK
 }
 
-// buildRollupWorker opens control.db and an account manager and wires a worker
+// buildRollupWorker opens system.db and an account manager and wires a worker
 // over them. The returned function closes both, and it is one function so a
 // caller cannot close half of what it opened.
 func buildRollupWorker(ctx context.Context, e *env, dataDir string) (*rollup.Worker, func(), error) {
-	control, err := openControl(ctx, dataDir)
+	control, err := openSystem(ctx, dataDir)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -254,7 +254,7 @@ func buildRollupWorker(ctx context.Context, e *env, dataDir string) (*rollup.Wor
 
 	worker := &rollup.Worker{
 		Accounts: manager,
-		Sites:    rollup.ControlLister(control),
+		Sites:    rollup.SystemLister(control),
 		Log:      e.log,
 	}
 

@@ -36,7 +36,7 @@ const DualWriteWindow = 72 * time.Hour
 // single index range per site.
 const SparklineDays = 30
 
-// Site is one tracked website. It mirrors control.db's sites row, which is the
+// Site is one tracked website. It mirrors system.db's sites row, which is the
 // routing index — everything site-scoped that is not routing lives in the
 // account database.
 type Site struct {

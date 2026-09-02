@@ -22,7 +22,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
-// fixture is a control database with one team and one site.
+// fixture is a system database with one team and one site.
 type fixture struct {
 	db     *sql.DB
 	store  *Store
@@ -101,14 +101,14 @@ func TestPasswordAttemptsAreBoundedPerSourceAndLink(t *testing.T) {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 
-	db, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "system.db"))
 	if err != nil {
 		t.Fatalf("open control: %v", err)
 	}
 
 	t.Cleanup(func() { db.Close() })
 
-	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), db, migrate.System()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 

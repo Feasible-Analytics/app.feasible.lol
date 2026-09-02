@@ -70,7 +70,7 @@ const (
 // rather than only its size, which is why they are all explicit rather than
 // derived from a single "how big" number.
 type Options struct {
-	// DataDir holds control.db and the account databases.
+	// DataDir holds system.db and the account databases.
 	DataDir string
 
 	// Pageviews is the total across every site. Other event kinds are generated
@@ -98,10 +98,10 @@ type Options struct {
 	// Out receives the progress and the summary. Nil means no output.
 	Out io.Writer
 
-	// ControlMigrations lets tests select an actual embedded schema prefix when
+	// SystemMigrations lets tests select an actual embedded schema prefix when
 	// the scenario does not exercise later control tables. Zero uses the
 	// production control migration set and retains its gap validation.
-	ControlMigrations migrate.Set
+	SystemMigrations migrate.Set
 
 	Log *logger.Logger
 }
@@ -131,8 +131,8 @@ func (o *Options) withDefaults() {
 	if o.Out == nil {
 		o.Out = io.Discard
 	}
-	if o.ControlMigrations.Name == "" {
-		o.ControlMigrations = migrate.Control()
+	if o.SystemMigrations.Name == "" {
+		o.SystemMigrations = migrate.System()
 	}
 }
 
@@ -313,13 +313,13 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	return &g.stats, nil
 }
 
-// open brings up control.db, the account manager and the derive pipeline. The
+// open brings up system.db, the account manager and the derive pipeline. The
 // pipeline is assembled here rather than through ingest.NewService because two
 // of its parts are deliberately not the production ones: geolocation comes from
 // the distribution instead of the mmdb file, and there is no buffer, transport
 // or HTTP handler in front of it.
 func (g *generator) open(ctx context.Context) error {
-	control, err := store.Open(filepath.Join(g.opts.DataDir, config.ControlDatabaseName))
+	control, err := store.Open(filepath.Join(g.opts.DataDir, config.SystemDatabaseName))
 	if err != nil {
 		return err
 	}
@@ -328,7 +328,7 @@ func (g *generator) open(ctx context.Context) error {
 	// A seed run migrates on its own. It is a development command against a
 	// development database, and making somebody run two commands to get one
 	// dataset is how they end up with neither.
-	if _, err := migrate.Run(ctx, control, g.opts.ControlMigrations); err != nil {
+	if _, err := migrate.Run(ctx, control, g.opts.SystemMigrations); err != nil {
 		return fmt.Errorf("seed: %w", err)
 	}
 
@@ -679,11 +679,11 @@ func (g *generator) restoreIndexes(ctx context.Context) {
 }
 
 // removeSeeded deletes the databases a previous run wrote. It removes the
-// control database and the account directory and nothing else: the salt key,
+// system database and the account directory and nothing else: the salt key,
 // the geolocation databases and the refreshed bot lists are expensive to
 // replace and have nothing to do with the seeded data.
 func removeSeeded(dataDir string) error {
-	control := filepath.Join(dataDir, config.ControlDatabaseName)
+	control := filepath.Join(dataDir, config.SystemDatabaseName)
 
 	for _, suffix := range []string{"", "-wal", "-shm"} {
 		if err := os.Remove(control + suffix); err != nil && !os.IsNotExist(err) {

@@ -1,6 +1,6 @@
 //
 // runtime.go
-// Opening control.db, building the ingest service and running a listener until a signal.
+// Opening system.db, building the ingest service and running a listener until a signal.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -13,6 +13,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"os"
 	"os/signal"
 	"path/filepath"
 	"sync"
@@ -38,12 +39,18 @@ import (
 // this replica are the ones that get dropped.
 const drainDelay = 2 * time.Second
 
-// openControl opens control.db and refuses one the binary cannot read. It
+// openSystem opens system.db and refuses one the binary cannot read. It
 // refuses rather than migrating, for the same reason migrations never run on
 // boot: two processes racing them is a classic self-hosting failure, and with
 // one database per account the operation has to be deliberate.
-func openControl(ctx context.Context, dataDir string) (*sql.DB, error) {
-	path := filepath.Join(dataDir, config.ControlDatabaseName)
+func openSystem(ctx context.Context, dataDir string) (*sql.DB, error) {
+	path := filepath.Join(dataDir, config.SystemDatabaseName)
+	legacy := filepath.Join(dataDir, config.LegacyDatabaseName)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if _, legacyErr := os.Stat(legacy); legacyErr == nil {
+			return nil, fmt.Errorf("legacy database %s must be renamed to %s — stop every feasible process and run `feasible db migrate`", legacy, path)
+		}
+	}
 
 	db, err := store.Open(path)
 	if err != nil {
@@ -56,7 +63,7 @@ func openControl(ctx context.Context, dataDir string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	expected := migrate.Control().Version()
+	expected := migrate.System().Version()
 
 	if version < expected {
 		db.Close()
@@ -75,7 +82,7 @@ func openControl(ctx context.Context, dataDir string) (*sql.DB, error) {
 // end up with pipelines that differ in a way nobody notices until the numbers
 // disagree.
 func buildIngest(ctx context.Context, e *env, dataDir string) (*ingest.Service, *sql.DB, *accounts.Manager, error) {
-	control, err := openControl(ctx, dataDir)
+	control, err := openSystem(ctx, dataDir)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -114,7 +121,7 @@ func attachIngestRecorder(service *ingest.Service, recorder *health.Recorder) {
 // unknown, not that events are lost — and a readiness probe that failed on it
 // would turn a downgraded dashboard into an outage.
 func ingestHealth(checks *health.Set, control *sql.DB, service *ingest.Service, dataDir string) {
-	checks.Require("control_db", health.Database(control))
+	checks.Require("system_db", health.Database(control))
 
 	// Every account database is created under here on an account's first
 	// event, so a directory that cannot be written to is a process that will
@@ -143,12 +150,21 @@ func ingestHealth(checks *health.Set, control *sql.DB, service *ingest.Service, 
 // worker should be reporting on it: an ingestor answering "no jobs are waiting"
 // about a queue it does not run would be an all-clear from the wrong place.
 func watchProcess(service *ingest.Service, manager *accounts.Manager, dataDir string, jobs func(context.Context) (metrics.JobCounts, error)) {
+	bufferDepth := func() int { return service.Buffer.Len() }
+	var bufferOldest func() time.Duration
+	var bufferParked func() int
+	var openAccounts func() int
+	if service.Outbox != nil {
+		bufferDepth = service.Outbox.Len
+		bufferOldest = service.Outbox.OldestAge
+		bufferParked = service.Outbox.Parked
+	}
+	if manager != nil {
+		openAccounts = manager.OpenCount
+	}
 	metrics.Watch(metrics.Sources{
-		BufferDepth:  func() int { return service.Buffer.Len() },
-		Sites:        service.Sites.Len,
-		OpenAccounts: manager.OpenCount,
-		Jobs:         jobs,
-		DataDir:      dataDir,
+		BufferDepth: bufferDepth, BufferOldest: bufferOldest, BufferParked: bufferParked, Sites: service.Sites.Len,
+		OpenAccounts: openAccounts, Jobs: jobs, DataDir: dataDir,
 	})
 }
 
@@ -180,14 +196,28 @@ func jobCounts(control *sql.DB) func(context.Context) (metrics.JobCounts, error)
 // operations endpoint. Nothing on it is customer data, but our event rate,
 // error rate and account count are not the internet's business, and no operator
 // expects to have to firewall a path.
-func internalServer(name, addr string, checks *health.Set) *httpserver.Server {
+func internalServer(name, addr string, checks *health.Set, routes ...http.Handler) *httpserver.Server {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", metrics.Handler())
+	if len(routes) > 0 && routes[0] != nil {
+		mux.Handle("/internal/", routes[0])
+	}
 
 	server := httpserver.New(name, addr, mux)
 	server.Health = checks
 
 	return server
+}
+
+// internalKeys converts configuration records into the protocol package's
+// deliberately small signing type.
+func internalKeys(keys []config.InternalKey) []ingest.InternalKey {
+	converted := make([]ingest.InternalKey, 0, len(keys))
+	for _, key := range keys {
+		converted = append(converted, ingest.InternalKey{ID: key.ID, Secret: key.Secret})
+	}
+
+	return converted
 }
 
 // serveUntilSignalWith runs the listeners until SIGINT or SIGTERM, then shuts
@@ -284,8 +314,9 @@ func serveUntilSignalWith(e *env, server, internal *httpserver.Server, service *
 	}
 
 	// The order matters and is the difference between a clean stop and losing
-	// half a second of every deploy: stop taking traffic, flush any buffered
-	// direct writes, then close the databases. Session state is already durable.
+	// half a second of every deploy: stop taking traffic, flush the in-memory
+	// batch into its durable transport, then close databases. Session state is
+	// already durable.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), httpserver.ShutdownGrace+drainDelay)
 	defer cancel()
 

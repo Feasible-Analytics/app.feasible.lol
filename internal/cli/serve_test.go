@@ -36,6 +36,7 @@ import (
 func TestServeReportsResolvedConfig(t *testing.T) {
 	t.Setenv("FEASIBLE_APP_BASE_URL", "http://rager.example.ts.net:19300")
 	t.Setenv("FEASIBLE_APP_TRANSPORT", "http")
+	t.Setenv("FEASIBLE_INTERNAL_KEYS", `[{"id":"test","secret":"test-secret"}]`)
 
 	code, stdout, stderr := run(t, "serve", "-check")
 
@@ -232,13 +233,13 @@ func newStack(t *testing.T) *stack {
 func seedLapsedAccount(t *testing.T, dir string) {
 	t.Helper()
 
-	control, err := store.Open(filepath.Join(dir, "control.db"))
+	control, err := store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer control.Close()
 
-	applyControlMigrations(t, control)
+	applySystemMigrations(t, control)
 
 	now := time.Now().UTC().Unix()
 
@@ -274,7 +275,7 @@ func seedLapsedAccount(t *testing.T, dir string) {
 func (s *stack) clock(t *testing.T, state lifecycle.State) {
 	t.Helper()
 
-	control, err := store.Open(filepath.Join(s.dataDir, "control.db"))
+	control, err := store.Open(filepath.Join(s.dataDir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +598,7 @@ func TestStatsCapabilitiesAreRevalidatedThroughTheAssembledRoute(t *testing.T) {
 	s := newStack(t)
 	s.pay(t)
 
-	control, err := store.Open(filepath.Join(s.dataDir, "control.db"))
+	control, err := store.Open(filepath.Join(s.dataDir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

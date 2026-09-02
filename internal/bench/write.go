@@ -53,7 +53,7 @@ var referrers = []string{"", "", "https://www.google.com/", "https://news.ycombi
 
 // WriteOptions describes one load run.
 type WriteOptions struct {
-	// DataDir is where control.db and the account databases are written. It
+	// DataDir is where system.db and the account databases are written. It
 	// should be empty, and it should be on the disk the answer is about.
 	DataDir string
 
@@ -80,10 +80,10 @@ type WriteOptions struct {
 	// simultaneous requests to fill a batch while each caller waits for commit.
 	Concurrency int
 
-	// ControlMigrations lets tests select an actual embedded schema prefix when
+	// SystemMigrations lets tests select an actual embedded schema prefix when
 	// the benchmark does not exercise later control tables. Zero uses the
 	// production control migration set and retains its gap validation.
-	ControlMigrations migrate.Set
+	SystemMigrations migrate.Set
 }
 
 // WriteResult is one load run's numbers.
@@ -173,7 +173,7 @@ func RunWrite(ctx context.Context, opts WriteOptions) (WriteResult, error) {
 		opts.Concurrency = opts.Events
 	}
 
-	control, err := newControl(ctx, opts.DataDir, opts.Accounts, opts.ControlMigrations)
+	control, err := newSystem(ctx, opts.DataDir, opts.Accounts, opts.SystemMigrations)
 	if err != nil {
 		return WriteResult{}, err
 	}
@@ -352,20 +352,20 @@ func addressFor(visitor int) string {
 	return fmt.Sprintf("198.18.%d.%d", (visitor/250)%256, visitor%250)
 }
 
-// newControl builds the control database the load routes against: one team and
+// newSystem builds the system database the load routes against: one team and
 // one site per account, which is the shape that puts every write on its own
 // database file and its own lock.
-func newControl(ctx context.Context, dataDir string, count int, controlMigrations migrate.Set) (*sql.DB, error) {
-	db, err := store.Open(filepath.Join(dataDir, "control.db"))
+func newSystem(ctx context.Context, dataDir string, count int, systemMigrations migrate.Set) (*sql.DB, error) {
+	db, err := store.Open(filepath.Join(dataDir, "system.db"))
 	if err != nil {
 		return nil, err
 	}
 
-	if controlMigrations.Name == "" {
-		controlMigrations = migrate.Control()
+	if systemMigrations.Name == "" {
+		systemMigrations = migrate.System()
 	}
 
-	if _, err := migrate.Run(ctx, db, controlMigrations); err != nil {
+	if _, err := migrate.Run(ctx, db, systemMigrations); err != nil {
 		db.Close()
 		return nil, err
 	}

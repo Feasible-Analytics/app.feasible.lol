@@ -1,6 +1,6 @@
 //
 // ingest.go
-// The `ingest` subcommand: serve event traffic separately over shared storage.
+// The `ingest` subcommand: durably accept events and forward them to app shards.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -11,16 +11,17 @@ package cli
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 )
 
 const ingestHelp = `feasible ingest — run the ingest tier only.
 
-Accepts events and writes them directly to the account databases on shared
-storage. It answers 202 only after the account transaction commits, and exists
-so the event listener scales without forking the payload-parsing code.
+Accepts events, derives privacy-safe facts, writes them to a local SQLite
+outbox, answers 202, and forwards them until the owning app shard commits.
 
 Flags:
 `
@@ -30,7 +31,8 @@ func runIngest(e *env, args []string) int {
 	fs := newFlagSet("ingest", e, ingestHelp)
 	listen := fs.String("listen", e.cfg.Ingest.Listen, "listen address (host:port)")
 	internalListen := fs.String("internal-listen", e.cfg.Ingest.InternalListen, "private listen address for /metrics (host:port)")
-	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding control.db and the account databases")
+	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding geolocation and classification data; account databases are never opened")
+	replayParked := fs.Bool("replay-parked", false, "return operator-reviewed parked events to delivery")
 	check := fs.Bool("check", false, "resolve and print the configuration, then exit without listening")
 
 	if code, ok := parseFlags(fs, args); !ok {
@@ -39,14 +41,17 @@ func runIngest(e *env, args []string) int {
 
 	e.cfg.Ingest.Listen = *listen
 	e.cfg.Ingest.InternalListen = *internalListen
+	if err := validateIngestTopology(e); err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return ExitError
+	}
 
-	// Compatibility topology fields remain visible while deployments move to
-	// shared storage, even though direct account writes no longer use them.
 	e.log.Info("ingest configuration",
 		"listen", e.cfg.Ingest.Listen,
 		"internal_listen", e.cfg.Ingest.InternalListen,
 		"shards", e.cfg.Ingest.Shards,
 		"buffer_path", e.cfg.Ingest.BufferPath,
+		"salt_url", e.cfg.Ingest.SaltURL,
 		"internal_keys", len(e.cfg.Shared.InternalKeys),
 		"trusted_proxies", len(e.cfg.Ingest.TrustedProxies),
 		"env", e.cfg.Shared.Env,
@@ -54,55 +59,73 @@ func runIngest(e *env, args []string) int {
 	)
 
 	if *check {
+		if *replayParked {
+			fmt.Fprintln(e.stderr, "-replay-parked cannot be used with -check")
+			return ExitUsage
+		}
 		return ExitOK
 	}
 
-	service, control, manager, err := buildIngest(context.Background(), e, *dataDir)
+	ctx := context.Background()
+	signer := &ingest.InternalSigner{Keys: internalKeys(e.cfg.Shared.InternalKeys)}
+	outbox, err := ingest.OpenOutbox(ctx, e.cfg.Ingest.BufferPath, e.cfg.Ingest.Shards, signer)
 	if err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return ExitError
+	}
+	if *replayParked {
+		count, replayErr := outbox.ReplayParked(ctx)
+		if replayErr != nil {
+			_ = outbox.Close()
+			fmt.Fprintf(e.stderr, "%v\n", replayErr)
+			return ExitError
+		}
+		e.log.Info("parked ingest events returned to delivery", "events", count)
+	}
+	service, err := ingest.NewRemoteService(ctx, outbox, e.cfg.Ingest.SaltURL, ingest.Options{
+		DataDir: *dataDir, TrustedProxies: e.cfg.Ingest.TrustedProxies, Log: e.log,
+	})
+	if err != nil {
+		_ = outbox.Close()
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError
 	}
 
 	checks := &health.Set{}
-	ingestHealth(checks, control, service, *dataDir)
-
-	// The blocked-address rules have to be loaded here as well as in the app
-	// process. This endpoint is the only place the raw IP still exists.
-	rules, err := buildSiteRules(context.Background(), e, service, manager)
-	if err != nil {
-		fmt.Fprintf(e.stderr, "%v\n", err)
-		return ExitError
-	}
-
-	// The standalone topology owns the public ingest handler and the final
-	// writer, so it must own the same durable recorder as direct mode. Without
-	// this attachment its customer-facing health tables stay empty even while
-	// the process accepts and stores traffic normally.
-	recorder := health.NewRecorder(manager, service.Sites, e.log)
-	attachIngestRecorder(service, recorder)
-
-	// An ingestor with an empty routing map answers 202 to everything and drops
-	// it all, so it is not ready until the map holds something. This is where
-	// the two process shapes genuinely differ: an app with no sites is a fresh
-	// install waiting for somebody to add one, and refusing it traffic would
-	// mean nobody could ever reach the page that adds one.
+	checks.Require("outbox", health.Database(outbox.DB))
+	checks.Require("salts", func(ctx context.Context) error {
+		pair, err := service.Salts.Pair(ctx)
+		pair.Erase()
+		return err
+	})
 	checks.Require("routing_map", health.Condition(
-		func() bool { return service.Sites.Len() > 0 },
-		"the routing map is empty — every event would be dropped as an unknown site"))
+		func() bool { return !service.Sites.BuiltAt().IsZero() },
+		"no live or disk-cached routing snapshot has been built"))
 
-	watchProcess(service, manager, *dataDir, nil)
+	watchProcess(service, nil, filepath.Dir(e.cfg.Ingest.BufferPath), nil)
 
 	server := httpserver.New("ingest", e.cfg.Ingest.Listen, ingestRoutes(service))
 	server.Health = checks
 
 	internal := internalServer("ingest-internal", e.cfg.Ingest.InternalListen, checks)
 
-	// No roll-up worker: the ingest tier answers no reports, and summarising
-	// from here would put a second process on the account's write lock. The rule
-	// refresh loops go through the shared background hook so that shutdown waits
-	// for them rather than cancelling a refresh mid-read.
-	return serveUntilSignalWith(e, server, internal, service, nil,
-		backgroundLoops(rules.background(e), func(ctx context.Context, run func(func())) {
-			run(func() { recorder.Run(ctx) })
-		}), manager.CloseAll, control.Close)
+	return serveUntilSignalWith(e, server, internal, service, nil, nil, outbox.Close)
+}
+
+// validateIngestTopology rejects a standalone ingester that has no complete
+// destination list, salt authority, or signing identity. These values are not
+// required by a direct-mode app, so validation belongs to this command rather
+// than the shared configuration loader.
+func validateIngestTopology(e *env) error {
+	if len(e.cfg.Ingest.Shards) == 0 {
+		return fmt.Errorf("FEASIBLE_INGEST_SHARDS: ingest requires at least one app shard")
+	}
+	if e.cfg.Ingest.SaltURL == "" {
+		return fmt.Errorf("FEASIBLE_INGEST_SALT_URL: ingest requires a private salt authority URL")
+	}
+	if len(e.cfg.Shared.InternalKeys) == 0 {
+		return fmt.Errorf("FEASIBLE_INTERNAL_KEYS: ingest requires at least one signing key")
+	}
+
+	return nil
 }

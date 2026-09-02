@@ -24,7 +24,7 @@ import (
 // far enough in for a projection to mean something.
 var sweepStart = time.Date(2026, time.March, 20, 12, 0, 0, 0, time.UTC)
 
-// fixture is a control database with one team and a sweeper wired to it.
+// fixture is a system database with one team and a sweeper wired to it.
 type fixture struct {
 	t       *testing.T
 	control *sql.DB
@@ -40,13 +40,13 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 
-	control, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	control, err := store.Open(filepath.Join(t.TempDir(), "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { control.Close() })
 
-	if _, err := migrate.Run(context.Background(), control, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), control, migrate.System()); err != nil {
 		t.Fatal(err)
 	}
 

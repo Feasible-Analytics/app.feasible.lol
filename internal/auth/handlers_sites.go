@@ -286,7 +286,7 @@ func (h *Handler) showSiteSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // showSiteSettingsByDomain gives the domain-keyed settings shell a stable way
-// back to General without teaching it control-database site ids.
+// back to General without teaching it system-database site ids.
 func (h *Handler) showSiteSettingsByDomain(w http.ResponseWriter, r *http.Request) {
 	site, ok := h.SiteCache.Lookup(r.PathValue("domain"))
 	if !ok {

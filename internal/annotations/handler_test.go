@@ -32,14 +32,14 @@ func newHandler(t *testing.T) (*Handler, string) {
 	dir := t.TempDir()
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 
-	control, err := store.Open(filepath.Join(dir, "control.db"))
+	control, err := store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatalf("open control: %v", err)
 	}
 
 	t.Cleanup(func() { control.Close() })
 
-	if _, err := migrate.Run(context.Background(), control, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), control, migrate.System()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 

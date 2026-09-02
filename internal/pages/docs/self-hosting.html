@@ -11,7 +11,7 @@ ingestion in one process, which is what almost every self-hoster should run. The
 <code>mcp</code> and <code>billing</code>.</p>
 
 <h3>The data directory</h3>
-<p>Everything lives under <code>FEASIBLE_APP_DATA_DIR</code>: <code>control.db</code>, one SQLite
+<p>Everything lives under <code>FEASIBLE_APP_DATA_DIR</code>: <code>system.db</code>, one SQLite
 database per account, the geolocation files, the bot and spam lists, and the two keys. Back up that
 directory and you have backed up the entire install.</p>
 <p>Use <code>./feasible db backup</code> rather than copying files. It takes a proper consistent

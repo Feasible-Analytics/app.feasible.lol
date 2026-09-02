@@ -8,7 +8,7 @@
 
 // Package jobs runs the work that must not happen inside a request: importing a
 // year of history, preparing a full-site export, refreshing a Google token. It
-// is a table in control.db and a loop, not a hosted queue, because the whole
+// is a table in system.db and a loop, not a hosted queue, because the whole
 // pitch of this product is one binary and one data directory.
 //
 // One rule in here is worth more than the rest of the package put together: a
@@ -127,7 +127,7 @@ func isPermanent(err error) bool {
 }
 
 // Client is the queue's write side: everything that puts work into it or reads
-// its state back out. It holds control.db, which is where the jobs table lives
+// its state back out. It holds system.db, which is where the jobs table lives
 // because a job can be about any account and there is only one of these.
 type Client struct {
 	db *sql.DB
@@ -137,7 +137,7 @@ type Client struct {
 	Now func() time.Time
 }
 
-// NewClient builds a client over control.db.
+// NewClient builds a client over system.db.
 func NewClient(db *sql.DB) *Client {
 	return &Client{db: db, Now: func() time.Time { return time.Now().UTC() }}
 }

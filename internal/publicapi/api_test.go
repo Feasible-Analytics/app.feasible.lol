@@ -1,6 +1,6 @@
 //
 // harness_test.go
-// A real control database, a real account database and a real key, per test.
+// A real system database, a real account database and a real key, per test.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -50,7 +50,7 @@ func closeResponse(t testing.TB, response *http.Response) {
 }
 
 // The harness builds the real thing rather than a set of fakes: a migrated
-// control database, a migrated account database with events in it, and a key
+// system database, a migrated account database with events in it, and a key
 // created through the same code the CLI uses. The whole promise of this package
 // is "no 500s and the shims agree with v2", and neither of those can be proved
 // against mocks — a mock cannot return the driver error that would have been a
@@ -71,11 +71,11 @@ const (
 
 // harness is one test's whole world.
 type harness struct {
-	API     *API
-	Server  *httptest.Server
-	Control *sql.DB
-	Key     string
-	Other   string
+	API    *API
+	Server *httptest.Server
+	System *sql.DB
+	Key    string
+	Other  string
 }
 
 // newHarness builds everything and tears it down after the test.
@@ -85,13 +85,13 @@ func newHarness(t *testing.T) *harness {
 	ctx := context.Background()
 	dir := t.TempDir()
 
-	control, err := store.Open(filepath.Join(dir, "control.db"))
+	control, err := store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { control.Close() })
 
-	if _, err := migrate.Run(ctx, control, migrate.Control()); err != nil {
+	if _, err := migrate.Run(ctx, control, migrate.System()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -134,7 +134,7 @@ func newHarness(t *testing.T) *harness {
 		Limiter:        apikeys.NewLimiter(0),
 		Access:         access.New(nil, nil, nil, nil),
 		Sites:          cache,
-		Control:        NewControlStore(control),
+		System:         NewSystemStore(control),
 		Teams:          teams.NewStore(control),
 		Sharing:        sharing.NewStore(control),
 		Accounts:       manager,
@@ -149,7 +149,7 @@ func newHarness(t *testing.T) *harness {
 	server := httptest.NewServer(api.Routes())
 	t.Cleanup(server.Close)
 
-	return &harness{API: api, Server: server, Control: control, Key: plaintext, Other: otherPlaintext}
+	return &harness{API: api, Server: server, System: control, Key: plaintext, Other: otherPlaintext}
 }
 
 // seedControl writes the teams, users and sites the tests act on.

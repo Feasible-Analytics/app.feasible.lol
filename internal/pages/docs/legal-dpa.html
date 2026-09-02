@@ -84,7 +84,7 @@ with the UK Addendum where the UK GDPR applies.</p>
       termination and backend transport.</li>
   <li>The visitor identifier's salt is encrypted at rest with AES-256-GCM under a key held
       outside the database. Rows are deleted from the live database after 48 hours; encrypted
-      control-database replica objects become eligible for provider removal within 72 hours of being
+      system-database replica objects become eligible for provider removal within 72 hours of being
       written. Physical removal is asynchronous with no published maximum. Restores occur
       with service stopped and expired salts are pruned before traffic resumes.</li>
   <li>One database per account, so a query for one customer cannot reach another's data.</li>

@@ -1,6 +1,6 @@
 --
 -- 0001_initial.sql
--- The control database: who the people are, what they own, and what we owe them.
+-- The system database: who the people are, what they own, and what we owe them.
 --
 -- Created: 2026-08-30
 -- Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.

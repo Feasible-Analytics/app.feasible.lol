@@ -48,7 +48,7 @@ type invitationSender interface {
 
 // Handler serves every settings screen.
 type TeamHandler struct {
-	Control  *sql.DB
+	System   *sql.DB
 	Teams    *teams.Store
 	Sharing  *sharing.Store
 	Reports  *reports.Store
@@ -87,7 +87,7 @@ func NewTeamHandler(h *TeamHandler) *TeamHandler {
 	h.templates = map[string]*template.Template{}
 
 	if h.Identify == nil {
-		h.Identify = FirstTeamOwner(h.Control)
+		h.Identify = FirstTeamOwner(h.System)
 	}
 
 	for _, name := range []string{"team", "sharing", "reports", "health"} {

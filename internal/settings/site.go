@@ -188,7 +188,7 @@ func (h *TeamHandler) sharingRoute(w http.ResponseWriter, r *http.Request, ident
 func (h *TeamHandler) isPublic(r *http.Request, siteID int64) (bool, error) {
 	var public int
 
-	err := h.Control.QueryRowContext(r.Context(), `SELECT is_public FROM sites WHERE id = ?`, siteID).Scan(&public)
+	err := h.System.QueryRowContext(r.Context(), `SELECT is_public FROM sites WHERE id = ?`, siteID).Scan(&public)
 
 	return public != 0, err
 }

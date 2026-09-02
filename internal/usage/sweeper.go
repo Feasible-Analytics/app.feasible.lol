@@ -17,7 +17,7 @@ import (
 
 // SweepInterval is how often the ladder runs. Hourly is often enough that a
 // customer crossing 70% hears about it the same morning, and rare enough that
-// the sweep never competes with ingestion for the control database.
+// the sweep never competes with ingestion for the system database.
 const SweepInterval = time.Hour
 
 // Notice is one volume email the ladder has decided to send. Like the lifecycle

@@ -18,11 +18,11 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 )
 
-// applyControlMigrations builds the complete merged control schema for command
+// applySystemMigrations builds the complete merged system schema for command
 // tests that seed records directly before exercising a process boundary.
-func applyControlMigrations(t *testing.T, db *sql.DB) {
+func applySystemMigrations(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), db, migrate.System()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -36,10 +36,10 @@ func run(t *testing.T, args ...string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
 
 	code := Run(Options{
-		Args:              args,
-		Stdout:            &stdout,
-		Stderr:            &stderr,
-		ControlMigrations: migrate.Control(),
+		Args:             args,
+		Stdout:           &stdout,
+		Stderr:           &stderr,
+		SystemMigrations: migrate.System(),
 	})
 
 	return code, stdout.String(), stderr.String()

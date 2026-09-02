@@ -230,7 +230,7 @@ func (a *API) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	site, err := a.Control.CreateSite(r.Context(), key.TeamID, domain, request.DisplayName, timezone)
+	site, err := a.System.CreateSite(r.Context(), key.TeamID, domain, request.DisplayName, timezone)
 	if err != nil {
 		a.answerStoreError(w, "create site", err)
 		return
@@ -341,7 +341,7 @@ func (a *API) handleListSites(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	list, total, err := a.Control.ListSites(r.Context(), key.TeamID, limit, (page-1)*limit)
+	list, total, err := a.System.ListSites(r.Context(), key.TeamID, limit, (page-1)*limit)
 	if err != nil {
 		a.answerStoreError(w, "list sites", err)
 		return
@@ -365,7 +365,7 @@ func (a *API) handleGetSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	record, err := a.Control.GetSite(r.Context(), key.TeamID, site.Domain)
+	record, err := a.System.GetSite(r.Context(), key.TeamID, site.Domain)
 	if err != nil {
 		a.answerStoreError(w, "get site", err)
 		return
@@ -414,7 +414,7 @@ func (a *API) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	record, err := a.Control.UpdateSite(r.Context(), key.TeamID, site.ID,
+	record, err := a.System.UpdateSite(r.Context(), key.TeamID, site.ID,
 		request.Domain, request.DisplayName, request.Timezone, request.IsPublic)
 	if err != nil {
 		a.answerStoreError(w, "update site", err)
@@ -470,7 +470,7 @@ func (a *API) handleGetTracker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	config, err := a.Control.TrackerConfig(r.Context(), site.ID)
+	config, err := a.System.TrackerConfig(r.Context(), site.ID)
 	if err != nil {
 		a.answerStoreError(w, "tracker config", err)
 		return
@@ -500,7 +500,7 @@ func (a *API) handleUpdateTracker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.Control.SaveTrackerConfig(r.Context(), site.ID, &config); err != nil {
+	if err := a.System.SaveTrackerConfig(r.Context(), site.ID, &config); err != nil {
 		a.answerStoreError(w, "save tracker config", err)
 		return
 	}
@@ -569,7 +569,7 @@ func (a *API) handleListCustomProps(w http.ResponseWriter, r *http.Request) {
 	if a.CustomProperties != nil {
 		properties, err = a.CustomProperties.ListProperties(r.Context(), site.ID)
 	} else {
-		properties, err = a.Control.CustomProperties(r.Context(), site.ID)
+		properties, err = a.System.CustomProperties(r.Context(), site.ID)
 	}
 	if err != nil {
 		a.answerStoreError(w, "custom properties", err)
@@ -630,7 +630,7 @@ func (a *API) handleCreateCustomProp(w http.ResponseWriter, r *http.Request) {
 	if a.CustomProperties != nil {
 		property, err = a.CustomProperties.CreateProperty(r.Context(), site.ID, name, scope)
 	} else {
-		property, err = a.Control.AddCustomProperty(r.Context(), site.ID, name)
+		property, err = a.System.AddCustomProperty(r.Context(), site.ID, name)
 	}
 	if err != nil {
 		a.answerStoreError(w, "add custom property", err)
@@ -656,7 +656,7 @@ func (a *API) handleDeleteCustomProp(w http.ResponseWriter, r *http.Request) {
 	if a.CustomProperties != nil {
 		err = a.CustomProperties.DeleteProperty(r.Context(), site.ID, id)
 	} else {
-		err = a.Control.DeleteCustomProperty(r.Context(), site.ID, id)
+		err = a.System.DeleteCustomProperty(r.Context(), site.ID, id)
 	}
 	if err != nil {
 		a.answerStoreError(w, "delete custom property", err)
@@ -676,7 +676,7 @@ func (a *API) handleListSharedLinks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	links, err := a.Control.SharedLinks(r.Context(), site.ID)
+	links, err := a.System.SharedLinks(r.Context(), site.ID)
 	if err != nil {
 		a.answerStoreError(w, "shared links", err)
 		return
@@ -792,7 +792,7 @@ func (a *API) handleListGuests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	guests, err := a.Control.Guests(r.Context(), site.ID)
+	guests, err := a.System.Guests(r.Context(), site.ID)
 	if err != nil {
 		a.answerStoreError(w, "guests", err)
 		return
@@ -926,7 +926,7 @@ func (a *API) handleDeleteGuest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.Control.DeleteGuest(r.Context(), site.ID, id); err != nil {
+	if err := a.System.DeleteGuest(r.Context(), site.ID, id); err != nil {
 		a.answerStoreError(w, "delete guest", err)
 		return
 	}
@@ -949,7 +949,7 @@ func (a *API) handleListMemberships(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	members, err := a.Control.Members(r.Context(), key.TeamID)
+	members, err := a.System.Members(r.Context(), key.TeamID)
 	if err != nil {
 		a.answerStoreError(w, "memberships", err)
 		return
@@ -1062,7 +1062,7 @@ func (a *API) handleDeleteMembership(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targetUserID, targetRole, err := a.Control.MembershipTarget(r.Context(), key.TeamID, id)
+	targetUserID, targetRole, err := a.System.MembershipTarget(r.Context(), key.TeamID, id)
 	if err != nil {
 		a.answerStoreError(w, "read membership", err)
 		return

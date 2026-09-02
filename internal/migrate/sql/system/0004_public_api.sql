@@ -5,7 +5,7 @@
 -- Created: 2026-08-30
 -- Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 --
--- Everything here lives in control.db rather than in an account database for one
+-- Everything here lives in system.db rather than in an account database for one
 -- reason each, and the reason matters more than the convention:
 --
 --   * A key, an OAuth client and a rate limit are checked before we know which

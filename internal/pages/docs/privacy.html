@@ -43,7 +43,7 @@ what happens when you hash a value drawn from a small set.</p>
 row is encrypted at rest with AES-256-GCM under a key held outside the database, and expired live
 rows are deleted outright rather than soft-deleted.</p>
 
-<p>The control database is continuously replicated. The bucket lifecycle makes each encrypted control
+<p>The system database is continuously replicated. The bucket lifecycle makes each encrypted system
 replica object eligible for provider removal within 72 hours of being written. The decryption key is
 never stored with those replicas, but an authorised
 restoration using the separately backed-up key and the corresponding analytics database could

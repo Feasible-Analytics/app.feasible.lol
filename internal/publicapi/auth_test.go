@@ -75,7 +75,7 @@ func TestRevokedKeyStopsWorking(t *testing.T) {
 		t.Fatalf("the key did not work before revocation: %d", status)
 	}
 
-	keys := apikeys.NewStore(h.Control)
+	keys := apikeys.NewStore(h.System)
 
 	list, err := keys.List(context.Background(), teamID)
 	if err != nil {
@@ -102,7 +102,7 @@ func TestLeavingTheTeamStopsThePublicAPIKey(t *testing.T) {
 		t.Fatalf("key did not work before leaving: %d (%s)", status, body)
 	}
 
-	if _, err := h.Control.Exec(`DELETE FROM team_memberships WHERE team_id = ? AND user_id = 1`, teamID); err != nil {
+	if _, err := h.System.Exec(`DELETE FROM team_memberships WHERE team_id = ? AND user_id = 1`, teamID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -139,7 +139,7 @@ func TestCurrentMembershipRoleRestrictsPublicAPIKey(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := h.Control.Exec(`
+			if _, err := h.System.Exec(`
 				UPDATE team_memberships SET role = ? WHERE team_id = ? AND user_id = 1
 			`, tc.role, teamID); err != nil {
 				t.Fatal(err)
@@ -158,7 +158,7 @@ func TestCurrentMembershipRoleRestrictsPublicAPIKey(t *testing.T) {
 func TestAdminKeyCannotGrantOrRemoveOwner(t *testing.T) {
 	h := newHarness(t)
 
-	if _, err := h.Control.Exec(`
+	if _, err := h.System.Exec(`
 		UPDATE team_memberships SET role = 'admin' WHERE team_id = ? AND user_id = 1;
 		INSERT INTO team_memberships (team_id, user_id, role, created_at)
 		VALUES (?, 3, 'owner', ?)
@@ -173,7 +173,7 @@ func TestAdminKeyCannotGrantOrRemoveOwner(t *testing.T) {
 	}
 
 	var ownerMembershipID int64
-	if err := h.Control.QueryRow(`
+	if err := h.System.QueryRow(`
 		SELECT id FROM team_memberships WHERE team_id = ? AND user_id = 3
 	`, teamID).Scan(&ownerMembershipID); err != nil {
 		t.Fatal(err)
@@ -319,7 +319,7 @@ func TestRateLimitWindowRolls(t *testing.T) {
 func TestScopedKeyIsRefusedOutsideItsScope(t *testing.T) {
 	h := newHarness(t)
 
-	keys := apikeys.NewStore(h.Control)
+	keys := apikeys.NewStore(h.System)
 
 	_, readOnly, err := keys.Create(context.Background(), teamID, 1, "read only", []string{apikeys.ScopeStatsRead}, 0)
 	if err != nil {
@@ -344,7 +344,7 @@ func TestScopedKeyIsRefusedOutsideItsScope(t *testing.T) {
 func TestGuestInvitationRequiresProvisioningScopeAndSiteCapability(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
-	keys := apikeys.NewStore(h.Control)
+	keys := apikeys.NewStore(h.System)
 	body := `{"site_id":"example.com","email":"invitee@example.test","role":"guest_viewer"}`
 
 	_, readOnly, err := keys.Create(ctx, teamID, 1, "read only", []string{apikeys.ScopeStatsRead}, 0)
@@ -358,13 +358,13 @@ func TestGuestInvitationRequiresProvisioningScopeAndSiteCapability(t *testing.T)
 		t.Fatalf("other-team guest invitation answered %d, want 404 (%s)", status, response)
 	}
 
-	if _, err := h.Control.Exec(`UPDATE team_memberships SET role = 'billing' WHERE team_id = ? AND user_id = 1`, teamID); err != nil {
+	if _, err := h.System.Exec(`UPDATE team_memberships SET role = 'billing' WHERE team_id = ? AND user_id = 1`, teamID); err != nil {
 		t.Fatal(err)
 	}
 	if status, response := h.do(t, http.MethodPut, "/api/v1/sites/guests", body, h.Key); status != http.StatusForbidden {
 		t.Fatalf("billing guest invitation answered %d, want 403 (%s)", status, response)
 	}
-	if _, err := h.Control.Exec(`UPDATE team_memberships SET role = 'editor' WHERE team_id = ? AND user_id = 1`, teamID); err != nil {
+	if _, err := h.System.Exec(`UPDATE team_memberships SET role = 'editor' WHERE team_id = ? AND user_id = 1`, teamID); err != nil {
 		t.Fatal(err)
 	}
 	if status, response := h.do(t, http.MethodPut, "/api/v1/sites/guests", body, h.Key); status != http.StatusCreated {
@@ -382,7 +382,7 @@ func TestLastUsedIsRecorded(t *testing.T) {
 		t.Fatalf("status = %d (%s)", status, body)
 	}
 
-	keys := apikeys.NewStore(h.Control)
+	keys := apikeys.NewStore(h.System)
 
 	list, err := keys.List(context.Background(), teamID)
 	if err != nil {

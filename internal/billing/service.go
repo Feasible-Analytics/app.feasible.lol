@@ -694,7 +694,7 @@ func (s *Service) CheckoutPaymentStatus(ctx context.Context, sessionID string) (
 
 // StartTrial enrols a brand-new account. The trial takes no card, so there is
 // no customer at the payment provider and nothing to ask it about — the whole
-// trial lives in control.db, which is why this does not touch the provider at
+// trial lives in system.db, which is why this does not touch the provider at
 // all.
 func (s *Service) StartTrial(ctx context.Context, teamID int64) (lifecycle.Transition, error) {
 	return s.Lifecycle.Signal(ctx, teamID, lifecycle.SignalTrialStarted)

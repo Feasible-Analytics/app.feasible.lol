@@ -133,7 +133,7 @@ help:
 	@echo "    make lint       go vet and golangci-lint"
 	@echo "    make test-race  the same tests under the race detector"
 	@echo "    make check-env  every environment variable is in .env.sample"
-	@echo "    make migrate    migrate control.db and every account database"
+	@echo "    make migrate    migrate system.db and every account database"
 	@echo "    make migrate-fresh      drop everything and rebuild"
 	@echo
 	@echo "  Data to build and measure against:"
@@ -295,7 +295,7 @@ lint:
 check-env:
 	@./scripts/check-env.sh
 
-## migrate: migrate control.db and every account database
+## migrate: migrate system.db and every account database
 migrate: build
 	@$(APP_ENV) ./$(BINARY) db migrate
 

@@ -111,7 +111,7 @@ The same dataset on disk, with every index and both roll-up grains built:
 | | |
 |---|---:|
 | Account database | 293.8 MB |
-| Control database | 4.2 MB |
+| System database | 4.2 MB |
 | Per event, all in | ~210 bytes |
 
 A million pageviews is about 300 MB once it is indexed and summarised. Raw rows

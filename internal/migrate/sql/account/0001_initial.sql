@@ -19,7 +19,7 @@
 --    when a query wants three columns, so a props blob in the same row is
 --    dragged through every scan that never looks at it.
 --
--- site_id points at sites.id in the control database. It cannot be a foreign
+-- site_id points at sites.id in the system database. It cannot be a foreign
 -- key because that table lives in a different file, and that is the trade the
 -- per-account layout makes: no cross-database joins on the query path, at the
 -- cost of one reference the database cannot enforce for us.

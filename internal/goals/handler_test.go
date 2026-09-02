@@ -28,13 +28,13 @@ func newReportHandler(t *testing.T) (*Handler, *accounts.Manager, string, int64)
 	t.Helper()
 
 	dir := t.TempDir()
-	control, err := store.Open(filepath.Join(dir, "control.db"))
+	control, err := store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatalf("open control: %v", err)
 	}
 	t.Cleanup(func() { control.Close() })
 
-	if _, err := migrate.Run(context.Background(), control, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), control, migrate.System()); err != nil {
 		t.Fatalf("migrate control: %v", err)
 	}
 

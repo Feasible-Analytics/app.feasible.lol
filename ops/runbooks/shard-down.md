@@ -1,62 +1,58 @@
 <!--
 shard-down.md
-An account database or shared account volume is unavailable.
+An app shard or its account storage is unavailable.
 
-Created: 2026-08-31
+Created: 2026-09-01
 Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 -->
 
-# Account storage is unavailable
+# An app shard is unavailable
 
-The filename remains for existing operational links. There is no network shard
-delivery service in the consolidated runtime: every event-serving process opens
-the shared account database and commits directly.
+App downtime must make dashboards unavailable, not lose pageviews. Public event
+traffic continues to any healthy ingester, which commits each event to its
+local outbox and retries the owning app shard until it returns.
 
 ## Symptom
 
-- `/health/ready` is `503` when `control_db` or `account_directory` fails.
-- Event requests for an unavailable account return `503`, never a durability
-  `202`.
-- `feasible_ingest_flushes_total{outcome="error"}` and HTTP 5xx increase.
-- The tracker keeps failed bodies in its browser outbox with the same UUID.
-- If only one account file is corrupt, other accounts continue and process
-  readiness may remain healthy.
+- Dashboard and API requests routed to the failed app shard return errors.
+- Every ingester's queue for that destination grows and
+  `feasible_ingest_buffer_oldest_seconds` rises.
+- Other app shards keep receiving batches and their account dashboards remain
+  current.
+- Public `/api/event` continues returning `202` while ingester disks, routing
+  snapshots, and fingerprint salts are healthy.
 
 ## Diagnosis
 
-Check the shared mount, directory write probe, free space, permissions, and the
-specific account database:
-
-```bash
-curl -s http://127.0.0.1:19402/health/ready | python3 -m json.tool
-curl -s http://127.0.0.1:19402/metrics | \
-  grep -E 'feasible_ingest_flushes_total|feasible_disk_available_bytes|feasible_database_wal_bytes_max'
-sqlite3 /var/lib/feasible/accounts/000042/analytics.db 'PRAGMA integrity_check;'
-```
-
-An empty or stale site snapshot is different: it produces a named
-`unknown_site` policy drop. Storage failure produces a retryable 503.
+1. Query the failed app's private `/health/ready` endpoint and inspect
+   `system_db`, `account_directory`, `salts`, and `routing_map`.
+2. Check its local `system.db`, account volume, permissions, and free space.
+3. Call `/internal/domains` with an authenticated operator client and confirm
+   the shard still publishes its owned domains. A failed poll must leave each
+   ingester's previous contribution intact but makes the combined map
+   incomplete after 60 seconds.
+4. If only one account database is damaged, verify other accounts on that shard
+   still commit and follow [restore-account.md](restore-account.md).
 
 ## Fix
 
-Restore the mount or the individual account database, then run migrations before
-returning the process to traffic:
+Restore the app process or its attached account volume. Run maintenance while
+the shard is out of the load balancer, then return it to service:
 
 ```bash
 feasible db migrate
 feasible litestream check
 ```
 
-For one damaged account, follow [restore-account.md](restore-account.md). After
-recovery, use a real browser check to confirm the retained body drains and the
-server stores one fact for its UUID.
+The ingesters drain automatically. Confirm buffer oldest age falls to zero and
+that repeated UUIDs create one permanent receipt and at most one fact.
 
 ## What makes it worse
 
-- Returning 202 from a proxy-generated fallback page falsely acknowledges data
-  that never reached SQLite.
+- Repointing the shard URL to a different app that does not own those accounts
+  creates `not_mine` churn and can strand the queue.
 - Deleting account databases or WAL files to make readiness green loses data.
-- Starting a second process against a different local data directory splits the
-  authoritative site, salt, receipt, and session state.
-- Searching for network outbox rows, polling maps, `not_mine` responses, or an
-  internal delivery endpoint follows architecture that current main removed.
+- Removing the failed shard from every ingester's static list makes an
+  incomplete routing map appear complete and allows unknown-domain drops.
+- Copying account SQLite files while either process has them open is not a
+  failover procedure; use the replica and restore runbook.

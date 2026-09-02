@@ -22,7 +22,7 @@ import (
 )
 
 // conversionStore bridges site-scoped public contracts to the owning account
-// database without moving conversion definitions back into control.db.
+// database without moving conversion definitions back into system.db.
 type conversionStore struct {
 	control  *sql.DB
 	accounts *accounts.Manager

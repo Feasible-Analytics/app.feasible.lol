@@ -38,7 +38,7 @@ type Phase string
 //	Grace    days 0-30    full dashboard, with a banner. Still collecting.
 //	Locked   days 30-60   dashboard blocked. STILL COLLECTING — see below.
 //	Dormant  days 60-90   dashboard blocked, collection stopped, data kept
-//	Deleted  day 90       the account database, the control rows and the
+//	Deleted  day 90       the account database, the system rows and the
 //	                      payment-provider customer are gone, irreversibly
 //
 // Collection continuing through Locked is deliberate and is the kindest
@@ -322,7 +322,7 @@ func Apply(state State, signal Signal, now time.Time) (Transition, error) {
 	from := state.At(now)
 
 	// Deleted is terminal, and this is the branch that makes it so. The
-	// customer's database file, control rows and payment-provider customer are
+	// customer's database file, system rows and payment-provider customer are
 	// gone; a payment arriving afterwards buys a new account, not the old one
 	// back, and pretending otherwise would leave an "active" account pointing
 	// at a database that does not exist.

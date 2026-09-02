@@ -44,7 +44,7 @@ ordered by how safe it is to remove.
 | `geoip/dbip-country-lite.mmdb` | Country geolocation | Yes, but it degrades every event's country |
 | `lists/` | Refreshed bot and spam lists | Yes — an embedded baseline is compiled in |
 | `salt.key`, `app.key`, `script.key` | Encryption keys | **Never** |
-| `control.db`, `control.db-wal` | Sites, users, keys, salts, jobs | **Never** |
+| `system.db`, `system.db-wal` | Sites, users, keys, salts, jobs | **Never** |
 | `accounts/*/analytics.db`, `-wal` | Customer data | **Never** |
 
 **Never delete a `-wal` file.** It is not a log in the "old and disposable"
@@ -120,9 +120,9 @@ year is lower than multiplying by twelve suggests.
 it corrupts the file; on a closed one it silently loses whatever had not been
 checkpointed.
 
-**Looking for an ingest outbox to delete.** Current main writes account SQLite
-directly and acknowledges only after commit. There is no outbox file; use the
-inventory above rather than deleting an unfamiliar database.
+**Deleting an ingest outbox.** A hosted ingester's `buffer.db` contains events
+that may already have received `202` and are waiting for an app acknowledgment.
+Move or drain its persistent volume; never remove the file to reclaim space.
 
 **Deleting an account database that "looks stale".** There is no such thing here:
 a quiet account is a customer with a quiet website.

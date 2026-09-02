@@ -37,7 +37,7 @@ Commands:
 
 const litestreamConfigHelp = `feasible litestream config — write the replication configuration.
 
-Lists control.db and every account database, and writes a Litestream config for
+Lists system.db and every account database, and writes a Litestream config for
 them. The file is only replaced when it differs, so the restart hook fires when
 an account is created rather than on every tick.
 
@@ -110,7 +110,7 @@ func runLitestream(e *env, args []string) int {
 func runLitestreamConfig(e *env, args []string) int {
 	fs := newFlagSet("litestream config", e, litestreamConfigHelp)
 
-	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding control.db and the account databases")
+	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding system.db and the account databases")
 	out := fs.String("out", e.cfg.Litestream.ConfigPath, "file to write the configuration to")
 	replica := fs.String("replica-url", e.cfg.Litestream.ReplicaURL, "replica prefix, such as s3://bucket/shard-01")
 	watch := fs.Bool("watch", false, "keep the file current as accounts are created")
@@ -284,7 +284,7 @@ const changeHookTimeout = 60 * time.Second
 func runLitestreamCheck(e *env, args []string) int {
 	fs := newFlagSet("litestream check", e, litestreamCheckHelp)
 
-	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding control.db and the account databases")
+	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding system.db and the account databases")
 	configPath := fs.String("config", e.cfg.Litestream.ConfigPath, "the configuration file to check")
 	replica := fs.String("replica-url", e.cfg.Litestream.ReplicaURL, "replica prefix, such as s3://bucket/shard-01")
 

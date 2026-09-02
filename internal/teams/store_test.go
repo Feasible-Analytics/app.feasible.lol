@@ -27,7 +27,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/webhooks"
 )
 
-// fixture is a control database with two teams, four people and two sites, plus
+// fixture is a system database with two teams, four people and two sites, plus
 // a store whose clock the test drives. It is a struct rather than a set of
 // return values because almost every test here needs at least four of the ids.
 type fixture struct {
@@ -91,14 +91,14 @@ func TestMembershipMutationsCannotUseStaleOwnerAuthorization(t *testing.T) {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 
-	db, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "system.db"))
 	if err != nil {
 		t.Fatalf("open control: %v", err)
 	}
 
 	t.Cleanup(func() { db.Close() })
 
-	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), db, migrate.System()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -437,7 +437,7 @@ func TestInvitationRedemptionIsBoundToTheRecipient(t *testing.T) {
 	}
 }
 
-// TestGuestInvitationCannotNameAnotherTeamsSite checks the control-database
+// TestGuestInvitationCannotNameAnotherTeamsSite checks the system-database
 // boundary directly instead of relying on the site's dropdown in the form.
 func TestGuestInvitationCannotNameAnotherTeamsSite(t *testing.T) {
 	f := newFixture(t)

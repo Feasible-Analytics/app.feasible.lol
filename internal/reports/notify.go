@@ -767,10 +767,10 @@ func (n *Notifier) SendNow(ctx context.Context, siteID int64, kind string, recip
 	return rendered, nil
 }
 
-// ControlSiteLookup reads a site's identity out of control.db. It is a
+// SystemSiteLookup reads a site's identity out of system.db. It is a
 // constructor rather than a method so the notifier holds a function and can be
 // tested with a fixed one.
-func ControlSiteLookup(db *sql.DB) SiteLookup {
+func SystemSiteLookup(db *sql.DB) SiteLookup {
 	return func(ctx context.Context, siteID int64) (SiteRef, error) {
 		var site SiteRef
 

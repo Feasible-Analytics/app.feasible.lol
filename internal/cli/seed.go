@@ -54,7 +54,7 @@ func runSeed(e *env, args []string) int {
 	sites := fs.Int("sites", seed.DefaultSites, "how many sites carry traffic")
 	rngSeed := fs.Int64("seed", seed.DefaultSeed, "random seed — the same value produces the same database")
 	fresh := fs.Bool("fresh", false, "delete the seeded databases first")
-	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding control.db and the account databases")
+	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding system.db and the account databases")
 
 	overWire := fs.Bool("http", false, "send events over real HTTP instead of generating in bulk")
 	wireURL := fs.String("url", "", "post to an already-running instance instead of starting one")
@@ -89,15 +89,15 @@ func runSeed(e *env, args []string) int {
 	)
 
 	result, err := seed.Run(ctx, seed.Options{
-		DataDir:           *dataDir,
-		Pageviews:         *pageviews,
-		Days:              *days,
-		Sites:             *sites,
-		Seed:              *rngSeed,
-		Fresh:             *fresh,
-		Out:               e.stdout,
-		Log:               e.log,
-		ControlMigrations: e.controlMigrations,
+		DataDir:          *dataDir,
+		Pageviews:        *pageviews,
+		Days:             *days,
+		Sites:            *sites,
+		Seed:             *rngSeed,
+		Fresh:            *fresh,
+		Out:              e.stdout,
+		Log:              e.log,
+		SystemMigrations: e.systemMigrations,
 	})
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
@@ -149,7 +149,7 @@ func runSeedHTTP(ctx context.Context, e *env, dataDir, url string, events int, r
 	// making somebody generate six weeks of history first would make the quick
 	// check the slow one.
 	if url == "" {
-		if err := seed.EnsureFixtureWithMigrations(ctx, dataDir, now, e.controlMigrations); err != nil {
+		if err := seed.EnsureFixtureWithMigrations(ctx, dataDir, now, e.systemMigrations); err != nil {
 			fmt.Fprintf(e.stderr, "%v\n", err)
 			return ExitError
 		}

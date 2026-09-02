@@ -20,17 +20,17 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
-// newControlDB builds a migrated control database with one team.
+// newControlDB builds a migrated system database with one team.
 func newControlDB(t testing.TB) *sql.DB {
 	t.Helper()
 
-	db, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), db, migrate.System()); err != nil {
 		t.Fatal(err)
 	}
 

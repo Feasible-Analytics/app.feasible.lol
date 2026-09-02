@@ -38,13 +38,13 @@ func newHandler(t *testing.T) (*Handler, *accounts.Manager) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
 
-	control, err := store.Open(filepath.Join(dataDir, "control.db"))
+	control, err := store.Open(filepath.Join(dataDir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { control.Close() })
 
-	if _, err := migrate.Run(ctx, control, migrate.Control()); err != nil {
+	if _, err := migrate.Run(ctx, control, migrate.System()); err != nil {
 		t.Fatal(err)
 	}
 

@@ -5,13 +5,13 @@
 -- Created: 2026-08-30
 -- Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 --
--- All five tables live in the account database rather than in control.db for
+-- All five tables live in the account database rather than in system.db for
 -- the same reason the facts do: every query that reads a goal also reads the
 -- events it matches, and a definition in another file would mean a cross-
 -- database join on the one path that has to stay a single scan.
 --
 -- Definitions are per site inside the account. site_id cannot be a foreign key
--- for the same reason it is not one on `events`: sites live in control.db.
+-- for the same reason it is not one on `events`: sites live in system.db.
 
 -- One goal. A goal is either a path pattern or an event name, never both, and
 -- which one it is decides how it is matched.

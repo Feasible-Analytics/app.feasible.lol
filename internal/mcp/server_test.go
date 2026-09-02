@@ -873,7 +873,7 @@ type fixture struct {
 	API     *publicapi.API
 	Key     *apikeys.Key
 	Raw     string
-	Control *sql.DB
+	System  *sql.DB
 	BaseURL string
 }
 
@@ -887,13 +887,13 @@ func newFixture(t *testing.T) *fixture {
 	ctx := context.Background()
 	dir := t.TempDir()
 
-	control, err := store.Open(filepath.Join(dir, "control.db"))
+	control, err := store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { control.Close() })
 
-	if _, err := migrate.Run(ctx, control, migrate.Control()); err != nil {
+	if _, err := migrate.Run(ctx, control, migrate.System()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -947,7 +947,7 @@ func newFixture(t *testing.T) *fixture {
 		Limiter:  apikeys.NewLimiter(0),
 		Access:   access.New(nil, nil, nil, nil),
 		Sites:    cache,
-		Control:  publicapi.NewControlStore(control),
+		System:   publicapi.NewSystemStore(control),
 		Accounts: manager,
 		BaseURL:  "https://example.test",
 		Now:      func() time.Time { return testNow },
@@ -958,7 +958,7 @@ func newFixture(t *testing.T) *fixture {
 		API:     api,
 		Key:     key,
 		Raw:     raw,
-		Control: control,
+		System:  control,
 		BaseURL: "https://example.test",
 	}
 }

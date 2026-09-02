@@ -150,6 +150,12 @@ func (c *Cache) Ruleset(siteID int64) *Ruleset {
 	return c.snap.Load().bySite[siteID]
 }
 
+// BlockedIPPrefixes returns the canonical IP rules that an app shard publishes
+// to ingesters before they discard visitor addresses.
+func (c *Cache) BlockedIPPrefixes(siteID int64) []string {
+	return c.Ruleset(siteID).BlockedIPPrefixes()
+}
+
 // BuiltAt reports when the snapshot was made, so a stalled refresh is visible
 // rather than merely quiet.
 func (c *Cache) BuiltAt() time.Time {

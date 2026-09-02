@@ -27,7 +27,7 @@ import (
 // monitoring while everything else kept working.
 func TestInternalListenerServesMetricsAndHealth(t *testing.T) {
 	checks := &health.Set{}
-	checks.Require("control_db", func(context.Context) error { return nil })
+	checks.Require("system_db", func(context.Context) error { return nil })
 
 	// Port zero, because a test that hard-coded one would fail whenever
 	// anything else on the machine happened to hold it.
@@ -54,7 +54,7 @@ func TestInternalListenerServesMetricsAndHealth(t *testing.T) {
 
 	// The health probes come with every listener, so a scrape target that is
 	// answering is also a target that can be checked.
-	if got := fetch(t, base+httpserver.PathReady); !strings.Contains(got, "control_db") {
+	if got := fetch(t, base+httpserver.PathReady); !strings.Contains(got, "system_db") {
 		t.Errorf("readiness did not name its components: %s", got)
 	}
 }
@@ -90,7 +90,7 @@ func fetch(t *testing.T, url string) string {
 func TestJobCountsSplitsTheQueueByState(t *testing.T) {
 	dir := migratedDataDir(t)
 
-	db, err := store.Open(filepath.Join(dir, "control.db"))
+	db, err := store.Open(filepath.Join(dir, "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

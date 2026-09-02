@@ -9,7 +9,7 @@
 // Package sites is the routing table the ingest path reads on every event: a
 // domain in, an account and a site out. It is a package rather than a query
 // because of one hard rule — nothing on the ingest hot path may touch
-// control.db. A per-event lookup against a shared SQLite file would put the
+// system.db. A per-event lookup against a shared SQLite file would put the
 // busiest path in the system behind the same write lock the dashboard, billing
 // and the job queue contend for.
 //
@@ -97,7 +97,7 @@ type snapshot struct {
 	builtAt  time.Time
 }
 
-// New builds an empty cache over the control database. Nothing is loaded yet,
+// New builds an empty cache over the system database. Nothing is loaded yet,
 // so a process can construct the cache before it has decided whether it will
 // serve traffic.
 func New(db *sql.DB) *Cache {
@@ -107,11 +107,25 @@ func New(db *sql.DB) *Cache {
 	return cache
 }
 
-// Refresh rebuilds the snapshot from control.db. It reads every site in one
+// NewEmpty builds a cache whose snapshots are supplied by a remote shard
+// poller. The standalone ingest tier uses it because it must never open the
+// app shard's system database merely to learn where an event belongs.
+func NewEmpty() *Cache {
+	cache := &Cache{}
+	cache.snap.Store(&snapshot{byDomain: map[string]Site{}})
+
+	return cache
+}
+
+// Refresh rebuilds the snapshot from system.db. It reads every site in one
 // query because the alternative — an incremental update — needs change
 // tracking that would have to be correct across restores and manual edits, for
 // a table that holds a few thousand rows.
 func (c *Cache) Refresh(ctx context.Context) error {
+	if c.db == nil {
+		return fmt.Errorf("sites: refresh: no local system database is configured")
+	}
+
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT sites.id, sites.account_id, COALESCE(sites.owner_team_id, sites.account_id),
 		       sites.domain, sites.timezone,
@@ -166,6 +180,21 @@ func (c *Cache) Refresh(ctx context.Context) error {
 	c.snap.Store(&snapshot{byDomain: byDomain, builtAt: time.Now()})
 
 	return nil
+}
+
+// Replace atomically installs a complete externally supplied routing snapshot.
+// A caller owns validation and completeness; readers continue seeing the
+// previous map until the new one is fully constructed.
+func (c *Cache) Replace(all []Site, builtAt time.Time) {
+	byDomain := make(map[string]Site, len(all))
+	for _, site := range all {
+		byDomain[Normalise(site.Domain)] = site
+	}
+	if builtAt.IsZero() {
+		builtAt = time.Now()
+	}
+
+	c.snap.Store(&snapshot{byDomain: byDomain, builtAt: builtAt})
 }
 
 // attachAllowedHostnames folds each site's allow-list into the snapshot being

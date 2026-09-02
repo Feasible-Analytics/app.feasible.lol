@@ -1,6 +1,6 @@
 //
 // gate.go
-// Blocking the dashboard for a locked account, without touching control.db per request.
+// Blocking the dashboard for a locked account, without touching system.db per request.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.

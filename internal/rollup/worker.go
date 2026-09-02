@@ -40,7 +40,7 @@ type SiteRef struct {
 
 // Lister supplies the sites to build. It is a function rather than a table read
 // so that the worker does not have to know whether the list came from
-// control.db, from a command's flags, or from a test.
+// system.db, from a command's flags, or from a test.
 type Lister func(ctx context.Context) ([]SiteRef, error)
 
 // Worker rebuilds every site's summary on a timer.
@@ -299,10 +299,10 @@ func firstEvent(ctx context.Context, db *sql.DB, siteID int64) (time.Time, error
 	return time.Unix(earliest.Int64, 0).UTC(), nil
 }
 
-// ControlLister reads every site out of control.db. It is what `feasible serve`
+// SystemLister reads every site out of system.db. It is what `feasible serve`
 // and the rebuild command both hand the worker, so the set of sites that get
 // summarised is the same set that receives traffic.
-func ControlLister(control *sql.DB) Lister {
+func SystemLister(control *sql.DB) Lister {
 	return func(ctx context.Context) ([]SiteRef, error) {
 		rows, err := control.QueryContext(ctx,
 			"SELECT id, account_id, domain, timezone FROM sites ORDER BY account_id, id")

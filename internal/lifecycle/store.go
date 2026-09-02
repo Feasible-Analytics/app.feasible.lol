@@ -28,13 +28,13 @@ const emailLeaseDuration = 5 * time.Minute
 // spinning while another process holds the same account transition lease.
 const lifecycleLeasePoll = 20 * time.Millisecond
 
-// Store is every read and write the lifecycle makes against control.db.
+// Store is every read and write the lifecycle makes against system.db.
 //
 // One thing here is worth being deliberate about: the clock lives in
 // account_lifecycle, but two derived values are also written onto the teams row
 // — trial_ends_at and accept_traffic_until. That duplication is not an
 // oversight. The ingest path resolves a domain from an in-memory snapshot of
-// teams and sites and may never touch control.db, so the date collection stops
+// teams and sites and may never touch system.db, so the date collection stops
 // has to be on the row that snapshot is built from. Both writes happen in one
 // transaction, so the mirror cannot lag the source.
 type Store struct {
@@ -49,7 +49,7 @@ type CompResult struct {
 	AlreadyComped bool
 }
 
-// NewStore builds a store over the control database.
+// NewStore builds a store over the system database.
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
 }

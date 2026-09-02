@@ -1,6 +1,6 @@
 //
 // auth.go
-// The control-plane store behind every identity, team and site operation.
+// The system store behind every identity, team and site operation.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -16,7 +16,7 @@
 // somebody download a JavaScript application before they can type a password is
 // how a sign-in page ends up slower than the product behind it.
 //
-// Everything here reads and writes control.db, which is the only database that
+// Everything here reads and writes system.db, which is the only database that
 // knows who people are. The per-account analytics databases are opened only for
 // the two things that genuinely need them — a sparkline on the sites list and
 // resetting or deleting a site's stats.
@@ -45,7 +45,7 @@ var (
 	ErrTwoFactorNeeded = errors.New("auth: a two-factor code is required")
 )
 
-// Store is the control database plus the clock everything here reads. The clock
+// Store is the system database plus the clock everything here reads. The clock
 // is injectable because half of this package is about expiry windows, and a
 // test that has to sleep for fourteen days is a test nobody runs.
 type Store struct {
@@ -53,7 +53,7 @@ type Store struct {
 	now func() time.Time
 }
 
-// NewStore wraps an open control database. It does not migrate: migrations are
+// NewStore wraps an open system database. It does not migrate: migrations are
 // deliberate and observable everywhere else in this binary, and a package that
 // quietly upgraded the schema on construction would be the one exception.
 func NewStore(db *sql.DB) *Store {
@@ -81,7 +81,7 @@ func (s *Store) DB() *sql.DB {
 }
 
 // nullInt64 turns a nullable unix timestamp column into a plain int64, with
-// zero meaning "never". Every timestamp in control.db is unix seconds, and
+// zero meaning "never". Every timestamp in system.db is unix seconds, and
 // carrying sql.NullInt64 through the whole package would put a two-field check
 // at every call site for a distinction only the database cares about.
 func nullInt64(v sql.NullInt64) int64 {

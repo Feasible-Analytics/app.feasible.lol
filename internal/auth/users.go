@@ -315,7 +315,7 @@ func (s *Store) UnlinkGoogle(ctx context.Context, userID int64) error {
 
 // TouchUser records that somebody was active. It is written on session refresh
 // rather than on every request so that reading a dashboard does not put a write
-// on the shared control database once per XHR.
+// on the app shard system database once per XHR.
 func (s *Store) TouchUser(ctx context.Context, userID int64, at time.Time) error {
 	if _, err := s.db.ExecContext(ctx,
 		"UPDATE users SET last_seen_at = ? WHERE id = ?", at.Unix(), userID); err != nil {

@@ -29,7 +29,7 @@ import (
 // gateNow is the clock the gate tests run at.
 var gateNow = time.Date(2026, time.March, 3, 12, 0, 0, 0, time.UTC)
 
-// fixture is a control database with one team, one site, and a gate over both.
+// fixture is a system database with one team, one site, and a gate over both.
 type fixture struct {
 	t       *testing.T
 	control *sql.DB
@@ -37,12 +37,12 @@ type fixture struct {
 	clock   time.Time
 }
 
-// applyAccessControlSchema applies the complete merged control schema used by
+// applyAccessSystemSchema applies the complete merged system schema used by
 // access fixtures, including M9 sharing topology and M8 cleanup ownership.
-func applyAccessControlSchema(t *testing.T, db *sql.DB) {
+func applyAccessSystemSchema(t *testing.T, db *sql.DB) {
 	t.Helper()
 
-	if _, err := migrate.Run(context.Background(), db, migrate.Control()); err != nil {
+	if _, err := migrate.Run(context.Background(), db, migrate.System()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -51,13 +51,13 @@ func applyAccessControlSchema(t *testing.T, db *sql.DB) {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 
-	control, err := store.Open(filepath.Join(t.TempDir(), "control.db"))
+	control, err := store.Open(filepath.Join(t.TempDir(), "system.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { control.Close() })
 
-	applyAccessControlSchema(t, control)
+	applyAccessSystemSchema(t, control)
 
 	stamp := gateNow.Unix()
 

@@ -32,7 +32,7 @@ type Dataset struct {
 // than first, because a benchmark against the fixture's deliberately empty site
 // would report that everything is instant.
 func OpenDataset(ctx context.Context, dataDir string) (Dataset, error) {
-	control, err := store.Open(filepath.Join(dataDir, "control.db"))
+	control, err := store.Open(filepath.Join(dataDir, "system.db"))
 	if err != nil {
 		return Dataset{}, err
 	}

@@ -51,7 +51,7 @@ records:
 
 ```bash
 test ! -e /var/lib/feasible/.account-deletions/account-000042.deleted
-state=$(sqlite3 /var/lib/feasible/control.db \
+state=$(sqlite3 /var/lib/feasible/system.db \
   "SELECT CASE
      WHEN EXISTS (SELECT 1 FROM account_deletions WHERE team_id = 42) THEN 'deleting'
      WHEN EXISTS (SELECT 1 FROM teams WHERE id = 42) THEN 'live'
@@ -180,12 +180,12 @@ received. Nothing is cheaper than a file on disk for a week.
 **Restoring the whole shard to fix one account.** Every other account on the box
 loses its last second too, for a fault none of them had.
 
-**Restoring `control.db` from an old timestamp to "match".** The account
-databases and the control database are replicated independently and are not a
-consistent set. Rolling the control database back deletes sites, keys and users
+**Restoring `system.db` from an old timestamp to "match".** The account
+databases and the system database are replicated independently and are not a
+consistent set. Rolling the system database back deletes sites, keys and users
 created since, and none of that is in an account database to recover from.
 
 **Putting `salt.key` into the replica bucket while you are in there.** It
-decrypts the fingerprint salts in `control.db`, and a copy beside them unseals
+decrypts the fingerprint salts in `system.db`, and a copy beside them unseals
 every historical snapshot at once. Back it up somewhere the replica credentials
 cannot reach.

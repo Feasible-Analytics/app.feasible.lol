@@ -44,7 +44,7 @@ func writeReplicaAttestation(t *testing.T, replicaURL string, policy []byte) str
 	return path
 }
 
-// litestreamDataDir builds a data directory with a control database and the
+// litestreamDataDir builds a data directory with a system database and the
 // account directories named, which is the layout every replication command
 // walks.
 func litestreamDataDir(t *testing.T, ids ...int64) string {
@@ -52,7 +52,7 @@ func litestreamDataDir(t *testing.T, ids ...int64) string {
 
 	dir := t.TempDir()
 
-	if err := os.WriteFile(filepath.Join(dir, "control.db"), []byte("x"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "system.db"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -162,7 +162,7 @@ func TestProductionLitestreamConfigRequiresValidatedProviderExports(t *testing.T
 	t.Setenv("FEASIBLE_LITESTREAM_ATTESTATION", writeReplicaAttestation(t, "s3://bucket/shard-01", policy))
 
 	code, stdout, stderr := run(t, "litestream", "config", "-print")
-	if code != ExitOK || !strings.Contains(stdout, "control.db") {
+	if code != ExitOK || !strings.Contains(stdout, "system.db") {
 		t.Fatalf("validated config result = %d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
@@ -209,7 +209,7 @@ func TestLitestreamConfigWritesEveryDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, want := range []string{"control.db", "000001", "000002"} {
+	for _, want := range []string{"system.db", "000001", "000002"} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("%q is not in the written configuration:\n%s", want, body)
 		}

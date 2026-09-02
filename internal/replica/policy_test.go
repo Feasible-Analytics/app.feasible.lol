@@ -143,7 +143,7 @@ func TestAttestationScriptPublishesOneCompleteGeneration(t *testing.T) {
 }
 
 // TestValidateLifecyclePolicyFailsClosed walks the provider states that can
-// retain a deleted account prefix or an old control snapshot past the bound.
+// retain a deleted account prefix or an old system snapshot past the bound.
 func TestValidateLifecyclePolicyFailsClosed(t *testing.T) {
 	valid, err := Render("s3://replicas/shard-01")
 	if err != nil {
