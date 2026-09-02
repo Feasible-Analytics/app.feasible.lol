@@ -190,7 +190,7 @@ func TestLitestreamConfigPrintsWithoutWriting(t *testing.T) {
 	}
 }
 
-// TestLitestreamConfigWritesEveryDatabase is the command doing its job: control
+// TestLitestreamConfigWritesEveryDatabase is the command doing its job: system
 // and every account, in one file the daemon can read.
 func TestLitestreamConfigWritesEveryDatabase(t *testing.T) {
 	dir := litestreamDataDir(t, 1, 2)

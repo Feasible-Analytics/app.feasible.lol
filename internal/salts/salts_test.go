@@ -20,10 +20,10 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
-// newControlDB builds a migrated system database. The rotation only makes
+// newSystemDB builds a migrated system database. The rotation only makes
 // sense against the real salts table and its unique day index, so these tests
 // run the actual schema rather than a hand-written stand-in.
-func newControlDB(t testing.TB) *sql.DB {
+func newSystemDB(t testing.TB) *sql.DB {
 	t.Helper()
 
 	db, err := store.Open(filepath.Join(t.TempDir(), "system.db"))
@@ -69,7 +69,7 @@ func at(year int, month time.Month, day, hour, minute int) time.Time {
 // for the same person on the same day, and no later job could reconcile them.
 func TestRotatesAtUTCMidnight(t *testing.T) {
 	ctx := context.Background()
-	db := newControlDB(t)
+	db := newSystemDB(t)
 
 	now := at(2026, time.August, 30, 23, 59)
 	store := newStore(t, db, &now)
@@ -104,7 +104,7 @@ func TestRotatesAtUTCMidnight(t *testing.T) {
 // would be a window after midnight where events hashed with yesterday's salt.
 func TestRotatesExactlyAtTheBoundary(t *testing.T) {
 	ctx := context.Background()
-	db := newControlDB(t)
+	db := newSystemDB(t)
 
 	now := time.Date(2026, time.August, 30, 23, 59, 59, 0, time.UTC)
 	store := newStore(t, db, &now)
@@ -132,7 +132,7 @@ func TestRotatesExactlyAtTheBoundary(t *testing.T) {
 // same visitor differently.
 func TestSaltStaysStableWithinADay(t *testing.T) {
 	ctx := context.Background()
-	db := newControlDB(t)
+	db := newSystemDB(t)
 
 	now := at(2026, time.August, 30, 0, 1)
 	store := newStore(t, db, &now)
@@ -159,7 +159,7 @@ func TestSaltStaysStableWithinADay(t *testing.T) {
 // the third stored generation is tomorrow's unused rollover material.
 func TestOnlyCurrentAndPreviousAreUsable(t *testing.T) {
 	ctx := context.Background()
-	db := newControlDB(t)
+	db := newSystemDB(t)
 
 	now := at(2026, time.August, 28, 12, 0)
 	store := newStore(t, db, &now)
@@ -192,7 +192,7 @@ func TestOnlyCurrentAndPreviousAreUsable(t *testing.T) {
 // us, and that is only true if the row is actually gone.
 func TestRowsPastRetentionAreDeleted(t *testing.T) {
 	ctx := context.Background()
-	db := newControlDB(t)
+	db := newSystemDB(t)
 
 	now := at(2026, time.August, 27, 12, 0)
 	store := newStore(t, db, &now)
@@ -231,7 +231,7 @@ func TestRowsPastRetentionAreDeleted(t *testing.T) {
 // value win for each day.
 func TestOneSaltPerDayUnderConcurrency(t *testing.T) {
 	ctx := context.Background()
-	db := newControlDB(t)
+	db := newSystemDB(t)
 
 	now := at(2026, time.August, 30, 0, 0)
 
@@ -268,8 +268,8 @@ func TestOneSaltPerDayUnderConcurrency(t *testing.T) {
 func TestPermanentKeyCannotRegenerateDailySalt(t *testing.T) {
 	ctx := context.Background()
 	now := at(2026, time.August, 31, 12, 0)
-	first := newStore(t, newControlDB(t), &now)
-	second := newStore(t, newControlDB(t), &now)
+	first := newStore(t, newSystemDB(t), &now)
+	second := newStore(t, newSystemDB(t), &now)
 
 	firstPair, err := first.Pair(ctx)
 	if err != nil {
@@ -291,7 +291,7 @@ func TestPermanentKeyCannotRegenerateDailySalt(t *testing.T) {
 // Once SQLite refuses deletion, the same-day fast path must stay unavailable.
 func TestPruneFailureErasesTheUsableCache(t *testing.T) {
 	ctx := context.Background()
-	db := newControlDB(t)
+	db := newSystemDB(t)
 	now := at(2026, time.August, 28, 0, 0)
 	store := newStore(t, db, &now)
 
@@ -326,7 +326,7 @@ func TestPruneFailureErasesTheUsableCache(t *testing.T) {
 // yesterday's pair and verifies rollover erases them before release.
 func TestRefreshOverwritesRetiredCacheSlices(t *testing.T) {
 	ctx := context.Background()
-	db := newControlDB(t)
+	db := newSystemDB(t)
 	now := at(2026, time.August, 30, 12, 0)
 	store := newStore(t, db, &now)
 	pair, err := store.Refresh(ctx)
@@ -354,7 +354,7 @@ func TestRefreshOverwritesRetiredCacheSlices(t *testing.T) {
 // encryption claim false while looking identical from the outside.
 func TestStoredSaltIsEncrypted(t *testing.T) {
 	ctx := context.Background()
-	db := newControlDB(t)
+	db := newSystemDB(t)
 
 	now := at(2026, time.August, 30, 12, 0)
 	store := newStore(t, db, &now)
@@ -382,7 +382,7 @@ func TestStoredSaltIsEncrypted(t *testing.T) {
 // and made a new salt would do.
 func TestWrongKeyIsAnExplicitFailure(t *testing.T) {
 	ctx := context.Background()
-	db := newControlDB(t)
+	db := newSystemDB(t)
 
 	now := at(2026, time.August, 30, 12, 0)
 	if _, err := newStore(t, db, &now).Pair(ctx); err != nil {
@@ -438,7 +438,7 @@ func TestSetRandomMakesTheSaltReproducible(t *testing.T) {
 
 	// The default source is the real one, so an ordinary store must not be
 	// reproducible: a predictable salt is a reversible fingerprint.
-	store := newStore(t, newControlDB(t), &now)
+	store := newStore(t, newSystemDB(t), &now)
 
 	pair, err := store.Pair(context.Background())
 	if err != nil {
@@ -455,7 +455,7 @@ func TestSetRandomMakesTheSaltReproducible(t *testing.T) {
 func saltFromFixedSource(t *testing.T, now *time.Time) []byte {
 	t.Helper()
 
-	store := newStore(t, newControlDB(t), now)
+	store := newStore(t, newSystemDB(t), now)
 	store.SetRandom(bytes.NewReader(bytes.Repeat([]byte{0x11, 0x22, 0x33, 0x44}, 64)))
 
 	pair, err := store.Pair(context.Background())
