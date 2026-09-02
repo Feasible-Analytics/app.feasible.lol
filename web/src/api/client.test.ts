@@ -54,6 +54,25 @@ test("every stats query carries the shared-link capability", async () => {
 	assert.equal(presented, capability);
 });
 
+/** Historical dashboard queries include migrated history by default while live
+ * traffic remains a native-only view and an explicit API choice is preserved. */
+test("historical dashboard queries include imports without changing realtime", async () => {
+	const presented: Record<string, unknown>[] = [];
+	globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+		presented.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+
+		return Response.json({ results: [], meta: {}, query: {} });
+	}) as typeof fetch;
+
+	await query("example.com", { metrics: ["visitors"], date_range: "28d" });
+	await query("example.com", { metrics: ["visitors"], date_range: "realtime" });
+	await query("example.com", { metrics: ["visitors"], date_range: "all", include: { imports: false } });
+
+	assert.deepEqual(presented[0]?.include, { imports: true });
+	assert.equal(presented[1]?.include, undefined);
+	assert.deepEqual(presented[2]?.include, { imports: false });
+});
+
 test("the goals report carries capabilities, filters, and the selected period", async () => {
 	let requested = "";
 	let presented = "";
