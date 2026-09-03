@@ -52,6 +52,7 @@
   "settings.health.reason.internal_error": "Our failure, not yours — the event could not be derived.",
   "settings.health.reason.invalid_payload": "The body was readable but a field was not the shape it has to be.",
   "settings.health.reason.no_session_for_engagement": "An engagement ping arrived with no pageview to attach it to.",
+  "settings.health.reason.outdated_browser": "The browser is so many versions behind that no self-updating install could still be on it. The event was still stored.",
   "settings.health.reason.rate_limited": "The site sent more events than its rate limit allows.",
   "settings.health.reason.referrer_spam": "The referrer is on the known spam list. The event was still stored.",
   "settings.health.reason.shield_country": "The visitor's country is on this site's blocked list.",

@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/netip"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -553,4 +554,164 @@ func siblings(a, b netip.Prefix) bool {
 // parent is the prefix one bit shorter, which covers this one and its sibling.
 func parent(prefix netip.Prefix) netip.Prefix {
 	return netip.PrefixFrom(prefix.Addr(), prefix.Bits()-1).Masked()
+}
+
+// BrowserSource is one upstream that publishes a browser's current version.
+type BrowserSource struct {
+	Name string
+	URL  string
+
+	// Major pulls the current stable major version out of the document.
+	Major func(body []byte) (int, error)
+}
+
+// BrowserSources are the browsers whose age can be judged.
+//
+// Only the three that update themselves silently and on a fixed cadence are
+// here. Safari is deliberately absent: its version follows the operating
+// system, Apple renumbered it to the year in 2025, and a supported iPhone can
+// legitimately sit several majors back for years. Judging it by the same rule
+// would classify a real person on an older phone as a script.
+func BrowserSources() []BrowserSource {
+	return []BrowserSource{
+		{
+			Name:  "Chrome",
+			URL:   "https://versionhistory.googleapis.com/v1/chrome/platforms/win/channels/stable/versions",
+			Major: majorFromChrome,
+		},
+		{
+			Name:  "Firefox",
+			URL:   "https://product-details.mozilla.org/1.0/firefox_versions.json",
+			Major: majorFromFirefox,
+		},
+		{
+			Name:  "Edge",
+			URL:   "https://edgeupdates.microsoft.com/api/products",
+			Major: majorFromEdge,
+		},
+	}
+}
+
+// FetchBrowser downloads and reads one browser's current major version.
+func FetchBrowser(ctx context.Context, client *http.Client, source BrowserSource) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, FetchTimeout)
+	defer cancel()
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, source.URL, nil)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", source.Name, err)
+	}
+	request.Header.Set("User-Agent", UserAgent)
+
+	response, err := client.Do(request)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", source.Name, err)
+	}
+	defer func() { _ = response.Body.Close() }()
+
+	if response.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("%s: %s", source.Name, response.Status)
+	}
+
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", source.Name, err)
+	}
+
+	major, err := source.Major(body)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", source.Name, err)
+	}
+
+	// A browser at version zero or one is a document that changed shape, not a
+	// browser that went back in time.
+	if major < 2 {
+		return 0, fmt.Errorf("%s: read version %d, so its format has probably changed", source.Name, major)
+	}
+
+	return major, nil
+}
+
+// majorFromChrome reads the newest stable release Google lists.
+func majorFromChrome(body []byte) (int, error) {
+	var doc struct {
+		Versions []struct {
+			Version string `json:"version"`
+		} `json:"versions"`
+	}
+
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return 0, err
+	}
+
+	if len(doc.Versions) == 0 {
+		return 0, fmt.Errorf("no versions listed")
+	}
+
+	return majorOf(doc.Versions[0].Version)
+}
+
+// majorFromFirefox reads Mozilla's published current release.
+func majorFromFirefox(body []byte) (int, error) {
+	var doc struct {
+		Latest string `json:"LATEST_FIREFOX_VERSION"`
+	}
+
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return 0, err
+	}
+
+	return majorOf(doc.Latest)
+}
+
+// majorFromEdge reads the highest stable build Microsoft lists. The releases
+// come back one per platform rather than newest first, so this is a maximum
+// rather than the first entry.
+func majorFromEdge(body []byte) (int, error) {
+	var doc []struct {
+		Product  string `json:"Product"`
+		Releases []struct {
+			ProductVersion string `json:"ProductVersion"`
+		} `json:"Releases"`
+	}
+
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return 0, err
+	}
+
+	var highest int
+	for _, product := range doc {
+		if product.Product != "Stable" {
+			continue
+		}
+
+		for _, release := range product.Releases {
+			major, err := majorOf(release.ProductVersion)
+			if err != nil {
+				continue
+			}
+
+			if major > highest {
+				highest = major
+			}
+		}
+	}
+
+	if highest == 0 {
+		return 0, fmt.Errorf("no stable release listed")
+	}
+
+	return highest, nil
+}
+
+// majorOf reads the leading number of a dotted version string.
+func majorOf(version string) (int, error) {
+	head, _, _ := strings.Cut(version, ".")
+
+	major, err := strconv.Atoi(strings.TrimSpace(head))
+	if err != nil {
+		return 0, fmt.Errorf("cannot read a major version from %q", version)
+	}
+
+	return major, nil
 }

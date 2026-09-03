@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -26,9 +27,10 @@ import (
 // `x-feasible-dropped` header can carry, so they are constants shared with the
 // response path rather than strings written twice.
 const (
-	ReasonBot          = "bot"
-	ReasonDatacenterIP = "datacenter_ip"
-	ReasonReferrerSpam = "referrer_spam"
+	ReasonBot             = "bot"
+	ReasonDatacenterIP    = "datacenter_ip"
+	ReasonReferrerSpam    = "referrer_spam"
+	ReasonOutdatedBrowser = "outdated_browser"
 )
 
 // File names the lists are refreshed into. Every list goes stale — providers
@@ -91,6 +93,7 @@ type BotFilter struct {
 	bots        atomic.Pointer[[]string]
 	spam        atomic.Pointer[map[string]struct{}]
 	datacenters atomic.Pointer[rangeSet]
+	browsers    atomic.Pointer[map[string]int]
 }
 
 // NewBotFilter builds a filter carrying only the embedded baselines. Loading
@@ -113,6 +116,9 @@ func NewBotFilter() *BotFilter {
 	// so the token list above cannot see it and an install with no ranges
 	// counts every one of those requests as a visitor.
 	filter.datacenters.Store(newRangeSet(lists.Datacenters()))
+
+	current := lists.CurrentBrowsers()
+	filter.browsers.Store(&current)
 
 	return filter
 }
@@ -185,6 +191,53 @@ func (f *BotFilter) IsBotUserAgent(ua string) bool {
 // dropped real Mullvad and Proton users for months.
 func (f *BotFilter) IsDatacenterIP(addr netip.Addr) bool {
 	return f.datacenters.Load().contains(addr)
+}
+
+// OutdatedBy is how many major versions behind current a browser has to be
+// before it is treated as a script wearing a browser's name.
+//
+// Twelve is where real traffic actually stops. These browsers ship roughly
+// every four weeks and update themselves without being asked, so twelve majors
+// is about a year, and a year-old install that has never once restarted is rare
+// enough to be worth the trade. It is one number rather than one per browser
+// because all three ship on the same cadence.
+const OutdatedBy = 12
+
+// IsOutdatedBrowser reports whether a browser is so far behind its current
+// release that no self-updating install could still be on it.
+//
+// This is the signal that survives everything else. A scraper renting
+// residential addresses and running a real browser engine defeats the address
+// list and the token list both, but it still announces a version, and a farm
+// rotating user agents to look like many people gives itself away by claiming
+// versions spread across years rather than the handful currently in the wild.
+//
+// It answers false for anything it has no current version for, which is every
+// browser but the three that update themselves silently.
+func (f *BotFilter) IsOutdatedBrowser(name, version string) bool {
+	if name == "" || version == "" {
+		return false
+	}
+
+	current, ok := (*f.browsers.Load())[name]
+	if !ok {
+		return false
+	}
+
+	head, _, _ := strings.Cut(version, ".")
+
+	major, err := strconv.Atoi(head)
+	if err != nil || major <= 0 {
+		return false
+	}
+
+	return current-major > OutdatedBy
+}
+
+// SetCurrentBrowsers replaces the version floor directly, for tests and for the
+// refresh job.
+func (f *BotFilter) SetCurrentBrowsers(current map[string]int) {
+	f.browsers.Store(&current)
 }
 
 // IsReferrerSpam reports whether a referrer host exists only to appear in

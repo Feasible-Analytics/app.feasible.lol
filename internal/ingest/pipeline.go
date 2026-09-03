@@ -267,7 +267,12 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 	// reason attached, and the customer gets a toggle. Deleting it means a
 	// wrongly-classified visitor is gone forever, and a self-hoster is frozen
 	// at whatever list their build shipped with.
-	botReason := p.classify(rawUserAgent, client.Addr, source.Referrer)
+	// The user agent is parsed here rather than at step 6 because the browser's
+	// age is one of the things classification reads. The parse is cached, so
+	// moving it earlier costs nothing.
+	agent := p.Agents.Parse(rawUserAgent)
+
+	botReason := p.classify(rawUserAgent, agent, client.Addr, source.Referrer)
 	result.Debug.BotReason = botReason
 
 	// Step 4.
@@ -314,9 +319,6 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 	if p.Shield != nil && p.Shield.Blocked(site.ID, client.Addr) && stop(ReasonShieldIP) {
 		return result, nil
 	}
-
-	// Step 6.
-	agent := p.Agents.Parse(rawUserAgent)
 
 	// Step 7. Geolocate, and then the address is gone: nothing below this line
 	// may reference client.Addr, and nothing on the Event has anywhere to put
@@ -488,10 +490,16 @@ func (p *Pipeline) clock() time.Time {
 	return p.Now().UTC()
 }
 
-// classify runs the three bot lists in the order that costs least. A user-agent
-// substring scan is cheaper than a binary search over thirty thousand ranges,
-// and both are cheaper than the referrer lookup that has to resolve a domain.
-func (p *Pipeline) classify(userAgent string, addr netip.Addr, referrerHost string) string {
+// classify runs the lists in the order that costs least. A user-agent substring
+// scan is cheaper than a binary search over thirty thousand ranges, and both are
+// cheaper than the referrer lookup that has to resolve a domain.
+//
+// The checks answer different kinds of traffic and none of them replaces
+// another. A crawler says what it is; an address says where it came from; a
+// version says whether anything could still be running it. A scraper renting
+// residential addresses and driving a real browser engine gets past the first
+// two and is caught by the third.
+func (p *Pipeline) classify(userAgent string, agent useragent.Result, addr netip.Addr, referrerHost string) string {
 	if p.Bots == nil {
 		return ""
 	}
@@ -502,6 +510,10 @@ func (p *Pipeline) classify(userAgent string, addr netip.Addr, referrerHost stri
 
 	if p.Bots.IsDatacenterIP(addr) {
 		return ReasonDatacenterIP
+	}
+
+	if p.Bots.IsOutdatedBrowser(agent.Browser, agent.BrowserVersion) {
+		return ReasonOutdatedBrowser
 	}
 
 	if host, _, found := strings.Cut(referrerHost, "/"); found || referrerHost != "" {

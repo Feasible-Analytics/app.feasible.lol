@@ -230,6 +230,82 @@ func TestNewFilterCarriesDatacenterRanges(t *testing.T) {
 	}
 }
 
+// TestOutdatedBrowsers checks the version floor, which is the signal that
+// survives a scraper renting residential addresses and driving a real browser.
+func TestOutdatedBrowsers(t *testing.T) {
+	filter := NewBotFilter()
+	filter.SetCurrentBrowsers(map[string]int{"Chrome": 152, "Firefox": 155, "Edge": 152})
+
+	outdated := []struct{ name, version string }{
+		{"Chrome", "104"},
+		{"Chrome", "131.0"},
+		{"Chrome", "139"},
+		{"Firefox", "120"},
+		{"Edge", "110.0.1"},
+	}
+
+	for _, browser := range outdated {
+		if !filter.IsOutdatedBrowser(browser.name, browser.version) {
+			t.Errorf("%s %s was not recognised as outdated", browser.name, browser.version)
+		}
+	}
+
+	// A year behind is the boundary, and the boundary itself is still a person.
+	current := []struct{ name, version string }{
+		{"Chrome", "140"},
+		{"Chrome", "152"},
+		{"Chrome", "153"},
+		{"Firefox", "143"},
+		{"Edge", "152.0"},
+	}
+
+	for _, browser := range current {
+		if filter.IsOutdatedBrowser(browser.name, browser.version) {
+			t.Errorf("%s %s was called outdated", browser.name, browser.version)
+		}
+	}
+}
+
+// TestBrowsersWithoutAFloorAreLeftAlone checks that the rule stays silent on
+// everything it cannot judge.
+//
+// Safari is the case that matters. Its version follows the operating system and
+// Apple renumbered it to the year, so a supported iPhone sits several majors
+// back and is still somebody reading the page. A rule that cannot tell the
+// difference has to decline rather than guess.
+func TestBrowsersWithoutAFloorAreLeftAlone(t *testing.T) {
+	filter := NewBotFilter()
+	filter.SetCurrentBrowsers(map[string]int{"Chrome": 152})
+
+	for _, browser := range []struct{ name, version string }{
+		{"Safari", "15"},
+		{"Samsung Internet", "19"},
+		{"Opera", "80"},
+		{"Chrome", ""},
+		{"", "104"},
+		{"Chrome", "not a number"},
+	} {
+		if filter.IsOutdatedBrowser(browser.name, browser.version) {
+			t.Errorf("%q %q was judged without a floor to judge it against",
+				browser.name, browser.version)
+		}
+	}
+}
+
+// TestNewFilterKnowsCurrentBrowsers is the companion to the address-list guard:
+// a floor nobody populated answers "current" to every version.
+func TestNewFilterKnowsCurrentBrowsers(t *testing.T) {
+	filter := NewBotFilter()
+
+	// Every browser with a floor, and a version far enough back that no
+	// self-updating install could be on it.
+	for _, name := range []string{"Chrome", "Firefox", "Edge"} {
+		if !filter.IsOutdatedBrowser(name, "40") {
+			t.Errorf("a fresh filter has no current version for %s — run `make lists`", name)
+		}
+	}
+}
+
 // BenchmarkDatacenterLookup keeps the range check inside the per-request budget
 // with a list the size of the real one.
 func BenchmarkDatacenterLookup(b *testing.B) {

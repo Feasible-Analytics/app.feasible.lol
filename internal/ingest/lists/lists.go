@@ -20,6 +20,7 @@ package lists
 import (
 	"bufio"
 	_ "embed"
+	"strconv"
 	"strings"
 )
 
@@ -61,4 +62,38 @@ func parse(body string) []string {
 	}
 
 	return lines
+}
+
+// browsersFile is the generated record of what each self-updating browser is
+// currently on. Like the address list it is committed rather than fetched, so a
+// build needs no network.
+//
+//go:embed browsers.txt
+var browsersFile string
+
+// CurrentBrowsers returns the newest stable major version of each browser whose
+// age is worth judging, keyed by the name the user-agent parser reports.
+//
+// It is deliberately a short list. Only browsers that update themselves
+// silently, on a fixed cadence, and on every platform they ship to can be
+// judged this way — a browser whose version follows the operating system moves
+// when the device does, and plenty of real devices do not move for years.
+func CurrentBrowsers() map[string]int {
+	out := make(map[string]int, 4)
+
+	for _, line := range parse(browsersFile) {
+		name, version, found := strings.Cut(line, " ")
+		if !found {
+			continue
+		}
+
+		major, err := strconv.Atoi(strings.TrimSpace(version))
+		if err != nil {
+			continue
+		}
+
+		out[strings.TrimSpace(name)] = major
+	}
+
+	return out
 }
