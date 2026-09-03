@@ -18,8 +18,8 @@ import (
 // `x-feasible-dropped` header and lands on the customer's ingestion health
 // panel, and a free-text reason would make both unqueryable.
 //
-// Five of these — bot, datacenter_ip, referrer_spam, outdated_browser and
-// automation — are classifications rather than deletions. The row is still written with its bot_reason set and
+// Five of these are classifications rather than deletions — bot, datacenter_ip,
+// referrer_spam, outdated_browser and automation. The row is still written with its bot_reason set and
 // the customer gets a toggle, because the incumbent deletes bot traffic before
 // storing it and a wrongly-classified visitor is then gone forever.
 const (

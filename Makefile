@@ -116,7 +116,7 @@ help:
 	@echo "    make build      build ./$(BINARY) (runs the asset build first)"
 	@echo "    make binary     build ./$(BINARY) from the committed embedded assets"
 	@echo "    make tracker    build the browser script and check it fits the size budget"
-	@echo "    make lists      rebuild the embedded datacentre address list (needs network)"
+	@echo "    make lists      rebuild the embedded bot-classification data (needs network)"
 	@echo "    make test       unit tests, including the tracker size budget"
 	@echo "    make test-web   the dashboard's unit tests on their own"
 	@echo "    make test-tracker       the tracker's end-to-end suite in a real browser"
@@ -191,13 +191,15 @@ assets: tracker web-deps ui-css
 		echo "no web/ directory yet — nothing to build"; \
 	fi
 
-## lists: rebuild the embedded datacentre address list from its upstream sources
+## lists: rebuild the embedded bot-classification data from its upstream sources
 #
-# It needs the network and the sources are third-party, so it is deliberately
-# not a dependency of `build`: a provider having a bad morning must never be
-# able to break somebody's build. The output is committed, like the dashboard
-# bundle, and wants rerunning every few weeks — providers announce new address
-# space constantly, and a stale list quietly counts scrapers as visitors.
+# The datacentre address ranges and the current browser versions, both from the
+# vendors themselves. It needs the network and the sources are third-party, so
+# it is deliberately not a dependency of `build`: a provider having a bad
+# morning must never be able to break somebody's build. The output is committed,
+# like the dashboard bundle, and wants rerunning every few weeks — providers
+# announce new address space constantly, browsers ship every four weeks, and
+# stale data on either quietly counts scrapers as visitors.
 lists:
 	go run ./cmd/gen-lists
 

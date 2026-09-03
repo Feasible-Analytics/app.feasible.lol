@@ -167,10 +167,11 @@ export function post(body, callback) {
 	} catch {}
 }
 
-// The browser's own account of itself, read once. Neither answer changes while
-// the document is open, and both ride on every event, so measuring them per
-// send would be work repeated for a result that cannot move.
-const width = innerWidth || undefined;
+// What the browser says about itself does not change while the document is
+// open, so it is read once. The viewport is not read here with it: a window
+// gets resized and a phone gets rotated, and an SPA sends a pageview per route,
+// so a width captured at load would be wrong for every pageview after the
+// first — in the report this field exists to fill.
 const automated = signals();
 
 // send serialises one event and posts it. The key names are the wire contract
@@ -186,7 +187,7 @@ export function send(event, callback) {
 	// replay stay one event with one permanent server receipt.
 	event.k = eventID();
 	event.v = VERSION;
-	event.w = width;
+	event.w = innerWidth || undefined;
 	event.a = automated;
 
 	post(JSON.stringify(event), callback);

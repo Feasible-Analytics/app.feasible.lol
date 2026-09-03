@@ -179,7 +179,7 @@ func (s testSet) has(addr netip.Addr) bool {
 func TestCurrentBrowsersIsPresent(t *testing.T) {
 	current := CurrentBrowsers()
 
-	for _, name := range []string{"Chrome", "Firefox", "Edge"} {
+	for _, name := range []string{"Chrome", "Edge"} {
 		major, ok := current[name]
 		if !ok {
 			t.Errorf("%s has no current version — run `make lists`", name)
@@ -195,14 +195,16 @@ func TestCurrentBrowsersIsPresent(t *testing.T) {
 	}
 }
 
-// TestSafariHasNoFloor checks the deliberate omission stays omitted.
+// TestBrowsersWithoutACadenceHaveNoFloor checks the deliberate omissions stay
+// omitted.
 //
 // Safari's version follows the operating system rather than a release cadence,
-// and Apple renumbered it to the year in 2025, so a supported phone can be
-// several majors back and still be a person. Adding it here would turn every
-// one of them into a bot.
-func TestSafariHasNoFloor(t *testing.T) {
-	for _, name := range []string{"Safari", "Samsung Internet", "Opera", "Internet Explorer"} {
+// so a supported phone sits several majors back and is still a person. Firefox
+// is the sharper one: its extended-support channel, every Linux distribution's
+// package and Tor Browser are all far behind on purpose and permanently, and
+// Tor reports a plain old Firefox on Windows with nothing to tell it apart.
+func TestBrowsersWithoutACadenceHaveNoFloor(t *testing.T) {
+	for _, name := range []string{"Firefox", "Safari", "Samsung Internet", "Opera", "Internet Explorer"} {
 		if major, ok := CurrentBrowsers()[name]; ok {
 			t.Errorf("%s has a floor of %d, but its version cannot be judged on a cadence", name, major)
 		}

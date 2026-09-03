@@ -567,31 +567,24 @@ type BrowserSource struct {
 
 // BrowserSources are the browsers whose age can be judged.
 //
-// Only the three that update themselves silently and on a fixed cadence are
-// here. Safari is deliberately absent: its version follows the operating
-// system, Apple renumbered it to the year in 2025, and a supported iPhone can
-// legitimately sit several majors back for years. Judging it by the same rule
-// would classify a real person on an older phone as a script.
+// It is two browsers, and the omissions are the design. Safari's version
+// follows the operating system and Apple renumbered it to the year, so a
+// supported iPhone sits several majors back and is still a person.
+//
+// Firefox is absent for a sharper reason. Its extended-support channel, every
+// Linux distribution's package, and the hardened builds — Tor Browser above all
+// — are far behind the release channel on purpose and permanently. Tor Browser
+// is the case that settles it: it is the most privacy-conscious browser there
+// is, it reports a plain old Firefox on Windows with no way to tell it apart,
+// and classifying it would be this product doing the exact thing it promises
+// not to. There is no version of this rule that catches a scraper pretending to
+// be Firefox without also catching them.
 func BrowserSources() []BrowserSource {
 	return []BrowserSource{
 		{
 			Name:  "Chrome",
 			URL:   "https://versionhistory.googleapis.com/v1/chrome/platforms/win/channels/stable/versions",
 			Major: majorFromChrome,
-		},
-		{
-			Name:  "Firefox",
-			URL:   "https://product-details.mozilla.org/1.0/firefox_versions.json",
-			Major: majorFromFirefox,
-		},
-		{
-			// The extended-support channel, which is what a managed desktop and
-			// most Linux distributions actually ship. It sits deliberately far
-			// behind the release channel, so without it every supported
-			// enterprise Firefox would be read as abandoned.
-			Name:  ESRSuffix("Firefox"),
-			URL:   "https://product-details.mozilla.org/1.0/firefox_versions.json",
-			Major: majorFromFirefoxESR,
 		},
 		{
 			Name:  "Edge",
@@ -658,33 +651,6 @@ func majorFromChrome(body []byte) (int, error) {
 	}
 
 	return majorOf(doc.Versions[0].Version)
-}
-
-// majorFromFirefox reads Mozilla's published current release.
-func majorFromFirefox(body []byte) (int, error) {
-	var doc struct {
-		Latest string `json:"LATEST_FIREFOX_VERSION"`
-	}
-
-	if err := json.Unmarshal(body, &doc); err != nil {
-		return 0, err
-	}
-
-	return majorOf(doc.Latest)
-}
-
-// majorFromFirefoxESR reads the extended-support release, whose version carries
-// an "esr" suffix that the plain major parser stops at anyway.
-func majorFromFirefoxESR(body []byte) (int, error) {
-	var doc struct {
-		ESR string `json:"FIREFOX_ESR"`
-	}
-
-	if err := json.Unmarshal(body, &doc); err != nil {
-		return 0, err
-	}
-
-	return majorOf(doc.ESR)
 }
 
 // majorFromEdge reads the highest stable build Microsoft lists. The releases

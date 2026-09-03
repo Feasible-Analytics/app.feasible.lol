@@ -558,3 +558,33 @@ func TestDeriveNeedsNoGeoDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestAutomationSignalsAreAClosedSet checks that only what the tracker actually
+// reports counts as a report.
+//
+// The field arrives from the open internet on a public endpoint. Treating
+// whatever turns up as a verdict means a proxy that mangles a body, or a
+// server-side caller reusing a template with a stray key, silently classifies
+// real traffic — which is the failure this product exists to not have.
+func TestAutomationSignalsAreAClosedSet(t *testing.T) {
+	reported := map[string]bool{
+		"o":  true,
+		"s":  true,
+		"os": true,
+		"so": true,
+
+		"":          false, // nothing reported
+		"p":         false, // a signal that was written and then withdrawn
+		"xyz":       false, // junk from something in the middle
+		"os!":       false, // one real signal and one that is not
+		"OS":        false, // the wrong case is not the same signal
+		"true":      false, // a template's leftover value
+		"ooooooooo": false, // longer than there are signals to report
+	}
+
+	for signal, want := range reported {
+		if got := automatedSignals(signal); got != want {
+			t.Errorf("automatedSignals(%q) = %v, want %v", signal, got, want)
+		}
+	}
+}

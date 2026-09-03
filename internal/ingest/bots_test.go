@@ -9,6 +9,7 @@
 package ingest
 
 import (
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/useragent"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -230,40 +231,42 @@ func TestNewFilterCarriesDatacenterRanges(t *testing.T) {
 	}
 }
 
-// TestOutdatedBrowsers checks the version floor, which is the signal that
-// survives a scraper renting residential addresses and driving a real browser.
+// pinned is the version floor the tests judge against, so they do not rot when
+// a browser ships next month.
+var pinned = map[string]int{"Chrome": 153, "Edge": 152}
+
+// parseUA gives the tests the same parsed result the pipeline works from,
+// because half of what this rule reads is the operating system.
+func parseUA(t *testing.T, ua string) useragent.Result {
+	t.Helper()
+
+	return useragent.NewCache(useragent.DefaultCapacity, useragent.DefaultTTL).Parse(ua)
+}
+
+// TestOutdatedBrowsers checks the version floor on the traffic it exists for: a
+// browser years behind on an operating system that was offering the update the
+// entire time.
 func TestOutdatedBrowsers(t *testing.T) {
 	filter := NewBotFilter()
-	filter.SetCurrentBrowsers(map[string]int{"Chrome": 152, "Firefox": 155, "Edge": 152})
+	filter.SetCurrentBrowsers(pinned)
 
-	outdated := []struct{ name, version string }{
-		{"Chrome", "104"},
-		{"Chrome", "131.0"},
-		{"Chrome", "133"},
-		{"Firefox", "110"},
-		{"Edge", "110.0.1"},
-	}
+	// The versions the scraper farm actually claimed, all on Windows 10.
+	for _, version := range []string{"104", "110", "120", "131", "133"} {
+		ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+			"(KHTML, like Gecko) Chrome/" + version + ".0.0.0 Safari/537.36"
 
-	for _, browser := range outdated {
-		if !filter.IsOutdatedBrowser(browser.name, browser.version, "") {
-			t.Errorf("%s %s was not recognised as outdated", browser.name, browser.version)
+		if !filter.IsOutdatedBrowser(parseUA(t, ua), ua) {
+			t.Errorf("Chrome %s on Windows 10 was not recognised as outdated", version)
 		}
 	}
 
-	// The margin below the boundary is where real people live, and it has to
-	// stay clear. 134 is eighteen releases back and still counted.
-	current := []struct{ name, version string }{
-		{"Chrome", "134"},
-		{"Chrome", "140"},
-		{"Chrome", "152"},
-		{"Chrome", "153"},
-		{"Firefox", "140"},
-		{"Edge", "152.0"},
-	}
+	// The margin below the boundary is where real people live.
+	for _, version := range []string{"135", "140", "152", "153"} {
+		ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+			"(KHTML, like Gecko) Chrome/" + version + ".0.0.0 Safari/537.36"
 
-	for _, browser := range current {
-		if filter.IsOutdatedBrowser(browser.name, browser.version, "") {
-			t.Errorf("%s %s was called outdated", browser.name, browser.version)
+		if filter.IsOutdatedBrowser(parseUA(t, ua), ua) {
+			t.Errorf("Chrome %s was called outdated", version)
 		}
 	}
 }
@@ -271,71 +274,97 @@ func TestOutdatedBrowsers(t *testing.T) {
 // TestRealPeopleOnOldEnginesAreLeftAlone is the false-positive guard, and it is
 // the test that matters most in this file.
 //
-// Every case here reports a Chrome or Firefox version far enough behind to trip
-// the rule, and every one of them is somebody reading the page. The engine
-// version is not theirs to change: a WebView moves with the system component, an
-// Electron app when its developer ships, a Chromebook past its auto-update date
-// never again, and an extended-support Firefox is behind on purpose because an
-// administrator chose it.
+// Every visitor here reports a browser far enough behind to trip the version
+// floor, and every one of them is somebody reading the page. What they have in
+// common is that the version was never theirs to change — the machine stopped
+// being supported, or the engine belongs to an application rather than to them.
 func TestRealPeopleOnOldEnginesAreLeftAlone(t *testing.T) {
 	filter := NewBotFilter()
-	filter.SetCurrentBrowsers(map[string]int{"Chrome": 153, "Firefox": 155, "Firefox-ESR": 140})
+	filter.SetCurrentBrowsers(pinned)
 
-	people := []struct {
-		who              string
-		browser, version string
-		userAgent        string
-	}{
+	people := []struct{ who, userAgent string }{
 		{
-			who: "a link opened inside a chat app on Android", browser: "Chrome", version: "119",
+			who: "a Windows 7 desktop, where Chrome stopped at 109",
+			userAgent: "Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 " +
+				"(KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
+		},
+		{
+			who: "a Mac on Mojave, where Chrome stopped at 116",
+			userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/537.36 " +
+				"(KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+		},
+		{
+			who: "a Mac on Catalina, where Chrome stopped at 138",
+			userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+				"(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+		},
+		{
+			who: "a phone on Android 7, where Chrome stopped at 119",
+			userAgent: "Mozilla/5.0 (Linux; Android 7.0; SM-G930F) AppleWebKit/537.36 " +
+				"(KHTML, like Gecko) Chrome/119.0.0.0 Mobile Safari/537.36",
+		},
+		{
+			who: "a Fire tablet, which reports an old Chrome it does not control",
+			userAgent: "Mozilla/5.0 (Linux; Android 9; KFONWI) AppleWebKit/537.36 " +
+				"(KHTML, like Gecko) Silk/106.3.1 like Chrome/106.0.5249.126 Safari/537.36",
+		},
+		{
+			who: "a link opened inside a chat app on Android",
 			userAgent: "Mozilla/5.0 (Linux; Android 13; SM-A536B Build/TP1A; wv) AppleWebKit/537.36 " +
 				"(KHTML, like Gecko) Version/4.0 Chrome/119.0.6045.163 Mobile Safari/537.36",
 		},
 		{
-			who: "a desktop app's built-in browser", browser: "Chrome", version: "126",
+			who: "a desktop application's built-in browser",
 			userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
 				"(KHTML, like Gecko) Chat/1.2.3 Chrome/126.0.0.0 Electron/31.0.0 Safari/537.36",
 		},
 		{
-			who: "a Chromebook past its last update", browser: "Chrome", version: "120",
+			who: "a Chromebook past its last update",
 			userAgent: "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 " +
 				"(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 		},
 		{
-			who: "a managed desktop on extended support", browser: "Firefox", version: "140",
+			who:       "Tor Browser, which tracks the extended-support Firefox",
+			userAgent: "Mozilla/5.0 (Windows NT 10.0; rv:128.0) Gecko/20100101 Firefox/128.0",
+		},
+		{
+			who:       "a managed desktop on extended-support Firefox",
 			userAgent: "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0",
+		},
+		{
+			who: "a Linux desktop, whose browser its distribution packages",
+			userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+				"(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 		},
 	}
 
 	for _, person := range people {
-		if filter.IsOutdatedBrowser(person.browser, person.version, person.userAgent) {
+		if filter.IsOutdatedBrowser(parseUA(t, person.userAgent), person.userAgent) {
 			t.Errorf("%s was classified as automated", person.who)
 		}
 	}
 }
 
-// TestBrowsersWithoutAFloorAreLeftAlone checks that the rule stays silent on
-// everything it cannot judge.
-//
-// Safari is the case that matters. Its version follows the operating system and
-// Apple renumbered it to the year, so a supported iPhone sits several majors
-// back and is still somebody reading the page. A rule that cannot tell the
-// difference has to decline rather than guess.
+// TestBrowsersWithoutAFloorAreLeftAlone checks the rule stays silent on every
+// browser it has no floor for. Safari is the one that matters: its version
+// follows the operating system and a supported iPhone sits several majors back
+// while still being somebody reading the page.
 func TestBrowsersWithoutAFloorAreLeftAlone(t *testing.T) {
 	filter := NewBotFilter()
-	filter.SetCurrentBrowsers(map[string]int{"Chrome": 152})
+	filter.SetCurrentBrowsers(pinned)
 
-	for _, browser := range []struct{ name, version string }{
-		{"Safari", "15"},
-		{"Samsung Internet", "19"},
-		{"Opera", "80"},
-		{"Chrome", ""},
-		{"", "104"},
-		{"Chrome", "not a number"},
+	for _, ua := range []string{
+		"Mozilla/5.0 (iPhone; CPU iPhone OS 15_7 like Mac OS X) AppleWebKit/605.1.15 " +
+			"(KHTML, like Gecko) Version/15.6 Mobile/15E148 Safari/604.1",
+		"Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) " +
+			"SamsungBrowser/19.0 Chrome/125.0.0.0 Mobile Safari/537.36",
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+			"(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 OPR/106.0.0.0",
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+			"(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Vivaldi/6.5",
 	} {
-		if filter.IsOutdatedBrowser(browser.name, browser.version, "") {
-			t.Errorf("%q %q was judged without a floor to judge it against",
-				browser.name, browser.version)
+		if filter.IsOutdatedBrowser(parseUA(t, ua), ua) {
+			t.Errorf("a browser with no floor was judged: %s", ua)
 		}
 	}
 }
@@ -345,12 +374,11 @@ func TestBrowsersWithoutAFloorAreLeftAlone(t *testing.T) {
 func TestNewFilterKnowsCurrentBrowsers(t *testing.T) {
 	filter := NewBotFilter()
 
-	// Every browser with a floor, and a version far enough back that no
-	// self-updating install could be on it.
-	for _, name := range []string{"Chrome", "Firefox", "Edge"} {
-		if !filter.IsOutdatedBrowser(name, "40", "") {
-			t.Errorf("a fresh filter has no current version for %s — run `make lists`", name)
-		}
+	ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+		"(KHTML, like Gecko) Chrome/40.0.0.0 Safari/537.36"
+
+	if !filter.IsOutdatedBrowser(parseUA(t, ua), ua) {
+		t.Error("a fresh filter has no current version for Chrome — run `make lists`")
 	}
 }
 

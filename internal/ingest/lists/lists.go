@@ -97,12 +97,3 @@ func CurrentBrowsers() map[string]int {
 
 	return out
 }
-
-// ESRSuffix names the long-term-support row for a browser.
-//
-// It is a suffix on the browser's own name rather than a separate file, so a
-// reader of browsers.txt sees the two channels of one browser side by side
-// instead of having to know that a second list exists.
-func ESRSuffix(browser string) string {
-	return browser + "-ESR"
-}

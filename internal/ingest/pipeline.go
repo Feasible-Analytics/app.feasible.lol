@@ -519,7 +519,7 @@ func (p *Pipeline) classify(userAgent string, agent useragent.Result, addr netip
 		return ReasonDatacenterIP
 	}
 
-	if p.Bots.IsOutdatedBrowser(agent.Browser, agent.BrowserVersion, userAgent) {
+	if p.Bots.IsOutdatedBrowser(agent, userAgent) {
 		return ReasonOutdatedBrowser
 	}
 
@@ -532,17 +532,33 @@ func (p *Pipeline) classify(userAgent string, agent useragent.Result, addr netip
 	return ""
 }
 
+// AutomationSignals are the observations the tracker can report, one letter
+// each: a browser drawn in no window, and a browser on no screen.
+//
+// It is a closed set for the same reason the drop reasons are. This field
+// arrives from the open internet on a public endpoint, and treating whatever
+// turns up as a verdict means a mangling proxy or a server-side caller reusing
+// a template can classify real traffic with nothing anywhere saying so.
+const AutomationSignals = "os"
+
 // automatedSignals reads the tracker's report of what looked wrong.
 //
 // One signal is enough. Each is a claim a browser cannot truthfully make about
-// itself — no window, no screen, a platform that contradicts its own user agent
-// — and the tracker only reports the ones that no privacy setting produces, so
-// there is nothing to weigh up here. The length cap is because this arrives
-// from the open internet and a caller can put anything in it.
+// itself, and the tracker only reports the ones no privacy setting produces, so
+// there is nothing to weigh up here. Anything unrecognised is ignored rather
+// than trusted.
 func automatedSignals(reported string) bool {
-	const maxSignals = 8
+	if reported == "" || len(reported) > len(AutomationSignals) {
+		return false
+	}
 
-	return reported != "" && len(reported) <= maxSignals
+	for _, signal := range reported {
+		if !strings.ContainsRune(AutomationSignals, signal) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // locate geolocates an address, bucketing datacentre traffic separately.

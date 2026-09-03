@@ -42,7 +42,7 @@ export function signals() {
 		if (!win.outerWidth && !win.outerHeight) found += NO_WINDOW;
 
 		// A browser with no display to be on.
-		if (!screen.width || !screen.height) found += NO_SCREEN;
+		if (!win.screen.width || !win.screen.height) found += NO_SCREEN;
 	} catch {
 		// A browser that throws on any of this is strange, but strange is not
 		// the same as automated, and guessing would cost a real visitor.
