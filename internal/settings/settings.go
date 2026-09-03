@@ -42,6 +42,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/appui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dataio"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/goals"
@@ -51,7 +52,6 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/pathclean"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/settingsui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/shields"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
@@ -158,7 +158,7 @@ func mustParse(name string) *template.Template {
 	if err == nil {
 		// The header and the section list live in the shared package, so both
 		// halves of the settings surface render the same chrome.
-		parsed, err = parsed.ParseFS(settingsui.Templates, "templates/*.html")
+		parsed, err = parsed.ParseFS(appui.Templates, "templates/*.html")
 	}
 	if err != nil {
 		panic("settings: " + err.Error())
@@ -269,6 +269,11 @@ type Handler struct {
 	// product it does not have.
 	Commerce bool
 
+	// Header builds the bar these screens wear. It is injected because the
+	// person, their team and their picture are the application's to resolve,
+	// and a second answer here would be a second, slightly different bar.
+	Header func(*http.Request) appui.Header
+
 	// DataDir is where uploads and prepared exports are written.
 	DataDir string
 
@@ -349,7 +354,7 @@ type page struct {
 
 	// Shell is the header and section list, shared with the screens rendered
 	// by another package so the two cannot drift into two navigations.
-	Shell   settingsui.Shell
+	Shell   appui.Shell
 	Message string
 	Error   string
 	CSRF    string
@@ -532,8 +537,8 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, da
 
 	// The chrome is resolved here rather than in each screen, so a screen added
 	// later cannot arrive with a different set of places to go.
-	data.Shell = settingsui.NewShell(data.Lang, data.Domain,
-		data.TeamID, data.Role, data.CSRF, data.Tab, data.Shield, h.Commerce)
+	data.Shell = appui.NewShell(data.Lang, data.Domain,
+		data.TeamID, data.Role, data.CSRF, data.Tab, data.Shield, h.Commerce, h.headerFor(r))
 
 	if err := template.ExecuteTemplate(w, "layout", data); err != nil && h.Log != nil {
 		h.Log.Error("settings page could not be rendered", "page", name, "error", err)
@@ -628,7 +633,7 @@ func (h *Handler) shields(w http.ResponseWriter, r *http.Request, site sites.Sit
 // answers as though none was given, because a stale bookmark should show the
 // whole screen rather than an empty one.
 func shieldKind(raw string) string {
-	for _, candidate := range settingsui.ShieldKinds() {
+	for _, candidate := range appui.ShieldKinds() {
 		if candidate == raw {
 			return raw
 		}
@@ -1510,4 +1515,15 @@ func (h *Handler) googleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.redirect(w, r, site.Domain, "imports", tr(r, "auth.imports.flash_connected"), "")
+}
+
+// headerFor asks the application for the bar, and answers an empty one when
+// nothing was injected — which is what a test that renders a screen without the
+// surrounding application gets.
+func (h *Handler) headerFor(r *http.Request) appui.Header {
+	if h.Header == nil {
+		return appui.Header{}
+	}
+
+	return h.Header(r)
 }

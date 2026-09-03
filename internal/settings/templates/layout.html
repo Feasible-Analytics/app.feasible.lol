@@ -3,7 +3,7 @@
   layout.html
   The frame every settings screen in this package is drawn in.
 
-  The header and the section list come from internal/settingsui, because the
+  The header and the section list come from internal/appui, because the
   General screen is rendered by another package and the two are one surface to
   the reader. A person who reached Shields and then could not find their way
   back to General would be looking at one screen that lost half of itself.
@@ -46,6 +46,7 @@
 <!-- The stylesheet comes out of the binary. A CDN would be one more thing to be
      blocked, one more thing to be offline, and one more thing to copy. -->
 <link rel="stylesheet" href="/app/assets/app.css">
+<script defer src="/app/assets/alpine.js"></script>
 
 <!-- These screens are behind a login and carry no analytics of their own. -->
 <meta name="robots" content="noindex, nofollow">
@@ -53,6 +54,7 @@
 
 <body class="min-h-full bg-page text-body antialiased">
 
+{{ template "app-header" .Shell.Header }}
 {{ template "settings-header" .Shell }}
 
 <div class="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 pt-6 pb-20 sm:flex-row sm:gap-8 sm:px-6">

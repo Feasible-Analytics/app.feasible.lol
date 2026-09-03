@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/appui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/settingsui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
@@ -792,9 +792,9 @@ func CommonTimezones() []string {
 //
 // The role is this site's rather than the page's account-level flags, because
 // the navigation hides the sections somebody may not reach on this site.
-func (h *Handler) settingsShell(r *http.Request, p *page, site *Site, teamID int64) *settingsui.Shell {
-	shell := settingsui.NewShell(p.Lang, site.Domain, teamID, h.RoleForSite(r, site.ID), p.CSRF,
-		settingsui.TabGeneral, "", !h.DisableCommerce)
+func (h *Handler) settingsShell(r *http.Request, p *page, site *Site, teamID int64) *appui.Shell {
+	shell := appui.NewShell(p.Lang, site.Domain, teamID, h.RoleForSite(r, site.ID), p.CSRF,
+		appui.TabGeneral, "", !h.DisableCommerce, h.HeaderFor(r))
 
 	return &shell
 }

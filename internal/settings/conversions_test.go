@@ -60,11 +60,14 @@ func TestConversionsPageManagesGoalsPropertiesAndFunnels(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("conversion settings answered %d", response.Code)
 	}
+	// The screen, and the chrome that says where the rest of the product is.
+	// Account settings and billing live in the avatar menu now, so they are
+	// asserted at the URLs that menu draws.
 	for _, text := range []string{
 		"Goals", "Custom properties", "Funnels", "Pricing viewed", "Purchased", "Scroll depth",
 		`href="/dashboard/example.com"`,
 		`href="/sites?team_id=1&amp;site_context=example.com"`,
-		`href="/settings?team_id=1"`,
+		`href="/settings"`,
 		`href="/billing?team=1"`,
 	} {
 		if !strings.Contains(response.Body.String(), text) {

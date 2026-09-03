@@ -353,7 +353,20 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 		Log:                 e.log,
 		OutboundPolicy:      outbound.PolicyFor(e.cfg),
 		Avatars:             newAvatarRefresher(e, control),
+		HelpURL:             "/docs",
+		SupportURL:          "mailto:" + supportAddress(e),
 	})
+}
+
+// supportAddress is who a customer writes to. A self-hosted deployment answers
+// its own operator, because pointing that customer at us is pointing them at
+// somebody who cannot see their data or their machine.
+func supportAddress(e *env) string {
+	if e.cfg.App.OperatorEmail != "" {
+		return e.cfg.App.OperatorEmail
+	}
+
+	return e.cfg.App.SalesEmail
 }
 
 // newAvatarRefresher builds the account-picture fetcher.
@@ -440,6 +453,7 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	// cookie and verifier even though their handlers live in another package.
 	site.CSRF = app.FormToken
 	site.CheckCSRF = app.CheckFormToken
+	site.Header = app.HeaderFor
 	site.Role = func(r *http.Request, current sites.Site) teams.Role {
 		return app.RoleForSite(r, current.ID)
 	}

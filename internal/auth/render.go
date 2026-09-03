@@ -21,8 +21,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/appui"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/avatar"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/settingsui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
@@ -69,7 +70,7 @@ func newViews() (*views, error) {
 
 		// The settings chrome comes from the package both settings surfaces
 		// share, so there is one copy of that markup rather than two.
-		if tpl, err = tpl.ParseFS(settingsui.Templates, "templates/*.html"); err != nil {
+		if tpl, err = tpl.ParseFS(appui.Templates, "templates/*.html"); err != nil {
 			return nil, fmt.Errorf("auth: parse settings chrome for %s: %w", entry, err)
 		}
 
@@ -90,7 +91,12 @@ type page struct {
 	// belong to that surface. Its presence is what selects the shell, because
 	// the settings screens in this package and the ones in internal/settings
 	// are one screen to the reader and must not arrive wearing two shells.
-	Settings *settingsui.Shell
+	Settings *appui.Shell
+
+	// Header is the bar every signed-in screen wears. It is a pointer so the
+	// signed-out and focused shells, which have no account to draw, can leave
+	// it out rather than carry an empty one.
+	Header *appui.Header
 
 	// Focused gives a signed-in setup step a quiet shell without losing the
 	// wider content area it needs. It is separate from Nav because signed-out
@@ -159,20 +165,127 @@ func (h *Handler) newPage(r *http.Request, title, nav string) *page {
 		Data:                map[string]any{},
 	}
 
+	var role teams.Role
+
 	if p.User != nil {
 		if _, teamID, err := h.Identify(r); err == nil {
 			if team, err := h.Store.TeamByID(r.Context(), teamID); err == nil {
 				p.Team = team
-				if role, roleErr := h.Teams.RoleOf(r.Context(), teamID, p.User.ID); roleErr == nil {
+				if found, roleErr := h.Teams.RoleOf(r.Context(), teamID, p.User.ID); roleErr == nil {
+					role = found
 					p.CanManageBilling = teams.Can(role, teams.PermManageBilling)
 					p.CanManageMembers = teams.Can(role, teams.PermManageMembers) || teams.Can(role, teams.PermCreateAPIKey)
 					p.CanManageTeam = teams.Can(role, teams.PermManageTeam) || teams.Can(role, teams.PermManageSecurity)
 				}
 			}
 		}
+
+		// Every signed-in screen wears the bar, so it is built once here rather
+		// than by each handler that happens to remember.
+		p.Header = h.header(r, p, role, nav)
+
+		// The account screens wear the settings chrome, resolved here for the
+		// same reason: there are eleven render calls between them and each one
+		// remembering would be eleven chances to forget.
+		if nav == "settings" {
+			shell := appui.NewShell(p.Lang, "", header(p).TeamID, role, p.CSRF,
+				accountTab(r), "", !h.DisableCommerce, *p.Header)
+			p.Settings = &shell
+		}
 	}
 
 	return p
+}
+
+// HeaderFor builds the bar for a screen rendered by another package.
+//
+// It is exported rather than duplicated because the settings screens live in
+// their own package and must not arrive wearing a second, slightly different
+// bar. An unauthenticated request answers an empty header, which those screens
+// never render because their own guard has already turned the request away.
+func (h *Handler) HeaderFor(r *http.Request) appui.Header {
+	user := userFrom(r)
+	if user == nil {
+		return appui.Header{}
+	}
+
+	header := appui.Header{
+		Name:    user.DisplayName(),
+		Email:   user.Email,
+		Help:    h.HelpURL,
+		Support: h.SupportURL,
+	}
+
+	if _, teamID, err := h.Identify(r); err == nil {
+		if team, teamErr := h.Store.TeamByID(r.Context(), teamID); teamErr == nil {
+			header.TeamName = team.Name
+		}
+	}
+
+	if h.Avatars != nil {
+		header.AvatarURL = avatar.URL(user.ID, h.Avatars.State(r.Context(), user.ID).ETag)
+	}
+
+	return header
+}
+
+// header builds the bar for one signed-in screen.
+//
+// The picture is read separately from the person because it lives in its own
+// table: the row a session lookup reads on every request has no business
+// carrying fifty kilobytes nobody asked for.
+func (h *Handler) header(r *http.Request, p *page, role teams.Role, nav string) *appui.Header {
+	header := appui.Header{
+		Lang:     p.Lang,
+		Current:  nav,
+		Name:     p.User.DisplayName(),
+		Email:    p.User.Email,
+		Role:     role,
+		Commerce: !h.DisableCommerce,
+		CSRF:     p.CSRF,
+		Help:     h.HelpURL,
+		Support:  h.SupportURL,
+	}
+
+	if p.Team != nil {
+		header.TeamID = p.Team.ID
+		header.TeamName = p.Team.Name
+	}
+
+	if h.Avatars != nil {
+		header.AvatarURL = avatar.URL(p.User.ID, h.Avatars.State(r.Context(), p.User.ID).ETag)
+	}
+
+	return &header
+}
+
+// accountTab reads which account screen a request is for.
+//
+// It comes from the path rather than from each handler, because the navigation
+// only has to say where the reader is and the path is exactly that. A path
+// nobody mapped falls back to the first section rather than to no selection,
+// which would be a navigation that says nothing.
+func accountTab(r *http.Request) string {
+	switch strings.TrimSuffix(r.URL.Path, "/") {
+	case "/settings/security":
+		return appui.TabSecurity
+	case "/settings/sessions":
+		return appui.TabDevices
+	case "/settings/team":
+		return appui.TabTeamPolicy
+	default:
+		return appui.TabAccount
+	}
+}
+
+// header reads the bar off a page, so a nil one does not panic while the shell
+// beside it is being built.
+func header(p *page) appui.Header {
+	if p.Header == nil {
+		return appui.Header{}
+	}
+
+	return *p.Header
 }
 
 // tr renders one catalogue string in the language a request asked for.
