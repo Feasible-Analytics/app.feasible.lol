@@ -231,9 +231,11 @@ test: tracker test-web
 # three are the kind of thing a rendering test would pass while getting wrong. A
 # machine with no JavaScript toolchain skips them rather than failing, the same
 # way the tracker build does — the Go suite still has to pass there.
+# The type check runs first because the test bundler strips types without
+# checking them: a dashboard that cannot compile still passes every unit test.
 test-web: web-deps
 	@if [ -d web/node_modules ]; then \
-		npm --prefix web test; \
+		npm --prefix web run typecheck && npm --prefix web test; \
 	else \
 		echo "npm is not installed — skipping the dashboard unit tests"; \
 	fi
