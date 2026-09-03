@@ -11,6 +11,7 @@ import { useCallback, useEffect, useState } from "react";
 import { shared } from "../api/client";
 import type { DateRange, JourneyAnchor, JourneyAnchorType, Preset } from "../api/types";
 import type { CompareMode } from "./compare";
+import { PERIODS } from "./period";
 import { readPref, writePref } from "./prefs";
 import type { FilterLabels, FilterState } from "./filters";
 import { readFilters, readLabels, writeFilters } from "./filters";
@@ -38,20 +39,13 @@ export function base(): string {
 	return shared()?.base ?? DEFAULT_BASE;
 }
 
-const PRESETS: Preset[] = [
-	"realtime",
-	"5m",
-	"day",
-	"24h",
-	"7d",
-	"28d",
-	"91d",
-	"month",
-	"last_month",
-	"year",
-	"12mo",
-	"all",
-];
+/** Every preset a URL may name.
+ *
+ *  It is read off the period table rather than written out again, because a
+ *  preset missing from here is silently swapped for the reader's remembered one
+ *  — the link opens, shows a different range, and says nothing. `5m` is the one
+ *  addition: the live view uses it, and it is not a row in the menu. */
+const PRESETS: Preset[] = ["5m", ...PERIODS.flatMap((period) => (period.preset ? [period.preset] : []))];
 
 /** DEFAULT_PRESET matches the engine's own default, so a bare /dashboard/site
  *  and an explicit ?period=28d are the same page rather than two. */

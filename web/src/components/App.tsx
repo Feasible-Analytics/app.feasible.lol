@@ -13,7 +13,7 @@ import type { Annotation, Bootstrap, Metric, StatsRequest } from "../api/types";
 import type { FilterLabels, FilterState } from "../lib/filters";
 import { toApi, toggle } from "../lib/filters";
 import { t } from "../lib/i18n";
-import { step, today } from "../lib/period";
+import { canStep, step, today, yesterday } from "../lib/period";
 import { usePref, useTheme } from "../lib/prefs";
 import type { CardDef, Tab } from "../lib/reports";
 import { CARDS, findCard, findTab, tableTabs } from "../lib/reports";
@@ -90,7 +90,12 @@ function AnalyticsDashboard() {
 	// Bumped to ask the top bar to open its custom-range form, which is what the
 	// `c` shortcut means. A nonce rather than a boolean: pressing `c` twice has
 	// to open it twice, and a boolean that is already true is a no-op.
-	const [pickCustom, setPickCustom] = useState(0);
+	// The last period anything asked for, and a counter that ticks on every ask.
+	// The picker watches the counter rather than the state it produced, so a
+	// hotkey for the period already showing still closes the menu — a list still
+	// offering choices over a dashboard that already answered is describing the
+	// wrong thing.
+	const [asked, setAsked] = useState({ id: "", at: 0 });
 
 	// Whether the reader has refused sampling for this session. It is not in
 	// the URL and not a stored preference: it is a deliberate "wait for the
@@ -303,14 +308,17 @@ function AnalyticsDashboard() {
 
 	const actions: ShortcutActions = {
 		onPeriod: (period) => {
-			if (period.custom === "pick") {
-				setPickCustom((was) => was + 1);
-				return;
-			}
+			setAsked((was) => ({ id: period.id, at: was.at + 1 }));
 
-			if (period.custom === "yesterday") {
-				const day = step("day", "", "", today(), -1);
-				if (day) navigate({ ...state, from: day.from, to: day.to, drawer: null });
+			// Custom range picks nothing on its own: it opens the two-date form
+			// and waits for both bounds.
+			if (period.id === "custom") return;
+
+			if (period.id === "yesterday") {
+				const day = yesterday(today());
+
+				navigate({ ...state, from: day.from, to: day.to, drawer: null });
+
 				return;
 			}
 
@@ -318,6 +326,10 @@ function AnalyticsDashboard() {
 		},
 
 		onStep: (direction) => {
+			// The same predicate the arrow buttons disable on, so a keystroke
+			// can never reach a window the mouse is refused.
+			if (!canStep(state.preset, state.from, state.to, today(), direction)) return;
+
 			const next = step(state.preset, state.from, state.to, today(), direction);
 			if (next) navigate({ ...state, from: next.from, to: next.to, drawer: null });
 		},
@@ -398,7 +410,9 @@ function AnalyticsDashboard() {
 					resolved={totals.data?.query.date_range}
 					filters={filters}
 					onHelp={() => setHelp(true)}
-					pickCustom={pickCustom}
+					onStep={actions.onStep}
+					onPeriod={actions.onPeriod}
+					asked={asked}
 					navigation={bootstrap().navigation}
 				/>
 			)}
@@ -512,7 +526,9 @@ function LockedDashboard({ boot }: { boot: Bootstrap }) {
 				resolved={undefined}
 				filters={[]}
 				onHelp={() => {}}
-				pickCustom={0}
+				onStep={() => {}}
+				onPeriod={() => {}}
+				asked={{ id: "", at: 0 }}
 				navigation={boot.navigation}
 				locked
 			/>

@@ -8,8 +8,9 @@
 
 import { useEffect, useRef } from "react";
 
-import type { Preset } from "../api/types";
 import { t } from "../lib/i18n";
+import type { Period } from "../lib/period";
+import { PERIODS } from "../lib/period";
 
 /**
  * Shortcuts nobody can discover are shortcuts nobody uses.
@@ -26,51 +27,36 @@ import { t } from "../lib/i18n";
  * bindings is not, so covering the page costs nothing.
  */
 
-/** A period the keyboard can jump to. `yesterday` and `custom` have no preset:
- *  one travels as an explicit pair of dates, the other opens the picker. */
-export interface PeriodKey {
+/**
+ * A binding that is not a period.
+ *
+ * `reserves` is what the handler below actually matches, in lower case, and it
+ * is here rather than only in the handler so a test can prove no period claims
+ * one of these keys. That failure is silent: the handler answers the action
+ * first, so the period never fires, while the overlay goes on advertising it.
+ */
+export interface ActionKey {
 	key: string;
 	labelId: string;
-	preset?: Preset;
-	custom?: "yesterday" | "pick";
+	reserves: string[];
 }
 
-/** The period names are the top bar's own, not a second set. A shortcut list
- *  that named a period differently from the menu would be describing a period
- *  the reader cannot then find. */
-export const PERIOD_KEYS: PeriodKey[] = [
-	{ key: "d", labelId: "dashboard.topbar.period.day", preset: "day" },
-	{ key: "e", labelId: "dashboard.topbar.period.yesterday", custom: "yesterday" },
-	{ key: "r", labelId: "dashboard.topbar.period.realtime", preset: "realtime" },
-	{ key: "h", labelId: "dashboard.topbar.period.24h", preset: "24h" },
-	{ key: "w", labelId: "dashboard.topbar.period.7d", preset: "7d" },
-	{ key: "f", labelId: "dashboard.topbar.period.28d", preset: "28d" },
-	{ key: "n", labelId: "dashboard.topbar.period.91d", preset: "91d" },
-	{ key: "m", labelId: "dashboard.topbar.period.month", preset: "month" },
-	{ key: "p", labelId: "dashboard.topbar.period.last_month", preset: "last_month" },
-	{ key: "y", labelId: "dashboard.topbar.period.year", preset: "year" },
-	{ key: "l", labelId: "dashboard.topbar.period.12mo", preset: "12mo" },
-	{ key: "a", labelId: "dashboard.topbar.period.all", preset: "all" },
-	{ key: "c", labelId: "dashboard.topbar.custom_range", custom: "pick" },
-];
-
-/** The bindings that are not periods, listed for the overlay. */
-const ACTION_KEYS: { key: string; labelId: string }[] = [
-	{ key: "←  →", labelId: "dashboard.shortcuts.step" },
-	{ key: "X", labelId: "dashboard.shortcuts.compare" },
-	{ key: "I", labelId: "dashboard.shortcuts.interval" },
-	{ key: "K", labelId: "dashboard.shortcuts.annotations" },
-	{ key: "/", labelId: "dashboard.shortcuts.search" },
-	{ key: "0", labelId: "dashboard.shortcuts.sites" },
-	{ key: "?", labelId: "dashboard.shortcuts.list" },
-	{ key: "Esc", labelId: "dashboard.shortcuts.escape" },
+export const ACTION_KEYS: ActionKey[] = [
+	{ key: "←  →", labelId: "dashboard.shortcuts.step", reserves: ["arrowleft", "arrowright"] },
+	{ key: "X", labelId: "dashboard.shortcuts.compare", reserves: ["x"] },
+	{ key: "I", labelId: "dashboard.shortcuts.interval", reserves: ["i"] },
+	{ key: "K", labelId: "dashboard.shortcuts.annotations", reserves: ["k"] },
+	{ key: "/", labelId: "dashboard.shortcuts.search", reserves: ["/"] },
+	{ key: "0", labelId: "dashboard.shortcuts.sites", reserves: ["0"] },
+	{ key: "?", labelId: "dashboard.shortcuts.list", reserves: ["?"] },
+	{ key: "Esc", labelId: "dashboard.shortcuts.escape", reserves: ["escape"] },
 ];
 
 /** What the keyboard can ask the dashboard to do. It is an interface so the
  *  handler and the overlay are the only two things that know about keys, and
  *  every action stays a plain function App already has. */
 export interface ShortcutActions {
-	onPeriod: (period: PeriodKey) => void;
+	onPeriod: (period: Period) => void;
 	onStep: (direction: -1 | 1) => void;
 	onCompare: () => void;
 	onInterval: () => void;
@@ -172,7 +158,7 @@ export function useShortcuts(actions: ShortcutActions): void {
 				return;
 			}
 
-			const period = PERIOD_KEYS.find((entry) => entry.key === key);
+			const period = PERIODS.find((entry) => entry.key === key);
 			if (period) current.onPeriod(period);
 		};
 
@@ -240,7 +226,7 @@ export function ShortcutsModal({ onClose }: { onClose: () => void }) {
 				</div>
 
 				<div className="grid grid-cols-1 gap-x-8 gap-y-6 px-5 py-4 sm:grid-cols-2">
-					<Section title={t("dashboard.shortcuts.periods")} rows={PERIOD_KEYS} />
+					<Section title={t("dashboard.shortcuts.periods")} rows={PERIODS} />
 					<Section title={t("dashboard.shortcuts.other")} rows={ACTION_KEYS} />
 				</div>
 
@@ -253,7 +239,7 @@ export function ShortcutsModal({ onClose }: { onClose: () => void }) {
 }
 
 /** Section is one titled column of the list. */
-function Section({ title, rows }: { title: string; rows: { key: string; labelId: string }[] }) {
+function Section({ title, rows }: { title: string; rows: readonly { key: string; labelId: string }[] }) {
 	return (
 		<div>
 			<h3 className="mb-2 text-[11px] font-medium tracking-wide text-muted uppercase">{title}</h3>

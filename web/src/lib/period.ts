@@ -18,6 +18,48 @@ import type { Preset } from "../api/types";
  * tomorrow: a preset re-resolves against their clock, a date does not.
  */
 
+/**
+ * Every period the dashboard offers, once.
+ *
+ * The menu, the keyboard handler and the shortcut overlay all read this. Two
+ * copies is how a period ends up with no shortcut, or with a shortcut the
+ * overlay advertises that jumps somewhere else — and neither failure says
+ * anything, because both lists are individually valid.
+ *
+ * `preset` is a wire value the engine resolves; a period without one travels as
+ * an explicit pair of dates, because "yesterday" is not something the engine
+ * names and a custom range is not a period at all.
+ *
+ * `group` only separates the menu. Twelve unbroken rows is a wall.
+ */
+export interface Period {
+	id: string;
+	key: string;
+	labelId: string;
+	preset?: Preset;
+	group: number;
+}
+
+export const PERIODS: Period[] = [
+	{ id: "day", key: "d", labelId: "dashboard.topbar.period.day", preset: "day", group: 1 },
+	{ id: "yesterday", key: "e", labelId: "dashboard.topbar.period.yesterday", group: 1 },
+	{ id: "realtime", key: "r", labelId: "dashboard.topbar.period.realtime", preset: "realtime", group: 1 },
+
+	{ id: "24h", key: "h", labelId: "dashboard.topbar.period.24h", preset: "24h", group: 2 },
+	{ id: "7d", key: "w", labelId: "dashboard.topbar.period.7d", preset: "7d", group: 2 },
+	{ id: "28d", key: "f", labelId: "dashboard.topbar.period.28d", preset: "28d", group: 2 },
+	{ id: "91d", key: "n", labelId: "dashboard.topbar.period.91d", preset: "91d", group: 2 },
+
+	{ id: "month", key: "m", labelId: "dashboard.topbar.period.month", preset: "month", group: 3 },
+	{ id: "last_month", key: "p", labelId: "dashboard.topbar.period.last_month", preset: "last_month", group: 3 },
+
+	{ id: "year", key: "y", labelId: "dashboard.topbar.period.year", preset: "year", group: 4 },
+	{ id: "12mo", key: "l", labelId: "dashboard.topbar.period.12mo", preset: "12mo", group: 4 },
+
+	{ id: "all", key: "a", labelId: "dashboard.topbar.period.all", preset: "all", group: 5 },
+	{ id: "custom", key: "c", labelId: "dashboard.topbar.custom_range", group: 5 },
+];
+
 /** A window as two inclusive local dates. */
 export interface Window {
 	from: string;
@@ -75,6 +117,33 @@ function startOfPeriod(preset: Preset, today: string): string {
 }
 
 /**
+ * wholeMonths counts the calendar months an explicit window covers exactly, and
+ * zero for any other range.
+ *
+ * Stepping a calendar preset hands back a pair of dates, and the URL cannot tell
+ * that pair apart from one somebody typed into the date form. So the shape of
+ * the window decides: the first of a month through the last day of a month is a
+ * run of months. Counting it in days instead walks August forward to
+ * "1 September – 1 October" and back to a single day in June.
+ */
+function wholeMonths(from: string, to: string): number {
+	if (from !== startOfMonth(from) || to !== lastDayOfMonth(to)) return 0;
+
+	const span = (year(to) - year(from)) * 12 + (month(to) - month(from)) + 1;
+
+	return span > 0 ? span : 0;
+}
+
+/** year and month read the two calendar fields a month count needs. */
+function year(date: string): number {
+	return Number(date.slice(0, 4));
+}
+
+function month(date: string): number {
+	return Number(date.slice(5, 7));
+}
+
+/**
  * step moves a window by one of its own length.
  *
  * A day-spanned window moves by its day count and a month-spanned one by its
@@ -86,7 +155,7 @@ export function step(preset: Preset, from: string, to: string, today: string, di
 	const current = windowOf(preset, from, to, today);
 	if (!current) return null;
 
-	const months = from && to ? 0 : (MONTH_SPANS[preset] ?? 0);
+	const months = from && to ? wholeMonths(from, to) : (MONTH_SPANS[preset] ?? 0);
 
 	if (months > 0) {
 		const start = addMonths(current.from, months * direction);
@@ -100,6 +169,40 @@ export function step(preset: Preset, from: string, to: string, today: string, di
 		from: addDays(current.from, length * direction),
 		to: addDays(current.to, length * direction),
 	};
+}
+
+/**
+ * yesterday is the one day before today, as an explicit window.
+ *
+ * The engine names no preset for it, so it travels as a date pair like any
+ * other custom range — and it is computed here rather than at each of the two
+ * routes that reach it, so the menu and the keyboard cannot land on different
+ * days across a month boundary.
+ */
+export function yesterday(today: string): Window {
+	const day = addDays(today, -1);
+
+	return { from: day, to: day };
+}
+
+/**
+ * canStep says whether the arrows may move.
+ *
+ * The buttons disable on it and the arrow keys ignore a keystroke on it, so a
+ * window the mouse is refused is never one keystroke away. It refuses a period
+ * with no window at all, and it refuses forward from a window that already
+ * reaches today, because there is nothing ahead of today but an empty graph.
+ *
+ * The test is on the window the reader is looking at, not on the one the arrow
+ * would land in. Judging the destination strands every calendar period: August
+ * ends on the 31st, so "does the next window end after today" is true all month
+ * and the forward arrow dies the moment you step back once.
+ */
+export function canStep(preset: Preset, from: string, to: string, today: string, direction: -1 | 1): boolean {
+	const current = windowOf(preset, from, to, today);
+	if (!current) return false;
+
+	return direction === -1 || current.to < today;
 }
 
 /** dayCount is how many days a window covers, both ends included. */
