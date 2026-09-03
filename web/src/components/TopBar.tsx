@@ -80,12 +80,25 @@ const CURRENT_RANGE: Preset = "5m";
  *  is what makes a live figure drift above the rest of the dashboard. */
 const NOT_ENGAGEMENT: Filter = ["is_not", "event:name", ["engagement"], { case_sensitive: true }];
 
-/** currentVisitorsRequest builds the live-pill query. The number has no room
- *  for a sampling caveat of its own, so it explicitly refuses sampling rather
- *  than inheriting the query engine's automatic decision. */
+/**
+ * currentVisitorsRequest builds the live-pill query, shared with the realtime
+ * screen so the two can never disagree about what "current" means.
+ *
+ * `pageviews` is requested and thrown away, and it is load-bearing. A query made
+ * only of metrics that count on either table is planned against `sessions`,
+ * where `is_not event:name engagement` means "this visit never sent a ping" —
+ * and since almost every real visit sends one, that answers zero. Asking for one
+ * event-scoped metric plans the query at event grain, where the filter means
+ * "events that are not pings" and the count is the visitors behind them, which
+ * is the question being asked. `internal/query/table.go` owns that decision and
+ * a test there pins both readings.
+ *
+ * The number has no room for a sampling caveat of its own, so it explicitly
+ * refuses sampling rather than inheriting the query engine's automatic decision.
+ */
 export function currentVisitorsRequest(filters: Filter[]): StatsRequest {
 	return {
-		metrics: ["visitors"],
+		metrics: ["visitors", "pageviews"],
 		date_range: CURRENT_RANGE,
 		filters: [...filters, NOT_ENGAGEMENT],
 		exact: true,
