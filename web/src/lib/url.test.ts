@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { PERIODS } from "./period";
 import { href, parse } from "./url";
 
 globalThis.document = { getElementById: () => null } as unknown as Document;
@@ -73,6 +74,19 @@ test("the period survives a round trip through the URL", () => {
 	const roundTripped = parse(new URL("https://example.test" + href(chosen)));
 
 	assert.equal(roundTripped.preset, "day");
+});
+
+test("every period the menu offers survives being written into a URL", () => {
+	// The menu, the keyboard and the parser have to accept the same set. A
+	// preset the parser does not know is silently swapped for the remembered
+	// one: the link opens, shows a different range, and says nothing about it.
+	for (const period of PERIODS) {
+		if (!period.preset) continue;
+
+		const state = parse(new URL(`https://example.test/dashboard/site.test?period=${period.preset}`));
+
+		assert.equal(state.preset, period.preset, `${period.id} did not survive the URL`);
+	}
 });
 
 test("a malformed percent-encoding in the path opens a dashboard rather than throwing", () => {

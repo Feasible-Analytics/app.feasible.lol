@@ -19,29 +19,31 @@ import { Chevron } from "./atoms";
 /**
  * PeriodPicker is the date range, its two arrows, and the menu behind it.
  *
- * "Show me the same thing, one week earlier" is the second most common thing
- * anybody does on an analytics dashboard, and it was an arrow key nobody had
- * been told about. The arrows are the same action that key already performs,
- * not a second copy of it, and every row in the menu prints its key so the
- * keyboard layer teaches itself.
+ * Every route into it — a row, an arrow, a hotkey — runs the same two actions
+ * the keyboard already had, so the mouse and the keyboard cannot land in
+ * different places. Each row prints its key, which is how the keyboard layer
+ * teaches itself to somebody who never presses `?`.
  */
 export function PeriodPicker({
 	state,
 	label,
 	onNavigate,
+	onPeriod,
 	onStep,
+	asked,
 	resolved,
-	pickCustom,
 }: {
 	state: UrlState;
 	label: string;
 	onNavigate: (next: UrlState) => void;
+	onPeriod: (period: Period) => void;
 	onStep: (direction: -1 | 1) => void;
+	asked: { id: string; at: number };
 	resolved: string[] | undefined;
-	pickCustom: number;
 }) {
 	const [open, setOpen] = useState(false);
 	const [custom, setCustom] = useState(false);
+
 	const wrap = useRef<HTMLDivElement>(null);
 
 	useDismiss(wrap, open, () => {
@@ -49,48 +51,18 @@ export function PeriodPicker({
 		setCustom(false);
 	});
 
-	// The keyboard's route into the two-date form. It skips the menu entirely:
-	// somebody who pressed the shortcut has already chosen, and making them
-	// click "Custom range…" afterwards would be the shortcut doing half a job.
+	// Every period request closes the menu, and Custom range opens the form
+	// instead. This watches the counter rather than the URL the request
+	// produced, because asking for the period already showing changes no URL and
+	// would leave the menu open over a dashboard that had already answered. It
+	// is also how the hotkey reaches the form without being made to click
+	// "Custom range…" afterwards, which would be the shortcut doing half a job.
 	useEffect(() => {
-		if (pickCustom === 0) return;
+		if (asked.at === 0) return;
 
-		setOpen(true);
-		setCustom(true);
-	}, [pickCustom]);
-
-	// A hotkey pressed while the menu is open applies the period, and the menu
-	// has to go with it: a list still offering choices over a dashboard that
-	// already changed is a list describing the wrong thing.
-	const selection = `${state.preset}|${state.from}|${state.to}`;
-
-	useEffect(() => {
-		setOpen(false);
-		setCustom(false);
-	}, [selection]);
-
-	// Changing the period closes the drawer. A details view is about a slice of
-	// a specific window, and leaving it open over a different one would show
-	// numbers that no longer answer the question that was asked.
-	const pick = (period: Period) => {
-		if (period.id === "custom") {
-			setCustom(true);
-			return;
-		}
-
-		setOpen(false);
-		setCustom(false);
-
-		if (period.id === "yesterday") {
-			const day = yesterday(today());
-
-			onNavigate({ ...state, from: day.from, to: day.to, drawer: null });
-
-			return;
-		}
-
-		onNavigate({ ...state, preset: period.preset ?? "28d", from: "", to: "", drawer: null });
-	};
+		setOpen(asked.id === "custom");
+		setCustom(asked.id === "custom");
+	}, [asked]);
 
 	return (
 		<div ref={wrap} className="relative">
@@ -117,13 +89,18 @@ export function PeriodPicker({
 			{open && (
 				<div role="menu" className="absolute right-0 z-40 mt-1 w-64 rounded-md border border-line bg-card p-1 shadow-lg">
 					{PERIODS.map((period, index) => (
-						<div key={period.id}>
-							{index > 0 && PERIODS[index - 1]?.group !== period.group && <div className="my-1 border-t border-line" />}
+						// The wrapper exists only to hang the divider on the row.
+						// role="none" keeps it out of the menu's own parent-to-
+						// menuitem relationship.
+						<div key={period.id} role="none">
+							{index > 0 && PERIODS[index - 1]?.group !== period.group && (
+								<div role="separator" className="my-1 border-t border-line" />
+							)}
 
 							<button
 								type="button"
 								role="menuitem"
-								onClick={() => pick(period)}
+								onClick={() => onPeriod(period)}
 								className={`flex w-full items-center gap-2 rounded-sm px-2.5 py-1.5 text-left text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover ${
 									isCurrent(period, state) ? "font-medium text-accent" : "text-body"
 								}`}
@@ -168,9 +145,8 @@ export function PeriodPicker({
 /**
  * StepButton is one arrow.
  *
- * It calls the same action the arrow keys do rather than stepping the window
- * itself, and it disables on the same predicate the keyboard ignores, so the
- * two routes to "one period earlier" cannot land in different places.
+ * It calls the action the arrow keys call rather than stepping the window
+ * itself, and disables on the predicate those keys obey.
  */
 function StepButton({
 	state,
@@ -188,27 +164,31 @@ function StepButton({
 		<button
 			type="button"
 			disabled={!allowed}
-			aria-disabled={!allowed}
 			onClick={() => onStep(direction)}
 			aria-label={t(direction === -1 ? "dashboard.topbar.previous_period" : "dashboard.topbar.next_period")}
 			// Hovering answers "earlier than what?" with the window itself
 			// rather than with a direction the reader has to work out.
 			title={next ? rangeLabel([next.from, next.to]) : undefined}
-			className="flex w-7 items-center justify-center text-sm text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover hover:text-body disabled:pointer-events-none disabled:text-faint"
+			className="flex w-7 items-center justify-center text-sm text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover hover:text-body disabled:text-faint"
 		>
 			<span aria-hidden="true" className="rtl:-scale-x-100">{direction === -1 ? "‹" : "›"}</span>
 		</button>
 	);
 }
 
-/** isCurrent marks the row the dashboard is actually showing. A custom window
- *  is Yesterday only when it is exactly yesterday; any other pair of dates is
- *  a range somebody typed, and no preset row describes it. */
-function isCurrent(period: Period, state: UrlState): boolean {
+/**
+ * isCurrent marks the row the dashboard is actually showing.
+ *
+ * A pair of dates is Yesterday only when it is exactly yesterday; any other pair
+ * is a range somebody typed, and the row that describes that is Custom range.
+ * Leaving it unmarked makes an open menu look as though nothing is selected.
+ */
+export function isCurrent(period: Period, state: UrlState): boolean {
 	if (state.from || state.to) {
 		const day = yesterday(today());
+		const exactlyYesterday = state.from === day.from && state.to === day.to;
 
-		return period.id === "yesterday" && state.from === day.from && state.to === day.to;
+		return exactlyYesterday ? period.id === "yesterday" : period.id === "custom";
 	}
 
 	return period.preset === state.preset;

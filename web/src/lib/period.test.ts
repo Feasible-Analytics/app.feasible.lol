@@ -104,6 +104,31 @@ test("the forward arrow refuses to walk into the future", () => {
 	assert.equal(canStep("28d", "2026-01-01", "2026-01-28", "2026-09-03", -1), true);
 });
 
+test("a calendar period stepped back can be stepped forward again", () => {
+	// Judging the destination instead of the window kills this: August ends on
+	// the 31st, which is after today all month, so the forward arrow would die
+	// the moment somebody stepped back once.
+	assert.equal(canStep("month", "2026-08-01", "2026-08-31", "2026-09-03", 1), true);
+	assert.equal(canStep("last_month", "", "", "2026-09-03", 1), true);
+	assert.equal(canStep("year", "2025-01-01", "2025-12-31", "2026-09-03", 1), true);
+
+	// Month to date and year to date already contain today, so they do not.
+	assert.equal(canStep("month", "", "", "2026-09-03", 1), false);
+	assert.equal(canStep("year", "", "", "2026-09-03", 1), false);
+});
+
+test("a window of whole calendar months steps by months even as a pair of dates", () => {
+	// Stepping a calendar preset hands back dates, and the next step reads
+	// those dates. Counting them in days walks August forward to 1 September –
+	// 1 October, and back to a single day in June.
+	assert.deepEqual(step("month", "2026-08-01", "2026-08-31", "2026-09-03", 1), { from: "2026-09-01", to: "2026-09-30" });
+	assert.deepEqual(step("month", "2026-08-01", "2026-08-31", "2026-09-03", -1), { from: "2026-07-01", to: "2026-07-31" });
+	assert.deepEqual(step("year", "2025-01-01", "2025-12-31", "2026-09-03", -1), { from: "2024-01-01", to: "2024-12-31" });
+
+	// A pair that is not whole months is still counted in days.
+	assert.deepEqual(step("month", "2026-08-02", "2026-08-31", "2026-09-03", -1), { from: "2026-07-03", to: "2026-08-01" });
+});
+
 test("a step that would end exactly today is allowed", () => {
 	// The boundary case: seven days ending on the 27th steps forward to a
 	// window ending on the 3rd, which is today and therefore real data.

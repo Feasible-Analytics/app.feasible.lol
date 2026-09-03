@@ -117,6 +117,33 @@ function startOfPeriod(preset: Preset, today: string): string {
 }
 
 /**
+ * wholeMonths counts the calendar months an explicit window covers exactly, and
+ * zero for any other range.
+ *
+ * Stepping a calendar preset hands back a pair of dates, and the URL cannot tell
+ * that pair apart from one somebody typed into the date form. So the shape of
+ * the window decides: the first of a month through the last day of a month is a
+ * run of months. Counting it in days instead walks August forward to
+ * "1 September – 1 October" and back to a single day in June.
+ */
+function wholeMonths(from: string, to: string): number {
+	if (from !== startOfMonth(from) || to !== lastDayOfMonth(to)) return 0;
+
+	const span = (year(to) - year(from)) * 12 + (month(to) - month(from)) + 1;
+
+	return span > 0 ? span : 0;
+}
+
+/** year and month read the two calendar fields a month count needs. */
+function year(date: string): number {
+	return Number(date.slice(0, 4));
+}
+
+function month(date: string): number {
+	return Number(date.slice(5, 7));
+}
+
+/**
  * step moves a window by one of its own length.
  *
  * A day-spanned window moves by its day count and a month-spanned one by its
@@ -128,7 +155,7 @@ export function step(preset: Preset, from: string, to: string, today: string, di
 	const current = windowOf(preset, from, to, today);
 	if (!current) return null;
 
-	const months = from && to ? 0 : (MONTH_SPANS[preset] ?? 0);
+	const months = from && to ? wholeMonths(from, to) : (MONTH_SPANS[preset] ?? 0);
 
 	if (months > 0) {
 		const start = addMonths(current.from, months * direction);
@@ -161,20 +188,21 @@ export function yesterday(today: string): Window {
 /**
  * canStep says whether the arrows may move.
  *
- * It exists so the mouse and the keyboard cannot disagree: the buttons disable
- * on it and the arrow keys ignore a keystroke on it, from one answer. Two
- * reasons to refuse. A period with no window has nothing before or after it —
- * All time has no earlier, and the live views are about now by definition, so
- * quietly turning them into a fixed range is not what the reader asked for. And
- * forward past today is an empty graph: the data does not exist yet, which on
- * an arrow key is obscure and on a visible button is the first thing somebody
- * clicks.
+ * The buttons disable on it and the arrow keys ignore a keystroke on it, so a
+ * window the mouse is refused is never one keystroke away. It refuses a period
+ * with no window at all, and it refuses forward from a window that already
+ * reaches today, because there is nothing ahead of today but an empty graph.
+ *
+ * The test is on the window the reader is looking at, not on the one the arrow
+ * would land in. Judging the destination strands every calendar period: August
+ * ends on the 31st, so "does the next window end after today" is true all month
+ * and the forward arrow dies the moment you step back once.
  */
 export function canStep(preset: Preset, from: string, to: string, today: string, direction: -1 | 1): boolean {
-	const next = step(preset, from, to, today, direction);
-	if (!next) return false;
+	const current = windowOf(preset, from, to, today);
+	if (!current) return false;
 
-	return direction === -1 || next.to <= today;
+	return direction === -1 || current.to < today;
 }
 
 /** dayCount is how many days a window covers, both ends included. */

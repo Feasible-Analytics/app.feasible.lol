@@ -27,18 +27,29 @@ import { PERIODS } from "../lib/period";
  * bindings is not, so covering the page costs nothing.
  */
 
-/** A period the keyboard can jump to. `yesterday` and `custom` have no preset:
- *  one travels as an explicit pair of dates, the other opens the picker. */
-/** The bindings that are not periods, listed for the overlay. */
-const ACTION_KEYS: { key: string; labelId: string }[] = [
-	{ key: "←  →", labelId: "dashboard.shortcuts.step" },
-	{ key: "X", labelId: "dashboard.shortcuts.compare" },
-	{ key: "I", labelId: "dashboard.shortcuts.interval" },
-	{ key: "K", labelId: "dashboard.shortcuts.annotations" },
-	{ key: "/", labelId: "dashboard.shortcuts.search" },
-	{ key: "0", labelId: "dashboard.shortcuts.sites" },
-	{ key: "?", labelId: "dashboard.shortcuts.list" },
-	{ key: "Esc", labelId: "dashboard.shortcuts.escape" },
+/**
+ * A binding that is not a period.
+ *
+ * `reserves` is what the handler below actually matches, in lower case, and it
+ * is here rather than only in the handler so a test can prove no period claims
+ * one of these keys. That failure is silent: the handler answers the action
+ * first, so the period never fires, while the overlay goes on advertising it.
+ */
+export interface ActionKey {
+	key: string;
+	labelId: string;
+	reserves: string[];
+}
+
+export const ACTION_KEYS: ActionKey[] = [
+	{ key: "←  →", labelId: "dashboard.shortcuts.step", reserves: ["arrowleft", "arrowright"] },
+	{ key: "X", labelId: "dashboard.shortcuts.compare", reserves: ["x"] },
+	{ key: "I", labelId: "dashboard.shortcuts.interval", reserves: ["i"] },
+	{ key: "K", labelId: "dashboard.shortcuts.annotations", reserves: ["k"] },
+	{ key: "/", labelId: "dashboard.shortcuts.search", reserves: ["/"] },
+	{ key: "0", labelId: "dashboard.shortcuts.sites", reserves: ["0"] },
+	{ key: "?", labelId: "dashboard.shortcuts.list", reserves: ["?"] },
+	{ key: "Esc", labelId: "dashboard.shortcuts.escape", reserves: ["escape"] },
 ];
 
 /** What the keyboard can ask the dashboard to do. It is an interface so the
@@ -228,7 +239,7 @@ export function ShortcutsModal({ onClose }: { onClose: () => void }) {
 }
 
 /** Section is one titled column of the list. */
-function Section({ title, rows }: { title: string; rows: { key: string; labelId: string }[] }) {
+function Section({ title, rows }: { title: string; rows: readonly { key: string; labelId: string }[] }) {
 	return (
 		<div>
 			<h3 className="mb-2 text-[11px] font-medium tracking-wide text-muted uppercase">{title}</h3>

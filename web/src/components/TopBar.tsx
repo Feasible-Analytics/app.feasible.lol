@@ -15,6 +15,7 @@ import { COMPARE_LABELS } from "../lib/compare";
 import { useDismiss } from "../lib/dom";
 import { calendarDate } from "../lib/format";
 import { n, t } from "../lib/i18n";
+import type { Period } from "../lib/period";
 import { PERIODS } from "../lib/period";
 import type { Theme } from "../lib/prefs";
 import type { UrlState } from "../lib/url";
@@ -42,7 +43,13 @@ interface Props {
 	onStep: (direction: -1 | 1) => void;
 	/** Bumped when the keyboard asks for the custom-range form. A counter rather
 	 *  than a flag, because pressing the key twice has to open it twice. */
-	pickCustom: number;
+	// onPeriod is the same action the period hotkeys perform, so a row in the
+	// menu and its printed key cannot land in different places.
+	onPeriod: (period: Period) => void;
+
+	// asked is the last period anything requested, with a counter that ticks on
+	// every request. The picker closes on it.
+	asked: { id: string; at: number };
 	navigation?: Navigation;
 	locked?: boolean;
 }
@@ -105,7 +112,7 @@ export function currentVisitorsRequest(filters: Filter[]): StatsRequest {
  * address bar is always a description of what is on screen — which is what
  * makes a dashboard link worth sending to somebody.
  */
-export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, filters, onHelp, onStep, pickCustom, navigation, locked = false }: Props) {
+export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, filters, onHelp, onStep, onPeriod, asked, navigation, locked = false }: Props) {
 	const label = periodLabel(state);
 	const live = state.preset === "realtime" && !state.from;
 
@@ -169,7 +176,8 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, fil
 						onNavigate={onNavigate}
 						onStep={onStep}
 						resolved={resolved}
-						pickCustom={pickCustom}
+						onPeriod={onPeriod}
+						asked={asked}
 					/>}
 					{/* A shared or public dashboard has no account, so it has no
 					    menu to fold these into. The keys are still bound there,
