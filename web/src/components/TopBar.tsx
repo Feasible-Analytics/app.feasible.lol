@@ -1,6 +1,6 @@
 //
 // TopBar.tsx
-// The sticky bar: site, live visitors, period, theme.
+// The sticky bar: site, live visitors, period, account.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -190,10 +190,20 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, fil
 						pickCustom={pickCustom}
 					/>}
 					{/* A shared or public dashboard has no account, so it has no
-					    menu to hold the theme. It keeps the standalone toggle
-					    rather than losing the choice entirely. */}
+					    menu to fold these into. The keys are still bound there,
+					    so without the buttons the whole layer is unreachable for
+					    the readers least able to ask for it back. */}
+					{!navigation && !locked && <HelpButton onHelp={onHelp} />}
 					{!navigation && <ThemeToggle theme={theme} onTheme={onTheme} />}
-					{navigation && <AccountMenu navigation={navigation} theme={theme} onTheme={onTheme} onHelp={onHelp} />}
+					{navigation && (
+						<AccountMenu
+							navigation={navigation}
+							theme={theme}
+							onTheme={onTheme}
+							onHelp={onHelp}
+							shortcuts={!locked}
+						/>
+					)}
 				</div>
 			</div>
 		</header>
@@ -243,10 +253,9 @@ export interface MenuGroup {
 	rows: MenuRow[];
 }
 
-/** The glyph and the label id for each theme row. Both are written out rather
- *  than built from the theme name, so every string the menu can ask for is
- *  findable by searching for its id — which is what the catalogue's
- *  unused-string check relies on. */
+/** The glyph and label id for each theme row. The ids are written out rather
+ *  than built from the theme name, so the catalogue's unused-string check can
+ *  find them. */
 const THEME_ROWS: { theme: Theme; glyph: string; labelId: string }[] = [
 	{ theme: "light", glyph: "☀", labelId: "dashboard.menu.theme.light" },
 	{ theme: "dark", glyph: "☾", labelId: "dashboard.menu.theme.dark" },
@@ -254,14 +263,14 @@ const THEME_ROWS: { theme: Theme; glyph: string; labelId: string }[] = [
 ];
 
 /**
- * accountMenuGroups is what the account menu draws.
+ * accountMenuGroups is what the account menu draws, in the order it draws it.
  *
  * It is a function rather than markup so the rules that decide which rows exist
- * — billing only where somebody may manage it, site settings only where a site
- * is in scope — are one testable answer rather than conditionals scattered
- * through JSX. The order here is the order on screen.
+ * are one testable answer rather than conditionals scattered through JSX.
+ * `shortcuts` is false on a locked account, which binds no keys: a row that
+ * closes the menu and does nothing else is worse than no row.
  */
-export function accountMenuGroups(navigation: Navigation, theme: Theme): MenuGroup[] {
+export function accountMenuGroups(navigation: Navigation, theme: Theme, shortcuts: boolean): MenuGroup[] {
 	const destinations: MenuRow[] = [
 		{ kind: "link", id: "sites", label: t("dashboard.navigation.sites"), href: navigation.sites_url },
 	];
@@ -291,12 +300,16 @@ export function accountMenuGroups(navigation: Navigation, theme: Theme): MenuGro
 		});
 	}
 
-	return [
-		{ id: "destinations", rows: destinations },
-		{
+	const groups: MenuGroup[] = [{ id: "destinations", rows: destinations }];
+
+	if (shortcuts) {
+		groups.push({
 			id: "help",
 			rows: [{ kind: "action", id: "shortcuts", label: t("dashboard.menu.shortcuts"), hint: "?" }],
-		},
+		});
+	}
+
+	groups.push(
 		{
 			id: "theme",
 			label: t("dashboard.menu.theme"),
@@ -310,33 +323,36 @@ export function accountMenuGroups(navigation: Navigation, theme: Theme): MenuGro
 			})),
 		},
 		{
-			id: "account",
+			id: "session",
 			rows: [{ kind: "signout", id: "signout", label: t("dashboard.navigation.sign_out") }],
 		},
-	];
+	);
+
+	return groups;
 }
 
-/** AccountMenu keeps product navigation, the two rarely-pressed controls and
- * the CSRF-protected sign-out in one place. The bar it sits in is the only
- * control surface on the dashboard, and a theme chosen once a year does not
- * earn permanent space beside the date range. */
+/** AccountMenu holds product navigation, the two controls that are pressed
+ * rarely enough not to earn space beside the date range, and the
+ * CSRF-protected sign-out. */
 function AccountMenu({
 	navigation,
 	theme,
 	onTheme,
 	onHelp,
+	shortcuts,
 }: {
 	navigation: Navigation;
 	theme: Theme;
 	onTheme: (next: Theme) => void;
 	onHelp: () => void;
+	shortcuts: boolean;
 }) {
 	const [open, setOpen] = useState(false);
 	const wrap = useRef<HTMLDivElement>(null);
 
 	useDismiss(wrap, open, () => setOpen(false));
 
-	const groups = accountMenuGroups(navigation, theme);
+	const groups = accountMenuGroups(navigation, theme, shortcuts);
 
 	return (
 		<div ref={wrap} className="relative">
@@ -362,7 +378,7 @@ function AccountMenu({
 					</div>
 
 					{groups.map((group) => (
-						<div key={group.id} role="group" aria-label={group.label} className="border-t border-line pt-1.5 first-of-type:border-t-0">
+						<div key={group.id} role="group" aria-label={group.label} className="border-t border-line pt-1.5">
 							{group.label && (
 								<p aria-hidden="true" className="px-2.5 pt-1 pb-0.5 text-[10px] font-semibold tracking-wide text-muted uppercase">
 									{group.label}
@@ -388,9 +404,8 @@ function AccountMenu({
 	);
 }
 
-/** MenuRowView draws one row. Choosing a theme deliberately leaves the menu
- * open: the page changes underneath, and somebody comparing light against dark
- * should be able to try the other one without opening the menu again. */
+/** MenuRowView draws one row. Choosing a theme leaves the menu open, because
+ * the page changes underneath it and the next choice is one click away. */
 function MenuRowView({
 	row,
 	navigation,
@@ -410,7 +425,13 @@ function MenuRowView({
 
 		case "action":
 			return (
-				<button type="button" role="menuitem" onClick={onHelp} className={`${base} text-body`}>
+				<button
+					type="button"
+					role="menuitem"
+					onClick={onHelp}
+					aria-label={t("dashboard.shortcuts.open")}
+					className={`${base} text-body`}
+				>
 					<span className="flex-1">{row.label}</span>
 					<span aria-hidden="true" className="tnum rounded border border-line px-1.5 text-[11px] text-muted">{row.hint}</span>
 				</button>
@@ -431,13 +452,16 @@ function MenuRowView({
 				</button>
 			);
 
-		default:
+		case "signout":
 			return (
 				<form method="post" action={navigation.logout_url}>
 					<input type="hidden" name="csrf_token" value={navigation.csrf} />
 					<button type="submit" role="menuitem" className={`${base} text-down`}>{row.label}</button>
 				</form>
 			);
+
+		default:
+			return null;
 	}
 }
 
@@ -577,6 +601,23 @@ function ComparePicker({ state, onNavigate }: { state: UrlState; onNavigate: (ne
 			</select>
 			<Chevron className="pointer-events-none absolute right-2" />
 		</label>
+	);
+}
+
+/** HelpButton is the only way into the shortcut layer on a dashboard with no
+ * account menu to hold it. A signed-in reader reaches the same thing from that
+ * menu, where it does not compete with the period picker. */
+function HelpButton({ onHelp }: { onHelp: () => void }) {
+	return (
+		<button
+			type="button"
+			onClick={onHelp}
+			title={t("dashboard.shortcuts.open")}
+			aria-label={t("dashboard.shortcuts.open")}
+			className="hidden size-control items-center justify-center rounded-md border border-line bg-card text-sm text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover sm:flex"
+		>
+			?
+		</button>
 	);
 }
 

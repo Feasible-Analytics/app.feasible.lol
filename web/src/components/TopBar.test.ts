@@ -113,9 +113,9 @@ function rowIDs(groups: ReturnType<typeof accountMenuGroups>): string[] {
 }
 
 test("the account menu is grouped, and ends with a separated sign out", () => {
-	const groups = accountMenuGroups(account(), "system");
+	const groups = accountMenuGroups(account(), "system", true);
 
-	assert.deepEqual(groups.map((group) => group.id), ["destinations", "help", "theme", "account"]);
+	assert.deepEqual(groups.map((group) => group.id), ["destinations", "help", "theme", "session"]);
 
 	// Only the theme group carries a heading: the others are self-evident, and
 	// a heading over one row reads as a label for that row.
@@ -131,16 +131,16 @@ test("a destination nobody may reach is not in the menu", () => {
 	// Billing is absent for a member who cannot manage it, and site settings is
 	// absent when no site is in scope. The server decides both by omitting the
 	// URL, so the menu must key off the URL rather than re-deriving the rule.
-	assert.ok(rowIDs(accountMenuGroups(account(), "system")).includes("billing"));
-	assert.ok(!rowIDs(accountMenuGroups(account({ billing_url: undefined }), "system")).includes("billing"));
+	assert.ok(rowIDs(accountMenuGroups(account(), "system", true)).includes("billing"));
+	assert.ok(!rowIDs(accountMenuGroups(account({ billing_url: undefined }), "system", true)).includes("billing"));
 
-	assert.ok(rowIDs(accountMenuGroups(account(), "system")).includes("site_settings"));
-	assert.ok(!rowIDs(accountMenuGroups(account({ site_settings_url: undefined }), "system")).includes("site_settings"));
+	assert.ok(rowIDs(accountMenuGroups(account(), "system", true)).includes("site_settings"));
+	assert.ok(!rowIDs(accountMenuGroups(account({ site_settings_url: undefined }), "system", true)).includes("site_settings"));
 
 	// The two that are always there stay there.
 	for (const id of ["sites", "account", "shortcuts", "signout"]) {
 		assert.ok(
-			rowIDs(accountMenuGroups(account({ billing_url: undefined, site_settings_url: undefined }), "system")).includes(id),
+			rowIDs(accountMenuGroups(account({ billing_url: undefined, site_settings_url: undefined }), "system", true)).includes(id),
 			`${id} must be in every menu`,
 		);
 	}
@@ -148,7 +148,7 @@ test("a destination nobody may reach is not in the menu", () => {
 
 test("exactly one theme is marked current, and it is the one in force", () => {
 	for (const theme of ["light", "dark", "system"] as const) {
-		const rows = accountMenuGroups(account(), theme)
+		const rows = accountMenuGroups(account(), theme, true)
 			.flatMap((group) => group.rows)
 			.filter((row) => row.kind === "theme");
 
@@ -164,10 +164,23 @@ test("exactly one theme is marked current, and it is the one in force", () => {
 test("the shortcut row advertises the key that opens the overlay", () => {
 	// The whole reason the button left the bar is that the key is discoverable
 	// from the menu instead. A row with no key printed loses that.
-	const shortcuts = accountMenuGroups(account(), "system")
+	const shortcuts = accountMenuGroups(account(), "system", true)
 		.flatMap((group) => group.rows)
 		.find((row) => row.id === "shortcuts");
 
 	assert.equal(shortcuts?.kind, "action");
 	assert.equal(shortcuts?.kind === "action" ? shortcuts.hint : "", "?");
+});
+
+test("a locked account is offered no shortcut row it cannot use", () => {
+	// A locked dashboard binds no keys at all, so the row would close the menu
+	// and do nothing — the silent no-op the house rules forbid.
+	const groups = accountMenuGroups(account(), "system", false);
+
+	assert.deepEqual(groups.map((group) => group.id), ["destinations", "theme", "session"]);
+	assert.ok(!rowIDs(groups).includes("shortcuts"));
+
+	// Everything else still stands: a locked account still signs out.
+	assert.ok(rowIDs(groups).includes("signout"));
+	assert.ok(rowIDs(groups).includes("sites"));
 });

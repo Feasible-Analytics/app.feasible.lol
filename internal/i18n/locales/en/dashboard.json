@@ -282,6 +282,7 @@
   "dashboard.shortcuts.search": "Jump to the nearest search box",
   "dashboard.shortcuts.sites": "Switch site",
   "dashboard.shortcuts.step": "Previous or next period",
+  "dashboard.shortcuts.open": "Keyboard shortcuts (?)",
   "dashboard.shortcuts.title": "Keyboard shortcuts",
   "dashboard.tab.campaign": "Campaign",
   "dashboard.tab.channels": "Channels",
