@@ -882,3 +882,34 @@ func TestTheListenerDefaultsToSafeHeadersAndOnlyAnEmbedRelaxesThem(t *testing.T)
 		t.Error("relaxing framing on the embed dropped the other defaults")
 	}
 }
+
+// TestDashboardAssetsAreServedWithoutASession is a property of the assembled
+// route table rather than of any handler, which is why it lives here.
+//
+// A public dashboard and a shared link render the authenticated dashboard's
+// shell, and that shell loads its two compiled files from /dashboard/assets/.
+// With those behind the session guard the browser asks for app.js and is handed
+// a redirect to /login, so the page paints nothing and the visitor sees a blank
+// frame with no error — the failure a viewer cannot report and the owner cannot
+// see. The guard has to keep everything else under /dashboard/ closed.
+func TestDashboardAssetsAreServedWithoutASession(t *testing.T) {
+	s := newStack(t)
+
+	for _, name := range []string{"app.js", "app.css"} {
+		response := s.send(t, http.MethodGet, "/dashboard/assets/"+name, "", nil)
+
+		if response.Code != http.StatusOK {
+			t.Errorf("GET /dashboard/assets/%s = %d, want 200 for a logged-out viewer", name, response.Code)
+		}
+		if response.Body.Len() == 0 {
+			t.Errorf("GET /dashboard/assets/%s served an empty body", name)
+		}
+	}
+
+	// The guard still owns the rest of the prefix. An anonymous request for a
+	// dashboard is sent to the login page, not answered.
+	response := s.send(t, http.MethodGet, "/dashboard/example.com", "", nil)
+	if response.Code == http.StatusOK {
+		t.Error("GET /dashboard/example.com was served to a logged-out caller")
+	}
+}

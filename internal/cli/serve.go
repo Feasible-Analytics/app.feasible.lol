@@ -556,6 +556,18 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 
 		return boot
 	}
+	// The compiled bundle is mounted before the guard and outside it, because a
+	// public dashboard and a shared link render this same shell while logged
+	// out. Behind the guard the browser asks for app.js and is handed a redirect
+	// to /login, so the page stays blank with nothing an ordinary visitor could
+	// diagnose — the script simply never runs.
+	//
+	// Serving it anonymously gives nothing away. Both files are compiled from
+	// this repository, embedded in the binary, and byte-identical for every
+	// viewer; every number they render still goes through the stats endpoint's
+	// own authorization. The longer pattern wins in the mux, so this takes the
+	// asset paths and the guard keeps everything else under /dashboard/.
+	mux.Handle(dashboard.AssetPrefix, shell)
 	mux.Handle(dashboard.PathPrefix, app.GuardDashboard(shell))
 
 	// The public dashboard, the shared links, the annotations endpoint and the
