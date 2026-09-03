@@ -205,9 +205,6 @@ func funcs() template.FuncMap {
 		"can": func(role teams.Role, permission string) bool {
 			return teams.Can(role, teams.Permission(permission))
 		},
-		"canBilling": func(role teams.Role) bool {
-			return teams.Can(role, teams.PermManageBilling)
-		},
 		"stepGoalID": func(funnel goals.Funnel, position int) int64 {
 			for _, step := range funnel.Steps {
 				if step.Position == position {
@@ -1517,11 +1514,18 @@ func (h *Handler) googleCallback(w http.ResponseWriter, r *http.Request) {
 	h.redirect(w, r, site.Domain, "imports", tr(r, "auth.imports.flash_connected"), "")
 }
 
-// headerFor asks the application for the bar, and answers an empty one when
-// nothing was injected — which is what a test that renders a screen without the
-// surrounding application gets.
+// headerFor asks the application for the bar.
+//
+// Nothing injected means a test rendering this screen on its own, and it gets
+// an empty bar — but a running process without it would draw a header with no
+// name, no picture and a sign-out button that fails its own token check, so it
+// says so once rather than serving that quietly.
 func (h *Handler) headerFor(r *http.Request) appui.Header {
 	if h.Header == nil {
+		if h.Log != nil {
+			h.Log.Warn("a settings screen was rendered with no account bar wired in")
+		}
+
 		return appui.Header{}
 	}
 

@@ -466,11 +466,18 @@ func stamp(unix int64) string {
 	return time.Unix(unix, 0).UTC().Format("2 Jan 15:04 MST")
 }
 
-// headerFor asks the application for the bar, and answers an empty one when
-// nothing was injected — which is what a test that renders a screen without the
-// surrounding application gets.
+// headerFor asks the application for the bar.
+//
+// Nothing injected means a test rendering this screen on its own, and it gets
+// an empty bar — but a running process without it would draw a header with no
+// name, no picture and a sign-out button that fails its own token check, so it
+// says so once rather than serving that quietly.
 func (h *TeamHandler) headerFor(r *http.Request) appui.Header {
 	if h.Header == nil {
+		if h.Log != nil {
+			h.Log.Warn("a settings screen was rendered with no account bar wired in")
+		}
+
 		return appui.Header{}
 	}
 

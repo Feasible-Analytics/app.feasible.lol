@@ -1,6 +1,6 @@
 //
 // appui.go
-// The one navigation every settings screen is drawn beside.
+// The bar and the section list every signed-in screen is drawn with.
 //
 // Created: 2026-09-03
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -52,9 +52,9 @@ const (
 
 // Header is the bar every signed-in server-rendered screen wears.
 //
-// It replaces a permanent 256px column that held four links: four destinations
-// do not earn a quarter of the width on every page. The two people actually
-// move between sit in the bar; everything else is one click into the menu.
+// The two destinations people move between sit in it; everything reached
+// occasionally is one click into the menu, because a permanent column of links
+// costs a quarter of the width on every page to save one click on a few.
 type Header struct {
 	Lang string
 
@@ -312,8 +312,7 @@ func shieldsSection(domain, tab, shield string) Section {
 }
 
 // accountSections is the same shell around the screens that belong to a person
-// and their team rather than to one site. It is the list that used to be an
-// indented sub-list inside the sidebar.
+// and their team rather than to one site.
 func accountSections(teamID int64, role teams.Role, tab string) []Section {
 	team := func(path string) string {
 		if teamID > 0 {

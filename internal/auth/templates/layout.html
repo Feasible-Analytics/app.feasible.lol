@@ -80,9 +80,7 @@
     </main>
   </div>
 {{ else if and .Header (not .Focused) }}
-  <!-- The bar, not a column. Four destinations never earned a permanent
-       quarter of the width; two of them are in the bar and the rest are one
-       click into the menu. -->
+  <!-- The bar. Two destinations in it, the rest one click into the menu. -->
   {{ template "app-header" .Header }}
 
   <main class="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">

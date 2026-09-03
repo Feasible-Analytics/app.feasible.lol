@@ -1,6 +1,6 @@
 //
 // appui_test.go
-// What the settings navigation offers, and to whom.
+// What the bar and the settings navigation offer, and to whom.
 //
 // Created: 2026-09-03
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.

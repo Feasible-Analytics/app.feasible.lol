@@ -61,8 +61,8 @@ func TestConversionsPageManagesGoalsPropertiesAndFunnels(t *testing.T) {
 		t.Fatalf("conversion settings answered %d", response.Code)
 	}
 	// The screen, and the chrome that says where the rest of the product is.
-	// Account settings and billing live in the avatar menu now, so they are
-	// asserted at the URLs that menu draws.
+	// Account settings and billing are menu rows, so they are asserted at the
+	// URLs that menu draws.
 	for _, text := range []string{
 		"Goals", "Custom properties", "Funnels", "Pricing viewed", "Purchased", "Scroll depth",
 		`href="/dashboard/example.com"`,

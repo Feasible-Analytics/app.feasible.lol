@@ -85,7 +85,10 @@ func newViews() (*views, error) {
 // rather than a silently empty value on the page.
 type page struct {
 	Title string
-	Nav   string
+
+	// Nav names the bar entry this screen belongs under, which is what puts
+	// the mark on Dashboard or Sites. It also selects the settings chrome.
+	Nav string
 
 	// Settings is the shared settings chrome, present only on the screens that
 	// belong to that surface. Its presence is what selects the shell, because
@@ -110,11 +113,8 @@ type page struct {
 	// language, so the only place the answer can come from is the render data.
 	Lang string
 
-	User             *User
-	Team             *Team
-	CanManageBilling bool
-	CanManageMembers bool
-	CanManageTeam    bool
+	User *User
+	Team *Team
 
 	// CSRF is the token the forms submit back. Every page carries one, whether
 	// or not it has a form, so that a form added later cannot be added without
@@ -173,22 +173,21 @@ func (h *Handler) newPage(r *http.Request, title, nav string) *page {
 				p.Team = team
 				if found, roleErr := h.Teams.RoleOf(r.Context(), teamID, p.User.ID); roleErr == nil {
 					role = found
-					p.CanManageBilling = teams.Can(role, teams.PermManageBilling)
-					p.CanManageMembers = teams.Can(role, teams.PermManageMembers) || teams.Can(role, teams.PermCreateAPIKey)
-					p.CanManageTeam = teams.Can(role, teams.PermManageTeam) || teams.Can(role, teams.PermManageSecurity)
 				}
 			}
 		}
 
 		// Every signed-in screen wears the bar, so it is built once here rather
 		// than by each handler that happens to remember.
-		p.Header = h.header(r, p, role, nav)
+		header := h.HeaderFor(r)
+		header.Current = nav
+		p.Header = &header
 
 		// The account screens wear the settings chrome, resolved here for the
 		// same reason: there are eleven render calls between them and each one
 		// remembering would be eleven chances to forget.
 		if nav == "settings" {
-			shell := appui.NewShell(p.Lang, "", header(p).TeamID, role, p.CSRF,
+			shell := appui.NewShell(p.Lang, "", p.Header.TeamID, role, p.CSRF,
 				accountTab(r), "", !h.DisableCommerce, *p.Header)
 			p.Settings = &shell
 		}
@@ -201,8 +200,11 @@ func (h *Handler) newPage(r *http.Request, title, nav string) *page {
 //
 // It is exported rather than duplicated because the settings screens live in
 // their own package and must not arrive wearing a second, slightly different
-// bar. An unauthenticated request answers an empty header, which those screens
-// never render because their own guard has already turned the request away.
+// bar. It is complete on its own — a caller that renders it without passing it
+// through a shell still gets a working sign-out token.
+//
+// An unauthenticated request answers an empty header, which those screens never
+// render because their own guard has already turned the request away.
 func (h *Handler) HeaderFor(r *http.Request) appui.Header {
 	user := userFrom(r)
 	if user == nil {
@@ -210,18 +212,29 @@ func (h *Handler) HeaderFor(r *http.Request) appui.Header {
 	}
 
 	header := appui.Header{
-		Name:    user.DisplayName(),
-		Email:   user.Email,
-		Help:    h.HelpURL,
-		Support: h.SupportURL,
+		Lang:     i18n.Negotiate(r),
+		Name:     user.DisplayName(),
+		Email:    user.Email,
+		Commerce: !h.DisableCommerce,
+		CSRF:     h.csrfToken(r),
+		Help:     h.HelpURL,
+		Support:  h.SupportURL,
 	}
 
 	if _, teamID, err := h.Identify(r); err == nil {
+		header.TeamID = teamID
+
 		if team, teamErr := h.Store.TeamByID(r.Context(), teamID); teamErr == nil {
 			header.TeamName = team.Name
 		}
+		if role, roleErr := h.Teams.RoleOf(r.Context(), teamID, user.ID); roleErr == nil {
+			header.Role = role
+		}
 	}
 
+	// The picture is read separately from the person because it lives in its
+	// own table: the row a session lookup reads on every request has no
+	// business carrying fifty kilobytes nobody asked for.
 	if h.Avatars != nil {
 		header.AvatarURL = avatar.URL(user.ID, h.Avatars.State(r.Context(), user.ID).ETag)
 	}
@@ -229,63 +242,41 @@ func (h *Handler) HeaderFor(r *http.Request) appui.Header {
 	return header
 }
 
-// header builds the bar for one signed-in screen.
+// standalone names the screens that are a card on an empty page, however the
+// request arrived.
 //
-// The picture is read separately from the person because it lives in its own
-// table: the row a session lookup reads on every request has no business
-// carrying fifty kilobytes nobody asked for.
-func (h *Handler) header(r *http.Request, p *page, role teams.Role, nav string) *appui.Header {
-	header := appui.Header{
-		Lang:     p.Lang,
-		Current:  nav,
-		Name:     p.User.DisplayName(),
-		Email:    p.User.Email,
-		Role:     role,
-		Commerce: !h.DisableCommerce,
-		CSRF:     p.CSRF,
-		Help:     h.HelpURL,
-		Support:  h.SupportURL,
-	}
-
-	if p.Team != nil {
-		header.TeamID = p.Team.ID
-		header.TeamName = p.Team.Name
-	}
-
-	if h.Avatars != nil {
-		header.AvatarURL = avatar.URL(p.User.ID, h.Avatars.State(r.Context(), p.User.ID).ETag)
-	}
-
-	return &header
+// Each one is a dead end by design. The verification gate advertises nothing,
+// because every destination bounces straight back to it. The deleted screen
+// belongs to somebody whose account no longer exists, so a bar carrying their
+// team and a sign-out button is describing a thing that is gone. An error is an
+// error.
+var standalone = map[string]bool{
+	"verify":        true,
+	"verify_failed": true,
+	"deleted":       true,
+	"error":         true,
 }
 
 // accountTab reads which account screen a request is for.
 //
 // It comes from the path rather than from each handler, because the navigation
-// only has to say where the reader is and the path is exactly that. A path
-// nobody mapped falls back to the first section rather than to no selection,
-// which would be a navigation that says nothing.
+// only has to say where the reader is and the path is exactly that. The match
+// is on the prefix: the two-factor forms all post to paths under
+// /settings/security and re-render that screen, and marking Preferences
+// current while Security is on the page is a navigation that lies.
 func accountTab(r *http.Request) string {
-	switch strings.TrimSuffix(r.URL.Path, "/") {
-	case "/settings/security":
+	path := strings.TrimSuffix(r.URL.Path, "/")
+
+	switch {
+	case strings.HasPrefix(path, "/settings/security"):
 		return appui.TabSecurity
-	case "/settings/sessions":
+	case strings.HasPrefix(path, "/settings/sessions"):
 		return appui.TabDevices
-	case "/settings/team":
+	case strings.HasPrefix(path, "/settings/team"):
 		return appui.TabTeamPolicy
 	default:
 		return appui.TabAccount
 	}
-}
-
-// header reads the bar off a page, so a nil one does not panic while the shell
-// beside it is being built.
-func header(p *page) appui.Header {
-	if p.Header == nil {
-		return appui.Header{}
-	}
-
-	return *p.Header
 }
 
 // tr renders one catalogue string in the language a request asked for.
@@ -308,6 +299,14 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, p 
 		http.Error(w, "internal error", http.StatusInternalServerError)
 
 		return
+	}
+
+	// A standalone screen is a centred card whether or not somebody is signed
+	// in, so it sheds the chrome here rather than in each of the nine handlers
+	// that render one.
+	if standalone[name] {
+		p.Header = nil
+		p.Settings = nil
 	}
 
 	var buf bytes.Buffer
@@ -340,13 +339,6 @@ func templateFuncs() template.FuncMap {
 		// url carries the current language through an internal link or form.
 		"url": func(locale, target string) string {
 			return i18n.LocalURL(target, locale)
-		},
-
-		// canBilling gates the billing link. It reads the permission matrix
-		// rather than listing roles, so who may pay is answered in one place
-		// instead of once per template that asks.
-		"canBilling": func(role teams.Role) bool {
-			return teams.Can(role, teams.PermManageBilling)
 		},
 
 		// t renders one catalogue string.

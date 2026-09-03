@@ -21,7 +21,7 @@
 
 		<!-- The two primary destinations. A person switching between their stats
 		     and their site list should not need two clicks. -->
-		<nav aria-label="{{ t .Lang "auth.header.primary_nav" }}" class="flex items-center gap-1 text-sm">
+		<nav aria-label="{{ t .Lang "auth.header.primary_nav" }}" class="hidden items-center gap-1 text-sm sm:flex">
 			<a href="{{ url .Lang .DashboardURL }}"
 			   {{ if eq .Current "dashboard" }}aria-current="page"{{ end }}
 			   class="rounded-lg px-2.5 py-1.5 font-medium transition-colors {{ if eq .Current "dashboard" }}bg-accent/10 text-accent-ink{{ else }}text-muted hover:bg-hover hover:text-heading{{ end }}">
@@ -55,25 +55,27 @@
 				<div x-show="open" x-cloak
 				     role="menu"
 				     @keydown.escape="open = false; $refs.avatar.focus()"
-				     class="scroll-thin absolute end-0 z-40 mt-2 max-h-[calc(100vh-5rem)] w-60 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border border-line bg-card p-1.5 shadow-xl">
+				     class="absolute end-0 z-40 mt-2 max-h-[calc(100vh-5rem)] w-60 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border border-line bg-card p-1.5 shadow-xl">
 					<div class="px-2.5 py-2">
 						<p class="text-xs text-muted">{{ t .Lang "auth.menu.signed_in_as" }}</p>
 						<p class="truncate text-sm font-medium text-body">{{ .Email }}</p>
 					</div>
 
+					<div role="group" aria-label="{{ t .Lang "auth.header.primary_nav" }}" class="border-t border-line pt-1.5 sm:hidden">
+						<a role="menuitem" href="{{ url .Lang .DashboardURL }}" class="block rounded-sm px-2.5 py-2 text-sm text-body transition-colors hover:bg-hover">{{ t .Lang "auth.sidebar.dashboard" }}</a>
+						<a role="menuitem" href="{{ url .Lang .SitesURL }}" class="block rounded-sm px-2.5 py-2 text-sm text-body transition-colors hover:bg-hover">{{ t .Lang "auth.sidebar.sites" }}</a>
+					</div>
+
 					<div role="group" class="border-t border-line pt-1.5">
 						<a role="menuitem" href="{{ url .Lang "/settings" }}" class="block rounded-sm px-2.5 py-2 text-sm text-body transition-colors hover:bg-hover">{{ t .Lang "dashboard.navigation.account_settings" }}</a>
-						<a role="menuitem" href="{{ url .Lang "/sites/new" }}" class="block rounded-sm px-2.5 py-2 text-sm text-body transition-colors hover:bg-hover">{{ t .Lang "auth.menu.create_team" }}</a>
 						{{ with .BillingURL }}<a role="menuitem" href="{{ url $.Lang . }}" class="block rounded-sm px-2.5 py-2 text-sm text-body transition-colors hover:bg-hover">{{ t $.Lang "auth.sidebar.billing" }}</a>{{ end }}
 					</div>
 
-					<!-- These leave the product, so they say so. -->
 					<div role="group" class="border-t border-line pt-1.5">
-						<a role="menuitem" href="{{ .Help }}" target="_blank" rel="noopener noreferrer" class="flex items-center gap-2 rounded-sm px-2.5 py-2 text-sm text-body transition-colors hover:bg-hover">
-							<span class="flex-1">{{ t .Lang "auth.menu.help" }}</span>
-							<span aria-hidden="true" class="text-xs text-muted">↗</span>
-						</a>
-						<a role="menuitem" href="{{ .Support }}" target="_blank" rel="noopener noreferrer" class="flex items-center gap-2 rounded-sm px-2.5 py-2 text-sm text-body transition-colors hover:bg-hover">
+						<a role="menuitem" href="{{ url .Lang .Help }}" class="block rounded-sm px-2.5 py-2 text-sm text-body transition-colors hover:bg-hover">{{ t .Lang "auth.menu.help" }}</a>
+
+						<!-- This one really does leave, so it says so. -->
+						<a role="menuitem" href="{{ .Support }}" class="flex items-center gap-2 rounded-sm px-2.5 py-2 text-sm text-body transition-colors hover:bg-hover">
 							<span class="flex-1">{{ t .Lang "auth.menu.support" }}</span>
 							<span aria-hidden="true" class="text-xs text-muted">↗</span>
 						</a>

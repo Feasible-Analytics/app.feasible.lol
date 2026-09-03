@@ -415,7 +415,7 @@ func TestSelfHostedNavigationHidesBillingButKeepsExports(t *testing.T) {
 
 	body := c.body("/sites")
 	if strings.Contains(body, `href="/billing`) {
-		t.Fatalf("self-hosted sidebar still links to billing: %s", body)
+		t.Fatalf("a self-hosted install still offers billing: %s", body)
 	}
 
 	user, err := app.store.UserByEmail(context.Background(), "person@example.com")
@@ -2169,5 +2169,59 @@ func TestGoogleOnlyAccountMustProveItselfToDisableTwoFactor(t *testing.T) {
 	}
 	if reloaded.TwoFactorEnabled() {
 		t.Fatal("two-factor survived a disable that carried a valid code")
+	}
+}
+
+// TestEverySignedInScreenWearsTheBar is the whole shape of the change: no
+// column, one bar, and the rest of the product one click into the menu.
+//
+// It asserts the rendered HTML rather than the model behind it, because a model
+// that is right and a template that never draws it is the failure this replaces
+// a navigation with.
+func TestEverySignedInScreenWearsTheBar(t *testing.T) {
+	app := newTestApp(t)
+	c := registerAndVerify(t, app)
+
+	for _, path := range []string{"/sites", "/settings", "/settings/security", "/settings/sessions"} {
+		body := c.body(path)
+
+		for _, want := range []string{
+			`aria-haspopup="menu"`,
+			"Signed in as",
+			"person@example.com",
+			`action="/logout"`,
+			`name="csrf_token"`,
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s is missing %q from its bar", path, want)
+			}
+		}
+
+		if strings.Contains(body, "<aside") {
+			t.Errorf("%s still renders a sidebar", path)
+		}
+	}
+}
+
+// TestTheVerificationGateAdvertisesNothing keeps a dead end quiet. Every
+// destination in the bar bounces an unverified person straight back here, so
+// offering them is offering a round trip.
+func TestTheVerificationGateAdvertisesNothing(t *testing.T) {
+	app := newTestApp(t)
+	c := newClient(t, app)
+
+	// Registered but not verified: signed in, and stuck on this screen.
+	closeResponseBody(t, c.post("/register", url.Values{
+		"email":    {"person@example.com"},
+		"password": {"a long enough password"},
+		"name":     {"Person"},
+	}))
+
+	body := c.body("/verify-email")
+
+	for _, unwanted := range []string{`aria-haspopup="menu"`, "Signed in as"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("the verification gate carries %q", unwanted)
+		}
 	}
 }

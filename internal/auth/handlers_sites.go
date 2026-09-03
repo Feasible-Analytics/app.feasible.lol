@@ -791,10 +791,12 @@ func CommonTimezones() []string {
 // settingsShell resolves the shared settings chrome for a per-site screen.
 //
 // The role is this site's rather than the page's account-level flags, because
-// the navigation hides the sections somebody may not reach on this site.
+// the navigation hides the sections somebody may not reach on this site. The
+// bar is the one the page already built, so the request pays for one avatar
+// lookup rather than two.
 func (h *Handler) settingsShell(r *http.Request, p *page, site *Site, teamID int64) *appui.Shell {
 	shell := appui.NewShell(p.Lang, site.Domain, teamID, h.RoleForSite(r, site.ID), p.CSRF,
-		appui.TabGeneral, "", !h.DisableCommerce, h.HeaderFor(r))
+		appui.TabGeneral, "", !h.DisableCommerce, *p.Header)
 
 	return &shell
 }
