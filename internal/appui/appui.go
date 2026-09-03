@@ -1,23 +1,24 @@
 //
-// settingsui.go
-// The one navigation every settings screen is drawn beside.
+// appui.go
+// The bar and the section list every signed-in screen is drawn with.
 //
 // Created: 2026-09-03
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-// Package settingsui holds the chrome shared by every settings screen.
+// Package appui holds the chrome every signed-in server-rendered screen wears.
 //
-// The screens themselves are split across two packages for reasons that are
-// about handlers, not about what a reader sees: to them it is one surface. So
-// the header, the section list and the card styles live here, in a package both
-// can import, rather than being written twice and drifting.
-package settingsui
+// Those screens are split across two packages for reasons that are about
+// handlers, not about what a reader sees: to them it is one product. So the top
+// header, the settings section list and the card styles live here, in a package
+// both can import, rather than being written twice and drifting.
+package appui
 
 import (
 	"embed"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/shields"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
@@ -41,7 +42,98 @@ const (
 	TabHealth      = "health"
 	TabShields     = "shields"
 	TabReports     = "reports"
+
+	// The account screens, which wear the same shell as a site's.
+	TabAccount    = "account"
+	TabSecurity   = "security"
+	TabDevices    = "devices"
+	TabTeamPolicy = "team_policy"
 )
+
+// Header is the bar every signed-in server-rendered screen wears.
+//
+// The two destinations people move between sit in it; everything reached
+// occasionally is one click into the menu, because a permanent column of links
+// costs a quarter of the width on every page to save one click on a few.
+type Header struct {
+	Lang string
+
+	// Current marks the destination being looked at, "dashboard" or "sites".
+	Current string
+
+	// Site is the domain the Dashboard link should open, so somebody on one
+	// site's settings goes back to that site rather than to a picker.
+	Site string
+
+	TeamID   int64
+	TeamName string
+
+	Name  string
+	Email string
+
+	// AvatarURL is empty for somebody with no stored picture, which leaves the
+	// letter circle the dashboard uses.
+	AvatarURL string
+
+	Role     teams.Role
+	Commerce bool
+	CSRF     string
+
+	// Help and Support leave the product, so the menu marks them.
+	Help    string
+	Support string
+}
+
+// Initial is the letter drawn when there is no picture. It is the same fallback
+// the dashboard's own account button uses, so the two never disagree.
+func (h Header) Initial() string {
+	source := h.Name
+	if source == "" {
+		source = h.Email
+	}
+
+	for _, r := range source {
+		return strings.ToUpper(string(r))
+	}
+
+	return "?"
+}
+
+// DashboardURL is where the bar's Dashboard link goes. A site in scope keeps
+// the reader on it; without one the picker chooses.
+func (h Header) DashboardURL() string {
+	if h.Site == "" {
+		return "/dashboard/"
+	}
+
+	return "/dashboard/" + url.PathEscape(h.Site)
+}
+
+// SitesURL carries the team, and the site in scope so the list opens showing it.
+func (h Header) SitesURL() string {
+	switch {
+	case h.TeamID > 0 && h.Site != "":
+		return fmt.Sprintf("/sites?team_id=%d&site_context=%s", h.TeamID, url.QueryEscape(h.Site))
+	case h.TeamID > 0:
+		return fmt.Sprintf("/sites?team_id=%d", h.TeamID)
+	default:
+		return "/sites"
+	}
+}
+
+// BillingURL is empty when this deployment sells nothing or this member may not
+// pay, which is what keeps the row out of the menu.
+func (h Header) BillingURL() string {
+	if !h.Commerce || !teams.Can(h.Role, teams.PermManageBilling) {
+		return ""
+	}
+
+	if h.TeamID > 0 {
+		return fmt.Sprintf("/billing?team=%d", h.TeamID)
+	}
+
+	return "/billing"
+}
 
 // Section is one entry in the settings navigation.
 //
@@ -113,6 +205,10 @@ type Shell struct {
 
 	// Sections is the resolved navigation.
 	Sections []Section
+
+	// Header is the same bar every other signed-in screen wears, so a settings
+	// screen is not a place with its own idea of where the product is.
+	Header Header
 }
 
 // GeneralPath is a site's General screen. It is the URL that already exists
@@ -132,11 +228,18 @@ func SitePath(domain, action string) string {
 // Every per-site screen gets the same list in the same order, and only Current
 // moves. That sameness is the point: two screens that are one surface to the
 // reader must not each arrive with a different set of places to go.
-func NewShell(lang, domain string, teamID int64, role teams.Role, csrf, tab, shield string, commerce bool) Shell {
-	shell := Shell{Lang: lang, Domain: domain, TeamID: teamID, Role: role, CSRF: csrf, Commerce: commerce}
+func NewShell(lang, domain string, teamID int64, role teams.Role, csrf, tab, shield string, commerce bool, header Header) Shell {
+	header.Lang = lang
+	header.Site = domain
+	header.TeamID = teamID
+	header.Role = role
+	header.CSRF = csrf
+	header.Commerce = commerce
+
+	shell := Shell{Lang: lang, Domain: domain, TeamID: teamID, Role: role, CSRF: csrf, Commerce: commerce, Header: header}
 
 	if domain == "" {
-		shell.Sections = accountSections(teamID, tab)
+		shell.Sections = accountSections(teamID, role, tab)
 
 		return shell
 	}
@@ -208,13 +311,30 @@ func shieldsSection(domain, tab, shield string) Section {
 	return parent
 }
 
-// accountSections is the same shell around the screens that belong to a team
-// rather than to one site.
-func accountSections(teamID int64, tab string) []Section {
-	members := "/settings/members"
-	if teamID > 0 {
-		members = fmt.Sprintf("%s?team_id=%d", members, teamID)
+// accountSections is the same shell around the screens that belong to a person
+// and their team rather than to one site.
+func accountSections(teamID int64, role teams.Role, tab string) []Section {
+	team := func(path string) string {
+		if teamID > 0 {
+			return fmt.Sprintf("%s?team_id=%d", path, teamID)
+		}
+
+		return path
 	}
 
-	return []Section{{LabelID: "settings.nav.team", URL: members, Current: tab == TabTeam}}
+	list := []Section{
+		{LabelID: "settings.nav.preferences", URL: "/settings", Current: tab == TabAccount},
+		{LabelID: "settings.nav.security", URL: "/settings/security", Current: tab == TabSecurity},
+		{LabelID: "settings.nav.devices", URL: "/settings/sessions", Current: tab == TabDevices},
+	}
+
+	if teams.Can(role, teams.PermManageTeam) || teams.Can(role, teams.PermManageSecurity) {
+		list = append(list, Section{LabelID: "settings.nav.team_policy", URL: team("/settings/team"), Current: tab == TabTeamPolicy})
+	}
+
+	if teams.Can(role, teams.PermManageMembers) || teams.Can(role, teams.PermCreateAPIKey) {
+		list = append(list, Section{LabelID: "settings.nav.team", URL: team("/settings/members"), Current: tab == TabTeam})
+	}
+
+	return append(list, Section{LabelID: "settings.nav.danger", URL: "/settings#danger"})
 }

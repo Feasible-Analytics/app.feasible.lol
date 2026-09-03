@@ -424,7 +424,7 @@ func scanForIDs(t *testing.T) map[string]bool {
 	roots := map[string][]string{
 		filepath.Join("..", "auth"):             {".html", ".go"},
 		filepath.Join("..", "settings"):         {".html", ".go"},
-		filepath.Join("..", "settingsui"):       {".html", ".go"},
+		filepath.Join("..", "appui"):            {".html", ".go"},
 		filepath.Join("..", "google"):           {".go"},
 		filepath.Join("..", "shields"):          {".go"},
 		filepath.Join("..", "dashboard"):        {".go"},

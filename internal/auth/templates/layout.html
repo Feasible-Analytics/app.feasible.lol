@@ -5,10 +5,15 @@
   Created: 2026-08-30
   Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 
-  There are several shapes here rather than several layouts. Signed-out pages
-  are a centred card, signed-in pages get the sidebar, and a settings screen
-  gets the shared settings chrome — keeping them in one file is what stops the
-  header, the fonts and the theme handling drifting apart between them.
+  There are several shapes here rather than several layouts: a settings screen
+  gets the settings chrome, a setup step gets a quiet one, signed-out pages are
+  a centred card, and every other signed-in page gets the top bar. Keeping them
+  in one file is what stops the header, the fonts and the theme handling
+  drifting apart.
+
+  The order matters. A setup step is signed in and therefore has a header, but
+  a bar full of places to go is the opposite of what a step-by-step wants, so
+  the quiet shell is checked first.
 -->
 <!doctype html>
 <html lang="{{ .Lang }}"{{ if rtl .Lang }} dir="rtl"{{ end }} class="h-full">
@@ -60,9 +65,10 @@
 <body class="h-full bg-page text-body antialiased">
 
 {{ if .Settings }}
-  <!-- A settings screen is drawn in the chrome from internal/settingsui, the
+  <!-- A settings screen is drawn in the chrome from internal/appui, the
        same one the screens in internal/settings use. The two packages are a
        handler detail; to the reader this is one surface. -->
+  {{ template "app-header" .Settings.Header }}
   {{ template "settings-header" .Settings }}
 
   <div class="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 pt-6 pb-20 sm:flex-row sm:gap-8 sm:px-6">
@@ -73,28 +79,14 @@
       {{ template "content" . }}
     </main>
   </div>
-{{ else if .Nav }}
-  <div class="min-h-full lg:flex" x-data="{ mobileNav: false }">
-    {{ template "sidebar.html" . }}
+{{ else if and .Header (not .Focused) }}
+  <!-- The bar. Two destinations in it, the rest one click into the menu. -->
+  {{ template "app-header" .Header }}
 
-    <div class="flex-1 min-w-0">
-      <header class="lg:hidden flex items-center justify-between border-b border-line bg-card px-4 py-3">
-        <a href="{{ url $.Lang "/sites" }}" class="flex items-center gap-2 font-semibold text-heading">
-          <span class="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-fill-fg text-sm font-bold">f</span>
-          feasible.lol
-        </a>
-        <button type="button" @click="mobileNav = !mobileNav"
-                class="rounded-lg border border-line px-3 py-1.5 text-sm font-medium text-body">
-          {{ t $.Lang "common.action.menu" }}
-        </button>
-      </header>
-
-      <main class="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 lg:px-10">
-        {{ template "messages.html" . }}
-        {{ template "content" . }}
-      </main>
-    </div>
-  </div>
+  <main class="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
+    {{ template "messages.html" . }}
+    {{ template "content" . }}
+  </main>
 {{ else if .Focused }}
   <div class="min-h-full">
     <header class="border-b border-line bg-card">

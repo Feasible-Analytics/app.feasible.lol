@@ -19,11 +19,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/appui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/reports"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/settingsui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
@@ -61,6 +61,11 @@ type TeamHandler struct {
 	// install has none, and a billing link there leads to a page about a
 	// product it does not have.
 	Commerce bool
+
+	// Header builds the bar these screens wear. It is injected because the
+	// person, their team and their picture are the application's to resolve,
+	// and a second answer here would be a second, slightly different bar.
+	Header func(*http.Request) appui.Header
 
 	Mail invitationSender
 	Log  *logger.Logger
@@ -103,7 +108,7 @@ func NewTeamHandler(h *TeamHandler) *TeamHandler {
 		if err == nil {
 			// The header and the section list come from the shared package, so
 			// every settings screen wears the same chrome.
-			parsed, err = parsed.ParseFS(settingsui.Templates, "templates/*.html")
+			parsed, err = parsed.ParseFS(appui.Templates, "templates/*.html")
 		}
 		if err != nil {
 			panic(fmt.Sprintf("settings: %s.html will not parse: %v", name, err))
@@ -171,7 +176,7 @@ type screen struct {
 
 	// Shell is the header and section list, shared with every other settings
 	// screen so the two packages cannot drift into two navigations.
-	Shell settingsui.Shell
+	Shell appui.Shell
 
 	// Lang is the locale the request negotiated. It is on the page rather than
 	// looked up per helper because the layout needs it for the html element's
@@ -307,8 +312,8 @@ func (h *TeamHandler) render(w http.ResponseWriter, r *http.Request, name string
 
 	// The chrome is resolved here rather than in each screen, so a screen added
 	// later cannot arrive with a different set of places to go.
-	data.Shell = settingsui.NewShell(data.Lang, h.shellDomain(r, data),
-		data.TeamID, data.Role, data.CSRF, data.Tab, data.Shield, h.Commerce)
+	data.Shell = appui.NewShell(data.Lang, h.shellDomain(r, data),
+		data.TeamID, data.Role, data.CSRF, data.Tab, data.Shield, h.Commerce, h.headerFor(r))
 
 	parsed, ok := h.templates[name]
 	if !ok {
@@ -459,4 +464,22 @@ func stamp(unix int64) string {
 	}
 
 	return time.Unix(unix, 0).UTC().Format("2 Jan 15:04 MST")
+}
+
+// headerFor asks the application for the bar.
+//
+// Nothing injected means a test rendering this screen on its own, and it gets
+// an empty bar — but a running process without it would draw a header with no
+// name, no picture and a sign-out button that fails its own token check, so it
+// says so once rather than serving that quietly.
+func (h *TeamHandler) headerFor(r *http.Request) appui.Header {
+	if h.Header == nil {
+		if h.Log != nil {
+			h.Log.Warn("a settings screen was rendered with no account bar wired in")
+		}
+
+		return appui.Header{}
+	}
+
+	return h.Header(r)
 }

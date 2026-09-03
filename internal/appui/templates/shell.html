@@ -7,7 +7,7 @@
 
   Both packages that render settings screens parse this file, so there is one
   copy of the chrome rather than two that drift. Everything here takes a
-  settingsui.Shell.
+  appui.Shell.
 
   The card styles are written out at each use rather than hidden behind a
   template, because Go templates cannot take a block of content as an argument
@@ -22,35 +22,19 @@
 -->
 
 {{ define "settings-header" }}
-<header class="border-b border-line bg-card">
-	<div class="mx-auto flex w-full max-w-6xl flex-wrap items-start justify-between gap-x-6 gap-y-3 px-4 py-4 sm:px-6">
-		<div class="min-w-0">
-			<a href="{{ if .Domain }}{{ url .Lang (printf "/dashboard/%s" .Domain) }}{{ else }}{{ url .Lang "/sites" }}{{ end }}"
-			   class="inline-flex items-center gap-1.5 text-sm text-muted transition-colors hover:text-heading">
-				<span aria-hidden="true">←</span>
-				{{ if .Domain }}{{ t .Lang "settings.shell.back_to_stats" }}{{ else }}{{ t .Lang "settings.shell.back_to_sites" }}{{ end }}
-			</a>
+<div class="border-b border-line bg-card">
+	<div class="mx-auto w-full max-w-6xl px-4 py-4 sm:px-6">
+		<a href="{{ if .Domain }}{{ url .Lang (printf "/dashboard/%s" .Domain) }}{{ else }}{{ url .Lang "/sites" }}{{ end }}"
+		   class="inline-flex items-center gap-1.5 text-sm text-muted transition-colors hover:text-heading">
+			<span aria-hidden="true" class="rtl:-scale-x-100">←</span>
+			{{ if .Domain }}{{ t .Lang "settings.shell.back_to_stats" }}{{ else }}{{ t .Lang "settings.shell.back_to_sites" }}{{ end }}
+		</a>
 
-			<h1 class="mt-1 truncate text-xl font-semibold text-heading">
-				{{ if .Domain }}{{ t .Lang "settings.shell.title_for" "domain" .Domain }}{{ else }}{{ t .Lang "settings.shell.title" }}{{ end }}
-			</h1>
-		</div>
-
-		<!-- The way out of the settings surface. Without it a settings screen is
-		     a place you can only leave towards the one site you arrived from. -->
-		<nav aria-label="{{ t .Lang "settings.shell.account_nav" }}" class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-			<!-- The site the reader came from travels with the link, so the site
-			     list opens showing it rather than the top of the list. -->
-			<a href="{{ if and .TeamID .Domain }}{{ url .Lang (printf "/sites?team_id=%d&site_context=%s" .TeamID (.Domain | urlquery)) }}{{ else if .TeamID }}{{ url .Lang (printf "/sites?team_id=%d" .TeamID) }}{{ else }}{{ url .Lang "/sites" }}{{ end }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.sites" }}</a>
-			<a href="{{ if .TeamID }}{{ url .Lang (printf "/settings?team_id=%d" .TeamID) }}{{ else }}{{ url .Lang "/settings" }}{{ end }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.account" }}</a>
-			{{ if and .Commerce (canBilling .Role) }}<a href="{{ if .TeamID }}{{ url .Lang (printf "/billing?team=%d" .TeamID) }}{{ else }}{{ url .Lang "/billing" }}{{ end }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.billing" }}</a>{{ end }}
-			<form method="post" action="{{ url .Lang "/logout" }}">
-				<input type="hidden" name="csrf_token" value="{{ .CSRF }}">
-				<button type="submit" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.sign_out" }}</button>
-			</form>
-		</nav>
+		<h1 class="mt-1 truncate text-xl font-semibold text-heading">
+			{{ if .Domain }}{{ t .Lang "settings.shell.title_for" "domain" .Domain }}{{ else }}{{ t .Lang "settings.shell.title" }}{{ end }}
+		</h1>
 	</div>
-</header>
+</div>
 {{ end }}
 
 

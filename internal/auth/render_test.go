@@ -9,9 +9,13 @@
 package auth
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/appui"
 )
 
 // TestEveryPageParses checks the whole template tree at once. A broken template
@@ -160,5 +164,53 @@ func TestTemplateHelpers(t *testing.T) {
 	// slightly wrong page, not take the process down.
 	if len(dict("a")) != 0 {
 		t.Error("an unpaired key should be dropped")
+	}
+}
+
+// TestTheAccountNavigationFollowsTheScreenBeingRendered pins where the section
+// list says the reader is.
+//
+// The two-factor forms all post to paths under /settings/security and re-render
+// that screen, so an exact-match on the path would show Security with
+// Preferences marked current — a navigation that lies about where you are.
+func TestTheAccountNavigationFollowsTheScreenBeingRendered(t *testing.T) {
+	for path, want := range map[string]string{
+		"/settings":                        appui.TabAccount,
+		"/settings/":                       appui.TabAccount,
+		"/settings/security":               appui.TabSecurity,
+		"/settings/security/2fa/start":     appui.TabSecurity,
+		"/settings/security/2fa/enable":    appui.TabSecurity,
+		"/settings/security/2fa/recovery":  appui.TabSecurity,
+		"/settings/security/2fa/disable":   appui.TabSecurity,
+		"/settings/sessions":               appui.TabDevices,
+		"/settings/sessions/revoke":        appui.TabDevices,
+		"/settings/team":                   appui.TabTeamPolicy,
+		"/settings/somewhere-nobody-built": appui.TabAccount,
+	} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+
+		if got := accountTab(request); got != want {
+			t.Errorf("%s marked %q current, want %q", path, got, want)
+		}
+	}
+}
+
+// TestAStandaloneScreenShedsTheBar keeps the dead ends quiet.
+//
+// The verification gate advertises destinations that all bounce straight back
+// to it, and the deleted screen belongs to somebody whose account is gone — a
+// bar carrying their team and a sign-out button describes a thing that no
+// longer exists.
+func TestAStandaloneScreenShedsTheBar(t *testing.T) {
+	for _, name := range []string{"verify", "verify_failed", "deleted", "error"} {
+		if !standalone[name] {
+			t.Errorf("%s renders the account bar", name)
+		}
+	}
+
+	for _, name := range []string{"sites", "settings_account", "settings_security", "site_settings"} {
+		if standalone[name] {
+			t.Errorf("%s was made standalone and lost its bar", name)
+		}
 	}
 }

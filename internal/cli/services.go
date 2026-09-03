@@ -160,6 +160,7 @@ func (s *services) screens(e *env, app *auth.Handler) http.Handler {
 		BaseURL:  e.cfg.App.BaseURL,
 		CSRF:     app.FormToken,
 		Commerce: e.cfg.App.Hosted,
+		Header:   app.HeaderFor,
 
 		// Who is asking comes from the application's session rather than from
 		// this package, so the permission checks on these screens are made

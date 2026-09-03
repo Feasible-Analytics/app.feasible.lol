@@ -119,6 +119,12 @@ type Handler struct {
 	// picture keeps the letter circle.
 	Avatars *avatar.Refresher
 
+	// HelpURL and SupportURL are the two destinations in the account menu that
+	// leave the product. They are configured rather than fixed because a
+	// self-hoster's support address is not ours.
+	HelpURL    string
+	SupportURL string
+
 	views *views
 	mux   *http.ServeMux
 }
@@ -169,6 +175,11 @@ type Options struct {
 	// Avatars fetches account pictures. Nil leaves every account on the letter
 	// circle, which is what a build with no outbound access should get.
 	Avatars *avatar.Refresher
+
+	// HelpURL and SupportURL are the two account-menu destinations that leave
+	// the product.
+	HelpURL    string
+	SupportURL string
 }
 
 // NewHandler builds the application and parses its templates.
@@ -208,6 +219,8 @@ func NewHandler(opts Options) (*Handler, error) {
 		Log:                 opts.Log,
 		Verifier:            opts.OutboundPolicy.NewClient(verifyTimeout),
 		Avatars:             opts.Avatars,
+		HelpURL:             opts.HelpURL,
+		SupportURL:          opts.SupportURL,
 		views:               views,
 	}
 
