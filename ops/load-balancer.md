@@ -36,10 +36,29 @@ from the dashboard like a site that silently collects nothing.
 Every internal request carries an HMAC over its method, path, timestamp and body
 regardless of scheme, so TLS on that hop is confidentiality and never
 authentication. Hosted production therefore requires `https` for a shard URL
-*except* where the transport already provides it: a loopback address or
-`localhost`, and a Tailscale address or `*.ts.net` name. An ordinary private LAN
-still needs a certificate — RFC 1918 is private by addressing, not by
-encryption.
+*except* where the transport already supplies that confidentiality.
+
+Two are accepted with no configuration, because both are provable rather than
+asserted: a loopback address or `localhost` puts no packet on a wire, and a
+Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) or `*.ts.net` name
+travels inside WireGuard.
+
+Any other private transport is named by the operator, because we cannot
+enumerate somebody else's network — Headscale, ZeroTier, Nebula and a plain
+WireGuard mesh are all as private as the built-ins:
+
+```
+FEASIBLE_INGEST_PLAINTEXT_SHARDS=10.147.0.0/16,.headscale.internal
+```
+
+Entries are CIDR prefixes or hostname suffixes, comma separated, and are additive
+— the two defaults above hold whether or not this is set. A suffix is anchored on
+a label boundary, so `.mesh.example` does not match `mesh.example.evil.com`. A
+malformed entry fails at startup rather than being skipped.
+
+What is deliberately *not* covered is an ordinary private LAN by default: RFC 1918
+is private by addressing rather than by encryption. An operator who trusts theirs
+says so with the variable above.
 
 ## Liveness and readiness are different questions
 

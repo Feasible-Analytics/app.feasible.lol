@@ -281,6 +281,17 @@ type Ingest struct {
 	// forwarded headers are ignored so a direct client cannot forge its
 	// fingerprint, geolocation or shield address.
 	TrustedProxies []string
+
+	// PlaintextShards names destinations that may be addressed over http even
+	// in hosted production, as network prefixes in CIDR form or as hostname
+	// suffixes. It is additive: loopback and Tailscale are accepted without it.
+	//
+	// This exists because we cannot enumerate the operator's network. Headscale,
+	// ZeroTier, Nebula and a plain WireGuard mesh are all as private as the two
+	// built-ins, and a rule that names one vendor makes every other one a fork.
+	// The operator is the only party who knows their topology, so the operator
+	// is who vouches for it.
+	PlaintextShards []string
 }
 
 // API holds the values the public API, the MCP server and the webhook worker
@@ -657,9 +668,10 @@ func LoadFrom(l *Loader) (*Config, error) {
 			QuerySampleThreshold: int64(sampleThreshold),
 		},
 		Ingest: Ingest{
-			Listen:         l.String("FEASIBLE_INGEST_LISTEN", DefaultIngestListen),
-			BufferPath:     l.String("FEASIBLE_INGEST_BUFFER_PATH", DefaultIngestBufferPath),
-			TrustedProxies: parseList(l.String("FEASIBLE_INGEST_TRUSTED_PROXIES", "")),
+			Listen:          l.String("FEASIBLE_INGEST_LISTEN", DefaultIngestListen),
+			BufferPath:      l.String("FEASIBLE_INGEST_BUFFER_PATH", DefaultIngestBufferPath),
+			TrustedProxies:  parseList(l.String("FEASIBLE_INGEST_TRUSTED_PROXIES", "")),
+			PlaintextShards: parseList(l.String("FEASIBLE_INGEST_PLAINTEXT_SHARDS", "")),
 		},
 	}
 
@@ -874,13 +886,22 @@ func (c *Config) Validate() error {
 	if err != nil || base.Scheme == "" || base.Host == "" {
 		return fmt.Errorf("FEASIBLE_APP_BASE_URL: %q is not an absolute URL", c.App.BaseURL)
 	}
+	// A malformed entry here is rejected rather than skipped. Silently ignoring
+	// one produces a deployment that reads as configured and still refuses every
+	// shard it was meant to allow, which is the hardest kind of thing to see.
+	for _, entry := range c.Ingest.PlaintextShards {
+		if _, _, err := parsePlaintextEntry(entry); err != nil {
+			return fmt.Errorf("FEASIBLE_INGEST_PLAINTEXT_SHARDS: %w", err)
+		}
+	}
+
 	if c.IsProduction() && c.App.Hosted && c.App.Transport == TransportHTTP {
 		for _, endpoint := range c.Ingest.Shards {
 			if endpoint == "" {
 				continue
 			}
 			parsed, _ := url.Parse(endpoint)
-			if parsed.Scheme != "https" && !plaintextShardAllowed(parsed) {
+			if parsed.Scheme != "https" && !plaintextShardAllowed(parsed, c.Ingest.PlaintextShards) {
 				return fmt.Errorf(
 					"private app-shard URL %q must use https in hosted production, "+
 						"or address a loopback or Tailscale destination", endpoint)
@@ -916,7 +937,7 @@ var (
 // port serves plain HTTP, so the only way to satisfy the rule is to route the
 // internal call back out through the public edge, which is both slower and the
 // one path deliberately configured to refuse it.
-func plaintextShardAllowed(parsed *url.URL) bool {
+func plaintextShardAllowed(parsed *url.URL, operatorEntries []string) bool {
 	if parsed == nil {
 		return false
 	}
@@ -927,20 +948,76 @@ func plaintextShardAllowed(parsed *url.URL) bool {
 		return false
 	}
 
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+	addr, addrErr := netip.ParseAddr(host)
+	if addrErr == nil {
+		addr = addr.Unmap()
+	}
+
+	if hostMatches(host, ".localhost") || hostMatches(host, ".ts.net") {
 		return true
 	}
 
-	// Tailscale's MagicDNS names, which resolve to the ranges below.
-	if host == "ts.net" || strings.HasSuffix(host, ".ts.net") {
+	if addrErr == nil &&
+		(addr.IsLoopback() || tailscaleV4.Contains(addr) || tailscaleV6.Contains(addr)) {
 		return true
 	}
 
-	addr, err := netip.ParseAddr(host)
-	if err != nil {
-		return false
+	for _, entry := range operatorEntries {
+		prefix, suffix, err := parsePlaintextEntry(entry)
+		if err != nil {
+			continue
+		}
+		if suffix != "" && hostMatches(host, suffix) {
+			return true
+		}
+		if prefix.IsValid() && addrErr == nil && prefix.Contains(addr) {
+			return true
+		}
 	}
-	addr = addr.Unmap()
 
-	return addr.IsLoopback() || tailscaleV4.Contains(addr) || tailscaleV6.Contains(addr)
+	return false
+}
+
+// hostMatches compares a host against a dotted suffix, anchored on a label
+// boundary so that `ts.net.example.com` does not pass as a Tailscale name. The
+// bare suffix without its leading dot matches too, because `ts.net` is itself a
+// legitimate host and an operator who writes `.internal` means that zone's apex
+// as much as anything under it.
+func hostMatches(host, suffix string) bool {
+	return host == strings.TrimPrefix(suffix, ".") || strings.HasSuffix(host, suffix)
+}
+
+// parsePlaintextEntry classifies one operator entry as a network prefix or a
+// hostname suffix.
+//
+// Anything carrying a scheme, a path or a port is rejected rather than
+// interpreted, because those are the shapes somebody writes when they have
+// mistaken this for a URL list — and an entry that is silently ignored is an
+// entry that reads as configured while allowing nothing.
+func parsePlaintextEntry(entry string) (netip.Prefix, string, error) {
+	entry = strings.ToLower(strings.TrimSpace(entry))
+	if entry == "" {
+		return netip.Prefix{}, "", fmt.Errorf("entry is empty")
+	}
+
+	if strings.ContainsAny(entry, "/:") {
+		prefix, err := netip.ParsePrefix(entry)
+		if err != nil {
+			return netip.Prefix{}, "", fmt.Errorf("%q is not a CIDR prefix or a hostname suffix", entry)
+		}
+
+		return prefix, "", nil
+	}
+
+	if strings.ContainsAny(entry, " \\?#@") {
+		return netip.Prefix{}, "", fmt.Errorf("%q is not a CIDR prefix or a hostname suffix", entry)
+	}
+
+	// A suffix is stored with its leading dot so the match stays anchored on a
+	// label boundary; `hostMatches` handles the apex separately.
+	if !strings.HasPrefix(entry, ".") {
+		entry = "." + entry
+	}
+
+	return netip.Prefix{}, entry, nil
 }
