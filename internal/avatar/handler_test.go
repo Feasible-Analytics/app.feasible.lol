@@ -74,7 +74,7 @@ func TestAMissingGravatarIsRememberedRatherThanRetried(t *testing.T) {
 
 	var fetchedAt, hasBytes int64
 	if err := db.QueryRow(`
-		SELECT COALESCE(avatar_fetched_at, 0), LENGTH(COALESCE(avatar_bytes, x'')) FROM users WHERE id = ?
+		SELECT fetched_at, LENGTH(COALESCE(bytes, x'')) FROM user_avatars WHERE user_id = ?
 	`, userID).Scan(&fetchedAt, &hasBytes); err != nil {
 		t.Fatalf("read row: %v", err)
 	}
@@ -92,6 +92,7 @@ func TestAMissingGravatarIsRememberedRatherThanRetried(t *testing.T) {
 // outbound request.
 func TestGravatarIsSkippedWhenSwitchedOffOrAlreadyAsked(t *testing.T) {
 	avatars, _, userID := newStore(t)
+	ctx := context.Background()
 
 	asked := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -100,14 +101,72 @@ func TestGravatarIsSkippedWhenSwitchedOffOrAlreadyAsked(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	off := &Refresher{Store: avatars, Client: server.Client(), Gravatar: false, Run: func(work func()) { work() }}
-	off.EnsureGravatar(context.Background(), userID, "a@example.com", false)
-
-	on := &Refresher{Store: avatars, Client: server.Client(), Gravatar: true, Run: func(work func()) { work() }}
-	on.EnsureGravatar(context.Background(), userID, "a@example.com", true)
+	seam := func(string) string { return server.URL }
+	off := &Refresher{Store: avatars, Client: server.Client(), Gravatar: false, Run: func(work func()) { work() }, gravatar: seam}
+	off.EnsureGravatar(ctx, userID, "a@example.com")
 
 	if asked {
-		t.Error("a switched-off or already-asked lookup still reached a provider")
+		t.Fatal("a switched-off lookup still reached a provider")
+	}
+
+	// A remembered answer — a picture or a miss — is what the second guard
+	// keys off.
+	if err := avatars.RememberMiss(ctx, userID, SourceGravatar); err != nil {
+		t.Fatalf("remember miss: %v", err)
+	}
+
+	on := &Refresher{Store: avatars, Client: server.Client(), Gravatar: true, Run: func(work func()) { work() }, gravatar: seam}
+	on.EnsureGravatar(ctx, userID, "a@example.com")
+
+	if asked {
+		t.Error("an already-answered lookup asked the provider again")
+	}
+}
+
+// TestAGoogleAccountWithNoPhotoStillGetsAGravatar is why the guard is "has a
+// provider answered" rather than "did they use Google". Signing in with Google
+// says nothing about whether Google has a photo.
+func TestAGoogleAccountWithNoPhotoStillGetsAGravatar(t *testing.T) {
+	avatars, _, userID := newStore(t)
+	provider := serving(t, http.StatusOK, "image/png", square(t, 96, "png"))
+
+	refresher := &Refresher{
+		Store:    avatars,
+		Client:   provider.Client(),
+		Gravatar: true,
+		Run:      func(work func()) { work() },
+		gravatar: func(string) string { return provider.URL },
+	}
+
+	// Google supplied no picture URL, so nothing was stored and nothing asked.
+	refresher.FromGoogle(context.Background(), userID, "")
+	refresher.EnsureGravatar(context.Background(), userID, "a@example.com")
+
+	got, err := avatars.Read(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(got.Bytes) == 0 {
+		t.Error("a Google account with no photo was left without a Gravatar")
+	}
+}
+
+// TestAProviderHavingABadDayIsRetriedRatherThanRecorded separates a clear "no
+// picture" from a failure. Writing a 500 or a rate limit down as "this person
+// has no avatar, never ask again" is the silent failure the house rules forbid.
+func TestAProviderHavingABadDayIsRetriedRatherThanRecorded(t *testing.T) {
+	avatars, _, userID := newStore(t)
+	provider := serving(t, http.StatusTooManyRequests, "text/plain", []byte("slow down"))
+
+	refresher := &Refresher{Store: avatars, Client: provider.Client(), Run: func(work func()) { work() }}
+	refresher.store(context.Background(), userID, SourceGravatar, provider.URL)
+
+	state, err := avatars.State(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if state.Asked {
+		t.Error("a rate limit was recorded as a permanent fact about this person")
 	}
 }
 

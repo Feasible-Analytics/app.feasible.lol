@@ -187,13 +187,10 @@ func (h *Handler) startSession(w http.ResponseWriter, r *http.Request, user *Use
 
 	h.Log.Info("signed in", "user", user.ID, "session", session.ID, "device", label)
 
-	// A Google account's picture comes from Google, and the callback has
-	// already asked for it. Gravatar is for everybody else, and only once:
-	// an address with no Gravatar would otherwise cost an outbound request on
-	// every sign-in for ever.
-	if user.GoogleSub == "" {
-		h.Avatars.EnsureGravatar(r.Context(), user.ID, user.Email, user.AvatarFetchedAt > 0)
-	}
+	// Gravatar is the fallback for anybody whose Google account did not supply
+	// a picture, which includes everybody who never used Google. The refresher
+	// decides whether it is needed; it already knows what is stored.
+	h.Avatars.EnsureGravatar(r.Context(), user.ID, user.Email)
 
 	// The new-device email is worth sending only when the device really is new
 	// and the account is old enough for it to mean something. One on the very

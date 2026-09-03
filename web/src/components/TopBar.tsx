@@ -218,8 +218,6 @@ function AccountFace({ navigation }: { navigation: Navigation }) {
 		<img
 			src={navigation.avatar_url}
 			alt=""
-			width={28}
-			height={28}
 			onError={() => setBroken(true)}
 			className="size-full object-cover"
 		/>

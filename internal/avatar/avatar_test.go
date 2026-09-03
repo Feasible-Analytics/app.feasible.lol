@@ -251,10 +251,10 @@ func TestAStoredPictureComesBackWhole(t *testing.T) {
 // TestAMissIsRememberedAndReadsAsNoPicture is what stops an address with no
 // Gravatar costing an outbound request on every sign-in for ever.
 func TestAMissIsRememberedAndReadsAsNoPicture(t *testing.T) {
-	avatars, db, userID := newStore(t)
+	avatars, _, userID := newStore(t)
 	ctx := context.Background()
 
-	if err := avatars.RememberMiss(ctx, userID); err != nil {
+	if err := avatars.RememberMiss(ctx, userID, SourceGravatar); err != nil {
 		t.Fatalf("remember miss: %v", err)
 	}
 
@@ -266,12 +266,44 @@ func TestAMissIsRememberedAndReadsAsNoPicture(t *testing.T) {
 		t.Errorf("a remembered miss read back as a picture: %d bytes, tag %q", len(got.Bytes), got.ETag)
 	}
 
-	var fetchedAt sql.NullInt64
-	if err := db.QueryRow(`SELECT avatar_fetched_at FROM users WHERE id = ?`, userID).Scan(&fetchedAt); err != nil {
-		t.Fatalf("read fetched_at: %v", err)
+	state, err := avatars.State(ctx, userID)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
 	}
-	if !fetchedAt.Valid {
+	if !state.Asked {
 		t.Error("a miss left no record that the provider had been asked")
+	}
+	if state.ETag != "" {
+		t.Errorf("a miss reported the tag %q, which would send the front end after an image", state.ETag)
+	}
+}
+
+// TestAMissDoesNotDestroyAPictureSomebodyAlreadyHas is the rule that keeps one
+// provider from erasing another. Google answering "no picture" says nothing
+// about the Gravatar already stored, and treating it as though it did means a
+// person's picture disappears for a reason nobody can see.
+func TestAMissDoesNotDestroyAPictureSomebodyAlreadyHas(t *testing.T) {
+	avatars, _, userID := newStore(t)
+	ctx := context.Background()
+
+	picture, err := Normalise(square(t, 64, "png"))
+	if err != nil {
+		t.Fatalf("normalise: %v", err)
+	}
+	if err := avatars.Save(ctx, userID, SourceGravatar, picture); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	if err := avatars.RememberMiss(ctx, userID, SourceGoogle); err != nil {
+		t.Fatalf("remember miss: %v", err)
+	}
+
+	got, err := avatars.Read(ctx, userID)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !bytes.Equal(got.Bytes, picture.Bytes) {
+		t.Error("a miss from one provider erased the picture another had supplied")
 	}
 }
 

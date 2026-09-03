@@ -46,11 +46,6 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
 )
 
-// avatarTimeout bounds a provider fetch. It is generous because the fetch runs
-// away from the request that triggered it, and short enough that a hung
-// provider does not hold a connection open for minutes.
-const avatarTimeout = 10 * time.Second
-
 const serveHelp = `feasible serve — run the whole product in one process.
 
 This is the default mode and the only thing a self-hoster ever runs: the
@@ -370,7 +365,7 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 func newAvatarRefresher(e *env, control *sql.DB) *avatar.Refresher {
 	return &avatar.Refresher{
 		Store:    avatar.NewStore(control, func() int64 { return time.Now().UTC().Unix() }),
-		Client:   outbound.PolicyFor(e.cfg).NewClient(avatarTimeout),
+		Client:   outbound.PolicyFor(e.cfg).NewClient(avatar.FetchTimeout),
 		Gravatar: e.cfg.App.Gravatar,
 		Log:      e.log,
 	}

@@ -754,7 +754,7 @@ func (h *Handler) NavigationForDashboard(w http.ResponseWriter, r *http.Request)
 		SitesURL:   "/sites",
 		AccountURL: "/settings",
 		LogoutURL:  "/logout",
-		AvatarURL:  avatar.URL(user.ID, user.AvatarETag),
+		AvatarURL:  avatar.URL(user.ID, h.Avatars.State(r.Context(), user.ID).ETag),
 		CSRF:       h.FormToken(w, r),
 	}
 
@@ -1108,16 +1108,26 @@ func (h *Handler) RunPrune(ctx context.Context) {
 // checks that the id in the path is theirs. Without that second check a numeric
 // URL is a way to walk the user table and learn who has an account here.
 //
-// It is built here rather than in the wiring because this is where the system
-// database and the session live; assembling it out there would mean opening a
-// second handle and reimplementing the session check.
+// It answers a signed-out request with a 404 rather than the redirect every
+// page route uses: this URL is the src of an image, and sending it to the login
+// page makes the browser try to decode an HTML document as one.
 func (h *Handler) AvatarHandler() http.Handler {
-	return http.HandlerFunc(h.require((&avatar.Handler{
+	pictures := &avatar.Handler{
 		Store: avatar.NewStore(h.Store.DB(), func() int64 { return h.Store.Now().Unix() }),
 		Authorise: func(r *http.Request, userID int64) bool {
 			user := userFrom(r)
 
 			return user != nil && user.ID == userID
 		},
-	}).ServeHTTP))
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, _, ok := h.currentUser(r)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+
+		pictures.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), contextUser, user)))
+	})
 }

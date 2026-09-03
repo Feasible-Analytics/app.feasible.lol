@@ -9,14 +9,11 @@
 // Package avatar turns a picture belonging to a person into bytes we hold.
 //
 // Google and Gravatar both serve images, and neither may be linked to from a
-// page. An <img> pointing at them makes the viewer's browser tell that provider
-// the viewer's IP address, their user agent, and — through the Referer — which
-// page of this product they are looking at. Doing that on every load of a
-// privacy-first analytics product is the exact behaviour our customers switched
-// to us to avoid. Google's picture URL also rotates, so a stored URL rots.
-//
-// So the picture is fetched here, once, checked, shrunk, and written to the
-// system database. The browser only ever talks to us.
+// page: an <img> pointing at them tells that provider the viewer's address,
+// their user agent and, through the Referer, which page of this product they
+// are reading — on every load. The picture is therefore fetched here once,
+// checked, shrunk and stored, and the browser only ever talks to us. Google's
+// URL rotates besides, so keeping one would not have worked anyway.
 package avatar
 
 import (
@@ -41,11 +38,8 @@ import (
 	_ "golang.org/x/image/webp"
 )
 
-// MaxDownloadBytes is the most we will read from a provider.
-//
-// A profile picture is tens of kilobytes. The cap exists because the response
-// is a stranger's: without it, a provider — or anything that can answer as one
-// — decides how much memory this process spends.
+// MaxDownloadBytes is the most we will read from a provider. Without it, a
+// response we did not write decides how much memory this process spends.
 const MaxDownloadBytes = 2 << 20
 
 // MaxDimension is the largest edge we store. Every surface renders the picture
@@ -53,13 +47,10 @@ const MaxDownloadBytes = 2 << 20
 // on every dashboard load.
 const MaxDimension = 512
 
-// MaxPixels is the largest picture we will decode, about 2048 on a side.
-//
-// The byte cap above bounds the download, not the decode, and those are very
-// different numbers: a few kilobytes of PNG can describe a canvas of tens of
-// thousands of pixels a side, which becomes gigabytes of memory the moment
-// anything reads it. The header is read first and a picture over this is
-// refused before a single row of it is allocated.
+// MaxPixels is the largest picture we will decode, about 2048 on a side. The
+// byte cap bounds the download, not the decode: a few kilobytes of PNG can
+// describe a canvas tens of thousands of pixels a side, which is gigabytes the
+// moment anything reads it.
 const MaxPixels = 4 << 20
 
 // Image is a picture ready to be stored and served.
@@ -82,10 +73,10 @@ const (
 	SourceGravatar = "gravatar"
 )
 
-// ErrNoImage means the provider had nothing for this person. It is an ordinary
-// answer, not a failure: Gravatar is asked with d=404 precisely so that "no
-// picture" arrives as a clean miss rather than as a generated default we would
-// then store and serve as though somebody had chosen it.
+// ErrNoImage means the provider said clearly that it has no picture for this
+// person. Everything else — a timeout, a 500, a rate limit — is an ordinary
+// error, so a provider having a bad day is never recorded as a person having no
+// picture.
 var ErrNoImage = errors.New("avatar: the provider has no picture")
 
 // GravatarURL is where to ask for the picture behind an email address.
@@ -116,10 +107,15 @@ func Fetch(ctx context.Context, client *http.Client, url string) (Image, error) 
 	}
 	defer response.Body.Close() //nolint:errcheck // the body is fully read or abandoned
 
-	// A redirect arrives here as a 3xx because the outbound client refuses to
-	// follow one: the second destination is one nobody validated.
-	if response.StatusCode != http.StatusOK {
+	// Only an explicit "there is nothing here" is a miss. A redirect arrives as
+	// a 3xx because the outbound client refuses to follow one — the second
+	// destination is one nobody validated — and that is a failure, not an
+	// answer.
+	if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusGone {
 		return Image{}, ErrNoImage
+	}
+	if response.StatusCode != http.StatusOK {
+		return Image{}, fmt.Errorf("avatar: the provider answered %d", response.StatusCode)
 	}
 
 	// One byte past the cap is read so a body that is exactly at the limit is
@@ -137,11 +133,10 @@ func Fetch(ctx context.Context, client *http.Client, url string) (Image, error) 
 
 // Normalise decodes, shrinks and re-encodes one downloaded picture.
 //
-// Decoding is the check: a byte string that is not a picture in a format we
-// recognise never becomes one, whatever the provider called it. Re-encoding is
-// what makes that check worth something — the bytes we serve are ones this
-// process produced, so a payload smuggled in the parts of a file the decoder
-// ignores does not survive.
+// Decoding is the type check — a provider's Content-Type is a claim — and
+// re-encoding is what makes it worth something: the bytes we serve are ones
+// this process produced, so anything smuggled in the parts of a file the
+// decoder ignores does not survive.
 func Normalise(raw []byte) (Image, error) {
 	config, format, err := image.DecodeConfig(bytes.NewReader(raw))
 	if err != nil {
@@ -222,7 +217,7 @@ func encode(source image.Image, format string) ([]byte, string, error) {
 	return out.Bytes(), "image/png", nil
 }
 
-// Store reads and writes the avatar columns on the system database.
+// Store reads and writes stored pictures on the system database.
 type Store struct {
 	db  *sql.DB
 	now func() int64
@@ -233,9 +228,44 @@ func NewStore(db *sql.DB, now func() int64) *Store {
 	return &Store{db: db, now: now}
 }
 
-// Read returns one person's stored picture. A person with no picture, or with a
-// remembered miss, comes back as an empty Image and no error: the caller
-// renders the letter, which is a fine default rather than a failure.
+// State is what is known about a person's picture without loading it. It is a
+// separate read from the picture itself because the pages that decide whether
+// to show one never need the bytes.
+type State struct {
+	// ETag is empty when there is nothing to serve.
+	ETag string
+
+	// Source names the provider a stored picture came from.
+	Source string
+
+	// Asked reports that a provider has already answered, whether or not it had
+	// anything. It is what stops an address with no Gravatar costing an
+	// outbound request on every sign-in for ever.
+	Asked bool
+}
+
+// State reads one person's picture status. A person with no row is not an
+// error: having no picture is the common case, not a failure.
+func (s *Store) State(ctx context.Context, userID int64) (State, error) {
+	var state State
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT etag, source FROM user_avatars WHERE user_id = ?
+	`, userID).Scan(&state.ETag, &state.Source)
+	if errors.Is(err, sql.ErrNoRows) {
+		return State{}, nil
+	}
+	if err != nil {
+		return State{}, fmt.Errorf("avatar: read state: %w", err)
+	}
+
+	state.Asked = true
+
+	return state, nil
+}
+
+// Read returns one person's stored picture, or an empty Image when there is
+// none. The caller renders the letter, which is a fine default.
 func (s *Store) Read(ctx context.Context, userID int64) (Image, error) {
 	var (
 		raw         []byte
@@ -244,7 +274,7 @@ func (s *Store) Read(ctx context.Context, userID int64) (Image, error) {
 	)
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(avatar_bytes, x''), avatar_type, avatar_etag FROM users WHERE id = ?
+		SELECT COALESCE(bytes, x''), type, etag FROM user_avatars WHERE user_id = ?
 	`, userID).Scan(&raw, &contentType, &etag)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Image{}, nil
@@ -263,10 +293,12 @@ func (s *Store) Read(ctx context.Context, userID int64) (Image, error) {
 // Save stores a fetched picture against a person.
 func (s *Store) Save(ctx context.Context, userID int64, source string, picture Image) error {
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE users
-		SET avatar_bytes = ?, avatar_type = ?, avatar_etag = ?, avatar_source = ?, avatar_fetched_at = ?
-		WHERE id = ?
-	`, picture.Bytes, picture.Type, picture.ETag, source, s.now(), userID)
+		INSERT INTO user_avatars (user_id, bytes, type, etag, source, fetched_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id) DO UPDATE SET
+			bytes = excluded.bytes, type = excluded.type, etag = excluded.etag,
+			source = excluded.source, fetched_at = excluded.fetched_at
+	`, userID, picture.Bytes, picture.Type, picture.ETag, source, s.now())
 	if err != nil {
 		return fmt.Errorf("avatar: save: %w", err)
 	}
@@ -274,14 +306,17 @@ func (s *Store) Save(ctx context.Context, userID int64, source string, picture I
 	return nil
 }
 
-// RememberMiss records that a provider had nothing, so the next page load does
-// not ask again. Silence from a provider is an answer worth keeping.
-func (s *Store) RememberMiss(ctx context.Context, userID int64) error {
+// RememberMiss records that a provider had nothing for this person.
+//
+// It deliberately leaves any bytes already stored alone. A provider answering
+// "no picture" is not a reason to throw away one somebody already has, and
+// without that rule a single 404 from one source erases what another supplied.
+func (s *Store) RememberMiss(ctx context.Context, userID int64, source string) error {
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE users
-		SET avatar_bytes = NULL, avatar_type = '', avatar_etag = '', avatar_source = '', avatar_fetched_at = ?
-		WHERE id = ?
-	`, s.now(), userID)
+		INSERT INTO user_avatars (user_id, type, etag, source, fetched_at)
+		VALUES (?, '', '', ?, ?)
+		ON CONFLICT(user_id) DO UPDATE SET source = excluded.source, fetched_at = excluded.fetched_at
+	`, userID, source, s.now())
 	if err != nil {
 		return fmt.Errorf("avatar: remember miss: %w", err)
 	}

@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 )
 
 // Pattern is the route the stored picture is served from. The path carries the
@@ -22,10 +24,16 @@ import (
 // picture behind it is not.
 const Pattern = "GET /app/avatar/{user}"
 
-// fetchTimeout bounds one provider fetch. The work already runs away from the
+// FetchTimeout bounds one provider fetch. The work already runs away from the
 // request that triggered it, so this is only about not holding a connection and
 // a goroutine open for a provider that has stopped answering.
-const fetchTimeout = 10 * time.Second
+const FetchTimeout = 10 * time.Second
+
+// firstPaintWait is how long a Google sign-in pauses for the picture before
+// redirecting. Google's image host answers in tens of milliseconds, so this is
+// usually the whole fetch; when it is not, the sign-in carries on and the
+// picture appears on the next page load rather than the first.
+const firstPaintWait = 1500 * time.Millisecond
 
 // Refresher fetches and stores pictures. It is a struct rather than a function
 // so the client and the Gravatar switch are configured once, at startup.
@@ -42,16 +50,16 @@ type Refresher struct {
 	// is involved either way — the request is ours, not the viewer's.
 	Gravatar bool
 
-	// Log records a failed fetch. A picture nobody could fetch is not worth an
-	// error to the person signing in, but it is worth us knowing about.
-	Log interface {
-		Warn(msg string, args ...any)
-	}
+	Log *logger.Logger
 
 	// Run is how the fetch leaves the request. It is a field so a test can make
 	// it synchronous; left nil it spawns, because a sign-in must never wait on
 	// somebody else's server.
 	Run func(func())
+
+	// gravatar builds the lookup URL. It is a seam so the tests can answer as
+	// Gravatar without any of them reaching the real one.
+	gravatar func(string) string
 }
 
 // dispatch sends the fetch away from the request.
@@ -66,10 +74,12 @@ func (r *Refresher) dispatch(work func()) {
 
 // FromGoogle stores the picture Google returned with the profile.
 //
-// It is called on sign-in and on reconnect, which is the cheapest trigger that
-// keeps the picture current: somebody who changes their Google photo sees it
-// here the next time they sign in. It never returns an error to its caller,
-// because a picture is not worth failing a sign-in over.
+// It runs on every Google sign-in, which is the cheapest trigger that notices
+// somebody changing their photo. It waits a moment before returning so the
+// picture is usually already there on the page the sign-in redirects to; past
+// that it carries on in the background and lands on the next load. The wait is
+// bounded and its result ignored, because a picture is never worth failing or
+// delaying a sign-in over.
 func (r *Refresher) FromGoogle(ctx context.Context, userID int64, pictureURL string) {
 	if r == nil || r.Store == nil || r.Client == nil || strings.TrimSpace(pictureURL) == "" {
 		return
@@ -78,52 +88,110 @@ func (r *Refresher) FromGoogle(ctx context.Context, userID int64, pictureURL str
 	// The request's context is cancelled the moment the redirect is written,
 	// which is before the fetch could finish.
 	detached := context.WithoutCancel(ctx)
+	done := make(chan struct{})
 
-	r.dispatch(func() { r.store(detached, userID, SourceGoogle, pictureURL) })
+	r.dispatch(func() {
+		defer close(done)
+		r.store(detached, userID, SourceGoogle, pictureURL)
+	})
+
+	select {
+	case <-done:
+	case <-time.After(firstPaintWait):
+	}
 }
 
-// EnsureGravatar fetches the Gravatar for an address, unless this person
-// already has a picture or has already been looked up.
+// EnsureGravatar looks up the Gravatar for an address, unless a provider has
+// already answered for this person.
 //
-// The already-looked-up check is what stops a mailbox with no Gravatar
-// producing an outbound request on every sign-in. A person who later creates
-// one is picked up when the stored answer is cleared, which is what linking a
-// Google account does.
-func (r *Refresher) EnsureGravatar(ctx context.Context, userID int64, email string, fetched bool) {
-	if r == nil || r.Store == nil || r.Client == nil || !r.Gravatar || fetched {
+// That one guard covers both cases worth covering: somebody who already has a
+// Google picture keeps it, and a mailbox with no Gravatar is not asked about on
+// every sign-in for ever. It is deliberately not "did they use Google" —
+// signing in with Google says nothing about whether Google has a photo.
+func (r *Refresher) EnsureGravatar(ctx context.Context, userID int64, email string) {
+	if r == nil || r.Store == nil || r.Client == nil || !r.Gravatar {
+		return
+	}
+
+	state, err := r.Store.State(ctx, userID)
+	if err != nil {
+		r.warn("could not read an account picture", userID, SourceGravatar, err)
+		return
+	}
+
+	if state.Asked {
 		return
 	}
 
 	detached := context.WithoutCancel(ctx)
-	url := GravatarURL(email)
+	build := r.gravatar
+	if build == nil {
+		build = GravatarURL
+	}
+	url := build(email)
 
 	r.dispatch(func() { r.store(detached, userID, SourceGravatar, url) })
 }
 
-// store performs one fetch and writes whatever it learned, including nothing.
+// State reports what is known about a person's picture without loading it, so
+// a page can build the URL to it. A store that is not configured answers as
+// though nobody has one, which leaves the letter circle.
+func (r *Refresher) State(ctx context.Context, userID int64) State {
+	if r == nil || r.Store == nil {
+		return State{}
+	}
+
+	state, err := r.Store.State(ctx, userID)
+	if err != nil {
+		r.warn("could not read an account picture", userID, "", err)
+
+		return State{}
+	}
+
+	return state
+}
+
+// store performs one fetch and writes what it learned.
+//
+// The three outcomes are deliberately different. A picture is stored. A clean
+// "no picture" is remembered, so the provider is not asked again. Anything else
+// — a timeout, a rate limit, a provider having a bad day — is logged and
+// written nowhere, so the next sign-in tries again rather than recording a
+// temporary failure as a permanent fact about a person.
 func (r *Refresher) store(ctx context.Context, userID int64, source, url string) {
-	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	fetch, cancel := context.WithTimeout(ctx, FetchTimeout)
 	defer cancel()
 
-	picture, err := Fetch(ctx, r.Client, url)
-	if err != nil {
-		// A miss and a failure are both remembered, because retrying a broken
-		// picture on every sign-in is a request that never starts succeeding.
-		// A failure is logged; a miss is an ordinary answer.
-		if !errors.Is(err, ErrNoImage) && r.Log != nil {
-			r.Log.Warn("could not fetch an account picture", "source", source, "user", userID, "error", err)
+	picture, err := Fetch(fetch, r.Client, url)
+
+	switch {
+	case errors.Is(err, ErrNoImage):
+		// The write runs on the outer context: the fetch deadline has very
+		// likely just expired, and the one failure the miss cache exists for is
+		// the one where it would then never be recorded.
+		if err := r.Store.RememberMiss(ctx, userID, source); err != nil {
+			r.warn("could not record a missing account picture", userID, source, err)
 		}
 
-		if err := r.Store.RememberMiss(ctx, userID); err != nil && r.Log != nil {
-			r.Log.Warn("could not record a missing account picture", "user", userID, "error", err)
-		}
+	case err != nil:
+		r.warn("could not fetch an account picture", userID, source, err)
 
+	default:
+		if err := r.Store.Save(ctx, userID, source, picture); err != nil {
+			r.warn("could not store an account picture", userID, source, err)
+		}
+	}
+}
+
+// warn records what went wrong. A picture nobody could fetch is not worth an
+// error to the person signing in, but a provider that has started refusing us
+// is worth knowing about before somebody reports it.
+func (r *Refresher) warn(message string, userID int64, source string, err error) {
+	if r.Log == nil {
 		return
 	}
 
-	if err := r.Store.Save(ctx, userID, source, picture); err != nil && r.Log != nil {
-		r.Log.Warn("could not store an account picture", "source", source, "user", userID, "error", err)
-	}
+	r.Log.Warn(message, "source", source, "user", userID, "error", err)
 }
 
 // Handler serves a stored picture.
@@ -149,10 +217,10 @@ func URL(userID int64, etag string) string {
 
 // ServeHTTP answers one picture request.
 //
-// The cache header is long because the bytes behind a URL only change when
-// somebody changes their picture, and the ETag catches that: a browser
-// revalidates and is told either 304 or the new image. It is private because
-// the picture belongs to one account and a shared cache must not hold it.
+// The URL is stable and the bytes behind it are not, so the browser revalidates
+// every time and is answered with a 304 when it already holds the picture. A
+// max-age would be cheaper and would leave a changed one stale for as long as
+// it lasted. It is private because the picture belongs to one account.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	userID, err := strconv.ParseInt(r.PathValue("user"), 10, 64)
 	if err != nil || userID < 1 {
@@ -172,7 +240,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("ETag", picture.ETag)
-	w.Header().Set("Cache-Control", "private, max-age=86400, must-revalidate")
+	w.Header().Set("Cache-Control", "private, no-cache")
 	w.Header().Set("Content-Type", picture.Type)
 
 	if matches(r.Header.Get("If-None-Match"), picture.ETag) {
