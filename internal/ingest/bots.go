@@ -197,12 +197,31 @@ func (f *BotFilter) IsDatacenterIP(addr netip.Addr) bool {
 // OutdatedBy is how many major versions behind current a browser has to be
 // before it is treated as a script wearing a browser's name.
 //
-// Twelve is where real traffic actually stops. These browsers ship roughly
-// every four weeks and update themselves without being asked, so twelve majors
-// is about a year, and a year-old install that has never once restarted is rare
-// enough to be worth the trade. It is one number rather than one per browser
-// because all three ship on the same cadence.
-const OutdatedBy = 12
+// These browsers ship roughly every four weeks, so eighteen majors is around
+// eighteen months of never once restarting. Real traffic stops well before
+// that: the oldest genuine visitor in our own data was thirteen releases back,
+// and the scraper farm that prompted the rule was spread from twenty to fifty
+// releases back.
+//
+// The gap between those two numbers is deliberate and is the whole design. A
+// threshold set to the tightest value that separates them today would be one
+// release away from wrong in either direction, and being wrong in one of those
+// directions means a person who quietly stops appearing in somebody's numbers
+// with nothing to say so. Missing a few of the farm costs a number that is
+// slightly too high, which is visible and fixable.
+const OutdatedBy = 18
+
+// embeddedEngines mark a browser engine that somebody else decides the version
+// of. An Android WebView moves with the system component, an Electron app moves
+// when its developer ships a release, and a Chromebook past its auto-update
+// date never moves again.
+//
+// All three report a Chrome version, all three are years behind on purpose, and
+// all three are a person reading the page — the phone opening a link inside a
+// chat app, the desktop app with a help window, the school laptop nobody is
+// going to replace. The version rule's premise is a browser that updates
+// itself, and none of these is one.
+var embeddedEngines = []string{"; wv)", "electron/", "cros "}
 
 // IsOutdatedBrowser reports whether a browser is so far behind its current
 // release that no self-updating install could still be on it.
@@ -213,14 +232,25 @@ const OutdatedBy = 12
 // rotating user agents to look like many people gives itself away by claiming
 // versions spread across years rather than the handful currently in the wild.
 //
-// It answers false for anything it has no current version for, which is every
-// browser but the three that update themselves silently.
-func (f *BotFilter) IsOutdatedBrowser(name, version string) bool {
+// It declines far more often than it fires. A browser it has no current version
+// for, an engine somebody else versions, and a long-term-support channel that
+// is behind on purpose all get the benefit of the doubt, because the cost of
+// being wrong here is a real person who quietly stops appearing.
+func (f *BotFilter) IsOutdatedBrowser(name, version, userAgent string) bool {
 	if name == "" || version == "" {
 		return false
 	}
 
-	current, ok := (*f.browsers.Load())[name]
+	lower := strings.ToLower(userAgent)
+	for _, marker := range embeddedEngines {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+
+	current := *f.browsers.Load()
+
+	newest, ok := current[name]
 	if !ok {
 		return false
 	}
@@ -232,7 +262,16 @@ func (f *BotFilter) IsOutdatedBrowser(name, version string) bool {
 		return false
 	}
 
-	return current-major > OutdatedBy
+	floor := newest - OutdatedBy
+
+	// A long-term-support channel is further back than the ordinary window
+	// allows and is still supported, so it moves the floor rather than being an
+	// exception to it.
+	if esr, ok := current[lists.ESRSuffix(name)]; ok && esr < floor {
+		floor = esr
+	}
+
+	return major < floor
 }
 
 // SetCurrentBrowsers replaces the version floor directly, for tests and for the

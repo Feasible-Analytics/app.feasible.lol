@@ -519,7 +519,7 @@ func (p *Pipeline) classify(userAgent string, agent useragent.Result, addr netip
 		return ReasonDatacenterIP
 	}
 
-	if p.Bots.IsOutdatedBrowser(agent.Browser, agent.BrowserVersion) {
+	if p.Bots.IsOutdatedBrowser(agent.Browser, agent.BrowserVersion, userAgent) {
 		return ReasonOutdatedBrowser
 	}
 

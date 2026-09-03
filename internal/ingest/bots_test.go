@@ -239,29 +239,77 @@ func TestOutdatedBrowsers(t *testing.T) {
 	outdated := []struct{ name, version string }{
 		{"Chrome", "104"},
 		{"Chrome", "131.0"},
-		{"Chrome", "139"},
-		{"Firefox", "120"},
+		{"Chrome", "133"},
+		{"Firefox", "110"},
 		{"Edge", "110.0.1"},
 	}
 
 	for _, browser := range outdated {
-		if !filter.IsOutdatedBrowser(browser.name, browser.version) {
+		if !filter.IsOutdatedBrowser(browser.name, browser.version, "") {
 			t.Errorf("%s %s was not recognised as outdated", browser.name, browser.version)
 		}
 	}
 
-	// A year behind is the boundary, and the boundary itself is still a person.
+	// The margin below the boundary is where real people live, and it has to
+	// stay clear. 134 is eighteen releases back and still counted.
 	current := []struct{ name, version string }{
+		{"Chrome", "134"},
 		{"Chrome", "140"},
 		{"Chrome", "152"},
 		{"Chrome", "153"},
-		{"Firefox", "143"},
+		{"Firefox", "140"},
 		{"Edge", "152.0"},
 	}
 
 	for _, browser := range current {
-		if filter.IsOutdatedBrowser(browser.name, browser.version) {
+		if filter.IsOutdatedBrowser(browser.name, browser.version, "") {
 			t.Errorf("%s %s was called outdated", browser.name, browser.version)
+		}
+	}
+}
+
+// TestRealPeopleOnOldEnginesAreLeftAlone is the false-positive guard, and it is
+// the test that matters most in this file.
+//
+// Every case here reports a Chrome or Firefox version far enough behind to trip
+// the rule, and every one of them is somebody reading the page. The engine
+// version is not theirs to change: a WebView moves with the system component, an
+// Electron app when its developer ships, a Chromebook past its auto-update date
+// never again, and an extended-support Firefox is behind on purpose because an
+// administrator chose it.
+func TestRealPeopleOnOldEnginesAreLeftAlone(t *testing.T) {
+	filter := NewBotFilter()
+	filter.SetCurrentBrowsers(map[string]int{"Chrome": 153, "Firefox": 155, "Firefox-ESR": 140})
+
+	people := []struct {
+		who              string
+		browser, version string
+		userAgent        string
+	}{
+		{
+			who: "a link opened inside a chat app on Android", browser: "Chrome", version: "119",
+			userAgent: "Mozilla/5.0 (Linux; Android 13; SM-A536B Build/TP1A; wv) AppleWebKit/537.36 " +
+				"(KHTML, like Gecko) Version/4.0 Chrome/119.0.6045.163 Mobile Safari/537.36",
+		},
+		{
+			who: "a desktop app's built-in browser", browser: "Chrome", version: "126",
+			userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+				"(KHTML, like Gecko) Chat/1.2.3 Chrome/126.0.0.0 Electron/31.0.0 Safari/537.36",
+		},
+		{
+			who: "a Chromebook past its last update", browser: "Chrome", version: "120",
+			userAgent: "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 " +
+				"(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		},
+		{
+			who: "a managed desktop on extended support", browser: "Firefox", version: "140",
+			userAgent: "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0",
+		},
+	}
+
+	for _, person := range people {
+		if filter.IsOutdatedBrowser(person.browser, person.version, person.userAgent) {
+			t.Errorf("%s was classified as automated", person.who)
 		}
 	}
 }
@@ -285,7 +333,7 @@ func TestBrowsersWithoutAFloorAreLeftAlone(t *testing.T) {
 		{"", "104"},
 		{"Chrome", "not a number"},
 	} {
-		if filter.IsOutdatedBrowser(browser.name, browser.version) {
+		if filter.IsOutdatedBrowser(browser.name, browser.version, "") {
 			t.Errorf("%q %q was judged without a floor to judge it against",
 				browser.name, browser.version)
 		}
@@ -300,7 +348,7 @@ func TestNewFilterKnowsCurrentBrowsers(t *testing.T) {
 	// Every browser with a floor, and a version far enough back that no
 	// self-updating install could be on it.
 	for _, name := range []string{"Chrome", "Firefox", "Edge"} {
-		if !filter.IsOutdatedBrowser(name, "40") {
+		if !filter.IsOutdatedBrowser(name, "40", "") {
 			t.Errorf("a fresh filter has no current version for %s — run `make lists`", name)
 		}
 	}

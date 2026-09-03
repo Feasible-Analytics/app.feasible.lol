@@ -585,6 +585,15 @@ func BrowserSources() []BrowserSource {
 			Major: majorFromFirefox,
 		},
 		{
+			// The extended-support channel, which is what a managed desktop and
+			// most Linux distributions actually ship. It sits deliberately far
+			// behind the release channel, so without it every supported
+			// enterprise Firefox would be read as abandoned.
+			Name:  ESRSuffix("Firefox"),
+			URL:   "https://product-details.mozilla.org/1.0/firefox_versions.json",
+			Major: majorFromFirefoxESR,
+		},
+		{
 			Name:  "Edge",
 			URL:   "https://edgeupdates.microsoft.com/api/products",
 			Major: majorFromEdge,
@@ -662,6 +671,20 @@ func majorFromFirefox(body []byte) (int, error) {
 	}
 
 	return majorOf(doc.Latest)
+}
+
+// majorFromFirefoxESR reads the extended-support release, whose version carries
+// an "esr" suffix that the plain major parser stops at anyway.
+func majorFromFirefoxESR(body []byte) (int, error) {
+	var doc struct {
+		ESR string `json:"FIREFOX_ESR"`
+	}
+
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return 0, err
+	}
+
+	return majorOf(doc.ESR)
 }
 
 // majorFromEdge reads the highest stable build Microsoft lists. The releases

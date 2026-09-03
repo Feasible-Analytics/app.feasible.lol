@@ -7,4 +7,5 @@
 
 Chrome 153
 Firefox 155
+Firefox-ESR 140
 Edge 152
