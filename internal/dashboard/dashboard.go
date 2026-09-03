@@ -282,8 +282,13 @@ type Navigation struct {
 	BillingURL      string `json:"billing_url,omitempty"`
 	ExportURL       string `json:"export_url,omitempty"`
 	LogoutURL       string `json:"logout_url"`
-	CSRF            string `json:"csrf"`
-	TeamID          int64  `json:"-"`
+
+	// AvatarURL is absent for a person with no stored picture, which is what
+	// leaves the account button on its letter circle.
+	AvatarURL string `json:"avatar_url,omitempty"`
+
+	CSRF   string `json:"csrf"`
+	TeamID int64  `json:"-"`
 }
 
 // Lock is the account-level refusal shown instead of individual failed cards.

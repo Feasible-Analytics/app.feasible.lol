@@ -41,6 +41,22 @@ type User struct {
 	CreatedAt       int64
 	UpdatedAt       int64
 	LastSeenAt      int64
+
+	// AvatarETag is empty for a person with no stored picture, and is the
+	// picture's validator otherwise. The bytes are deliberately not here: this
+	// row is read on every request that turns a cookie into a person, and a
+	// picture nobody is asking for has no business travelling with it.
+	AvatarETag string
+
+	// AvatarFetchedAt records that a provider has been asked, whether or not it
+	// had anything. Without it, an address with no Gravatar produces an
+	// outbound request on every sign-in forever.
+	AvatarFetchedAt int64
+}
+
+// HasAvatar reports whether a stored picture exists to serve.
+func (u *User) HasAvatar() bool {
+	return u.AvatarETag != ""
 }
 
 // Verified reports whether this address has been proven. Google linking and
@@ -257,7 +273,8 @@ func nullUnix(value any) int64 {
 // otherwise drift.
 const userColumns = `id, email, name, password_hash, COALESCE(google_sub, ''),
 	email_verified_at, theme, totp_secret, totp_recovery_codes, totp_enabled_at,
-	totp_last_used_step, created_at, updated_at, last_seen_at`
+	totp_last_used_step, created_at, updated_at, last_seen_at,
+	avatar_etag, avatar_fetched_at`
 
 // scanUser reads one row in the shape userColumns produces.
 func scanUser(row interface{ Scan(...any) error }) (*User, error) {
@@ -266,11 +283,13 @@ func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 		verifiedAt sql.NullInt64
 		totpAt     sql.NullInt64
 		lastSeen   sql.NullInt64
+		avatarAt   sql.NullInt64
 	)
 
 	err := row.Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.GoogleSub,
 		&verifiedAt, &u.Theme, &u.TOTPSecret, &u.TOTPRecovery, &totpAt,
-		&u.TOTPLastStep, &u.CreatedAt, &u.UpdatedAt, &lastSeen)
+		&u.TOTPLastStep, &u.CreatedAt, &u.UpdatedAt, &lastSeen,
+		&u.AvatarETag, &avatarAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -281,6 +300,7 @@ func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	u.EmailVerifiedAt = nullInt64(verifiedAt)
 	u.TOTPEnabledAt = nullInt64(totpAt)
 	u.LastSeenAt = nullInt64(lastSeen)
+	u.AvatarFetchedAt = nullInt64(avatarAt)
 
 	return &u, nil
 }

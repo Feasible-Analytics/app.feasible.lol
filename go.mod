@@ -7,6 +7,7 @@ toolchain go1.26.8
 require (
 	github.com/pquerna/otp v1.5.0
 	golang.org/x/crypto v0.55.0
+	golang.org/x/image v0.45.0
 	modernc.org/sqlite v1.39.0
 )
 

@@ -198,6 +198,34 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, fil
 	);
 }
 
+/**
+ * AccountFace is the picture, or the first letter of the name when there is
+ * none.
+ *
+ * The letter is not a placeholder to be apologised for: it is the right answer
+ * for anybody who has neither a Google picture nor a Gravatar, and it is what a
+ * picture that fails to load falls back to. The source is always our own origin
+ * — the server fetched it once, precisely so a browser never tells Google or
+ * Gravatar who is looking at which page.
+ */
+function AccountFace({ navigation }: { navigation: Navigation }) {
+	const [broken, setBroken] = useState(false);
+	const letter = (navigation.name || navigation.email).slice(0, 1).toUpperCase();
+
+	if (!navigation.avatar_url || broken) return <>{letter}</>;
+
+	return (
+		<img
+			src={navigation.avatar_url}
+			alt=""
+			width={28}
+			height={28}
+			onError={() => setBroken(true)}
+			className="size-full object-cover"
+		/>
+	);
+}
+
 /** AccountMenu keeps product navigation and the CSRF-protected sign-out in one
  * compact control that remains usable at mobile widths. */
 function AccountMenu({ navigation }: { navigation: Navigation }) {
@@ -214,9 +242,9 @@ function AccountMenu({ navigation }: { navigation: Navigation }) {
 				aria-haspopup="menu"
 				aria-label={t("dashboard.navigation.account_menu")}
 				onClick={() => setOpen((was) => !was)}
-				className="flex size-control items-center justify-center rounded-full border border-line bg-subtle text-xs font-semibold text-body transition-colors hover:bg-hover"
+				className="flex size-control items-center justify-center overflow-hidden rounded-full border border-line bg-subtle text-xs font-semibold text-body transition-colors hover:bg-hover"
 			>
-				{(navigation.name || navigation.email).slice(0, 1).toUpperCase()}
+				<AccountFace navigation={navigation} />
 			</button>
 
 			{open && (

@@ -373,6 +373,11 @@ export interface Navigation {
 	billing_url?: string;
 	export_url?: string;
 	logout_url: string;
+	/** Absent for a person with no stored picture, which is what leaves the
+	 *  account button on its letter circle. Always our own origin: the picture
+	 *  is fetched once on the server precisely so a browser never asks Google
+	 *  or Gravatar for it. */
+	avatar_url?: string;
 	csrf: string;
 }
 
