@@ -776,7 +776,7 @@ func (h *Handler) NavigationForDashboard(w http.ResponseWriter, r *http.Request)
 		navigation.SiteSettingsURL = "/sites/domain/" + site.Domain + "/settings"
 		navigation.ConversionsURL = "/settings/sites/" + site.Domain + "/conversions"
 	}
-	if role == teams.RoleOwner || role == teams.RoleAdmin || role == teams.RoleBilling {
+	if teams.Can(role, teams.PermManageBilling) {
 		navigation.ExportURL = "/billing/export?team=" + strconv.FormatInt(site.TeamID, 10)
 		if !h.DisableCommerce {
 			navigation.BillingURL = "/billing?team=" + strconv.FormatInt(site.TeamID, 10)

@@ -112,7 +112,7 @@ func (h *Handler) showSites(w http.ResponseWriter, r *http.Request) {
 	role, _ := h.Teams.RoleOf(r.Context(), team.ID, userFrom(r).ID)
 	p.Data["CanManage"] = teams.Can(role, teams.PermManageSites)
 	p.Data["CanConfigure"] = teams.Can(role, teams.PermManageSiteSettings)
-	p.Data["CanManageBilling"] = role == teams.RoleOwner || role == teams.RoleAdmin || role == teams.RoleBilling
+	p.Data["CanManageBilling"] = teams.Can(role, teams.PermManageBilling)
 
 	if r.URL.Query().Get("welcome") == "1" {
 		p.Flash = i18n.T(p.Lang, "auth.flash.email_confirmed")

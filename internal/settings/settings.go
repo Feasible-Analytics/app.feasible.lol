@@ -206,7 +206,7 @@ func funcs() template.FuncMap {
 			return teams.Can(role, teams.Permission(permission))
 		},
 		"canBilling": func(role teams.Role) bool {
-			return role == teams.RoleOwner || role == teams.RoleAdmin || role == teams.RoleBilling
+			return teams.Can(role, teams.PermManageBilling)
 		},
 		"stepGoalID": func(funnel goals.Funnel, position int) int64 {
 			for _, step := range funnel.Steps {

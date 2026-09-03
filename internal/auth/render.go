@@ -164,7 +164,7 @@ func (h *Handler) newPage(r *http.Request, title, nav string) *page {
 			if team, err := h.Store.TeamByID(r.Context(), teamID); err == nil {
 				p.Team = team
 				if role, roleErr := h.Teams.RoleOf(r.Context(), teamID, p.User.ID); roleErr == nil {
-					p.CanManageBilling = role == teams.RoleOwner || role == teams.RoleAdmin || role == teams.RoleBilling
+					p.CanManageBilling = teams.Can(role, teams.PermManageBilling)
 					p.CanManageMembers = teams.Can(role, teams.PermManageMembers) || teams.Can(role, teams.PermCreateAPIKey)
 					p.CanManageTeam = teams.Can(role, teams.PermManageTeam) || teams.Can(role, teams.PermManageSecurity)
 				}
@@ -229,11 +229,11 @@ func templateFuncs() template.FuncMap {
 			return i18n.LocalURL(target, locale)
 		},
 
-		// canBilling gates the billing link in the shared settings chrome. It
-		// is the same rule the settings package uses, because the chrome is
-		// one template and cannot ask two different questions.
+		// canBilling gates the billing link. It reads the permission matrix
+		// rather than listing roles, so who may pay is answered in one place
+		// instead of once per template that asks.
 		"canBilling": func(role teams.Role) bool {
-			return role == teams.RoleOwner || role == teams.RoleAdmin || role == teams.RoleBilling
+			return teams.Can(role, teams.PermManageBilling)
 		},
 
 		// t renders one catalogue string.
