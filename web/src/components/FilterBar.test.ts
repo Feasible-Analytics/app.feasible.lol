@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { suggestionsRequest } from "./FilterBar";
+import { suggestionsRequest, suggestionsSettled } from "./FilterBar";
 
 test("an empty search asks for the busiest values and nothing else", () => {
 	const body = suggestionsRequest("visit:entry_page", "28d", "");
@@ -50,4 +50,23 @@ test("a changed search is a changed request, which is what re-runs the query", (
 
 	assert.notEqual(first, second);
 	assert.notEqual(first, cleared);
+});
+
+test("values are marked out of date until they answer the box above them", () => {
+	// Nothing typed, nothing in flight: the busiest values are the answer.
+	assert.equal(suggestionsSettled("", "", false), true);
+
+	// Still inside the debounce. The rows on screen were fetched for the empty
+	// search and cannot contain what is being typed.
+	assert.equal(suggestionsSettled("blog", "", false), false);
+
+	// Debounce done, query in flight. This is the seconds-long window a large
+	// site spends showing its busiest pages under a search for something else.
+	assert.equal(suggestionsSettled("blog", "blog", true), false);
+
+	assert.equal(suggestionsSettled("blog", "blog", false), true);
+
+	// The search is trimmed on its way to the server, so trailing space is not
+	// a difference and must not leave the list looking permanently stale.
+	assert.equal(suggestionsSettled("blog ", "blog", false), true);
 });

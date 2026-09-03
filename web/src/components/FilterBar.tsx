@@ -42,6 +42,19 @@ export function suggestionsRequest(dimension: string, range: DateRange, search: 
 }
 
 /**
+ * suggestionsSettled says whether the values on screen answer the box above
+ * them.
+ *
+ * The previous answer stays rendered while the next one loads, which is right
+ * for a report card and wrong here: a list of the busiest pages sitting under a
+ * search box the reader has just typed into is indistinguishable from a search
+ * box that does nothing, and on a large site the query behind it takes seconds.
+ */
+export function suggestionsSettled(typed: string, search: string, loading: boolean): boolean {
+	return !loading && typed.trim() === search;
+}
+
+/**
  * How many pills stay on the bar before the rest collapse.
  *
  * Four is where a row of pills stops being a summary of what you are looking at
@@ -390,6 +403,7 @@ function ValueEditor({
 
 	const stats = useStats(domain, freeform ? null : suggestionsRequest(editing.dimension, range, search));
 	const rows = stats.data?.results ?? [];
+	const settled = suggestionsSettled(typed, search, stats.loading);
 
 	/** collected is the labels this panel learned, so a country code chosen here
 	 *  arrives on the recipient's screen with its name attached. */
@@ -474,7 +488,7 @@ function ValueEditor({
 			)}
 
 			{!freeform && (
-				<div className="scroll-thin max-h-56 overflow-auto border-t border-line">
+				<div className="scroll-thin max-h-56 overflow-auto border-t border-line" aria-busy={!settled}>
 					{stats.error ? (
 						<p className="px-3 py-3 text-xs text-down">{stats.error}</p>
 					) : !stats.data ? (
@@ -484,7 +498,14 @@ function ValueEditor({
 					) : rows.length === 0 ? (
 						<p className="px-3 py-3 text-xs text-muted">{t("dashboard.filter.no_matches")}</p>
 					) : (
-						rows.map((row) => {
+						// The dimming is immediate rather than eased: a fade is time
+						// spent showing values that contradict the box, which is the
+						// exact impression being corrected. They are unclickable
+						// while out of date too, because picking the busiest page
+						// during a narrower search filters the dashboard by
+						// something the reader never chose.
+						<div className={settled ? "" : "pointer-events-none opacity-40"}>
+						{rows.map((row) => {
 							const value = row.dimensions[0] ?? "";
 							const on = values.includes(value);
 
@@ -505,7 +526,8 @@ function ValueEditor({
 									<span className="tnum shrink-0 text-xs text-muted"><span className="sr-only">{exact(row.metrics[0] ?? 0)}</span><span aria-hidden="true">{compact(row.metrics[0] ?? 0)}</span></span>
 								</button>
 							);
-						})
+						})}
+						</div>
 					)}
 				</div>
 			)}
