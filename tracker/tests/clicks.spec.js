@@ -39,7 +39,11 @@ test("a modifier-click opens a new tab and leaves the page alone", async ({ page
 	await page.goto("/basic.html");
 	await settledCount(state, "pageview", 1);
 
-	const opened = context.waitForEvent("page", { timeout: 5000 });
+	// No explicit timeout: opening a tab is the browser's work, not ours, and it
+	// is slowest exactly when the suite is busiest — every engine running at once.
+	// The test timeout is the honest ceiling, and a shorter one only ever reports
+	// a loaded machine as a tracker bug.
+	const opened = context.waitForEvent("page");
 	await page.click("#outbound", { modifiers: ["ControlOrMeta"] });
 
 	const tab = await opened;
@@ -59,7 +63,7 @@ test("a link with a target opens where it says and is still recorded", async ({ 
 	await page.goto("/basic.html");
 	await settledCount(state, "pageview", 1);
 
-	const opened = context.waitForEvent("page", { timeout: 5000 });
+	const opened = context.waitForEvent("page");
 	await page.click("#outbound-blank");
 
 	const tab = await opened;
@@ -106,6 +110,18 @@ test("a mailto link is left alone", async ({ page }) => {
 
 	await page.goto("/basic.html");
 	await settledCount(state, "pageview", 1);
+
+	// WebKit and Firefox hand a `mailto:` off to the operating system, which
+	// launches the developer's mail client — once per run, per engine. Chromium
+	// swallows it, which is why this only bites now that the suite drives all
+	// three.
+	//
+	// The listener is registered here rather than in the fixture or an init
+	// script because listeners on one target fire in registration order: the
+	// tracker claimed `document` when it loaded, so it still sees this click
+	// with `defaultPrevented` false and decides exactly as it would in the
+	// wild. Cancelling afterwards stops only the operating system's half.
+	await page.evaluate(() => document.addEventListener("click", (event) => event.preventDefault()));
 
 	await page.click("#mailto");
 	await page.waitForTimeout(500);

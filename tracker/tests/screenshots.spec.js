@@ -12,6 +12,13 @@
 import { test, expect } from "@playwright/test";
 import { collect, settledCount, stubOutbound } from "./helpers.js";
 
+// Chromium only, because `shoot` writes each image to one fixed committed path.
+// Running this file under every engine would have three browsers racing for the
+// same four filenames, and whichever finished last would decide what the review
+// artefact looks like. The tracker's cross-engine behaviour is asserted by the
+// rest of the suite; these are pictures, and one engine's are enough.
+test.skip(({ browserName }) => browserName !== "chromium", "diagnostic images are a Chromium artefact");
+
 // pinUUIDs keeps the diagnostic artefacts reproducible now that the client
 // identity is visible in every captured payload. It is intentionally scoped to
 // screenshots; retry tests need the browser's real generator across documents.

@@ -143,3 +143,51 @@ jobs:
       # The binary has to actually run. A build that links but cannot start is a
       # failure people otherwise discover after the release is cut.
       - run: ./feasible --version
+
+  # The only honest test of a tracking script is a real browser loading a real
+  # page, and the tracker runs on a customer's site in whatever engine their
+  # visitors have. Chromium alone would leave every feature-detection fallback
+  # — keepalive, ResizeObserver, requestSubmit, randomUUID — unexercised in the
+  # engines that actually take them.
+  #
+  # It is a separate job because it drives three browsers and is slower than the
+  # Go suite, and holding fast feedback hostage to it helps nobody.
+  tracker:
+    name: Tracker end-to-end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Go is not incidental here. The public page layout checks render their
+      # fixtures through the real route table with `go test` before Playwright
+      # ever opens a browser.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: tracker/package-lock.json
+
+      - run: npm --prefix tracker ci
+
+      # The browser binaries are a few hundred megabytes and change only when
+      # the pinned Playwright version does, so the lockfile hash is the key.
+      - uses: actions/cache@v4
+        id: browsers
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('tracker/package-lock.json') }}
+
+      - if: steps.browsers.outputs.cache-hit != 'true'
+        run: npm --prefix tracker exec -- playwright install --with-deps chromium webkit firefox
+
+      # A cache hit restores the binaries but not the system libraries they link
+      # against, which live outside the cached directory and have to be put back.
+      - if: steps.browsers.outputs.cache-hit == 'true'
+        run: npm --prefix tracker exec -- playwright install-deps chromium webkit firefox
+
+      - run: make test-tracker
