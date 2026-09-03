@@ -34,13 +34,17 @@ this skill is that permission.
 ## Choosing the next issue
 
 ```bash
-gh issue list --state open --limit 100 --json number,title,labels,milestone
+gh issue list --state open --limit 100 --json number,title,milestone,createdAt
 ```
 
-Order of preference:
+The repository has no labels, so nothing tells you what is urgent. Order by:
 
-1. `priority:critical`, then `high`, then `medium`, then `low`, then unlabelled.
-2. Within a tier, oldest first.
+1. **Milestone**, earliest first. That is the only priority signal there is.
+2. Within a milestone, oldest first.
+
+Read the titles before you commit to that order. A one-line copy fix ahead of a week-long redesign
+is worth taking first even when it is newer — a burndown that lands six small things beats one that
+half-lands a big one. Say in your summary if you reordered and why.
 
 **Skip, and do not start:**
 

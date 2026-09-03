@@ -69,7 +69,10 @@ This project is **AGPL-3.0-or-later**.
 - Epics own **native GitHub sub-issues**, not markdown checklists — only native sub-issues give a real
   parent/child rollup and populate the project board's Parent and Progress fields.
 - Child issue bodies end with `Part of #<epic>`.
-- Every issue carries an `area:*` label, a `priority:*` label, and a milestone.
+- **We do not use GitHub labels.** There are none on the repository and none are to be created.
+  An issue says what it is in its title and body; a label is a second, weaker place for the same
+  information that then has to be kept in step. Every issue carries a milestone and is assigned
+  to `cloudmanic`.
 - **Issues must stand alone.** A senior developer with no prior context should be able to pick one up
   and do the work from the issue body. The Harbor plan is background, not a prerequisite — this repo
   is public and Harbor is not.

@@ -70,8 +70,8 @@ three weeks and having to redo your research.
 ## Repository conventions
 
 - **Assign every issue to `cloudmanic`.**
-- **Do not add labels.** Not `bug`, not `area:*`, not `priority:*` — nothing, unless Spicer asks for
-  them in that session. (This overrides the label conventions in `CLAUDE.md`; it is deliberate.)
+- **Never add a label.** The repository has none and none are to be created. An issue says what it
+  is in its title and body.
 - **Do not set a milestone** unless Spicer names one.
 - **Never name a competitor** — in the title, the body, a code block, or a screenshot. Write "the
   incumbent" or "a competitor". If a screenshot shows their branding, do not attach it; describe the
