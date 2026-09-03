@@ -514,9 +514,10 @@ func (p *Pipeline) classify(userAgent string, addr netip.Addr, referrerHost stri
 }
 
 // locate geolocates an address, bucketing datacentre traffic separately.
-// Commercial VPN exits are datacentre addresses, so geolocating them reports
-// the exit node's country rather than the visitor's — naming the bucket keeps
-// the visitor counted and tells the truth about what we know.
+// Geolocating a datacentre address reports where the machine is, not where the
+// person is, so it is named for what it is instead. The row keeps its country
+// and stays queryable behind the bots toggle; what it must not do is claim to
+// know a country it does not.
 func (p *Pipeline) locate(addr netip.Addr, botReason string) geo.Location {
 	if p.Geo == nil {
 		return geo.Location{}

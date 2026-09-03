@@ -1,0 +1,178 @@
+//
+// main.go
+// Rebuilds the embedded classification lists from their upstream sources.
+//
+// Created: 2026-09-03
+// Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+//
+
+// Command gen-lists writes internal/ingest/lists/datacenters.txt from the
+// ranges each cloud provider publishes about itself. It is a build-time tool,
+// never embedded in the product, and its output is committed so that `go build`
+// works from a clean checkout with no network.
+//
+// Run it with `make lists`.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest/lists"
+)
+
+// main fetches every source, merges the result and writes the file.
+func main() {
+	out := flag.String("out", filepath.Join("internal", "ingest", "lists", "datacenters.txt"),
+		"file to write the merged ranges into")
+	shrink := flag.Bool("allow-shrink", false,
+		"write the list even if it is much smaller than the committed one, for a deliberate change of sources")
+	flag.Parse()
+
+	if err := run(*out, *shrink); err != nil {
+		fmt.Fprintln(os.Stderr, "gen-lists:", err)
+		os.Exit(1)
+	}
+}
+
+// run does the work. A source that fails is reported and skipped rather than
+// fatal, because one provider having a bad morning must not leave the tree with
+// no list at all — but a run that loses a source says so loudly, and the
+// coverage floor below refuses to write a file that lost most of them.
+func run(out string, allowShrink bool) error {
+	client := &http.Client{Timeout: lists.FetchTimeout}
+	ctx := context.Background()
+
+	sources := lists.DatacenterSources()
+
+	var failed []string
+
+	// Azure is found rather than named, and it is the largest source by a wide
+	// margin. It has to join the roll call either way: a source that is never
+	// added is a source the coverage check below cannot notice is gone.
+	if azure, err := lists.AzureSource(ctx, client, time.Now()); err != nil {
+		fmt.Fprintln(os.Stderr, "  ! Azure:", err)
+		failed = append(failed, "Azure")
+	} else {
+		sources = append(sources, azure)
+	}
+
+	var all []string
+
+	for _, source := range sources {
+		cidrs, err := lists.Fetch(ctx, client, source)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "  !", err)
+			failed = append(failed, source.Name)
+
+			continue
+		}
+
+		fmt.Printf("  %-16s %6d prefixes\n", source.Name, len(cidrs))
+		all = append(all, cidrs...)
+	}
+
+	merged := lists.Merge(all)
+
+	fmt.Printf("\n  %d prefixes merged to %d ranges\n", len(all), len(merged))
+
+	if err := sound(merged, len(sources)+len(failed), failed, allowShrink); err != nil {
+		return err
+	}
+
+	return write(out, merged, sources, failed)
+}
+
+// MinimumCoverage is the floor the rebuilt list has to clear.
+//
+// It is a fraction of what is already committed rather than a fixed number,
+// because the number that matters is "did this run lose a source" and the
+// absolute size grows over time. Losing the largest source costs about a sixth
+// of the ranges, so anything under this is a bad morning at one of the
+// providers rather than the internet getting smaller.
+const MinimumCoverage = 0.9
+
+// sound refuses to write a list that lost too much.
+//
+// Overwriting the committed file with a half-fetched one is the worst outcome
+// here: it builds, it tests, it ships, and it silently stops recognising a
+// cloud. The check has to be here because nothing downstream can tell a list
+// that shrank from a list that was always that size.
+func sound(merged []string, sources int, failed []string, allowShrink bool) error {
+	if len(failed)*2 >= sources {
+		return fmt.Errorf("%d of %d sources failed: %s",
+			len(failed), sources, strings.Join(failed, ", "))
+	}
+
+	// Dropping a source on purpose shrinks the list on purpose, and the check
+	// cannot tell that from a source that failed. Saying so on the command line
+	// is the difference between a decision and an accident.
+	if allowShrink {
+		return nil
+	}
+
+	floor := int(float64(len(lists.Datacenters())) * MinimumCoverage)
+	if len(merged) < floor {
+		return fmt.Errorf("rebuilt to %d ranges, but the committed list holds %d and the floor is %d — "+
+			"a source is missing; %s. Pass -allow-shrink if the change is deliberate",
+			len(merged), len(lists.Datacenters()), floor, describe(failed))
+	}
+
+	return nil
+}
+
+// describe names the sources that failed, for an error a person has to act on.
+func describe(failed []string) string {
+	if len(failed) == 0 {
+		return "every source answered, so one of them has changed its format"
+	}
+
+	return "these did not answer: " + strings.Join(failed, ", ")
+}
+
+// write renders the file. The header names the sources rather than the date:
+// a date changes every run and turns a no-op regeneration into a diff, while
+// the source list is the thing a reader actually needs to judge the file by.
+func write(out string, ranges []string, sources []lists.Source, failed []string) error {
+	names := make([]string, 0, len(sources))
+	for _, source := range sources {
+		names = append(names, source.Name)
+	}
+
+	var body strings.Builder
+
+	body.WriteString("# datacenters.txt\n")
+	body.WriteString("# Hosting and cloud-compute address ranges. Generated by cmd/gen-lists;\n")
+	body.WriteString("# run `make lists` to rebuild. Do not edit by hand.\n")
+	body.WriteString("#\n")
+	body.WriteString("# Every range here comes from the provider describing its own network.\n")
+	body.WriteString("# Cloudflare, Fastly and Akamai are deliberately absent: their address\n")
+	body.WriteString("# space carries WARP and iCloud Private Relay, which are real people.\n")
+	body.WriteString("#\n")
+	body.WriteString("# Sources: " + strings.Join(names, ", ") + "\n")
+
+	if len(failed) > 0 {
+		body.WriteString("# Missing at generation time: " + strings.Join(failed, ", ") + "\n")
+	}
+
+	body.WriteString("\n")
+
+	for _, entry := range ranges {
+		body.WriteString(entry)
+		body.WriteString("\n")
+	}
+
+	if err := os.WriteFile(out, []byte(body.String()), 0o644); err != nil {
+		return err
+	}
+
+	fmt.Printf("  wrote %s\n", out)
+
+	return nil
+}

@@ -18,6 +18,8 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest/lists"
 )
 
 // The classification reasons. They are part of the closed set of values the
@@ -29,10 +31,10 @@ const (
 	ReasonReferrerSpam = "referrer_spam"
 )
 
-// File names the lists are refreshed into. Bot and spam lists go stale, so the
-// embedded copies below are only a baseline; a background job replaces these
-// files without a rebuild, and a self-hoster is never frozen at whatever list
-// their binary shipped with.
+// File names the lists are refreshed into. Every list goes stale — providers
+// announce new address space every week — so the embedded copies are only a
+// baseline; a file here replaces one without a rebuild, and a self-hoster is
+// never frozen at whatever list their binary shipped with.
 const (
 	BotListFileName        = "bots.txt"
 	DatacenterListFileName = "datacenters.txt"
@@ -106,8 +108,11 @@ func NewBotFilter() *BotFilter {
 	}
 	filter.spam.Store(&spam)
 
-	empty := &rangeSet{}
-	filter.datacenters.Store(empty)
+	// The address ranges are embedded rather than left empty until somebody
+	// supplies a file. A scraper farm rotates through real browser user agents,
+	// so the token list above cannot see it and an install with no ranges
+	// counts every one of those requests as a visitor.
+	filter.datacenters.Store(newRangeSet(lists.Datacenters()))
 
 	return filter
 }
@@ -206,9 +211,9 @@ func (f *BotFilter) IsReferrerSpam(host string) bool {
 	return false
 }
 
-// Sizes reports how many entries each list holds. The ingestion health panel
-// shows them, because a refresh job that quietly started returning an empty
-// file looks exactly like a sudden surge of legitimate traffic.
+// Sizes reports how many entries each list holds. The process logs them on the
+// way up, because a list that quietly went empty looks exactly like a sudden
+// surge of legitimate traffic.
 func (f *BotFilter) Sizes() (bots, datacenters, spam int) {
 	return len(*f.bots.Load()), f.datacenters.Load().len(), len(*f.spam.Load())
 }
