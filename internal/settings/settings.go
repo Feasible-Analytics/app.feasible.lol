@@ -51,6 +51,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/pathclean"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/settingsui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/shields"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
@@ -154,6 +155,11 @@ var pages = map[string]*template.Template{
 func mustParse(name string) *template.Template {
 	parsed, err := template.New("layout.html").Funcs(funcs()).ParseFS(templateFS,
 		"templates/layout.html", "templates/"+name)
+	if err == nil {
+		// The header and the section list live in the shared package, so both
+		// halves of the settings surface render the same chrome.
+		parsed, err = parsed.ParseFS(settingsui.Templates, "templates/*.html")
+	}
 	if err != nil {
 		panic("settings: " + err.Error())
 	}
@@ -330,6 +336,15 @@ type page struct {
 	TitleID string
 	Tab     string
 	Domain  string
+
+	// Shield is the rule kind Shields is filtered to, empty for all of them.
+	// It is on the page rather than derived in the template because the
+	// navigation and the screen have to agree on which one is showing.
+	Shield string
+
+	// Shell is the header and section list, shared with the screens rendered
+	// by another package so the two cannot drift into two navigations.
+	Shell   settingsui.Shell
 	Message string
 	Error   string
 	CSRF    string
@@ -510,6 +525,11 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, da
 		}
 	}
 
+	// The chrome is resolved here rather than in each screen, so a screen added
+	// later cannot arrive with a different set of places to go.
+	data.Shell = settingsui.NewShell(data.Lang, data.Domain, i18n.T(data.Lang, data.TitleID),
+		data.TeamID, data.Role, data.CSRF, data.Tab, data.Shield)
+
 	if err := template.ExecuteTemplate(w, "layout", data); err != nil && h.Log != nil {
 		h.Log.Error("settings page could not be rendered", "page", name, "error", err)
 	}
@@ -567,17 +587,52 @@ func (h *Handler) shields(w http.ResponseWriter, r *http.Request, site sites.Sit
 
 	message, failure := flash(r)
 
+	// One rule kind at a time when the navigation asked for one. Four kinds of
+	// rule on one screen is four screens somebody scrolls through to reach the
+	// one they came for, and each is long enough to be worth its own URL.
+	kind := shieldKind(r.URL.Query().Get("kind"))
+	groups := groupRules(rules)
+	if kind != "" {
+		groups = onlyKind(groups, kind)
+	}
+
 	data := page{
-		TitleID: "auth.title.shields", Tab: "shields", Domain: site.Domain,
+		TitleID: "auth.title.shields", Tab: "shields", Domain: site.Domain, Shield: kind,
 		Lang:    i18n.Negotiate(r),
 		Message: message, Error: failure,
 		Viewer:            shields.ResolveViewer(r, h.Trusted),
 		MaxRules:          shields.MaxRulesPerKind,
-		Groups:            groupRules(rules),
+		Groups:            groups,
 		RejectedHostnames: rejected,
 	}
 
 	h.render(w, r, "shields", data)
+}
+
+// shieldKind reads the rule kind the navigation asked for. An unknown value
+// answers as though none was given, because a stale bookmark should show the
+// whole screen rather than an empty one.
+func shieldKind(raw string) string {
+	for _, candidate := range settingsui.ShieldKinds {
+		if candidate.Kind == raw {
+			return raw
+		}
+	}
+
+	return ""
+}
+
+// onlyKind narrows the screen to one rule kind. The other groups are dropped
+// rather than hidden in the template, so the page cannot render an "add rule"
+// form for a kind its heading does not mention.
+func onlyKind(groups []ruleGroup, kind string) []ruleGroup {
+	for _, group := range groups {
+		if group.Kind == kind {
+			return []ruleGroup{group}
+		}
+	}
+
+	return nil
 }
 
 // allowableRejections removes aggregate and already-allowed hostnames from the

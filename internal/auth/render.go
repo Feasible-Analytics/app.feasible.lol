@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/settingsui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
@@ -64,6 +65,12 @@ func newViews() (*views, error) {
 			return nil, fmt.Errorf("auth: parse %s: %w", entry, err)
 		}
 
+		// The settings chrome comes from the package both settings surfaces
+		// share, so there is one copy of that markup rather than two.
+		if tpl, err = tpl.ParseFS(settingsui.Templates, "templates/*.html"); err != nil {
+			return nil, fmt.Errorf("auth: parse settings chrome for %s: %w", entry, err)
+		}
+
 		v.pages[name] = tpl
 	}
 
@@ -76,6 +83,12 @@ func newViews() (*views, error) {
 type page struct {
 	Title string
 	Nav   string
+
+	// Settings is the shared settings chrome, present only on the screens that
+	// belong to that surface. Its presence is what selects the shell, because
+	// the settings screens in this package and the ones in internal/settings
+	// are one screen to the reader and must not arrive wearing two shells.
+	Settings *settingsui.Shell
 
 	// Focused gives a signed-in setup step a quiet shell without losing the
 	// wider content area it needs. It is separate from Nav because signed-out
@@ -212,6 +225,13 @@ func templateFuncs() template.FuncMap {
 		// url carries the current language through an internal link or form.
 		"url": func(locale, target string) string {
 			return i18n.LocalURL(target, locale)
+		},
+
+		// canBilling gates the billing link in the shared settings chrome. It
+		// is the same rule the settings package uses, because the chrome is
+		// one template and cannot ask two different questions.
+		"canBilling": func(role teams.Role) bool {
+			return role == teams.RoleOwner || role == teams.RoleAdmin || role == teams.RoleBilling
 		},
 
 		// t renders one catalogue string.

@@ -194,7 +194,9 @@ func TestScreensRender(t *testing.T) {
 	for _, tc := range []struct{ path, want string }{
 		{"/settings/sites/example.com/shields", "Blocked addresses"},
 		{"/settings/sites/example.com/paths", "Path cleaning"},
-		{"/settings/sites/example.com/imports", "Import &amp; export"},
+		// The screen's own content rather than a navigation label: a nav that
+		// gets reworded should not read as a broken screen.
+		{"/settings/sites/example.com/imports", "Upload it here"},
 	} {
 		response := get(t, handler, tc.path)
 

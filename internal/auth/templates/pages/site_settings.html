@@ -4,227 +4,212 @@
 
   Created: 2026-08-30
   Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  Drawn in the shared settings chrome, so this screen and the ones rendered by
+  internal/settings carry the same navigation. The card and row shapes are
+  described in internal/settingsui/templates/shell.html.
 -->
 {{ define "content" }}
 {{ $site := .Data.Site }}
 
-<div class="mx-auto max-w-2xl">
-  <a href="{{ url $.Lang (printf "/sites?team_id=%d" .Data.CurrentTeamID) }}" class="text-sm text-muted hover:text-body">{{ t $.Lang "auth.site_settings.back" }}</a>
+{{ if .Data.DualWrite }}
+  <div class="mb-6 rounded-2xl border border-warn/30 bg-warn/10 p-4 text-sm text-warn-ink">
+    <strong>{{ t $.Lang "auth.site_settings.dual_write_title" }}</strong>
+    {{ t $.Lang "auth.site_settings.dual_write_body" "domain" $site.PreviousDomain "duration" (until $.Now $.Lang $site.PreviousDomainUntil) }}
+  </div>
+{{ end }}
 
-  <h1 class="mt-2 text-2xl font-semibold text-heading">{{ $site.Label }}</h1>
-  <p class="mt-1 text-sm text-muted">{{ $site.Domain }}</p>
+<!-- Site details -->
+<form method="post" action="{{ url $.Lang (printf "/sites/%d/settings" $site.ID) }}"
+      class="rounded-2xl border border-line bg-card shadow-sm">
+  <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
 
-  <!-- The per-site screens that live outside this package. They are linked from
-       here rather than from the sidebar because each is about one site,
-       and a nav item that needs a site chosen first is a nav item that answers
-       "which one?" with a 404. -->
-  <div class="mt-4 flex flex-wrap gap-2">
-    <a href="{{ url $.Lang (printf "/dashboard/%s" $site.Domain) }}"
-       class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">
-      {{ t $.Lang "auth.site_row.dashboard" }}
-    </a>
-    <a href="{{ url $.Lang (printf "/settings/sites/%s/conversions" $site.Domain) }}"
-       class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">
-      {{ t $.Lang "settings.conversions.title" }}
-    </a>
-    <a href="{{ url $.Lang (printf "/settings/sites/%s/sharing" $site.Domain) }}"
-       class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">
-      {{ t $.Lang "auth.site_settings.sharing" }}
-    </a>
-    <a href="{{ url $.Lang (printf "/settings/sites/%s/reports" $site.Domain) }}"
-       class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">
-      {{ t $.Lang "auth.site_settings.reports" }}
-    </a>
-    <a href="{{ url $.Lang (printf "/settings/sites/%s/health" $site.Domain) }}"
-       class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">
-      {{ t $.Lang "auth.site_settings.health" }}
-    </a>
-    <a href="{{ url $.Lang (printf "/settings/sites/%s/shields" $site.Domain) }}" class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">{{ t $.Lang "auth.shields.title" }}</a>
-    <a href="{{ url $.Lang (printf "/settings/sites/%s/paths" $site.Domain) }}" class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">{{ t $.Lang "auth.paths.title" }}</a>
-    <a href="{{ url $.Lang (printf "/settings/sites/%s/imports" $site.Domain) }}" class="rounded-full border border-line bg-card px-3 py-1.5 text-sm font-semibold text-muted hover:bg-hover">{{ t $.Lang "auth.imports.title" }}</a>
+  <div class="px-6 pt-5 pb-4">
+    <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.site_settings.general" }}</h2>
+    <p class="mt-0.5 text-xs text-muted">{{ t $.Lang "settings.general.details_help" }}</p>
   </div>
 
-  {{ if .Data.DualWrite }}
-    <div class="mt-6 rounded-2xl border border-warn/30 bg-warn/10 p-4 text-sm text-warn-ink">
-      <strong>{{ t $.Lang "auth.site_settings.dual_write_title" }}</strong>
-      {{ t $.Lang "auth.site_settings.dual_write_body" "domain" $site.PreviousDomain "duration" (until $.Now $.Lang $site.PreviousDomainUntil) }}
-    </div>
-  {{ end }}
+  <div class="flex flex-col gap-2 border-t border-line px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+    <label for="display_name" class="text-sm font-medium text-body">{{ t $.Lang "auth.site_settings.display_name" }}</label>
+    <input id="display_name" name="display_name" type="text" value="{{ $site.DisplayName }}"
+           placeholder="{{ $site.Domain }}"
+           class="w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:ring-2 focus:ring-accent/25 focus:outline-none sm:w-72">
+  </div>
 
-  <!-- General -->
-  <section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm">
-    <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.site_settings.general" }}</h2>
+  <div class="flex flex-col gap-2 border-t border-line px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+    <span class="flex items-center gap-1.5 text-sm font-medium text-body">
+      <label for="timezone">{{ t $.Lang "auth.site_settings.timezone" }}</label>
+      <span class="cursor-help text-muted" title="{{ t $.Lang "auth.site_settings.timezone_help" }}" aria-label="{{ t $.Lang "auth.site_settings.timezone_help" }}">ⓘ</span>
+    </span>
+    <select id="timezone" name="timezone"
+            class="w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:ring-2 focus:ring-accent/25 focus:outline-none sm:w-72">
+      <option value="{{ $site.Timezone }}" selected>{{ t $.Lang "auth.site_settings.timezone_current" "zone" $site.Timezone }}</option>
+      {{ range .Data.Timezones }}
+        <option value="{{ . }}">{{ . }}</option>
+      {{ end }}
+    </select>
+  </div>
 
-    <form method="post" action="{{ url $.Lang (printf "/sites/%d/settings" $site.ID) }}" class="mt-4 space-y-5">
-      <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+  <div class="flex flex-col gap-2 border-t border-line px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+    <label for="folder_id" class="text-sm font-medium text-body">{{ t $.Lang "auth.site_settings.folder" }}</label>
+    <select id="folder_id" name="folder_id"
+            class="w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:ring-2 focus:ring-accent/25 focus:outline-none sm:w-72">
+      <option value="0">{{ t $.Lang "auth.site_settings.no_folder" }}</option>
+      {{ range .Data.Folders }}
+        <option value="{{ .ID }}" {{ if eq .ID $site.FolderID }}selected{{ end }}>{{ .Name }}</option>
+      {{ end }}
+    </select>
+  </div>
 
-      <div>
-        <label for="display_name" class="block text-sm font-medium text-body">{{ t $.Lang "auth.site_settings.display_name" }}</label>
-        <input id="display_name" name="display_name" type="text" value="{{ $site.DisplayName }}"
-               placeholder="{{ $site.Domain }}"
-               class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
-      </div>
+  <div class="flex items-center justify-between gap-4 border-t border-line px-6 py-4">
+    <span class="flex items-center gap-1.5 text-sm font-medium text-body">
+      <label for="is_public">{{ t $.Lang "auth.site_settings.public" }}</label>
+      <span class="cursor-help text-muted" title="{{ t $.Lang "auth.site_settings.public_help" }}" aria-label="{{ t $.Lang "auth.site_settings.public_help" }}">ⓘ</span>
+    </span>
+    <input id="is_public" type="checkbox" name="is_public" value="1" {{ if $site.IsPublic }}checked{{ end }}
+           class="size-4 rounded border-field text-accent-ink focus:ring-accent">
+  </div>
 
-      <div>
-        <label for="timezone" class="block text-sm font-medium text-body">{{ t $.Lang "auth.site_settings.timezone" }}</label>
-        <select id="timezone" name="timezone"
-                class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
-          <option value="{{ $site.Timezone }}" selected>{{ t $.Lang "auth.site_settings.timezone_current" "zone" $site.Timezone }}</option>
-          {{ range .Data.Timezones }}
-            <option value="{{ . }}">{{ . }}</option>
-          {{ end }}
-        </select>
-        <p class="mt-1 text-xs text-muted">{{ t $.Lang "auth.site_settings.timezone_help" }}</p>
-      </div>
+  <!-- Save sits in the card, beside what it changes. One save at the foot of
+       the page would claim to have written the danger zone as well. -->
+  <div class="flex justify-end border-t border-line px-6 py-4">
+    <button type="submit" class="rounded-xl bg-accent px-5 py-2 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
+      {{ t $.Lang "common.action.save" }}
+    </button>
+  </div>
+</form>
 
-      <div>
-        <label for="folder_id" class="block text-sm font-medium text-body">{{ t $.Lang "auth.site_settings.folder" }}</label>
-        <select id="folder_id" name="folder_id"
-                class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
-          <option value="0">{{ t $.Lang "auth.site_settings.no_folder" }}</option>
-          {{ range .Data.Folders }}
-            <option value="{{ .ID }}" {{ if eq .ID $site.FolderID }}selected{{ end }}>{{ .Name }}</option>
-          {{ end }}
-        </select>
-      </div>
-
-      <label class="flex items-start gap-3">
-        <input type="checkbox" name="is_public" value="1" {{ if $site.IsPublic }}checked{{ end }}
-               class="mt-0.5 rounded border-field text-accent-ink focus:ring-accent">
-        <span class="text-sm text-body">
-          {{ t $.Lang "auth.site_settings.public" }}
-          <span class="block text-xs text-muted">{{ t $.Lang "auth.site_settings.public_help" }}</span>
-        </span>
-      </label>
-
-      <button type="submit"
-              class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
-        {{ t $.Lang "common.action.save" }}
-      </button>
-    </form>
-  </section>
-
-  <!-- Snippet -->
-  <section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm" x-data="{ copied: false }">
+<!-- Tracking -->
+<section class="mt-6 rounded-2xl border border-line bg-card shadow-sm" x-data="{ copied: false }">
+  <div class="px-6 pt-5 pb-4">
     <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.site_settings.snippet" }}</h2>
+    <p class="mt-0.5 text-xs text-muted">{{ t $.Lang "settings.general.snippet_help" }}</p>
+  </div>
 
-    <pre class="mt-3 overflow-x-auto rounded-xl bg-code p-4 text-xs text-code-fg"><code x-ref="snippet">{{ .Data.Snippet }}</code></pre>
+  <div class="border-t border-line px-6 py-4">
+    <pre class="overflow-x-auto rounded-xl bg-code p-4 text-xs text-code-fg"><code x-ref="snippet">{{ .Data.Snippet }}</code></pre>
+  </div>
 
+  <div class="flex items-center gap-3 border-t border-line px-6 py-4">
     <button type="button"
             @click="navigator.clipboard.writeText($refs.snippet.textContent); copied = true; setTimeout(() => copied = false, 2000)"
-            class="mt-3 rounded-xl border border-field px-4 py-2 text-sm font-medium text-body hover:bg-hover">
+            class="rounded-xl border border-field px-4 py-2 text-sm font-medium text-body hover:bg-hover">
       <span x-text="copied ? '{{ t $.Lang "common.action.copied" }}' : '{{ t $.Lang "auth.site_settings.copy_snippet" }}'"></span>
     </button>
-
-    <a href="{{ url $.Lang (printf "/onboarding/%d" $site.ID) }}" class="ml-3 text-sm font-medium text-accent-ink hover:text-accent">
+    <a href="{{ url $.Lang (printf "/onboarding/%d" $site.ID) }}" class="text-sm font-medium text-accent-ink hover:text-accent">
       {{ t $.Lang "auth.site_settings.install_instructions" }}
     </a>
-  </section>
+  </div>
+</section>
 
-  <!-- Domain -->
-  <section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+<!-- Domain -->
+<form method="post" action="{{ url $.Lang (printf "/sites/%d/domain" $site.ID) }}"
+      class="mt-6 rounded-2xl border border-line bg-card shadow-sm">
+  <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+
+  <div class="px-6 pt-5 pb-4">
     <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.site_settings.domain_heading" }}</h2>
-    <p class="mt-1 text-sm text-muted">
-      {{ n $.Lang "auth.site_settings.domain_help" .Data.DualWriteHours }}
-    </p>
+    <p class="mt-0.5 text-xs text-muted">{{ n $.Lang "auth.site_settings.domain_help" .Data.DualWriteHours }}</p>
+  </div>
 
-    <form method="post" action="{{ url $.Lang (printf "/sites/%d/domain" $site.ID) }}" class="mt-4 flex flex-wrap items-end gap-3">
-      <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+  <div class="flex flex-col gap-2 border-t border-line px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+    <label for="domain" class="text-sm font-medium text-body">{{ t $.Lang "auth.site_settings.domain_label" }}</label>
+    <input id="domain" name="domain" type="text" required value="{{ $site.Domain }}"
+           class="w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:ring-2 focus:ring-accent/25 focus:outline-none sm:w-72">
+  </div>
 
-      <div class="flex-1 min-w-[16rem]">
-        <label for="domain" class="block text-sm font-medium text-body">{{ t $.Lang "auth.site_settings.domain_label" }}</label>
-        <input id="domain" name="domain" type="text" required value="{{ $site.Domain }}"
-               class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
-      </div>
+  <div class="flex justify-end border-t border-line px-6 py-4">
+    <button type="submit" class="rounded-xl border border-field px-5 py-2 text-sm font-semibold text-body hover:bg-hover">
+      {{ t $.Lang "auth.site_settings.domain_submit" }}
+    </button>
+  </div>
+</form>
 
-      <button type="submit"
-              class="rounded-xl border border-field px-5 py-2.5 text-sm font-semibold text-body hover:bg-hover">
-        {{ t $.Lang "auth.site_settings.domain_submit" }}
-      </button>
-    </form>
-  </section>
+{{ if .Data.TransferTeams }}
+<form method="post" action="{{ url $.Lang (printf "/sites/%d/transfer" $site.ID) }}"
+      class="mt-6 rounded-2xl border border-line bg-card shadow-sm"
+      onsubmit="return confirm('{{ t $.Lang "auth.site_settings.transfer_confirm" "domain" $site.Domain }}')">
+  <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+  <input type="hidden" name="from_team_id" value="{{ .Data.CurrentTeamID }}">
 
-  {{ if .Data.TransferTeams }}
-  <section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
-    <h2 class="text-sm font-semibold text-heading">Transfer site</h2>
-    <p class="mt-1 text-sm text-muted">Move this site to another team you own or administer. Existing history stays with the site; guests, pending invitations, and shared links are revoked.</p>
+  <div class="px-6 pt-5 pb-4">
+    <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.site_settings.transfer_heading" }}</h2>
+    <p class="mt-0.5 text-xs text-muted">{{ t $.Lang "auth.site_settings.transfer_help" }}</p>
+  </div>
 
-    <form method="post" action="{{ url $.Lang (printf "/sites/%d/transfer" $site.ID) }}" class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end"
-          onsubmit="return confirm('Transfer {{ $site.Domain }} to the selected team?')">
-      <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
-      <input type="hidden" name="from_team_id" value="{{ .Data.CurrentTeamID }}">
+  <div class="flex flex-col gap-2 border-t border-line px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+    <label for="to_team_id" class="text-sm font-medium text-body">{{ t $.Lang "auth.site_settings.transfer_destination" }}</label>
+    <select id="to_team_id" name="to_team_id" required
+            class="w-full rounded-xl border border-field px-3 py-2 text-sm sm:w-72">
+      {{ range .Data.TransferTeams }}<option value="{{ .ID }}">{{ .Name }}</option>{{ end }}
+    </select>
+  </div>
 
-      <label class="min-w-0 text-sm font-medium text-body">
-        Destination team
-        <select name="to_team_id" required class="mt-1 block w-full min-w-0 rounded-xl border border-field px-3 py-2 text-sm">
-          {{ range .Data.TransferTeams }}<option value="{{ .ID }}">{{ .Name }}</option>{{ end }}
-        </select>
-      </label>
+  <div class="flex flex-col gap-2 border-t border-line px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+    <label for="transfer-confirm" class="text-sm font-medium text-body">{{ t $.Lang "auth.site_settings.type_domain_to_confirm" "domain" $site.Domain }}</label>
+    <input id="transfer-confirm" name="confirm" type="text" required
+           class="w-full rounded-xl border border-field px-3 py-2 text-sm sm:w-72">
+  </div>
 
-      <label class="min-w-0 text-sm font-medium text-body">
-        Type {{ $site.Domain }} to confirm
-        <input name="confirm" type="text" required class="mt-1 block w-full min-w-0 rounded-xl border border-field px-3 py-2 text-sm">
-      </label>
+  <div class="flex justify-end border-t border-line px-6 py-4">
+    <button type="submit" class="rounded-xl border border-field px-5 py-2 text-sm font-semibold text-body hover:bg-hover">
+      {{ t $.Lang "auth.site_settings.transfer_submit" }}
+    </button>
+  </div>
+</form>
+{{ end }}
 
-      <button type="submit" class="w-full rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover sm:w-auto">Transfer</button>
-    </form>
-  </section>
-  {{ end }}
-
-  <!-- Destructive -->
-  <section class="mt-6 rounded-2xl border border-down/30 bg-card p-6 shadow-sm">
+<!-- Danger zone. The nav links here, so the anchor has to be on the section. -->
+<section id="danger" class="mt-6 scroll-mt-6 rounded-2xl border border-down/30 bg-card shadow-sm">
+  <div class="px-6 pt-5 pb-4">
     <h2 class="text-sm font-semibold text-down-ink">{{ t $.Lang "auth.site_settings.irreversible" }}</h2>
+    <p class="mt-0.5 text-xs text-muted">{{ t $.Lang "settings.general.danger_help" }}</p>
+  </div>
 
-    <div class="mt-4 border-b border-line pb-6">
-      <h3 class="text-sm font-medium text-heading">{{ t $.Lang "auth.site_settings.reset_heading" }}</h3>
-      <p class="mt-1 text-sm text-muted">
-        {{ t $.Lang "auth.site_settings.reset_body" }}
-      </p>
+  <form method="post" action="{{ url $.Lang (printf "/sites/%d/reset" $site.ID) }}"
+        class="border-t border-line px-6 py-4"
+        onsubmit="return confirm('{{ t $.Lang "auth.site_settings.reset_confirm" "domain" $site.Domain }}')">
+    <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
 
-      <form method="post" action="{{ url $.Lang (printf "/sites/%d/reset" $site.ID) }}" class="mt-3 flex flex-wrap items-end gap-3"
-            onsubmit="return confirm('{{ t $.Lang "auth.site_settings.reset_confirm" "domain" $site.Domain }}')">
-        <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+    <h3 class="text-sm font-medium text-heading">{{ t $.Lang "auth.site_settings.reset_heading" }}</h3>
+    <p class="mt-1 text-xs text-muted">{{ t $.Lang "auth.site_settings.reset_body" }}</p>
 
-        <div class="flex-1 min-w-[16rem]">
-          <label for="reset-confirm" class="block text-xs font-medium text-muted">
-            {{ t $.Lang "auth.site_settings.type_domain_to_confirm" "domain" $site.Domain }}
-          </label>
-          <input id="reset-confirm" name="confirm" type="text" required
-                 class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm">
-        </div>
-
-        <button type="submit"
-                class="rounded-xl border border-down/50 px-4 py-2 text-sm font-semibold text-down-ink hover:bg-down/10">
+    <div class="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+      <label for="reset-confirm" class="text-xs font-medium text-muted">
+        {{ t $.Lang "auth.site_settings.type_domain_to_confirm" "domain" $site.Domain }}
+      </label>
+      <div class="flex gap-2">
+        <input id="reset-confirm" name="confirm" type="text" required
+               class="w-full rounded-xl border border-field px-3 py-2 text-sm sm:w-56">
+        <button type="submit" class="shrink-0 rounded-xl border border-down/50 px-4 py-2 text-sm font-semibold text-down-ink hover:bg-down/10">
           {{ t $.Lang "auth.site_settings.reset_submit" }}
         </button>
-      </form>
+      </div>
+    </div>
+  </form>
+
+  <form method="post" action="{{ url $.Lang (printf "/sites/%d/delete" $site.ID) }}"
+        class="border-t border-line px-6 py-4"
+        onsubmit="return confirm('{{ t $.Lang "auth.site_settings.delete_confirm" "domain" $site.Domain }}')">
+    <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+
+    <h3 class="text-sm font-medium text-heading">{{ t $.Lang "auth.site_settings.delete_heading" }}</h3>
+    <div class="mt-2 rounded-xl border border-warn/30 bg-warn/10 p-3 text-xs text-warn-ink">
+      {{ t $.Lang "auth.site_settings.traffic_warning" }}
     </div>
 
-    <div class="mt-6">
-      <h3 class="text-sm font-medium text-heading">{{ t $.Lang "auth.site_settings.delete_heading" }}</h3>
-
-      <div class="mt-2 rounded-xl border border-warn/30 bg-warn/10 p-3 text-sm text-warn-ink">
-        {{ t $.Lang "auth.site_settings.traffic_warning" }}
-      </div>
-
-      <form method="post" action="{{ url $.Lang (printf "/sites/%d/delete" $site.ID) }}" class="mt-3 flex flex-wrap items-end gap-3"
-            onsubmit="return confirm('{{ t $.Lang "auth.site_settings.delete_confirm" "domain" $site.Domain }}')">
-        <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
-
-        <div class="flex-1 min-w-[16rem]">
-          <label for="delete-confirm" class="block text-xs font-medium text-muted">
-            {{ t $.Lang "auth.site_settings.type_domain_to_confirm" "domain" $site.Domain }}
-          </label>
-          <input id="delete-confirm" name="confirm" type="text" required
-                 class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm">
-        </div>
-
-        <button type="submit"
-                class="rounded-xl bg-down px-4 py-2 text-sm font-semibold text-fill-fg hover:bg-down/85">
+    <div class="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+      <label for="delete-confirm" class="text-xs font-medium text-muted">
+        {{ t $.Lang "auth.site_settings.type_domain_to_confirm" "domain" $site.Domain }}
+      </label>
+      <div class="flex gap-2">
+        <input id="delete-confirm" name="confirm" type="text" required
+               class="w-full rounded-xl border border-field px-3 py-2 text-sm sm:w-56">
+        <button type="submit" class="shrink-0 rounded-xl bg-down px-4 py-2 text-sm font-semibold text-fill-fg hover:bg-down/85">
           {{ t $.Lang "auth.site_settings.delete_submit" }}
         </button>
-      </form>
+      </div>
     </div>
-  </section>
-</div>
+  </form>
+</section>
 {{ end }}

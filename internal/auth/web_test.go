@@ -820,7 +820,9 @@ func TestMultiTeamSiteNavigationKeepsTheSelectedSiteAndTeam(t *testing.T) {
 
 	body := c.body("/sites/" + strconv.FormatInt(site.ID, 10) + "/settings")
 	for _, want := range []string{
-		`href="/sites?team_id=` + strconv.FormatInt(second, 10) + `"`,
+		// The team travels on the way back to the site list, and so does the
+		// site, so that list opens showing the one this screen is about.
+		`href="/sites?team_id=` + strconv.FormatInt(second, 10) + `&amp;site_context=second-team.example"`,
 		`href="/dashboard/second-team.example"`,
 		`href="/settings/sites/second-team.example/conversions"`,
 		`href="/billing?team=` + strconv.FormatInt(second, 10) + `"`,
@@ -978,9 +980,11 @@ func TestSiteTransferRoutesExerciseTheProductionWorkflow(t *testing.T) {
 	}
 	settingsPath := "/sites/" + itoa(site.ID) + "/settings"
 	body := c.body(settingsPath)
+	// The fields the transfer needs, not the classes that lay them out: a
+	// restyle is not a broken form.
 	for _, want := range []string{
 		"Transfer site", `action="/sites/` + itoa(site.ID) + `/transfer"`,
-		`name="csrf_token"`, "grid-cols-1", "sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]",
+		`name="csrf_token"`, `name="from_team_id"`, `name="to_team_id"`, `name="confirm"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("transfer form is missing %q", want)

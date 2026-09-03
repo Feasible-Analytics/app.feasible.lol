@@ -1,12 +1,12 @@
 {{define "layout"}}<!doctype html>
 <!--
   layout.html
-  The frame every settings screen is drawn in.
+  The frame every settings screen in this package is drawn in.
 
-  There is one of these for the whole /settings/ surface. Two layouts would mean
-  two navigations, and a person who reached Shields from the tab bar and then
-  could not find their way back to Members would be looking at what is, to them,
-  one screen that lost half of itself.
+  The header and the section list come from internal/settingsui, because the
+  General screen is rendered by another package and the two are one surface to
+  the reader. A person who reached Shields and then could not find their way
+  back to General would be looking at one screen that lost half of itself.
 
   The stylesheet is the one the rest of the server-rendered product compiles,
   built from the shared palette in ui/tokens.css, so every colour below is a
@@ -53,58 +53,23 @@
 
 <body class="min-h-full bg-page text-body antialiased">
 
-<header class="border-b border-line bg-card">
-	<div class="mx-auto flex max-w-5xl items-center gap-3 px-6 py-4">
-		<a href="{{ if .Domain }}{{ url .Lang (printf "/sites?team_id=%d&site_context=%s" .TeamID (.Domain | urlquery)) }}{{ else }}{{ url .Lang "/sites" }}{{ end }}" class="flex items-center gap-2 font-semibold text-heading">
-			<span class="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-sm font-bold text-fill-fg">f</span>
-			feasible.lol
-		</a>
-		{{ if .Domain }}<span class="text-sm text-muted">{{ .Domain }}</span>{{ end }}
-		<nav class="ml-auto flex flex-wrap items-center gap-3 text-sm" aria-label="Account">
-			<a href="{{ if .Domain }}{{ url .Lang (printf "/dashboard/%s" .Domain) }}{{ else }}{{ url .Lang "/dashboard/" }}{{ end }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.dashboard" }}</a>
-			<a href="{{ if .Domain }}{{ url .Lang (printf "/sites?team_id=%d&site_context=%s" .TeamID (.Domain | urlquery)) }}{{ else }}{{ url .Lang "/sites" }}{{ end }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.sites" }}</a>
-			<a href="{{ if .TeamID }}{{ url .Lang (printf "/settings?team_id=%d" .TeamID) }}{{ else }}{{ url .Lang "/settings" }}{{ end }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.account" }}</a>
-			{{ if canBilling .Role }}<a href="{{ if .TeamID }}{{ url .Lang (printf "/billing?team=%d" .TeamID) }}{{ else }}{{ url .Lang "/billing" }}{{ end }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.billing" }}</a>{{ end }}
-			<form method="post" action="{{ url .Lang "/logout" }}">
-				<input type="hidden" name="csrf_token" value="{{ .CSRF }}">
-				<button type="submit" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.sign_out" }}</button>
-			</form>
-		</nav>
-	</div>
-</header>
+{{ template "settings-header" .Shell }}
 
-<!-- One navigation for the whole surface. The team screen is always reachable;
-     the per-site screens appear once a site is in scope, because a tab that
-     leads to /settings//shields is a tab that 404s. -->
-<nav class="border-b border-line bg-card" aria-label="{{ t .Lang "auth.settings_nav.label" }}">
-	<div class="mx-auto flex max-w-5xl flex-wrap gap-1 px-6">
-		{{ if or (can .Role "manage_members") (can .Role "create_api_key") }}<a href="{{ if .Domain }}{{ url .Lang (printf "/settings/members?site_context=%s" (.Domain | urlquery)) }}{{ else }}{{ url .Lang "/settings/members" }}{{ end }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "team" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.team" }}</a>{{ end }}
+<div class="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 pt-6 pb-20 sm:flex-row sm:gap-8 sm:px-6">
+	{{ template "settings-nav" .Shell }}
 
-		{{ if .Domain }}
-			<a href="{{ url .Lang (printf "/sites/domain/%s/settings" .Domain) }}" class="-mb-px border-b-2 border-transparent px-3 py-3 text-sm font-medium text-muted hover:text-heading">{{ t .Lang "auth.site_settings.general" }}</a>
-			<a href="{{ url .Lang (printf "/settings/sites/%s/conversions" .Domain) }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "conversions" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">Conversions</a>
-			<a href="{{ url .Lang (printf "/settings/sites/%s/sharing" .Domain) }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "sharing" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.sharing" }}</a>
-			<a href="{{ url .Lang (printf "/settings/sites/%s/reports" .Domain) }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "reports" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.reports" }}</a>
-			<a href="{{ url .Lang (printf "/settings/sites/%s/health" .Domain) }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "health" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "settings.nav.health" }}</a>
-			<a href="{{ url .Lang (printf "/settings/sites/%s/shields" .Domain) }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "shields" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "auth.shields.title" }}</a>
-			<a href="{{ url .Lang (printf "/settings/sites/%s/paths" .Domain) }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "paths" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "auth.paths.title" }}</a>
-			<a href="{{ url .Lang (printf "/settings/sites/%s/imports" .Domain) }}" class="-mb-px border-b-2 px-3 py-3 text-sm font-medium {{ if eq .Tab "imports" }}border-accent text-heading{{ else }}border-transparent text-muted hover:text-heading{{ end }}">{{ t .Lang "auth.imports.title" }}</a>
-			<a href="{{ url .Lang (printf "/dashboard/%s" .Domain) }}" class="-mb-px border-b-2 border-transparent px-3 py-3 text-sm font-medium text-muted hover:text-heading">{{ t .Lang "settings.nav.dashboard" }}</a>
+	<main class="min-w-0 flex-1">
+		{{ if .Error }}
+		<div class="mb-6 rounded-xl border border-down/30 bg-down/10 px-4 py-3 text-sm text-down-ink" role="alert">{{ .Error }}</div>
 		{{ end }}
-	</div>
-</nav>
 
-<main class="mx-auto w-full max-w-5xl px-6 pb-20 pt-8">
-	{{ if .Error }}
-	<div class="mb-6 rounded-xl border border-down/30 bg-down/10 px-4 py-3 text-sm text-down-ink" role="alert">{{ .Error }}</div>
-	{{ end }}
+		{{ if .Message }}
+		<div class="mb-6 rounded-xl border border-up/30 bg-up/10 px-4 py-3 text-sm text-up-ink" role="status">{{ .Message }}</div>
+		{{ end }}
 
-	{{ if .Message }}
-	<div class="mb-6 rounded-xl border border-up/30 bg-up/10 px-4 py-3 text-sm text-up-ink" role="status">{{ .Message }}</div>
-	{{ end }}
-
-	{{ template "body" . }}
-</main>
+		{{ template "body" . }}
+	</main>
+</div>
 
 </body>
 </html>{{end}}

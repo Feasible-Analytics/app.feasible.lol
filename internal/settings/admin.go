@@ -23,6 +23,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/reports"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/settingsui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
@@ -93,6 +94,11 @@ func NewTeamHandler(h *TeamHandler) *TeamHandler {
 	for _, name := range []string{"team", "sharing", "reports", "health"} {
 		parsed, err := template.New("layout.html").Funcs(funcs()).
 			ParseFS(templateFS, "templates/layout.html", "templates/"+name+".html")
+		if err == nil {
+			// The header and the section list come from the shared package, so
+			// every settings screen wears the same chrome.
+			parsed, err = parsed.ParseFS(settingsui.Templates, "templates/*.html")
+		}
 		if err != nil {
 			panic(fmt.Sprintf("settings: %s.html will not parse: %v", name, err))
 		}
@@ -120,6 +126,15 @@ type screen struct {
 	Domain  string
 	Message string
 	Error   string
+
+	// Shield is the rule kind Shields is filtered to. These screens never set
+	// it; it is here because the shared chrome is resolved from one call that
+	// both page types make.
+	Shield string
+
+	// Shell is the header and section list, shared with every other settings
+	// screen so the two packages cannot drift into two navigations.
+	Shell settingsui.Shell
 
 	// Lang is the locale the request negotiated. It is on the page rather than
 	// looked up per helper because the layout needs it for the html element's
@@ -252,6 +267,11 @@ func (h *TeamHandler) render(w http.ResponseWriter, r *http.Request, name string
 	if h.CSRF != nil {
 		data.CSRF = h.CSRF(w, r)
 	}
+
+	// The chrome is resolved here rather than in each screen, so a screen added
+	// later cannot arrive with a different set of places to go.
+	data.Shell = settingsui.NewShell(data.Lang, data.Domain, i18n.T(data.Lang, data.TitleID),
+		data.TeamID, data.Role, data.CSRF, data.Tab, data.Shield)
 
 	parsed, ok := h.templates[name]
 	if !ok {

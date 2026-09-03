@@ -5,10 +5,10 @@
   Created: 2026-08-30
   Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 
-  There are two shapes here rather than two layouts. Signed-out pages are a
-  centred card and signed-in pages get the sidebar, and keeping them in one file
-  is what stops the header, the fonts and the theme handling drifting apart
-  between them.
+  There are several shapes here rather than several layouts. Signed-out pages
+  are a centred card, signed-in pages get the sidebar, and a settings screen
+  gets the shared settings chrome — keeping them in one file is what stops the
+  header, the fonts and the theme handling drifting apart between them.
 -->
 <!doctype html>
 <html lang="{{ .Lang }}"{{ if rtl .Lang }} dir="rtl"{{ end }} class="h-full">
@@ -59,7 +59,21 @@
 </head>
 <body class="h-full bg-page text-body antialiased">
 
-{{ if .Nav }}
+{{ if .Settings }}
+  <!-- A settings screen is drawn in the chrome from internal/settingsui, the
+       same one the screens in internal/settings use. The two packages are a
+       handler detail; to the reader this is one surface. -->
+  {{ template "settings-header" .Settings }}
+
+  <div class="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 pt-6 pb-20 sm:flex-row sm:gap-8 sm:px-6">
+    {{ template "settings-nav" .Settings }}
+
+    <main class="min-w-0 flex-1">
+      {{ template "messages.html" . }}
+      {{ template "content" . }}
+    </main>
+  </div>
+{{ else if .Nav }}
   <div class="min-h-full lg:flex" x-data="{ mobileNav: false }">
     {{ template "sidebar.html" . }}
 

@@ -1,8 +1,10 @@
 {{define "body"}}
-<h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "auth.shields.title" }}</h1>
-<p class="mt-1 max-w-2xl text-sm text-muted">{{ t $.Lang "auth.shields.lede" }}</p>
+<p class="mb-6 max-w-2xl text-sm text-muted">{{ t $.Lang "auth.shields.lede" }}</p>
 
-<section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm">
+<!-- Your own address is about IP rules, so it stays out of the way of the
+     three sub-sections it has nothing to do with. -->
+{{ if or (not $.Shield) (eq $.Shield "ip") }}
+<section class="rounded-2xl border border-line bg-card p-6 shadow-sm">
 	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.shields.own_traffic" }}</h2>
 	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang "auth.shields.own_traffic_help" }}</p>
 
@@ -28,8 +30,10 @@
 	</div>
 	{{ end }}
 </section>
+{{ end }}
 
-{{ if .RejectedHostnames }}
+<!-- Rejected hostnames are the one-click source of hostname rules. -->
+{{ if and .RejectedHostnames (or (not $.Shield) (eq $.Shield "hostname")) }}
 <section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
 	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.shields.rejected_title" }}</h2>
 	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang "auth.shields.rejected_hint" }}</p>
