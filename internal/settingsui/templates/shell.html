@@ -55,33 +55,26 @@
 
 
 <!--
-  The section list, twice: a disclosure below `sm` and a plain column from `sm`
-  up. Only one of the two is ever in the layout, so only one is ever in the
-  accessibility tree.
-
-  It is written this way rather than as one <details> forced open by a media
-  query because a closed <details> is hidden by a user-agent rule on a pseudo
-  element that author CSS cannot reach — the list would simply never appear on
-  a desktop. Fourteen entries stacked above every screen is a wall somebody
-  scrolls past on every visit, so the phone gets the disclosure.
+  The section list: a disclosure below `sm`, a plain column from `sm` up, and
+  one list in the DOM either way. The forcing-open rule lives in the stylesheet
+  because a closed <details> is hidden by a user-agent rule that a utility class
+  cannot reach — see .settings-sections in internal/auth/tailwind.css.
 -->
 {{ define "settings-nav" }}
 <nav aria-label="{{ t .Lang "settings.nav.label" }}" class="shrink-0 sm:w-56">
-	<details class="group sm:hidden">
+	<details class="settings-sections group">
 		<summary class="flex cursor-pointer list-none items-center gap-2 rounded-xl border border-line bg-card px-4 py-2.5 text-sm font-medium text-heading">
 			<span aria-hidden="true" class="text-muted transition-transform group-open:rotate-90 rtl:-scale-x-100">›</span>
 			{{ t .Lang .CurrentLabel }}
 		</summary>
 
-		<div class="mt-2">{{ template "settings-sections" . }}</div>
+		<div class="mt-2 sm:mt-0">{{ template "settings-sections" . }}</div>
 	</details>
-
-	<div class="hidden sm:block">{{ template "settings-sections" . }}</div>
 </nav>
 {{ end }}
 
 
-<!-- One list, rendered into both of the shapes above. -->
+<!-- One list, drawn once. -->
 {{ define "settings-sections" }}
 <ul class="space-y-0.5">
 	{{ range .Sections }}
