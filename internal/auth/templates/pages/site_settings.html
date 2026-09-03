@@ -26,7 +26,7 @@
 
   <div class="px-6 pt-5 pb-4">
     <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.site_settings.general" }}</h2>
-    <p class="mt-0.5 text-xs text-muted">{{ t $.Lang "settings.general.details_help" }}</p>
+    <p class="mt-0.5 text-xs text-muted">{{ t $.Lang "auth.site_settings.details_help" }}</p>
   </div>
 
   <div class="flex flex-col gap-2 border-t border-line px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
@@ -83,7 +83,7 @@
 <section class="mt-6 rounded-2xl border border-line bg-card shadow-sm" x-data="{ copied: false }">
   <div class="px-6 pt-5 pb-4">
     <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.site_settings.snippet" }}</h2>
-    <p class="mt-0.5 text-xs text-muted">{{ t $.Lang "settings.general.snippet_help" }}</p>
+    <p class="mt-0.5 text-xs text-muted">{{ t $.Lang "auth.site_settings.snippet_help" }}</p>
   </div>
 
   <div class="border-t border-line px-6 py-4">
@@ -163,7 +163,7 @@
 <section id="danger" class="mt-6 scroll-mt-6 rounded-2xl border border-down/30 bg-card shadow-sm">
   <div class="px-6 pt-5 pb-4">
     <h2 class="text-sm font-semibold text-down-ink">{{ t $.Lang "auth.site_settings.irreversible" }}</h2>
-    <p class="mt-0.5 text-xs text-muted">{{ t $.Lang "settings.general.danger_help" }}</p>
+    <p class="mt-0.5 text-xs text-muted">{{ t $.Lang "auth.site_settings.danger_help" }}</p>
   </div>
 
   <form method="post" action="{{ url $.Lang (printf "/sites/%d/reset" $site.ID) }}"

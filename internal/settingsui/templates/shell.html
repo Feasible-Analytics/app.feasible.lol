@@ -43,7 +43,7 @@
 			     list opens showing it rather than the top of the list. -->
 			<a href="{{ if and .TeamID .Domain }}{{ url .Lang (printf "/sites?team_id=%d&site_context=%s" .TeamID (.Domain | urlquery)) }}{{ else if .TeamID }}{{ url .Lang (printf "/sites?team_id=%d" .TeamID) }}{{ else }}{{ url .Lang "/sites" }}{{ end }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.sites" }}</a>
 			<a href="{{ if .TeamID }}{{ url .Lang (printf "/settings?team_id=%d" .TeamID) }}{{ else }}{{ url .Lang "/settings" }}{{ end }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.account" }}</a>
-			{{ if canBilling .Role }}<a href="{{ if .TeamID }}{{ url .Lang (printf "/billing?team=%d" .TeamID) }}{{ else }}{{ url .Lang "/billing" }}{{ end }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.billing" }}</a>{{ end }}
+			{{ if and .Commerce (canBilling .Role) }}<a href="{{ if .TeamID }}{{ url .Lang (printf "/billing?team=%d" .TeamID) }}{{ else }}{{ url .Lang "/billing" }}{{ end }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.billing" }}</a>{{ end }}
 			<form method="post" action="{{ url .Lang "/logout" }}">
 				<input type="hidden" name="csrf_token" value="{{ .CSRF }}">
 				<button type="submit" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.sign_out" }}</button>
@@ -69,8 +69,8 @@
 <nav aria-label="{{ t .Lang "settings.nav.label" }}" class="shrink-0 sm:w-56">
 	<details class="group sm:hidden">
 		<summary class="flex cursor-pointer list-none items-center gap-2 rounded-xl border border-line bg-card px-4 py-2.5 text-sm font-medium text-heading">
-			<span aria-hidden="true" class="text-muted transition-transform group-open:rotate-90">›</span>
-			{{ t .Lang "settings.nav.label" }}
+			<span aria-hidden="true" class="text-muted transition-transform group-open:rotate-90 rtl:-scale-x-100">›</span>
+			{{ t .Lang .CurrentLabel }}
 		</summary>
 
 		<div class="mt-2">{{ template "settings-sections" . }}</div>

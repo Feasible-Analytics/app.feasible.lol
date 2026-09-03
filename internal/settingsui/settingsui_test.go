@@ -46,10 +46,10 @@ func find(t *testing.T, sections []Section, labelID string) Section {
 // screens that are one surface to the reader must not each arrive with a
 // different set of places to go.
 func TestEverySiteScreenGetsTheSameSections(t *testing.T) {
-	want := labels(NewShell("en", "a.example", "", 1, teams.RoleOwner, "", TabGeneral, "").Sections)
+	want := labels(NewShell("en", "a.example", 1, teams.RoleOwner, "", TabGeneral, "", true).Sections)
 
 	for _, tab := range []string{TabGeneral, TabSharing, TabConversions, TabPaths, TabImports, TabHealth, TabShields, TabReports} {
-		got := labels(NewShell("en", "a.example", "", 1, teams.RoleOwner, "", tab, "").Sections)
+		got := labels(NewShell("en", "a.example", 1, teams.RoleOwner, "", tab, "", true).Sections)
 
 		if strings.Join(got, ",") != strings.Join(want, ",") {
 			t.Errorf("the %s screen offers %v, want %v", tab, got, want)
@@ -72,7 +72,7 @@ func TestExactlyOneSectionIsCurrent(t *testing.T) {
 		TabShields:     "settings.nav.shields",
 		TabReports:     "settings.nav.reports",
 	} {
-		shell := NewShell("en", "a.example", "", 1, teams.RoleOwner, "", tab, "")
+		shell := NewShell("en", "a.example", 1, teams.RoleOwner, "", tab, "", true)
 
 		var current []string
 		for _, section := range shell.Sections {
@@ -96,7 +96,7 @@ func TestExactlyOneSectionIsCurrent(t *testing.T) {
 // children. The parent opens when it or any child is showing, because a
 // navigation that hides where you are is telling you nothing.
 func TestShieldsNestsItsFourKindsAndOpensOnOne(t *testing.T) {
-	all := NewShell("en", "a.example", "", 1, teams.RoleOwner, "", TabShields, "")
+	all := NewShell("en", "a.example", 1, teams.RoleOwner, "", TabShields, "", true)
 	shields := find(t, all.Sections, "settings.nav.shields")
 
 	if len(shields.Children) != 4 {
@@ -106,7 +106,7 @@ func TestShieldsNestsItsFourKindsAndOpensOnOne(t *testing.T) {
 		t.Error("shields is closed on its own screen")
 	}
 
-	one := find(t, NewShell("en", "a.example", "", 1, teams.RoleOwner, "", TabShields, "country").Sections, "settings.nav.shields")
+	one := find(t, NewShell("en", "a.example", 1, teams.RoleOwner, "", TabShields, "country", true).Sections, "settings.nav.shields")
 
 	if one.Current {
 		t.Error("the parent is marked current while a child is showing")
@@ -116,7 +116,7 @@ func TestShieldsNestsItsFourKindsAndOpensOnOne(t *testing.T) {
 	}
 
 	// Somewhere else entirely leaves it shut.
-	elsewhere := find(t, NewShell("en", "a.example", "", 1, teams.RoleOwner, "", TabHealth, "").Sections, "settings.nav.shields")
+	elsewhere := find(t, NewShell("en", "a.example", 1, teams.RoleOwner, "", TabHealth, "", true).Sections, "settings.nav.shields")
 	if elsewhere.Expanded() {
 		t.Error("shields is open on a screen that is not shields")
 	}
@@ -125,8 +125,8 @@ func TestShieldsNestsItsFourKindsAndOpensOnOne(t *testing.T) {
 // TestASectionNobodyMayReachIsNotOffered keeps the permission rule in one
 // testable place rather than in template conditionals.
 func TestASectionNobodyMayReachIsNotOffered(t *testing.T) {
-	owner := labels(NewShell("en", "a.example", "", 1, teams.RoleOwner, "", TabGeneral, "").Sections)
-	viewer := labels(NewShell("en", "a.example", "", 1, teams.RoleViewer, "", TabGeneral, "").Sections)
+	owner := labels(NewShell("en", "a.example", 1, teams.RoleOwner, "", TabGeneral, "", true).Sections)
+	viewer := labels(NewShell("en", "a.example", 1, teams.RoleViewer, "", TabGeneral, "", true).Sections)
 
 	for _, want := range []string{"settings.nav.general", "settings.nav.shields"} {
 		if !contains(owner, want) || !contains(viewer, want) {
@@ -146,7 +146,7 @@ func TestASectionNobodyMayReachIsNotOffered(t *testing.T) {
 // that belong to a team rather than to one site. They render in the same shell,
 // and a per-site section there would lead to /settings/sites//shields.
 func TestADomainWithNothingToConfigureFallsBackToTheAccount(t *testing.T) {
-	shell := NewShell("en", "", "", 4, teams.RoleOwner, "", TabTeam, "")
+	shell := NewShell("en", "", 4, teams.RoleOwner, "", TabTeam, "", true)
 
 	if got := labels(shell.Sections); len(got) != 1 || got[0] != "settings.nav.team" {
 		t.Fatalf("the account shell offers %v", got)
@@ -162,7 +162,7 @@ func TestADomainWithNothingToConfigureFallsBackToTheAccount(t *testing.T) {
 func TestADomainSurvivesEveryLinkItIsPutIn(t *testing.T) {
 	const domain = "a b/c.example"
 
-	shell := NewShell("en", domain, "", 1, teams.RoleOwner, "", TabGeneral, "")
+	shell := NewShell("en", domain, 1, teams.RoleOwner, "", TabGeneral, "", true)
 
 	for _, section := range shell.Sections {
 		for _, link := range append([]string{section.URL}, childURLs(section)...) {

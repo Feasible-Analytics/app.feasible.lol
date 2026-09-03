@@ -6,10 +6,9 @@
   Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 -->
 {{define "body"}}
+	<p class="mb-6 max-w-2xl text-sm text-muted">{{ t $.Lang "settings.sharing.lede" }}</p>
 
-	<p class="mt-1 text-sm text-muted">{{ t $.Lang "settings.sharing.lede" }}</p>
-
-	<section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm">
+	<section class="rounded-2xl border border-line bg-card p-6 shadow-sm">
 		<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.sharing.public_heading" }}</h2>
 		<p class="mt-1 text-sm text-muted">
 			{{ t $.Lang "settings.sharing.public_hint" }}

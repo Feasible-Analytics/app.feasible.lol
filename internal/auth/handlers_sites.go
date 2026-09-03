@@ -491,6 +491,7 @@ func (h *Handler) doSiteGeneral(w http.ResponseWriter, r *http.Request) {
 		r.PostFormValue("display_name"), timezone, r.PostFormValue("is_public") == "1")
 	if err != nil {
 		p := h.newPage(r, tr(r, "auth.title.site_settings", "site", site.Label()), "sites")
+		p.Settings = h.settingsShell(r, p, site, team.ID)
 		p.Data["Site"] = site
 		p.Data["Timezones"] = CommonTimezones()
 		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
@@ -530,6 +531,7 @@ func (h *Handler) doSiteDomain(w http.ResponseWriter, r *http.Request) {
 	err := h.Store.ChangeDomain(r.Context(), team.ID, site.ID, r.PostFormValue("domain"))
 	if err != nil {
 		p := h.newPage(r, tr(r, "auth.title.site_settings", "site", site.Label()), "sites")
+		p.Settings = h.settingsShell(r, p, site, team.ID)
 		p.Data["Site"] = site
 		p.Data["Timezones"] = CommonTimezones()
 		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
@@ -568,6 +570,7 @@ func (h *Handler) doSiteReset(w http.ResponseWriter, r *http.Request) {
 
 	if strings.TrimSpace(r.PostFormValue("confirm")) != site.Domain {
 		p := h.newPage(r, tr(r, "auth.title.site_settings", "site", site.Label()), "sites")
+		p.Settings = h.settingsShell(r, p, site, team.ID)
 		p.Data["Site"] = site
 		p.Data["Timezones"] = CommonTimezones()
 		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
@@ -606,6 +609,7 @@ func (h *Handler) doSiteDelete(w http.ResponseWriter, r *http.Request) {
 
 	if strings.TrimSpace(r.PostFormValue("confirm")) != site.Domain {
 		p := h.newPage(r, tr(r, "auth.title.site_settings", "site", site.Label()), "sites")
+		p.Settings = h.settingsShell(r, p, site, team.ID)
 		p.Data["Site"] = site
 		p.Data["Timezones"] = CommonTimezones()
 		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
@@ -786,19 +790,11 @@ func CommonTimezones() []string {
 
 // settingsShell resolves the shared settings chrome for a per-site screen.
 //
-// The role comes from the team membership rather than from the page, because
-// the navigation hides the sections somebody may not reach and the page-level
-// flags are about the account rather than about this site.
+// The role is this site's rather than the page's account-level flags, because
+// the navigation hides the sections somebody may not reach on this site.
 func (h *Handler) settingsShell(r *http.Request, p *page, site *Site, teamID int64) *settingsui.Shell {
-	var role teams.Role
-	if user := userFrom(r); user != nil && h.Teams != nil {
-		if found, err := h.Teams.SiteRole(r.Context(), site.ID, user.ID); err == nil {
-			role = found
-		}
-	}
-
-	shell := settingsui.NewShell(p.Lang, site.Domain, p.Title, teamID, role, p.CSRF,
-		settingsui.TabGeneral, "")
+	shell := settingsui.NewShell(p.Lang, site.Domain, teamID, h.RoleForSite(r, site.ID), p.CSRF,
+		settingsui.TabGeneral, "", !h.DisableCommerce)
 
 	return &shell
 }

@@ -264,6 +264,11 @@ type Handler struct {
 	CheckCSRF func(http.ResponseWriter, *http.Request) bool
 	Role      func(*http.Request, sites.Site) teams.Role
 
+	// Commerce says whether this deployment sells a subscription. A self-hosted
+	// install has none, and a billing link there leads to a page about a
+	// product it does not have.
+	Commerce bool
+
 	// DataDir is where uploads and prepared exports are written.
 	DataDir string
 
@@ -527,8 +532,8 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, da
 
 	// The chrome is resolved here rather than in each screen, so a screen added
 	// later cannot arrive with a different set of places to go.
-	data.Shell = settingsui.NewShell(data.Lang, data.Domain, i18n.T(data.Lang, data.TitleID),
-		data.TeamID, data.Role, data.CSRF, data.Tab, data.Shield)
+	data.Shell = settingsui.NewShell(data.Lang, data.Domain,
+		data.TeamID, data.Role, data.CSRF, data.Tab, data.Shield, h.Commerce)
 
 	if err := template.ExecuteTemplate(w, "layout", data); err != nil && h.Log != nil {
 		h.Log.Error("settings page could not be rendered", "page", name, "error", err)
@@ -545,6 +550,16 @@ func (h *Handler) redirect(w http.ResponseWriter, r *http.Request, domain, tab, 
 	}
 	if failure != "" {
 		values.Set("err", failure)
+	}
+
+	// A screen that was showing one Shields sub-section has to come back to it.
+	// Landing on the unfiltered page after adding a country rule loses the place
+	// somebody was working in, and marks the parent current instead of the
+	// child they arrived from.
+	// The field is `section` rather than `kind` because these forms already
+	// carry a `kind` — the rule being added — and the two are different things.
+	if section := shieldKind(r.PostFormValue("section")); section != "" {
+		values.Set("kind", section)
 	}
 
 	target := SitePrefix + domain + "/" + tab
@@ -613,8 +628,8 @@ func (h *Handler) shields(w http.ResponseWriter, r *http.Request, site sites.Sit
 // answers as though none was given, because a stale bookmark should show the
 // whole screen rather than an empty one.
 func shieldKind(raw string) string {
-	for _, candidate := range settingsui.ShieldKinds {
-		if candidate.Kind == raw {
+	for _, candidate := range settingsui.ShieldKinds() {
+		if candidate == raw {
 			return raw
 		}
 	}

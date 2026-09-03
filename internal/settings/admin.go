@@ -56,9 +56,15 @@ type TeamHandler struct {
 	Health   *health.Store
 	Notifier *reports.Notifier
 	Sites    *sites.Cache
-	Mail     invitationSender
-	Log      *logger.Logger
-	CSRF     func(http.ResponseWriter, *http.Request) string
+
+	// Commerce says whether this deployment sells a subscription. A self-hosted
+	// install has none, and a billing link there leads to a page about a
+	// product it does not have.
+	Commerce bool
+
+	Mail invitationSender
+	Log  *logger.Logger
+	CSRF func(http.ResponseWriter, *http.Request) string
 
 	// BaseURL is what every URL shown on these pages is built from — the share
 	// links, the embed snippet and the test event's target.
@@ -129,6 +135,11 @@ func (h *TeamHandler) shellDomain(r *http.Request, data screen) string {
 
 	site, ok := h.Sites.Lookup(context)
 	if !ok || site.TeamID != data.TeamID {
+		if h.Log != nil {
+			h.Log.Warn("a settings screen was asked for a site context it cannot use",
+				"site_context", context, "team", data.TeamID)
+		}
+
 		return ""
 	}
 
@@ -296,8 +307,8 @@ func (h *TeamHandler) render(w http.ResponseWriter, r *http.Request, name string
 
 	// The chrome is resolved here rather than in each screen, so a screen added
 	// later cannot arrive with a different set of places to go.
-	data.Shell = settingsui.NewShell(data.Lang, h.shellDomain(r, data), i18n.T(data.Lang, data.TitleID),
-		data.TeamID, data.Role, data.CSRF, data.Tab, data.Shield)
+	data.Shell = settingsui.NewShell(data.Lang, h.shellDomain(r, data),
+		data.TeamID, data.Role, data.CSRF, data.Tab, data.Shield, h.Commerce)
 
 	parsed, ok := h.templates[name]
 	if !ok {

@@ -10,7 +10,9 @@ package auth
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -432,19 +434,57 @@ func sparklinePath(series []int64) template.HTMLAttr {
 
 // assetHandler serves the embedded CSS and JavaScript.
 //
-// They are fingerprint-free and cached for a day rather than a year: the
-// dashboard is behind a login, so a stale asset costs one person one reload,
-// while a year-long cache means a fix nobody sees until next spring.
+// The URLs carry no fingerprint, so a cache lifetime is a promise the content
+// will not change — and a deploy breaks it. A browser holding yesterday's
+// stylesheet against today's markup does not render an old page; it renders a
+// broken one, and a reload does not always clear it. So the answer carries an
+// ETag over the bytes and asks to be revalidated every time: one conditional
+// request, almost always answered 304, and a new build picked up at once.
 func assetHandler() http.Handler {
 	sub, err := fs.Sub(assetFS, "assets")
 	if err != nil {
 		panic(fmt.Sprintf("auth: embedded assets are missing: %v", err))
 	}
 
+	tags := assetETags(sub)
 	files := http.FileServer(http.FS(sub))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "public, max-age=86400")
+		// The tag is set before delegating because net/http checks
+		// If-None-Match against whatever is already on the response.
+		if tag, ok := tags[strings.TrimPrefix(path.Clean(r.URL.Path), "/")]; ok {
+			w.Header().Set("ETag", tag)
+		}
+
+		w.Header().Set("Cache-Control", "public, no-cache")
 		files.ServeHTTP(w, r)
 	})
+}
+
+// assetETags hashes every embedded asset once, at start-up. The files cannot
+// change while the process runs, so hashing them per request would be work
+// repeated for an answer that is already known.
+func assetETags(assets fs.FS) map[string]string {
+	tags := map[string]string{}
+
+	err := fs.WalkDir(assets, ".", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+
+		body, err := fs.ReadFile(assets, name)
+		if err != nil {
+			return err
+		}
+
+		sum := sha256.Sum256(body)
+		tags[name] = `"` + hex.EncodeToString(sum[:16]) + `"`
+
+		return nil
+	})
+	if err != nil {
+		panic(fmt.Sprintf("auth: embedded assets could not be read: %v", err))
+	}
+
+	return tags
 }

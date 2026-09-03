@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/url"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/shields"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
@@ -52,7 +53,8 @@ type Section struct {
 	// as the screen beside it.
 	LabelID string
 
-	// URL is already localised and already names the site it is about.
+	// URL names the site it is about. The locale is added where the link is
+	// drawn, because these are built once and rendered per request.
 	URL string
 
 	// Current marks the screen being looked at. A navigation that does not say
@@ -79,13 +81,20 @@ func (s Section) Expanded() bool {
 	return false
 }
 
-// ShieldKinds are the four rule kinds Shields nests, in the order they appear.
-// They are exported because the screen filters on the same values.
-var ShieldKinds = []struct{ Kind, LabelID string }{
-	{"ip", "settings.nav.shields.ip"},
-	{"country", "settings.nav.shields.country"},
-	{"page", "settings.nav.shields.page"},
-	{"hostname", "settings.nav.shields.hostname"},
+// shieldLabels names each rule kind in the navigation. The kinds themselves
+// come from the shields package, so renaming one there is a compile error here
+// rather than a Shields screen that quietly renders nothing.
+var shieldLabels = map[string]string{
+	shields.KindIP:       "settings.nav.shields.ip",
+	shields.KindCountry:  "settings.nav.shields.country",
+	shields.KindPage:     "settings.nav.shields.page",
+	shields.KindHostname: "settings.nav.shields.hostname",
+}
+
+// ShieldKinds is every kind the navigation nests, in the order Shields shows
+// them. It is exported because the screen filters on the same values.
+func ShieldKinds() []string {
+	return shields.Kinds
 }
 
 // Shell is everything the shared header and navigation need. Both packages'
@@ -93,10 +102,14 @@ var ShieldKinds = []struct{ Kind, LabelID string }{
 type Shell struct {
 	Lang   string
 	Domain string
-	Title  string
 	TeamID int64
 	Role   teams.Role
 	CSRF   string
+
+	// Commerce is false on a self-hosted install, where there is no
+	// subscription to manage and a billing link leads to a page about a
+	// product this deployment does not sell.
+	Commerce bool
 
 	// Sections is the resolved navigation.
 	Sections []Section
@@ -119,8 +132,8 @@ func SitePath(domain, action string) string {
 // Every per-site screen gets the same list in the same order, and only Current
 // moves. That sameness is the point: two screens that are one surface to the
 // reader must not each arrive with a different set of places to go.
-func NewShell(lang, domain, title string, teamID int64, role teams.Role, csrf, tab, shield string) Shell {
-	shell := Shell{Lang: lang, Domain: domain, Title: title, TeamID: teamID, Role: role, CSRF: csrf}
+func NewShell(lang, domain string, teamID int64, role teams.Role, csrf, tab, shield string, commerce bool) Shell {
+	shell := Shell{Lang: lang, Domain: domain, TeamID: teamID, Role: role, CSRF: csrf, Commerce: commerce}
 
 	if domain == "" {
 		shell.Sections = accountSections(teamID, tab)
@@ -158,6 +171,24 @@ func NewShell(lang, domain, title string, teamID int64, role teams.Role, csrf, t
 	return shell
 }
 
+// CurrentLabel is the label id of the section being looked at, for the phone's
+// collapsed navigation. A closed box reading only "Settings sections" is one
+// that will not say where you are without being opened.
+func (s Shell) CurrentLabel() string {
+	for _, section := range s.Sections {
+		if section.Current {
+			return section.LabelID
+		}
+		for _, child := range section.Children {
+			if child.Current {
+				return child.LabelID
+			}
+		}
+	}
+
+	return "settings.nav.label"
+}
+
 // shieldsSection is the one parent with children. Its four rule kinds are long
 // enough that each deserves its own screen, and shallow enough that hiding them
 // behind a page nobody bookmarked would be worse.
@@ -166,11 +197,11 @@ func shieldsSection(domain, tab, shield string) Section {
 
 	parent := Section{LabelID: "settings.nav.shields", URL: base, Current: tab == TabShields && shield == ""}
 
-	for _, kind := range ShieldKinds {
+	for _, kind := range shields.Kinds {
 		parent.Children = append(parent.Children, Section{
-			LabelID: kind.LabelID,
-			URL:     base + "?kind=" + kind.Kind,
-			Current: tab == TabShields && shield == kind.Kind,
+			LabelID: shieldLabels[kind],
+			URL:     base + "?kind=" + kind,
+			Current: tab == TabShields && shield == kind,
 		})
 	}
 
