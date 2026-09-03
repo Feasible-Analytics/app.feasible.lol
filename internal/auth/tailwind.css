@@ -37,6 +37,29 @@
 @source "../settings/templates";
 @source "../settingsui/templates";
 
+/* The settings navigation is a disclosure on a phone and a plain column from
+   `sm` up, and it is one list either way. Rendering it twice and hiding one
+   with a media query means a browser holding a stale stylesheet shows both,
+   which is worse than any wall it was avoiding.
+
+   A closed <details> hides its content through a user-agent rule, and browsers
+   disagree about where: current ones put `content-visibility: hidden` on the
+   ::details-content pseudo element, older ones hide the children directly.
+   Both are overridden, so the column appears whichever mechanism is in play. */
+@media (min-width: 40rem) {
+  .settings-sections > summary {
+    display: none;
+  }
+
+  .settings-sections::details-content {
+    content-visibility: visible;
+  }
+
+  .settings-sections > :not(summary) {
+    display: block;
+  }
+}
+
 /* x-cloak hides an element until Alpine has initialised it. Without it every
    x-show="false" branch is visible for the moment between the HTML parsing and
    the script running, which reads as a page that flashes its own internals. */
