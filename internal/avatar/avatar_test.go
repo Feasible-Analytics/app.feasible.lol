@@ -130,6 +130,29 @@ func TestSomethingThatIsNotAPictureIsRefused(t *testing.T) {
 	}
 }
 
+// TestADecompressionBombIsRefusedFromItsHeader is the limit that matters most.
+// The download cap bounds the bytes on the wire, not the memory a decoder
+// spends: a few kilobytes of PNG can describe a canvas tens of thousands of
+// pixels on a side, and reading it is gigabytes.
+func TestADecompressionBombIsRefusedFromItsHeader(t *testing.T) {
+	// A single-colour PNG compresses to almost nothing, which is exactly what
+	// makes this shape dangerous.
+	bomb := image.NewRGBA(image.Rect(0, 0, 20000, 20000))
+
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, bomb); err != nil {
+		t.Fatalf("encode the fixture: %v", err)
+	}
+
+	if encoded.Len() > MaxDownloadBytes {
+		t.Fatalf("the fixture is %d bytes, which the download cap would catch first", encoded.Len())
+	}
+
+	if _, err := Normalise(encoded.Bytes()); err == nil {
+		t.Fatal("a 20000x20000 picture was decoded")
+	}
+}
+
 // TestTheEtagFollowsTheBytes is what makes the cache header safe. The URL is
 // stable, so a browser holding an old picture is only corrected because the
 // validator changed with it.

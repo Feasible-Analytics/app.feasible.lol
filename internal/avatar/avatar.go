@@ -53,6 +53,15 @@ const MaxDownloadBytes = 2 << 20
 // on every dashboard load.
 const MaxDimension = 512
 
+// MaxPixels is the largest picture we will decode, about 2048 on a side.
+//
+// The byte cap above bounds the download, not the decode, and those are very
+// different numbers: a few kilobytes of PNG can describe a canvas of tens of
+// thousands of pixels a side, which becomes gigabytes of memory the moment
+// anything reads it. The header is read first and a picture over this is
+// refused before a single row of it is allocated.
+const MaxPixels = 4 << 20
+
 // Image is a picture ready to be stored and served.
 type Image struct {
 	Bytes []byte
@@ -134,13 +143,22 @@ func Fetch(ctx context.Context, client *http.Client, url string) (Image, error) 
 // process produced, so a payload smuggled in the parts of a file the decoder
 // ignores does not survive.
 func Normalise(raw []byte) (Image, error) {
-	source, format, err := image.Decode(bytes.NewReader(raw))
+	config, format, err := image.DecodeConfig(bytes.NewReader(raw))
 	if err != nil {
 		return Image{}, fmt.Errorf("avatar: %w", err)
 	}
 
 	if format != "png" && format != "jpeg" && format != "webp" {
 		return Image{}, fmt.Errorf("avatar: %s is not a picture format we store", format)
+	}
+
+	if config.Width < 1 || config.Height < 1 || config.Width*config.Height > MaxPixels {
+		return Image{}, fmt.Errorf("avatar: %dx%d is not a size we decode", config.Width, config.Height)
+	}
+
+	source, _, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return Image{}, fmt.Errorf("avatar: %w", err)
 	}
 
 	encoded, contentType, err := encode(shrink(source), format)
