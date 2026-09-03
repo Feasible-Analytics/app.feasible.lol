@@ -258,7 +258,7 @@ function GoalsEmpty({ prompt, settingsURL }: { prompt: Exclude<GoalsPrompt, "row
 				title={t("dashboard.goals.none_converted")}
 				body={t("dashboard.goals.none_converted_hint")}
 				href={settingsURL}
-				action={t("dashboard.behavior.goals.manage")}
+				action={t("dashboard.goals.see_all")}
 			/>
 		);
 	}

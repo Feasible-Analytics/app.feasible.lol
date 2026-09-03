@@ -123,6 +123,7 @@
   "dashboard.goals.loading": "Loading goals",
   "dashboard.goals.none_converted": "No goals converted in this period",
   "dashboard.goals.none_converted_hint": "Only goals with conversions are listed here. Every goal you have configured stays on the goals settings screen. Try a wider period, or clear a filter.",
+  "dashboard.goals.see_all": "See every goal",
   "dashboard.behavior.collapse": "Use the standard report height",
   "dashboard.behavior.configure": "Configure",
   "dashboard.behavior.expand": "Give this report more room",
