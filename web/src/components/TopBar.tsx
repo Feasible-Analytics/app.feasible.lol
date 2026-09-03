@@ -189,9 +189,11 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, fil
 						resolved={resolved}
 						pickCustom={pickCustom}
 					/>}
-					{!locked && <HelpButton onHelp={onHelp} />}
-					<ThemeToggle theme={theme} onTheme={onTheme} />
-					{navigation && <AccountMenu navigation={navigation} />}
+					{/* A shared or public dashboard has no account, so it has no
+					    menu to hold the theme. It keeps the standalone toggle
+					    rather than losing the choice entirely. */}
+					{!navigation && <ThemeToggle theme={theme} onTheme={onTheme} />}
+					{navigation && <AccountMenu navigation={navigation} theme={theme} onTheme={onTheme} onHelp={onHelp} />}
 				</div>
 			</div>
 		</header>
@@ -224,13 +226,117 @@ function AccountFace({ navigation }: { navigation: Navigation }) {
 	);
 }
 
-/** AccountMenu keeps product navigation and the CSRF-protected sign-out in one
- * compact control that remains usable at mobile widths. */
-function AccountMenu({ navigation }: { navigation: Navigation }) {
+/** MenuRow is one row in the account menu. The kinds differ because they are
+ * different controls, not different labels: a destination is a link, a theme is
+ * one of an exclusive set, and signing out is a form that carries a token. */
+export type MenuRow =
+	| { kind: "link"; id: string; label: string; href: string }
+	| { kind: "action"; id: string; label: string; hint: string }
+	| { kind: "theme"; id: string; label: string; theme: Theme; glyph: string; current: boolean }
+	| { kind: "signout"; id: string; label: string };
+
+/** MenuGroup is one divider-separated run of rows, with a heading when the rows
+ * need one to make sense. */
+export interface MenuGroup {
+	id: string;
+	label?: string;
+	rows: MenuRow[];
+}
+
+/** The glyph and the label id for each theme row. Both are written out rather
+ *  than built from the theme name, so every string the menu can ask for is
+ *  findable by searching for its id — which is what the catalogue's
+ *  unused-string check relies on. */
+const THEME_ROWS: { theme: Theme; glyph: string; labelId: string }[] = [
+	{ theme: "light", glyph: "☀", labelId: "dashboard.menu.theme.light" },
+	{ theme: "dark", glyph: "☾", labelId: "dashboard.menu.theme.dark" },
+	{ theme: "system", glyph: "◐", labelId: "dashboard.menu.theme.system" },
+];
+
+/**
+ * accountMenuGroups is what the account menu draws.
+ *
+ * It is a function rather than markup so the rules that decide which rows exist
+ * — billing only where somebody may manage it, site settings only where a site
+ * is in scope — are one testable answer rather than conditionals scattered
+ * through JSX. The order here is the order on screen.
+ */
+export function accountMenuGroups(navigation: Navigation, theme: Theme): MenuGroup[] {
+	const destinations: MenuRow[] = [
+		{ kind: "link", id: "sites", label: t("dashboard.navigation.sites"), href: navigation.sites_url },
+	];
+
+	if (navigation.site_settings_url) {
+		destinations.push({
+			kind: "link",
+			id: "site_settings",
+			label: t("dashboard.navigation.site_settings"),
+			href: navigation.site_settings_url,
+		});
+	}
+
+	destinations.push({
+		kind: "link",
+		id: "account",
+		label: t("dashboard.navigation.account_settings"),
+		href: navigation.account_url,
+	});
+
+	if (navigation.billing_url) {
+		destinations.push({
+			kind: "link",
+			id: "billing",
+			label: t("dashboard.navigation.billing"),
+			href: navigation.billing_url,
+		});
+	}
+
+	return [
+		{ id: "destinations", rows: destinations },
+		{
+			id: "help",
+			rows: [{ kind: "action", id: "shortcuts", label: t("dashboard.menu.shortcuts"), hint: "?" }],
+		},
+		{
+			id: "theme",
+			label: t("dashboard.menu.theme"),
+			rows: THEME_ROWS.map((row) => ({
+				kind: "theme" as const,
+				id: `theme:${row.theme}`,
+				label: t(row.labelId),
+				theme: row.theme,
+				glyph: row.glyph,
+				current: row.theme === theme,
+			})),
+		},
+		{
+			id: "account",
+			rows: [{ kind: "signout", id: "signout", label: t("dashboard.navigation.sign_out") }],
+		},
+	];
+}
+
+/** AccountMenu keeps product navigation, the two rarely-pressed controls and
+ * the CSRF-protected sign-out in one place. The bar it sits in is the only
+ * control surface on the dashboard, and a theme chosen once a year does not
+ * earn permanent space beside the date range. */
+function AccountMenu({
+	navigation,
+	theme,
+	onTheme,
+	onHelp,
+}: {
+	navigation: Navigation;
+	theme: Theme;
+	onTheme: (next: Theme) => void;
+	onHelp: () => void;
+}) {
 	const [open, setOpen] = useState(false);
 	const wrap = useRef<HTMLDivElement>(null);
 
 	useDismiss(wrap, open, () => setOpen(false));
+
+	const groups = accountMenuGroups(navigation, theme);
 
 	return (
 		<div ref={wrap} className="relative">
@@ -246,30 +352,93 @@ function AccountMenu({ navigation }: { navigation: Navigation }) {
 			</button>
 
 			{open && (
-				<div role="menu" className="absolute right-0 mt-2 w-56 rounded-md border border-line bg-card p-1.5 shadow-xl">
-					<div className="border-b border-line px-2.5 py-2">
+				<div
+					role="menu"
+					className="scroll-thin absolute right-0 mt-2 max-h-[calc(100vh-5rem)] w-60 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border border-line bg-card p-1.5 shadow-xl"
+				>
+					<div className="px-2.5 py-2">
 						<p className="truncate text-sm font-medium text-body">{navigation.name}</p>
 						<p className="truncate text-xs text-muted">{navigation.email}</p>
 					</div>
-					<NavItem href={navigation.sites_url} label={t("dashboard.navigation.sites")} />
-					{navigation.site_settings_url && <NavItem href={navigation.site_settings_url} label={t("dashboard.navigation.site_settings")} />}
-					<NavItem href={navigation.account_url} label={t("dashboard.navigation.account_settings")} />
-					{navigation.billing_url && <NavItem href={navigation.billing_url} label={t("dashboard.navigation.billing")} />}
-					<form method="post" action={navigation.logout_url}>
-						<input type="hidden" name="csrf_token" value={navigation.csrf} />
-						<button type="submit" role="menuitem" className="w-full rounded-sm px-2.5 py-2 text-left text-sm text-body hover:bg-hover">
-							{t("dashboard.navigation.sign_out")}
-						</button>
-					</form>
+
+					{groups.map((group) => (
+						<div key={group.id} role="group" aria-label={group.label} className="border-t border-line pt-1.5 first-of-type:border-t-0">
+							{group.label && (
+								<p aria-hidden="true" className="px-2.5 pt-1 pb-0.5 text-[10px] font-semibold tracking-wide text-muted uppercase">
+									{group.label}
+								</p>
+							)}
+							{group.rows.map((row) => (
+								<MenuRowView
+									key={row.id}
+									row={row}
+									navigation={navigation}
+									onTheme={onTheme}
+									onHelp={() => {
+										setOpen(false);
+										onHelp();
+									}}
+								/>
+							))}
+						</div>
+					))}
 				</div>
 			)}
 		</div>
 	);
 }
 
-/** NavItem is one consistent destination in the account menu. */
-function NavItem({ href, label }: { href: string; label: string }) {
-	return <a role="menuitem" href={href} className="block rounded-sm px-2.5 py-2 text-sm text-body hover:bg-hover">{label}</a>;
+/** MenuRowView draws one row. Choosing a theme deliberately leaves the menu
+ * open: the page changes underneath, and somebody comparing light against dark
+ * should be able to try the other one without opening the menu again. */
+function MenuRowView({
+	row,
+	navigation,
+	onTheme,
+	onHelp,
+}: {
+	row: MenuRow;
+	navigation: Navigation;
+	onTheme: (next: Theme) => void;
+	onHelp: () => void;
+}) {
+	const base = "flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover";
+
+	switch (row.kind) {
+		case "link":
+			return <a role="menuitem" href={row.href} className={`${base} text-body`}>{row.label}</a>;
+
+		case "action":
+			return (
+				<button type="button" role="menuitem" onClick={onHelp} className={`${base} text-body`}>
+					<span className="flex-1">{row.label}</span>
+					<span aria-hidden="true" className="tnum rounded border border-line px-1.5 text-[11px] text-muted">{row.hint}</span>
+				</button>
+			);
+
+		case "theme":
+			return (
+				<button
+					type="button"
+					role="menuitemradio"
+					aria-checked={row.current}
+					onClick={() => onTheme(row.theme)}
+					className={`${base} ${row.current ? "font-medium text-body" : "text-body"}`}
+				>
+					<span aria-hidden="true" className="w-4 text-center text-muted">{row.glyph}</span>
+					<span className="flex-1">{row.label}</span>
+					{row.current && <span aria-hidden="true" className="text-accent">✓</span>}
+				</button>
+			);
+
+		default:
+			return (
+				<form method="post" action={navigation.logout_url}>
+					<input type="hidden" name="csrf_token" value={navigation.csrf} />
+					<button type="submit" role="menuitem" className={`${base} text-down`}>{row.label}</button>
+				</form>
+			);
+	}
 }
 
 /** SettingsIcon is an SVG rather than a text glyph so its weight, alignment,
@@ -408,23 +577,6 @@ function ComparePicker({ state, onNavigate }: { state: UrlState; onNavigate: (ne
 			</select>
 			<Chevron className="pointer-events-none absolute right-2" />
 		</label>
-	);
-}
-
-/** HelpButton is how somebody who never presses `?` finds out that `?` does
- *  something. A keyboard layer with no visible way in is a keyboard layer only
- *  its author uses. */
-function HelpButton({ onHelp }: { onHelp: () => void }) {
-	return (
-		<button
-			type="button"
-			onClick={onHelp}
-			title={t("dashboard.shortcuts.open")}
-			aria-label={t("dashboard.shortcuts.title")}
-			className="hidden size-control items-center justify-center rounded-md border border-line bg-card text-sm text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover sm:flex"
-		>
-			?
-		</button>
 	);
 }
 

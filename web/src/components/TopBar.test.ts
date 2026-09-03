@@ -9,9 +9,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { Filter } from "../api/types";
+import type { Filter, Navigation } from "../api/types";
 import type { UrlState } from "../lib/url";
-import { currentVisitorsRequest, periodLabel, siteSwitchURL } from "./TopBar";
+import { accountMenuGroups, currentVisitorsRequest, periodLabel, siteSwitchURL } from "./TopBar";
 
 test("the current visitors number always requests an exact answer", () => {
 	const filter: Filter = ["is", "visit:country", ["US"]];
@@ -89,4 +89,85 @@ test("switching sites keeps the period, the comparison and the filters", () => {
 
 test("a site with no query string switches cleanly", () => {
 	assert.equal(siteSwitchURL("other.example", ""), "/dashboard/other.example");
+});
+
+/** account builds a Navigation with every optional destination present, so each
+ * test below removes only the one it is about. */
+function account(overrides: Partial<Navigation> = {}): Navigation {
+	return {
+		name: "E2E Test Owner",
+		email: "e2e@example.com",
+		sites_url: "/sites",
+		site_settings_url: "/sites/domain/a.example/settings",
+		account_url: "/settings",
+		billing_url: "/billing",
+		logout_url: "/logout",
+		csrf: "token",
+		...overrides,
+	};
+}
+
+/** rowIDs is every row in the menu, flattened, for the presence assertions. */
+function rowIDs(groups: ReturnType<typeof accountMenuGroups>): string[] {
+	return groups.flatMap((group) => group.rows.map((row) => row.id));
+}
+
+test("the account menu is grouped, and ends with a separated sign out", () => {
+	const groups = accountMenuGroups(account(), "system");
+
+	assert.deepEqual(groups.map((group) => group.id), ["destinations", "help", "theme", "account"]);
+
+	// Only the theme group carries a heading: the others are self-evident, and
+	// a heading over one row reads as a label for that row.
+	assert.deepEqual(
+		groups.filter((group) => group.label).map((group) => group.id),
+		["theme"],
+	);
+
+	assert.deepEqual(groups.at(-1)?.rows.map((row) => row.kind), ["signout"]);
+});
+
+test("a destination nobody may reach is not in the menu", () => {
+	// Billing is absent for a member who cannot manage it, and site settings is
+	// absent when no site is in scope. The server decides both by omitting the
+	// URL, so the menu must key off the URL rather than re-deriving the rule.
+	assert.ok(rowIDs(accountMenuGroups(account(), "system")).includes("billing"));
+	assert.ok(!rowIDs(accountMenuGroups(account({ billing_url: undefined }), "system")).includes("billing"));
+
+	assert.ok(rowIDs(accountMenuGroups(account(), "system")).includes("site_settings"));
+	assert.ok(!rowIDs(accountMenuGroups(account({ site_settings_url: undefined }), "system")).includes("site_settings"));
+
+	// The two that are always there stay there.
+	for (const id of ["sites", "account", "shortcuts", "signout"]) {
+		assert.ok(
+			rowIDs(accountMenuGroups(account({ billing_url: undefined, site_settings_url: undefined }), "system")).includes(id),
+			`${id} must be in every menu`,
+		);
+	}
+});
+
+test("exactly one theme is marked current, and it is the one in force", () => {
+	for (const theme of ["light", "dark", "system"] as const) {
+		const rows = accountMenuGroups(account(), theme)
+			.flatMap((group) => group.rows)
+			.filter((row) => row.kind === "theme");
+
+		assert.equal(rows.length, 3, "all three choices are always offered");
+
+		const current = rows.filter((row) => row.current);
+
+		assert.equal(current.length, 1, `${theme} marked ${current.length} rows current`);
+		assert.equal(current[0]?.id, `theme:${theme}`);
+	}
+});
+
+test("the shortcut row advertises the key that opens the overlay", () => {
+	// The whole reason the button left the bar is that the key is discoverable
+	// from the menu instead. A row with no key printed loses that.
+	const shortcuts = accountMenuGroups(account(), "system")
+		.flatMap((group) => group.rows)
+		.find((row) => row.id === "shortcuts");
+
+	assert.equal(shortcuts?.kind, "action");
+	assert.equal(shortcuts?.kind === "action" ? shortcuts.hint : "", "?");
 });
