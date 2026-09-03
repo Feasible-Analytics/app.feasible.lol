@@ -5,34 +5,19 @@
   Created: 2026-09-03
   Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 
-  It takes an appui.Header. The two destinations people move between are in the
-  bar; everything reached occasionally is one click into the menu, which is the
-  same shape as the React dashboard's account menu — identity, destinations,
-  external links, then a separated sign out.
+  It takes an appui.Header. The bar itself carries only identity — the mark, the
+  team and the account picture. Every destination is one click into the menu,
+  which is the same shape as the React dashboard's account menu: identity,
+  destinations, external links, then a separated sign out.
 -->
 
 {{ define "app-header" }}
 <header class="sticky top-0 z-30 border-b border-line bg-card">
-	<div class="mx-auto flex h-14 w-full max-w-6xl items-center gap-4 px-4 sm:px-6">
+	<div class="mx-auto flex h-14 w-full max-w-shell items-center gap-4 px-4 sm:px-5">
 		<a href="{{ url .Lang .SitesURL }}" class="flex shrink-0 items-center gap-2 font-semibold text-heading">
 			<span aria-hidden="true" class="inline-flex size-7 items-center justify-center rounded-lg bg-accent text-sm font-bold text-fill-fg">f</span>
 			<span class="hidden sm:inline">feasible.lol</span>
 		</a>
-
-		<!-- The two primary destinations. A person switching between their stats
-		     and their site list should not need two clicks. -->
-		<nav aria-label="{{ t .Lang "auth.header.primary_nav" }}" class="hidden items-center gap-1 text-sm sm:flex">
-			<a href="{{ url .Lang .DashboardURL }}"
-			   {{ if eq .Current "dashboard" }}aria-current="page"{{ end }}
-			   class="rounded-lg px-2.5 py-1.5 font-medium transition-colors {{ if eq .Current "dashboard" }}bg-accent/10 text-accent-ink{{ else }}text-muted hover:bg-hover hover:text-heading{{ end }}">
-				{{ t .Lang "auth.sidebar.dashboard" }}
-			</a>
-			<a href="{{ url .Lang .SitesURL }}"
-			   {{ if eq .Current "sites" }}aria-current="page"{{ end }}
-			   class="rounded-lg px-2.5 py-1.5 font-medium transition-colors {{ if eq .Current "sites" }}bg-accent/10 text-accent-ink{{ else }}text-muted hover:bg-hover hover:text-heading{{ end }}">
-				{{ t .Lang "auth.sidebar.sites" }}
-			</a>
-		</nav>
 
 		<div class="ms-auto flex items-center gap-3" x-data="{ open: false }" @keydown.escape.window="open = false">
 			{{ if .TeamName }}<span class="hidden max-w-40 truncate text-sm text-muted sm:block">{{ .TeamName }}</span>{{ end }}
@@ -61,9 +46,16 @@
 						<p class="truncate text-sm font-medium text-body">{{ .Email }}</p>
 					</div>
 
-					<div role="group" aria-label="{{ t .Lang "auth.header.primary_nav" }}" class="border-t border-line pt-1.5 sm:hidden">
-						<a role="menuitem" href="{{ url .Lang .DashboardURL }}" class="block rounded-sm px-2.5 py-2 text-sm text-body transition-colors hover:bg-hover">{{ t .Lang "auth.sidebar.dashboard" }}</a>
-						<a role="menuitem" href="{{ url .Lang .SitesURL }}" class="block rounded-sm px-2.5 py-2 text-sm text-body transition-colors hover:bg-hover">{{ t .Lang "auth.sidebar.sites" }}</a>
+					<!-- The two primary destinations. They are in the menu rather than
+					     the bar because a settings screen already carries its own way
+					     back, and a bar that repeats it is two links for one journey. -->
+					<div role="group" aria-label="{{ t .Lang "auth.header.primary_nav" }}" class="border-t border-line pt-1.5">
+						<a role="menuitem" href="{{ url .Lang .DashboardURL }}"
+						   {{ if eq .Current "dashboard" }}aria-current="page"{{ end }}
+						   class="block rounded-sm px-2.5 py-2 text-sm transition-colors hover:bg-hover {{ if eq .Current "dashboard" }}font-semibold text-accent-ink{{ else }}text-body{{ end }}">{{ t .Lang "auth.sidebar.dashboard" }}</a>
+						<a role="menuitem" href="{{ url .Lang .SitesURL }}"
+						   {{ if eq .Current "sites" }}aria-current="page"{{ end }}
+						   class="block rounded-sm px-2.5 py-2 text-sm transition-colors hover:bg-hover {{ if eq .Current "sites" }}font-semibold text-accent-ink{{ else }}text-body{{ end }}">{{ t .Lang "auth.sidebar.sites" }}</a>
 					</div>
 
 					<div role="group" class="border-t border-line pt-1.5">
