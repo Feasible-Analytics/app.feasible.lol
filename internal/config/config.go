@@ -15,6 +15,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -879,11 +880,67 @@ func (c *Config) Validate() error {
 				continue
 			}
 			parsed, _ := url.Parse(endpoint)
-			if parsed.Scheme != "https" {
-				return fmt.Errorf("private app-shard URL %q must use https in hosted production", endpoint)
+			if parsed.Scheme != "https" && !plaintextShardAllowed(parsed) {
+				return fmt.Errorf(
+					"private app-shard URL %q must use https in hosted production, "+
+						"or address a loopback or Tailscale destination", endpoint)
 			}
 		}
 	}
 
 	return nil
+}
+
+// tailscaleV4 and tailscaleV6 are the ranges Tailscale assigns to nodes: the
+// carrier-grade NAT block for IPv4, and its own slice of the unique-local space
+// for IPv6.
+var (
+	tailscaleV4 = netip.MustParsePrefix("100.64.0.0/10")
+	tailscaleV6 = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
+)
+
+// plaintextShardAllowed reports whether an app-shard URL may skip TLS.
+//
+// Internal requests carry an HMAC over the method, path, timestamp and body no
+// matter which scheme delivered them, so TLS on this hop is confidentiality and
+// never authentication. Two destinations already supply that confidentiality:
+// loopback puts no packet on a wire at all, and Tailscale carries every packet
+// inside WireGuard.
+//
+// Everything else still has to present a certificate, an ordinary private LAN
+// included. RFC 1918 is private by addressing rather than by encryption, and
+// derived events crossing a shared network in the clear is precisely what this
+// check exists to prevent.
+//
+// Requiring https of a loopback destination is not a neutral default: the app
+// port serves plain HTTP, so the only way to satisfy the rule is to route the
+// internal call back out through the public edge, which is both slower and the
+// one path deliberately configured to refuse it.
+func plaintextShardAllowed(parsed *url.URL) bool {
+	if parsed == nil {
+		return false
+	}
+
+	// Hostname strips the port and the brackets around a literal IPv6 host.
+	host := strings.ToLower(parsed.Hostname())
+	if host == "" {
+		return false
+	}
+
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+
+	// Tailscale's MagicDNS names, which resolve to the ranges below.
+	if host == "ts.net" || strings.HasSuffix(host, ".ts.net") {
+		return true
+	}
+
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	addr = addr.Unmap()
+
+	return addr.IsLoopback() || tailscaleV4.Contains(addr) || tailscaleV6.Contains(addr)
 }

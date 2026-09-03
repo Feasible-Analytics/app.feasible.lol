@@ -24,9 +24,22 @@ laptop is the routing bug production would have had.
 
 The edge denies `/internal/*`. In local and single-host deployments the second
 listener stays on loopback. Hosted app shards bind it to a private interface
-with TLS and HMAC authentication because ingesters poll `/internal/domains` and
-deliver batches to `/internal/ingest`. Each configured shard URL addresses one
-owning shard; it is not a round-robin app URL.
+because ingesters poll `/internal/domains` and deliver batches to
+`/internal/ingest`. Each configured shard URL addresses one owning shard; it is
+not a round-robin app URL.
+
+**Never point `FEASIBLE_INGEST_SHARDS` at the public hostname.** The edge returns
+404 for `/internal/*` by design, so an ingester aimed there never loads a routing
+map. It then holds every event as unrouted rather than dropping it, which looks
+from the dashboard like a site that silently collects nothing.
+
+Every internal request carries an HMAC over its method, path, timestamp and body
+regardless of scheme, so TLS on that hop is confidentiality and never
+authentication. Hosted production therefore requires `https` for a shard URL
+*except* where the transport already provides it: a loopback address or
+`localhost`, and a Tailscale address or `*.ts.net` name. An ordinary private LAN
+still needs a certificate — RFC 1918 is private by addressing, not by
+encryption.
 
 ## Liveness and readiness are different questions
 
