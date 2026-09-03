@@ -22,6 +22,13 @@ import { shared } from "../api/client";
  * which metric the graph is drawing, whether you are in dark mode. Putting
  * those in the URL would mean every shared link quietly imposed your
  * preferences on whoever opened it.
+ *
+ * The period and the comparison sit in both, and the rule that keeps them from
+ * contradicting each other is that the URL always wins. A link that names
+ * either one pins it for whoever opens it; the stored value answers only what a
+ * bare /dashboard leaves open, which is what to show somebody who last chose to
+ * look at today. url.ts writes both to every URL it builds so that "no opinion"
+ * and "deliberately the default" can never look alike.
  */
 const PREFIX = "feasible.";
 
@@ -78,6 +85,26 @@ function write(key: string, value: string): void {
  * behind by an older build — a tab that no longer exists — would otherwise
  * render an empty card with no way for the user to work out why.
  */
+/**
+ * readPref is usePref's first half, for state that is resolved before React
+ * runs. The URL is parsed on the way into the first render, so the remembered
+ * period has to be readable there rather than from a hook.
+ *
+ * The allowed list is checked here for the same reason usePref checks it: a
+ * value left by an older build must degrade to the default rather than travel
+ * into a query.
+ */
+export function readPref<T extends string>(key: string, allowed: readonly T[]): T | null {
+	const stored = read(key) as T | null;
+
+	return stored && allowed.includes(stored) ? stored : null;
+}
+
+/** writePref is the matching half, for the same callers. */
+export function writePref(key: string, value: string): void {
+	write(key, value);
+}
+
 export function usePref<T extends string>(key: string, fallback: T, allowed: readonly T[]): [T, (next: T) => void] {
 	const [value, setValue] = useState<T>(() => {
 		const stored = read(key) as T | null;

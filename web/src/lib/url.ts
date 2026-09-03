@@ -11,6 +11,7 @@ import { useCallback, useEffect, useState } from "react";
 import { shared } from "../api/client";
 import type { DateRange, JourneyAnchor, JourneyAnchorType, Preset } from "../api/types";
 import type { CompareMode } from "./compare";
+import { readPref, writePref } from "./prefs";
 import type { FilterLabels, FilterState } from "./filters";
 import { readFilters, readLabels, writeFilters } from "./filters";
 
@@ -55,6 +56,33 @@ const PRESETS: Preset[] = [
 /** DEFAULT_PRESET matches the engine's own default, so a bare /dashboard/site
  *  and an explicit ?period=28d are the same page rather than two. */
 export const DEFAULT_PRESET: Preset = "28d";
+
+/**
+ * The two selectors that are remembered between visits.
+ *
+ * They are the exception to the split described in prefs.ts, and a narrow one.
+ * The URL still decides: a link that names a period or a comparison pins it for
+ * whoever opens it, exactly as before. These only answer the question the URL
+ * leaves open — what to show somebody arriving at a bare /dashboard, who last
+ * time chose to look at today.
+ */
+const PERIOD_KEY = "period";
+const COMPARE_KEY = "compare";
+
+const COMPARE_MODES: readonly CompareMode[] = ["off", "previous_period", "year_over_year"];
+
+/** DEFAULT_COMPARE is the comparison a visitor sees with no stored choice. */
+export const DEFAULT_COMPARE: CompareMode = "previous_period";
+
+/** rememberRange stores the selectors so the next arrival starts where this one
+ *  left off. A custom from/to pair is deliberately not stored: a fixed range
+ *  chosen yesterday is the wrong answer today, and silently reopening it would
+ *  be worse than forgetting it. */
+export function rememberRange(state: UrlState): void {
+	if (!state.from && !state.to) writePref(PERIOD_KEY, state.preset);
+
+	writePref(COMPARE_KEY, state.compare);
+}
 
 /**
  * DrawerState is which details view is open.
@@ -132,7 +160,13 @@ export function parse(url: URL): UrlState {
 	const from = params.get("from") ?? "";
 	const to = params.get("to") ?? "";
 
-	const preset: Preset = PRESETS.includes(raw as Preset) ? (raw as Preset) : DEFAULT_PRESET;
+	// An explicit value in the URL always wins, so a shared link still pins what
+	// its author chose. The stored value answers only the case the URL leaves
+	// open, which is why the lookup is in the else branch rather than layered
+	// over the parse.
+	const preset: Preset = PRESETS.includes(raw as Preset)
+		? (raw as Preset)
+		: (readPref(PERIOD_KEY, PRESETS) ?? DEFAULT_PRESET);
 	const compare = params.get("compare");
 
 	return {
@@ -140,7 +174,10 @@ export function parse(url: URL): UrlState {
 		preset,
 		from: isDate(from) && isDate(to) ? from : "",
 		to: isDate(from) && isDate(to) ? to : "",
-		compare: compare === "year_over_year" || compare === "off" ? compare : "previous_period",
+		compare:
+			compare === "year_over_year" || compare === "off" || compare === "previous_period"
+				? compare
+				: (readPref(COMPARE_KEY, COMPARE_MODES) ?? DEFAULT_COMPARE),
 		filters: readFilters(params),
 		labels: readLabels(params),
 		drawer: parseDrawer(params),
@@ -245,14 +282,20 @@ function parseDrawer(params: URLSearchParams): DrawerState | null {
 export function href(state: UrlState): string {
 	const params = new URLSearchParams();
 
+	// Both are written unconditionally, and that is the whole reason the stored
+	// values are safe to consult. Omitting the default made a bare URL and a
+	// deliberate choice of that default indistinguishable, so somebody whose
+	// remembered period was `day` could pick 28d, get a URL with nothing in it,
+	// and be handed `day` back on the next read — the selector fighting the
+	// person using it.
 	if (state.from && state.to) {
 		params.set("from", state.from);
 		params.set("to", state.to);
-	} else if (state.preset !== DEFAULT_PRESET) {
+	} else {
 		params.set("period", state.preset);
 	}
 
-	if (state.compare !== "previous_period") params.set("compare", state.compare);
+	params.set("compare", state.compare);
 
 	writeFilters(params, state.filters, state.labels);
 
@@ -310,7 +353,11 @@ export function useUrlState(): [UrlState, (next: UrlState, mode?: "push" | "repl
 		// bar. This is the half of "shareable and Back-able" that is easy to
 		// forget, and its absence is only noticed by somebody who has already
 		// lost their place.
-		const onPop = () => setState(parse(new URL(location.href)));
+		const onPop = () => {
+			const restored = parse(new URL(location.href));
+			rememberRange(restored);
+			setState(restored);
+		};
 
 		addEventListener("popstate", onPop);
 
@@ -318,6 +365,10 @@ export function useUrlState(): [UrlState, (next: UrlState, mode?: "push" | "repl
 	}, []);
 
 	const navigate = useCallback((next: UrlState, mode: "push" | "replace" = "push") => {
+		// Remembered on every move, including Back, because what to restore next
+		// time is whatever is on screen now rather than the last thing clicked.
+		rememberRange(next);
+
 		const url = href(next);
 
 		// Replacing rather than pushing when nothing moved keeps the history

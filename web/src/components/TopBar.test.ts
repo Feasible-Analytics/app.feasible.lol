@@ -11,7 +11,7 @@ import { test } from "node:test";
 
 import type { Filter } from "../api/types";
 import type { UrlState } from "../lib/url";
-import { currentVisitorsRequest, periodLabel } from "./TopBar";
+import { currentVisitorsRequest, periodLabel, siteSwitchURL } from "./TopBar";
 
 test("the current visitors number always requests an exact answer", () => {
 	const filter: Filter = ["is", "visit:country", ["US"]];
@@ -76,4 +76,17 @@ test("custom dates are friendly on the period button", () => {
 	};
 
 	assert.equal(periodLabel(state), "Sep 1, 2026");
+});
+
+test("switching sites keeps the period, the comparison and the filters", () => {
+	// The picker reloads the page so the server-rendered navigation links match
+	// the new site. That reload used to drop the search string, which reset
+	// every selector the moment somebody changed site.
+	const url = siteSwitchURL("other.example", "?period=day&compare=off&f=is,visit:country,US");
+
+	assert.equal(url, "/dashboard/other.example?period=day&compare=off&f=is,visit:country,US");
+});
+
+test("a site with no query string switches cleanly", () => {
+	assert.equal(siteSwitchURL("other.example", ""), "/dashboard/other.example");
 });

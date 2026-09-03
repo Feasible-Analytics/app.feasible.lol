@@ -42,7 +42,37 @@ test("default and damaged behavior selections degrade to the Goals tab", () => {
 		exploreGrouping: "exact",
 		exploreTrail: [],
 	});
-	assert.equal(href(state), "/dashboard/site.test");
+	// The damaged behavior parameters are gone. The range travels on every URL
+	// now, so that a stored period can never be mistaken for an absent one.
+	assert.equal(href(state), "/dashboard/site.test?period=28d&compare=previous_period");
+});
+
+test("an explicit period in the URL beats the remembered one", () => {
+	// The guarantee a shared link depends on: whatever this reader last chose
+	// for themselves, a link that names a period shows the period it names.
+	const state = parse(new URL("https://example.test/dashboard/site.test?period=day&compare=off"));
+
+	assert.equal(state.preset, "day");
+	assert.equal(state.compare, "off");
+});
+
+test("a URL with no range falls back to the documented defaults", () => {
+	// Storage is unavailable under the test runner, which is the same path a
+	// private window and a blocked-storage browser take. The dashboard has to
+	// open on something rather than throw.
+	const state = parse(new URL("https://example.test/dashboard/site.test"));
+
+	assert.equal(state.preset, "28d");
+	assert.equal(state.compare, "previous_period");
+});
+
+test("the period survives a round trip through the URL", () => {
+	// The reload half of remembering a selector. Writing the default out is what
+	// makes a deliberate choice of it readable as a choice.
+	const chosen = parse(new URL("https://example.test/dashboard/site.test?period=day"));
+	const roundTripped = parse(new URL("https://example.test" + href(chosen)));
+
+	assert.equal(roundTripped.preset, "day");
 });
 
 test("a malformed percent-encoding in the path opens a dashboard rather than throwing", () => {

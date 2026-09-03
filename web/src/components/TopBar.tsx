@@ -81,6 +81,18 @@ const CURRENT_RANGE: Preset = "5m";
 const NOT_ENGAGEMENT: Filter = ["is_not", "event:name", ["engagement"], { case_sensitive: true }];
 
 /**
+ * siteSwitchURL is where the picker sends the browser for another site.
+ *
+ * The query string comes along. The full reload is about the server-rendered
+ * navigation links, which only ship in the bootstrap, and not about starting
+ * over — dropping the search here reset the period, the comparison and every
+ * filter every time somebody changed site.
+ */
+export function siteSwitchURL(domain: string, search: string): string {
+	return `/dashboard/${encodeURIComponent(domain)}${search}`;
+}
+
+/**
  * currentVisitorsRequest builds the live-pill query, shared with the realtime
  * screen so the two can never disagree about what "current" means.
  *
@@ -139,7 +151,7 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, fil
 						// server and only ship in the bootstrap, so a SPA switch would
 						// leave the settings link pointing at the previous site.
 						if (navigation) {
-							window.location.assign(`/dashboard/${encodeURIComponent(domain)}`);
+							window.location.assign(siteSwitchURL(domain, location.search));
 							return;
 						}
 						onNavigate({ ...state, domain });
