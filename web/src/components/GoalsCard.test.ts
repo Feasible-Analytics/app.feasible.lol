@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { Goal, JourneyAnchor } from "../api/types";
-import { anchorKey, behaviorCaveat, behaviorEnabled, filterAnchors, goalFilter } from "./GoalsCard";
+import { anchorKey, behaviorCaveat, behaviorEnabled, filterAnchors, goalFilter, goalsPrompt } from "./GoalsCard";
 
 // The catalogue is read once from the page, so it is stubbed before any test
 // asks for a string rather than inside the one test that needs it.
@@ -110,4 +110,30 @@ test("an unparseable reporting start date is shown as it arrived", () => {
 	const [, second] = behaviorCaveat("goals", "not-a-date");
 
 	assert.equal(second, "Reporting starts not-a-date, when this configuration became measurable.");
+});
+
+/** goalRow is one line of a goals report, carrying only the two fields the
+ * empty-state decision reads. */
+function goalRow(conversions: number, automatic = false) {
+	return { total_conversions: conversions, goal: configuredGoal({ is_automatic: automatic }) };
+}
+
+test("a period in which nothing converted says which kind of nothing it is", () => {
+	// Nothing set up at all: send them to configure a goal.
+	assert.equal(goalsPrompt([]), "unconfigured");
+
+	// Only the goals we provisioned, none fired: they are armed, not missing.
+	assert.equal(goalsPrompt([goalRow(0, true), goalRow(0, true)]), "automatic_only");
+
+	// A goal of their own is configured and did not fire. Telling them to
+	// configure a goal would read as though the one they made was lost.
+	assert.equal(goalsPrompt([goalRow(0, true), goalRow(0)]), "none_converted");
+});
+
+test("one converted goal is enough to render the table", () => {
+	assert.equal(goalsPrompt([goalRow(3)]), "rows");
+
+	// A single conversion among a wall of zeroes is exactly the case the tab
+	// hides rows for, so it must reach the table rather than an empty state.
+	assert.equal(goalsPrompt([goalRow(0, true), goalRow(0), goalRow(1)]), "rows");
 });
