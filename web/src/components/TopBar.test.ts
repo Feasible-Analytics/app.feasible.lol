@@ -27,6 +27,21 @@ test("the current visitors number always requests an exact answer", () => {
 	]);
 });
 
+test("the live count is planned at event grain", () => {
+	// The extra metric is the whole fix for a live number that read zero. Only
+	// metrics that count on either table leave the planner free to choose
+	// sessions, where excluding engagement means "this visit never pinged" —
+	// and almost every real visit pings. Asking for one event-scoped metric
+	// forces event grain, where the filter excludes pings rather than people.
+	const request = currentVisitorsRequest([]);
+
+	assert.equal(request.metrics[0], "visitors", "the pill reads metrics[0]");
+	assert.ok(
+		request.metrics.includes("pageviews"),
+		"an event-scoped metric must be present or the count collapses to zero",
+	);
+});
+
 test("custom dates are friendly on the period button", () => {
 	globalThis.document = {
 		getElementById: () => ({

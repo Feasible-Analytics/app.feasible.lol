@@ -12,6 +12,7 @@ import { t } from "../lib/i18n";
 import { useInterval, useStats } from "../lib/useStats";
 import { InfoDot } from "./atoms";
 import { MainGraph } from "./MainGraph";
+import { currentVisitorsRequest } from "./TopBar";
 
 /**
  * The realtime view reads raw events, never a summary.
@@ -47,8 +48,6 @@ const GRAPH_METRIC: Metric = "pageviews";
  * being on the site — and the live number then drifts above everything else on
  * the dashboard for a reason nobody can find.
  */
-const NOT_ENGAGEMENT: Filter = ["is_not", "event:name", ["engagement"], { case_sensitive: true }];
-
 interface Props {
 	domain: string;
 	/** The dashboard's filters. The live view is filtered like every other
@@ -65,12 +64,10 @@ interface Props {
  * free.
  */
 export function Realtime({ domain, filters }: Props) {
-	const currentBody: StatsRequest = {
-		metrics: ["visitors"],
-		date_range: "5m",
-		filters: [...filters, NOT_ENGAGEMENT],
-		exact: true,
-	};
+	// Shared with the top bar's pill so the two readings of "current" cannot
+	// drift apart, and so the event-grain planning both depend on lives in one
+	// place rather than being rediscovered here.
+	const currentBody: StatsRequest = currentVisitorsRequest(filters);
 
 	const windowBody: StatsRequest = {
 		metrics: ["visitors", "pageviews", "events"],

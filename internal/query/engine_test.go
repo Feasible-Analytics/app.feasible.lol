@@ -1294,3 +1294,44 @@ func seedSignupGoal(t *testing.T, account *accounts.Account) int64 {
 
 	return id
 }
+
+// TestExcludingEngagementNeedsEventGrain pins the two readings of an excluding
+// filter on an event dimension, because the dashboard's live visitor count
+// depends on getting the right one and the difference is invisible in the
+// answer — both are plausible small numbers.
+//
+// Planned against sessions, "is_not engagement" selects visits that never sent
+// a ping. That is the documented meaning and it is deliberate, but it is not
+// what a live count asks: engagement pings fire on tab blur, so almost every
+// real visit has one and the answer collapses toward zero.
+//
+// Asking for one event-scoped metric alongside plans the query at event grain,
+// where the filter selects events that are not pings and the visitors behind
+// them are counted. That is the reading the live pill needs, and it is why
+// currentVisitorsRequest asks for a pageviews figure it never reads.
+func TestExcludingEngagementNeedsEventGrain(t *testing.T) {
+	engine := newEngine(t)
+
+	notEngagement := Filter{Operator: OpIsNot, Dimension: "event:name", Values: []string{"engagement"}}
+
+	sessionGrain := baseQuery("visitors")
+	sessionGrain.Filters = []Filter{notEngagement}
+
+	eventGrain := baseQuery("visitors", "pageviews")
+	eventGrain.Filters = []Filter{notEngagement}
+
+	// Two of the three fixture visitors never sent a ping.
+	if got := run(t, engine, sessionGrain).Results[0].Metrics[0]; got != 2 {
+		t.Errorf("visitors at session grain = %v, want 2 (visits that never sent a ping)", got)
+	}
+
+	// All three did something other than ping, which is what "on the site" means.
+	if got := run(t, engine, eventGrain).Results[0].Metrics[0]; got != 3 {
+		t.Errorf("visitors at event grain = %v, want 3 (visitors behind non-ping events)", got)
+	}
+
+	// The unfiltered count is the ceiling both readings sit under.
+	if got := run(t, engine, baseQuery("visitors")).Results[0].Metrics[0]; got != 3 {
+		t.Errorf("unfiltered visitors = %v, want 3", got)
+	}
+}
