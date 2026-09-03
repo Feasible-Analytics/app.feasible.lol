@@ -19,6 +19,95 @@ import { flagFor } from "../lib/labels";
 import { useStats } from "../lib/useStats";
 import { Flag, Spinner } from "./atoms";
 
+/** How many values the autocomplete offers. Enough that the value somebody is
+ *  looking for is nearly always in the list, few enough that the panel does not
+ *  become its own scrolling report. */
+const SUGGESTIONS = 25;
+
+/** How many values a locally searched dimension fetches. It has to be the whole
+ *  set or the search finds only what the first page happened to contain, and
+ *  these dimensions are the ones where the whole set is small: countries and
+ *  languages are in the hundreds, and a site's regions are bounded by where its
+ *  visitors actually are. */
+const CODED_SUGGESTIONS = 1000;
+
+/**
+ * Dimensions whose stored value is a code the reader never sees.
+ *
+ * The list shows "United States" and the column holds "US", so sending the
+ * typed text to the server searches the code and finds nothing. Their value
+ * sets are small and fixed, so the whole list is fetched once and narrowed
+ * here against the same label the row renders.
+ */
+const CODED_DIMENSIONS = new Set(["visit:country", "visit:region", "visit:language"]);
+
+/** searchesLocally says whether this dimension's values are narrowed in the
+ *  browser rather than by the server. */
+export function searchesLocally(dimension: string): boolean {
+	return CODED_DIMENSIONS.has(dimension);
+}
+
+/**
+ * suggestionsRequest asks the server for the values worth offering.
+ *
+ * The list is capped, so on a site with millions of distinct pages the value
+ * somebody wants is almost never among the busiest few. The typed text
+ * therefore goes to the server as a filter on the dimension being broken down
+ * — a search that can only find what was already on screen is not a search.
+ *
+ * Both metrics are asked for because a custom property has no session column:
+ * `visitors` alone lets the planner choose session grain, which then refuses an
+ * event-scoped breakdown and answers the picker with an error instead of any
+ * values at all.
+ */
+export function suggestionsRequest(dimension: string, range: DateRange, search: string): StatsRequest {
+	const local = searchesLocally(dimension);
+	const narrowing = Boolean(search) && !local;
+
+	return {
+		metrics: ["visitors", "events"],
+		date_range: range,
+		dimensions: [dimension],
+		pagination: { limit: local ? CODED_SUGGESTIONS : SUGGESTIONS },
+		filters: narrowing ? [["contains", dimension, [search], { case_sensitive: false }]] : undefined,
+	};
+}
+
+/**
+ * suggestionsSettled says whether the values on screen answer the box above
+ * them.
+ *
+ * The previous answer stays rendered while the next one loads, which is right
+ * for a report card and wrong here: a list of the busiest pages sitting under a
+ * search box the reader has just typed into is indistinguishable from a search
+ * box that does nothing, and on a large site the query behind it takes seconds.
+ * A locally narrowed dimension never waits, so it is never out of date.
+ */
+export function suggestionsSettled(dimension: string, typed: string, search: string, loading: boolean): boolean {
+	return searchesLocally(dimension) || (!loading && typed.trim() === search);
+}
+
+/** matchingRows narrows a locally searched dimension. The label is matched
+ *  because it is what the reader is reading, and the code as well because
+ *  "US" is a reasonable thing to type at a list of country names. */
+export function matchingRows<T extends { dimensions: string[] }>(
+	rows: T[],
+	dimension: string,
+	search: string,
+	label: (value: string) => string,
+): T[] {
+	if (!searchesLocally(dimension) || !search) return rows.slice(0, SUGGESTIONS);
+
+	const needle = search.toLowerCase();
+	const hit = (row: T) => {
+		const value = row.dimensions[0] ?? "";
+
+		return label(value).toLowerCase().includes(needle) || value.toLowerCase().includes(needle);
+	};
+
+	return rows.filter(hit).slice(0, SUGGESTIONS);
+}
+
 /**
  * How many pills stay on the bar before the rest collapse.
  *
@@ -27,11 +116,6 @@ import { Flag, Spinner } from "./atoms";
  * count is on the button, so nothing is hidden — it is just not shouted.
  */
 const VISIBLE_PILLS = 4;
-
-/** How many values the autocomplete offers. Enough that the value somebody is
- *  looking for is nearly always in the list, few enough that the panel does not
- *  become its own scrolling report. */
-const SUGGESTIONS = 25;
 
 interface Props {
 	domain: string;
@@ -366,16 +450,11 @@ function ValueEditor({
 	// list of what exists would be a list of things the pattern does not match.
 	const freeform = operator === "matches" || operator === "matches_not";
 
-	const body: StatsRequest = {
-		metrics: ["visitors"],
-		date_range: range,
-		dimensions: [editing.dimension],
-		pagination: { limit: SUGGESTIONS },
-		filters: search ? [["contains", editing.dimension, [search], { case_sensitive: false }]] : undefined,
-	};
-
-	const stats = useStats(domain, freeform ? null : body);
-	const rows = stats.data?.results ?? [];
+	const stats = useStats(domain, freeform ? null : suggestionsRequest(editing.dimension, range, search));
+	const rows = matchingRows(stats.data?.results ?? [], editing.dimension, search, (value) =>
+		readable(editing.dimension, value, labels),
+	);
+	const settled = suggestionsSettled(editing.dimension, typed, search, stats.loading);
 
 	/** collected is the labels this panel learned, so a country code chosen here
 	 *  arrives on the recipient's screen with its name attached. */
@@ -460,7 +539,7 @@ function ValueEditor({
 			)}
 
 			{!freeform && (
-				<div className="scroll-thin max-h-56 overflow-auto border-t border-line">
+				<div className="scroll-thin max-h-56 overflow-auto border-t border-line" aria-busy={!settled}>
 					{stats.error ? (
 						<p className="px-3 py-3 text-xs text-down">{stats.error}</p>
 					) : !stats.data ? (
@@ -470,28 +549,36 @@ function ValueEditor({
 					) : rows.length === 0 ? (
 						<p className="px-3 py-3 text-xs text-muted">{t("dashboard.filter.no_matches")}</p>
 					) : (
-						rows.map((row) => {
-							const value = row.dimensions[0] ?? "";
-							const on = values.includes(value);
+						// Out-of-date values are inert, not merely dimmed: picking
+						// the busiest page while a narrower search is still running
+						// filters the dashboard by something the reader never chose,
+						// and a pointer rule alone would leave Tab and Enter open.
+						// The dimming is immediate rather than eased, because a fade
+						// is time spent showing the impression being corrected.
+						<div inert={!settled} className={settled ? "" : "opacity-40"}>
+							{rows.map((row) => {
+								const value = row.dimensions[0] ?? "";
+								const on = values.includes(value);
 
-							return (
-								<button
-									key={value}
-									type="button"
-									aria-pressed={on}
-									onClick={() => toggleValue(value)}
-									className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover ${
-										on ? "text-accent" : "text-body"
-									}`}
-								>
-									<Flag glyph={flagFor(editing.dimension, value)} />
-									<span className="min-w-0 flex-1 truncate">
-										{readable(editing.dimension, value, labels)}
-									</span>
-									<span className="tnum shrink-0 text-xs text-muted"><span className="sr-only">{exact(row.metrics[0] ?? 0)}</span><span aria-hidden="true">{compact(row.metrics[0] ?? 0)}</span></span>
-								</button>
-							);
-						})
+								return (
+									<button
+										key={value}
+										type="button"
+										aria-pressed={on}
+										onClick={() => toggleValue(value)}
+										className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover ${
+											on ? "text-accent" : "text-body"
+										}`}
+									>
+										<Flag glyph={flagFor(editing.dimension, value)} />
+										<span className="min-w-0 flex-1 truncate">
+											{readable(editing.dimension, value, labels)}
+										</span>
+										<span className="tnum shrink-0 text-xs text-muted"><span className="sr-only">{exact(row.metrics[0] ?? 0)}</span><span aria-hidden="true">{compact(row.metrics[0] ?? 0)}</span></span>
+									</button>
+								);
+							})}
+						</div>
 					)}
 				</div>
 			)}

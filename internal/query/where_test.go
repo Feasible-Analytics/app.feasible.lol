@@ -56,6 +56,25 @@ func TestFilterOperators(t *testing.T) {
 			pageviews: 4, visitors: 2,
 		},
 		{
+			// A session-scoped dimension filtered from an event-grain query is
+			// the one place a filter reaches across the join, and it is a
+			// different compiled predicate from the same filter at session
+			// grain.
+			name:      "contains on a session dimension",
+			filters:   []Filter{{Operator: OpContains, Dimension: "visit:entry_page", Values: []string{"pric"}}},
+			pageviews: 1, visitors: 1,
+		},
+		{
+			name:      "contains_not on a session dimension",
+			filters:   []Filter{{Operator: OpContainsNot, Dimension: "visit:entry_page", Values: []string{"pric"}}},
+			pageviews: 6, visitors: 2,
+		},
+		{
+			name:      "contains_not on a session dimension, ignoring case",
+			filters:   []Filter{{Operator: OpContainsNot, Dimension: "visit:entry_page", Values: []string{"PRIC"}, CaseInsensitive: true}},
+			pageviews: 6, visitors: 2,
+		},
+		{
 			name:      "matches",
 			filters:   []Filter{{Operator: OpMatches, Dimension: "event:page", Values: []string{"^/pri"}}},
 			pageviews: 3, visitors: 2,
@@ -84,6 +103,39 @@ func TestFilterOperators(t *testing.T) {
 
 			closeTo(t, tc.name+" pageviews", result.Results[0].Metrics[0], tc.pageviews)
 			closeTo(t, tc.name+" visitors", result.Results[0].Metrics[1], tc.visitors)
+		})
+	}
+}
+
+// TestFilterOnTheDimensionBeingBrokenDown is the shape behind every filter box
+// in the dashboard: break down by a dimension and narrow it by the typed text
+// at the same time. Nothing may drop or rewrite a filter because it names the
+// dimension being grouped by, and the two metric sets below plan at different
+// grains, so the same question compiles two different predicates.
+func TestFilterOnTheDimensionBeingBrokenDown(t *testing.T) {
+	engine := newEngine(t)
+
+	for _, metrics := range [][]string{{"visitors"}, {"visitors", "events"}} {
+		t.Run(strings.Join(metrics, "+"), func(t *testing.T) {
+			q := baseQuery(metrics...)
+			q.Dimensions = []string{"visit:entry_page"}
+			q.Filters = []Filter{{
+				Operator: OpContains, Dimension: "visit:entry_page",
+				Values: []string{"PRIC"}, CaseInsensitive: true,
+			}}
+
+			result := run(t, engine, q)
+
+			// One visit entered on /pricing, and it is the only entry page that
+			// contains the typed text.
+			if len(result.Results) != 1 {
+				t.Fatalf("suggestions = %d rows, want only /pricing", len(result.Results))
+			}
+			if got := result.Results[0].Dimensions[0]; got != "/pricing" {
+				t.Fatalf("suggestion = %q, want /pricing", got)
+			}
+
+			closeTo(t, "visitors who entered on /pricing", result.Results[0].Metrics[0], 1)
 		})
 	}
 }
@@ -141,6 +193,16 @@ func TestCaseSensitivity(t *testing.T) {
 
 	contains.Filters[0].CaseInsensitive = true
 	closeTo(t, "case-insensitive contains", run(t, engine, contains).Results[0].Metrics[0], 3)
+
+	// The same two answers across the session join. Folding one side with Go's
+	// rules and the other with SQLite's is a mistake that only shows up here.
+	entry := baseQuery("pageviews")
+	entry.Filters = []Filter{{Operator: OpContains, Dimension: "visit:entry_page", Values: []string{"PRIC"}}}
+
+	closeTo(t, "case-sensitive contains on a session dimension", run(t, engine, entry).Results[0].Metrics[0], 0)
+
+	entry.Filters[0].CaseInsensitive = true
+	closeTo(t, "case-insensitive contains on a session dimension", run(t, engine, entry).Results[0].Metrics[0], 1)
 }
 
 // TestCaseInsensitiveRegex checks the flag reaches the matcher.
