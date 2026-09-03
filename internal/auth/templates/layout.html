@@ -5,10 +5,15 @@
   Created: 2026-08-30
   Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 
-  There are several shapes here rather than several layouts. Signed-out pages
-  are a centred card, a settings screen gets the settings chrome, and every
-  other signed-in page gets the top bar — keeping them in one file is what
-  stops the header, the fonts and the theme handling drifting apart.
+  There are several shapes here rather than several layouts: a settings screen
+  gets the settings chrome, a setup step gets a quiet one, signed-out pages are
+  a centred card, and every other signed-in page gets the top bar. Keeping them
+  in one file is what stops the header, the fonts and the theme handling
+  drifting apart.
+
+  The order matters. A setup step is signed in and therefore has a header, but
+  a bar full of places to go is the opposite of what a step-by-step wants, so
+  the quiet shell is checked first.
 -->
 <!doctype html>
 <html lang="{{ .Lang }}"{{ if rtl .Lang }} dir="rtl"{{ end }} class="h-full">
@@ -74,7 +79,7 @@
       {{ template "content" . }}
     </main>
   </div>
-{{ else if .Header }}
+{{ else if and .Header (not .Focused) }}
   <!-- The bar, not a column. Four destinations never earned a permanent
        quarter of the width; two of them are in the bar and the rest are one
        click into the menu. -->
