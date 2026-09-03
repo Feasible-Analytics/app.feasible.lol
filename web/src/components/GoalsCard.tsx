@@ -25,6 +25,7 @@ import type {
 	FunnelReport,
 	Goal,
 	GoalReport,
+	GoalReportRow,
 	JourneyAnchor,
 	JourneyReport,
 	Property,
@@ -144,10 +145,15 @@ export function GoalsCard({ domain, range, filters, exact: exactAnswer, onFilter
 	);
 }
 
-/** GoalsPanel renders the goals that converted in the period and turns matchable
+/** GoalsPanel lists the goals that converted in the period and turns matchable
  * rows into the same dashboard filters used elsewhere. Goals that did not
  * convert are left to the goals settings screen, which is where somebody
- * checking that a goal saved goes to look for it. */
+ * checking that a goal saved goes to look for it.
+ *
+ * The hiding happens here rather than in the report, because the report is also
+ * what the Explore tab reads to offer every configured goal as a journey
+ * anchor. A goal nobody has converted yet is still a thing you want to explore
+ * towards. */
 function GoalsPanel({
 	domain,
 	request,
@@ -168,8 +174,10 @@ function GoalsPanel({
 		enabled,
 		(signal) => goalsReport(domain, request, signal),
 	);
-	const rows = report.data?.rows ?? [];
+	const configured = report.data?.rows ?? [];
+	const rows = configured.filter((row) => row.total_conversions > 0);
 	const peak = Math.max(1, ...rows.map((row) => row.unique_conversions));
+	const prompt = goalsPrompt(configured);
 
 	// A failed request keeps the rows it last succeeded with, so the caveat is
 	// withheld whenever the panel is showing a failure rather than a table. A
@@ -181,16 +189,24 @@ function GoalsPanel({
 	if (report.error) return <PanelFailure state={report} />;
 	if (!report.data) return <PanelLoading label={t("dashboard.goals.loading")} />;
 
-	const prompt = goalsPrompt(report.data);
-
 	return (
 		<PanelFrame
-			footer={settingsURL ? <a href={settingsURL} className="text-xs font-medium text-muted transition-colors hover:text-accent">{t("dashboard.behavior.goals.manage")} →</a> : undefined}
+			// The empty states carry their own call to action, so the footer link
+			// would be a second button to the same page a few inches below it.
+			footer={settingsURL && prompt === "rows" ? <a href={settingsURL} className="text-xs font-medium text-muted transition-colors hover:text-accent">{t("dashboard.behavior.goals.manage")} →</a> : undefined}
 		>
 			{prompt !== "rows" ? (
 				<GoalsEmpty prompt={prompt} settingsURL={settingsURL} />
 			) : (
 				<div className="px-4 sm:px-5">
+					{/* Silently dropping rows is how a reader concludes a goal was
+					    lost, so the count of what is not on screen is on screen. */}
+					{rows.length < configured.length && (
+						<p className="pt-2 text-[11px] text-muted">
+							{t("dashboard.goals.hidden", { shown: String(rows.length), configured: String(configured.length) })}
+							{settingsURL && <> <a href={settingsURL} className="font-medium text-muted underline underline-offset-2 transition-colors hover:text-accent">{t("dashboard.goals.see_all")}</a></>}
+						</p>
+					)}
 					<div className="grid h-8 grid-cols-[minmax(0,1fr)_60px_60px_60px] items-center gap-2 text-[11px] font-medium tracking-wide text-muted uppercase sm:grid-cols-[minmax(0,1fr)_90px_90px_80px]">
 						<span>{t("dashboard.column.goal")}</span><span className="text-right">{t("dashboard.column.uniques")}</span><span className="text-right">{t("dashboard.column.total")}</span><span className="text-right">{t("dashboard.column.conversion_rate")}</span>
 					</div>
@@ -221,49 +237,50 @@ function GoalsPanel({
 export type GoalsPrompt = "rows" | "unconfigured" | "automatic_only" | "none_converted";
 
 /**
- * goalsPrompt picks the message for a report with nothing to list.
+ * goalsPrompt picks the message for a period in which nothing converted.
  *
- * The three empty answers need opposite advice, and an empty row list on its
- * own cannot tell them apart. A site with no goals needs to be sent to set one
- * up; a site carrying only the goals we created for it needs to be told they
- * are armed and to add one of its own; a site whose goals simply did not fire
- * in this period needs neither, and being told to configure a goal it already
- * configured reads as though the goal was lost.
+ * The three answers need different advice. A site with no goals has to be sent
+ * to set one up. A site carrying only the goals we provisioned for it has to be
+ * told they are armed and to add one of its own, or it reads the silence as a
+ * broken tracker. A site whose own goals simply did not fire needs neither, and
+ * being told to configure a goal it already configured reads as though the goal
+ * was lost.
  */
-export function goalsPrompt(report: Pick<GoalReport, "rows" | "configured" | "configured_automatic">): GoalsPrompt {
-	if (report.rows.length > 0) return "rows";
-	if (report.configured === 0) return "unconfigured";
-	if (report.configured_automatic === report.configured) return "automatic_only";
+export function goalsPrompt(configured: Pick<GoalReportRow, "total_conversions" | "goal">[]): GoalsPrompt {
+	if (configured.some((row) => row.total_conversions > 0)) return "rows";
+	if (configured.length === 0) return "unconfigured";
+	if (configured.every((row) => row.goal.is_automatic)) return "automatic_only";
 
 	return "none_converted";
 }
 
-/** GoalsEmpty renders one of the three empty answers, each with the call to
- * action that matches it. */
+/** GoalsEmpty renders one of the three empty answers with the call to action
+ * that matches it. Every title answers the question the reader actually asked —
+ * what happened in this period — and only the advice underneath differs. */
 function GoalsEmpty({ prompt, settingsURL }: { prompt: Exclude<GoalsPrompt, "rows">; settingsURL?: string }) {
+	if (prompt === "unconfigured") {
+		return <BehaviorEmpty title={t("dashboard.goals.empty")} body={t("dashboard.goals.empty_hint")} href={settingsURL} />;
+	}
+
 	if (prompt === "automatic_only") {
 		return (
 			<BehaviorEmpty
-				title={t("dashboard.behavior.goals.automatic_ready")}
-				body={t("dashboard.behavior.goals.automatic_ready_hint")}
+				title={t("dashboard.goals.none_converted")}
+				body={t("dashboard.goals.automatic_only_hint")}
 				href={settingsURL}
 				action={t("dashboard.behavior.goals.add_business_goal")}
 			/>
 		);
 	}
 
-	if (prompt === "none_converted") {
-		return (
-			<BehaviorEmpty
-				title={t("dashboard.goals.none_converted")}
-				body={t("dashboard.goals.none_converted_hint")}
-				href={settingsURL}
-				action={t("dashboard.goals.see_all")}
-			/>
-		);
-	}
-
-	return <BehaviorEmpty title={t("dashboard.goals.empty")} body={t("dashboard.goals.empty_hint")} href={settingsURL} />;
+	return (
+		<BehaviorEmpty
+			title={t("dashboard.goals.none_converted")}
+			body={t("dashboard.goals.none_converted_hint")}
+			href={settingsURL}
+			action={t("dashboard.goals.see_all")}
+		/>
+	);
 }
 
 /** PropertiesPanel lets a reader choose one enabled property and applies a

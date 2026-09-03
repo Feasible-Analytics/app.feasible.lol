@@ -47,12 +47,6 @@ type ReportRequest struct {
 	// until 404 events actually arrive, and a settings screen is the only
 	// place somebody wants to see the empty ones.
 	IncludeEmptyAutomatic bool
-
-	// ConvertedOnly drops every goal that did not convert in the period, not
-	// only the automatic ones. A site with two dozen goals otherwise reports a
-	// wall of zeroes the reader has to search for the rows carrying a number.
-	// Configured on the result is what keeps the hidden ones countable.
-	ConvertedOnly bool
 }
 
 // ReportRow is one goal's line.
@@ -104,16 +98,6 @@ type ReportRow struct {
 type ReportResult struct {
 	Rows []ReportRow `json:"rows"`
 
-	// Configured is how many goals the site has, counting the ones this report
-	// left out. Without it "no goals configured" and "goals configured, none
-	// converted" arrive as the same empty list, and they need opposite advice.
-	Configured int `json:"configured"`
-
-	// ConfiguredAutomatic is how many of those we created ourselves. A site
-	// where every goal is one of ours and none has fired has not set up a
-	// conversion yet, which is a third thing to say.
-	ConfiguredAutomatic int `json:"configured_automatic"`
-
 	// Visitors and Visits are the period's totals: the divisor every rate on
 	// the report used, returned so the reader can check the arithmetic.
 	Visitors int64 `json:"visitors"`
@@ -144,13 +128,7 @@ func Report(ctx context.Context, db *sql.DB, engine *query.Engine, req ReportReq
 
 	full := NewWindow(resolved.Start, resolved.End)
 
-	result := &ReportResult{Rows: []ReportRow{}, From: resolved.Start, To: resolved.End, Configured: len(list)}
-
-	for _, goal := range list {
-		if goal.IsAutomatic {
-			result.ConfiguredAutomatic++
-		}
-	}
+	result := &ReportResult{Rows: []ReportRow{}, From: resolved.Start, To: resolved.End}
 
 	// The divisor is read once per distinct window. Most goals share the whole
 	// period, so this is one query however many goals a site has, and a goal
@@ -195,10 +173,6 @@ func Report(ctx context.Context, db *sql.DB, engine *query.Engine, req ReportReq
 		// is what makes creating one on every new site free: a site that never
 		// serves a 404 never sees a 404 goal.
 		if goal.IsAutomatic && row.TotalConversions == 0 && !req.IncludeEmptyAutomatic {
-			continue
-		}
-
-		if req.ConvertedOnly && row.TotalConversions == 0 {
 			continue
 		}
 

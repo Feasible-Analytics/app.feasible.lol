@@ -112,23 +112,28 @@ test("an unparseable reporting start date is shown as it arrived", () => {
 	assert.equal(second, "Reporting starts not-a-date, when this configuration became measurable.");
 });
 
-test("an empty goals report says which kind of empty it is", () => {
-	const rows = [] as never[];
+/** goalRow is one line of a goals report, carrying only the two fields the
+ * empty-state decision reads. */
+function goalRow(conversions: number, automatic = false) {
+	return { total_conversions: conversions, goal: configuredGoal({ is_automatic: automatic }) };
+}
 
+test("a period in which nothing converted says which kind of nothing it is", () => {
 	// Nothing set up at all: send them to configure a goal.
-	assert.equal(goalsPrompt({ rows, configured: 0, configured_automatic: 0 }), "unconfigured");
+	assert.equal(goalsPrompt([]), "unconfigured");
 
 	// Only the goals we provisioned, none fired: they are armed, not missing.
-	assert.equal(goalsPrompt({ rows, configured: 4, configured_automatic: 4 }), "automatic_only");
+	assert.equal(goalsPrompt([goalRow(0, true), goalRow(0, true)]), "automatic_only");
 
 	// A goal of their own is configured and did not fire. Telling them to
 	// configure a goal would read as though the one they made was lost.
-	assert.equal(goalsPrompt({ rows, configured: 5, configured_automatic: 4 }), "none_converted");
+	assert.equal(goalsPrompt([goalRow(0, true), goalRow(0)]), "none_converted");
 });
 
-test("a goals report with any row renders its table", () => {
-	const rows = [{}] as never[];
+test("one converted goal is enough to render the table", () => {
+	assert.equal(goalsPrompt([goalRow(3)]), "rows");
 
-	assert.equal(goalsPrompt({ rows, configured: 5, configured_automatic: 4 }), "rows");
-	assert.equal(goalsPrompt({ rows, configured: 4, configured_automatic: 4 }), "rows");
+	// A single conversion among a wall of zeroes is exactly the case the tab
+	// hides rows for, so it must reach the table rather than an empty state.
+	assert.equal(goalsPrompt([goalRow(0, true), goalRow(0), goalRow(1)]), "rows");
 });

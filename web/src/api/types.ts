@@ -214,13 +214,9 @@ export interface GoalReportRow {
 	partial: boolean;
 }
 
-/** The goals report plus the period totals used as its denominators. The rows
- * are only the goals that converted, so the two configured counts are what
- * separate an unconfigured site from one whose goals simply did not fire. */
+/** The goals report plus the period totals used as its denominators. */
 export interface GoalReport {
 	rows: GoalReportRow[];
-	configured: number;
-	configured_automatic: number;
 	visitors: number;
 	visits: number;
 	from: string;
