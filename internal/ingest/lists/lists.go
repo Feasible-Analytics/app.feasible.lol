@@ -25,8 +25,8 @@ import (
 
 // datacentersFile is the generated baseline. It is committed rather than built,
 // because `go build` has to work from a clean checkout with no network, and a
-// list assembled at build time would make every build depend on eight third
-// party services being up.
+// list assembled at build time would make every build depend on a dozen and a
+// half third-party services all being up at once.
 //
 //go:embed datacenters.txt
 var datacentersFile string

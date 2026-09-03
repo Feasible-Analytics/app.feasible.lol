@@ -202,17 +202,17 @@ func TestMissingListFilesLeaveTheBaseline(t *testing.T) {
 	}
 }
 
-// TestNewFilterCarriesDatacenterRanges is the regression guard for the bug this
-// list was built to fix.
+// TestNewFilterCarriesDatacenterRanges checks that a filter nobody configured
+// still knows about hosting providers.
 //
-// A filter with no ranges answers "human" to every address and looks exactly
-// like clean traffic: production ran for weeks classifying a scraper farm as
-// twenty-nine visitors a morning, and nothing anywhere said so. Every other
-// test in this file supplies its own ranges, so none of them can see it.
+// A filter with no ranges answers "human" to every address, which does not look
+// like a fault from the outside — it looks like clean traffic. Every other test
+// in this file supplies its own ranges, so none of them can see an empty
+// default.
 func TestNewFilterCarriesDatacenterRanges(t *testing.T) {
 	filter := NewBotFilter()
 
-	if _, datacenters, _ := filter.Sizes(); datacenters < 5000 {
+	if _, datacenters, _ := filter.Sizes(); datacenters < 10000 {
 		t.Fatalf("a fresh filter holds %d datacentre ranges — run `make lists`", datacenters)
 	}
 

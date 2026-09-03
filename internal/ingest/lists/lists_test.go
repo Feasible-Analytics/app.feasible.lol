@@ -13,14 +13,20 @@ import (
 	"testing"
 )
 
-// TestDatacentersIsPresent guards against the embedded file being emptied or
-// replaced by a placeholder. An empty list is the failure this whole package
-// exists to fix, and it looks exactly like a sudden surge of real traffic.
+// committedRanges is roughly what a full rebuild produces. The floors below are
+// set close under it rather than at some comfortable round number, because
+// losing one whole cloud costs about a sixth of the list — a floor loose enough
+// to survive that is a floor that never fires.
+const committedRanges = 11838
+
+// TestDatacentersIsPresent guards against the embedded file being emptied,
+// truncated or replaced by a placeholder. A short list is the failure this
+// package exists to fix, and it looks exactly like a week of clean traffic.
 func TestDatacentersIsPresent(t *testing.T) {
 	ranges := Datacenters()
 
-	if len(ranges) < 5000 {
-		t.Fatalf("the embedded list holds %d ranges, want at least 5000 — run `make lists`", len(ranges))
+	if floor := committedRanges * 9 / 10; len(ranges) < floor {
+		t.Fatalf("the embedded list holds %d ranges, want at least %d — run `make lists`", len(ranges), floor)
 	}
 }
 

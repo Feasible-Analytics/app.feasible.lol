@@ -21,7 +21,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -32,9 +31,11 @@ import (
 func main() {
 	out := flag.String("out", filepath.Join("internal", "ingest", "lists", "datacenters.txt"),
 		"file to write the merged ranges into")
+	shrink := flag.Bool("allow-shrink", false,
+		"write the list even if it is much smaller than the committed one, for a deliberate change of sources")
 	flag.Parse()
 
-	if err := run(*out); err != nil {
+	if err := run(*out, *shrink); err != nil {
 		fmt.Fprintln(os.Stderr, "gen-lists:", err)
 		os.Exit(1)
 	}
@@ -44,22 +45,25 @@ func main() {
 // fatal, because one provider having a bad morning must not leave the tree with
 // no list at all — but a run that loses a source says so loudly, and the
 // coverage floor below refuses to write a file that lost most of them.
-func run(out string) error {
+func run(out string, allowShrink bool) error {
 	client := &http.Client{Timeout: lists.FetchTimeout}
 	ctx := context.Background()
 
 	sources := lists.DatacenterSources()
 
+	var failed []string
+
+	// Azure is found rather than named, and it is the largest source by a wide
+	// margin. It has to join the roll call either way: a source that is never
+	// added is a source the coverage check below cannot notice is gone.
 	if azure, err := lists.AzureSource(ctx, client, time.Now()); err != nil {
 		fmt.Fprintln(os.Stderr, "  ! Azure:", err)
+		failed = append(failed, "Azure")
 	} else {
 		sources = append(sources, azure)
 	}
 
-	var (
-		all    []string
-		failed []string
-	)
+	var all []string
 
 	for _, source := range sources {
 		cidrs, err := lists.Fetch(ctx, client, source)
@@ -74,19 +78,62 @@ func run(out string) error {
 		all = append(all, cidrs...)
 	}
 
-	// Half the sources missing is a network problem at this end, not a list.
-	// Writing it would quietly halve the coverage of every build that follows.
-	if len(failed)*2 >= len(sources) {
-		return fmt.Errorf("%d of %d sources failed: %s",
-			len(failed), len(sources), strings.Join(failed, ", "))
-	}
-
 	merged := lists.Merge(all)
-	sort.Strings(merged)
 
 	fmt.Printf("\n  %d prefixes merged to %d ranges\n", len(all), len(merged))
 
+	if err := sound(merged, len(sources)+len(failed), failed, allowShrink); err != nil {
+		return err
+	}
+
 	return write(out, merged, sources, failed)
+}
+
+// MinimumCoverage is the floor the rebuilt list has to clear.
+//
+// It is a fraction of what is already committed rather than a fixed number,
+// because the number that matters is "did this run lose a source" and the
+// absolute size grows over time. Losing the largest source costs about a sixth
+// of the ranges, so anything under this is a bad morning at one of the
+// providers rather than the internet getting smaller.
+const MinimumCoverage = 0.9
+
+// sound refuses to write a list that lost too much.
+//
+// Overwriting the committed file with a half-fetched one is the worst outcome
+// here: it builds, it tests, it ships, and it silently stops recognising a
+// cloud. The check has to be here because nothing downstream can tell a list
+// that shrank from a list that was always that size.
+func sound(merged []string, sources int, failed []string, allowShrink bool) error {
+	if len(failed)*2 >= sources {
+		return fmt.Errorf("%d of %d sources failed: %s",
+			len(failed), sources, strings.Join(failed, ", "))
+	}
+
+	// Dropping a source on purpose shrinks the list on purpose, and the check
+	// cannot tell that from a source that failed. Saying so on the command line
+	// is the difference between a decision and an accident.
+	if allowShrink {
+		return nil
+	}
+
+	floor := int(float64(len(lists.Datacenters())) * MinimumCoverage)
+	if len(merged) < floor {
+		return fmt.Errorf("rebuilt to %d ranges, but the committed list holds %d and the floor is %d — "+
+			"a source is missing; %s. Pass -allow-shrink if the change is deliberate",
+			len(merged), len(lists.Datacenters()), floor, describe(failed))
+	}
+
+	return nil
+}
+
+// describe names the sources that failed, for an error a person has to act on.
+func describe(failed []string) string {
+	if len(failed) == 0 {
+		return "every source answered, so one of them has changed its format"
+	}
+
+	return "these did not answer: " + strings.Join(failed, ", ")
 }
 
 // write renders the file. The header names the sources rather than the date:

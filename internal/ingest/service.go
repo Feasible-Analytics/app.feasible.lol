@@ -18,6 +18,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/geo"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest/lists"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/salts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
@@ -332,7 +333,12 @@ func logListSizes(log *logger.Logger, bots *BotFilter) {
 	log.Info("classification lists loaded",
 		"user_agent_tokens", agents, "datacenter_ranges", datacenters, "spam_domains", spam)
 
-	if datacenters == 0 {
-		log.Warn("no datacentre ranges are loaded — traffic from hosting providers will be counted as visitors")
+	// A file in the data directory replaces the embedded list outright, so a
+	// truncated download does not fail — it succeeds with a shorter list, and
+	// the traffic it stops recognising turns back into visitors. Comparing
+	// against what shipped is the only way to notice.
+	if baseline := len(lists.Datacenters()); datacenters < baseline*9/10 {
+		log.Warn("far fewer datacentre ranges than the built-in list — traffic from hosting providers may be counted as visitors",
+			"loaded", datacenters, "built_in", baseline)
 	}
 }

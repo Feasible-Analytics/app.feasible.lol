@@ -9,6 +9,7 @@
 package lists
 
 import (
+	"bytes"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -88,6 +89,13 @@ type hostingASN struct {
 // hostingASNs are the compute providers that publish no feed. They are large
 // enough that leaving them out is the difference between catching a scraper
 // farm and watching it inflate a customer's numbers.
+//
+// Networks that exist to carry consumer VPN exits are not here, for the same
+// reason Cloudflare is not: a browser really does originate from a VPN exit,
+// and the person driving it is real. They are also impossible to cover
+// consistently — one provider's exits sit under several unrelated autonomous
+// systems, so listing one of them classifies the same person differently
+// depending on which city they picked.
 func hostingASNs() []hostingASN {
 	return []hostingASN{
 		{"Alibaba Cloud", "45102"},
@@ -98,7 +106,6 @@ func hostingASNs() []hostingASN {
 		{"Scaleway", "12876"},
 		{"Contabo", "51167"},
 		{"Leaseweb", "60781"},
-		{"M247", "9009"},
 		{"Choopa/Vultr", "20473"},
 	}
 }
@@ -189,6 +196,14 @@ func Fetch(ctx context.Context, client *http.Client, source Source) ([]string, e
 	cidrs, err := source.Parse(body)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", source.Name, err)
+	}
+
+	// A provider that renames a field publishes a document that still parses
+	// and yields nothing. Treating that as "this network announces no
+	// addresses" would drop the source from the list with only a cheerful
+	// zero in the output to show for it.
+	if len(cidrs) == 0 {
+		return nil, fmt.Errorf("%s: parsed no prefixes, so its format has probably changed", source.Name)
 	}
 
 	return cidrs, nil
@@ -320,7 +335,7 @@ func parseRIPEstat(body []byte) ([]string, error) {
 // parseGeofeed reads an RFC 8805 self-published geofeed, whose first column is
 // the prefix and whose remaining columns are the location we do not want.
 func parseGeofeed(body []byte) ([]string, error) {
-	reader := csv.NewReader(strings.NewReader(string(body)))
+	reader := csv.NewReader(bytes.NewReader(body))
 	reader.FieldsPerRecord = -1
 	reader.Comment = '#'
 
@@ -346,10 +361,10 @@ func parseGeofeed(body []byte) ([]string, error) {
 // Merge normalises, deduplicates and collapses a pile of CIDR blocks into the
 // smallest equivalent set.
 //
-// It matters more than it looks: the raw sources are around 120,000 prefixes,
-// mostly because Azure lists every address under several service tags, and they
-// collapse to roughly 8,000. That is the difference between a list worth
-// embedding and one that is not.
+// It matters more than it looks: the raw sources run to roughly 135,000
+// prefixes, mostly because Azure lists every address under several service
+// tags, and they collapse to about a tenth of that. That is the difference
+// between a list worth embedding and one that is not.
 func Merge(cidrs []string) []string {
 	var v4, v6 []netip.Prefix
 
@@ -358,6 +373,8 @@ func Merge(cidrs []string) []string {
 		if err != nil {
 			continue
 		}
+
+		prefix = unmap(prefix)
 
 		prefix = prefix.Masked()
 		if !routable(prefix) {
@@ -372,6 +389,22 @@ func Merge(cidrs []string) []string {
 	}
 
 	merged := append(collapse(v4), collapse(v6)...)
+
+	// Numeric order, not the lexicographic order the strings would take. A
+	// regeneration changes a few hundred lines, and sorted by address they land
+	// next to the network they belong to instead of scattered through the file,
+	// which is the difference between a reviewable diff and an unread one.
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].Addr().Is4() != merged[j].Addr().Is4() {
+			return merged[i].Addr().Is4()
+		}
+
+		if merged[i].Addr() != merged[j].Addr() {
+			return merged[i].Addr().Less(merged[j].Addr())
+		}
+
+		return merged[i].Bits() < merged[j].Bits()
+	})
 
 	out := make([]string, 0, len(merged))
 	for _, prefix := range merged {
@@ -410,6 +443,19 @@ var reserved = []netip.Prefix{
 	netip.MustParsePrefix("fe80::/10"),
 	netip.MustParsePrefix("2001:db8::/32"),
 	netip.MustParsePrefix("ff00::/8"),
+}
+
+// unmap rewrites a v4 address written in its v6-mapped form as a plain v4
+// prefix. Left alone it sorts, merges and stores as IPv6, and the range set
+// then measures its length against 128 bits rather than 32 — turning a whole
+// network into a single address with nothing to show for it.
+func unmap(prefix netip.Prefix) netip.Prefix {
+	addr := prefix.Addr()
+	if !addr.Is4In6() {
+		return prefix
+	}
+
+	return netip.PrefixFrom(addr.Unmap(), prefix.Bits()-96)
 }
 
 // routable reports whether a prefix describes address space a real visitor
