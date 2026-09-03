@@ -26,8 +26,9 @@
 	--color-bar-strong: var(--fs-bar-strong);
 
 	/* The layout numbers from the design system. They live here rather than as
-	   magic values in components so that "the card is 430 tall" is stated once. */
-	--container-shell: 1120px;
+	   magic values in components so that "the card is 430 tall" is stated once.
+	   The body width is not among them: the settings screens have to line up
+	   with this one, so `--container-shell` is in ui/tokens.css. */
 	--spacing-card: 430px;
 	--spacing-cardbody: 356px;
 	--spacing-graph: 368px;

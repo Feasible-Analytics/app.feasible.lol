@@ -11,9 +11,10 @@
  * two drifting apart is exactly how the auth screens ended up on a different
  * accent colour from the product they belong to.
  *
- * This file is the only place a colour is written down. Both stylesheets import
- * it, so a change here reaches both surfaces on the next build and neither can
- * be corrected without the other.
+ * This file is the only place a colour, or anything else both surfaces have to
+ * agree on, is written down. Both stylesheets import it, so a change here
+ * reaches both surfaces on the next build and neither can be corrected without
+ * the other.
  *
  * Teal on slate, deliberately unlike the incumbent's indigo. That is not a
  * decoration: it is the one visual thing that makes this look like its own
@@ -73,6 +74,14 @@
 	--font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
 	--ease-ui: cubic-bezier(0.4, 0, 0.2, 1);
+
+	/* The body width every signed-in screen holds to, as `max-w-shell`. It is
+	   here rather than in either stylesheet because the dashboard and the
+	   server-rendered screens are one product: a person crossing from their
+	   stats to their settings must not see the left edge of the page move.
+	   Prose pages set their own, narrower measure — a long line of body text is
+	   harder to read, and that is a typographic choice rather than drift. */
+	--container-shell: 1120px;
 }
 
 :root {
