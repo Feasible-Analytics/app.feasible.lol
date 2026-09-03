@@ -61,6 +61,17 @@ export function ChangeChip({ change, invert = false }: { change: number | null |
 	);
 }
 
+/** Chevron is the drop-down arrow drawn over the menus and the native selects.
+ *  A select's own arrow cannot be styled the same way in every browser, so it
+ *  is hidden and this one is drawn in its place. */
+export function Chevron({ className = "" }: { className?: string }) {
+	return (
+		<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true" className={`fill-none stroke-current ${className}`}>
+			<path d="M3 4.5 6 7.5 9 4.5" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+		</svg>
+	);
+}
+
 /**
  * InfoDot is a hover-and-focus explanation for a number that looks like a bug.
  *

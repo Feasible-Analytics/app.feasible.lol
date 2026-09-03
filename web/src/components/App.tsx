@@ -13,7 +13,7 @@ import type { Annotation, Bootstrap, Metric, StatsRequest } from "../api/types";
 import type { FilterLabels, FilterState } from "../lib/filters";
 import { toApi, toggle } from "../lib/filters";
 import { t } from "../lib/i18n";
-import { step, today } from "../lib/period";
+import { canStep, step, today, yesterday } from "../lib/period";
 import { usePref, useTheme } from "../lib/prefs";
 import type { CardDef, Tab } from "../lib/reports";
 import { CARDS, findCard, findTab, tableTabs } from "../lib/reports";
@@ -303,14 +303,16 @@ function AnalyticsDashboard() {
 
 	const actions: ShortcutActions = {
 		onPeriod: (period) => {
-			if (period.custom === "pick") {
+			if (period.id === "custom") {
 				setPickCustom((was) => was + 1);
 				return;
 			}
 
-			if (period.custom === "yesterday") {
-				const day = step("day", "", "", today(), -1);
-				if (day) navigate({ ...state, from: day.from, to: day.to, drawer: null });
+			if (period.id === "yesterday") {
+				const day = yesterday(today());
+
+				navigate({ ...state, from: day.from, to: day.to, drawer: null });
+
 				return;
 			}
 
@@ -318,6 +320,10 @@ function AnalyticsDashboard() {
 		},
 
 		onStep: (direction) => {
+			// The same predicate the arrow buttons disable on, so a keystroke
+			// can never reach a window the mouse is refused.
+			if (!canStep(state.preset, state.from, state.to, today(), direction)) return;
+
 			const next = step(state.preset, state.from, state.to, today(), direction);
 			if (next) navigate({ ...state, from: next.from, to: next.to, drawer: null });
 		},
@@ -398,6 +404,7 @@ function AnalyticsDashboard() {
 					resolved={totals.data?.query.date_range}
 					filters={filters}
 					onHelp={() => setHelp(true)}
+					onStep={actions.onStep}
 					pickCustom={pickCustom}
 					navigation={bootstrap().navigation}
 				/>
@@ -512,6 +519,7 @@ function LockedDashboard({ boot }: { boot: Bootstrap }) {
 				resolved={undefined}
 				filters={[]}
 				onHelp={() => {}}
+				onStep={() => {}}
 				pickCustom={0}
 				navigation={boot.navigation}
 				locked

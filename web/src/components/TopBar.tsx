@@ -6,46 +6,22 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
 import type { Filter, Preset, StatsRequest } from "../api/types";
 import type { Navigation } from "../api/types";
 import type { CompareMode } from "../lib/compare";
 import { COMPARE_LABELS } from "../lib/compare";
 import { useDismiss } from "../lib/dom";
-import { calendarDate, rangeLabel } from "../lib/format";
+import { calendarDate } from "../lib/format";
 import { n, t } from "../lib/i18n";
-import { addDays, step, today } from "../lib/period";
+import { PERIODS } from "../lib/period";
 import type { Theme } from "../lib/prefs";
 import type { UrlState } from "../lib/url";
 import { useStats } from "../lib/useStats";
 import { useInterval } from "../lib/useStats";
-
-/**
- * The period menu.
- *
- * Every entry but Yesterday and Custom is a preset the engine resolves itself,
- * because a range resolved on the client is a range the graph, the tables and
- * an export can disagree about. Yesterday has no preset, so it travels as an
- * explicit pair of dates like any other custom range.
- *
- * The names are message ids, translated where the menu is drawn. The preset
- * beside each one is a wire value the engine reads and is never translated.
- */
-const PERIODS: { id: string; labelId: string; preset?: Preset }[] = [
-	{ id: "day", labelId: "dashboard.topbar.period.day", preset: "day" },
-	{ id: "yesterday", labelId: "dashboard.topbar.period.yesterday" },
-	{ id: "realtime", labelId: "dashboard.topbar.period.realtime", preset: "realtime" },
-	{ id: "24h", labelId: "dashboard.topbar.period.24h", preset: "24h" },
-	{ id: "7d", labelId: "dashboard.topbar.period.7d", preset: "7d" },
-	{ id: "28d", labelId: "dashboard.topbar.period.28d", preset: "28d" },
-	{ id: "91d", labelId: "dashboard.topbar.period.91d", preset: "91d" },
-	{ id: "month", labelId: "dashboard.topbar.period.month", preset: "month" },
-	{ id: "last_month", labelId: "dashboard.topbar.period.last_month", preset: "last_month" },
-	{ id: "year", labelId: "dashboard.topbar.period.year", preset: "year" },
-	{ id: "12mo", labelId: "dashboard.topbar.period.12mo", preset: "12mo" },
-	{ id: "all", labelId: "dashboard.topbar.period.all", preset: "all" },
-];
+import { Chevron } from "./atoms";
+import { PeriodPicker } from "./PeriodPicker";
 
 interface Props {
 	state: UrlState;
@@ -59,6 +35,11 @@ interface Props {
 	 *  bar is about the same population as the page under it. */
 	filters: Filter[];
 	onHelp: () => void;
+
+	// onStep is the same action the arrow keys perform. The arrows in the
+	// period control call it rather than stepping the window themselves, so the
+	// two routes cannot land in different places.
+	onStep: (direction: -1 | 1) => void;
 	/** Bumped when the keyboard asks for the custom-range form. A counter rather
 	 *  than a flag, because pressing the key twice has to open it twice. */
 	pickCustom: number;
@@ -124,7 +105,7 @@ export function currentVisitorsRequest(filters: Filter[]): StatsRequest {
  * address bar is always a description of what is on screen — which is what
  * makes a dashboard link worth sending to somebody.
  */
-export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, filters, onHelp, pickCustom, navigation, locked = false }: Props) {
+export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, filters, onHelp, onStep, pickCustom, navigation, locked = false }: Props) {
 	const label = periodLabel(state);
 	const live = state.preset === "realtime" && !state.from;
 
@@ -186,6 +167,7 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, fil
 						state={state}
 						label={label}
 						onNavigate={onNavigate}
+						onStep={onStep}
 						resolved={resolved}
 						pickCustom={pickCustom}
 					/>}
@@ -621,168 +603,6 @@ function HelpButton({ onHelp }: { onHelp: () => void }) {
 	);
 }
 
-/** PeriodPicker is the date-range menu, plus the custom-range form. */
-function PeriodPicker({
-	state,
-	label,
-	onNavigate,
-	resolved,
-	pickCustom,
-}: {
-	state: UrlState;
-	label: string;
-	onNavigate: (next: UrlState) => void;
-	resolved: string[] | undefined;
-	pickCustom: number;
-}) {
-	const [open, setOpen] = useState(false);
-	const [custom, setCustom] = useState(false);
-	const wrap = useRef<HTMLDivElement>(null);
-
-	useDismiss(wrap, open, () => {
-		setOpen(false);
-		setCustom(false);
-	});
-
-	// The keyboard's route into the two-date form. It skips the menu entirely:
-	// somebody who pressed the shortcut has already chosen, and making them
-	// click "Custom range…" afterwards would be the shortcut doing half a job.
-	useEffect(() => {
-		if (pickCustom === 0) return;
-
-		setOpen(true);
-		setCustom(true);
-	}, [pickCustom]);
-
-	// Changing the period closes the drawer. A details view is about a slice of
-	// a specific window, and leaving it open over a different one would show
-	// numbers that no longer answer the question that was asked.
-	const pick = (id: string, preset?: Preset) => {
-		setOpen(false);
-		setCustom(false);
-
-		// Yesterday is computed the same way the keyboard shortcut computes it,
-		// so the two routes to the same day cannot disagree.
-		if (id === "yesterday") {
-			const day = step("day", "", "", today(), -1);
-			if (day) onNavigate({ ...state, from: day.from, to: day.to, drawer: null });
-			return;
-		}
-
-		onNavigate({ ...state, preset: preset ?? "28d", from: "", to: "", drawer: null });
-	};
-
-	return (
-		<div ref={wrap} className="relative">
-			<button
-				type="button"
-				aria-expanded={open}
-				aria-haspopup="menu"
-				onClick={() => setOpen((was) => !was)}
-				className="flex h-control items-center gap-1.5 rounded-md border border-line bg-card px-2.5 text-sm font-medium text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
-				title={resolved ? rangeLabel(resolved) : undefined}
-			>
-				{label}
-				<Chevron />
-			</button>
-
-			{open && (
-				<div
-					role="menu"
-					className="absolute right-0 z-40 mt-1 w-60 rounded-md border border-line bg-card p-1 shadow-lg"
-				>
-					{PERIODS.map((period) => {
-						const active = period.id === "yesterday" ? !!state.from : !state.from && state.preset === period.preset;
-
-						return (
-							<button
-								key={period.id}
-								type="button"
-								role="menuitem"
-								onClick={() => pick(period.id, period.preset)}
-								className={`flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-left text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover ${
-									active ? "font-medium text-accent" : "text-body"
-								}`}
-							>
-								{t(period.labelId)}
-							</button>
-						);
-					})}
-
-					<div className="my-1 border-t border-line" />
-
-					{custom ? (
-						<CustomRange
-							from={state.from}
-							to={state.to}
-							onApply={(from, to) => {
-								setOpen(false);
-								setCustom(false);
-								onNavigate({ ...state, from, to, drawer: null });
-							}}
-						/>
-					) : (
-						<button
-							type="button"
-							role="menuitem"
-							onClick={() => setCustom(true)}
-							className="w-full rounded-sm px-2.5 py-1.5 text-left text-sm text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
-						>
-							{t("dashboard.topbar.custom_range")}
-						</button>
-					)}
-
-					{/* The resolved window is shown under the menu because date
-					    maths is the single biggest source of "your numbers are
-					    wrong", and the answer is usually that the period was not
-					    the one the reader assumed. */}
-					{resolved && <p className="px-2.5 pt-2 pb-1 text-[11px] text-muted">{rangeLabel(resolved)}</p>}
-				</div>
-			)}
-		</div>
-	);
-}
-
-/** CustomRange is the two-date form. It applies nothing until both bounds are
- *  set, so a half-typed range never fires a query the server will refuse. */
-function CustomRange({ from, to, onApply }: { from: string; to: string; onApply: (from: string, to: string) => void }) {
-	const [start, setStart] = useState(from || addDays(today(), -6));
-	const [end, setEnd] = useState(to || today());
-
-	return (
-		<div className="flex flex-col gap-2 px-2.5 py-2">
-			<label className="flex items-center justify-between gap-2 text-xs text-muted">
-				{t("dashboard.topbar.from")}
-				<input
-					type="date"
-					value={start}
-					max={end}
-					onChange={(event) => setStart(event.target.value)}
-					className="h-control rounded-md border border-line bg-card px-2 text-sm text-body"
-				/>
-			</label>
-			<label className="flex items-center justify-between gap-2 text-xs text-muted">
-				{t("dashboard.topbar.to")}
-				<input
-					type="date"
-					value={end}
-					min={start}
-					onChange={(event) => setEnd(event.target.value)}
-					className="h-control rounded-md border border-line bg-card px-2 text-sm text-body"
-				/>
-			</label>
-			<button
-				type="button"
-				disabled={!start || !end}
-				onClick={() => onApply(start, end)}
-				className="h-control rounded-md bg-accent text-sm font-medium text-white transition-opacity duration-150 ease-[var(--ease-ui)] hover:opacity-90 disabled:opacity-40 dark:text-slate-950"
-			>
-				{t("dashboard.topbar.apply")}
-			</button>
-		</div>
-	);
-}
-
 /** What each theme is called mid-sentence. The ids are written out rather than
  *  built from the theme name, so every string the dashboard can ask for is
  *  findable by searching the source for its id. */
@@ -813,13 +633,3 @@ function ThemeToggle({ theme, onTheme }: { theme: Theme; onTheme: (next: Theme) 
 	);
 }
 
-/** Chevron is the drop-down arrow drawn over the menus and the native selects.
- *  A select's own arrow cannot be styled the same way in every browser, so it
- *  is hidden and this one is drawn in its place. */
-function Chevron({ className = "" }: { className?: string }) {
-	return (
-		<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true" className={`fill-none stroke-current ${className}`}>
-			<path d="M3 4.5 6 7.5 9 4.5" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-		</svg>
-	);
-}

@@ -18,6 +18,48 @@ import type { Preset } from "../api/types";
  * tomorrow: a preset re-resolves against their clock, a date does not.
  */
 
+/**
+ * Every period the dashboard offers, once.
+ *
+ * The menu, the keyboard handler and the shortcut overlay all read this. Two
+ * copies is how a period ends up with no shortcut, or with a shortcut the
+ * overlay advertises that jumps somewhere else — and neither failure says
+ * anything, because both lists are individually valid.
+ *
+ * `preset` is a wire value the engine resolves; a period without one travels as
+ * an explicit pair of dates, because "yesterday" is not something the engine
+ * names and a custom range is not a period at all.
+ *
+ * `group` only separates the menu. Twelve unbroken rows is a wall.
+ */
+export interface Period {
+	id: string;
+	key: string;
+	labelId: string;
+	preset?: Preset;
+	group: number;
+}
+
+export const PERIODS: Period[] = [
+	{ id: "day", key: "d", labelId: "dashboard.topbar.period.day", preset: "day", group: 1 },
+	{ id: "yesterday", key: "e", labelId: "dashboard.topbar.period.yesterday", group: 1 },
+	{ id: "realtime", key: "r", labelId: "dashboard.topbar.period.realtime", preset: "realtime", group: 1 },
+
+	{ id: "24h", key: "h", labelId: "dashboard.topbar.period.24h", preset: "24h", group: 2 },
+	{ id: "7d", key: "w", labelId: "dashboard.topbar.period.7d", preset: "7d", group: 2 },
+	{ id: "28d", key: "f", labelId: "dashboard.topbar.period.28d", preset: "28d", group: 2 },
+	{ id: "91d", key: "n", labelId: "dashboard.topbar.period.91d", preset: "91d", group: 2 },
+
+	{ id: "month", key: "m", labelId: "dashboard.topbar.period.month", preset: "month", group: 3 },
+	{ id: "last_month", key: "p", labelId: "dashboard.topbar.period.last_month", preset: "last_month", group: 3 },
+
+	{ id: "year", key: "y", labelId: "dashboard.topbar.period.year", preset: "year", group: 4 },
+	{ id: "12mo", key: "l", labelId: "dashboard.topbar.period.12mo", preset: "12mo", group: 4 },
+
+	{ id: "all", key: "a", labelId: "dashboard.topbar.period.all", preset: "all", group: 5 },
+	{ id: "custom", key: "c", labelId: "dashboard.topbar.custom_range", group: 5 },
+];
+
 /** A window as two inclusive local dates. */
 export interface Window {
 	from: string;
@@ -100,6 +142,39 @@ export function step(preset: Preset, from: string, to: string, today: string, di
 		from: addDays(current.from, length * direction),
 		to: addDays(current.to, length * direction),
 	};
+}
+
+/**
+ * yesterday is the one day before today, as an explicit window.
+ *
+ * The engine names no preset for it, so it travels as a date pair like any
+ * other custom range — and it is computed here rather than at each of the two
+ * routes that reach it, so the menu and the keyboard cannot land on different
+ * days across a month boundary.
+ */
+export function yesterday(today: string): Window {
+	const day = addDays(today, -1);
+
+	return { from: day, to: day };
+}
+
+/**
+ * canStep says whether the arrows may move.
+ *
+ * It exists so the mouse and the keyboard cannot disagree: the buttons disable
+ * on it and the arrow keys ignore a keystroke on it, from one answer. Two
+ * reasons to refuse. A period with no window has nothing before or after it —
+ * All time has no earlier, and the live views are about now by definition, so
+ * quietly turning them into a fixed range is not what the reader asked for. And
+ * forward past today is an empty graph: the data does not exist yet, which on
+ * an arrow key is obscure and on a visible button is the first thing somebody
+ * clicks.
+ */
+export function canStep(preset: Preset, from: string, to: string, today: string, direction: -1 | 1): boolean {
+	const next = step(preset, from, to, today, direction);
+	if (!next) return false;
+
+	return direction === -1 || next.to <= today;
 }
 
 /** dayCount is how many days a window covers, both ends included. */
