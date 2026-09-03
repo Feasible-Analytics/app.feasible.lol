@@ -152,7 +152,10 @@ func (h *Handler) serveRead(w http.ResponseWriter, r *http.Request, site sites.S
 	path := r.URL.Path
 	switch {
 	case strings.HasSuffix(path, "/goals/report"):
-		common.IncludeEmptyAutomatic = true
+		// The dashboard reads the report to find what converted. The configured
+		// list lives on the goals settings screen, which is where somebody
+		// looking for a goal they just created goes to confirm it saved.
+		common.ConvertedOnly = true
 		result, err := Report(r.Context(), lease.Account.Reader(), engine, common)
 		if err != nil {
 			return err

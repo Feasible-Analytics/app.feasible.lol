@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { Goal, JourneyAnchor } from "../api/types";
-import { anchorKey, behaviorCaveat, behaviorEnabled, filterAnchors, goalFilter } from "./GoalsCard";
+import { anchorKey, behaviorCaveat, behaviorEnabled, filterAnchors, goalFilter, goalsPrompt } from "./GoalsCard";
 
 // The catalogue is read once from the page, so it is stubbed before any test
 // asks for a string rather than inside the one test that needs it.
@@ -110,4 +110,25 @@ test("an unparseable reporting start date is shown as it arrived", () => {
 	const [, second] = behaviorCaveat("goals", "not-a-date");
 
 	assert.equal(second, "Reporting starts not-a-date, when this configuration became measurable.");
+});
+
+test("an empty goals report says which kind of empty it is", () => {
+	const rows = [] as never[];
+
+	// Nothing set up at all: send them to configure a goal.
+	assert.equal(goalsPrompt({ rows, configured: 0, configured_automatic: 0 }), "unconfigured");
+
+	// Only the goals we provisioned, none fired: they are armed, not missing.
+	assert.equal(goalsPrompt({ rows, configured: 4, configured_automatic: 4 }), "automatic_only");
+
+	// A goal of their own is configured and did not fire. Telling them to
+	// configure a goal would read as though the one they made was lost.
+	assert.equal(goalsPrompt({ rows, configured: 5, configured_automatic: 4 }), "none_converted");
+});
+
+test("a goals report with any row renders its table", () => {
+	const rows = [{}] as never[];
+
+	assert.equal(goalsPrompt({ rows, configured: 5, configured_automatic: 4 }), "rows");
+	assert.equal(goalsPrompt({ rows, configured: 4, configured_automatic: 4 }), "rows");
 });

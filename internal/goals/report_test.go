@@ -268,6 +268,58 @@ func TestTheAutomaticGoalHidesUntilItHasSomethingToShow(t *testing.T) {
 	}
 }
 
+// TestConvertedOnlyHidesEveryZeroAndStillCountsIt is the dashboard's rule. A
+// site with two dozen goals otherwise reports a wall of zeroes the reader has
+// to search for the rows carrying a number, so a goal that did not convert is
+// left out — but it is still counted, because an empty list and no goals at all
+// are different states that need different advice.
+func TestConvertedOnlyHidesEveryZeroAndStillCountsIt(t *testing.T) {
+	db, engine := newFixture(t)
+
+	mustCreate(t, db, Goal{SiteID: siteID, Kind: KindEvent, EventName: "Signup", DisplayName: "Signed up"})
+	mustCreate(t, db, Goal{SiteID: siteID, Kind: KindEvent, EventName: "NeverFired", DisplayName: "Never fired"})
+
+	result := report(t, db, engine, ReportRequest{ConvertedOnly: true})
+
+	if len(result.Rows) != 1 || result.Rows[0].Label != "Signed up" {
+		t.Fatalf("converted-only report = %+v, want only the goal that converted", result.Rows)
+	}
+
+	if result.Configured != 2 || result.ConfiguredAutomatic != 0 {
+		t.Errorf("counted %d goals, %d automatic, want 2 and 0", result.Configured, result.ConfiguredAutomatic)
+	}
+
+	// Without the flag the unconverted goal is a real zero-valued row, which is
+	// what the settings screen and the public API still read.
+	full := report(t, db, engine, ReportRequest{})
+	if len(full.Rows) != 2 {
+		t.Errorf("unfiltered report has %d rows, want both goals", len(full.Rows))
+	}
+}
+
+// TestEveryGoalIsCountedIncludingTheAutomaticOnesNobodyAsksFor keeps the two
+// counts honest for a site that has only the goals we provisioned for it. The
+// dashboard tells that site its automatic goals are armed rather than telling
+// it to go and configure one, and it can only do that if both counts arrive.
+func TestEveryGoalIsCountedIncludingTheAutomaticOnesNobodyAsksFor(t *testing.T) {
+	db, engine := newFixture(t)
+
+	if _, err := EnsureAutomatic(context.Background(), db, siteID, fixtureNow.Add(-72*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	result := report(t, db, engine, ReportRequest{ConvertedOnly: true})
+
+	if result.Configured != 4 || result.ConfiguredAutomatic != 4 {
+		t.Errorf("counted %d goals, %d automatic, want 4 and 4", result.Configured, result.ConfiguredAutomatic)
+	}
+
+	// The fixture serves exactly one 404, so one of the four converted.
+	if len(result.Rows) != 1 || result.Rows[0].Goal.EventName != EventNotFound {
+		t.Fatalf("converted-only report = %+v, want only the 404 goal", result.Rows)
+	}
+}
+
 // TestRevenueOnAGoalIsCountedInMinorUnits checks the money on the one purchase
 // in the fixture: fifty dollars, stored as five thousand cents, never as a
 // float.

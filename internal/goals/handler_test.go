@@ -90,19 +90,40 @@ func goalReportRequest(domain string) *http.Request {
 	return request
 }
 
-// TestTheReportEndpointKeepsItsCardVisibleWithAndWithoutGoals checks both empty
-// states: no definitions is an empty array, while a configured goal with no
-// conversions is a real zero-valued row.
-func TestTheReportEndpointKeepsItsCardVisibleWithAndWithoutGoals(t *testing.T) {
+// TestTheReportEndpointCountsTheGoalsItDoesNotList is the contract the empty
+// states are built on. The dashboard lists only goals that converted, so an
+// empty row list on its own cannot say whether the site has no goals or has
+// goals that did not fire — and those two need opposite advice. The counts are
+// what tell them apart, so they must survive the wire.
+func TestTheReportEndpointCountsTheGoalsItDoesNotList(t *testing.T) {
 	handler, manager, domain, siteID := newReportHandler(t)
 
-	empty := httptest.NewRecorder()
-	handler.ServeHTTP(empty, goalReportRequest(domain))
-	if empty.Code != http.StatusOK {
-		t.Fatalf("empty report answered %d: %s", empty.Code, empty.Body.String())
+	decode := func(t *testing.T, what string) ReportResult {
+		t.Helper()
+
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, goalReportRequest(domain))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s report answered %d: %s", what, recorder.Code, recorder.Body.String())
+		}
+
+		var report ReportResult
+		if err := json.Unmarshal(recorder.Body.Bytes(), &report); err != nil {
+			t.Fatalf("decode %s report: %v", what, err)
+		}
+
+		return report
 	}
-	if !json.Valid(empty.Body.Bytes()) || !contains(empty.Body.String(), `"Form: Submission"`) {
-		t.Fatalf("empty report = %s, want provisioned automatic goals", empty.Body.String())
+
+	// The fixture serves no events at all, so none of the four provisioned
+	// automatic goals has converted.
+	automatic := decode(t, "automatic")
+	if len(automatic.Rows) != 0 {
+		t.Errorf("unconverted report lists %d rows, want none", len(automatic.Rows))
+	}
+	if automatic.Configured != 4 || automatic.ConfiguredAutomatic != 4 {
+		t.Errorf("unconverted report counted %d goals, %d automatic, want 4 and 4",
+			automatic.Configured, automatic.ConfiguredAutomatic)
 	}
 
 	lease, err := manager.Acquire(context.Background(), 1)
@@ -110,7 +131,7 @@ func TestTheReportEndpointKeepsItsCardVisibleWithAndWithoutGoals(t *testing.T) {
 		t.Fatalf("open account: %v", err)
 	}
 	if _, err := Create(context.Background(), lease.Account.Writer(), Goal{
-		SiteID: siteID, Kind: KindEvent, EventName: "Signup", DisplayName: "Signed up", IsAutomatic: true,
+		SiteID: siteID, Kind: KindEvent, EventName: "Signup", DisplayName: "Signed up",
 	}, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
@@ -118,18 +139,15 @@ func TestTheReportEndpointKeepsItsCardVisibleWithAndWithoutGoals(t *testing.T) {
 		t.Fatalf("release account: %v", err)
 	}
 
-	configured := httptest.NewRecorder()
-	handler.ServeHTTP(configured, goalReportRequest(domain))
-	if configured.Code != http.StatusOK {
-		t.Fatalf("configured report answered %d: %s", configured.Code, configured.Body.String())
+	// A goal somebody configured themselves is still not listed until it
+	// converts, but it does move the site off "every goal here is one of ours".
+	business := decode(t, "configured")
+	if len(business.Rows) != 0 {
+		t.Errorf("configured report lists %d rows, want none", len(business.Rows))
 	}
-
-	var report ReportResult
-	if err := json.Unmarshal(configured.Body.Bytes(), &report); err != nil {
-		t.Fatalf("decode report: %v", err)
-	}
-	if len(report.Rows) != 5 || report.Rows[0].Label != "Signed up" || report.Rows[0].TotalConversions != 0 {
-		t.Fatalf("configured report = %+v", report.Rows)
+	if business.Configured != 5 || business.ConfiguredAutomatic != 4 {
+		t.Errorf("configured report counted %d goals, %d automatic, want 5 and 4",
+			business.Configured, business.ConfiguredAutomatic)
 	}
 }
 
@@ -157,14 +175,3 @@ func TestJourneyEndpointDecodesTypedContinuation(t *testing.T) {
 	}
 }
 
-// contains keeps the assertion above readable without making its exact JSON
-// whitespace part of the endpoint contract.
-func contains(value, fragment string) bool {
-	for index := 0; index+len(fragment) <= len(value); index++ {
-		if value[index:index+len(fragment)] == fragment {
-			return true
-		}
-	}
-
-	return false
-}

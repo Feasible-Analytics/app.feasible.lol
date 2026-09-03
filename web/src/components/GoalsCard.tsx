@@ -144,8 +144,10 @@ export function GoalsCard({ domain, range, filters, exact: exactAnswer, onFilter
 	);
 }
 
-/** GoalsPanel renders every configured conversion, including zero-result goals,
- * and turns matchable rows into the same dashboard filters used elsewhere. */
+/** GoalsPanel renders the goals that converted in the period and turns matchable
+ * rows into the same dashboard filters used elsewhere. Goals that did not
+ * convert are left to the goals settings screen, which is where somebody
+ * checking that a goal saved goes to look for it. */
 function GoalsPanel({
 	domain,
 	request,
@@ -168,7 +170,6 @@ function GoalsPanel({
 	);
 	const rows = report.data?.rows ?? [];
 	const peak = Math.max(1, ...rows.map((row) => row.unique_conversions));
-	const onlyEmptyAutomatic = rows.length > 0 && rows.every((row) => row.goal.is_automatic && row.total_conversions === 0);
 
 	// A failed request keeps the rows it last succeeded with, so the caveat is
 	// withheld whenever the panel is showing a failure rather than a table. A
@@ -180,18 +181,14 @@ function GoalsPanel({
 	if (report.error) return <PanelFailure state={report} />;
 	if (!report.data) return <PanelLoading label={t("dashboard.goals.loading")} />;
 
+	const prompt = goalsPrompt(report.data);
+
 	return (
 		<PanelFrame
 			footer={settingsURL ? <a href={settingsURL} className="text-xs font-medium text-muted transition-colors hover:text-accent">{t("dashboard.behavior.goals.manage")} →</a> : undefined}
 		>
-			{onlyEmptyAutomatic && (
-				<div className="flex flex-col gap-2 border-b border-line bg-accent/5 px-4 py-3 sm:flex-row sm:items-center sm:px-5">
-					<div className="min-w-0 flex-1"><p className="text-sm font-medium text-body">{t("dashboard.behavior.goals.automatic_ready")}</p><p className="text-xs leading-relaxed text-muted">{t("dashboard.behavior.goals.automatic_ready_hint")}</p></div>
-					{settingsURL && <a href={settingsURL} className="shrink-0 rounded-md border border-line bg-card px-3 py-1.5 text-xs font-medium text-body transition-colors hover:bg-hover">{t("dashboard.behavior.goals.add_business_goal")}</a>}
-				</div>
-			)}
-			{rows.length === 0 ? (
-				<BehaviorEmpty title={t("dashboard.goals.empty")} body={t("dashboard.goals.empty_hint")} href={settingsURL} />
+			{prompt !== "rows" ? (
+				<GoalsEmpty prompt={prompt} settingsURL={settingsURL} />
 			) : (
 				<div className="px-4 sm:px-5">
 					<div className="grid h-8 grid-cols-[minmax(0,1fr)_60px_60px_60px] items-center gap-2 text-[11px] font-medium tracking-wide text-muted uppercase sm:grid-cols-[minmax(0,1fr)_90px_90px_80px]">
@@ -218,6 +215,55 @@ function GoalsPanel({
 			)}
 		</PanelFrame>
 	);
+}
+
+/** GoalsPrompt is what the Goals tab shows instead of a table. */
+export type GoalsPrompt = "rows" | "unconfigured" | "automatic_only" | "none_converted";
+
+/**
+ * goalsPrompt picks the message for a report with nothing to list.
+ *
+ * The three empty answers need opposite advice, and an empty row list on its
+ * own cannot tell them apart. A site with no goals needs to be sent to set one
+ * up; a site carrying only the goals we created for it needs to be told they
+ * are armed and to add one of its own; a site whose goals simply did not fire
+ * in this period needs neither, and being told to configure a goal it already
+ * configured reads as though the goal was lost.
+ */
+export function goalsPrompt(report: Pick<GoalReport, "rows" | "configured" | "configured_automatic">): GoalsPrompt {
+	if (report.rows.length > 0) return "rows";
+	if (report.configured === 0) return "unconfigured";
+	if (report.configured_automatic === report.configured) return "automatic_only";
+
+	return "none_converted";
+}
+
+/** GoalsEmpty renders one of the three empty answers, each with the call to
+ * action that matches it. */
+function GoalsEmpty({ prompt, settingsURL }: { prompt: Exclude<GoalsPrompt, "rows">; settingsURL?: string }) {
+	if (prompt === "automatic_only") {
+		return (
+			<BehaviorEmpty
+				title={t("dashboard.behavior.goals.automatic_ready")}
+				body={t("dashboard.behavior.goals.automatic_ready_hint")}
+				href={settingsURL}
+				action={t("dashboard.behavior.goals.add_business_goal")}
+			/>
+		);
+	}
+
+	if (prompt === "none_converted") {
+		return (
+			<BehaviorEmpty
+				title={t("dashboard.goals.none_converted")}
+				body={t("dashboard.goals.none_converted_hint")}
+				href={settingsURL}
+				action={t("dashboard.behavior.goals.manage")}
+			/>
+		);
+	}
+
+	return <BehaviorEmpty title={t("dashboard.goals.empty")} body={t("dashboard.goals.empty_hint")} href={settingsURL} />;
 }
 
 /** PropertiesPanel lets a reader choose one enabled property and applies a
@@ -407,8 +453,8 @@ function PanelFrame({ children, footer }: { children: React.ReactNode; footer?: 
 }
 
 /** BehaviorEmpty serves unconfigured and zero-result states without hiding tabs. */
-function BehaviorEmpty({ title, body, href }: { title: string; body: string; href?: string }) {
-	return <div className="flex min-h-[300px] flex-col items-center justify-center gap-1.5 px-6 text-center"><p className="text-sm font-medium text-body">{title}</p><p className="max-w-md text-xs leading-relaxed text-muted">{body}</p>{href && <a href={href} className="mt-2 rounded-md border border-line px-3 py-1.5 text-xs font-medium text-body transition-colors hover:bg-hover">{t("dashboard.behavior.configure")}</a>}</div>;
+function BehaviorEmpty({ title, body, href, action }: { title: string; body: string; href?: string; action?: string }) {
+	return <div className="flex min-h-[300px] flex-col items-center justify-center gap-1.5 px-6 text-center"><p className="text-sm font-medium text-body">{title}</p><p className="max-w-md text-xs leading-relaxed text-muted">{body}</p>{href && <a href={href} className="mt-2 rounded-md border border-line px-3 py-1.5 text-xs font-medium text-body transition-colors hover:bg-hover">{action ?? t("dashboard.behavior.configure")}</a>}</div>;
 }
 
 /** PanelLoading preserves the tabs while one selected report is loading. */
