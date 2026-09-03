@@ -87,6 +87,10 @@ func newHandler(t *testing.T) (*Handler, *accounts.Manager) {
 		Now:       func() time.Time { return time.Unix(1_800_000_000, 0) },
 		CSRF:      func(http.ResponseWriter, *http.Request) string { return "test-csrf" },
 		CheckCSRF: func(http.ResponseWriter, *http.Request) bool { return true },
+
+		// The fixture is a hosted install, which is the deployment with a
+		// billing link to assert on.
+		Commerce: true,
 	}, manager
 }
 
@@ -193,8 +197,10 @@ func TestScreensRender(t *testing.T) {
 
 	for _, tc := range []struct{ path, want string }{
 		{"/settings/sites/example.com/shields", "Blocked addresses"},
-		{"/settings/sites/example.com/paths", "Path cleaning"},
-		{"/settings/sites/example.com/imports", "Import &amp; export"},
+		{"/settings/sites/example.com/paths", "Trailing slashes"},
+		// The screen's own content rather than a navigation label: a nav that
+		// gets reworded should not read as a broken screen.
+		{"/settings/sites/example.com/imports", "Upload it here"},
 	} {
 		response := get(t, handler, tc.path)
 

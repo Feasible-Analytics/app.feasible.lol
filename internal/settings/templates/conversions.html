@@ -6,21 +6,9 @@
   Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 -->
 {{define "body"}}
-<div class="flex flex-wrap items-start justify-between gap-4">
-	<div>
-		<h1 class="text-2xl font-semibold text-heading">Conversions</h1>
-		<p class="mt-1 max-w-2xl text-sm text-muted">Define the outcomes that matter, make custom properties available for analysis, and connect goals into funnels.</p>
-	</div>
-	<a href="{{ url $.Lang (printf "/dashboard/%s" .Domain) }}" class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">View dashboard</a>
-</div>
+<p class="mb-6 max-w-2xl text-sm text-muted">Define the outcomes that matter, make custom properties available for analysis, and connect goals into funnels.</p>
 
-<nav class="mt-6 flex flex-wrap gap-2" aria-label="Conversion settings">
-	<a href="#goals" class="rounded-lg bg-accent/15 px-3 py-1.5 text-sm font-semibold text-accent-ink">Goals</a>
-	<a href="#properties" class="rounded-lg bg-subtle px-3 py-1.5 text-sm font-medium text-muted hover:text-heading">Custom properties</a>
-	<a href="#funnels" class="rounded-lg bg-subtle px-3 py-1.5 text-sm font-medium text-muted hover:text-heading">Funnels</a>
-</nav>
-
-<section id="goals" class="mt-8 scroll-mt-4 rounded-2xl border border-line bg-card p-6 shadow-sm">
+<section id="goals" class="scroll-mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
 	<div>
 		<h2 class="text-lg font-semibold text-heading">Goals</h2>
 		<p class="mt-1 max-w-3xl text-sm text-muted">A goal turns matching traffic into a conversion. Events are collected before you define a goal, but only configured goals appear in conversion reports.</p>
@@ -138,7 +126,7 @@
 	</details>
 </section>
 
-<section id="properties" class="mt-6 scroll-mt-4 rounded-2xl border border-line bg-card p-6 shadow-sm">
+<section id="properties" class="mt-6 scroll-mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
 	<h2 class="text-lg font-semibold text-heading">Custom properties</h2>
 	<p class="mt-1 max-w-3xl text-sm text-muted">Enabled properties appear in dashboard filters and breakdowns. Event properties describe one event; session properties describe the visitor's whole visit.</p>
 	<div class="mt-4 rounded-xl border border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn-ink">{{ .PropertyPIINotice }}</div>
@@ -156,7 +144,7 @@
 	</div>
 </section>
 
-<section id="funnels" class="mt-6 scroll-mt-4 rounded-2xl border border-line bg-card p-6 shadow-sm">
+<section id="funnels" class="mt-6 scroll-mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
 	<h2 class="text-lg font-semibold text-heading">Funnels</h2>
 	<p class="mt-1 max-w-3xl text-sm text-muted">Combine two to eight goals to see where visitors leave a flow. Sequential funnels permit unrelated activity between steps; strict funnels require consecutive matching steps.</p>
 

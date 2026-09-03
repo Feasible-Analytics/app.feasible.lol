@@ -574,3 +574,55 @@ func TestAnInstallWithNoTeamAnswers404(t *testing.T) {
 		t.Fatalf("an install with no owner answered %d", code)
 	}
 }
+
+// TestThePeopleScreenOnlyTrustsASiteThisTeamOwns checks the guard on the site
+// the navigation is drawn for.
+//
+// The people screen belongs to a team, so the site it is about arrives in the
+// query. An unchecked domain there would draw a full section list pointing at
+// somebody else's site — every link a 404 at best, and a hint that the site
+// exists at worst.
+func TestThePeopleScreenOnlyTrustsASiteThisTeamOwns(t *testing.T) {
+	f := newFixture(t)
+
+	// A site belonging to a different team, in the same cache.
+	other, err := f.control.Exec(`
+		INSERT INTO teams (name, created_at, updated_at) VALUES ('Other', ?, ?)
+	`, f.now.Unix(), f.now.Unix())
+	if err != nil {
+		t.Fatalf("insert other team: %v", err)
+	}
+	otherTeam, _ := other.LastInsertId()
+
+	if _, err := f.control.Exec(`
+		INSERT INTO sites (account_id, domain, timezone, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
+	`, otherTeam, "not-mine.example", "UTC", f.now.Unix(), f.now.Unix()); err != nil {
+		t.Fatalf("insert other site: %v", err)
+	}
+	if err := f.handler.Sites.Refresh(context.Background()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+
+	mine := screen{TeamID: f.teamID}
+
+	for name, tc := range map[string]struct{ query, want string }{
+		"our own site":        {query: "?site_context=" + f.domain, want: f.domain},
+		"another team's site": {query: "?site_context=not-mine.example", want: ""},
+		"a site nobody has":   {query: "?site_context=nowhere.example", want: ""},
+		"no context at all":   {query: "", want: ""},
+	} {
+		request := httptest.NewRequest(http.MethodGet, "/settings/members"+tc.query, nil)
+
+		if got := f.handler.shellDomain(request, mine); got != tc.want {
+			t.Errorf("%s drew the navigation for %q, want %q", name, got, tc.want)
+		}
+	}
+
+	// A screen that already knows its site keeps it, whatever the query says.
+	known := screen{TeamID: f.teamID, Domain: f.domain}
+	request := httptest.NewRequest(http.MethodGet, "/settings/members?site_context=not-mine.example", nil)
+
+	if got := f.handler.shellDomain(request, known); got != f.domain {
+		t.Errorf("a screen with its own site used %q instead", got)
+	}
+}

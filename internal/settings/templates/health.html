@@ -6,12 +6,11 @@
   Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 -->
 {{define "body"}}
-	<h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "settings.health.title" "domain" .Domain }}</h1>
-	<p class="mt-1 text-sm text-muted">
+	<p class="mb-6 max-w-2xl text-sm text-muted">
 		{{ t $.Lang "settings.health.lede" }}
 	</p>
 
-	<section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm">
+	<section class="rounded-2xl border border-line bg-card p-6 shadow-sm">
 		<div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
 			<div>
 				<div class="text-2xl font-bold tracking-tight text-heading">{{.Panel.Accepted}}</div>

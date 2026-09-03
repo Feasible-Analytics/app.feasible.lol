@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/settingsui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
@@ -277,6 +278,7 @@ func (h *Handler) showSiteSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p := h.newPage(r, tr(r, "auth.title.site_settings", "site", site.Label()), "sites")
+	p.Settings = h.settingsShell(r, p, site, team.ID)
 	p.Data["Site"] = site
 	p.Data["Folders"] = folders
 	p.Data["Timezones"] = CommonTimezones()
@@ -489,6 +491,7 @@ func (h *Handler) doSiteGeneral(w http.ResponseWriter, r *http.Request) {
 		r.PostFormValue("display_name"), timezone, r.PostFormValue("is_public") == "1")
 	if err != nil {
 		p := h.newPage(r, tr(r, "auth.title.site_settings", "site", site.Label()), "sites")
+		p.Settings = h.settingsShell(r, p, site, team.ID)
 		p.Data["Site"] = site
 		p.Data["Timezones"] = CommonTimezones()
 		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
@@ -528,6 +531,7 @@ func (h *Handler) doSiteDomain(w http.ResponseWriter, r *http.Request) {
 	err := h.Store.ChangeDomain(r.Context(), team.ID, site.ID, r.PostFormValue("domain"))
 	if err != nil {
 		p := h.newPage(r, tr(r, "auth.title.site_settings", "site", site.Label()), "sites")
+		p.Settings = h.settingsShell(r, p, site, team.ID)
 		p.Data["Site"] = site
 		p.Data["Timezones"] = CommonTimezones()
 		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
@@ -566,6 +570,7 @@ func (h *Handler) doSiteReset(w http.ResponseWriter, r *http.Request) {
 
 	if strings.TrimSpace(r.PostFormValue("confirm")) != site.Domain {
 		p := h.newPage(r, tr(r, "auth.title.site_settings", "site", site.Label()), "sites")
+		p.Settings = h.settingsShell(r, p, site, team.ID)
 		p.Data["Site"] = site
 		p.Data["Timezones"] = CommonTimezones()
 		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
@@ -604,6 +609,7 @@ func (h *Handler) doSiteDelete(w http.ResponseWriter, r *http.Request) {
 
 	if strings.TrimSpace(r.PostFormValue("confirm")) != site.Domain {
 		p := h.newPage(r, tr(r, "auth.title.site_settings", "site", site.Label()), "sites")
+		p.Settings = h.settingsShell(r, p, site, team.ID)
 		p.Data["Site"] = site
 		p.Data["Timezones"] = CommonTimezones()
 		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
@@ -780,4 +786,15 @@ func CommonTimezones() []string {
 		"Australia/Perth", "Australia/Adelaide", "Australia/Brisbane", "Australia/Sydney",
 		"Australia/Melbourne", "Pacific/Auckland",
 	}
+}
+
+// settingsShell resolves the shared settings chrome for a per-site screen.
+//
+// The role is this site's rather than the page's account-level flags, because
+// the navigation hides the sections somebody may not reach on this site.
+func (h *Handler) settingsShell(r *http.Request, p *page, site *Site, teamID int64) *settingsui.Shell {
+	shell := settingsui.NewShell(p.Lang, site.Domain, teamID, h.RoleForSite(r, site.ID), p.CSRF,
+		settingsui.TabGeneral, "", !h.DisableCommerce)
+
+	return &shell
 }

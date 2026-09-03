@@ -1,8 +1,10 @@
 {{define "body"}}
-<h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "auth.shields.title" }}</h1>
-<p class="mt-1 max-w-2xl text-sm text-muted">{{ t $.Lang "auth.shields.lede" }}</p>
+<p class="mb-6 max-w-2xl text-sm text-muted">{{ t $.Lang "auth.shields.lede" }}</p>
 
-<section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm">
+<!-- Your own address is about IP rules, so it stays out of the way of the
+     three sub-sections it has nothing to do with. -->
+{{ if or (not $.Shield) (eq $.Shield "ip") }}
+<section class="rounded-2xl border border-line bg-card p-6 shadow-sm">
 	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.shields.own_traffic" }}</h2>
 	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang "auth.shields.own_traffic_help" }}</p>
 
@@ -13,6 +15,7 @@
 		{{ if not .Viewer.Private }}
 		<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/shields/add" $.Domain) }}" class="ml-auto">
 			<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+			<input type="hidden" name="section" value="{{ $.Shield }}">
 			<input type="hidden" name="kind" value="ip">
 			<input type="hidden" name="value" value="{{ .Viewer.Address }}">
 			<input type="hidden" name="note" value="{{ t $.Lang "auth.shields.own_traffic_note" }}">
@@ -28,8 +31,10 @@
 	</div>
 	{{ end }}
 </section>
+{{ end }}
 
-{{ if .RejectedHostnames }}
+<!-- Rejected hostnames are the one-click source of hostname rules. -->
+{{ if and .RejectedHostnames (or (not $.Shield) (eq $.Shield "hostname")) }}
 <section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
 	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.shields.rejected_title" }}</h2>
 	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang "auth.shields.rejected_hint" }}</p>
@@ -51,6 +56,7 @@
 					<td class="py-2 text-right">
 						<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/shields/allow-hostname" $.Domain) }}">
 							<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+							<input type="hidden" name="section" value="{{ $.Shield }}">
 							<input type="hidden" name="hostname" value="{{ .Hostname }}">
 							<button type="submit" class="text-sm font-semibold text-accent-ink hover:text-accent">{{ t $.Lang "auth.shields.allow_hostname" }}</button>
 						</form>
@@ -63,8 +69,8 @@
 </section>
 {{ end }}
 
-{{ range .Groups }}
-<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+{{ range $index, $group := .Groups }}
+<section class="{{ if or $index (not $.Shield) }}mt-6 {{ end }}rounded-2xl border border-line bg-card p-6 shadow-sm">
 	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang .TitleID }}</h2>
 	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang .HintID }}</p>
 
@@ -86,6 +92,7 @@
 					<td class="py-2 align-top">
 						<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/shields/delete" $.Domain) }}">
 							<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+							<input type="hidden" name="section" value="{{ $.Shield }}">
 							<input type="hidden" name="id" value="{{ .ID }}">
 							<button type="submit" class="text-sm font-medium text-down hover:text-down-ink">{{ t $.Lang "auth.shields.remove" }}</button>
 						</form>
@@ -101,6 +108,7 @@
 
 	<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/shields/add" $.Domain) }}" class="mt-5 flex flex-wrap items-end gap-3 border-t border-line pt-5">
 		<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+		<input type="hidden" name="section" value="{{ $.Shield }}">
 		<input type="hidden" name="kind" value="{{ .Kind }}">
 
 		<div class="min-w-[14rem] flex-1">

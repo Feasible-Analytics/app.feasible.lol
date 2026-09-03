@@ -23,6 +23,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/reports"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/settingsui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
@@ -55,9 +56,15 @@ type TeamHandler struct {
 	Health   *health.Store
 	Notifier *reports.Notifier
 	Sites    *sites.Cache
-	Mail     invitationSender
-	Log      *logger.Logger
-	CSRF     func(http.ResponseWriter, *http.Request) string
+
+	// Commerce says whether this deployment sells a subscription. A self-hosted
+	// install has none, and a billing link there leads to a page about a
+	// product it does not have.
+	Commerce bool
+
+	Mail invitationSender
+	Log  *logger.Logger
+	CSRF func(http.ResponseWriter, *http.Request) string
 
 	// BaseURL is what every URL shown on these pages is built from — the share
 	// links, the embed snippet and the test event's target.
@@ -93,6 +100,11 @@ func NewTeamHandler(h *TeamHandler) *TeamHandler {
 	for _, name := range []string{"team", "sharing", "reports", "health"} {
 		parsed, err := template.New("layout.html").Funcs(funcs()).
 			ParseFS(templateFS, "templates/layout.html", "templates/"+name+".html")
+		if err == nil {
+			// The header and the section list come from the shared package, so
+			// every settings screen wears the same chrome.
+			parsed, err = parsed.ParseFS(settingsui.Templates, "templates/*.html")
+		}
 		if err != nil {
 			panic(fmt.Sprintf("settings: %s.html will not parse: %v", name, err))
 		}
@@ -101,6 +113,37 @@ func NewTeamHandler(h *TeamHandler) *TeamHandler {
 	}
 
 	return h
+}
+
+// shellDomain is the site the navigation should be about.
+//
+// The people screen belongs to a team rather than to one site, but it is
+// reached from a site's settings and is one entry in that site's section list.
+// Arriving there to a one-item navigation is the disappearing-navigation
+// problem the shared shell exists to fix, so the site travels in the query and
+// is checked against this team before it is trusted — an unchecked domain would
+// draw links to somebody else's site.
+func (h *TeamHandler) shellDomain(r *http.Request, data screen) string {
+	if data.Domain != "" {
+		return data.Domain
+	}
+
+	context := strings.TrimSpace(r.URL.Query().Get("site_context"))
+	if context == "" || h.Sites == nil {
+		return ""
+	}
+
+	site, ok := h.Sites.Lookup(context)
+	if !ok || site.TeamID != data.TeamID {
+		if h.Log != nil {
+			h.Log.Warn("a settings screen was asked for a site context it cannot use",
+				"site_context", context, "team", data.TeamID)
+		}
+
+		return ""
+	}
+
+	return site.Domain
 }
 
 // page is what every template is executed against.
@@ -120,6 +163,15 @@ type screen struct {
 	Domain  string
 	Message string
 	Error   string
+
+	// Shield is the rule kind Shields is filtered to. These screens never set
+	// it; it is here because the shared chrome is resolved from one call that
+	// both page types make.
+	Shield string
+
+	// Shell is the header and section list, shared with every other settings
+	// screen so the two packages cannot drift into two navigations.
+	Shell settingsui.Shell
 
 	// Lang is the locale the request negotiated. It is on the page rather than
 	// looked up per helper because the layout needs it for the html element's
@@ -252,6 +304,11 @@ func (h *TeamHandler) render(w http.ResponseWriter, r *http.Request, name string
 	if h.CSRF != nil {
 		data.CSRF = h.CSRF(w, r)
 	}
+
+	// The chrome is resolved here rather than in each screen, so a screen added
+	// later cannot arrive with a different set of places to go.
+	data.Shell = settingsui.NewShell(data.Lang, h.shellDomain(r, data),
+		data.TeamID, data.Role, data.CSRF, data.Tab, data.Shield, h.Commerce)
 
 	parsed, ok := h.templates[name]
 	if !ok {

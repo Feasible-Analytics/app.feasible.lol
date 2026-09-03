@@ -1,0 +1,111 @@
+<!--
+  shell.html
+  The header and the section navigation every settings screen is drawn beside.
+
+  Created: 2026-09-03
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  Both packages that render settings screens parse this file, so there is one
+  copy of the chrome rather than two that drift. Everything here takes a
+  settingsui.Shell.
+
+  The card styles are written out at each use rather than hidden behind a
+  template, because Go templates cannot take a block of content as an argument
+  and a wrapper that can only hold one fixed shape is worth less than the
+  classes it saves. The shapes are:
+
+    card      rounded-2xl border border-line bg-card shadow-sm
+    card head px-6 pt-5 pb-4  — an h2 and a one-line description under it
+    row       flex items-center justify-between gap-4 border-t border-line px-6 py-4
+              label on the left, control on the right, on one line
+    footer    the per-card save, in the card, beside what it changes
+-->
+
+{{ define "settings-header" }}
+<header class="border-b border-line bg-card">
+	<div class="mx-auto flex w-full max-w-6xl flex-wrap items-start justify-between gap-x-6 gap-y-3 px-4 py-4 sm:px-6">
+		<div class="min-w-0">
+			<a href="{{ if .Domain }}{{ url .Lang (printf "/dashboard/%s" .Domain) }}{{ else }}{{ url .Lang "/sites" }}{{ end }}"
+			   class="inline-flex items-center gap-1.5 text-sm text-muted transition-colors hover:text-heading">
+				<span aria-hidden="true">←</span>
+				{{ if .Domain }}{{ t .Lang "settings.shell.back_to_stats" }}{{ else }}{{ t .Lang "settings.shell.back_to_sites" }}{{ end }}
+			</a>
+
+			<h1 class="mt-1 truncate text-xl font-semibold text-heading">
+				{{ if .Domain }}{{ t .Lang "settings.shell.title_for" "domain" .Domain }}{{ else }}{{ t .Lang "settings.shell.title" }}{{ end }}
+			</h1>
+		</div>
+
+		<!-- The way out of the settings surface. Without it a settings screen is
+		     a place you can only leave towards the one site you arrived from. -->
+		<nav aria-label="{{ t .Lang "settings.shell.account_nav" }}" class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+			<!-- The site the reader came from travels with the link, so the site
+			     list opens showing it rather than the top of the list. -->
+			<a href="{{ if and .TeamID .Domain }}{{ url .Lang (printf "/sites?team_id=%d&site_context=%s" .TeamID (.Domain | urlquery)) }}{{ else if .TeamID }}{{ url .Lang (printf "/sites?team_id=%d" .TeamID) }}{{ else }}{{ url .Lang "/sites" }}{{ end }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.sites" }}</a>
+			<a href="{{ if .TeamID }}{{ url .Lang (printf "/settings?team_id=%d" .TeamID) }}{{ else }}{{ url .Lang "/settings" }}{{ end }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.account" }}</a>
+			{{ if and .Commerce (canBilling .Role) }}<a href="{{ if .TeamID }}{{ url .Lang (printf "/billing?team=%d" .TeamID) }}{{ else }}{{ url .Lang "/billing" }}{{ end }}" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.billing" }}</a>{{ end }}
+			<form method="post" action="{{ url .Lang "/logout" }}">
+				<input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+				<button type="submit" class="text-muted hover:text-heading">{{ t .Lang "auth.sidebar.sign_out" }}</button>
+			</form>
+		</nav>
+	</div>
+</header>
+{{ end }}
+
+
+<!--
+  The section list, twice: a disclosure below `sm` and a plain column from `sm`
+  up. Only one of the two is ever in the layout, so only one is ever in the
+  accessibility tree.
+
+  It is written this way rather than as one <details> forced open by a media
+  query because a closed <details> is hidden by a user-agent rule on a pseudo
+  element that author CSS cannot reach — the list would simply never appear on
+  a desktop. Fourteen entries stacked above every screen is a wall somebody
+  scrolls past on every visit, so the phone gets the disclosure.
+-->
+{{ define "settings-nav" }}
+<nav aria-label="{{ t .Lang "settings.nav.label" }}" class="shrink-0 sm:w-56">
+	<details class="group sm:hidden">
+		<summary class="flex cursor-pointer list-none items-center gap-2 rounded-xl border border-line bg-card px-4 py-2.5 text-sm font-medium text-heading">
+			<span aria-hidden="true" class="text-muted transition-transform group-open:rotate-90 rtl:-scale-x-100">›</span>
+			{{ t .Lang .CurrentLabel }}
+		</summary>
+
+		<div class="mt-2">{{ template "settings-sections" . }}</div>
+	</details>
+
+	<div class="hidden sm:block">{{ template "settings-sections" . }}</div>
+</nav>
+{{ end }}
+
+
+<!-- One list, rendered into both of the shapes above. -->
+{{ define "settings-sections" }}
+<ul class="space-y-0.5">
+	{{ range .Sections }}
+	<li>
+		<a href="{{ url $.Lang .URL }}"
+		   {{ if .Current }}aria-current="page"{{ end }}
+		   class="block rounded-lg px-3 py-2 text-sm transition-colors {{ if .Current }}bg-accent/10 font-semibold text-accent-ink{{ else }}text-muted hover:bg-hover hover:text-heading{{ end }}">
+			{{ t $.Lang .LabelID }}
+		</a>
+
+		{{ if and .Children .Expanded }}
+		<ul class="mt-0.5 ms-3 space-y-0.5 border-l border-line ps-3">
+			{{ range .Children }}
+			<li>
+				<a href="{{ url $.Lang .URL }}"
+				   {{ if .Current }}aria-current="page"{{ end }}
+				   class="block rounded-lg px-3 py-1.5 text-sm transition-colors {{ if .Current }}font-semibold text-accent-ink{{ else }}text-muted hover:bg-hover hover:text-heading{{ end }}">
+					{{ t $.Lang .LabelID }}
+				</a>
+			</li>
+			{{ end }}
+		</ul>
+		{{ end }}
+	</li>
+	{{ end }}
+</ul>
+{{ end }}

@@ -284,6 +284,7 @@ func buildData(e *env, control *sql.DB, manager *accounts.Manager, service *inge
 		Trusted:  site.trusted,
 		Shields:  site.shields,
 		Paths:    site.paths,
+		Commerce: e.cfg.App.Hosted,
 	}
 
 	// A nil application is what hides every Google feature. A button that sends
