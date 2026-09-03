@@ -202,6 +202,34 @@ func TestMissingListFilesLeaveTheBaseline(t *testing.T) {
 	}
 }
 
+// TestNewFilterCarriesDatacenterRanges is the regression guard for the bug this
+// list was built to fix.
+//
+// A filter with no ranges answers "human" to every address and looks exactly
+// like clean traffic: production ran for weeks classifying a scraper farm as
+// twenty-nine visitors a morning, and nothing anywhere said so. Every other
+// test in this file supplies its own ranges, so none of them can see it.
+func TestNewFilterCarriesDatacenterRanges(t *testing.T) {
+	filter := NewBotFilter()
+
+	if _, datacenters, _ := filter.Sizes(); datacenters < 5000 {
+		t.Fatalf("a fresh filter holds %d datacentre ranges — run `make lists`", datacenters)
+	}
+
+	// One address per major provider, straight out of the box with no file
+	// loaded and nothing configured.
+	for _, addr := range []string{"52.94.76.1", "34.64.32.1", "20.36.0.1", "45.32.0.1"} {
+		if !filter.IsDatacenterIP(netip.MustParseAddr(addr)) {
+			t.Errorf("%s is not recognised as a datacentre address", addr)
+		}
+	}
+
+	// And an ordinary visitor still is one.
+	if filter.IsDatacenterIP(netip.MustParseAddr("203.0.113.7")) {
+		t.Error("a documentation address was classified as a datacentre")
+	}
+}
+
 // BenchmarkDatacenterLookup keeps the range check inside the per-request budget
 // with a list the size of the real one.
 func BenchmarkDatacenterLookup(b *testing.B) {

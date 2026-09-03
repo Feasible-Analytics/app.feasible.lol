@@ -88,7 +88,7 @@ FRESH ?= --fresh
 
 .DEFAULT_GOAL := help
 
-.PHONY: help assets tracker-deps tracker web-deps ui-css binary build test test-race test-web test-tracker test-integration test-ecosystem \
+.PHONY: help assets lists tracker-deps tracker web-deps ui-css binary build test test-race test-web test-tracker test-integration test-ecosystem \
 	bench lint check-env \
 	migrate migrate-fresh seed seed-big seed-http caddy app ingest testsite dev dev-solo \
 	caddy-ts app-ts ingest-ts testsite-ts dev-ts dev-solo-ts require-tailscale
@@ -116,6 +116,7 @@ help:
 	@echo "    make build      build ./$(BINARY) (runs the asset build first)"
 	@echo "    make binary     build ./$(BINARY) from the committed embedded assets"
 	@echo "    make tracker    build the browser script and check it fits the size budget"
+	@echo "    make lists      rebuild the embedded datacentre address list (needs network)"
 	@echo "    make test       unit tests, including the tracker size budget"
 	@echo "    make test-web   the dashboard's unit tests on their own"
 	@echo "    make test-tracker       the tracker's end-to-end suite in a real browser"
@@ -189,6 +190,16 @@ assets: tracker web-deps ui-css
 	else \
 		echo "no web/ directory yet — nothing to build"; \
 	fi
+
+## lists: rebuild the embedded datacentre address list from its upstream sources
+#
+# It needs the network and the sources are third-party, so it is deliberately
+# not a dependency of `build`: a provider having a bad morning must never be
+# able to break somebody's build. The output is committed, like the dashboard
+# bundle, and wants rerunning every few weeks — providers announce new address
+# space constantly, and a stale list quietly counts scrapers as visitors.
+lists:
+	go run ./cmd/gen-lists
 
 ## ui-css: rebuild the stylesheet the server-rendered screens embed
 # The output is committed, like every other compiled asset, so `go build` works

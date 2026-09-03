@@ -126,6 +126,7 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 	if err := bots.LoadLists(opts.DataDir); err != nil && opts.Log != nil {
 		opts.Log.Warn("bot lists could not be read — using the built-in baseline", "error", err)
 	}
+	logListSizes(opts.Log, bots)
 
 	counters := NewCounters()
 
@@ -210,6 +211,7 @@ func NewRemoteService(ctx context.Context, outbox *Outbox, opts Options) (*Servi
 	if err := bots.LoadLists(opts.DataDir); err != nil && opts.Log != nil {
 		opts.Log.Warn("bot lists could not be read — using the built-in baseline", "error", err)
 	}
+	logListSizes(opts.Log, bots)
 	counters := NewCounters()
 	service := &Service{
 		Sites: outbox.Router.Cache, Salts: saltSource, Geo: locator,
@@ -313,4 +315,24 @@ func (s *Service) Stop(ctx context.Context) error {
 	})
 
 	return err
+}
+
+// logListSizes records how much classification data is loaded.
+//
+// An empty list does not look like a fault from the outside — it looks like a
+// quiet week with unusually clean traffic — so the only way anybody finds out
+// is if the process says on the way up how much it is working from.
+func logListSizes(log *logger.Logger, bots *BotFilter) {
+	if log == nil {
+		return
+	}
+
+	agents, datacenters, spam := bots.Sizes()
+
+	log.Info("classification lists loaded",
+		"user_agent_tokens", agents, "datacenter_ranges", datacenters, "spam_domains", spam)
+
+	if datacenters == 0 {
+		log.Warn("no datacentre ranges are loaded — traffic from hosting providers will be counted as visitors")
+	}
 }
