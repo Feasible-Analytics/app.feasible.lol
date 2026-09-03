@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/avatar"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/destructive"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
@@ -113,6 +114,11 @@ type Handler struct {
 	// what it can see on its own network and read the answer back.
 	Verifier *http.Client
 
+	// Avatars fetches and stores account pictures. It is asked on sign-in and
+	// on a Google reconnect, and it never fails a request: a person with no
+	// picture keeps the letter circle.
+	Avatars *avatar.Refresher
+
 	views *views
 	mux   *http.ServeMux
 }
@@ -130,6 +136,7 @@ type DashboardNavigation struct {
 	BillingURL      string
 	ExportURL       string
 	LogoutURL       string
+	AvatarURL       string
 	CSRF            string
 	TeamID          int64
 }
@@ -158,6 +165,10 @@ type Options struct {
 	// value refuses loopback and every private range, which is the safe default
 	// for a build that forgets to set it.
 	OutboundPolicy outbound.Policy
+
+	// Avatars fetches account pictures. Nil leaves every account on the letter
+	// circle, which is what a build with no outbound access should get.
+	Avatars *avatar.Refresher
 }
 
 // NewHandler builds the application and parses its templates.
@@ -196,6 +207,7 @@ func NewHandler(opts Options) (*Handler, error) {
 		BaseURL:             strings.TrimRight(opts.BaseURL, "/"),
 		Log:                 opts.Log,
 		Verifier:            opts.OutboundPolicy.NewClient(verifyTimeout),
+		Avatars:             opts.Avatars,
 		views:               views,
 	}
 
@@ -742,6 +754,7 @@ func (h *Handler) NavigationForDashboard(w http.ResponseWriter, r *http.Request)
 		SitesURL:   "/sites",
 		AccountURL: "/settings",
 		LogoutURL:  "/logout",
+		AvatarURL:  avatar.URL(user.ID, h.Avatars.State(r.Context(), user.ID).ETag),
 		CSRF:       h.FormToken(w, r),
 	}
 
@@ -1087,4 +1100,34 @@ func (h *Handler) RunPrune(ctx context.Context) {
 			h.PruneExpired(ctx)
 		}
 	}
+}
+
+// AvatarHandler serves stored account pictures behind the session.
+//
+// A picture is account data, so the route requires a signed-in person and then
+// checks that the id in the path is theirs. Without that second check a numeric
+// URL is a way to walk the user table and learn who has an account here.
+//
+// It answers a signed-out request with a 404 rather than the redirect every
+// page route uses: this URL is the src of an image, and sending it to the login
+// page makes the browser try to decode an HTML document as one.
+func (h *Handler) AvatarHandler() http.Handler {
+	pictures := &avatar.Handler{
+		Store: avatar.NewStore(h.Store.DB(), func() int64 { return h.Store.Now().Unix() }),
+		Authorise: func(r *http.Request, userID int64) bool {
+			user := userFrom(r)
+
+			return user != nil && user.ID == userID
+		},
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, _, ok := h.currentUser(r)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+
+		pictures.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), contextUser, user)))
+	})
 }

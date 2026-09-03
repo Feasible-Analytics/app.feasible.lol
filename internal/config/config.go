@@ -178,6 +178,14 @@ type App struct {
 	// a customer's report email going out from their laptop.
 	Worker bool
 
+	// Gravatar decides whether an account with no Google picture has its
+	// address looked up at Gravatar. Nothing about a viewer leaves this
+	// process either way — the request is ours, made once, and the image is
+	// stored and served from our own origin — but it is still an outbound
+	// request carrying the hash of a customer's address to a third party, so a
+	// self-hoster gets it off by default and hosted gets it on.
+	Gravatar bool
+
 	SMTP   SMTP
 	AWS    AWS
 	Google GoogleOAuth
@@ -571,6 +579,10 @@ func LoadFrom(l *Loader) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	gravatar, err := l.Bool("FEASIBLE_APP_GRAVATAR", hosted)
+	if err != nil {
+		return nil, err
+	}
 	startTLS, err := l.Bool("FEASIBLE_SMTP_STARTTLS", true)
 	if err != nil {
 		return nil, err
@@ -633,6 +645,7 @@ func LoadFrom(l *Loader) (*Config, error) {
 			OperatorEmail:   strings.TrimSpace(l.String("FEASIBLE_OPERATOR_EMAIL", "")),
 			SecretKey:       strings.TrimSpace(l.String("FEASIBLE_APP_SECRET_KEY", "")),
 			Worker:          worker,
+			Gravatar:        gravatar,
 			SMTP: SMTP{
 				Host:     strings.TrimSpace(l.String("FEASIBLE_SMTP_HOST", "")),
 				Port:     smtpPort,

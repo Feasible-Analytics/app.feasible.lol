@@ -1178,17 +1178,17 @@ func TestPlausibleChannelParityMigration(t *testing.T) {
 // TestCoordinatedMigrationNumbers pins the upgrade order requested by the
 // app-shard runtime: account ingest state and hostname authority follow the
 // deployed 0007 settings migration, while the system chain preserves every
-// historical step before removing obsolete salt storage in migration 12 and
-// recording the last accepted authenticator step in 13. The account chain then
-// adds Plausible's lossless imported-rollup fields in 13 and repairs the first
-// Plausible channel backfill in 14.
+// historical step before removing obsolete salt storage in migration 12,
+// recording the last accepted authenticator step in 13 and the account picture
+// bytes in 14. The account chain then adds Plausible's lossless imported-rollup
+// fields in 13 and repairs the first Plausible channel backfill in 14.
 func TestCoordinatedMigrationNumbers(t *testing.T) {
 	for name, test := range map[string]struct {
 		set  Set
 		want []int
 	}{
 		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14}},
-		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}},
+		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := make([]int, 0, len(test.set.Migrations))

@@ -187,6 +187,11 @@ func (h *Handler) startSession(w http.ResponseWriter, r *http.Request, user *Use
 
 	h.Log.Info("signed in", "user", user.ID, "session", session.ID, "device", label)
 
+	// Gravatar is the fallback for anybody whose Google account did not supply
+	// a picture, which includes everybody who never used Google. The refresher
+	// decides whether it is needed; it already knows what is stored.
+	h.Avatars.EnsureGravatar(r.Context(), user.ID, user.Email)
+
 	// The new-device email is worth sending only when the device really is new
 	// and the account is old enough for it to mean something. One on the very
 	// first sign-in would just be a second email about an account somebody

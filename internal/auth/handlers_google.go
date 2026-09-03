@@ -104,6 +104,11 @@ func (h *Handler) finishGoogle(w http.ResponseWriter, r *http.Request) {
 		h.Log.Info("account created through google", "user", user.ID)
 	}
 
+	// Every sign-in, not only the first: somebody who changes their Google
+	// photo expects to see it here, and this is the cheapest trigger that
+	// notices.
+	h.Avatars.FromGoogle(r.Context(), user.ID, profile.Picture)
+
 	// Two-factor still applies. A second factor that a federated login skips is
 	// not a second factor; it is a setting.
 	if user.TwoFactorEnabled() {

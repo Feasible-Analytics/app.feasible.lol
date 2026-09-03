@@ -21,6 +21,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/access"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/auth"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/avatar"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dashboard"
@@ -350,7 +351,24 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 		BaseURL:             e.cfg.App.BaseURL,
 		Log:                 e.log,
 		OutboundPolicy:      outbound.PolicyFor(e.cfg),
+		Avatars:             newAvatarRefresher(e, control),
 	})
+}
+
+// newAvatarRefresher builds the account-picture fetcher.
+//
+// It dials through the same outbound policy every other request made on
+// somebody else's say-so uses. Google's picture URL arrives in a response we
+// did not write, and Gravatar is a hostname in our source rather than a
+// customer's, but neither is a reason to open a second, unguarded way out of
+// this process.
+func newAvatarRefresher(e *env, control *sql.DB) *avatar.Refresher {
+	return &avatar.Refresher{
+		Store:    avatar.NewStore(control, func() int64 { return time.Now().UTC().Unix() }),
+		Client:   outbound.PolicyFor(e.cfg).NewClient(avatar.FetchTimeout),
+		Gravatar: e.cfg.App.Gravatar,
+		Log:      e.log,
+	}
 }
 
 // siteRules is the pair of snapshots the ingest and write paths consult, plus
@@ -547,7 +565,8 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 				SiteSettingsURL: nav.SiteSettingsURL, ConversionsURL: nav.ConversionsURL,
 				AccountURL: nav.AccountURL,
 				BillingURL: nav.BillingURL, ExportURL: nav.ExportURL,
-				LogoutURL: nav.LogoutURL, CSRF: nav.CSRF, TeamID: nav.TeamID,
+				LogoutURL: nav.LogoutURL, AvatarURL: nav.AvatarURL,
+				CSRF: nav.CSRF, TeamID: nav.TeamID,
 			},
 		}
 		if refusal, locked := com.Gate.Check(nav.TeamID); locked {
@@ -587,6 +606,8 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	// telling every site that ever linked to yours that somebody is looking at
 	// their referral traffic.
 	mux.Handle(dashboard.FaviconPattern, dashboard.NewFavicons(filepath.Join(dataDir, "favicons"), e.log))
+
+	mux.Handle(avatar.Pattern, app.AvatarHandler())
 
 	// The root is the dashboard until the marketing site and the auth screens
 	// exist. A bare hostname answering 404 looks like a failed deploy, which is
