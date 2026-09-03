@@ -666,3 +666,116 @@ func TestSESTransportNeedsItsCredentials(t *testing.T) {
 		t.Fatalf("ses configuration set = %q, want it empty by default", cfg.App.AWS.SESConfigurationSet)
 	}
 }
+
+// TestHostedProductionShardSchemes covers the one hop where TLS is
+// confidentiality rather than authentication. The loopback and Tailscale cases
+// are the ones a real deployment hits: the app port serves plain HTTP, so
+// demanding https of them forces the internal call back out through the public
+// edge, which is configured to refuse it.
+func TestHostedProductionShardSchemes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		shard   string
+		allowed bool
+	}{
+		"public https":       {"https://app.example.com", true},
+		"public plaintext":   {"http://app.example.com", false},
+		"loopback v4":        {"http://127.0.0.1:19303", true},
+		"loopback v6":        {"http://[::1]:19303", true},
+		"localhost":          {"http://localhost:19301", true},
+		"tailscale address":  {"http://100.101.102.103:19301", true},
+		"tailscale magicdns": {"http://shard-one.tailnet.ts.net:19301", true},
+		"private lan":        {"http://10.0.0.5:19301", false},
+		"lookalike hostname": {"http://ts.net.example.com", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("FEASIBLE_ENV", EnvProduction)
+			t.Setenv("FEASIBLE_APP_HOSTED", "true")
+			// The scheme rule only governs the store-and-forward topology; a
+			// direct app writes its own events and never makes this call.
+			t.Setenv("FEASIBLE_APP_TRANSPORT", TransportHTTP)
+			// Every internal request is signed with this key whatever the
+			// scheme, which is why TLS on that hop is confidentiality alone.
+			t.Setenv("FEASIBLE_INTERNAL_KEY", "an-internal-signing-key-nobody-else-knows")
+			t.Setenv("FEASIBLE_INGEST_SALT", "a-production-salt-nobody-else-knows")
+			t.Setenv("FEASIBLE_INGEST_SHARDS", `["`+tc.shard+`"]`)
+
+			loader, err := NewLoader("", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = LoadFrom(loader)
+			if tc.allowed && err != nil {
+				t.Fatalf("shard %q rejected: %v", tc.shard, err)
+			}
+			if !tc.allowed {
+				if err == nil {
+					t.Fatalf("shard %q accepted, want rejection", tc.shard)
+				}
+				if !strings.Contains(err.Error(), "must use https") {
+					t.Fatalf("shard %q error = %v", tc.shard, err)
+				}
+			}
+		})
+	}
+}
+
+// TestPlaintextShardOperatorEntries covers the escape hatch for a mesh we do not
+// ship a default for. Headscale, ZeroTier, Nebula and a plain WireGuard tunnel
+// are as private as the built-ins, and only the operator knows which they run.
+func TestPlaintextShardOperatorEntries(t *testing.T) {
+	for name, tc := range map[string]struct {
+		entries string
+		shard   string
+		allowed bool
+	}{
+		"headscale suffix":     {".headscale.internal", "http://shard-one.headscale.internal:19301", true},
+		"suffix apex":          {"mesh.example", "http://mesh.example:19301", true},
+		"suffix is anchored":   {".mesh.example", "http://mesh.example.evil.com:19301", false},
+		"zerotier prefix":      {"10.147.0.0/16", "http://10.147.20.5:19301", true},
+		"prefix excludes rest": {"10.147.0.0/16", "http://10.148.20.5:19301", false},
+		"several entries":      {"10.147.0.0/16, .mesh.example", "http://shard.mesh.example", true},
+		"empty keeps default":  {"", "http://10.147.20.5:19301", false},
+		"builtins survive":     {"10.147.0.0/16", "http://127.0.0.1:19303", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("FEASIBLE_ENV", EnvProduction)
+			t.Setenv("FEASIBLE_APP_HOSTED", "true")
+			t.Setenv("FEASIBLE_APP_TRANSPORT", TransportHTTP)
+			t.Setenv("FEASIBLE_INTERNAL_KEY", "an-internal-signing-key-nobody-else-knows")
+			t.Setenv("FEASIBLE_INGEST_SALT", "a-production-salt-nobody-else-knows")
+			t.Setenv("FEASIBLE_INGEST_PLAINTEXT_SHARDS", tc.entries)
+			t.Setenv("FEASIBLE_INGEST_SHARDS", `["`+tc.shard+`"]`)
+
+			loader, err := NewLoader("", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = LoadFrom(loader)
+			if tc.allowed && err != nil {
+				t.Fatalf("shard %q with entries %q rejected: %v", tc.shard, tc.entries, err)
+			}
+			if !tc.allowed && err == nil {
+				t.Fatalf("shard %q with entries %q accepted, want rejection", tc.shard, tc.entries)
+			}
+		})
+	}
+}
+
+// TestPlaintextShardEntryIsValidated keeps a typo from reading as configured
+// while allowing nothing.
+func TestPlaintextShardEntryIsValidated(t *testing.T) {
+	for _, entry := range []string{"http://mesh.example", "10.147.0.0/99", "mesh.example:19301", "not a host"} {
+		t.Setenv("FEASIBLE_INGEST_PLAINTEXT_SHARDS", entry)
+
+		loader, err := NewLoader("", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadFrom(loader); err == nil ||
+			!strings.Contains(err.Error(), "FEASIBLE_INGEST_PLAINTEXT_SHARDS") {
+			t.Fatalf("entry %q error = %v", entry, err)
+		}
+	}
+}
