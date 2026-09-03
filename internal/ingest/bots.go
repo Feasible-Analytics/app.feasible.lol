@@ -16,19 +16,23 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest/lists"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/useragent"
 )
 
 // The classification reasons. They are part of the closed set of values the
 // `x-feasible-dropped` header can carry, so they are constants shared with the
 // response path rather than strings written twice.
 const (
-	ReasonBot          = "bot"
-	ReasonDatacenterIP = "datacenter_ip"
-	ReasonReferrerSpam = "referrer_spam"
+	ReasonBot             = "bot"
+	ReasonDatacenterIP    = "datacenter_ip"
+	ReasonReferrerSpam    = "referrer_spam"
+	ReasonOutdatedBrowser = "outdated_browser"
+	ReasonAutomation      = "automation"
 )
 
 // File names the lists are refreshed into. Every list goes stale — providers
@@ -91,6 +95,7 @@ type BotFilter struct {
 	bots        atomic.Pointer[[]string]
 	spam        atomic.Pointer[map[string]struct{}]
 	datacenters atomic.Pointer[rangeSet]
+	browsers    atomic.Pointer[map[string]int]
 }
 
 // NewBotFilter builds a filter carrying only the embedded baselines. Loading
@@ -113,6 +118,9 @@ func NewBotFilter() *BotFilter {
 	// so the token list above cannot see it and an install with no ranges
 	// counts every one of those requests as a visitor.
 	filter.datacenters.Store(newRangeSet(lists.Datacenters()))
+
+	current := lists.CurrentBrowsers()
+	filter.browsers.Store(&current)
 
 	return filter
 }
@@ -185,6 +193,125 @@ func (f *BotFilter) IsBotUserAgent(ua string) bool {
 // dropped real Mullvad and Proton users for months.
 func (f *BotFilter) IsDatacenterIP(addr netip.Addr) bool {
 	return f.datacenters.Load().contains(addr)
+}
+
+// embeddedEngines mark a browser engine that somebody else decides the version
+// of: an Android WebView moves with the system component, an Electron app moves
+// when its developer ships, and a Chromebook past its auto-update date never
+// moves again. All three are a person reading the page.
+var embeddedEngines = []string{"; wv)", "electron/", "cros "}
+
+// updatingPlatforms are the operating systems still receiving current browser
+// releases, and the oldest version of each that does.
+//
+// This is the half of the rule that keeps it honest. A browser goes stale for
+// two completely different reasons: nobody is driving it, or the machine it is
+// on stopped being supported. The second is most of a real audience — Windows 7
+// froze at Chrome 109, macOS Catalina at 138, Android 7 at 119, a Fire tablet
+// at 106 — and every one of those is somebody with an older device rather than
+// a script.
+//
+// Judging the version alone cannot tell the two apart, and it gets worse over
+// time rather than better: a frozen population sits at a fixed version while
+// the floor keeps advancing, so the rule would gradually turn whole classes of
+// real visitor into bots. Requiring a platform that would have given them a
+// current browser is what makes an old version mean something.
+var updatingPlatforms = map[string]int{
+	"Windows": 10,
+	"macOS":   11,
+	"Android": 10,
+}
+
+// OutdatedBy is how many major versions behind current a browser has to be
+// before it is treated as a script wearing a browser's name.
+//
+// These browsers ship roughly every four weeks, so eighteen majors is around
+// eighteen months of never once restarting on a platform that was offering the
+// update the whole time. Real traffic stops well before that: the oldest
+// genuine visitor in our own data was thirteen releases back, and the scraper
+// farm that prompted the rule was spread from twenty to fifty releases back.
+//
+// The gap between those two numbers is deliberate. A threshold set to the
+// tightest value that separates them today would be one release away from
+// wrong, and being wrong here means a person who quietly stops appearing with
+// nothing to say so. Missing a few of the farm costs a number that is slightly
+// too high, which is visible and fixable.
+const OutdatedBy = 18
+
+// IsOutdatedBrowser reports whether a browser is so far behind its current
+// release that no self-updating install could still be on it.
+//
+// This is the signal that survives everything else. A scraper renting
+// residential addresses and running a real browser engine defeats the address
+// list and the token list both, but it still announces a version, and a farm
+// rotating user agents to look like many people gives itself away by claiming
+// versions spread across years on an operating system that would have updated
+// every one of them.
+//
+// It declines far more often than it fires, and each refusal is a population of
+// real people: a browser it has no floor for, an engine somebody else versions,
+// a platform that stopped receiving updates. A version list that has gone stale
+// also fails this way, answering "current" to more than it should. That is the
+// right direction to be wrong in.
+func (f *BotFilter) IsOutdatedBrowser(agent useragent.Result, userAgent string) bool {
+	if agent.Browser == "" || agent.BrowserVersion == "" {
+		return false
+	}
+
+	newest, ok := (*f.browsers.Load())[agent.Browser]
+	if !ok {
+		return false
+	}
+
+	if !updatingPlatform(agent.OS, agent.OSVersion) {
+		return false
+	}
+
+	lower := strings.ToLower(userAgent)
+	for _, marker := range embeddedEngines {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+
+	major, ok := majorVersion(agent.BrowserVersion)
+	if !ok {
+		return false
+	}
+
+	return major < newest-OutdatedBy
+}
+
+// updatingPlatform reports whether an operating system was still being offered
+// current browser releases. Anything it cannot read is treated as one that was
+// not, because the cost of guessing wrong is a real visitor.
+func updatingPlatform(name, version string) bool {
+	oldest, ok := updatingPlatforms[name]
+	if !ok {
+		return false
+	}
+
+	major, ok := majorVersion(version)
+
+	return ok && major >= oldest
+}
+
+// majorVersion reads the leading number of a dotted version.
+func majorVersion(version string) (int, bool) {
+	head, _, _ := strings.Cut(version, ".")
+
+	major, err := strconv.Atoi(head)
+	if err != nil || major <= 0 {
+		return 0, false
+	}
+
+	return major, true
+}
+
+// SetCurrentBrowsers replaces the version floor directly, for tests and for the
+// refresh job.
+func (f *BotFilter) SetCurrentBrowsers(current map[string]int) {
+	f.browsers.Store(&current)
 }
 
 // IsReferrerSpam reports whether a referrer host exists only to appear in

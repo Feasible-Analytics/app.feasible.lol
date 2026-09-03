@@ -25,10 +25,58 @@ test("a pageview carries exactly the documented keys", async ({ page }) => {
 	expect(pageview.t).toBe("Basic — tracker fixture");
 	expect(pageview.v).toBe(1);
 
+	// The viewport width rides on every event. It is what the screen-size report
+	// is built from, and it is read per send rather than once: a window gets
+	// resized and a phone gets rotated between one pageview and the next.
+	expect(pageview.w).toBeGreaterThan(0);
+
+	// A real browser reports nothing wrong about itself, so the automation key
+	// is absent rather than empty. This is the assertion that fails first if a
+	// signal is ever written that fires on an ordinary visitor.
+	expect(pageview.a).toBeUndefined();
+
 	// Absent keys are left out rather than sent as null, which is what keeps a
 	// pageview under two hundred bytes.
 	expect(pageview.k).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-	expect(Object.keys(pageview).sort()).toEqual(["d", "k", "n", "t", "u", "v"]);
+	expect(Object.keys(pageview).sort()).toEqual(["d", "k", "n", "t", "u", "v", "w"]);
+});
+
+// The signals only fire on a browser claiming something impossible about
+// itself, so the only honest way to test them is to make a real browser make
+// one of those claims.
+test("a browser with no window at all is reported as automated", async ({ page }) => {
+	await page.addInitScript(() => {
+		Object.defineProperty(window, "outerWidth", { configurable: true, value: 0 });
+		Object.defineProperty(window, "outerHeight", { configurable: true, value: 0 });
+	});
+
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+
+	expect(named(state, "pageview")[0].a).toBe("o");
+});
+
+// Emulating a device rewrites the user agent and leaves the platform alone, and
+// the person doing it is usually the site's own owner checking their layout.
+// Nothing here may read that as a robot.
+test("a browser emulating another device is left alone", async ({ page }) => {
+	await page.addInitScript(() => {
+		Object.defineProperty(navigator, "userAgent", {
+			configurable: true,
+			value:
+				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+				"(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+		});
+	});
+
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+
+	expect(named(state, "pageview")[0].a).toBeUndefined();
 });
 
 // Some supported Web Crypto implementations have secure randomness but not

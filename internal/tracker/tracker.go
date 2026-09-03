@@ -51,11 +51,10 @@ var Script []byte
 //go:embed assets/vitals.js
 var VitalsScript []byte
 
-// BaseSizeBudget is the largest the primary tracker may be over the wire.
-// Stable client event ids and current-policy checks on live and persisted sends
-// add a small fixed cost. The planned 3.25 KiB post-feature ceiling is kept in
-// sync with tracker/build.js by the generated-asset test.
-const BaseSizeBudget = 13 * 256
+// BaseSizeBudget is the largest the primary tracker may be over the wire. The
+// 3.5 KiB ceiling is kept in sync with tracker/build.js by the generated-asset
+// test, and moves only when something is bought with it.
+const BaseSizeBudget = 14 * 256
 
 // VitalsSizeBudget is the separate ceiling for the maintained optional Web
 // Vitals module. Sites that do not enable capture never request these bytes.

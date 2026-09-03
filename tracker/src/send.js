@@ -7,6 +7,7 @@
 //
 
 import { win, loc, hatch, VERSION } from "./state.js";
+import { signals } from "./automation.js";
 import { excluded, ignoreReason, warn } from "./exclude.js";
 
 // The outbox key. A request whose connection died was never seen by any server,
@@ -166,10 +167,17 @@ export function post(body, callback) {
 	} catch {}
 }
 
+// What the browser says about itself does not change while the document is
+// open, so it is read once. The viewport is not read here with it: a window
+// gets resized and a phone gets rotated, and an SPA sends a pageview per route,
+// so a width captured at load would be wrong for every pageview after the
+// first — in the report this field exists to fill.
+const automated = signals();
+
 // send serialises one event and posts it. The key names are the wire contract
-// and are not ours to rename: `k` `n` `u` `d` `r` `p` `i` `sd` `e` `v` `t` and `$`.
-// Absent keys are left out entirely rather than sent as null, which keeps a
-// pageview under two hundred bytes.
+// and are not ours to rename: `k` `n` `u` `d` `r` `p` `i` `sd` `e` `v` `t` `w`
+// `a` and `$`. Absent keys are left out entirely rather than sent as null,
+// which keeps a pageview under two hundred bytes.
 export function send(event, callback) {
 	if (refusal(event)) {
 		callback?.({ status: null });
@@ -179,6 +187,8 @@ export function send(event, callback) {
 	// replay stay one event with one permanent server receipt.
 	event.k = eventID();
 	event.v = VERSION;
+	event.w = innerWidth || undefined;
+	event.a = automated;
 
 	post(JSON.stringify(event), callback);
 }

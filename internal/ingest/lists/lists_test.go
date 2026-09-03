@@ -172,3 +172,41 @@ func (s testSet) has(addr netip.Addr) bool {
 
 	return false
 }
+
+// TestCurrentBrowsersIsPresent guards the version floor the same way the
+// address list is guarded. An empty map answers "current" to every version,
+// which is the check quietly turning itself off.
+func TestCurrentBrowsersIsPresent(t *testing.T) {
+	current := CurrentBrowsers()
+
+	for _, name := range []string{"Chrome", "Edge"} {
+		major, ok := current[name]
+		if !ok {
+			t.Errorf("%s has no current version — run `make lists`", name)
+
+			continue
+		}
+
+		// A browser on a four-week cadence passed 100 years ago; anything below
+		// that is a parse that read the wrong field.
+		if major < 100 {
+			t.Errorf("%s is recorded as version %d, which is not a current release", name, major)
+		}
+	}
+}
+
+// TestBrowsersWithoutACadenceHaveNoFloor checks the deliberate omissions stay
+// omitted.
+//
+// Safari's version follows the operating system rather than a release cadence,
+// so a supported phone sits several majors back and is still a person. Firefox
+// is the sharper one: its extended-support channel, every Linux distribution's
+// package and Tor Browser are all far behind on purpose and permanently, and
+// Tor reports a plain old Firefox on Windows with nothing to tell it apart.
+func TestBrowsersWithoutACadenceHaveNoFloor(t *testing.T) {
+	for _, name := range []string{"Firefox", "Safari", "Samsung Internet", "Opera", "Internet Explorer"} {
+		if major, ok := CurrentBrowsers()[name]; ok {
+			t.Errorf("%s has a floor of %d, but its version cannot be judged on a cadence", name, major)
+		}
+	}
+}

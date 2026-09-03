@@ -87,6 +87,11 @@ var visitors = []visitor{
 	{"198.51.100.21", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15"},
 }
 
+// fixtureBrowsers is what "current" means to the fixture. It matches the user
+// agents above, so the people in the fixture are ordinary visitors rather than
+// a browser version that happens to have aged since somebody wrote them down.
+var fixtureBrowsers = map[string]int{"Chrome": 121, "Firefox": 121, "Edge": 121}
+
 // visitorAt returns one person by index. The first five are the hand-written
 // ones above; beyond that they are generated, which is what lets the same
 // fixture be replayed as many distinct people at once without hand-writing a
@@ -433,6 +438,13 @@ func newHarness(t testing.TB, control *sql.DB, dataDir string, wrap func(Transpo
 	// came — is invisible, and a replay that quietly loses events reads as a
 	// number that no longer matches with no reason attached.
 	service.Writer.Counters = service.Counters
+
+	// The fixture people below run the browsers they ran when they were
+	// written. Judging them against the embedded list would classify the whole
+	// fixture as automated the moment those versions aged a year, so the floor
+	// is pinned to the fixture instead. The rule itself is tested where it
+	// lives.
+	service.Pipeline.Bots.SetCurrentBrowsers(fixtureBrowsers)
 
 	// The buffer is built with the same bounds production runs with. A harness
 	// that raises them writes every event through a path production never

@@ -611,6 +611,8 @@ var explanations = map[string]string{
 	ingest.ReasonBot:                "settings.health.reason.bot",
 	ingest.ReasonDatacenterIP:       "settings.health.reason.datacenter_ip",
 	ingest.ReasonReferrerSpam:       "settings.health.reason.referrer_spam",
+	ingest.ReasonOutdatedBrowser:    "settings.health.reason.outdated_browser",
+	ingest.ReasonAutomation:         "settings.health.reason.automation",
 
 	ingest.TruncationProps:           "settings.health.reason.truncation_props",
 	ingest.TruncationPropName:        "settings.health.reason.truncation_prop_name",

@@ -18,8 +18,8 @@ import (
 // `x-feasible-dropped` header and lands on the customer's ingestion health
 // panel, and a free-text reason would make both unqueryable.
 //
-// Three of these — bot, datacenter_ip and referrer_spam — are classifications
-// rather than deletions. The row is still written with its bot_reason set and
+// Five of these are classifications rather than deletions — bot, datacenter_ip,
+// referrer_spam, outdated_browser and automation. The row is still written with its bot_reason set and
 // the customer gets a toggle, because the incumbent deletes bot traffic before
 // storing it and a wrongly-classified visitor is then gone forever.
 const (
@@ -52,6 +52,8 @@ var Reasons = []string{
 	ReasonBot,
 	ReasonDatacenterIP,
 	ReasonReferrerSpam,
+	ReasonOutdatedBrowser,
+	ReasonAutomation,
 	ReasonHostnameNotAllowed,
 	ReasonUnknownSite,
 	ReasonAccountDormant,
@@ -71,7 +73,7 @@ var Reasons = []string{
 // is how somebody concludes their traffic is being lost.
 func IsClassification(reason string) bool {
 	switch reason {
-	case ReasonBot, ReasonDatacenterIP, ReasonReferrerSpam:
+	case ReasonBot, ReasonDatacenterIP, ReasonReferrerSpam, ReasonOutdatedBrowser, ReasonAutomation:
 		return true
 	}
 
