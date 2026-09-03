@@ -20,6 +20,28 @@ import { useStats } from "../lib/useStats";
 import { Flag, Spinner } from "./atoms";
 
 /**
+ * suggestionsRequest asks the server for the values worth offering.
+ *
+ * The list is capped, so on a site with millions of distinct pages the value
+ * somebody wants is almost never among the busiest few. The typed text
+ * therefore goes to the server as a filter on the dimension being broken down,
+ * rather than narrowing a page of results the browser already holds — a search
+ * that can only find what was already on screen is not a search.
+ *
+ * The request is the whole cache key behind it, so a changed search re-queries
+ * by construction.
+ */
+export function suggestionsRequest(dimension: string, range: DateRange, search: string): StatsRequest {
+	return {
+		metrics: ["visitors"],
+		date_range: range,
+		dimensions: [dimension],
+		pagination: { limit: SUGGESTIONS },
+		filters: search ? [["contains", dimension, [search], { case_sensitive: false }]] : undefined,
+	};
+}
+
+/**
  * How many pills stay on the bar before the rest collapse.
  *
  * Four is where a row of pills stops being a summary of what you are looking at
@@ -366,15 +388,7 @@ function ValueEditor({
 	// list of what exists would be a list of things the pattern does not match.
 	const freeform = operator === "matches" || operator === "matches_not";
 
-	const body: StatsRequest = {
-		metrics: ["visitors"],
-		date_range: range,
-		dimensions: [editing.dimension],
-		pagination: { limit: SUGGESTIONS },
-		filters: search ? [["contains", editing.dimension, [search], { case_sensitive: false }]] : undefined,
-	};
-
-	const stats = useStats(domain, freeform ? null : body);
+	const stats = useStats(domain, freeform ? null : suggestionsRequest(editing.dimension, range, search));
 	const rows = stats.data?.results ?? [];
 
 	/** collected is the labels this panel learned, so a country code chosen here

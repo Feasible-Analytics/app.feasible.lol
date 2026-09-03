@@ -56,6 +56,24 @@ func TestFilterOperators(t *testing.T) {
 			pageviews: 4, visitors: 2,
 		},
 		{
+			// A session-scoped dimension is the one place a filter has to reach
+			// across the join from the event table, and the suggestion list
+			// behind every filter box searches exactly these.
+			name:      "contains on a session dimension",
+			filters:   []Filter{{Operator: OpContains, Dimension: "visit:entry_page", Values: []string{"pric"}}},
+			pageviews: 1, visitors: 1,
+		},
+		{
+			name:      "contains_not on a session dimension",
+			filters:   []Filter{{Operator: OpContainsNot, Dimension: "visit:entry_page", Values: []string{"pric"}}},
+			pageviews: 6, visitors: 2,
+		},
+		{
+			name:      "contains on an interned session dimension",
+			filters:   []Filter{{Operator: OpContains, Dimension: "visit:source", Values: []string{"goo"}, CaseInsensitive: true}},
+			pageviews: 4, visitors: 2,
+		},
+		{
 			name:      "matches",
 			filters:   []Filter{{Operator: OpMatches, Dimension: "event:page", Values: []string{"^/pri"}}},
 			pageviews: 3, visitors: 2,
@@ -141,6 +159,16 @@ func TestCaseSensitivity(t *testing.T) {
 
 	contains.Filters[0].CaseInsensitive = true
 	closeTo(t, "case-insensitive contains", run(t, engine, contains).Results[0].Metrics[0], 3)
+
+	// The same two answers across the session join. Folding one side with Go's
+	// rules and the other with SQLite's is a mistake that only shows up here.
+	entry := baseQuery("pageviews")
+	entry.Filters = []Filter{{Operator: OpContains, Dimension: "visit:entry_page", Values: []string{"PRIC"}}}
+
+	closeTo(t, "case-sensitive contains on a session dimension", run(t, engine, entry).Results[0].Metrics[0], 0)
+
+	entry.Filters[0].CaseInsensitive = true
+	closeTo(t, "case-insensitive contains on a session dimension", run(t, engine, entry).Results[0].Metrics[0], 1)
 }
 
 // TestCaseInsensitiveRegex checks the flag reaches the matcher.
