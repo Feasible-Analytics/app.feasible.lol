@@ -6,7 +6,7 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
 	bootstrap,
@@ -77,6 +77,14 @@ export function GoalsCard({ domain, range, filters, exact: exactAnswer, onFilter
 	const tab = behavior.tab;
 	const enabled = behaviorEnabled(tab, near);
 
+	// The partial-reporting date belongs in the header's help bubble, but only
+	// the panel that fetched the report knows it. The tab is stored alongside
+	// the date so a stale answer from the tab you just left can never be read
+	// as a caveat about the tab you are now looking at.
+	const [partial, setPartial] = useState<{ tab: BehaviorTab; from?: string } | null>(null);
+	const reportPartial = useCallback((from?: string) => setPartial({ tab, from }), [tab]);
+	const partialFrom = partial?.tab === tab ? partial.from : undefined;
+
 	return (
 		<section
 			ref={ref}
@@ -101,7 +109,7 @@ export function GoalsCard({ domain, range, filters, exact: exactAnswer, onFilter
 					))}
 				</nav>
 
-				<InfoDot text={behaviorCaveat(tab)} />
+				<InfoDot text={behaviorCaveat(tab, partialFrom)} />
 
 				<button
 					type="button"
@@ -116,13 +124,13 @@ export function GoalsCard({ domain, range, filters, exact: exactAnswer, onFilter
 
 			<div className="min-h-[350px] flex-1">
 				{tab === "goals" && (
-					<GoalsPanel domain={domain} request={request} enabled={enabled} onFilter={onFilter} settingsURL={settingsURL} />
+					<GoalsPanel domain={domain} request={request} enabled={enabled} onFilter={onFilter} settingsURL={settingsURL} onPartial={reportPartial} />
 				)}
 				{tab === "properties" && (
 					<PropertiesPanel domain={domain} request={request} enabled={enabled} onFilter={onFilter} settingsURL={settingsURL} selected={behavior.property} onSelected={(property) => onBehaviorChange({ ...behavior, property })} />
 				)}
 				{tab === "funnels" && (
-					<FunnelsPanel domain={domain} request={request} enabled={enabled} settingsURL={settingsURL} selected={behavior.funnel} onSelected={(funnel) => onBehaviorChange({ ...behavior, funnel })} />
+					<FunnelsPanel domain={domain} request={request} enabled={enabled} settingsURL={settingsURL} selected={behavior.funnel} onSelected={(funnel) => onBehaviorChange({ ...behavior, funnel })} onPartial={reportPartial} />
 				)}
 				{tab === "explore" && <ExplorePanel domain={domain} request={request} enabled={enabled} behavior={behavior} onBehaviorChange={onBehaviorChange} />}
 			</div>
@@ -138,12 +146,14 @@ function GoalsPanel({
 	enabled,
 	onFilter,
 	settingsURL,
+	onPartial,
 }: {
 	domain: string;
 	request: { dateRange: DateRange; filters: Filter[]; exact: boolean };
 	enabled: boolean;
 	onFilter: Props["onFilter"];
 	settingsURL?: string;
+	onPartial: (from?: string) => void;
 }) {
 	const report = useRemote<GoalReport>(
 		JSON.stringify({ domain, request }),
@@ -152,8 +162,10 @@ function GoalsPanel({
 	);
 	const rows = report.data?.rows ?? [];
 	const peak = Math.max(1, ...rows.map((row) => row.unique_conversions));
-	const partial = rows.some((row) => row.partial);
+	const partialFrom = rows.find((row) => row.partial)?.from;
 	const onlyEmptyAutomatic = rows.length > 0 && rows.every((row) => row.goal.is_automatic && row.total_conversions === 0);
+
+	useEffect(() => onPartial(partialFrom), [onPartial, partialFrom]);
 
 	if (report.error) return <PanelFailure state={report} />;
 	if (!report.data) return <PanelLoading label={t("dashboard.goals.loading")} />;
@@ -162,7 +174,6 @@ function GoalsPanel({
 		<PanelFrame
 			footer={settingsURL ? <a href={settingsURL} className="text-xs font-medium text-muted transition-colors hover:text-accent">{t("dashboard.behavior.goals.manage")} →</a> : undefined}
 		>
-			{partial && <PartialNotice from={rows.find((row) => row.partial)?.from} />}
 			{onlyEmptyAutomatic && (
 				<div className="flex flex-col gap-2 border-b border-line bg-accent/5 px-4 py-3 sm:flex-row sm:items-center sm:px-5">
 					<div className="min-w-0 flex-1"><p className="text-sm font-medium text-body">{t("dashboard.behavior.goals.automatic_ready")}</p><p className="text-xs leading-relaxed text-muted">{t("dashboard.behavior.goals.automatic_ready_hint")}</p></div>
@@ -248,12 +259,15 @@ function PropertyRows({ report, name, onFilter }: { report: PropertyReport; name
 
 /** FunnelsPanel measures one saved funnel at a time and visualizes both the
  * surviving audience and the loss between steps without fabricating a chart. */
-function FunnelsPanel({ domain, request, enabled, settingsURL, selected, onSelected }: { domain: string; request: { dateRange: DateRange; filters: Filter[]; exact: boolean }; enabled: boolean; settingsURL?: string; selected: number; onSelected: (funnel: number) => void }) {
+function FunnelsPanel({ domain, request, enabled, settingsURL, selected, onSelected, onPartial }: { domain: string; request: { dateRange: DateRange; filters: Filter[]; exact: boolean }; enabled: boolean; settingsURL?: string; selected: number; onSelected: (funnel: number) => void; onPartial: (from?: string) => void }) {
 	const list = useRemote<Funnel[]>(domain, enabled, (signal) => funnels(domain, signal));
 	const available = list.data ?? [];
 	const current = available.some((funnel) => funnel.id === selected) ? selected : (available[0]?.id ?? 0);
 
 	const report = useRemote<FunnelReport>(JSON.stringify({ domain, selected: current, request }), enabled && current > 0, (signal) => funnelReport(domain, current, request, signal));
+	const partialFrom = report.data?.partial ? report.data.from : undefined;
+
+	useEffect(() => onPartial(partialFrom), [onPartial, partialFrom]);
 
 	if (list.error) return <PanelFailure state={list} />;
 	if (!list.data) return <PanelLoading label={t("dashboard.behavior.funnels.loading")} />;
@@ -276,7 +290,6 @@ function FunnelChart({ report }: { report: FunnelReport }) {
 
 	return (
 		<div className="px-4 pb-3 sm:px-5">
-			{report.partial && <PartialNotice from={report.from} />}
 			<div className="mb-2 flex items-center justify-between text-xs text-muted"><span>{report.funnel.strict_order ? t("dashboard.behavior.funnels.strict") : t("dashboard.behavior.funnels.sequential")}</span><span>{t("dashboard.behavior.funnels.overall", { rate: metricAxisValue("conversion_rate", report.steps.at(-1)?.conversion_rate ?? 0) })}</span></div>
 			{report.steps.length === 0 ? <BehaviorEmpty title={t("dashboard.behavior.funnels.no_data")} body={t("dashboard.empty.hint")} /> : (
 				<ol className="space-y-2">
@@ -393,11 +406,6 @@ function PanelFailure<T>({ state, compact: compactPanel = false }: { state: Remo
 	return <div className={compactPanel ? "h-56" : "h-[350px]"}><Failure message={state.error ?? t("dashboard.error.query_failed")} onRetry={state.reload} /></div>;
 }
 
-/** PartialNotice explains a shortened window instead of implying a collapse. */
-function PartialNotice({ from }: { from?: string }) {
-	return <div className="border-b border-line bg-accent/5 px-4 py-2 text-xs text-muted sm:px-5">{t("dashboard.behavior.partial", { from: readableDate(from) })}</div>;
-}
-
 /** NumberCell renders an abbreviated count with its exact value on hover. */
 function NumberCell({ value }: { value: number }) {
 	return <span className="tnum pointer-events-none relative text-right text-sm text-body" title={exact(value)}><span className="sr-only">{exact(value)}</span><span aria-hidden="true">{compact(value)}</span></span>;
@@ -462,14 +470,24 @@ function behaviorTabLabel(tab: BehaviorTab): string {
 	}
 }
 
-/** behaviorCaveat gives each analysis mode its own concise explanation. */
-function behaviorCaveat(tab: BehaviorTab): string {
-	switch (tab) {
-		case "properties": return t("dashboard.behavior.properties.caveat");
-		case "funnels": return t("dashboard.behavior.funnels.caveat");
-		case "explore": return t("dashboard.behavior.explore.caveat");
-		default: return t("dashboard.behavior.goals.caveat");
-	}
+/** behaviorCaveat gives each analysis mode its own concise explanation, and
+ * appends the reporting start date when the window reaches back past the point
+ * the configuration became measurable. A shortened chart looks like a collapse,
+ * so the explanation has to travel with the numbers rather than sit above the
+ * table as a bar the reader has to dismiss on every visit. */
+export function behaviorCaveat(tab: BehaviorTab, partialFrom?: string): string[] {
+	const caveat = (() => {
+		switch (tab) {
+			case "properties": return t("dashboard.behavior.properties.caveat");
+			case "funnels": return t("dashboard.behavior.funnels.caveat");
+			case "explore": return t("dashboard.behavior.explore.caveat");
+			default: return t("dashboard.behavior.goals.caveat");
+		}
+	})();
+
+	if (!partialFrom) return [caveat];
+
+	return [caveat, t("dashboard.behavior.partial", { from: readableDate(partialFrom) })];
 }
 
 /** propertyScopeLabel explains whether a value describes one event or visit. */
