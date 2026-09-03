@@ -33,11 +33,14 @@ const BUNDLES = [
 		entry: join(here, "src", "index.js"),
 		out: join(here, "dist", "feasible.js"),
 		embedded: join(here, "..", "internal", "tracker", "assets", "feasible.js"),
-		// Stable client ids plus current-policy enforcement on every live and
-		// persisted send add a small fixed cost. Keep the planned 3.25 KiB
-		// post-feature ceiling hard so privacy does not become an excuse for
-		// unbounded bundle growth.
-		budget: 13 * 256,
+		// 3.5 KiB. The ceiling moves only when something is bought with it, and
+		// it is written as a multiple of 256 so raising it is always a visible
+		// decision rather than a number nudged to fit. This step bought the
+		// viewport width every screen-size report needs and the automation
+		// signals that catch a scraper the address list cannot see. Keep it
+		// hard otherwise: a script that grows whenever it is convenient ends up
+		// costing a customer their Core Web Vitals score.
+		budget: 14 * 256,
 		format: "iife",
 		external: ["./vitals.js"],
 	},

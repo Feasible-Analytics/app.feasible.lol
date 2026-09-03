@@ -46,6 +46,7 @@
   "settings.health.none_recorded": "None.",
   "settings.health.nothing_recorded": "Nothing recorded yet.",
   "settings.health.reason.account_dormant": "The account's grace period after a lapsed subscription has run out.",
+  "settings.health.reason.automation": "The page reported a browser making claims about itself that cannot all be true, which is what an automated browser looks like. The event was still stored.",
   "settings.health.reason.bot": "Classified as a bot from its user agent. The event was still stored.",
   "settings.health.reason.datacenter_ip": "Came from a datacentre address rather than a consumer network. The event was still stored.",
   "settings.health.reason.hostname_not_allowed": "The page's hostname is not on this site's allow-list.",

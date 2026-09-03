@@ -31,6 +31,11 @@ import (
 // identical visitor IDs.
 const benchIngestSalt = "benchmark-shared-salt"
 
+// benchBrowsers is what "current" means to this fixture. It matches the user
+// agents below, so the synthetic load is ordinary traffic rather than a browser
+// version that has aged since somebody wrote it down.
+var benchBrowsers = map[string]int{"Chrome": 120, "Firefox": 120, "Edge": 120}
+
 // userAgents are the browsers the load is sent as. There are several because
 // the user-agent cache is on the hot path, and a run with one string would
 // measure a cache that always hits — which is not a number anybody can use.
@@ -199,6 +204,13 @@ func RunWrite(ctx context.Context, opts WriteOptions) (WriteResult, error) {
 	// direct requests originate from httptest's one synthetic peer, so leaving
 	// the public limiter enabled would measure that fixture instead of SQLite.
 	service.Handler.Limiter = nil
+
+	// The load is sent as the browsers below, and what counts as a current
+	// browser moves every four weeks. Judging the fixture against the shipped
+	// list would classify the whole run as automated the moment those versions
+	// aged a year, and a throughput benchmark would start failing for a reason
+	// that has nothing to do with throughput.
+	service.Pipeline.Bots.SetCurrentBrowsers(benchBrowsers)
 
 	// The background loops run, because they run in production: without the
 	// ticker the only thing that ever writes is the size trigger, and a size

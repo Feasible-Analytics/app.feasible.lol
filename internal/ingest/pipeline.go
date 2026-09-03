@@ -272,7 +272,7 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 	// moving it earlier costs nothing.
 	agent := p.Agents.Parse(rawUserAgent)
 
-	botReason := p.classify(rawUserAgent, agent, client.Addr, source.Referrer)
+	botReason := p.classify(rawUserAgent, agent, client.Addr, source.Referrer, payload.Automated)
 	result.Debug.BotReason = botReason
 
 	// Step 4.
@@ -499,13 +499,20 @@ func (p *Pipeline) clock() time.Time {
 // version says whether anything could still be running it. A scraper renting
 // residential addresses and driving a real browser engine gets past the first
 // two and is caught by the third.
-func (p *Pipeline) classify(userAgent string, agent useragent.Result, addr netip.Addr, referrerHost string) string {
+func (p *Pipeline) classify(userAgent string, agent useragent.Result, addr netip.Addr, referrerHost, automated string) string {
 	if p.Bots == nil {
 		return ""
 	}
 
 	if p.Bots.IsBotUserAgent(userAgent) {
 		return ReasonBot
+	}
+
+	// What the page saw. It is checked before the address because it is the
+	// only signal here that survives a scraper on a residential connection
+	// running a real browser engine, and it costs a string comparison.
+	if automatedSignals(automated) {
+		return ReasonAutomation
 	}
 
 	if p.Bots.IsDatacenterIP(addr) {
@@ -523,6 +530,19 @@ func (p *Pipeline) classify(userAgent string, agent useragent.Result, addr netip
 	}
 
 	return ""
+}
+
+// automatedSignals reads the tracker's report of what looked wrong.
+//
+// One signal is enough. Each is a claim a browser cannot truthfully make about
+// itself — no window, no screen, a platform that contradicts its own user agent
+// — and the tracker only reports the ones that no privacy setting produces, so
+// there is nothing to weigh up here. The length cap is because this arrives
+// from the open internet and a caller can put anything in it.
+func automatedSignals(reported string) bool {
+	const maxSignals = 8
+
+	return reported != "" && len(reported) <= maxSignals
 }
 
 // locate geolocates an address, bucketing datacentre traffic separately.

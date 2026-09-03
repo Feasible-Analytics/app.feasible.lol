@@ -31,6 +31,7 @@ const (
 	ReasonDatacenterIP    = "datacenter_ip"
 	ReasonReferrerSpam    = "referrer_spam"
 	ReasonOutdatedBrowser = "outdated_browser"
+	ReasonAutomation      = "automation"
 )
 
 // File names the lists are refreshed into. Every list goes stale — providers

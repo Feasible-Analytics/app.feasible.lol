@@ -94,6 +94,13 @@ type Payload struct {
 	Engage   *json.Number    `json:"e"`  // engagement time, milliseconds
 	Width    *json.Number    `json:"w"`  // viewport width in CSS pixels — our addition
 
+	// Automated reports what the page saw that a server cannot: a browser
+	// making claims about itself that cannot all be true. It is a short string
+	// of one-letter signals, and it is an observation rather than a verdict —
+	// what it means is decided here, so the threshold can change without
+	// reshipping a script that lives on other people's pages.
+	Automated string `json:"a"`
+
 	// Interactive defaults to true when absent, which is what an ordinary
 	// pageview is. It is a pointer so "absent" and "explicitly false" stay
 	// distinguishable — the bounce rule reads them differently.

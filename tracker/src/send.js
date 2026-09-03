@@ -7,6 +7,7 @@
 //
 
 import { win, loc, hatch, VERSION } from "./state.js";
+import { signals } from "./automation.js";
 import { excluded, ignoreReason, warn } from "./exclude.js";
 
 // The outbox key. A request whose connection died was never seen by any server,
@@ -166,10 +167,16 @@ export function post(body, callback) {
 	} catch {}
 }
 
+// The browser's own account of itself, read once. Neither answer changes while
+// the document is open, and both ride on every event, so measuring them per
+// send would be work repeated for a result that cannot move.
+const width = innerWidth || undefined;
+const automated = signals();
+
 // send serialises one event and posts it. The key names are the wire contract
-// and are not ours to rename: `k` `n` `u` `d` `r` `p` `i` `sd` `e` `v` `t` and `$`.
-// Absent keys are left out entirely rather than sent as null, which keeps a
-// pageview under two hundred bytes.
+// and are not ours to rename: `k` `n` `u` `d` `r` `p` `i` `sd` `e` `v` `t` `w`
+// `a` and `$`. Absent keys are left out entirely rather than sent as null,
+// which keeps a pageview under two hundred bytes.
 export function send(event, callback) {
 	if (refusal(event)) {
 		callback?.({ status: null });
@@ -179,6 +186,8 @@ export function send(event, callback) {
 	// replay stay one event with one permanent server receipt.
 	event.k = eventID();
 	event.v = VERSION;
+	event.w = width;
+	event.a = automated;
 
 	post(JSON.stringify(event), callback);
 }
