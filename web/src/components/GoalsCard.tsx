@@ -6,7 +6,7 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
 	bootstrap,
@@ -78,12 +78,18 @@ export function GoalsCard({ domain, range, filters, exact: exactAnswer, onFilter
 	const enabled = behaviorEnabled(tab, near);
 
 	// The partial-reporting date belongs in the header's help bubble, but only
-	// the panel that fetched the report knows it. The tab is stored alongside
-	// the date so a stale answer from the tab you just left can never be read
-	// as a caveat about the tab you are now looking at.
-	const [partial, setPartial] = useState<{ tab: BehaviorTab; from?: string } | null>(null);
-	const reportPartial = useCallback((from?: string) => setPartial({ tab, from }), [tab]);
-	const partialFrom = partial?.tab === tab ? partial.from : undefined;
+	// the panel that fetched the report knows it, so the panel reports it up.
+	const [partialFrom, setPartialFrom] = useState<string>();
+	const [shown, setShown] = useState(tab);
+
+	// A tab change forgets the date in the same render that changes the tab,
+	// before the incoming panel mounts. Waiting for that panel to answer would
+	// leave the previous tab's caveat standing over numbers it does not
+	// describe.
+	if (shown !== tab) {
+		setShown(tab);
+		setPartialFrom(undefined);
+	}
 
 	return (
 		<section
@@ -124,13 +130,13 @@ export function GoalsCard({ domain, range, filters, exact: exactAnswer, onFilter
 
 			<div className="min-h-[350px] flex-1">
 				{tab === "goals" && (
-					<GoalsPanel domain={domain} request={request} enabled={enabled} onFilter={onFilter} settingsURL={settingsURL} onPartial={reportPartial} />
+					<GoalsPanel domain={domain} request={request} enabled={enabled} onFilter={onFilter} settingsURL={settingsURL} onPartial={setPartialFrom} />
 				)}
 				{tab === "properties" && (
 					<PropertiesPanel domain={domain} request={request} enabled={enabled} onFilter={onFilter} settingsURL={settingsURL} selected={behavior.property} onSelected={(property) => onBehaviorChange({ ...behavior, property })} />
 				)}
 				{tab === "funnels" && (
-					<FunnelsPanel domain={domain} request={request} enabled={enabled} settingsURL={settingsURL} selected={behavior.funnel} onSelected={(funnel) => onBehaviorChange({ ...behavior, funnel })} onPartial={reportPartial} />
+					<FunnelsPanel domain={domain} request={request} enabled={enabled} settingsURL={settingsURL} selected={behavior.funnel} onSelected={(funnel) => onBehaviorChange({ ...behavior, funnel })} onPartial={setPartialFrom} />
 				)}
 				{tab === "explore" && <ExplorePanel domain={domain} request={request} enabled={enabled} behavior={behavior} onBehaviorChange={onBehaviorChange} />}
 			</div>
@@ -162,8 +168,12 @@ function GoalsPanel({
 	);
 	const rows = report.data?.rows ?? [];
 	const peak = Math.max(1, ...rows.map((row) => row.unique_conversions));
-	const partialFrom = rows.find((row) => row.partial)?.from;
 	const onlyEmptyAutomatic = rows.length > 0 && rows.every((row) => row.goal.is_automatic && row.total_conversions === 0);
+
+	// A failed request keeps the rows it last succeeded with, so the caveat is
+	// withheld whenever the panel is showing a failure rather than a table. A
+	// note explaining numbers nobody can see explains nothing.
+	const partialFrom = report.error ? undefined : rows.find((row) => row.partial)?.from;
 
 	useEffect(() => onPartial(partialFrom), [onPartial, partialFrom]);
 
@@ -265,7 +275,12 @@ function FunnelsPanel({ domain, request, enabled, settingsURL, selected, onSelec
 	const current = available.some((funnel) => funnel.id === selected) ? selected : (available[0]?.id ?? 0);
 
 	const report = useRemote<FunnelReport>(JSON.stringify({ domain, selected: current, request }), enabled && current > 0, (signal) => funnelReport(domain, current, request, signal));
-	const partialFrom = report.data?.partial ? report.data.from : undefined;
+
+	// Both requests keep whatever they last succeeded with, so the caveat is
+	// withheld unless a chart is actually on screen: a failed or absent funnel
+	// list means the report below it is not being rendered at all.
+	const charted = Boolean(list.data?.length) && !list.error && !report.error;
+	const partialFrom = charted && report.data?.partial ? report.data.from : undefined;
 
 	useEffect(() => onPartial(partialFrom), [onPartial, partialFrom]);
 
@@ -472,9 +487,8 @@ function behaviorTabLabel(tab: BehaviorTab): string {
 
 /** behaviorCaveat gives each analysis mode its own concise explanation, and
  * appends the reporting start date when the window reaches back past the point
- * the configuration became measurable. A shortened chart looks like a collapse,
- * so the explanation has to travel with the numbers rather than sit above the
- * table as a bar the reader has to dismiss on every visit. */
+ * the configuration became measurable. A shortened chart reads as a collapse
+ * without it. */
 export function behaviorCaveat(tab: BehaviorTab, partialFrom?: string): string[] {
 	const caveat = (() => {
 		switch (tab) {
@@ -522,9 +536,10 @@ function formatMoney(value: number, currency: string): string {
 	}
 }
 
-/** readableDate keeps a server timestamp compact enough for the partial badge. */
-function readableDate(value?: string): string {
-	if (!value) return t("common.state.dash");
+/** readableDate keeps a server timestamp short enough to read inside a
+ * sentence. A timestamp it cannot parse is shown as it arrived, because a value
+ * the reader can quote back to us is worth more than a tidy dash. */
+function readableDate(value: string): string {
 	const date = new Date(value);
 	return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }

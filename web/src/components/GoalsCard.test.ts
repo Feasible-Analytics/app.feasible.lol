@@ -88,10 +88,26 @@ test("the help bubble carries only the tab caveat when a report is complete", ()
 });
 
 test("a partial report appends its reporting start date as a second paragraph", () => {
-	const paragraphs = behaviorCaveat("goals", "2026-09-02T00:00:00Z");
+	for (const [tab, caveat] of [
+		["goals", "Unique conversions count each visitor once."],
+		["funnels", "Steps are measured against the first step."],
+	] as const) {
+		const [first, second, ...rest] = behaviorCaveat(tab, "2026-09-02T12:00:00Z");
 
-	assert.equal(paragraphs.length, 2);
-	assert.equal(paragraphs[0], "Unique conversions count each visitor once.");
-	assert.match(paragraphs[1], /^Reporting starts .+, when this configuration became measurable\.$/);
-	assert.ok(paragraphs[1].includes("2026"), "the date must be substituted, not left as its placeholder");
+		assert.equal(first, caveat);
+		assert.deepEqual(rest, []);
+		assert.match(
+			second ?? "",
+			/^Reporting starts \w+ \d+, \d+, when this configuration became measurable\.$/,
+			"the date must be substituted, not left as its placeholder",
+		);
+	}
+});
+
+test("an unparseable reporting start date is shown as it arrived", () => {
+	// A timestamp we cannot read is a server bug, and quoting it back is what
+	// lets somebody report it. Hiding it behind a dash loses the evidence.
+	const [, second] = behaviorCaveat("goals", "not-a-date");
+
+	assert.equal(second, "Reporting starts not-a-date, when this configuration became measurable.");
 });
