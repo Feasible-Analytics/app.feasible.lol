@@ -34,9 +34,10 @@ const (
 	// policy, and is the only role that can delete the team or hand it on.
 	RoleOwner Role = "owner"
 
-	// RoleAdmin manages members and sites but not the team itself. The split
-	// exists so that "help me run this" does not also mean "you can delete
-	// everything and change the card on file".
+	// RoleAdmin manages members, sites and the subscription, but not the team
+	// itself. The split is about what cannot be undone: an admin is somebody
+	// trusted to run the account day to day, and paying for it is part of that,
+	// while deleting the team or handing it to somebody else is not.
 	RoleAdmin Role = "admin"
 
 	// RoleEditor reads every dashboard and changes site settings.
@@ -151,6 +152,7 @@ var matrix = map[Role]map[Permission]bool{
 		PermManageSiteSettings: true,
 		PermManageSites:        true,
 		PermManageMembers:      true,
+		PermManageBilling:      true,
 		PermCreateAPIKey:       true,
 	},
 	RoleEditor: {

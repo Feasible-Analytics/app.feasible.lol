@@ -80,7 +80,7 @@ func TestTheFullMatrix(t *testing.T) {
 		},
 		RoleAdmin: {
 			PermViewDashboard, PermManageSiteSettings, PermManageSites, PermManageMembers,
-			PermCreateAPIKey,
+			PermManageBilling, PermCreateAPIKey,
 		},
 		RoleEditor:      {PermViewDashboard, PermManageSiteSettings, PermCreateAPIKey},
 		RoleBilling:     {PermViewDashboard, PermManageBilling, PermCreateAPIKey},
