@@ -109,6 +109,32 @@ func NewTeamHandler(h *TeamHandler) *TeamHandler {
 	return h
 }
 
+// shellDomain is the site the navigation should be about.
+//
+// The people screen belongs to a team rather than to one site, but it is
+// reached from a site's settings and is one entry in that site's section list.
+// Arriving there to a one-item navigation is the disappearing-navigation
+// problem the shared shell exists to fix, so the site travels in the query and
+// is checked against this team before it is trusted — an unchecked domain would
+// draw links to somebody else's site.
+func (h *TeamHandler) shellDomain(r *http.Request, data screen) string {
+	if data.Domain != "" {
+		return data.Domain
+	}
+
+	context := strings.TrimSpace(r.URL.Query().Get("site_context"))
+	if context == "" || h.Sites == nil {
+		return ""
+	}
+
+	site, ok := h.Sites.Lookup(context)
+	if !ok || site.TeamID != data.TeamID {
+		return ""
+	}
+
+	return site.Domain
+}
+
 // page is what every template is executed against.
 //
 // It is one flat struct for every screen rather than one per screen, because
@@ -270,7 +296,7 @@ func (h *TeamHandler) render(w http.ResponseWriter, r *http.Request, name string
 
 	// The chrome is resolved here rather than in each screen, so a screen added
 	// later cannot arrive with a different set of places to go.
-	data.Shell = settingsui.NewShell(data.Lang, data.Domain, i18n.T(data.Lang, data.TitleID),
+	data.Shell = settingsui.NewShell(data.Lang, h.shellDomain(r, data), i18n.T(data.Lang, data.TitleID),
 		data.TeamID, data.Role, data.CSRF, data.Tab, data.Shield)
 
 	parsed, ok := h.templates[name]
