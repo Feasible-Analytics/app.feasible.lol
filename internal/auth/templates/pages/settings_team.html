@@ -8,20 +8,20 @@
 {{ define "content" }}
 <div class="max-w-2xl">
 
-  <form method="post" action="{{ url $.Lang "/settings/team" }}" class="space-y-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+  <form method="post" action="{{ url $.Lang "/settings/team" }}" class="space-y-6 border-2 border-line bg-card p-6">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <input type="hidden" name="team_id" value="{{ .Data.TeamID }}">
 
     <div>
       <label for="name" class="block text-sm font-medium text-body">{{ t $.Lang "auth.settings_team.name" }}</label>
       <input id="name" name="name" type="text" value="{{ .Team.Name }}" required
-             class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+             class="mt-1 block w-full border-2 border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
     </div>
 
     <div class="border-t border-line pt-6">
       <label class="flex items-start gap-3">
         <input type="checkbox" name="require_2fa" value="1" {{ if .Team.Require2FA }}checked{{ end }}
-               class="mt-0.5 rounded border-field text-accent-ink focus:ring-accent">
+               class="mt-0.5 border-field text-accent-ink focus:ring-accent">
         <span class="text-sm text-body">
           {{ t $.Lang "auth.settings_team.require_2fa" }}
           <span class="block text-xs text-muted">
@@ -41,7 +41,7 @@
     {{ end }}
 
     <button type="submit"
-            class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
+            class="btn btn-primary">
       {{ t $.Lang "common.action.save" }}
     </button>
   </form>

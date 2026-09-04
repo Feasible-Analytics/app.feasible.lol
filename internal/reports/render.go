@@ -243,58 +243,58 @@ func titleOf(kind string) string {
 // obvious in review as well as at run time.
 const reportHTML = `<!doctype html>
 <html lang="en">
-<body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1f2933;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:24px 12px;">
+<body style="margin:0;padding:0;background:#eae9e9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#444141;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eae9e9;padding:24px 12px;">
 <tr><td align="center">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:620px;background:#ffffff;border:1px solid #e4e7eb;border-radius:8px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:620px;background:#f3f2f2;border:2px solid #9f9d9d;">
 <tr><td style="padding:22px 24px 8px 24px;">
-<div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#0d9488;font-weight:700;">{{.Kind}} report</div>
+<div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#ae1800;font-weight:700;">{{.Kind}} report</div>
 <div style="font-size:22px;font-weight:700;margin-top:4px;">{{.Domain}}</div>
-<div style="font-size:14px;color:#616e7c;margin-top:2px;">{{.PeriodLabel}}</div>
-{{if .Note}}<div style="font-size:14px;color:#8a5300;background:#fff7e6;border:1px solid #ffe0a3;border-radius:6px;padding:10px 12px;margin-top:14px;">{{.Note}}</div>{{end}}
+<div style="font-size:14px;color:#605d5d;margin-top:2px;">{{.PeriodLabel}}</div>
+{{if .Note}}<div style="font-size:14px;color:#854d0e;background:#f7f0dd;border:2px solid #a16207;padding:10px 12px;margin-top:14px;">{{.Note}}</div>{{end}}
 </td></tr>
 <tr><td style="padding:8px 24px 0 24px;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
 <tr>
 {{range .Figures}}
-<td style="padding:12px 8px;border-top:1px solid #e4e7eb;vertical-align:top;">
-<div style="font-size:12px;color:#616e7c;">{{.Label}}</div>
+<td style="padding:12px 8px;border-top:1px solid #d1d0d0;vertical-align:top;">
+<div style="font-size:12px;color:#605d5d;">{{.Label}}</div>
 <div style="font-size:20px;font-weight:700;margin-top:2px;">{{.Value}}</div>
-{{if .Change}}<div style="font-size:12px;margin-top:2px;color:{{if eq .Direction "up"}}#0f7b47{{else if eq .Direction "down"}}#b42318{{else}}#616e7c{{end}};">{{.Change}}</div>{{end}}
+{{if .Change}}<div style="font-size:12px;margin-top:2px;color:{{if eq .Direction "up"}}#15803d{{else if eq .Direction "down"}}#b91c1c{{else}}#616e7c{{end}};">{{.Change}}</div>{{end}}
 </td>
 {{end}}
 </tr>
 </table>
 </td></tr>
 <tr><td style="padding:6px 24px 0 24px;">
-<div style="font-size:13px;font-weight:700;margin-top:16px;border-top:1px solid #e4e7eb;padding-top:14px;">Top pages</div>
+<div style="font-size:13px;font-weight:700;margin-top:16px;border-top:1px solid #d1d0d0;padding-top:14px;">Top pages</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:6px;">
 {{range .TopPages}}
-<tr><td style="font-size:14px;padding:4px 0;color:#3e4c59;">{{.Label}}</td><td align="right" style="font-size:14px;padding:4px 0;font-variant-numeric:tabular-nums;">{{.Value}}</td></tr>
+<tr><td style="font-size:14px;padding:4px 0;color:#444141;">{{.Label}}</td><td align="right" style="font-size:14px;padding:4px 0;font-variant-numeric:tabular-nums;">{{.Value}}</td></tr>
 {{else}}
-<tr><td style="font-size:14px;padding:4px 0;color:#9aa5b1;">No pages were viewed in this period.</td></tr>
+<tr><td style="font-size:14px;padding:4px 0;color:#7d7979;">No pages were viewed in this period.</td></tr>
 {{end}}
 </table>
 <div style="font-size:13px;font-weight:700;margin-top:18px;">Top sources</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:6px;">
 {{range .TopSources}}
-<tr><td style="font-size:14px;padding:4px 0;color:#3e4c59;">{{.Label}}</td><td align="right" style="font-size:14px;padding:4px 0;font-variant-numeric:tabular-nums;">{{.Value}}</td></tr>
+<tr><td style="font-size:14px;padding:4px 0;color:#444141;">{{.Label}}</td><td align="right" style="font-size:14px;padding:4px 0;font-variant-numeric:tabular-nums;">{{.Value}}</td></tr>
 {{else}}
-<tr><td style="font-size:14px;padding:4px 0;color:#9aa5b1;">No referrers were recorded in this period.</td></tr>
+<tr><td style="font-size:14px;padding:4px 0;color:#7d7979;">No referrers were recorded in this period.</td></tr>
 {{end}}
 </table>
 <div style="font-size:13px;font-weight:700;margin-top:18px;">Top countries</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:6px;">
 {{range .Countries}}
-<tr><td style="font-size:14px;padding:4px 0;color:#3e4c59;">{{.Label}}</td><td align="right" style="font-size:14px;padding:4px 0;font-variant-numeric:tabular-nums;">{{.Value}}</td></tr>
+<tr><td style="font-size:14px;padding:4px 0;color:#444141;">{{.Label}}</td><td align="right" style="font-size:14px;padding:4px 0;font-variant-numeric:tabular-nums;">{{.Value}}</td></tr>
 {{else}}
-<tr><td style="font-size:14px;padding:4px 0;color:#9aa5b1;">No locations were recorded in this period.</td></tr>
+<tr><td style="font-size:14px;padding:4px 0;color:#7d7979;">No locations were recorded in this period.</td></tr>
 {{end}}
 </table>
 </td></tr>
 <tr><td style="padding:20px 24px 24px 24px;">
-<a href="{{.DashboardURL}}" style="display:inline-block;background:#0d9488;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:10px 16px;border-radius:6px;">Open the dashboard</a>
-<div style="font-size:12px;color:#9aa5b1;margin-top:16px;">Generated {{.GeneratedAt}}. You are receiving this because somebody added your address to this site's {{.Kind}} report.</div>
+<a href="{{.DashboardURL}}" style="display:inline-block;background:#ec3013;color:#f3f2f2;text-decoration:none;font-size:14px;font-weight:800;padding:12px 18px;">Open the dashboard</a>
+<div style="font-size:12px;color:#7d7979;margin-top:16px;">Generated {{.GeneratedAt}}. You are receiving this because somebody added your address to this site's {{.Kind}} report.</div>
 </td></tr>
 </table>
 </td></tr>
@@ -328,23 +328,23 @@ Generated {{.GeneratedAt}}.
 
 const alertHTML = `<!doctype html>
 <html lang="en">
-<body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1f2933;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:24px 12px;">
+<body style="margin:0;padding:0;background:#eae9e9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#444141;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eae9e9;padding:24px 12px;">
 <tr><td align="center">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid #e4e7eb;border-radius:8px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#f3f2f2;border:2px solid #9f9d9d;">
 <tr><td style="padding:22px 24px;">
-<div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#b42318;font-weight:700;">{{.Kind}} alert</div>
+<div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#b91c1c;font-weight:700;">{{.Kind}} alert</div>
 <div style="font-size:20px;font-weight:700;margin-top:4px;">{{.Domain}}</div>
 <div style="font-size:16px;margin-top:10px;">{{.Headline}}</div>
-<div style="font-size:14px;color:#3e4c59;margin-top:8px;">{{.Detail}}</div>
-<table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:16px;border-top:1px solid #e4e7eb;width:100%;">
+<div style="font-size:14px;color:#444141;margin-top:8px;">{{.Detail}}</div>
+<table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:16px;border-top:1px solid #d1d0d0;width:100%;">
 <tr>
-<td style="padding:12px 0;"><div style="font-size:12px;color:#616e7c;">Observed</div><div style="font-size:20px;font-weight:700;">{{.Observed}}</div></td>
-<td style="padding:12px 0;"><div style="font-size:12px;color:#616e7c;">Threshold</div><div style="font-size:20px;font-weight:700;">{{.Threshold}}</div></td>
+<td style="padding:12px 0;"><div style="font-size:12px;color:#605d5d;">Observed</div><div style="font-size:20px;font-weight:700;">{{.Observed}}</div></td>
+<td style="padding:12px 0;"><div style="font-size:12px;color:#605d5d;">Threshold</div><div style="font-size:20px;font-weight:700;">{{.Threshold}}</div></td>
 </tr>
 </table>
-<a href="{{.DashboardURL}}" style="display:inline-block;background:#0d9488;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:10px 16px;border-radius:6px;margin-top:8px;">Open the dashboard</a>
-<div style="font-size:12px;color:#9aa5b1;margin-top:16px;">Triggered {{.TriggeredAt}}. At most two alerts are sent per site per day, so this will not repeat every hour.</div>
+<a href="{{.DashboardURL}}" style="display:inline-block;background:#ec3013;color:#f3f2f2;text-decoration:none;font-size:14px;font-weight:800;padding:12px 18px;margin-top:8px;">Open the dashboard</a>
+<div style="font-size:12px;color:#7d7979;margin-top:16px;">Triggered {{.TriggeredAt}}. At most two alerts are sent per site per day, so this will not repeat every hour.</div>
 </td></tr>
 </table>
 </td></tr>

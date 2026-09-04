@@ -20,7 +20,7 @@
     <div class="flex items-center gap-2">
       <label for="sort" class="sr-only">{{ t $.Lang "auth.sites.sort_label" }}</label>
       <select id="sort" onchange="window.location = '{{ url $.Lang (printf "/sites?team_id=%d" .Data.TeamID) }}&sort=' + this.value"
-              class="rounded-xl border border-field bg-card px-3 py-2 text-sm text-body">
+              class="border-2 border-field bg-card px-3 py-2 text-sm text-body">
         <option value="" {{ if eq .Data.Sort "" }}selected{{ end }}>{{ t $.Lang "auth.sites.sort_manual" }}</option>
         <option value="traffic" {{ if eq .Data.Sort "traffic" }}selected{{ end }}>{{ t $.Lang "auth.sites.sort_traffic" }}</option>
         <option value="name" {{ if eq .Data.Sort "name" }}selected{{ end }}>{{ t $.Lang "auth.sites.sort_name" }}</option>
@@ -29,7 +29,7 @@
 
       {{ if .Data.CanManage }}
       <a href="{{ url $.Lang (printf "/sites/new?team_id=%d" .Data.TeamID) }}"
-         class="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
+         class="btn btn-primary">
         {{ t $.Lang "auth.sites.add" }}
       </a>
       {{ end }}
@@ -37,27 +37,27 @@
   </div>
 
   {{ if .Data.Locked }}
-    <div class="mt-6 rounded-2xl border border-down/30 bg-down/10 p-5 text-sm text-down-ink" role="status">
+    <div class="mt-6 border-2 border-down/30 bg-down/10 p-5 text-sm text-down-ink" role="status">
       <h2 class="font-semibold">{{ t $.Lang "auth.sites.locked_title" }}</h2>
       <p class="mt-1">{{ t $.Lang "auth.sites.locked_body" }}</p>
       {{ if .Data.CanManageBilling }}
       <div class="mt-4 flex flex-wrap gap-2">
-        <a href="{{ url $.Lang (printf "/billing?team=%d" .Data.TeamID) }}" class="rounded-xl bg-accent px-4 py-2 font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "auth.sites.locked_billing" }}</a>
-        <a href="{{ url $.Lang (printf "/billing/export?team=%d" .Data.TeamID) }}" class="rounded-xl border border-field bg-card px-4 py-2 font-medium text-body hover:bg-hover">{{ t $.Lang "auth.sites.locked_export" }}</a>
+        <a href="{{ url $.Lang (printf "/billing?team=%d" .Data.TeamID) }}" class="btn btn-primary">{{ t $.Lang "auth.sites.locked_billing" }}</a>
+        <a href="{{ url $.Lang (printf "/billing/export?team=%d" .Data.TeamID) }}" class="border-2 border-field bg-card px-4 py-2 font-medium text-body hover:bg-hover">{{ t $.Lang "auth.sites.locked_export" }}</a>
       </div>
       {{ end }}
     </div>
   {{ end }}
 
   {{ if and (not .Data.Sites) (not .Data.Folders) }}
-    <div class="mt-10 rounded-2xl border border-dashed border-field bg-card p-12 text-center">
+    <div class="mt-10 border-2 border-dashed border-field bg-card p-12 text-center">
       <h2 class="text-lg font-medium text-heading">{{ t $.Lang "auth.sites.empty_title" }}</h2>
       <p class="mx-auto mt-2 max-w-md text-sm text-muted">
         {{ t $.Lang "auth.sites.empty_body" }}
       </p>
       {{ if .Data.CanManage }}
       <a href="{{ url $.Lang (printf "/sites/new?team_id=%d" .Data.TeamID) }}"
-         class="mt-6 inline-block rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
+         class="mt-6 btn btn-primary">
         {{ t $.Lang "auth.sites.empty_action" }}
       </a>
       {{ end }}
@@ -67,7 +67,7 @@
     {{ if .Data.Folders }}
       <div class="mt-8 space-y-6" @dragover.prevent>
         {{ range .Data.Folders }}
-          <section class="rounded-2xl border border-line bg-card shadow-sm"
+          <section class="border-2 border-line bg-card"
                    draggable="true" data-folder="{{ .ID }}"
                    @dragstart="startFolderDrag($event, {{ .ID }})"
                    @drop="dropFolder($event, {{ .ID }})">
@@ -101,7 +101,7 @@
     {{ end }}
 
     {{ if .Data.Sites }}
-      <div class="mt-8 rounded-2xl border border-line bg-card shadow-sm">
+      <div class="mt-8 border-2 border-line bg-card">
         {{ if .Data.Folders }}
           <header class="border-b border-line px-5 py-3">
             <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.sites.loose_heading" }}</h2>
@@ -124,10 +124,10 @@
     <div>
       <label for="folder-name" class="block text-xs font-medium text-muted">{{ t $.Lang "auth.sites.folder_new_label" }}</label>
       <input id="folder-name" name="name" type="text" placeholder="{{ t $.Lang "auth.sites.folder_new_placeholder" }}" required
-             class="mt-1 rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+             class="mt-1 border-2 border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
     </div>
     <button type="submit"
-            class="rounded-xl border border-field px-4 py-2 text-sm font-medium text-body hover:bg-hover">
+            class="border-2 border-field px-4 py-2 text-sm font-medium text-body hover:bg-hover">
       {{ t $.Lang "auth.sites.folder_create" }}
     </button>
   </form>

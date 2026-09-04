@@ -253,7 +253,7 @@ export function FilterBar({ domain, range, filters, labels, onChange }: Props) {
 						.slice(VISIBLE_PILLS)
 						.map((filter) => describe(filter, labels))
 						.join(" · ")}
-					className="h-control rounded-full border border-line px-2.5 text-xs font-medium text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover hover:text-body"
+					className="h-control border-2 border-line px-2.5 text-xs font-medium text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover hover:text-body"
 				>
 					{t("dashboard.filter.more", { count: hidden })}
 				</button>
@@ -266,7 +266,7 @@ export function FilterBar({ domain, range, filters, labels, onChange }: Props) {
 					setEditing(null);
 					setOpen((was) => !was);
 				}}
-				className="flex h-control items-center gap-1 rounded-full border border-dashed border-field px-2.5 text-xs font-medium text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:border-accent hover:text-accent"
+				className="flex h-control items-center gap-1 border-2 border-dashed border-field px-2.5 text-xs font-medium text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:border-accent hover:text-accent-ink"
 			>
 				<span aria-hidden="true">+</span> {t("dashboard.filter.add")}
 			</button>
@@ -327,13 +327,13 @@ function Pill({
 	const glyph = filter.values.length === 1 ? flagFor(filter.dimension, filter.values[0] ?? "") : "";
 
 	return (
-		<span className="flex h-control items-center rounded-full border border-line bg-subtle pr-0.5 pl-2.5 text-xs">
+		<span className="flex h-control items-center border-2 border-line bg-subtle pr-0.5 pl-2.5 text-xs">
 			{onEdit ? (
 				<button
 					type="button"
 					onClick={onEdit}
 					title={t("dashboard.filter.edit_hint", { dimension: nameOf(filter.dimension), values: fullValues(filter, labels) })}
-					className="flex max-w-56 items-center gap-1.5 truncate font-medium text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent"
+					className="flex max-w-56 items-center gap-1.5 truncate font-medium text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent-ink"
 				>
 					<Flag glyph={glyph} /><span className="truncate">{text}</span>
 				</button>
@@ -345,7 +345,7 @@ function Pill({
 				type="button"
 				onClick={onRemove}
 				aria-label={t("dashboard.filter.remove", { filter: text })}
-				className="ml-1 flex size-5 shrink-0 items-center justify-center rounded-full text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover hover:text-body"
+				className="ml-1 flex size-5 shrink-0 items-center justify-center text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover hover:text-body"
 			>
 				✕
 			</button>
@@ -372,7 +372,7 @@ function DimensionMenu({ onPick, properties }: { onPick: (dimension: string) => 
 		<div
 			role="dialog"
 			aria-label={t("dashboard.filter.menu_label")}
-			className="scroll-thin absolute top-full left-0 z-40 mt-1.5 max-h-96 w-64 overflow-auto rounded-md border border-line bg-card p-1 shadow-lg"
+			className="scroll-thin absolute top-full left-0 z-40 mt-1.5 max-h-96 w-64 overflow-auto border-2 border-line bg-card p-1 pop"
 		>
 			{groups.map((group) => (
 				<div key={group}>
@@ -385,7 +385,7 @@ function DimensionMenu({ onPick, properties }: { onPick: (dimension: string) => 
 							key={entry.alias}
 							type="button"
 							onClick={() => onPick(entry.dimension)}
-							className="w-full rounded-sm px-2.5 py-1.5 text-left text-sm text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
+							className="w-full px-2.5 py-1.5 text-left text-sm text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
 						>
 							{t(entry.labelId)}
 						</button>
@@ -396,7 +396,7 @@ function DimensionMenu({ onPick, properties }: { onPick: (dimension: string) => 
 							key={`property:${property.id}`}
 							type="button"
 							onClick={() => onPick(`event:props:${property.name}`)}
-							className="flex w-full items-center gap-2 rounded-sm px-2.5 py-1.5 text-left text-sm text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
+							className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
 						>
 							<span className="min-w-0 flex-1 truncate">{property.name}</span>
 							<span className="text-[10px] text-muted">{property.scope}</span>
@@ -476,7 +476,7 @@ function ValueEditor({
 		<div
 			role="dialog"
 			aria-label={t("dashboard.filter.dialog_label", { dimension: nameOf(editing.dimension) })}
-			className="absolute top-full left-0 z-40 mt-1.5 flex w-80 flex-col rounded-md border border-line bg-card shadow-lg"
+			className="absolute top-full left-0 z-40 mt-1.5 flex w-80 flex-col border-2 border-line bg-card pop"
 		>
 			<div className="flex items-center gap-2 border-b border-line px-3 py-2">
 				<span className="shrink-0 text-sm font-medium text-body">{nameOf(editing.dimension)}</span>
@@ -486,7 +486,7 @@ function ValueEditor({
 					<select
 						value={operator}
 						onChange={(event) => setOperator(event.target.value as Operator)}
-						className="h-control cursor-pointer rounded-md border border-line bg-card px-1.5 text-xs text-body"
+						className="h-control cursor-pointer border-2 border-line bg-card px-1.5 text-xs text-body"
 					>
 						{OPERATORS.map((entry) => (
 							<option key={entry.id} value={entry.id}>
@@ -515,7 +515,7 @@ function ValueEditor({
 					}}
 					placeholder={t(freeform ? "dashboard.filter.regex_placeholder" : "dashboard.filter.search_placeholder")}
 					aria-label={t("dashboard.filter.value_label")}
-					className="h-control w-full rounded-md border border-line bg-page px-2.5 text-sm text-body placeholder:text-muted"
+					className="h-control w-full border-2 border-line bg-page px-2.5 text-sm text-body placeholder:text-muted"
 				/>
 			</div>
 
@@ -529,7 +529,7 @@ function ValueEditor({
 							aria-label={t("dashboard.filter.remove_value", {
 								value: readable(editing.dimension, value, labels),
 							})}
-							className="flex max-w-full items-center gap-1 rounded-full bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent"
+							className="flex max-w-full items-center gap-1 bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent-ink-ink"
 						>
 							<span className="truncate">{readable(editing.dimension, value, labels)}</span>
 							<span aria-hidden="true">✕</span>
@@ -567,7 +567,7 @@ function ValueEditor({
 										aria-pressed={on}
 										onClick={() => toggleValue(value)}
 										className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover ${
-											on ? "text-accent" : "text-body"
+											on ? "text-accent-ink" : "text-body"
 										}`}
 									>
 										<Flag glyph={flagFor(editing.dimension, value)} />
@@ -587,7 +587,7 @@ function ValueEditor({
 				<button
 					type="button"
 					onClick={onCancel}
-					className="h-control rounded-md px-2.5 text-xs font-medium text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:text-body"
+					className="h-control px-2.5 text-xs font-medium text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:text-body"
 				>
 					{t("dashboard.filter.cancel")}
 				</button>
@@ -595,7 +595,7 @@ function ValueEditor({
 				<button
 					type="button"
 					onClick={() => onApply({ ...editing, operator, values }, collected)}
-					className="ml-auto h-control rounded-md bg-accent px-3 text-xs font-medium text-fill-fg transition-opacity duration-150 ease-[var(--ease-ui)] hover:opacity-90 disabled:opacity-40"
+					className="ml-auto h-control bg-accent px-3 text-xs font-medium text-fill-fg transition-opacity duration-150 ease-[var(--ease-ui)] hover:opacity-90 disabled:opacity-40"
 					disabled={values.length === 0 && editing.index === null}
 				>
 					{t("dashboard.topbar.apply")}

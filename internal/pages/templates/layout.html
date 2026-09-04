@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ .Title }} · feasible.lol</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d9488'/%3E%3Ctext x='16' y='23' text-anchor='middle' fill='white' font-family='system-ui,sans-serif' font-size='21' font-weight='700'%3Ef%3C/text%3E%3C/svg%3E">
+<link rel="icon" href="/app/assets/favicon.svg" type="image/svg+xml">
 
 <!-- The theme is decided before the stylesheet paints, or every load flashes
      white before it turns slate. It reads the same preference key the dashboard
@@ -22,12 +22,13 @@
   })();
 </script>
 
+<link rel="preload" href="/app/assets/fonts/archivo-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/billing/assets/pages.css">
 </head>
 <body>
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/">feasible.lol</a>
+    <a class="brand" href="/" aria-label="feasible.lol">Feasible<b>.lol</b></a>
     <nav>
 	  {{ if .Hosted }}
 	  <a href="/pricing{{ if .TeamID }}?team={{ .TeamID }}{{ end }}" {{ if eq .Nav "pricing" }}class="on"{{ end }}>{{ t .Lang "pages.nav.pricing" }}</a>

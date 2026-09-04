@@ -16,16 +16,25 @@
  * reaches both surfaces on the next build and neither can be corrected without
  * the other.
  *
- * Teal on slate, deliberately unlike the incumbent's indigo. That is not a
- * decoration: it is the one visual thing that makes this look like its own
- * product rather than a fork of theirs, so a raw `indigo-600` anywhere in a
- * template is a bug rather than a matter of taste.
+ * The brand is the one on feasible.lol: warm paper, near-black ink, one hot
+ * red-orange, Archivo at 800, hard 2px rules and square corners. Somebody
+ * arrives here straight from the marketing site, often mid-signup, and a
+ * product that looks like a different company at the moment they hand over a
+ * card is a product they trust less. So the values below are the marketing
+ * site's own custom properties, copied rather than approximated — a raw
+ * `slate-200` or `teal-600` anywhere in a template is a bug rather than a
+ * matter of taste.
  */
 
 /* Dark mode is a class on <html>, not a media query, because the product has to
    offer an explicit override. The media query is still honoured — a small
    blocking script on each surface reads it — but it decides the class rather
-   than the styles, so one rule governs both paths. */
+   than the styles, so one rule governs both paths.
+
+   The marketing site is light only. It has nothing to read at 2am and no
+   preference to remember, so its palette below is the light half; the dark half
+   is this product's own, built by inverting paper and ink through the same warm
+   neutral ramp so the two themes are one brand rather than two. */
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* The palette is declared once below as plain custom properties and mapped into
@@ -37,10 +46,18 @@
 	--color-accent-hover: var(--fs-accent-hover);
 	--color-accent-ink: var(--fs-accent-ink);
 
+	/* The saturated band behind an inverted section — a call to action, a
+	   trial banner. It is a step deeper than the accent because paper-coloured
+	   text has to sit on it at paragraph size, which the accent itself is too
+	   bright to carry. */
+	--color-band: var(--fs-band);
+	--color-band-fg: var(--fs-band-fg);
+
 	--color-page: var(--fs-page);
 	--color-card: var(--fs-card);
 	--color-subtle: var(--fs-subtle);
 	--color-line: var(--fs-line);
+	--color-line-soft: var(--fs-line-soft);
 	--color-field: var(--fs-field);
 	--color-hover: var(--fs-hover);
 	--color-zebra: var(--fs-zebra);
@@ -51,8 +68,8 @@
 	--color-faint: var(--fs-faint);
 
 	/* The text that sits on top of a saturated fill — a primary button, a status
-	   pip. It flips with the theme because the fills lighten in the dark, and
-	   white on a teal-400 button is the one contrast failure this palette can
+	   pip. It flips with the theme because the accent lightens in the dark, and
+	   paper on a light-red button is the one contrast failure this palette can
 	   produce. */
 	--color-fill-fg: var(--fs-fill-fg);
 
@@ -66,12 +83,44 @@
 	--color-code: var(--fs-code);
 	--color-code-fg: var(--fs-code-fg);
 
-	/* The system font stack, no webfont. It is the fastest possible choice and
-	   one fewer request on a product whose entire pitch is speed. */
+	/* Archivo, the marketing site's typeface, shipped as a variable font from
+	   the binary. It is one extra request against the brand reading as one
+	   brand, and it is a request to our own origin: nothing to be blocked, and
+	   nothing to be offline. The stack behind it is the system stack, so a
+	   blocked or slow font degrades to what this product used to set anyway. */
 	--font-sans:
-		ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
-		"Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+		"Archivo", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+		Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+	--font-display: "Archivo", ui-sans-serif, system-ui, sans-serif;
 	--font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+	/* Every corner is square. The radius scale is zeroed rather than deleted so
+	   that a `rounded-xl` typed from muscle memory, or arriving with a copied
+	   block of markup, is a no-op instead of the one soft corner on the page.
+	   `rounded-full` is the exception the scale cannot reach — it compiles to a
+	   literal — so it is stripped from the markup instead. */
+	--radius-xs: 0;
+	--radius-sm: 0;
+	--radius-md: 0;
+	--radius-lg: 0;
+	--radius-xl: 0;
+	--radius-2xl: 0;
+	--radius-3xl: 0;
+	--radius-4xl: 0;
+
+	/* No soft shadows either. Depth here is a 2px rule, not a blur: a drop
+	   shadow under a card is the single thing that would make these screens read
+	   as a different, softer product than the one that sold them. The two
+	   exceptions are drawn by hand where they are needed — a menu and a drawer
+	   float over content and need to be told apart from it — and they use a hard
+	   offset rule rather than a blur. */
+	--shadow-2xs: 0 0 #0000;
+	--shadow-xs: 0 0 #0000;
+	--shadow-sm: 0 0 #0000;
+	--shadow-md: 0 0 #0000;
+	--shadow-lg: 0 0 #0000;
+	--shadow-xl: 0 0 #0000;
+	--shadow-2xl: 0 0 #0000;
 
 	--ease-ui: cubic-bezier(0.4, 0, 0.2, 1);
 
@@ -87,72 +136,313 @@
 :root {
 	color-scheme: light;
 
-	--fs-accent: #0d9488;
-	--fs-accent-hover: #14b8a6;
+	/* The marketing site's flag red, and the two deeper steps it hovers and
+	   presses through. */
+	--fs-accent: #ec3013;
+	--fs-accent-hover: #dd2b0f;
 
-	/* Accent-coloured *text* is a shade darker than the accent fill. teal-600 on
-	   white is 3.1:1, which is fine for a button's background and not fine for
-	   the words on a link. */
-	--fs-accent-ink: #0f766e;
+	/* Accent-coloured *text* is several shades darker than the accent fill.
+	   The flag on paper is 3.7:1, which the marketing site accepts for the
+	   words on a button and which is not enough for a link in a sentence. */
+	--fs-accent-ink: #ae1800;
 
-	--fs-page: #f8fafc;
-	--fs-card: #ffffff;
-	--fs-subtle: #f1f5f9;
-	--fs-line: #e2e8f0;
-	--fs-field: #cbd5e1;
-	--fs-hover: #f1f5f9;
-	--fs-zebra: #f8fafc;
+	--fs-band: #c62210;
+	--fs-band-fg: #f3f2f2;
 
-	--fs-heading: #0f172a;
-	--fs-body: #1e293b;
-	--fs-muted: #64748b;
-	--fs-faint: #94a3b8;
+	/* Paper and the surface under it. Cards are the lighter of the two and are
+	   told apart from the page by their rule rather than by a shadow, which is
+	   why the two greys can sit this close together. */
+	--fs-page: #eae9e9;
+	--fs-card: #f3f2f2;
+	--fs-subtle: #eae7e7;
 
-	--fs-fill-fg: #ffffff;
+	/* Ink at 40% is the structural rule — every card edge, every table head.
+	   At 16% it is the hairline *inside* a card, between rows of one list,
+	   where a full rule would chop the card into pieces. */
+	--fs-line: rgb(32 30 29 / 0.4);
+	--fs-line-soft: rgb(32 30 29 / 0.16);
 
-	--fs-up: #059669;
-	--fs-up-ink: #065f46;
-	--fs-down: #e11d48;
-	--fs-down-ink: #9f1239;
-	--fs-warn: #d97706;
-	--fs-warn-ink: #92400e;
+	/* A control's own edge is full ink. An input that is only a 40% rule reads
+	   as a disabled input, and on a form that is the difference between a
+	   person typing and a person emailing to ask what is broken. */
+	--fs-field: #201e1d;
 
-	--fs-code: #0f172a;
-	--fs-code-fg: #e2e8f0;
+	--fs-hover: #eae7e7;
+	--fs-zebra: #eae9e9;
+
+	--fs-heading: #201e1d;
+	--fs-body: #444141;
+	--fs-muted: #605d5d;
+	--fs-faint: #7d7979;
+
+	--fs-fill-fg: #f3f2f2;
+
+	/* The status trio has to survive an accent that is itself red. Green and
+	   amber take care of themselves; "down" is pulled off the flag's orange
+	   towards crimson so that a falling metric is never mistaken for a link,
+	   and so that a destructive button is never mistaken for the primary one. */
+	--fs-up: #15803d;
+	--fs-up-ink: #166534;
+	--fs-down: #b91c1c;
+	--fs-down-ink: #991b1b;
+	--fs-warn: #a16207;
+	--fs-warn-ink: #854d0e;
+
+	--fs-code: #201e1d;
+	--fs-code-fg: #eae9e9;
 }
 
 .dark {
 	color-scheme: dark;
 
-	--fs-accent: #2dd4bf;
-	--fs-accent-hover: #5eead4;
-	--fs-accent-ink: #5eead4;
+	/* The flag lightened until it carries text on a near-black ground. The
+	   marketing red itself is 3.6:1 down here, which is a headline at best and
+	   never a label. */
+	--fs-accent: #ff5a3c;
+	--fs-accent-hover: #ff7458;
+	--fs-accent-ink: #ff8f77;
 
-	--fs-page: #020617;
-	--fs-card: #0f172a;
-	--fs-subtle: #1e293b;
-	--fs-line: #1e293b;
-	--fs-field: #334155;
-	--fs-hover: #1e293b;
-	--fs-zebra: #0b1220;
+	--fs-band: #ae1800;
+	--fs-band-fg: #f3f2f2;
 
-	--fs-heading: #f1f5f9;
-	--fs-body: #e2e8f0;
-	--fs-muted: #94a3b8;
-	--fs-faint: #64748b;
+	/* Warm blacks, not slate. The light theme's neutrals are brown-grey, and a
+	   dark theme built on blue-grey would read as a second brand rather than
+	   the same one at night. */
+	--fs-page: #161514;
+	--fs-card: #201e1d;
+	--fs-subtle: #2b2827;
 
-	/* Near-black rather than white: every fill above is a 400-level colour in
-	   the dark, and they are bright enough that light text on them is unreadable
-	   where it was fine on the 600-level light-mode fills. */
-	--fs-fill-fg: #020617;
+	--fs-line: rgb(243 242 242 / 0.3);
+	--fs-line-soft: rgb(243 242 242 / 0.14);
+	--fs-field: rgb(243 242 242 / 0.55);
 
-	--fs-up: #34d399;
-	--fs-up-ink: #6ee7b7;
-	--fs-down: #fb7185;
-	--fs-down-ink: #fda4af;
+	--fs-hover: #2b2827;
+	--fs-zebra: #1c1a19;
+
+	--fs-heading: #f3f2f2;
+	--fs-body: #eae7e7;
+	--fs-muted: #bab6b6;
+	--fs-faint: #9b9797;
+
+	/* Near-black rather than paper: the accent above is a light red, and it is
+	   bright enough that paper-coloured text on it is unreadable where it was
+	   acceptable on the light theme's flag. */
+	--fs-fill-fg: #161514;
+
+	--fs-up: #4ade80;
+	--fs-up-ink: #86efac;
+	--fs-down: #f87171;
+	--fs-down-ink: #fca5a5;
 	--fs-warn: #fbbf24;
 	--fs-warn-ink: #fcd34d;
 
-	--fs-code: #020617;
-	--fs-code-fg: #e2e8f0;
+	--fs-code: #0d0c0c;
+	--fs-code-fg: #eae7e7;
+}
+
+/* Archivo, served from the binary at a path the signed-in application owns at
+   the root, so all three surfaces — the React dashboard, these screens and the
+   billing pages — resolve the same two files and the browser caches one copy.
+   `font-display: swap` is deliberate: the fallback stack above is metrically
+   close enough that the swap is not a jolt, and a blank headline while a font
+   downloads is worse on a page whose whole pitch is that it loads. */
+@font-face {
+	font-family: "Archivo";
+	font-style: normal;
+	font-weight: 100 900;
+	font-display: swap;
+	src: url("/app/assets/fonts/archivo-latin-wght-normal.woff2") format("woff2-variations");
+	unicode-range:
+		U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
+		U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+	font-family: "Archivo";
+	font-style: normal;
+	font-weight: 100 900;
+	font-display: swap;
+	src: url("/app/assets/fonts/archivo-latin-ext-wght-normal.woff2") format("woff2-variations");
+	unicode-range:
+		U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+		U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+		U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* The base typography both surfaces share. It is here rather than restated in
+   each stylesheet for the same reason the colours are: a heading that is 800 on
+   the dashboard and 600 on the settings screen beside it is the drift this file
+   exists to stop. */
+@layer base {
+	/* Heavy, tight and balanced, exactly as the marketing site sets them. The
+	   negative tracking is what stops Archivo at 800 reading as shouted; without
+	   it the letterforms are far enough apart that a headline looks spaced. */
+	h1,
+	h2,
+	h3,
+	h4,
+	h5,
+	h6 {
+		font-family: var(--font-display);
+		font-weight: 800;
+		letter-spacing: -0.018em;
+		line-height: 1.15;
+		text-wrap: balance;
+	}
+
+	/* The page background is painted on <html> as well as <body> so that
+	   over-scrolling past the end of a short screen shows the theme's own colour
+	   rather than the browser's white. */
+	html {
+		background-color: var(--fs-page);
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+	}
+
+	/* The focus ring is the accent on both surfaces. It is declared once here
+	   rather than per-control because a keyboard user finding a different ring
+	   on every input is how a form starts feeling unfinished. */
+	:focus-visible {
+		outline: 2px solid var(--fs-accent);
+		outline-offset: 2px;
+	}
+
+	::selection {
+		background: color-mix(in srgb, var(--fs-accent) 28%, transparent);
+	}
+}
+
+/* The brand's own components, named as they are named on the marketing site so
+   that a block of markup moves between the two without translation.
+
+   They are plain classes rather than Tailwind utilities because each is a
+   decision — a primary button is flag on paper with a 2px transparent border
+   that the secondary fills in — and repeating that decision across three
+   surfaces in eight utilities each is how two of them end up slightly wrong. */
+@layer components {
+	.btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.375rem;
+		border: 2px solid transparent;
+		padding: 0.75rem 1.25rem;
+		font-family: var(--font-display);
+		font-size: 0.9375rem;
+		font-weight: 800;
+		line-height: 1.2;
+		white-space: nowrap;
+		cursor: pointer;
+		transition:
+			background-color 0.12s,
+			color 0.12s,
+			border-color 0.12s;
+	}
+
+	.btn:disabled {
+		cursor: not-allowed;
+		opacity: 0.5;
+	}
+
+	.btn-primary {
+		background-color: var(--fs-accent);
+		color: var(--fs-fill-fg);
+	}
+
+	.btn-primary:hover:not(:disabled) {
+		background-color: var(--fs-accent-hover);
+	}
+
+	/* The outline button carries the ink rather than the accent, so that a
+	   screen offering "save" beside "cancel" has one red thing on it. */
+	.btn-secondary {
+		border-color: var(--fs-heading);
+		color: var(--fs-heading);
+	}
+
+	.btn-secondary:hover:not(:disabled) {
+		background-color: var(--fs-heading);
+		color: var(--fs-card);
+	}
+
+	/* Destructive is the crimson from the status trio, never the flag. Deleting
+	   a site and starting a trial must not be the same colour. */
+	.btn-danger {
+		background-color: var(--fs-down);
+		color: var(--fs-card);
+	}
+
+	.btn-danger:hover:not(:disabled) {
+		background-color: var(--fs-down-ink);
+	}
+
+	/* The quieter destructive: an outline in crimson, for the "remove this
+	   member" that sits in a row beside eleven others. The filled one is for
+	   the single irreversible button at the bottom of a danger panel. */
+	.btn-danger-outline {
+		border-color: var(--fs-down);
+		color: var(--fs-down-ink);
+	}
+
+	.btn-danger-outline:hover:not(:disabled) {
+		background-color: var(--fs-down);
+		color: var(--fs-card);
+	}
+
+	/* On a saturated band, where the accent has nothing to contrast against. */
+	.btn-inverse {
+		background-color: var(--fs-band-fg);
+		color: var(--fs-band);
+	}
+
+	.btn-inverse-outline {
+		border-color: var(--fs-band-fg);
+		color: var(--fs-band-fg);
+	}
+
+	.btn-inverse-outline:hover:not(:disabled) {
+		background-color: var(--fs-band-fg);
+		color: var(--fs-band);
+	}
+
+	/* The small red uppercase label that names a section above its heading. It
+	   is the brand's substitute for a coloured icon, and it is the reason these
+	   screens can be almost entirely black and white and still look like the
+	   site they came from. */
+	.kicker {
+		font-size: 0.8125rem;
+		font-weight: 600;
+		line-height: 1;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--fs-accent-ink);
+	}
+
+	/* A full-width horizontal rule at the structural weight, for separating the
+	   major bands of a page. Inside a card, use a `border-line-soft` hairline. */
+	.rule {
+		height: 2px;
+		border: 0;
+		background-color: var(--fs-line);
+	}
+
+	/* Tabular figures everywhere a number sits in a column. Proportional digits
+	   make a table of counts shiver as the values change, which reads as the
+	   page being broken rather than the numbers being live. */
+	.tnum {
+		font-variant-numeric: tabular-nums;
+	}
+
+	/* A heading set flush left has a visible indent when it starts on a round
+	   letter or a quote. This pulls it back by the optical difference. */
+	.optical-l {
+		margin-left: -0.058em;
+	}
+
+	/* The one shadow in the product, and it is not a blur. A menu or a drawer
+	   has to be told apart from the page under it, and a hard offset rule does
+	   that in a language the rest of these screens already speak. */
+	.pop {
+		box-shadow: 4px 4px 0 0 var(--fs-line);
+	}
 }

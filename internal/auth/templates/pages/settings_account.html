@@ -8,7 +8,7 @@
 {{ define "content" }}
 <div class="max-w-2xl">
 
-  <section class="rounded-2xl border border-line bg-card p-6 shadow-sm">
+  <section class="border-2 border-line bg-card p-6">
     <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.settings_account.profile" }}</h2>
 
     <form method="post" action="{{ url $.Lang "/settings/profile" }}" class="mt-4 space-y-5">
@@ -16,10 +16,10 @@
 
       <div>
         <label class="block text-sm font-medium text-body">{{ t $.Lang "auth.settings_account.email" }}</label>
-        <p class="mt-1 rounded-xl border border-line bg-subtle px-3 py-2 text-sm text-muted">
+        <p class="mt-1 border-2 border-line bg-subtle px-3 py-2 text-sm text-muted">
           {{ .User.Email }}
           {{ if .User.Verified }}
-            <span class="ml-2 rounded-md bg-up/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-up-ink">{{ t $.Lang "auth.settings_account.verified" }}</span>
+            <span class="ml-2 bg-up/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-up-ink">{{ t $.Lang "auth.settings_account.verified" }}</span>
           {{ end }}
         </p>
       </div>
@@ -27,13 +27,13 @@
       <div>
         <label for="name" class="block text-sm font-medium text-body">{{ t $.Lang "auth.settings_account.name" }}</label>
         <input id="name" name="name" type="text" value="{{ .User.Name }}"
-               class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+               class="mt-1 block w-full border-2 border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
       </div>
 
       <div>
         <label for="theme" class="block text-sm font-medium text-body">{{ t $.Lang "auth.settings_account.theme" }}</label>
         <select id="theme" name="theme"
-                class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+                class="mt-1 block w-full border-2 border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
           <option value="system" {{ if eq .User.Theme "system" }}selected{{ end }}>{{ t $.Lang "auth.settings_account.theme_system" }}</option>
           <option value="light" {{ if eq .User.Theme "light" }}selected{{ end }}>{{ t $.Lang "auth.settings_account.theme_light" }}</option>
           <option value="dark" {{ if eq .User.Theme "dark" }}selected{{ end }}>{{ t $.Lang "auth.settings_account.theme_dark" }}</option>
@@ -41,13 +41,13 @@
       </div>
 
       <button type="submit"
-              class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
+              class="btn btn-primary">
         {{ t $.Lang "common.action.save" }}
       </button>
     </form>
   </section>
 
-  <section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+  <section class="mt-6 border-2 border-line bg-card p-6">
     <h2 class="text-sm font-semibold text-heading">
       {{ if eq .User.PasswordHash "" }}{{ t $.Lang "auth.settings_account.set_password_heading" }}{{ else }}{{ t $.Lang "auth.settings_account.change_password_heading" }}{{ end }}
     </h2>
@@ -76,7 +76,7 @@
         <div>
           <label for="current_password" class="block text-sm font-medium text-body">{{ t $.Lang "auth.settings_account.current_password" }}</label>
           <input id="current_password" name="current_password" type="password" autocomplete="current-password" required
-                 class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+                 class="mt-1 block w-full border-2 border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
         </div>
       {{ else }}
         {{ template "reauth_code" dict "Lang" $.Lang "Mode" $.Data.ReauthMode "ID" "password" }}
@@ -86,18 +86,18 @@
         <label for="new_password" class="block text-sm font-medium text-body">{{ t $.Lang "auth.settings_account.new_password" }}</label>
         <input id="new_password" name="new_password" type="password" autocomplete="new-password"
                required minlength="{{ .Data.MinLength }}"
-               class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+               class="mt-1 block w-full border-2 border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
         <p class="mt-1 text-xs text-muted">{{ n $.Lang "auth.settings_account.password_help" .Data.MinLength }}</p>
       </div>
 
       <button type="submit"
-              class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
+              class="btn btn-primary">
         {{ if eq .User.PasswordHash "" }}{{ t $.Lang "auth.settings_account.set_password_submit" }}{{ else }}{{ t $.Lang "auth.settings_account.change_password_submit" }}{{ end }}
       </button>
     </form>
   </section>
 
-  <section class="mt-6 rounded-2xl border border-down/30 bg-card p-6 shadow-sm">
+  <section class="mt-6 border-2 border-down/30 bg-card p-6">
     <h2 class="text-sm font-semibold text-down-ink">{{ t $.Lang "auth.settings_account.delete_heading" }}</h2>
     <p class="mt-1 text-sm text-muted">
       {{ t $.Lang "auth.settings_account.delete_body" }}
@@ -112,7 +112,7 @@
         <div>
           <label for="delete_password" class="block text-sm font-medium text-body">{{ t $.Lang "auth.settings_account.password" }}</label>
           <input id="delete_password" name="password" type="password" autocomplete="current-password" required
-                 class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm">
+                 class="mt-1 block w-full border-2 border-field px-3 py-2 text-sm">
         </div>
       {{ else }}
         {{ template "reauth_code" dict "Lang" $.Lang "Mode" $.Data.ReauthMode "ID" "delete" }}
@@ -123,11 +123,11 @@
           {{ t $.Lang "auth.settings_account.type_to_confirm" "word" "DELETE" }}
         </label>
         <input id="delete_confirm" name="confirm" type="text" required
-               class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm">
+               class="mt-1 block w-full border-2 border-field px-3 py-2 text-sm">
       </div>
 
       <button type="submit"
-              class="rounded-xl bg-down px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-down/85">
+              class="btn btn-danger">
         {{ t $.Lang "auth.settings_account.delete_submit" }}
       </button>
     </form>

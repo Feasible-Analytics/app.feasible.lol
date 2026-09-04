@@ -12,9 +12,9 @@
   </p>
 
   {{ if .Data.Enabled }}
-    <section class="rounded-2xl border border-up/30 bg-up/10 p-6">
+    <section class="border-2 border-up/30 bg-up/10 p-6">
       <div class="flex items-center gap-3">
-        <span class="flex h-8 w-8 items-center justify-center rounded-full bg-up text-fill-fg">✓</span>
+        <span class="flex h-8 w-8 items-center justify-center bg-up text-fill-fg">✓</span>
         <div>
           <h2 class="text-sm font-semibold text-up-ink">{{ t $.Lang "auth.settings_security.on" }}</h2>
           <p class="text-sm text-up-ink">
@@ -25,7 +25,7 @@
       </div>
     </section>
 
-    <section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+    <section class="mt-6 border-2 border-line bg-card p-6">
       <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.settings_security.recovery_heading" }}</h2>
       <p class="mt-1 text-sm text-muted">{{ t $.Lang "auth.settings_security.recovery_help" }}</p>
 
@@ -37,20 +37,20 @@
           <div class="flex-1 min-w-[16rem]">
             <label for="recovery_password" class="block text-sm font-medium text-body">{{ t $.Lang "auth.settings_security.password" }}</label>
             <input id="recovery_password" name="password" type="password" autocomplete="current-password" required
-                   class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm">
+                   class="mt-1 block w-full border-2 border-field px-3 py-2 text-sm">
           </div>
         {{ else }}
           {{ template "reauth_code" dict "Lang" $.Lang "Mode" $.Data.ReauthMode "ID" "recovery" }}
         {{ end }}
 
         <button type="submit"
-                class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">
+                class="btn btn-secondary">
           {{ t $.Lang "auth.settings_security.recovery_submit" }}
         </button>
       </form>
     </section>
 
-    <section class="mt-6 rounded-2xl border border-down/30 bg-card p-6 shadow-sm">
+    <section class="mt-6 border-2 border-down/30 bg-card p-6">
       <h2 class="text-sm font-semibold text-down-ink">{{ t $.Lang "auth.settings_security.disable_heading" }}</h2>
       <p class="mt-1 text-sm text-muted">
         {{ t $.Lang "auth.settings_security.disable_help" }}
@@ -64,33 +64,33 @@
           <div class="flex-1 min-w-[16rem]">
             <label for="disable_password" class="block text-sm font-medium text-body">{{ t $.Lang "auth.settings_security.password" }}</label>
             <input id="disable_password" name="password" type="password" autocomplete="current-password" required
-                   class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm">
+                   class="mt-1 block w-full border-2 border-field px-3 py-2 text-sm">
           </div>
         {{ else }}
           {{ template "reauth_code" dict "Lang" $.Lang "Mode" $.Data.ReauthMode "ID" "disable" }}
         {{ end }}
 
         <button type="submit"
-                class="rounded-xl border border-down/50 px-4 py-2 text-sm font-semibold text-down-ink hover:bg-down/10">
+                class="btn btn-danger-outline">
           {{ t $.Lang "auth.settings_security.disable_submit" }}
         </button>
       </form>
     </section>
 
   {{ else if .Data.Enrolling }}
-    <section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm">
+    <section class="mt-8 border-2 border-line bg-card p-6">
       <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.settings_security.enrol_heading" }}</h2>
 
       <div class="mt-5 flex flex-col gap-6 sm:flex-row sm:items-start">
         <img src="/settings/security/2fa/qr.png" alt="{{ t $.Lang "auth.settings_security.qr_alt" }}"
              width="240" height="240"
-             class="rounded-xl border border-line bg-card p-2">
+             class="border-2 border-line bg-card p-2">
 
         <div class="flex-1">
           <p class="text-sm text-muted">
             {{ t $.Lang "auth.settings_security.manual_key" }}
           </p>
-          <p class="mt-2 select-all break-all rounded-xl bg-subtle px-3 py-2 font-mono text-sm text-body">
+          <p class="mt-2 select-all break-all bg-subtle px-3 py-2 font-mono text-sm text-body">
             {{ .Data.Secret }}
           </p>
 
@@ -101,11 +101,11 @@
               <label for="code" class="block text-sm font-medium text-body">{{ t $.Lang "auth.settings_security.code_label" }}</label>
               <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code"
                      required maxlength="6" pattern="[0-9]*" autofocus
-                     class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-center font-mono text-lg tracking-[0.3em]">
+                     class="mt-1 block w-full border-2 border-field px-3 py-2 text-center font-mono text-lg tracking-[0.3em]">
             </div>
 
             <button type="submit"
-                    class="w-full rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
+                    class="w-full btn btn-primary">
               {{ t $.Lang "auth.settings_security.enable_submit" }}
             </button>
           </form>
@@ -114,7 +114,7 @@
     </section>
 
   {{ else }}
-    <section class="mt-8 rounded-2xl border border-line bg-card p-6 shadow-sm">
+    <section class="mt-8 border-2 border-line bg-card p-6">
       <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.settings_security.off" }}</h2>
       <p class="mt-1 text-sm text-muted">
         {{ t $.Lang "auth.settings_security.off_help" }}
@@ -123,7 +123,7 @@
       <form method="post" action="{{ url $.Lang "/settings/security/2fa/start" }}" class="mt-4">
         <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
         <button type="submit"
-                class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
+                class="btn btn-primary">
           {{ t $.Lang "auth.settings_security.setup_submit" }}
         </button>
       </form>

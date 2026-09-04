@@ -59,8 +59,6 @@ export interface Tab {
 export interface CardDef {
 	id: string;
 	titleId: string;
-	/** The CSS class carrying this card's bar tint. */
-	tint: string;
 	tabs: Tab[];
 	/** The footnote on a number that reliably looks like a bug and is not. */
 	caveatId?: string;
@@ -100,7 +98,6 @@ function tagged(dimension: string): Filter[] {
 export const SOURCES: CardDef = {
 	id: "sources",
 	titleId: "dashboard.report.sources.title",
-	tint: "tint-sources",
 	caveatId: "dashboard.report.sources.caveat",
 	tabs: [
 		{
@@ -153,7 +150,6 @@ export const SOURCES: CardDef = {
 export const PAGES: CardDef = {
 	id: "pages",
 	titleId: "dashboard.report.pages.title",
-	tint: "tint-pages",
 	caveatId: "dashboard.report.pages.caveat",
 	tabs: [
 		{
@@ -190,7 +186,6 @@ const NOT_SET = "dashboard.value.not_set";
 export const LOCATIONS: CardDef = {
 	id: "locations",
 	titleId: "dashboard.report.locations.title",
-	tint: "tint-locations",
 	caveatId: "dashboard.report.locations.caveat",
 	attribution: { labelId: "dashboard.report.locations.attribution", href: "https://db-ip.com" },
 	tabs: [
@@ -234,7 +229,6 @@ export const LOCATIONS: CardDef = {
 export const DEVICES: CardDef = {
 	id: "devices",
 	titleId: "dashboard.report.devices.title",
-	tint: "tint-devices",
 	caveatId: "dashboard.report.devices.caveat",
 	tabs: [
 		{

@@ -187,7 +187,7 @@ export function Drawer({
 				role="dialog"
 				aria-modal="true"
 				aria-label={t("dashboard.drawer.title", { card: t(card.titleId), tab: t(tab.labelId) })}
-				className="drawer-panel absolute inset-y-0 right-0 flex w-full flex-col border-l border-line bg-card shadow-2xl min-[900px]:w-[max(560px,min(50vw,900px))]"
+				className="drawer-panel absolute inset-y-0 right-0 flex w-full flex-col border-l-2 border-line bg-card min-[900px]:w-[max(560px,min(50vw,900px))]"
 			>
 				<div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line px-4 py-2.5">
 					<input
@@ -198,7 +198,7 @@ export function Drawer({
 							heading: t(tab.headingId).toLocaleLowerCase(formatterLocale()),
 						})}
 						aria-label={t("dashboard.drawer.search_label", { heading: t(tab.headingId) })}
-						className="h-control min-w-0 flex-1 rounded-md border border-line bg-page px-2.5 text-sm text-body placeholder:text-muted"
+						className="h-control min-w-0 flex-1 border-2 border-line bg-page px-2.5 text-sm text-body placeholder:text-muted"
 					/>
 
 					<label className="flex items-center">
@@ -206,7 +206,7 @@ export function Drawer({
 						<select
 							value={state.breakdown}
 							onChange={(event) => onChange({ ...state, breakdown: event.target.value, page: 1 })}
-							className="h-control cursor-pointer rounded-md border border-line bg-card px-2 text-sm text-body"
+							className="h-control cursor-pointer border-2 border-line bg-card px-2 text-sm text-body"
 						>
 							{BREAKDOWNS.map((entry) => (
 								<option key={entry.id || "none"} value={entry.id}>
@@ -232,7 +232,7 @@ export function Drawer({
 						type="button"
 						onClick={onClose}
 						aria-label={t("dashboard.drawer.close")}
-						className="flex size-control items-center justify-center rounded-md border border-line text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
+						className="flex size-control items-center justify-center border-2 border-line text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
 					>
 						✕
 					</button>
@@ -365,9 +365,9 @@ export function Drawer({
 															</span>
 														)}
 														<span
-															className={`truncate transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent ${
-																on
-																	? "font-medium text-accent"
+															className={`truncate transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent-ink ${
+ on
+ ? "font-medium text-accent-ink"
 																	: companion
 																		? "text-[10px] text-muted"
 																		: "text-body"
@@ -444,7 +444,7 @@ function Pager({ page, lastPage, onGo }: { page: number; lastPage: number; onGo:
 				aria-label={t("dashboard.drawer.previous_page")}
 				disabled={page <= 1}
 				onClick={() => onGo(page - 1)}
-				className="flex size-control items-center justify-center rounded-md border border-line text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover disabled:opacity-30"
+				className="flex size-control items-center justify-center border-2 border-line text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover disabled:opacity-30"
 			>
 				‹
 			</button>
@@ -453,7 +453,7 @@ function Pager({ page, lastPage, onGo }: { page: number; lastPage: number; onGo:
 				aria-label={t("dashboard.drawer.next_page")}
 				disabled={page >= lastPage}
 				onClick={() => onGo(page + 1)}
-				className="flex size-control items-center justify-center rounded-md border border-line text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover disabled:opacity-30"
+				className="flex size-control items-center justify-center border-2 border-line text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover disabled:opacity-30"
 			>
 				›
 			</button>
@@ -483,7 +483,7 @@ function Th({
 }) {
 	const classes = `px-3 py-2 text-[11px] font-medium tracking-wide uppercase ${
 		align === "right" ? "text-right whitespace-nowrap" : "px-4 text-left"
-	} ${grow ? "w-full" : "w-px"} ${sorted ? "text-accent" : "text-muted"}`;
+	} ${grow ? "w-full" : "w-px"} ${sorted ? "text-accent-ink" : "text-muted"}`;
 
 	if (!onSort) {
 		return (
@@ -498,7 +498,7 @@ function Th({
 			<button
 				type="button"
 				onClick={onSort}
-				className="transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent"
+				className="transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent-ink"
 			>
 				{label}
 				{sorted && <span aria-hidden="true"> {descending ? "↓" : "↑"}</span>}
@@ -514,8 +514,8 @@ function DrawerTab({ label, active, onClick }: { label: string; active: boolean;
 			type="button"
 			aria-pressed={active}
 			onClick={onClick}
-			className={`shrink-0 rounded-sm px-2 py-1 text-xs whitespace-nowrap transition-colors duration-150 ease-[var(--ease-ui)] ${
-				active ? "bg-accent/10 font-medium text-accent" : "text-muted hover:text-body"
+			className={`shrink-0 px-2 py-1 text-xs whitespace-nowrap transition-colors duration-150 ease-[var(--ease-ui)] ${
+ active ? "bg-accent/10 font-medium text-accent-ink" : "text-muted hover:text-body"
 			}`}
 		>
 			{label}

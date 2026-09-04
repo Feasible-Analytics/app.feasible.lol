@@ -13,7 +13,7 @@
 {{ $site := .Data.Site }}
 
 {{ if .Data.DualWrite }}
-  <div class="mb-6 rounded-2xl border border-warn/30 bg-warn/10 p-4 text-sm text-warn-ink">
+  <div class="mb-6 border-2 border-warn/30 bg-warn/10 p-4 text-sm text-warn-ink">
     <strong>{{ t $.Lang "auth.site_settings.dual_write_title" }}</strong>
     {{ t $.Lang "auth.site_settings.dual_write_body" "domain" $site.PreviousDomain "duration" (until $.Now $.Lang $site.PreviousDomainUntil) }}
   </div>
@@ -21,7 +21,7 @@
 
 <!-- Site details -->
 <form method="post" action="{{ url $.Lang (printf "/sites/%d/settings" $site.ID) }}"
-      class="rounded-2xl border border-line bg-card shadow-sm">
+      class="border-2 border-line bg-card">
   <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
 
   <div class="px-6 pt-5 pb-4">
@@ -33,7 +33,7 @@
     <label for="display_name" class="text-sm font-medium text-body">{{ t $.Lang "auth.site_settings.display_name" }}</label>
     <input id="display_name" name="display_name" type="text" value="{{ $site.DisplayName }}"
            placeholder="{{ $site.Domain }}"
-           class="w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:ring-2 focus:ring-accent/25 focus:outline-none sm:w-72">
+           class="w-full border-2 border-field px-3 py-2 text-sm focus:border-accent focus:ring-2 focus:ring-accent/25 focus:outline-none sm:w-72">
   </div>
 
   <div class="flex flex-col gap-2 border-t border-line px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
@@ -42,7 +42,7 @@
       <span class="cursor-help text-muted" title="{{ t $.Lang "auth.site_settings.timezone_help" }}" aria-label="{{ t $.Lang "auth.site_settings.timezone_help" }}">ⓘ</span>
     </span>
     <select id="timezone" name="timezone"
-            class="w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:ring-2 focus:ring-accent/25 focus:outline-none sm:w-72">
+            class="w-full border-2 border-field px-3 py-2 text-sm focus:border-accent focus:ring-2 focus:ring-accent/25 focus:outline-none sm:w-72">
       <option value="{{ $site.Timezone }}" selected>{{ t $.Lang "auth.site_settings.timezone_current" "zone" $site.Timezone }}</option>
       {{ range .Data.Timezones }}
         <option value="{{ . }}">{{ . }}</option>
@@ -53,7 +53,7 @@
   <div class="flex flex-col gap-2 border-t border-line px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
     <label for="folder_id" class="text-sm font-medium text-body">{{ t $.Lang "auth.site_settings.folder" }}</label>
     <select id="folder_id" name="folder_id"
-            class="w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:ring-2 focus:ring-accent/25 focus:outline-none sm:w-72">
+            class="w-full border-2 border-field px-3 py-2 text-sm focus:border-accent focus:ring-2 focus:ring-accent/25 focus:outline-none sm:w-72">
       <option value="0">{{ t $.Lang "auth.site_settings.no_folder" }}</option>
       {{ range .Data.Folders }}
         <option value="{{ .ID }}" {{ if eq .ID $site.FolderID }}selected{{ end }}>{{ .Name }}</option>
@@ -67,36 +67,36 @@
       <span class="cursor-help text-muted" title="{{ t $.Lang "auth.site_settings.public_help" }}" aria-label="{{ t $.Lang "auth.site_settings.public_help" }}">ⓘ</span>
     </span>
     <input id="is_public" type="checkbox" name="is_public" value="1" {{ if $site.IsPublic }}checked{{ end }}
-           class="size-4 rounded border-field text-accent-ink focus:ring-accent">
+           class="size-4 border-field text-accent-ink focus:ring-accent">
   </div>
 
   <!-- Save sits in the card, beside what it changes. One save at the foot of
        the page would claim to have written the danger zone as well. -->
   <div class="flex justify-end border-t border-line px-6 py-4">
-    <button type="submit" class="rounded-xl bg-accent px-5 py-2 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
+    <button type="submit" class="btn btn-primary">
       {{ t $.Lang "common.action.save" }}
     </button>
   </div>
 </form>
 
 <!-- Tracking -->
-<section class="mt-6 rounded-2xl border border-line bg-card shadow-sm" x-data="{ copied: false }">
+<section class="mt-6 border-2 border-line bg-card" x-data="{ copied: false }">
   <div class="px-6 pt-5 pb-4">
     <h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.site_settings.snippet" }}</h2>
     <p class="mt-0.5 text-xs text-muted">{{ t $.Lang "auth.site_settings.snippet_help" }}</p>
   </div>
 
   <div class="border-t border-line px-6 py-4">
-    <pre class="overflow-x-auto rounded-xl bg-code p-4 text-xs text-code-fg"><code x-ref="snippet">{{ .Data.Snippet }}</code></pre>
+    <pre class="overflow-x-auto bg-code p-4 text-xs text-code-fg"><code x-ref="snippet">{{ .Data.Snippet }}</code></pre>
   </div>
 
   <div class="flex items-center gap-3 border-t border-line px-6 py-4">
     <button type="button"
             @click="navigator.clipboard.writeText($refs.snippet.textContent); copied = true; setTimeout(() => copied = false, 2000)"
-            class="rounded-xl border border-field px-4 py-2 text-sm font-medium text-body hover:bg-hover">
+            class="border-2 border-field px-4 py-2 text-sm font-medium text-body hover:bg-hover">
       <span x-text="copied ? '{{ t $.Lang "common.action.copied" }}' : '{{ t $.Lang "auth.site_settings.copy_snippet" }}'"></span>
     </button>
-    <a href="{{ url $.Lang (printf "/onboarding/%d" $site.ID) }}" class="text-sm font-medium text-accent-ink hover:text-accent">
+    <a href="{{ url $.Lang (printf "/onboarding/%d" $site.ID) }}" class="text-sm font-medium text-accent-ink hover:text-accent-ink">
       {{ t $.Lang "auth.site_settings.install_instructions" }}
     </a>
   </div>
@@ -104,7 +104,7 @@
 
 <!-- Domain -->
 <form method="post" action="{{ url $.Lang (printf "/sites/%d/domain" $site.ID) }}"
-      class="mt-6 rounded-2xl border border-line bg-card shadow-sm">
+      class="mt-6 border-2 border-line bg-card">
   <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
 
   <div class="px-6 pt-5 pb-4">
@@ -115,11 +115,11 @@
   <div class="flex flex-col gap-2 border-t border-line px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
     <label for="domain" class="text-sm font-medium text-body">{{ t $.Lang "auth.site_settings.domain_label" }}</label>
     <input id="domain" name="domain" type="text" required value="{{ $site.Domain }}"
-           class="w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:ring-2 focus:ring-accent/25 focus:outline-none sm:w-72">
+           class="w-full border-2 border-field px-3 py-2 text-sm focus:border-accent focus:ring-2 focus:ring-accent/25 focus:outline-none sm:w-72">
   </div>
 
   <div class="flex justify-end border-t border-line px-6 py-4">
-    <button type="submit" class="rounded-xl border border-field px-5 py-2 text-sm font-semibold text-body hover:bg-hover">
+    <button type="submit" class="btn btn-secondary">
       {{ t $.Lang "auth.site_settings.domain_submit" }}
     </button>
   </div>
@@ -127,7 +127,7 @@
 
 {{ if .Data.TransferTeams }}
 <form method="post" action="{{ url $.Lang (printf "/sites/%d/transfer" $site.ID) }}"
-      class="mt-6 rounded-2xl border border-line bg-card shadow-sm"
+      class="mt-6 border-2 border-line bg-card"
       onsubmit="return confirm('{{ t $.Lang "auth.site_settings.transfer_confirm" "domain" $site.Domain }}')">
   <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
   <input type="hidden" name="from_team_id" value="{{ .Data.CurrentTeamID }}">
@@ -140,7 +140,7 @@
   <div class="flex flex-col gap-2 border-t border-line px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
     <label for="to_team_id" class="text-sm font-medium text-body">{{ t $.Lang "auth.site_settings.transfer_destination" }}</label>
     <select id="to_team_id" name="to_team_id" required
-            class="w-full rounded-xl border border-field px-3 py-2 text-sm sm:w-72">
+            class="w-full border-2 border-field px-3 py-2 text-sm sm:w-72">
       {{ range .Data.TransferTeams }}<option value="{{ .ID }}">{{ .Name }}</option>{{ end }}
     </select>
   </div>
@@ -148,11 +148,11 @@
   <div class="flex flex-col gap-2 border-t border-line px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
     <label for="transfer-confirm" class="text-sm font-medium text-body">{{ t $.Lang "auth.site_settings.type_domain_to_confirm" "domain" $site.Domain }}</label>
     <input id="transfer-confirm" name="confirm" type="text" required
-           class="w-full rounded-xl border border-field px-3 py-2 text-sm sm:w-72">
+           class="w-full border-2 border-field px-3 py-2 text-sm sm:w-72">
   </div>
 
   <div class="flex justify-end border-t border-line px-6 py-4">
-    <button type="submit" class="rounded-xl border border-field px-5 py-2 text-sm font-semibold text-body hover:bg-hover">
+    <button type="submit" class="btn btn-secondary">
       {{ t $.Lang "auth.site_settings.transfer_submit" }}
     </button>
   </div>
@@ -160,7 +160,7 @@
 {{ end }}
 
 <!-- Danger zone. The nav links here, so the anchor has to be on the section. -->
-<section id="danger" class="mt-6 scroll-mt-6 rounded-2xl border border-down/30 bg-card shadow-sm">
+<section id="danger" class="mt-6 scroll-mt-6 border-2 border-down/30 bg-card">
   <div class="px-6 pt-5 pb-4">
     <h2 class="text-sm font-semibold text-down-ink">{{ t $.Lang "auth.site_settings.irreversible" }}</h2>
     <p class="mt-0.5 text-xs text-muted">{{ t $.Lang "auth.site_settings.danger_help" }}</p>
@@ -180,8 +180,8 @@
       </label>
       <div class="flex gap-2">
         <input id="reset-confirm" name="confirm" type="text" required
-               class="w-full rounded-xl border border-field px-3 py-2 text-sm sm:w-56">
-        <button type="submit" class="shrink-0 rounded-xl border border-down/50 px-4 py-2 text-sm font-semibold text-down-ink hover:bg-down/10">
+               class="w-full border-2 border-field px-3 py-2 text-sm sm:w-56">
+        <button type="submit" class="shrink-0 btn btn-danger-outline">
           {{ t $.Lang "auth.site_settings.reset_submit" }}
         </button>
       </div>
@@ -194,7 +194,7 @@
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
 
     <h3 class="text-sm font-medium text-heading">{{ t $.Lang "auth.site_settings.delete_heading" }}</h3>
-    <div class="mt-2 rounded-xl border border-warn/30 bg-warn/10 p-3 text-xs text-warn-ink">
+    <div class="mt-2 border-2 border-warn/30 bg-warn/10 p-3 text-xs text-warn-ink">
       {{ t $.Lang "auth.site_settings.traffic_warning" }}
     </div>
 
@@ -204,8 +204,8 @@
       </label>
       <div class="flex gap-2">
         <input id="delete-confirm" name="confirm" type="text" required
-               class="w-full rounded-xl border border-field px-3 py-2 text-sm sm:w-56">
-        <button type="submit" class="shrink-0 rounded-xl bg-down px-4 py-2 text-sm font-semibold text-fill-fg hover:bg-down/85">
+               class="w-full border-2 border-field px-3 py-2 text-sm sm:w-56">
+        <button type="submit" class="shrink-0 btn btn-danger">
           {{ t $.Lang "auth.site_settings.delete_submit" }}
         </button>
       </div>

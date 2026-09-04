@@ -129,7 +129,7 @@ export function TopStats({ stats, selected, onSelect, comparing }: Props) {
 							{active && <span aria-hidden="true" className="absolute inset-x-0 bottom-0 h-0.5 bg-accent" />}
 
 							<span
-								className={`text-[11px] font-medium tracking-wide uppercase ${active ? "text-accent" : "text-muted"}`}
+								className={`text-[11px] font-medium tracking-wide uppercase ${active ? "text-accent-ink" : "text-muted"}`}
 							>
 								{tileLabel(metric)}
 							</span>
@@ -172,7 +172,7 @@ function Tile({ metric, active, children }: { metric: Metric; active: boolean; c
 		>
 			{active && <span aria-hidden="true" className="absolute inset-x-0 bottom-0 h-0.5 bg-accent" />}
 
-			<span className={`text-[11px] font-medium tracking-wide uppercase ${active ? "text-accent" : "text-muted"}`}>
+			<span className={`text-[11px] font-medium tracking-wide uppercase ${active ? "text-accent-ink" : "text-muted"}`}>
 				{tileLabel(metric)}
 			</span>
 

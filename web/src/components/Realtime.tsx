@@ -98,7 +98,7 @@ export function Realtime({ domain, filters }: Props) {
 	const row = totals.data?.results[0]?.metrics ?? [];
 
 	return (
-		<section className="overflow-hidden rounded-md border border-line bg-card shadow-sm">
+		<section className="overflow-hidden border-2 border-line bg-card">
 			<div className="grid grid-cols-2 border-b border-line sm:grid-cols-4">
 				<Cell
 					label={t("dashboard.realtime.current_visitors")}
@@ -159,7 +159,7 @@ function Cell({
 				{caveat && <InfoDot text={caveat} />}
 			</span>
 
-			<span className={`tnum text-2xl leading-none font-semibold ${accent ? "text-accent" : "text-body"}`}>
+			<span className={`tnum text-2xl leading-none font-semibold ${accent ? "text-accent-ink" : "text-body"}`}>
 				{value}
 			</span>
 

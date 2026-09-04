@@ -117,17 +117,14 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, fil
 	const live = state.preset === "realtime" && !state.from;
 
 	return (
-		<header className="sticky top-0 z-30 border-b border-line bg-card/95 backdrop-blur">
+		<header className="sticky top-0 z-30 border-b-2 border-line bg-card/95 backdrop-blur">
 			<div className="mx-auto flex max-w-shell flex-wrap items-center gap-2 px-4 py-2.5 sm:px-5">
 				<a
 					href={navigation?.sites_url ?? "/"}
-					className="mr-1 flex items-center gap-2 text-sm font-semibold tracking-tight text-body"
+					className="mr-1 font-display text-base font-extrabold tracking-tight text-heading"
 					title="feasible.lol"
 				>
-					<span className="flex size-6 items-center justify-center rounded-md bg-accent text-[13px] font-bold text-white dark:text-slate-950">
-						f
-					</span>
-					<span className="hidden sm:inline">feasible</span>
+					Feasible<span className="text-accent">.lol</span>
 				</a>
 
 				<SitePicker
@@ -150,7 +147,7 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, fil
 						href={navigation.site_settings_url}
 						title={t("dashboard.navigation.site_settings")}
 						aria-label={t("dashboard.navigation.site_settings")}
-						className="flex size-control items-center justify-center rounded-md border border-line bg-card text-sm text-muted transition-colors hover:bg-hover hover:text-body"
+						className="flex size-control items-center justify-center border-2 border-line bg-card text-sm text-muted transition-colors hover:bg-hover hover:text-body"
 					>
 						<SettingsIcon />
 					</a>
@@ -352,7 +349,7 @@ function AccountMenu({
 				aria-haspopup="menu"
 				aria-label={t("dashboard.navigation.account_menu")}
 				onClick={() => setOpen((was) => !was)}
-				className="flex size-control items-center justify-center overflow-hidden rounded-full border border-line bg-subtle text-xs font-semibold text-body transition-colors hover:bg-hover"
+				className="flex size-control items-center justify-center overflow-hidden border-2 border-line bg-subtle text-xs font-semibold text-body transition-colors hover:bg-hover"
 			>
 				<AccountFace navigation={navigation} />
 			</button>
@@ -360,7 +357,7 @@ function AccountMenu({
 			{open && (
 				<div
 					role="menu"
-					className="scroll-thin absolute right-0 mt-2 max-h-[calc(100vh-5rem)] w-60 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border border-line bg-card p-1.5 shadow-xl"
+					className="scroll-thin absolute right-0 mt-2 max-h-[calc(100vh-5rem)] w-60 max-w-[calc(100vw-1rem)] overflow-y-auto border-2 border-line bg-card p-1.5 pop"
 				>
 					<div className="px-2.5 py-2">
 						<p className="truncate text-sm font-medium text-body">{navigation.name}</p>
@@ -407,7 +404,7 @@ function MenuRowView({
 	onTheme: (next: Theme) => void;
 	onHelp: () => void;
 }) {
-	const base = "flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover";
+	const base = "flex w-full items-center gap-2 px-2.5 py-2 text-left text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover";
 
 	switch (row.kind) {
 		case "link":
@@ -423,7 +420,7 @@ function MenuRowView({
 					className={`${base} text-body`}
 				>
 					<span className="flex-1">{row.label}</span>
-					<span aria-hidden="true" className="tnum rounded border border-line px-1.5 text-[11px] text-muted">{row.hint}</span>
+					<span aria-hidden="true" className="tnum border-2 border-line px-1.5 text-[11px] text-muted">{row.hint}</span>
 				</button>
 			);
 
@@ -438,7 +435,7 @@ function MenuRowView({
 				>
 					<span aria-hidden="true" className="w-4 text-center text-muted">{row.glyph}</span>
 					<span className="flex-1">{row.label}</span>
-					{row.current && <span aria-hidden="true" className="text-accent">✓</span>}
+					{row.current && <span aria-hidden="true" className="text-accent-ink">✓</span>}
 				</button>
 			);
 
@@ -502,7 +499,7 @@ function SitePicker({ current, sites, onPick }: { current: string; sites: string
 				id="site-picker"
 				value={current}
 				onChange={(event) => onPick(event.target.value)}
-				className="h-control cursor-pointer appearance-none rounded-md border border-line bg-card py-0 pr-7 pl-2.5 text-sm font-medium text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
+				className="h-control cursor-pointer appearance-none border-2 border-line bg-card py-0 pr-7 pl-2.5 text-sm font-medium text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
 			>
 				{sites.map((site) => (
 					<option key={site} value={site}>
@@ -547,14 +544,14 @@ function CurrentVisitors({
 			type="button"
 			onClick={onOpen}
 			aria-pressed={live}
-			className={`flex h-control items-center gap-2 rounded-md px-2 text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover ${
-				live ? "text-accent" : "text-muted"
+			className={`flex h-control items-center gap-2 px-2 text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover ${
+ live ? "text-accent-ink" : "text-muted"
 			}`}
 			title={t("dashboard.topbar.current_visitors.help")}
 		>
 			<span className="relative flex size-2">
-				<span className="absolute inline-flex size-full animate-ping rounded-full bg-accent opacity-60" />
-				<span className="relative inline-flex size-2 rounded-full bg-accent" />
+				<span className="absolute inline-flex size-full animate-ping bg-accent opacity-60" />
+				<span className="relative inline-flex size-2 bg-accent" />
 			</span>
 			<span className="tnum font-medium text-body">{count}</span>
 			<span className="hidden sm:inline">{n("dashboard.topbar.current_visitors", count)}</span>
@@ -579,8 +576,8 @@ function ComparePicker({ state, onNavigate }: { state: UrlState; onNavigate: (ne
 			<select
 				value={state.compare}
 				onChange={(event) => onNavigate({ ...state, compare: event.target.value as CompareMode })}
-				className={`h-control cursor-pointer appearance-none rounded-md border border-line bg-card py-0 pr-7 pl-2.5 text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover ${
-					state.compare === "off" ? "text-muted" : "font-medium text-body"
+				className={`h-control cursor-pointer appearance-none border-2 border-line bg-card py-0 pr-7 pl-2.5 text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover ${
+ state.compare === "off" ? "text-muted" : "font-medium text-body"
 				}`}
 			>
 				{modes.map((mode) => (
@@ -604,7 +601,7 @@ function HelpButton({ onHelp }: { onHelp: () => void }) {
 			onClick={onHelp}
 			title={t("dashboard.shortcuts.open")}
 			aria-label={t("dashboard.shortcuts.open")}
-			className="hidden size-control items-center justify-center rounded-md border border-line bg-card text-sm text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover sm:flex"
+			className="hidden size-control items-center justify-center border-2 border-line bg-card text-sm text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover sm:flex"
 		>
 			?
 		</button>
@@ -634,7 +631,7 @@ function ThemeToggle({ theme, onTheme }: { theme: Theme; onTheme: (next: Theme) 
 			onClick={() => onTheme(next)}
 			title={description}
 			aria-label={description}
-			className="flex size-control items-center justify-center rounded-md border border-line bg-card text-sm text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
+			className="flex size-control items-center justify-center border-2 border-line bg-card text-sm text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
 		>
 			{glyph}
 		</button>

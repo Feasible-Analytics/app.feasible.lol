@@ -6,7 +6,7 @@
   Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 -->
 {{ define "content" }}
-<div class="rounded-2xl border border-line bg-card p-8 text-center shadow-sm">
+<div class="border-2 border-line bg-card p-8 text-center">
   <h1 class="text-xl font-semibold text-heading">{{ t $.Lang "auth.deleted.title" }}</h1>
   <p class="mt-2 text-sm text-muted">
     {{ t $.Lang "auth.deleted.body" }}
@@ -14,12 +14,12 @@
 
   {{ if .RegistrationEnabled }}
     <a href="{{ url $.Lang "/register" }}"
-       class="mt-6 inline-block rounded-xl border border-field px-5 py-2.5 text-sm font-semibold text-body hover:bg-hover">
+       class="mt-6 btn btn-secondary">
       {{ t $.Lang "auth.deleted.action" }}
     </a>
   {{ else }}
     <a href="{{ url $.Lang "/login" }}"
-       class="mt-6 inline-block rounded-xl border border-field px-5 py-2.5 text-sm font-semibold text-body hover:bg-hover">
+       class="mt-6 btn btn-secondary">
       {{ t $.Lang "auth.register.sign_in" }}
     </a>
   {{ end }}

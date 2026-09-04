@@ -357,26 +357,40 @@ var passwordTemplate = template.Must(template.New("password").Parse(`<!doctype h
 <title>{{.Domain}} · protected dashboard</title>
 <style>
   :root { color-scheme: light dark; }
-  body { margin:0; min-height:100vh; display:grid; place-items:center; background:#f4f5f7; color:#1f2933;
-         font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; }
-  .card { width:min(360px,92vw); background:#fff; border:1px solid #e4e7eb; border-radius:10px; padding:24px; }
-  h1 { font-size:18px; margin:0 0 4px; }
-  p { margin:0 0 16px; color:#616e7c; font-size:14px; }
-  label { display:block; font-size:13px; font-weight:600; margin-bottom:6px; }
-  input { width:100%; box-sizing:border-box; padding:9px 10px; font-size:15px;
-          border:1px solid #cbd2d9; border-radius:6px; }
-  button { margin-top:14px; width:100%; padding:10px; font-size:15px; font-weight:600;
-           background:#0d9488; color:#fff; border:0; border-radius:6px; cursor:pointer; }
-  .problem { background:#fdecea; border:1px solid #f5c6c2; color:#8a1c13; border-radius:6px;
+  @font-face { font-family:"Archivo"; font-style:normal; font-weight:100 900; font-display:swap;
+               src:url("/app/assets/fonts/archivo-latin-wght-normal.woff2") format("woff2-variations"); }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; background:#eae9e9; color:#444141;
+         font:15px/1.5 "Archivo",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif; }
+  .brand { font-size:18px; font-weight:800; letter-spacing:-.025em; color:#201e1d; margin:0 0 14px; }
+  .brand b { color:#ec3013; }
+  .card { background:#f3f2f2; border:2px solid #9f9d9d; padding:24px; }
+  h1 { font-size:20px; font-weight:800; letter-spacing:-.018em; margin:0 0 4px; color:#201e1d; }
+  p { margin:0 0 16px; color:#605d5d; font-size:14px; }
+  a { color:#ae1800; }
+  .card { width:min(360px,92vw); }
+  label { display:block; font-size:13px; font-weight:700; margin-bottom:6px; color:#201e1d; }
+  input { width:100%; box-sizing:border-box; padding:10px; font-size:15px; font:inherit;
+          background:#f3f2f2; border:2px solid #201e1d; color:#201e1d; }
+  button { margin-top:14px; width:100%; padding:12px; font-size:15px; font-weight:800; font-family:inherit;
+           background:#ec3013; color:#f3f2f2; border:2px solid transparent; cursor:pointer; }
+  button:hover { background:#dd2b0f; }
+  .problem { background:#f8e4e3; border:2px solid #b91c1c; color:#991b1b;
              padding:8px 10px; font-size:13px; margin-bottom:14px; }
   @media (prefers-color-scheme: dark) {
-    body { background:#0f1419; color:#e4e7eb; }
-    .card { background:#1a2028; border-color:#2c3540; }
-    input { background:#0f1419; border-color:#3e4c59; color:#e4e7eb; }
-    p { color:#9aa5b1; }
+    body { background:#161514; color:#eae7e7; }
+    .brand { color:#f3f2f2; } .brand b { color:#ff5a3c; }
+    .card { background:#201e1d; border-color:#5a5654; }
+    h1 { color:#f3f2f2; }
+    p { color:#bab6b6; }
+    a { color:#ff8f77; }
+    input { background:#161514; border-color:#8d8987; color:#eae7e7; }
+    button { background:#ff5a3c; color:#161514; }
+    .problem { background:#2a1614; border-color:#f87171; color:#fca5a5; }
   }
 </style>
 </head><body>
+<div>
+<p class="brand">Feasible<b>.lol</b></p>
 <form class="card" method="post" action="{{.Action}}">
   <h1>{{.Domain}}</h1>
   <p>This dashboard is protected. Enter the password you were given.</p>
@@ -385,6 +399,7 @@ var passwordTemplate = template.Must(template.New("password").Parse(`<!doctype h
   <input id="password" name="password" type="password" autocomplete="current-password" autofocus>
   <button type="submit">View the dashboard</button>
 </form>
+</div>
 </body></html>`))
 
 var refusalTemplate = template.Must(template.New("refusal").Parse(`<!doctype html>
@@ -394,19 +409,32 @@ var refusalTemplate = template.Must(template.New("refusal").Parse(`<!doctype htm
 <title>This link cannot be embedded</title>
 <style>
   :root { color-scheme: light dark; }
-  body { margin:0; min-height:100vh; display:grid; place-items:center; background:#f4f5f7; color:#1f2933;
-         font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; }
-  .card { width:min(520px,92vw); background:#fff; border:1px solid #e4e7eb; border-radius:10px; padding:24px; }
-  h1 { font-size:18px; margin:0 0 8px; }
-  p { margin:0 0 12px; color:#3e4c59; font-size:14px; }
-  code { background:#eef1f4; padding:1px 5px; border-radius:4px; font-size:13px; }
+  @font-face { font-family:"Archivo"; font-style:normal; font-weight:100 900; font-display:swap;
+               src:url("/app/assets/fonts/archivo-latin-wght-normal.woff2") format("woff2-variations"); }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; background:#eae9e9; color:#444141;
+         font:15px/1.5 "Archivo",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif; }
+  .brand { font-size:18px; font-weight:800; letter-spacing:-.025em; color:#201e1d; margin:0 0 14px; }
+  .brand b { color:#ec3013; }
+  .card { background:#f3f2f2; border:2px solid #9f9d9d; padding:24px; }
+  h1 { font-size:20px; font-weight:800; letter-spacing:-.018em; margin:0 0 4px; color:#201e1d; }
+  p { margin:0 0 16px; color:#605d5d; font-size:14px; }
+  a { color:#ae1800; }
+  .card { width:min(520px,92vw); }
+  p { margin:0 0 12px; }
+  code { background:#eae7e7; border:1px solid #d1d0d0; padding:1px 5px; font-size:13px; }
   @media (prefers-color-scheme: dark) {
-    body { background:#0f1419; color:#e4e7eb; }
-    .card { background:#1a2028; border-color:#2c3540; }
-    p { color:#9aa5b1; } code { background:#0f1419; }
+    body { background:#161514; color:#eae7e7; }
+    .brand { color:#f3f2f2; } .brand b { color:#ff5a3c; }
+    .card { background:#201e1d; border-color:#5a5654; }
+    h1 { color:#f3f2f2; }
+    p { color:#bab6b6; }
+    a { color:#ff8f77; }
+    code { background:#161514; border-color:#3a3735; }
   }
 </style>
 </head><body>
+<div>
+<p class="brand">Feasible<b>.lol</b></p>
 <div class="card">
   <h1>A password-protected link cannot be embedded</h1>
   <p>Embedding this dashboard would mean serving its password form inside your page's frame. A login
@@ -415,5 +443,6 @@ var refusalTemplate = template.Must(template.New("refusal").Parse(`<!doctype htm
   <p>Two things work instead: create a second shared link with no password and embed that one, or
      make the site fully public and embed <code>/public/&lt;domain&gt;</code>.</p>
   <p><a href="{{.Path}}">Open this dashboard directly</a></p>
+</div>
 </div>
 </body></html>`))
