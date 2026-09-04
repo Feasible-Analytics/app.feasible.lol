@@ -4,13 +4,13 @@
 <!-- Your own address is about IP rules, so it stays out of the way of the
      three sub-sections it has nothing to do with. -->
 {{ if or (not $.Shield) (eq $.Shield "ip") }}
-<section class="rounded-2xl border border-line bg-card p-6 shadow-sm">
+<section class="border-2 border-line bg-card p-6">
 	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.shields.own_traffic" }}</h2>
 	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang "auth.shields.own_traffic_help" }}</p>
 
-	<div class="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-line bg-subtle px-4 py-3">
+	<div class="mt-4 flex flex-wrap items-center gap-3 border-2 border-line bg-subtle px-4 py-3">
 		<span class="font-mono text-sm font-semibold text-heading">{{ .Viewer.Address }}</span>
-		<span class="rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-ink">{{ t $.Lang "auth.shields.seen_via" "source" .Viewer.Source }}</span>
+		<span class="bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-ink">{{ t $.Lang "auth.shields.seen_via" "source" .Viewer.Source }}</span>
 
 		{{ if not .Viewer.Private }}
 		<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/shields/add" $.Domain) }}" class="ml-auto">
@@ -19,13 +19,13 @@
 			<input type="hidden" name="kind" value="ip">
 			<input type="hidden" name="value" value="{{ .Viewer.Address }}">
 			<input type="hidden" name="note" value="{{ t $.Lang "auth.shields.own_traffic_note" }}">
-			<button type="submit" class="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "auth.shields.block_own" }}</button>
+			<button type="submit" class="btn btn-primary">{{ t $.Lang "auth.shields.block_own" }}</button>
 		</form>
 		{{ end }}
 	</div>
 
 	{{ if .Viewer.Private }}
-	<div class="mt-4 rounded-xl border border-warn/30 bg-warn/10 p-4 text-sm text-warn-ink">
+	<div class="mt-4 border-2 border-warn/30 bg-warn/10 p-4 text-sm text-warn-ink">
 		<strong class="font-semibold">{{ t $.Lang "auth.shields.not_public_address" }}</strong>
 		{{ t $.Lang .Viewer.Warning }}
 	</div>
@@ -35,7 +35,7 @@
 
 <!-- Rejected hostnames are the one-click source of hostname rules. -->
 {{ if and .RejectedHostnames (or (not $.Shield) (eq $.Shield "hostname")) }}
-<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+<section class="mt-6 border-2 border-line bg-card p-6">
 	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "auth.shields.rejected_title" }}</h2>
 	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang "auth.shields.rejected_hint" }}</p>
 
@@ -51,14 +51,14 @@
 			<tbody class="divide-y divide-line">
 				{{ range .RejectedHostnames }}
 				<tr>
-					<td class="py-2 pr-3"><code class="rounded bg-subtle px-1 font-mono text-xs text-body">{{ .Hostname }}</code></td>
+					<td class="py-2 pr-3"><code class="bg-subtle px-1 font-mono text-xs text-body">{{ .Hostname }}</code></td>
 					<td class="py-2 pr-3 text-right tabular-nums text-muted">{{ .Events }}</td>
 					<td class="py-2 text-right">
 						<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/shields/allow-hostname" $.Domain) }}">
 							<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
 							<input type="hidden" name="section" value="{{ $.Shield }}">
 							<input type="hidden" name="hostname" value="{{ .Hostname }}">
-							<button type="submit" class="text-sm font-semibold text-accent-ink hover:text-accent">{{ t $.Lang "auth.shields.allow_hostname" }}</button>
+							<button type="submit" class="text-sm font-semibold text-accent-ink hover:text-accent-ink">{{ t $.Lang "auth.shields.allow_hostname" }}</button>
 						</form>
 					</td>
 				</tr>
@@ -70,7 +70,7 @@
 {{ end }}
 
 {{ range $index, $group := .Groups }}
-<section class="{{ if or $index (not $.Shield) }}mt-6 {{ end }}rounded-2xl border border-line bg-card p-6 shadow-sm">
+<section class="{{ if or $index (not $.Shield) }}mt-6 {{ end }} border-2 border-line bg-card p-6">
 	<h2 class="text-sm font-semibold text-heading">{{ t $.Lang .TitleID }}</h2>
 	<p class="mt-1 max-w-2xl text-xs text-muted">{{ t $.Lang .HintID }}</p>
 
@@ -87,7 +87,7 @@
 			<tbody class="divide-y divide-line">
 				{{ range .Rules }}
 				<tr>
-					<td class="py-2 pr-3 align-top"><code class="rounded bg-subtle px-1 font-mono text-xs text-body">{{ .Value }}</code></td>
+					<td class="py-2 pr-3 align-top"><code class="bg-subtle px-1 font-mono text-xs text-body">{{ .Value }}</code></td>
 					<td class="py-2 pr-3 align-top text-muted">{{ .Note }}</td>
 					<td class="py-2 align-top">
 						<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/shields/delete" $.Domain) }}">
@@ -114,16 +114,16 @@
 		<div class="min-w-[14rem] flex-1">
 			<label class="block text-xs font-medium text-muted" for="value-{{ .Kind }}">{{ t $.Lang "auth.shields.column_rule" }}</label>
 			<input id="value-{{ .Kind }}" type="text" name="value" required placeholder="{{ t $.Lang .PlaceholderID }}"
-				class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+				class="mt-1 block w-full border-2 border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
 		</div>
 
 		<div class="min-w-[12rem] flex-1">
 			<label class="block text-xs font-medium text-muted" for="note-{{ .Kind }}">{{ t $.Lang "auth.shields.note_optional" }}</label>
 			<input id="note-{{ .Kind }}" type="text" name="note"
-				class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+				class="mt-1 block w-full border-2 border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
 		</div>
 
-		<button type="submit" class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">{{ t $.Lang "auth.shields.add_rule" }}</button>
+		<button type="submit" class="btn btn-secondary">{{ t $.Lang "auth.shields.add_rule" }}</button>
 		<span class="pb-2 text-xs text-faint">{{ t $.Lang "auth.shields.used_of_max" "used" (len .Rules) "max" $.MaxRules }}</span>
 	</form>
 </section>

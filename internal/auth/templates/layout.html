@@ -23,12 +23,12 @@
   <title>{{ .Title }} · feasible.lol</title>
 
   <!--
-    The same teal mark the dashboard uses, inlined so it costs no request. A
-    browser asks for /favicon.ico whether or not anything points at one, and the
-    two surfaces showing different marks in adjacent tabs is the same drift this
-    palette exists to stop.
+    The mark from the marketing site, served from the binary rather than inlined
+    as a data URI so that all three surfaces point at one file. A browser asks
+    for a favicon whether or not anything points at one, and three copies of the
+    same encoded square is how two of them end up the old colour.
   -->
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d9488'/%3E%3Ctext x='16' y='23' text-anchor='middle' fill='white' font-family='system-ui,sans-serif' font-size='21' font-weight='700'%3Ef%3C/text%3E%3C/svg%3E">
+  <link rel="icon" href="/app/assets/favicon.svg" type="image/svg+xml">
 
   <!--
     The theme is decided before the first paint, in a blocking inline script,
@@ -56,6 +56,7 @@
 
   <!-- Both assets come out of the binary. A CDN would be one more thing to be
        blocked, one more thing to be offline, and one more thing to copy. -->
+  <link rel="preload" href="/app/assets/fonts/archivo-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/app/assets/app.css">
   <script defer src="/app/assets/alpine.js"></script>
 
@@ -92,11 +93,10 @@
        is one column of instructions, and a form stretched to the full body width
        reads as a page with nothing on it. -->
   <div class="min-h-full">
-    <header class="border-b border-line bg-card">
+    <header class="border-b-2 border-line bg-card">
       <div class="mx-auto flex w-full max-w-5xl items-center justify-between px-4 py-4 sm:px-6">
-        <a href="{{ url $.Lang "/sites" }}" class="flex items-center gap-2 font-semibold text-heading">
-          <span class="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-accent text-fill-fg font-bold">f</span>
-          feasible.lol
+        <a href="{{ url $.Lang "/sites" }}" class="font-display text-xl font-extrabold tracking-tight text-heading" aria-label="feasible.lol">
+          Feasible<span class="text-accent">.lol</span>
         </a>
 
         <div class="text-right">
@@ -113,9 +113,8 @@
   </div>
 {{ else }}
   <div class="flex min-h-full flex-col items-center justify-center px-4 py-10">
-    <a href="{{ url $.Lang "/" }}" class="mb-8 flex items-center gap-2 text-lg font-semibold text-heading">
-      <span class="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-accent text-fill-fg font-bold">f</span>
-      feasible.lol
+    <a href="{{ url $.Lang "/" }}" class="mb-8 font-display text-2xl font-extrabold tracking-tight text-heading" aria-label="feasible.lol">
+      Feasible<span class="text-accent">.lol</span>
     </a>
 
     <div class="w-full max-w-md">

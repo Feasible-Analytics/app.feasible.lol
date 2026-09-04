@@ -209,7 +209,7 @@ export function ShortcutsModal({ onClose }: { onClose: () => void }) {
 				role="dialog"
 				aria-modal="true"
 				aria-label={t("dashboard.shortcuts.title")}
-				className="modal-in relative max-h-full w-full max-w-2xl overflow-auto rounded-md border border-line bg-card shadow-2xl"
+				className="modal-in relative max-h-full w-full max-w-2xl overflow-auto border-2 border-line bg-card pop"
 			>
 				<div className="flex items-center border-b border-line px-5 py-3">
 					<h2 className="text-sm font-semibold text-body">{t("dashboard.shortcuts.title")}</h2>
@@ -219,7 +219,7 @@ export function ShortcutsModal({ onClose }: { onClose: () => void }) {
 						type="button"
 						onClick={onClose}
 						aria-label={t("dashboard.shortcuts.close")}
-						className="ml-auto flex size-control items-center justify-center rounded-md border border-line text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
+						className="ml-auto flex size-control items-center justify-center border-2 border-line text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
 					>
 						✕
 					</button>
@@ -247,7 +247,7 @@ function Section({ title, rows }: { title: string; rows: readonly { key: string;
 			<ul className="flex flex-col gap-1.5">
 				{rows.map((row) => (
 					<li key={row.key} className="flex items-center gap-3 text-sm">
-						<kbd className="flex h-6 min-w-6 shrink-0 items-center justify-center rounded border border-line bg-subtle px-1.5 font-mono text-xs font-medium text-body uppercase">
+						<kbd className="flex h-6 min-w-6 shrink-0 items-center justify-center border-2 border-line bg-subtle px-1.5 font-mono text-xs font-medium text-body uppercase">
 							{row.key}
 						</kbd>
 						<span className="text-body">{t(row.labelId)}</span>

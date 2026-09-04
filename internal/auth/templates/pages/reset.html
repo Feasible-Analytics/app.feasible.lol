@@ -6,14 +6,14 @@
   Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 -->
 {{ define "content" }}
-<div class="rounded-2xl border border-line bg-card p-8 shadow-sm">
+<div class="border-2 border-line bg-card p-8">
   <h1 class="text-xl font-semibold text-heading">{{ t $.Lang "auth.reset.title" }}</h1>
 
   {{ if .Data.Invalid }}
     <p class="mt-2 text-sm text-muted">{{ t $.Lang "auth.reset.invalid" }}</p>
 
     <a href="{{ url $.Lang "/forgot-password" }}"
-       class="mt-6 inline-block rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
+       class="mt-6 btn btn-primary">
       {{ t $.Lang "auth.reset.ask_again" }}
     </a>
   {{ else }}
@@ -29,12 +29,12 @@
         <label for="password" class="block text-sm font-medium text-body">{{ t $.Lang "auth.reset.password" }}</label>
         <input id="password" name="password" type="password" autocomplete="new-password"
                required minlength="{{ .Data.MinLength }}" autofocus
-               class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+               class="mt-1 block w-full border-2 border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
         <p class="mt-1 text-xs text-muted">{{ n $.Lang "auth.reset.password_help" .Data.MinLength }}</p>
       </div>
 
       <button type="submit"
-              class="w-full rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
+              class="w-full btn btn-primary">
         {{ t $.Lang "auth.reset.submit" }}
       </button>
     </form>

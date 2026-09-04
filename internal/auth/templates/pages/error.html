@@ -6,11 +6,11 @@
   Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 -->
 {{ define "content" }}
-<div class="rounded-2xl border border-line bg-card p-8 text-center shadow-sm">
+<div class="border-2 border-line bg-card p-8 text-center">
   <h1 class="text-xl font-semibold text-heading">{{ .Title }}</h1>
 
   <a href="{{ url $.Lang "/" }}"
-     class="mt-6 inline-block rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
+     class="mt-6 btn btn-primary">
     {{ t $.Lang "auth.error.action" }}
   </a>
 </div>

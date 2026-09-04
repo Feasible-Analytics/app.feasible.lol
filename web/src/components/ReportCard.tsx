@@ -131,7 +131,7 @@ export function ReportCard({
 	return (
 		<section
 			ref={ref}
-			className={`group/card flex h-card flex-col overflow-hidden rounded-md border border-line bg-card shadow-sm ${card.tint}`}
+			className="group/card flex h-card flex-col overflow-hidden border-2 border-line bg-card"
 		>
 			<header className="flex h-10 shrink-0 items-center gap-2 px-5">
 				<h2 className="flex shrink-0 items-center gap-1.5 text-sm font-semibold text-body">
@@ -223,7 +223,7 @@ export function ReportCard({
 												filtered ? "dashboard.row.stop_filtering" : "dashboard.row.filter_by",
 												{ name },
 											)}
-											className="absolute inset-0 rounded-sm"
+											className="absolute inset-0"
 										>
 											<span className="sr-only">
 												{t(filtered ? "dashboard.row.stop_filtering" : "dashboard.row.filter_by", {
@@ -245,7 +245,7 @@ export function ReportCard({
 												)}
 												<span
 													className={`truncate ${companion ? "text-[10px] text-muted" : ""} ${
-														filtered ? "font-medium text-accent" : ""
+														filtered ? "font-medium text-accent-ink" : ""
 													}`}
 													title={name}
 												>
@@ -285,7 +285,7 @@ export function ReportCard({
 					type="button"
 					disabled={rows.length === 0}
 					onClick={(event) => onOpenDetails(card, active, event.currentTarget)}
-					className="text-xs font-medium text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent disabled:cursor-default disabled:opacity-40"
+					className="text-xs font-medium text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent-ink disabled:cursor-default disabled:opacity-40"
 				>
 					{t("dashboard.card.details")}
 				</button>
@@ -326,9 +326,9 @@ function TabButton({
 			aria-pressed={active}
 			onClick={onClick}
 			className={[
-				"shrink-0 rounded-sm py-1 whitespace-nowrap transition-colors duration-150 ease-[var(--ease-ui)]",
+				"shrink-0 py-1 whitespace-nowrap transition-colors duration-150 ease-[var(--ease-ui)]",
 				small ? "px-1.5 text-[11px]" : "px-2 text-xs",
-				active ? "bg-accent/10 font-medium text-accent" : "text-muted hover:text-body",
+				active ? "bg-accent/10 font-medium text-accent-ink" : "text-muted hover:text-body",
 			].join(" ")}
 		>
 			{label}

@@ -13,15 +13,15 @@
 <div class="mx-auto max-w-xl" x-data="siteForm()" x-init="detectTimezone()">
   {{ if .Data.FirstRun }}
     <div class="mb-8 flex items-center justify-center gap-2" aria-hidden="true">
-      <span class="h-2 w-8 rounded-full bg-accent"></span>
-      <span class="h-2 w-2 rounded-full bg-line"></span>
+      <span class="h-2 w-8 bg-accent"></span>
+      <span class="h-2 w-2 bg-line"></span>
     </div>
   {{ end }}
 
   <h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "auth.site_new.title" }}</h1>
   <p class="mt-1 text-sm text-muted">{{ t $.Lang "auth.site_new.subtitle" }}</p>
 
-  <form method="post" action="{{ url $.Lang "/sites/new" }}" class="mt-8 space-y-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+  <form method="post" action="{{ url $.Lang "/sites/new" }}" class="mt-8 space-y-6 border-2 border-line bg-card p-6">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <input type="hidden" name="team_id" value="{{ .Data.TeamID }}">
     {{ if .Data.FirstRun }}<input type="hidden" name="first_run" value="1">{{ end }}
@@ -30,7 +30,7 @@
       <label for="domain" class="block text-sm font-medium text-body">{{ t $.Lang "auth.site_new.domain" }}</label>
       <input id="domain" name="domain" type="text" required autofocus placeholder="{{ t $.Lang "auth.site_new.domain_placeholder" }}"
              value="{{ .Data.Domain }}"
-             class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+             class="mt-1 block w-full border-2 border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
       <p class="mt-1 text-xs text-muted">{{ t $.Lang "auth.site_new.domain_help" }}</p>
     </div>
 
@@ -41,10 +41,10 @@
       </label>
       <input id="display_name" name="display_name" type="text" placeholder="{{ t $.Lang "auth.site_new.display_name_placeholder" }}"
              value="{{ .Data.DisplayName }}"
-             class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+             class="mt-1 block w-full border-2 border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
       <p class="mt-1 text-xs text-muted">
         {{ t $.Lang "auth.site_new.display_name_help" }}
-        <code class="rounded bg-subtle px-1">acme-staging-2.vercel.app</code>.
+        <code class="bg-subtle px-1">acme-staging-2.vercel.app</code>.
       </p>
     </div>
 
@@ -52,17 +52,17 @@
       <div class="flex items-baseline justify-between">
         <label for="timezone" class="block text-sm font-medium text-body">{{ t $.Lang "auth.site_new.timezone" }}</label>
         <button type="button" @click="override = !override"
-                class="text-xs font-medium text-accent-ink hover:text-accent"
+                class="text-xs font-medium text-accent-ink hover:text-accent-ink"
                 x-text="override ? '{{ t $.Lang "auth.site_new.use_browser_tz" }}' : '{{ t $.Lang "auth.site_new.change_tz" }}'"></button>
       </div>
 
-      <p x-show="!override" class="mt-1 rounded-xl border border-line bg-subtle px-3 py-2 text-sm text-body">
+      <p x-show="!override" class="mt-1 border-2 border-line bg-subtle px-3 py-2 text-sm text-body">
         <span x-text="timezone"></span>
         <span class="text-faint">{{ t $.Lang "auth.site_new.tz_detected" }}</span>
       </p>
 
       <select x-show="override" x-model="timezone"
-              class="mt-1 block w-full rounded-xl border border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+              class="mt-1 block w-full border-2 border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
         <template x-for="zone in zones" :key="zone">
           <option :value="zone" x-text="zone"></option>
         </template>
@@ -76,7 +76,7 @@
 
     <div class="flex items-center gap-3">
       <button type="submit"
-              class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
+              class="btn btn-primary">
         {{ t $.Lang "auth.site_new.submit" }}
       </button>
       <a href="{{ url $.Lang (printf "/sites?team_id=%d" .Data.TeamID) }}" class="text-sm font-medium text-muted hover:text-body">

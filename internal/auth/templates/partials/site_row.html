@@ -20,12 +20,12 @@
       </a>
 
       {{ if .Site.Pinned }}
-        <span class="rounded-md bg-warn/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-warn-ink">{{ t $.Lang "auth.site_row.pinned" }}</span>
+        <span class="bg-warn/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-warn-ink">{{ t $.Lang "auth.site_row.pinned" }}</span>
       {{ end }}
 
       {{ if and .CanConfigure (eq .Site.OnboardedAt 0) }}
         <a href="{{ url $.Lang (printf "/onboarding/%d" .Site.ID) }}"
-           class="rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-ink">
+           class="bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-ink">
           {{ t $.Lang "auth.site_row.finish_setup" }}
         </a>
       {{ end }}
@@ -44,7 +44,7 @@
   -->
   {{ if not .Locked }}
     <div class="hidden w-32 shrink-0 sm:block">
-      <svg viewBox="0 0 120 28" class="h-7 w-full text-accent" preserveAspectRatio="none" aria-hidden="true">
+      <svg viewBox="0 0 120 28" class="h-7 w-full text-accent-ink" preserveAspectRatio="none" aria-hidden="true">
         <polyline fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"
                   points="{{ sparkline .Site.Sparkline }}" />
       </svg>
@@ -57,7 +57,7 @@
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <button type="submit"
             title="{{ if .Site.Pinned }}{{ t $.Lang "auth.site_row.unpin_title" }}{{ else }}{{ t $.Lang "auth.site_row.pin_title" }}{{ end }}"
-            class="rounded-lg px-2 py-1 text-sm {{ if .Site.Pinned }}text-warn{{ else }}text-faint hover:text-muted{{ end }}">
+            class="px-2 py-1 text-sm {{ if .Site.Pinned }}text-warn{{ else }}text-faint hover:text-muted{{ end }}">
       ★<span class="sr-only">{{ if .Site.Pinned }}{{ t $.Lang "auth.site_row.unpin_label" "site" .Site.Label }}{{ else }}{{ t $.Lang "auth.site_row.pin_label" "site" .Site.Label }}{{ end }}</span>
     </button>
   </form>
@@ -67,7 +67,7 @@
   </a>
   {{ end }}
 
-  <a href="{{ url $.Lang (printf "/dashboard/%s" .Site.Domain) }}" class="shrink-0 text-xs font-medium text-accent-ink hover:text-accent">
+  <a href="{{ url $.Lang (printf "/dashboard/%s" .Site.Domain) }}" class="shrink-0 text-xs font-medium text-accent-ink hover:text-accent-ink">
     {{ t $.Lang "auth.site_row.dashboard" }}
   </a>
 </li>

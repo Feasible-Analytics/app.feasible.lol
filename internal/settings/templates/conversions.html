@@ -8,25 +8,25 @@
 {{define "body"}}
 <p class="mb-6 max-w-2xl text-sm text-muted">Define the outcomes that matter, make custom properties available for analysis, and connect goals into funnels.</p>
 
-<section id="goals" class="scroll-mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+<section id="goals" class="scroll-mt-6 border-2 border-line bg-card p-6">
 	<div>
 		<h2 class="text-lg font-semibold text-heading">Goals</h2>
 		<p class="mt-1 max-w-3xl text-sm text-muted">A goal turns matching traffic into a conversion. Events are collected before you define a goal, but only configured goals appear in conversion reports.</p>
 	</div>
 
-	<div class="mt-4 rounded-xl border border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn-ink">{{ .NoBackfillNotice }}</div>
+	<div class="mt-4 border-2 border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn-ink">{{ .NoBackfillNotice }}</div>
 
 	{{ if .Goals }}
 	<div class="mt-5 space-y-3">
 		{{ range .Goals }}
-		<details class="group rounded-xl border border-line bg-subtle/40 px-4 py-3">
+		<details class="group border-2 border-line bg-subtle/40 px-4 py-3">
 			<summary class="flex cursor-pointer list-none items-center gap-3">
 				<div class="min-w-0 flex-1">
 					<div class="flex flex-wrap items-center gap-2">
 						<strong class="truncate text-sm font-semibold text-heading">{{ .Label }}</strong>
-						<span class="rounded-md bg-card px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted">{{ .Kind }}</span>
-						{{ if .IsRevenue }}<span class="rounded-md bg-up/10 px-2 py-0.5 text-[11px] font-semibold text-up-ink">Revenue · {{ .Currency }}</span>{{ end }}
-						{{ if .IsAutomatic }}<span class="rounded-md bg-accent/10 px-2 py-0.5 text-[11px] font-semibold text-accent-ink">Automatic</span>{{ end }}
+						<span class="bg-card px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted">{{ .Kind }}</span>
+						{{ if .IsRevenue }}<span class="bg-up/10 px-2 py-0.5 text-[11px] font-semibold text-up-ink">Revenue · {{ .Currency }}</span>{{ end }}
+						{{ if .IsAutomatic }}<span class="bg-accent/10 px-2 py-0.5 text-[11px] font-semibold text-accent-ink">Automatic</span>{{ end }}
 					</div>
 					<p class="mt-1 truncate font-mono text-xs text-muted">
 						{{ if eq .Kind "page" }}{{ .PagePattern }}{{ else if eq .Kind "scroll" }}{{ .ScrollDepth }}%{{ if .PagePattern }} on {{ .PagePattern }}{{ end }}{{ else }}{{ .EventName }}{{ end }}
@@ -40,38 +40,38 @@
 				<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
 				<input type="hidden" name="goal_id" value="{{.ID}}">
 				{{ if .IsAutomatic }}
-				<div class="rounded-xl border border-accent/20 bg-accent/5 px-4 py-3">
+				<div class="border-2 border-accent/20 bg-accent/5 px-4 py-3">
 					<p class="text-sm font-medium text-heading">Feasible manages this goal's matching rule.</p>
 					<p class="mt-1 text-xs leading-5 text-muted">It stays available so tracker-detected activity is always measured. You can change only the name shown in reports.</p>
 					<label class="mt-3 block text-xs font-medium text-muted">Report name
-						<input type="text" name="display_name" value="{{.DisplayName}}" placeholder="Shown on reports" class="mt-1 block w-full rounded-xl border border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+						<input type="text" name="display_name" value="{{.DisplayName}}" placeholder="Shown on reports" class="mt-1 block w-full border-2 border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
 					</label>
 				</div>
-				<div class="mt-4"><button type="submit" class="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-fill-fg hover:bg-accent-hover">Save name</button></div>
+				<div class="mt-4"><button type="submit" class="btn btn-primary">Save name</button></div>
 				{{ else }}
 				<div class="grid gap-3 sm:grid-cols-2">
 					<label class="text-xs font-medium text-muted">Name
-						<input type="text" name="display_name" value="{{.DisplayName}}" placeholder="Shown on reports" class="mt-1 block w-full rounded-xl border border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+						<input type="text" name="display_name" value="{{.DisplayName}}" placeholder="Shown on reports" class="mt-1 block w-full border-2 border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
 					</label>
 					<label class="text-xs font-medium text-muted">Goal type
-						<select name="kind" class="mt-1 block w-full rounded-xl border border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+						<select name="kind" class="mt-1 block w-full border-2 border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
 							<option value="page" {{if eq .Kind "page"}}selected{{end}}>Page visit</option>
 							<option value="event" {{if eq .Kind "event"}}selected{{end}}>Custom event</option>
 							<option value="scroll" {{if eq .Kind "scroll"}}selected{{end}}>Scroll depth</option>
 						</select>
 					</label>
 					<label class="text-xs font-medium text-muted">Page pattern <span class="font-normal text-faint">(page; optional for scroll)</span>
-						<input type="text" name="page_pattern" value="{{.PagePattern}}" placeholder="/thank-you or /blog/**" class="mt-1 block w-full rounded-xl border border-field bg-card px-3 py-2 font-mono text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+						<input type="text" name="page_pattern" value="{{.PagePattern}}" placeholder="/thank-you or /blog/**" class="mt-1 block w-full border-2 border-field bg-card px-3 py-2 font-mono text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
 					</label>
 					<label class="text-xs font-medium text-muted">Event name <span class="font-normal text-faint">(event goals)</span>
-						<input type="text" name="event_name" value="{{.EventName}}" placeholder="Signup" class="mt-1 block w-full rounded-xl border border-field bg-card px-3 py-2 font-mono text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+						<input type="text" name="event_name" value="{{.EventName}}" placeholder="Signup" class="mt-1 block w-full border-2 border-field bg-card px-3 py-2 font-mono text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
 					</label>
 					<label class="text-xs font-medium text-muted">Scroll threshold <span class="font-normal text-faint">(1–100%)</span>
-						<input type="number" min="1" max="100" name="scroll_depth" value="{{.ScrollDepth}}" class="mt-1 block w-full rounded-xl border border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+						<input type="number" min="1" max="100" name="scroll_depth" value="{{.ScrollDepth}}" class="mt-1 block w-full border-2 border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
 					</label>
 					<div class="grid grid-cols-[auto_1fr] items-end gap-3">
-						<label class="flex h-10 items-center gap-2 text-sm text-body"><input type="checkbox" name="is_revenue" value="1" {{if .IsRevenue}}checked{{end}} class="size-4 rounded border-field accent-accent"> Revenue goal</label>
-						<label class="text-xs font-medium text-muted">Currency<input type="text" name="currency" value="{{.Currency}}" maxlength="3" placeholder="USD" class="mt-1 block w-full rounded-xl border border-field bg-card px-3 py-2 uppercase text-sm text-body"></label>
+						<label class="flex h-10 items-center gap-2 text-sm text-body"><input type="checkbox" name="is_revenue" value="1" {{if .IsRevenue}}checked{{end}} class="size-4 border-field accent-accent"> Revenue goal</label>
+						<label class="text-xs font-medium text-muted">Currency<input type="text" name="currency" value="{{.Currency}}" maxlength="3" placeholder="USD" class="mt-1 block w-full border-2 border-field bg-card px-3 py-2 uppercase text-sm text-body"></label>
 					</div>
 				</div>
 
@@ -80,15 +80,15 @@
 					<div class="mt-2 grid gap-2 sm:grid-cols-3">
 						{{ $goal := . }}{{ range $index := $.FunnelStepSlots }}{{ if le $index 3 }}
 						<div class="grid grid-cols-2 gap-2">
-							<input type="text" name="property_name" value="{{ propertyName $goal (sub $index 1) }}" placeholder="Property" class="rounded-xl border border-field bg-card px-3 py-2 text-sm text-body">
-							<input type="text" name="property_value" value="{{ propertyValue $goal (sub $index 1) }}" placeholder="Value" class="rounded-xl border border-field bg-card px-3 py-2 text-sm text-body">
+							<input type="text" name="property_name" value="{{ propertyName $goal (sub $index 1) }}" placeholder="Property" class="border-2 border-field bg-card px-3 py-2 text-sm text-body">
+							<input type="text" name="property_value" value="{{ propertyValue $goal (sub $index 1) }}" placeholder="Value" class="border-2 border-field bg-card px-3 py-2 text-sm text-body">
 						</div>
 						{{ end }}{{ end }}
 					</div>
 				</fieldset>
 
 				<div class="mt-4 flex flex-wrap items-center gap-3">
-					<button type="submit" class="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-fill-fg hover:bg-accent-hover">Save goal</button>
+					<button type="submit" class="btn btn-primary">Save goal</button>
 				</div>
 				{{ end }}
 			</form>
@@ -102,54 +102,54 @@
 		{{ end }}
 	</div>
 	{{ else }}
-	<div class="mt-5 rounded-xl border border-dashed border-line px-5 py-8 text-center">
+	<div class="mt-5 border-2 border-dashed border-line px-5 py-8 text-center">
 		<p class="font-semibold text-heading">No goals yet</p>
 		<p class="mt-1 text-sm text-muted">Create a page, event, or scroll-depth goal to start measuring conversions.</p>
 	</div>
 	{{ end }}
 
-	<details class="mt-5 rounded-xl border border-accent/30 bg-accent/5 p-4" {{if not .Goals}}open{{end}}>
+	<details class="mt-5 border-2 border-accent/30 bg-accent/5 p-4" {{if not .Goals}}open{{end}}>
 		<summary class="cursor-pointer text-sm font-semibold text-accent-ink">Add a goal</summary>
 		<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/conversions/goals/create" .Domain) }}" class="mt-4">
 			<input type="hidden" name="csrf_token" value="{{.CSRF}}">
 			<div class="grid gap-3 sm:grid-cols-2">
-				<label class="text-xs font-medium text-muted">Name<input type="text" name="display_name" placeholder="Newsletter signup" class="mt-1 block w-full rounded-xl border border-field bg-card px-3 py-2 text-sm text-body"></label>
-				<label class="text-xs font-medium text-muted">Goal type<select name="kind" class="mt-1 block w-full rounded-xl border border-field bg-card px-3 py-2 text-sm text-body"><option value="page">Page visit</option><option value="event">Custom event</option><option value="scroll">Scroll depth</option></select></label>
-				<label class="text-xs font-medium text-muted">Page pattern <span class="font-normal text-faint">(page; optional for scroll)</span><input type="text" name="page_pattern" placeholder="/thank-you or /blog/**" class="mt-1 block w-full rounded-xl border border-field bg-card px-3 py-2 font-mono text-sm text-body"></label>
-				<label class="text-xs font-medium text-muted">Event name <span class="font-normal text-faint">(event goals)</span><input type="text" name="event_name" placeholder="Signup" class="mt-1 block w-full rounded-xl border border-field bg-card px-3 py-2 font-mono text-sm text-body"></label>
-				<label class="text-xs font-medium text-muted">Scroll threshold <span class="font-normal text-faint">(scroll goals)</span><input type="number" min="1" max="100" name="scroll_depth" value="50" class="mt-1 block w-full rounded-xl border border-field bg-card px-3 py-2 text-sm text-body"></label>
-				<div class="grid grid-cols-[auto_1fr] items-end gap-3"><label class="flex h-10 items-center gap-2 text-sm text-body"><input type="checkbox" name="is_revenue" value="1" class="size-4 rounded border-field accent-accent"> Revenue goal</label><label class="text-xs font-medium text-muted">Currency<input type="text" name="currency" maxlength="3" placeholder="USD" class="mt-1 block w-full rounded-xl border border-field bg-card px-3 py-2 uppercase text-sm text-body"></label></div>
+				<label class="text-xs font-medium text-muted">Name<input type="text" name="display_name" placeholder="Newsletter signup" class="mt-1 block w-full border-2 border-field bg-card px-3 py-2 text-sm text-body"></label>
+				<label class="text-xs font-medium text-muted">Goal type<select name="kind" class="mt-1 block w-full border-2 border-field bg-card px-3 py-2 text-sm text-body"><option value="page">Page visit</option><option value="event">Custom event</option><option value="scroll">Scroll depth</option></select></label>
+				<label class="text-xs font-medium text-muted">Page pattern <span class="font-normal text-faint">(page; optional for scroll)</span><input type="text" name="page_pattern" placeholder="/thank-you or /blog/**" class="mt-1 block w-full border-2 border-field bg-card px-3 py-2 font-mono text-sm text-body"></label>
+				<label class="text-xs font-medium text-muted">Event name <span class="font-normal text-faint">(event goals)</span><input type="text" name="event_name" placeholder="Signup" class="mt-1 block w-full border-2 border-field bg-card px-3 py-2 font-mono text-sm text-body"></label>
+				<label class="text-xs font-medium text-muted">Scroll threshold <span class="font-normal text-faint">(scroll goals)</span><input type="number" min="1" max="100" name="scroll_depth" value="50" class="mt-1 block w-full border-2 border-field bg-card px-3 py-2 text-sm text-body"></label>
+				<div class="grid grid-cols-[auto_1fr] items-end gap-3"><label class="flex h-10 items-center gap-2 text-sm text-body"><input type="checkbox" name="is_revenue" value="1" class="size-4 border-field accent-accent"> Revenue goal</label><label class="text-xs font-medium text-muted">Currency<input type="text" name="currency" maxlength="3" placeholder="USD" class="mt-1 block w-full border-2 border-field bg-card px-3 py-2 uppercase text-sm text-body"></label></div>
 			</div>
-			<fieldset class="mt-4"><legend class="text-xs font-semibold uppercase tracking-wide text-muted">Property constraints <span class="font-normal normal-case text-faint">(optional)</span></legend><div class="mt-2 grid gap-2 sm:grid-cols-3">{{range $index := .FunnelStepSlots}}{{if le $index 3}}<div class="grid grid-cols-2 gap-2"><input type="text" name="property_name" placeholder="Property" class="rounded-xl border border-field bg-card px-3 py-2 text-sm text-body"><input type="text" name="property_value" placeholder="Value" class="rounded-xl border border-field bg-card px-3 py-2 text-sm text-body"></div>{{end}}{{end}}</div></fieldset>
-			<button type="submit" class="mt-4 rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">Create goal</button>
+			<fieldset class="mt-4"><legend class="text-xs font-semibold uppercase tracking-wide text-muted">Property constraints <span class="font-normal normal-case text-faint">(optional)</span></legend><div class="mt-2 grid gap-2 sm:grid-cols-3">{{range $index := .FunnelStepSlots}}{{if le $index 3}}<div class="grid grid-cols-2 gap-2"><input type="text" name="property_name" placeholder="Property" class="border-2 border-field bg-card px-3 py-2 text-sm text-body"><input type="text" name="property_value" placeholder="Value" class="border-2 border-field bg-card px-3 py-2 text-sm text-body"></div>{{end}}{{end}}</div></fieldset>
+			<button type="submit" class="mt-4 btn btn-primary">Create goal</button>
 		</form>
 	</details>
 </section>
 
-<section id="properties" class="mt-6 scroll-mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+<section id="properties" class="mt-6 scroll-mt-6 border-2 border-line bg-card p-6">
 	<h2 class="text-lg font-semibold text-heading">Custom properties</h2>
 	<p class="mt-1 max-w-3xl text-sm text-muted">Enabled properties appear in dashboard filters and breakdowns. Event properties describe one event; session properties describe the visitor's whole visit.</p>
-	<div class="mt-4 rounded-xl border border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn-ink">{{ .PropertyPIINotice }}</div>
+	<div class="mt-4 border-2 border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn-ink">{{ .PropertyPIINotice }}</div>
 
 	{{ if .Properties }}
-	<div class="mt-5 overflow-x-auto"><table class="w-full text-sm"><thead><tr class="border-b border-line text-left text-xs font-semibold uppercase tracking-wide text-muted"><th class="pb-2 pr-3">Property</th><th class="pb-2 pr-3">Scope</th><th class="pb-2 text-right"><span class="sr-only">Actions</span></th></tr></thead><tbody class="divide-y divide-line">{{range .Properties}}<tr><td class="py-3 pr-3 font-mono text-xs text-heading">{{.Name}}</td><td class="py-3 pr-3"><form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/conversions/properties/allow" $.Domain) }}" class="flex items-center gap-2"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="name" value="{{.Name}}"><select name="scope" class="rounded-lg border border-field bg-card px-2 py-1.5 text-sm"><option value="event" {{if eq .Scope "event"}}selected{{end}}>Event</option><option value="session" {{if eq .Scope "session"}}selected{{end}}>Session</option></select><button class="text-xs font-semibold text-accent-ink">Save</button></form></td><td class="py-3 text-right"><form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/conversions/properties/delete" $.Domain) }}"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="name" value="{{.Name}}"><button class="text-sm font-medium text-down hover:text-down-ink">Disable</button></form></td></tr>{{end}}</tbody></table></div>
+	<div class="mt-5 overflow-x-auto"><table class="w-full text-sm"><thead><tr class="border-b border-line text-left text-xs font-semibold uppercase tracking-wide text-muted"><th class="pb-2 pr-3">Property</th><th class="pb-2 pr-3">Scope</th><th class="pb-2 text-right"><span class="sr-only">Actions</span></th></tr></thead><tbody class="divide-y divide-line">{{range .Properties}}<tr><td class="py-3 pr-3 font-mono text-xs text-heading">{{.Name}}</td><td class="py-3 pr-3"><form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/conversions/properties/allow" $.Domain) }}" class="flex items-center gap-2"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="name" value="{{.Name}}"><select name="scope" class="border-2 border-field bg-card px-2 py-1.5 text-sm"><option value="event" {{if eq .Scope "event"}}selected{{end}}>Event</option><option value="session" {{if eq .Scope "session"}}selected{{end}}>Session</option></select><button class="text-xs font-semibold text-accent-ink">Save</button></form></td><td class="py-3 text-right"><form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/conversions/properties/delete" $.Domain) }}"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="name" value="{{.Name}}"><button class="text-sm font-medium text-down hover:text-down-ink">Disable</button></form></td></tr>{{end}}</tbody></table></div>
 	{{ else }}
-	<div class="mt-5 rounded-xl border border-dashed border-line px-5 py-8 text-center"><p class="font-semibold text-heading">No custom properties enabled</p><p class="mt-1 text-sm text-muted">Send properties with events, then enable the names you want to analyze.</p></div>
+	<div class="mt-5 border-2 border-dashed border-line px-5 py-8 text-center"><p class="font-semibold text-heading">No custom properties enabled</p><p class="mt-1 text-sm text-muted">Send properties with events, then enable the names you want to analyze.</p></div>
 	{{ end }}
 
 	<div class="mt-5 border-t border-line pt-5">
 		<h3 class="text-sm font-semibold text-heading">Enable a property</h3>
-		<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/conversions/properties/allow" .Domain) }}" class="mt-3 flex flex-wrap items-end gap-3"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><label class="min-w-[14rem] flex-1 text-xs font-medium text-muted">Property name<input list="seen-properties" type="text" name="name" required placeholder="plan" class="mt-1 block w-full rounded-xl border border-field bg-card px-3 py-2 text-sm text-body"></label><datalist id="seen-properties">{{range .SeenProperties}}<option value="{{.}}">{{end}}</datalist><label class="text-xs font-medium text-muted">Scope<select name="scope" class="mt-1 block rounded-xl border border-field bg-card px-3 py-2 text-sm text-body"><option value="event">Event</option><option value="session">Session</option></select></label><button class="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-fill-fg hover:bg-accent-hover">Enable property</button></form>
-		{{if .SeenProperties}}<div class="mt-3 flex flex-wrap items-center gap-3"><p class="text-xs text-muted">Recently seen: {{range $index, $name := .SeenProperties}}{{if $index}}, {{end}}<code class="rounded bg-subtle px-1">{{$name}}</code>{{end}}</p><form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/conversions/properties/allow-all" .Domain) }}"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="text-xs font-semibold text-accent-ink hover:text-accent">Enable all as event properties</button></form></div>{{end}}
+		<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/conversions/properties/allow" .Domain) }}" class="mt-3 flex flex-wrap items-end gap-3"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><label class="min-w-[14rem] flex-1 text-xs font-medium text-muted">Property name<input list="seen-properties" type="text" name="name" required placeholder="plan" class="mt-1 block w-full border-2 border-field bg-card px-3 py-2 text-sm text-body"></label><datalist id="seen-properties">{{range .SeenProperties}}<option value="{{.}}">{{end}}</datalist><label class="text-xs font-medium text-muted">Scope<select name="scope" class="mt-1 block border-2 border-field bg-card px-3 py-2 text-sm text-body"><option value="event">Event</option><option value="session">Session</option></select></label><button class="btn btn-primary">Enable property</button></form>
+		{{if .SeenProperties}}<div class="mt-3 flex flex-wrap items-center gap-3"><p class="text-xs text-muted">Recently seen: {{range $index, $name := .SeenProperties}}{{if $index}}, {{end}}<code class="bg-subtle px-1">{{$name}}</code>{{end}}</p><form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/conversions/properties/allow-all" .Domain) }}"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="text-xs font-semibold text-accent-ink hover:text-accent-ink">Enable all as event properties</button></form></div>{{end}}
 	</div>
 </section>
 
-<section id="funnels" class="mt-6 scroll-mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+<section id="funnels" class="mt-6 scroll-mt-6 border-2 border-line bg-card p-6">
 	<h2 class="text-lg font-semibold text-heading">Funnels</h2>
 	<p class="mt-1 max-w-3xl text-sm text-muted">Combine two to eight goals to see where visitors leave a flow. Sequential funnels permit unrelated activity between steps; strict funnels require consecutive matching steps.</p>
 
-	{{if .Funnels}}<div class="mt-5 space-y-3">{{range .Funnels}}<details class="group rounded-xl border border-line bg-subtle/40 px-4 py-3"><summary class="flex cursor-pointer list-none items-center gap-3"><div class="min-w-0 flex-1"><strong class="text-sm font-semibold text-heading">{{.Name}}</strong><p class="mt-1 text-xs text-muted">{{len .Steps}} steps · {{if .StrictOrder}}Strict{{else}}Sequential{{end}}</p></div><span class="text-xs font-semibold text-accent-ink group-open:hidden">Edit</span><span class="hidden text-xs font-semibold text-accent-ink group-open:inline">Close</span></summary><form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/conversions/funnels/save" $.Domain) }}" class="mt-4 border-t border-line pt-4"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="funnel_id" value="{{.ID}}"><label class="block text-xs font-medium text-muted">Funnel name<input type="text" name="name" value="{{.Name}}" required class="mt-1 block w-full rounded-xl border border-field bg-card px-3 py-2 text-sm text-body"></label><div class="mt-3 grid gap-2 sm:grid-cols-2">{{$funnel := .}}{{range $position := $.FunnelStepSlots}}<label class="text-xs font-medium text-muted">Step {{$position}} {{if gt $position 2}}<span class="font-normal text-faint">(optional)</span>{{end}}<select name="goal_id" {{if le $position 2}}required{{end}} class="mt-1 block w-full rounded-xl border border-field bg-card px-3 py-2 text-sm text-body"><option value="">Choose a goal</option>{{range $.Goals}}<option value="{{.ID}}" {{if eq .ID (stepGoalID $funnel $position)}}selected{{end}}>{{.Label}}</option>{{end}}</select></label>{{end}}</div><fieldset class="mt-3"><legend class="text-xs font-medium text-muted">Matching mode</legend><div class="mt-1 flex flex-wrap gap-4"><label class="flex items-center gap-2 text-sm text-body"><input type="radio" name="mode" value="sequential" {{if not .StrictOrder}}checked{{end}}> Sequential</label><label class="flex items-center gap-2 text-sm text-body"><input type="radio" name="mode" value="strict" {{if .StrictOrder}}checked{{end}}> Strict</label></div></fieldset><button class="mt-4 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-fill-fg">Save funnel</button></form><form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/conversions/funnels/delete" $.Domain) }}" class="mt-2"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="funnel_id" value="{{.ID}}"><button class="text-sm font-medium text-down hover:text-down-ink">Delete funnel</button></form></details>{{end}}</div>{{else}}<div class="mt-5 rounded-xl border border-dashed border-line px-5 py-8 text-center"><p class="font-semibold text-heading">No funnels yet</p><p class="mt-1 text-sm text-muted">Create at least two goals, then connect them into a funnel.</p></div>{{end}}
+	{{if .Funnels}}<div class="mt-5 space-y-3">{{range .Funnels}}<details class="group border-2 border-line bg-subtle/40 px-4 py-3"><summary class="flex cursor-pointer list-none items-center gap-3"><div class="min-w-0 flex-1"><strong class="text-sm font-semibold text-heading">{{.Name}}</strong><p class="mt-1 text-xs text-muted">{{len .Steps}} steps · {{if .StrictOrder}}Strict{{else}}Sequential{{end}}</p></div><span class="text-xs font-semibold text-accent-ink group-open:hidden">Edit</span><span class="hidden text-xs font-semibold text-accent-ink group-open:inline">Close</span></summary><form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/conversions/funnels/save" $.Domain) }}" class="mt-4 border-t border-line pt-4"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="funnel_id" value="{{.ID}}"><label class="block text-xs font-medium text-muted">Funnel name<input type="text" name="name" value="{{.Name}}" required class="mt-1 block w-full border-2 border-field bg-card px-3 py-2 text-sm text-body"></label><div class="mt-3 grid gap-2 sm:grid-cols-2">{{$funnel := .}}{{range $position := $.FunnelStepSlots}}<label class="text-xs font-medium text-muted">Step {{$position}} {{if gt $position 2}}<span class="font-normal text-faint">(optional)</span>{{end}}<select name="goal_id" {{if le $position 2}}required{{end}} class="mt-1 block w-full border-2 border-field bg-card px-3 py-2 text-sm text-body"><option value="">Choose a goal</option>{{range $.Goals}}<option value="{{.ID}}" {{if eq .ID (stepGoalID $funnel $position)}}selected{{end}}>{{.Label}}</option>{{end}}</select></label>{{end}}</div><fieldset class="mt-3"><legend class="text-xs font-medium text-muted">Matching mode</legend><div class="mt-1 flex flex-wrap gap-4"><label class="flex items-center gap-2 text-sm text-body"><input type="radio" name="mode" value="sequential" {{if not .StrictOrder}}checked{{end}}> Sequential</label><label class="flex items-center gap-2 text-sm text-body"><input type="radio" name="mode" value="strict" {{if .StrictOrder}}checked{{end}}> Strict</label></div></fieldset><button class="mt-4 btn btn-primary">Save funnel</button></form><form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/conversions/funnels/delete" $.Domain) }}" class="mt-2"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="funnel_id" value="{{.ID}}"><button class="text-sm font-medium text-down hover:text-down-ink">Delete funnel</button></form></details>{{end}}</div>{{else}}<div class="mt-5 border-2 border-dashed border-line px-5 py-8 text-center"><p class="font-semibold text-heading">No funnels yet</p><p class="mt-1 text-sm text-muted">Create at least two goals, then connect them into a funnel.</p></div>{{end}}
 
-	<details class="mt-5 rounded-xl border border-accent/30 bg-accent/5 p-4" {{if not .Funnels}}open{{end}}><summary class="cursor-pointer text-sm font-semibold text-accent-ink">Add a funnel</summary>{{if lt (len .Goals) 2}}<p class="mt-3 text-sm text-muted">A funnel needs at least two goals. Create those goals above first.</p>{{else}}<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/conversions/funnels/save" .Domain) }}" class="mt-4"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><label class="block text-xs font-medium text-muted">Funnel name<input type="text" name="name" required placeholder="Signup to purchase" class="mt-1 block w-full rounded-xl border border-field bg-card px-3 py-2 text-sm text-body"></label><div class="mt-3 grid gap-2 sm:grid-cols-2">{{range $position := .FunnelStepSlots}}<label class="text-xs font-medium text-muted">Step {{$position}} {{if gt $position 2}}<span class="font-normal text-faint">(optional)</span>{{end}}<select name="goal_id" {{if le $position 2}}required{{end}} class="mt-1 block w-full rounded-xl border border-field bg-card px-3 py-2 text-sm text-body"><option value="">Choose a goal</option>{{range $.Goals}}<option value="{{.ID}}">{{.Label}}</option>{{end}}</select></label>{{end}}</div><fieldset class="mt-3"><legend class="text-xs font-medium text-muted">Matching mode</legend><div class="mt-1 flex flex-wrap gap-4"><label class="flex items-center gap-2 text-sm text-body"><input type="radio" name="mode" value="sequential" checked> Sequential</label><label class="flex items-center gap-2 text-sm text-body"><input type="radio" name="mode" value="strict"> Strict</label></div></fieldset><button class="mt-4 rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">Create funnel</button></form>{{end}}</details>
+	<details class="mt-5 border-2 border-accent/30 bg-accent/5 p-4" {{if not .Funnels}}open{{end}}><summary class="cursor-pointer text-sm font-semibold text-accent-ink">Add a funnel</summary>{{if lt (len .Goals) 2}}<p class="mt-3 text-sm text-muted">A funnel needs at least two goals. Create those goals above first.</p>{{else}}<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/conversions/funnels/save" .Domain) }}" class="mt-4"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><label class="block text-xs font-medium text-muted">Funnel name<input type="text" name="name" required placeholder="Signup to purchase" class="mt-1 block w-full border-2 border-field bg-card px-3 py-2 text-sm text-body"></label><div class="mt-3 grid gap-2 sm:grid-cols-2">{{range $position := .FunnelStepSlots}}<label class="text-xs font-medium text-muted">Step {{$position}} {{if gt $position 2}}<span class="font-normal text-faint">(optional)</span>{{end}}<select name="goal_id" {{if le $position 2}}required{{end}} class="mt-1 block w-full border-2 border-field bg-card px-3 py-2 text-sm text-body"><option value="">Choose a goal</option>{{range $.Goals}}<option value="{{.ID}}">{{.Label}}</option>{{end}}</select></label>{{end}}</div><fieldset class="mt-3"><legend class="text-xs font-medium text-muted">Matching mode</legend><div class="mt-1 flex flex-wrap gap-4"><label class="flex items-center gap-2 text-sm text-body"><input type="radio" name="mode" value="sequential" checked> Sequential</label><label class="flex items-center gap-2 text-sm text-body"><input type="radio" name="mode" value="strict"> Strict</label></div></fieldset><button class="mt-4 btn btn-primary">Create funnel</button></form>{{end}}</details>
 </section>
 {{end}}

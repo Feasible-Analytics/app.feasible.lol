@@ -75,7 +75,7 @@ export function SampledBadge({ sampling, exact, exactFallback = false, onExact }
 			{/* Outlined rather than filled: warn and warn-ink are two shades of
 			    the same amber, so a filled pill would be amber text on amber in
 			    dark mode. The outline reads in both. */}
-			<span className="rounded-sm border border-warn px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-warn uppercase">
+			<span className="border-2 border-warn px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-warn uppercase">
 				{t("dashboard.sampled.badge")}
 			</span>
 
@@ -106,7 +106,7 @@ export function SampledMark({ sampling }: { sampling: Sampling | undefined }) {
 		<span
 			title={explanation}
 			aria-label={explanation}
-			className="rounded-sm border border-warn px-1 py-px text-[9px] leading-none font-semibold tracking-wide text-warn uppercase"
+			className="border-2 border-warn px-1 py-px text-[9px] leading-none font-semibold tracking-wide text-warn uppercase"
 		>
 			{t("dashboard.sampled.badge")}
 		</span>
@@ -155,7 +155,7 @@ function Action({ children, onClick }: { children: React.ReactNode; onClick: () 
 		<button
 			type="button"
 			onClick={onClick}
-			className="font-medium text-accent underline underline-offset-2 transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent-hover"
+			className="font-medium text-accent-ink underline underline-offset-2 transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent-hover"
 		>
 			{children}
 		</button>

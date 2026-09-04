@@ -227,8 +227,16 @@ func TestPublicHeaderHasNarrowViewportContainment(t *testing.T) {
 			t.Errorf("narrow header CSS is missing %q", want)
 		}
 	}
-	if strings.Contains(css, "letter-spacing: -") {
-		t.Fatal("public CSS still uses negative letter spacing")
+	// Negative tracking belongs on the display type and nowhere near a
+	// paragraph. Archivo at 800 needs it to stop a heading reading as spaced;
+	// applied to a line of body copy at 16px it costs legibility for nothing,
+	// and a narrow viewport is where that first shows up as a word breaking.
+	for _, rule := range []string{"body {", ".hero p {", "header.top nav a {"} {
+		block := css[strings.Index(css, rule):]
+		block = block[:strings.Index(block, "}")]
+		if strings.Contains(block, "letter-spacing: -") {
+			t.Errorf("%s tightens tracking on body text", rule)
+		}
 	}
 }
 

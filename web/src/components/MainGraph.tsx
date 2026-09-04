@@ -521,7 +521,7 @@ export function MainGraph({ stats, metric, comparing, annotations = [] }: Props)
 				<div
 					// The tooltip is HTML rather than SVG so it can use the same
 					// card tokens as everything else and wrap its own text.
-					className="pointer-events-none absolute z-20 w-max max-w-56 rounded-md border border-line bg-card px-3 py-2 shadow-lg"
+					className="pointer-events-none absolute z-20 w-max max-w-56 border-2 border-line bg-card px-3 py-2 pop"
 					style={{
 						left: Math.min(Math.max(x(hover) - 70, 4), Math.max(4, width - 160)),
 						top: hovered !== null ? Math.max(4, y(hovered) - 62) : PAD.top,
@@ -576,7 +576,7 @@ export function MainGraph({ stats, metric, comparing, annotations = [] }: Props)
 				<div
 					id={`annotation-tooltip-${openMarker.index}`}
 					role="tooltip"
-					className="pointer-events-none absolute z-30 w-max max-w-64 rounded-md border border-line bg-card px-3 py-2 shadow-lg"
+					className="pointer-events-none absolute z-30 w-max max-w-64 border-2 border-line bg-card px-3 py-2 pop"
 					style={{
 						left: Math.min(Math.max(x(openMarker.index) - 90, 4), Math.max(4, width - 200)),
 						// Anchored to its own bottom rather than its top, so a

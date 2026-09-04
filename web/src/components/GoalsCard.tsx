@@ -95,8 +95,8 @@ export function GoalsCard({ domain, range, filters, exact: exactAnswer, onFilter
 	return (
 		<section
 			ref={ref}
-			className={`tint-languages flex min-h-card flex-col rounded-md border border-line bg-card shadow-sm lg:col-span-2 ${
-				expanded ? "lg:min-h-[640px]" : ""
+			className={`flex min-h-card flex-col border-2 border-line bg-card lg:col-span-2 ${
+ expanded ? "lg:min-h-[640px]" : ""
 			}`}
 		>
 			<header className="flex min-h-12 shrink-0 items-center gap-2 border-b border-line px-3 sm:px-5">
@@ -107,8 +107,8 @@ export function GoalsCard({ domain, range, filters, exact: exactAnswer, onFilter
 							type="button"
 							aria-pressed={tab === candidate}
 							onClick={() => onBehaviorChange({ ...behavior, tab: candidate })}
-							className={`shrink-0 rounded-sm px-2.5 py-1.5 text-xs transition-colors duration-150 ease-[var(--ease-ui)] ${
-								tab === candidate ? "bg-accent/10 font-semibold text-accent" : "font-medium text-muted hover:text-body"
+							className={`shrink-0 px-2.5 py-1.5 text-xs transition-colors duration-150 ease-[var(--ease-ui)] ${
+ tab === candidate ? "bg-accent/10 font-semibold text-accent-ink" : "font-medium text-muted hover:text-body"
 							}`}
 						>
 							{behaviorTabLabel(candidate)}
@@ -123,7 +123,7 @@ export function GoalsCard({ domain, range, filters, exact: exactAnswer, onFilter
 					aria-label={t(expanded ? "dashboard.behavior.collapse" : "dashboard.behavior.expand")}
 					aria-pressed={expanded}
 					onClick={() => setExpanded((value) => !value)}
-					className="ml-auto flex size-7 shrink-0 items-center justify-center rounded-sm text-muted transition-colors duration-150 hover:bg-hover hover:text-body"
+					className="ml-auto flex size-7 shrink-0 items-center justify-center text-muted transition-colors duration-150 hover:bg-hover hover:text-body"
 				>
 					<span aria-hidden="true" className="text-base leading-none">{expanded ? "↙" : "↗"}</span>
 				</button>
@@ -193,7 +193,7 @@ function GoalsPanel({
 		<PanelFrame
 			// The empty states carry their own call to action, so the footer link
 			// would be a second button to the same page a few inches below it.
-			footer={settingsURL && prompt === "rows" ? <a href={settingsURL} className="text-xs font-medium text-muted transition-colors hover:text-accent">{t("dashboard.behavior.goals.manage")} →</a> : undefined}
+			footer={settingsURL && prompt === "rows" ? <a href={settingsURL} className="text-xs font-medium text-muted transition-colors hover:text-accent-ink">{t("dashboard.behavior.goals.manage")} →</a> : undefined}
 		>
 			{prompt !== "rows" ? (
 				<GoalsEmpty prompt={prompt} settingsURL={settingsURL} />
@@ -204,7 +204,7 @@ function GoalsPanel({
 					{rows.length < configured.length && (
 						<p className="pt-2 text-[11px] text-muted">
 							{t("dashboard.goals.hidden", { shown: String(rows.length), configured: String(configured.length) })}
-							{settingsURL && <> <a href={settingsURL} className="font-medium text-muted underline underline-offset-2 transition-colors hover:text-accent">{t("dashboard.goals.see_all")}</a></>}
+							{settingsURL && <> <a href={settingsURL} className="font-medium text-muted underline underline-offset-2 transition-colors hover:text-accent-ink">{t("dashboard.goals.see_all")}</a></>}
 						</p>
 					)}
 					<div className="grid h-8 grid-cols-[minmax(0,1fr)_60px_60px_60px] items-center gap-2 text-[11px] font-medium tracking-wide text-muted uppercase sm:grid-cols-[minmax(0,1fr)_90px_90px_80px]">
@@ -217,9 +217,9 @@ function GoalsPanel({
 							const revenue = row.goal.is_revenue ? formatMoney(row.revenue, row.currency ?? row.goal.currency ?? "") : "";
 
 							return (
-								<li key={row.goal.id} className="group/row relative grid min-h-11 grid-cols-[minmax(0,1fr)_60px_60px_60px] items-center gap-2 rounded-sm sm:grid-cols-[minmax(0,1fr)_90px_90px_80px]">
+								<li key={row.goal.id} className="group/row relative grid min-h-11 grid-cols-[minmax(0,1fr)_60px_60px_60px] items-center gap-2 sm:grid-cols-[minmax(0,1fr)_90px_90px_80px]">
 									{row.unique_conversions > 0 && <Bar share={row.unique_conversions / peak} />}
-									{filter && <button type="button" onClick={() => onFilter(filter, row.label)} title={t("dashboard.row.filter_by", { name: row.label })} className="absolute inset-0 rounded-sm"><span className="sr-only">{t("dashboard.row.filter_by", { name: row.label })}</span></button>}
+									{filter && <button type="button" onClick={() => onFilter(filter, row.label)} title={t("dashboard.row.filter_by", { name: row.label })} className="absolute inset-0"><span className="sr-only">{t("dashboard.row.filter_by", { name: row.label })}</span></button>}
 									<span className="pointer-events-none relative min-w-0 pl-2"><span className="block truncate text-sm font-medium text-body" title={row.label}>{row.label}</span>{revenue && <span className="block truncate text-[11px] text-muted">{t("dashboard.behavior.goals.revenue", { amount: revenue })}</span>}</span>
 									<NumberCell value={row.unique_conversions} /><NumberCell value={row.total_conversions} />
 									<span className="tnum pointer-events-none relative text-right text-sm text-body" title={metricTitle("conversion_rate", row.conversion_rate)}>{metricAxisValue("conversion_rate", row.conversion_rate)}</span>
@@ -297,7 +297,7 @@ function PropertiesPanel({ domain, request, enabled, onFilter, settingsURL, sele
 	if (list.data.length === 0) return <BehaviorEmpty title={t("dashboard.behavior.properties.empty")} body={t("dashboard.behavior.properties.empty_hint")} href={settingsURL} />;
 
 	return (
-		<PanelFrame footer={settingsURL ? <a href={settingsURL} className="text-xs font-medium text-muted transition-colors hover:text-accent">{t("dashboard.behavior.properties.manage")} →</a> : undefined}>
+		<PanelFrame footer={settingsURL ? <a href={settingsURL} className="text-xs font-medium text-muted transition-colors hover:text-accent-ink">{t("dashboard.behavior.properties.manage")} →</a> : undefined}>
 			<SelectorBar label={t("dashboard.behavior.properties.selector_label")} value={current} onChange={onSelected}>
 				{list.data.map((property) => <option key={property.id} value={property.name}>{property.name} · {propertyScopeLabel(property.scope)}</option>)}
 			</SelectorBar>
@@ -318,9 +318,9 @@ function PropertyRows({ report, name, onFilter }: { report: PropertyReport; name
 			</div>
 			<ul className="pb-2">
 				{report.rows.map((row) => (
-					<li key={`${row.missing ? "missing" : "value"}:${row.value}`} className="group/row relative grid h-10 grid-cols-[minmax(0,1fr)_70px_70px_70px] items-center gap-2 rounded-sm sm:grid-cols-[minmax(0,1fr)_100px_100px_100px]">
+					<li key={`${row.missing ? "missing" : "value"}:${row.value}`} className="group/row relative grid h-10 grid-cols-[minmax(0,1fr)_70px_70px_70px] items-center gap-2 sm:grid-cols-[minmax(0,1fr)_100px_100px_100px]">
 						{row.visitors > 0 && <Bar share={row.visitors / peak} />}
-						{!row.missing && <button type="button" onClick={() => onFilter({ operator: "is", dimension: `event:props:${name}`, values: [row.value] }, row.value)} title={t("dashboard.row.filter_by", { name: row.value })} className="absolute inset-0 rounded-sm"><span className="sr-only">{t("dashboard.row.filter_by", { name: row.value })}</span></button>}
+						{!row.missing && <button type="button" onClick={() => onFilter({ operator: "is", dimension: `event:props:${name}`, values: [row.value] }, row.value)} title={t("dashboard.row.filter_by", { name: row.value })} className="absolute inset-0"><span className="sr-only">{t("dashboard.row.filter_by", { name: row.value })}</span></button>}
 						<span className={`pointer-events-none relative truncate pl-2 text-sm ${row.missing ? "italic text-muted" : "text-body"}`} title={row.value}>{row.value}</span>
 						<NumberCell value={row.visitors} /><NumberCell value={row.visits} /><NumberCell value={row.events} />
 					</li>
@@ -352,7 +352,7 @@ function FunnelsPanel({ domain, request, enabled, settingsURL, selected, onSelec
 	if (list.data.length === 0) return <BehaviorEmpty title={t("dashboard.behavior.funnels.empty")} body={t("dashboard.behavior.funnels.empty_hint")} href={settingsURL} />;
 
 	return (
-		<PanelFrame footer={settingsURL ? <a href={settingsURL} className="text-xs font-medium text-muted transition-colors hover:text-accent">{t("dashboard.behavior.funnels.manage")} →</a> : undefined}>
+		<PanelFrame footer={settingsURL ? <a href={settingsURL} className="text-xs font-medium text-muted transition-colors hover:text-accent-ink">{t("dashboard.behavior.funnels.manage")} →</a> : undefined}>
 			<SelectorBar label={t("dashboard.behavior.funnels.selector_label")} value={String(current)} onChange={(value) => onSelected(Number(value))}>
 				{list.data.map((funnel) => <option key={funnel.id} value={funnel.id}>{funnel.name}</option>)}
 			</SelectorBar>
@@ -372,9 +372,9 @@ function FunnelChart({ report }: { report: FunnelReport }) {
 			{report.steps.length === 0 ? <BehaviorEmpty title={t("dashboard.behavior.funnels.no_data")} body={t("dashboard.empty.hint")} /> : (
 				<ol className="space-y-2">
 					{report.steps.map((step, index) => (
-						<li key={`${step.position}:${step.goal.id}`} className="relative overflow-hidden rounded-md border border-line bg-page/40 px-3 py-2.5">
+						<li key={`${step.position}:${step.goal.id}`} className="relative overflow-hidden border-2 border-line bg-page/40 px-3 py-2.5">
 							<span aria-hidden="true" className="absolute inset-y-0 left-0 bg-accent/10 transition-[width] duration-200" style={{ width: `${Math.max(0.7, (step.visitors / first) * 100)}%` }} />
-							<div className="relative flex items-center gap-3"><span className="tnum flex size-6 shrink-0 items-center justify-center rounded-full bg-card text-xs font-semibold text-muted shadow-sm">{index + 1}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-body">{step.label}</span>{index > 0 && <span className="block text-[11px] text-down">{t("dashboard.behavior.funnels.dropoff", { count: compact(step.drop_off), rate: metricAxisValue("conversion_rate", step.drop_off_rate) })}</span>}</span><span className="text-right"><span className="tnum block text-sm font-semibold text-body" title={exact(step.visitors)}><span className="sr-only">{exact(step.visitors)}</span><span aria-hidden="true">{compact(step.visitors)}</span></span><span className="tnum block text-[11px] text-muted">{metricAxisValue("conversion_rate", step.conversion_rate)}</span></span></div>
+							<div className="relative flex items-center gap-3"><span className="tnum flex size-6 shrink-0 items-center justify-center bg-card text-xs font-semibold text-muted">{index + 1}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-body">{step.label}</span>{index > 0 && <span className="block text-[11px] text-down">{t("dashboard.behavior.funnels.dropoff", { count: compact(step.drop_off), rate: metricAxisValue("conversion_rate", step.drop_off_rate) })}</span>}</span><span className="text-right"><span className="tnum block text-sm font-semibold text-body" title={exact(step.visitors)}><span className="sr-only">{exact(step.visitors)}</span><span aria-hidden="true">{compact(step.visitors)}</span></span><span className="tnum block text-[11px] text-muted">{metricAxisValue("conversion_rate", step.conversion_rate)}</span></span></div>
 						</li>
 					))}
 				</ol>
@@ -425,16 +425,16 @@ function ExplorePanel({ domain, request, enabled, behavior, onBehaviorChange }: 
 		<PanelFrame>
 			<div className="flex flex-col gap-2 border-b border-line px-4 py-3 sm:px-5">
 				<div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(160px,0.45fr)]">
-					<label className="min-w-0 text-[11px] font-medium tracking-wide text-muted uppercase">{t("dashboard.behavior.explore.start")}<select value={anchor ? anchorKey(anchor) : ""} onChange={(event) => chooseAnchor(event.target.value)} className="mt-1 block h-control w-full rounded-md border border-line bg-card px-2.5 text-sm text-body">{anchor && !visibleOptions.some((item) => anchorKey(item) === anchorKey(anchor)) && <option value={anchorKey(anchor)}>{anchorLabel(anchor)}</option>}<AnchorGroup label={t("dashboard.behavior.explore.pages")} anchors={visibleOptions.filter((item) => item.type === "page")} /><AnchorGroup label={t("dashboard.behavior.explore.events")} anchors={visibleOptions.filter((item) => item.type === "event")} /><AnchorGroup label={t("dashboard.behavior.explore.goals")} anchors={visibleOptions.filter((item) => item.type === "goal")} /></select></label>
-					<label className="text-[11px] font-medium tracking-wide text-muted uppercase">{t("dashboard.behavior.explore.search_label")}<input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("dashboard.behavior.explore.search_placeholder")} className="mt-1 block h-control w-full rounded-md border border-line bg-page px-2.5 text-sm font-normal tracking-normal text-body normal-case placeholder:text-muted" /></label>
+					<label className="min-w-0 text-[11px] font-medium tracking-wide text-muted uppercase">{t("dashboard.behavior.explore.start")}<select value={anchor ? anchorKey(anchor) : ""} onChange={(event) => chooseAnchor(event.target.value)} className="mt-1 block h-control w-full border-2 border-line bg-card px-2.5 text-sm text-body">{anchor && !visibleOptions.some((item) => anchorKey(item) === anchorKey(anchor)) && <option value={anchorKey(anchor)}>{anchorLabel(anchor)}</option>}<AnchorGroup label={t("dashboard.behavior.explore.pages")} anchors={visibleOptions.filter((item) => item.type === "page")} /><AnchorGroup label={t("dashboard.behavior.explore.events")} anchors={visibleOptions.filter((item) => item.type === "event")} /><AnchorGroup label={t("dashboard.behavior.explore.goals")} anchors={visibleOptions.filter((item) => item.type === "goal")} /></select></label>
+					<label className="text-[11px] font-medium tracking-wide text-muted uppercase">{t("dashboard.behavior.explore.search_label")}<input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("dashboard.behavior.explore.search_placeholder")} className="mt-1 block h-control w-full border-2 border-line bg-page px-2.5 text-sm font-normal tracking-normal text-body normal-case placeholder:text-muted" /></label>
 				</div>
 				<div className="flex flex-wrap items-center gap-2">
-					<div className="flex h-control rounded-md border border-line bg-page p-0.5" aria-label={t("dashboard.behavior.explore.direction")}>{(["backward", "forward"] as JourneyDirection[]).map((candidate) => <button key={candidate} type="button" aria-pressed={direction === candidate} onClick={() => onBehaviorChange({ ...behavior, exploreDirection: candidate, exploreTrail: [] })} className={`rounded-sm px-3 text-xs transition-colors ${direction === candidate ? "bg-card font-medium text-body shadow-sm" : "text-muted hover:text-body"}`}>{journeyDirectionLabel(candidate)}</button>)}</div>
-					<div className="flex h-control rounded-md border border-line bg-page p-0.5" aria-label={t("dashboard.behavior.explore.grouping")}>{(["exact", "prefix"] as const).map((candidate) => <button key={candidate} type="button" aria-pressed={behavior.exploreGrouping === candidate} onClick={() => onBehaviorChange({ ...behavior, exploreGrouping: candidate, exploreTrail: [] })} className={`rounded-sm px-3 text-xs transition-colors ${behavior.exploreGrouping === candidate ? "bg-card font-medium text-body shadow-sm" : "text-muted hover:text-body"}`}>{journeyGroupingLabel(candidate)}</button>)}</div>
+					<div className="flex h-control border-2 border-line bg-page p-0.5" aria-label={t("dashboard.behavior.explore.direction")}>{(["backward", "forward"] as JourneyDirection[]).map((candidate) => <button key={candidate} type="button" aria-pressed={direction === candidate} onClick={() => onBehaviorChange({ ...behavior, exploreDirection: candidate, exploreTrail: [] })} className={` px-3 text-xs transition-colors ${direction === candidate ? "bg-card font-medium text-body" : "text-muted hover:text-body"}`}>{journeyDirectionLabel(candidate)}</button>)}</div>
+					<div className="flex h-control border-2 border-line bg-page p-0.5" aria-label={t("dashboard.behavior.explore.grouping")}>{(["exact", "prefix"] as const).map((candidate) => <button key={candidate} type="button" aria-pressed={behavior.exploreGrouping === candidate} onClick={() => onBehaviorChange({ ...behavior, exploreGrouping: candidate, exploreTrail: [] })} className={` px-3 text-xs transition-colors ${behavior.exploreGrouping === candidate ? "bg-card font-medium text-body" : "text-muted hover:text-body"}`}>{journeyGroupingLabel(candidate)}</button>)}</div>
 				</div>
 			</div>
 
-			{trail.length > 0 && <nav aria-label={t("dashboard.behavior.explore.trail")} className="scroll-thin flex items-center gap-1 overflow-x-auto border-b border-line px-4 py-2 text-xs sm:px-5">{trail.map((item, index) => <span key={`${anchorKey(item)}:${index}`} className="flex shrink-0 items-center gap-1"><button type="button" onClick={() => rewind(index)} className="max-w-40 truncate rounded-sm px-1.5 py-1 text-muted hover:bg-hover hover:text-body">{anchorLabel(item)}</button><span aria-hidden="true" className="text-muted">›</span></span>)}<span className="shrink-0 font-medium text-body">{anchor && anchorLabel(anchor)}</span></nav>}
+			{trail.length > 0 && <nav aria-label={t("dashboard.behavior.explore.trail")} className="scroll-thin flex items-center gap-1 overflow-x-auto border-b border-line px-4 py-2 text-xs sm:px-5">{trail.map((item, index) => <span key={`${anchorKey(item)}:${index}`} className="flex shrink-0 items-center gap-1"><button type="button" onClick={() => rewind(index)} className="max-w-40 truncate px-1.5 py-1 text-muted hover:bg-hover hover:text-body">{anchorLabel(item)}</button><span aria-hidden="true" className="text-muted">›</span></span>)}<span className="shrink-0 font-medium text-body">{anchor && anchorLabel(anchor)}</span></nav>}
 
 			{report.error ? <PanelFailure state={report} compact /> : !report.data ? <PanelLoading label={t("dashboard.behavior.explore.loading_steps")} compact /> : report.data.steps.length === 0 ? <BehaviorEmpty title={t("dashboard.behavior.explore.no_steps")} body={t("dashboard.empty.hint")} /> : <JourneyRows report={report.data} onContinue={continueTo} />}
 		</PanelFrame>
@@ -454,14 +454,14 @@ function JourneyRows({ report, onContinue }: { report: JourneyReport; onContinue
 	return (
 		<div className="px-4 py-2 sm:px-5">
 			<div className="mb-1 flex items-center justify-between text-xs text-muted"><span>{journeyHeading(report.direction, anchorLabel(report.anchor))}</span><span>{t("dashboard.behavior.explore.anchor_visitors", { count: compact(report.visitors) })}</span></div>
-			<ul>{report.steps.map((step, index) => <li key={`${anchorKey(step.anchor)}:${index}`} className="group/row relative flex min-h-10 items-center rounded-sm">{step.visitors > 0 && <Bar share={step.visitors / peak} />}{!step.terminal && <button type="button" onClick={() => onContinue(step.anchor)} className="absolute inset-0 rounded-sm" title={t("dashboard.behavior.explore.continue", { name: anchorLabel(step.anchor) })}><span className="sr-only">{t("dashboard.behavior.explore.continue", { name: anchorLabel(step.anchor) })}</span></button>}<span className={`pointer-events-none relative min-w-0 flex-1 truncate pl-2 text-sm ${step.terminal ? "italic text-muted" : "font-medium text-body"}`}>{anchorLabel(step.anchor)}</span><span className="tnum pointer-events-none relative w-20 text-right text-sm text-body" title={exact(step.visitors)}><span className="sr-only">{exact(step.visitors)}</span><span aria-hidden="true">{compact(step.visitors)}</span></span><span className="pointer-events-none relative w-6 text-right text-muted" aria-hidden="true">{step.terminal ? "" : "→"}</span></li>)}</ul>
+			<ul>{report.steps.map((step, index) => <li key={`${anchorKey(step.anchor)}:${index}`} className="group/row relative flex min-h-10 items-center">{step.visitors > 0 && <Bar share={step.visitors / peak} />}{!step.terminal && <button type="button" onClick={() => onContinue(step.anchor)} className="absolute inset-0" title={t("dashboard.behavior.explore.continue", { name: anchorLabel(step.anchor) })}><span className="sr-only">{t("dashboard.behavior.explore.continue", { name: anchorLabel(step.anchor) })}</span></button>}<span className={`pointer-events-none relative min-w-0 flex-1 truncate pl-2 text-sm ${step.terminal ? "italic text-muted" : "font-medium text-body"}`}>{anchorLabel(step.anchor)}</span><span className="tnum pointer-events-none relative w-20 text-right text-sm text-body" title={exact(step.visitors)}><span className="sr-only">{exact(step.visitors)}</span><span aria-hidden="true">{compact(step.visitors)}</span></span><span className="pointer-events-none relative w-6 text-right text-muted" aria-hidden="true">{step.terminal ? "" : "→"}</span></li>)}</ul>
 		</div>
 	);
 }
 
 /** SelectorBar gives Properties and Funnels identical control treatment. */
 function SelectorBar({ label, value, onChange, children }: { label: string; value: string; onChange: (value: string) => void; children: React.ReactNode }) {
-	return <div className="border-b border-line px-4 py-3 sm:px-5"><label className="block max-w-sm text-[11px] font-medium tracking-wide text-muted uppercase">{label}<select value={value} onChange={(event) => onChange(event.target.value)} className="mt-1 block h-control w-full rounded-md border border-line bg-card px-2.5 text-sm text-body">{children}</select></label></div>;
+	return <div className="border-b border-line px-4 py-3 sm:px-5"><label className="block max-w-sm text-[11px] font-medium tracking-wide text-muted uppercase">{label}<select value={value} onChange={(event) => onChange(event.target.value)} className="mt-1 block h-control w-full border-2 border-line bg-card px-2.5 text-sm text-body">{children}</select></label></div>;
 }
 
 /** PanelFrame pins optional management navigation to the bottom. */
@@ -471,7 +471,7 @@ function PanelFrame({ children, footer }: { children: React.ReactNode; footer?: 
 
 /** BehaviorEmpty serves unconfigured and zero-result states without hiding tabs. */
 function BehaviorEmpty({ title, body, href, action }: { title: string; body: string; href?: string; action?: string }) {
-	return <div className="flex min-h-[300px] flex-col items-center justify-center gap-1.5 px-6 text-center"><p className="text-sm font-medium text-body">{title}</p><p className="max-w-md text-xs leading-relaxed text-muted">{body}</p>{href && <a href={href} className="mt-2 rounded-md border border-line px-3 py-1.5 text-xs font-medium text-body transition-colors hover:bg-hover">{action ?? t("dashboard.behavior.configure")}</a>}</div>;
+	return <div className="flex min-h-[300px] flex-col items-center justify-center gap-1.5 px-6 text-center"><p className="text-sm font-medium text-body">{title}</p><p className="max-w-md text-xs leading-relaxed text-muted">{body}</p>{href && <a href={href} className="mt-2 border-2 border-line px-3 py-1.5 text-xs font-medium text-body transition-colors hover:bg-hover">{action ?? t("dashboard.behavior.configure")}</a>}</div>;
 }
 
 /** PanelLoading preserves the tabs while one selected report is loading. */

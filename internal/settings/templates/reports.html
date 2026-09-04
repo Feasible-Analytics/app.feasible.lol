@@ -11,7 +11,7 @@
 		<strong class="font-semibold text-heading">{{.Timezone}}</strong>{{ t $.Lang "settings.reports.lede_after" }}
 	</p>
 
-	<section class="rounded-2xl border border-line bg-card p-6 shadow-sm">
+	<section class="border-2 border-line bg-card p-6">
 		<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.reports.scheduled_heading" }}</h2>
 		<p class="mt-1 text-sm text-muted">
 			{{ t $.Lang "settings.reports.scheduled_hint_before" }}
@@ -27,25 +27,25 @@
 				<div class="mb-2 flex flex-wrap items-center gap-2">
 					<strong class="min-w-[82px] font-semibold text-heading">{{.Title}}</strong>
 					<label class="flex items-center gap-1.5 text-sm text-body">
-						<input type="checkbox" name="enabled" value="1" {{if .Enabled}}checked{{end}} class="rounded border-field text-accent-ink focus:ring-accent" />
+						<input type="checkbox" name="enabled" value="1" {{if .Enabled}}checked{{end}} class="border-field text-accent-ink focus:ring-accent" />
 						{{ t $.Lang "settings.reports.enabled" }}
 					</label>
-					<span class="rounded-md bg-subtle px-2 py-0.5 text-xs font-medium text-muted">{{ t $.Lang "settings.reports.next_run" "when" .NextRun }}</span>
-					{{if .LastSent}}<span class="rounded-md bg-subtle px-2 py-0.5 text-xs font-medium text-muted">{{ t $.Lang "settings.reports.last_sent" "when" .LastSent }}</span>{{end}}
+					<span class="bg-subtle px-2 py-0.5 text-xs font-medium text-muted">{{ t $.Lang "settings.reports.next_run" "when" .NextRun }}</span>
+					{{if .LastSent}}<span class="bg-subtle px-2 py-0.5 text-xs font-medium text-muted">{{ t $.Lang "settings.reports.last_sent" "when" .LastSent }}</span>{{end}}
 				</div>
 				<div class="grid gap-2 sm:grid-cols-2">
-					<input type="text" name="recipients" value="{{.RecipientList}}" placeholder="{{ t $.Lang "settings.reports.recipients_placeholder" }}" class="rounded-xl border border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
-					<input type="url" name="slack_webhook_url" value="{{.SlackWebhookURL}}" placeholder="{{ t $.Lang "settings.reports.slack_placeholder" }}" class="rounded-xl border border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
+					<input type="text" name="recipients" value="{{.RecipientList}}" placeholder="{{ t $.Lang "settings.reports.recipients_placeholder" }}" class="border-2 border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
+					<input type="url" name="slack_webhook_url" value="{{.SlackWebhookURL}}" placeholder="{{ t $.Lang "settings.reports.slack_placeholder" }}" class="border-2 border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
 				</div>
 				<div class="mt-2 flex flex-wrap items-center gap-2">
-					<button type="submit" class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "common.action.save" }}</button>
-					<button type="submit" name="send_now" value="1" class="rounded-xl border border-field px-4 py-2 text-sm font-semibold text-body hover:bg-hover">{{ t $.Lang "settings.reports.send_now" }}</button>
+					<button type="submit" class="btn btn-primary">{{ t $.Lang "common.action.save" }}</button>
+					<button type="submit" name="send_now" value="1" class="btn btn-secondary">{{ t $.Lang "settings.reports.send_now" }}</button>
 				</div>
 			</form>
 		{{end}}
 	</section>
 
-	<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+	<section class="mt-6 border-2 border-line bg-card p-6">
 		<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.reports.alerts_heading" }}</h2>
 		<p class="mt-1 text-sm text-muted">
 			{{ t $.Lang "settings.reports.alerts_hint_before" }}
@@ -60,31 +60,31 @@
 				<div class="mb-2 flex flex-wrap items-center gap-2">
 					<strong class="min-w-[82px] font-semibold text-heading">{{.Title}}</strong>
 					<label class="flex items-center gap-1.5 text-sm text-body">
-						<input type="checkbox" name="enabled" value="1" {{if .Enabled}}checked{{end}} class="rounded border-field text-accent-ink focus:ring-accent" />
+						<input type="checkbox" name="enabled" value="1" {{if .Enabled}}checked{{end}} class="border-field text-accent-ink focus:ring-accent" />
 						{{ t $.Lang "settings.reports.enabled" }}
 					</label>
-					<span class="rounded-md bg-subtle px-2 py-0.5 text-xs font-medium text-muted">{{.Description}}</span>
+					<span class="bg-subtle px-2 py-0.5 text-xs font-medium text-muted">{{.Description}}</span>
 				</div>
 				<div class="grid gap-2 sm:grid-cols-2">
 					<label class="block text-sm font-medium text-body">
 						{{ t $.Lang "settings.reports.threshold" }}
-						<input type="number" name="threshold" value="{{.Threshold}}" min="0" class="mt-1 w-full rounded-xl border border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
+						<input type="number" name="threshold" value="{{.Threshold}}" min="0" class="mt-1 w-full border-2 border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
 					</label>
 					{{if eq .Kind "drop"}}
 						<label class="block text-sm font-medium text-body">
 							{{ t $.Lang "settings.reports.window_hours" }}
-							<input type="number" name="window_hours" value="{{.WindowHours}}" min="1" max="168" class="mt-1 w-full rounded-xl border border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
+							<input type="number" name="window_hours" value="{{.WindowHours}}" min="1" max="168" class="mt-1 w-full border-2 border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
 						</label>
 					{{end}}
-					<input type="text" name="recipients" value="{{.RecipientList}}" placeholder="{{ t $.Lang "settings.reports.alert_recipients_placeholder" }}" class="rounded-xl border border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
-					<input type="url" name="slack_webhook_url" value="{{.SlackWebhookURL}}" placeholder="{{ t $.Lang "settings.reports.slack_placeholder" }}" class="rounded-xl border border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
+					<input type="text" name="recipients" value="{{.RecipientList}}" placeholder="{{ t $.Lang "settings.reports.alert_recipients_placeholder" }}" class="border-2 border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
+					<input type="url" name="slack_webhook_url" value="{{.SlackWebhookURL}}" placeholder="{{ t $.Lang "settings.reports.slack_placeholder" }}" class="border-2 border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25" />
 				</div>
-				<div class="mt-2 flex flex-wrap items-center gap-2"><button type="submit" class="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">{{ t $.Lang "common.action.save" }}</button></div>
+				<div class="mt-2 flex flex-wrap items-center gap-2"><button type="submit" class="btn btn-primary">{{ t $.Lang "common.action.save" }}</button></div>
 			</form>
 		{{end}}
 	</section>
 
-	<section class="mt-6 rounded-2xl border border-line bg-card p-6 shadow-sm">
+	<section class="mt-6 border-2 border-line bg-card p-6">
 		<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.reports.deliveries_heading" }}</h2>
 		<p class="mt-1 text-sm text-muted">
 			{{ t $.Lang "settings.reports.deliveries_hint" }}

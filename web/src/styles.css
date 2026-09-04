@@ -1,6 +1,6 @@
 /*
  * styles.css
- * The design system: teal on slate, the layout tokens, and the two flourishes.
+ * The design system: the dashboard's own tokens, and the flourishes.
  *
  * Created: 2026-08-30
  * Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -39,123 +39,70 @@
 }
 
 :root {
-	/* The report-row bar tint. Each card overrides the pair; these are the
-	   neutral defaults a card that forgot to would fall back to. */
-	--fs-bar: #f1f5f9;
-	--fs-bar-strong: #e2e8f0;
+	/* The report-row bar tint — the neutral bar behind a row's label, sized to
+	   its share of the total. Bars are neutral and the highlight is the flag,
+	   exactly as the price chart on the marketing site sets them: five hues of
+	   pastel would be five more colours competing with the one that means
+	   something. */
+	--fs-bar: #e2e0df;
+	--fs-bar-strong: #d3d0cf;
 
 	/* The scrim behind the drawer is deliberately light. A drawer that dims the
 	   page as hard as a modal throws away the one thing it is for, which is
 	   keeping the dashboard readable behind it. */
-	--fs-scrim: rgb(15 23 42 / 0.16);
+	--fs-scrim: rgb(32 30 29 / 0.16);
 
 	/* The shortcut overlay is the one modal in the product, and it is the one
 	   surface whose content has nothing to do with the numbers behind it. It
 	   dims properly, because there is nothing back there worth reading while it
 	   is open. */
-	--fs-scrim-modal: rgb(15 23 42 / 0.45);
+	--fs-scrim-modal: rgb(32 30 29 / 0.45);
 
-	/* The choropleth ramp, five steps from the palest teal to the accent. It is
-	   the same teal family as the accent in ui/tokens.css and is written out
-	   step by step rather than interpolated, because a map has to pick a shade
-	   per country and five named steps is what a legend can explain.
+	/* The choropleth ramp, five steps from the palest tint of the flag to the
+	   flag itself. It is written out step by step rather than interpolated,
+	   because a map has to pick a shade per country and five named steps is what
+	   a legend can explain.
 
 	   These live here rather than in the shared token file for the same reason
-	   the row tints above do: there is no map on a sign-in form, and exporting
-	   a palette to one consumer is how a shared file becomes a junk drawer. */
-	/* A step darker than the card's usual neutral, on purpose. The palest teal on
+	   the row tints above do: there is no map on a sign-in form, and exporting a
+	   palette to one consumer is how a shared file becomes a junk drawer. */
+	/* A step darker than the card's usual neutral, on purpose. The palest step on
 	   the ramp is very light, and "nobody at all" has to be tellable from "one
 	   visitor" at a glance or a broken tracker looks like a quiet week. */
-	--fs-map-empty: #e2e8f0;
-	--fs-map-line: #94a3b8;
-	--fs-map-1: #ccfbf1;
-	--fs-map-2: #99f6e4;
-	--fs-map-3: #5eead4;
-	--fs-map-4: #2dd4bf;
-	--fs-map-5: #14b8a6;
+	--fs-map-empty: #dcd9d8;
+	--fs-map-line: #9b9797;
+	--fs-map-1: #fbdbd5;
+	--fs-map-2: #f6b5a6;
+	--fs-map-3: #f28874;
+	--fs-map-4: #ee5b40;
+	--fs-map-5: #ec3013;
 }
 
 .dark {
-	/* Every card's tint collapses to the same neutral in the dark. The five
-	   hues only read against white; on slate they turn into five shades of mud
-	   that carry no meaning and cost contrast. */
-	--fs-bar: rgb(100 116 139 / 0.15);
-	--fs-bar-strong: rgb(100 116 139 / 0.3);
+	--fs-bar: rgb(243 242 242 / 0.1);
+	--fs-bar-strong: rgb(243 242 242 / 0.2);
 
-	--fs-scrim: rgb(2 6 23 / 0.5);
-	--fs-scrim-modal: rgb(2 6 23 / 0.7);
+	--fs-scrim: rgb(13 12 12 / 0.5);
+	--fs-scrim-modal: rgb(13 12 12 / 0.7);
 
-	/* The dark ramp runs the other way through the same teal: from the deepest
+	/* The dark ramp runs the other way through the same red: from the deepest
 	   shade up to the accent, so "more visitors" is still "brighter" against a
-	   dark card. The empty and the border are slate rather than teal — a country
-	   with nothing in it must not read as the bottom of the scale. */
-	--fs-map-empty: #1e293b;
-	--fs-map-line: #334155;
-	--fs-map-1: #134e4a;
-	--fs-map-2: #115e59;
-	--fs-map-3: #0f766e;
-	--fs-map-4: #0d9488;
-	--fs-map-5: #14b8a6;
-}
-
-/* The per-card tints, light mode only — the dark values above win because .dark
-   is applied to <html> and these are set on a descendant, so specificity has to
-   be handled by re-declaring them under .dark. */
-.tint-sources {
-	--fs-bar: #f0f9ff;
-	--fs-bar-strong: #e0f2fe;
-}
-
-.tint-pages {
-	--fs-bar: #f0fdfa;
-	--fs-bar-strong: #ccfbf1;
-}
-
-.tint-locations {
-	--fs-bar: #f5f3ff;
-	--fs-bar-strong: #ede9fe;
-}
-
-.tint-devices {
-	--fs-bar: #fffbeb;
-	--fs-bar-strong: #fef3c7;
-}
-
-.tint-languages {
-	--fs-bar: #fff1f2;
-	--fs-bar-strong: #ffe4e6;
-}
-
-.dark .tint-sources,
-.dark .tint-pages,
-.dark .tint-locations,
-.dark .tint-devices,
-.dark .tint-languages {
-	--fs-bar: rgb(100 116 139 / 0.15);
-	--fs-bar-strong: rgb(100 116 139 / 0.3);
+	   dark card. The empty and the border are warm neutral rather than red — a
+	   country with nothing in it must not read as the bottom of the scale. */
+	--fs-map-empty: #2b2827;
+	--fs-map-line: #4a4645;
+	--fs-map-1: #4a1409;
+	--fs-map-2: #7c1405;
+	--fs-map-3: #ae1800;
+	--fs-map-4: #dd2b0f;
+	--fs-map-5: #ff5a3c;
 }
 
 @layer base {
-	html {
-		background-color: var(--fs-page);
-	}
-
 	body {
+		font-family: var(--font-sans);
 		background-color: var(--fs-page);
 		color: var(--fs-body);
-		-webkit-font-smoothing: antialiased;
-	}
-
-	/* Tabular figures everywhere a number sits in a column. Proportional digits
-	   make a table of counts shiver as the values change, which reads as the
-	   page being broken rather than the numbers being live. */
-	.tnum {
-		font-variant-numeric: tabular-nums;
-	}
-
-	:focus-visible {
-		outline: 2px solid var(--fs-accent);
-		outline-offset: 2px;
 	}
 }
 

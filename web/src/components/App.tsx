@@ -435,7 +435,7 @@ function AnalyticsDashboard() {
 				{live ? (
 					<Realtime domain={state.domain} filters={filters} />
 				) : (
-					<section className="overflow-hidden rounded-md border border-line bg-card shadow-sm">
+					<section className="overflow-hidden border-2 border-line bg-card">
 						{/* Above the tiles rather than beside one of them:
 						    sampling applies to every figure in the section, and
 						    a caveat attached to a single number reads as being
@@ -533,15 +533,15 @@ function LockedDashboard({ boot }: { boot: Bootstrap }) {
 				locked
 			/>
 			<main className="mx-auto max-w-2xl px-4 py-16 sm:px-5">
-				<section className="rounded-xl border border-line bg-card p-8 text-center shadow-sm">
-					<div className="mx-auto flex size-12 items-center justify-center rounded-full bg-down/10 text-xl text-down">!</div>
+				<section className="border-2 border-line bg-card p-8 text-center">
+					<div className="mx-auto flex size-12 items-center justify-center bg-down/10 text-xl text-down">!</div>
 					<h1 className="mt-4 text-xl font-semibold text-body">{t("dashboard.locked.title")}</h1>
 					<p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-muted">{boot.lock?.error}</p>
 					<div className="mt-6 flex flex-wrap justify-center gap-3">
-						{boot.navigation?.billing_url && <a href={boot.navigation.billing_url} className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white dark:text-slate-950">{t("dashboard.locked.billing")}</a>}
-						{boot.navigation?.export_url && <a href={boot.navigation.export_url} className="rounded-md border border-line px-4 py-2 text-sm font-medium text-body hover:bg-hover">{t("dashboard.locked.export")}</a>}
-						<a href={boot.navigation?.sites_url} className="rounded-md border border-line px-4 py-2 text-sm font-medium text-body hover:bg-hover">{t("dashboard.navigation.sites")}</a>
-						<a href={boot.navigation?.account_url} className="rounded-md border border-line px-4 py-2 text-sm font-medium text-body hover:bg-hover">{t("dashboard.navigation.account_settings")}</a>
+						{boot.navigation?.billing_url && <a href={boot.navigation.billing_url} className="bg-accent px-4 py-2 text-sm font-semibold text-fill-fg">{t("dashboard.locked.billing")}</a>}
+						{boot.navigation?.export_url && <a href={boot.navigation.export_url} className="border-2 border-line px-4 py-2 text-sm font-medium text-body hover:bg-hover">{t("dashboard.locked.export")}</a>}
+						<a href={boot.navigation?.sites_url} className="border-2 border-line px-4 py-2 text-sm font-medium text-body hover:bg-hover">{t("dashboard.navigation.sites")}</a>
+						<a href={boot.navigation?.account_url} className="border-2 border-line px-4 py-2 text-sm font-medium text-body hover:bg-hover">{t("dashboard.navigation.account_settings")}</a>
 					</div>
 				</section>
 			</main>
@@ -559,11 +559,11 @@ const EMPTY: ReadonlySet<string> = new Set();
 function NoSites() {
 	return (
 		<div className="flex min-h-screen items-center justify-center bg-page px-6">
-			<section className="w-full max-w-md rounded-2xl border border-line bg-card p-8 text-center shadow-sm">
-				<div className="mx-auto flex size-12 items-center justify-center rounded-2xl bg-accent text-xl font-bold text-white dark:text-slate-950">f</div>
+			<section className="w-full max-w-md border-2 border-line bg-card p-8 text-center">
+				<p className="font-display text-2xl font-extrabold tracking-tight text-heading">Feasible<span className="text-accent">.lol</span></p>
 				<h1 className="mt-5 text-xl font-semibold text-body">{t("dashboard.no_sites.title")}</h1>
 				<p className="mt-2 text-sm leading-6 text-muted">{t("dashboard.no_sites.body")}</p>
-				<a href="/sites/new" className="mt-6 inline-flex rounded-lg bg-accent px-5 py-2.5 text-sm font-semibold text-white hover:bg-accent-hover dark:text-slate-950">
+				<a href="/sites/new" className="mt-6 inline-flex bg-accent px-5 py-2.5 text-sm font-semibold text-fill-fg hover:bg-accent-hover">
 					{t("dashboard.no_sites.action")}
 				</a>
 			</section>

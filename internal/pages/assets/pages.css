@@ -18,25 +18,30 @@
 :root {
   color-scheme: light;
 
-  --bg: #f8fafc;
-  --panel: #ffffff;
-  --subtle: #f1f5f9;
-  --ink: #0f172a;
-  --body: #1e293b;
-  --muted: #64748b;
-  --line: #e2e8f0;
+  --bg: #eae9e9;
+  --panel: #f3f2f2;
+  --subtle: #eae7e7;
+  --ink: #201e1d;
+  --body: #444141;
+  --muted: #605d5d;
 
-  --accent: #0d9488;
+  /* Ink at 40% is a card's edge; at 16% it is a hairline between rows of one
+     list, where the full rule would chop the card into pieces. */
+  --line: rgb(32 30 29 / 0.4);
+  --line-soft: rgb(32 30 29 / 0.16);
 
-  /* Accent-coloured text is a shade darker than the accent fill: the fill has
-     to carry a button, the ink has to carry a link at body size. */
-  --accent-ink: #0f766e;
-  --accent-fg: #ffffff;
+  --accent: #ec3013;
 
-  --good: #059669;
-  --warn: #d97706;
-  --bad: #e11d48;
-  --radius: 12px;
+  /* Accent-coloured text is several shades darker than the accent fill: the
+     fill has to carry a button, the ink has to carry a link at body size. */
+  --accent-ink: #ae1800;
+  --accent-fg: #f3f2f2;
+
+  /* "Bad" is pulled off the flag's orange towards crimson. The accent is
+     already red, and a failed payment must not look like a link. */
+  --good: #15803d;
+  --warn: #a16207;
+  --bad: #b91c1c;
 }
 
 /* Dark mode resolves two ways, and both are needed. The class is what the
@@ -45,22 +50,23 @@
    never opened the dashboard and has no preference stored. */
 .dark,
 :root:not(.light) {
-  --dark-bg: #020617;
-  --dark-panel: #0f172a;
-  --dark-subtle: #1e293b;
-  --dark-ink: #f1f5f9;
-  --dark-body: #e2e8f0;
-  --dark-muted: #94a3b8;
-  --dark-line: #1e293b;
-  --dark-accent: #2dd4bf;
-  --dark-accent-ink: #5eead4;
+  --dark-bg: #161514;
+  --dark-panel: #201e1d;
+  --dark-subtle: #2b2827;
+  --dark-ink: #f3f2f2;
+  --dark-body: #eae7e7;
+  --dark-muted: #bab6b6;
+  --dark-line: rgb(243 242 242 / 0.3);
+  --dark-line-soft: rgb(243 242 242 / 0.14);
+  --dark-accent: #ff5a3c;
+  --dark-accent-ink: #ff8f77;
 
-  /* Near-black on the accent, not white: the dark accent is a 400-level teal
-     and light text on it is unreadable where it was fine on the 600. */
-  --dark-accent-fg: #020617;
-  --dark-good: #34d399;
+  /* Near-black on the accent, not paper: the dark accent is a light red and
+     paper-coloured text on it is unreadable where it was fine on the flag. */
+  --dark-accent-fg: #161514;
+  --dark-good: #4ade80;
   --dark-warn: #fbbf24;
-  --dark-bad: #fb7185;
+  --dark-bad: #f87171;
 }
 
 .dark {
@@ -73,6 +79,7 @@
   --body: var(--dark-body);
   --muted: var(--dark-muted);
   --line: var(--dark-line);
+  --line-soft: var(--dark-line-soft);
   --accent: var(--dark-accent);
   --accent-ink: var(--dark-accent-ink);
   --accent-fg: var(--dark-accent-fg);
@@ -92,6 +99,7 @@
     --body: var(--dark-body);
     --muted: var(--dark-muted);
     --line: var(--dark-line);
+    --line-soft: var(--dark-line-soft);
     --accent: var(--dark-accent);
     --accent-ink: var(--dark-accent-ink);
     --accent-fg: var(--dark-accent-fg);
@@ -101,17 +109,58 @@
   }
 }
 
+/* The brand typeface, declared here as well as in the compiled stylesheets for
+   the same reason the colours are: this file is not compiled. Both faces are
+   served by the signed-in application, which is mounted at the root, so one
+   copy of each file is cached across all three surfaces. */
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/app/assets/fonts/archivo-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
+    U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/app/assets/fonts/archivo-latin-ext-wght-normal.woff2") format("woff2-variations");
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+    U+2C60-2C7F, U+A720-A7FF;
+}
+
 * { box-sizing: border-box; }
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--body);
-  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font: 16px/1.6 "Archivo", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
+/* Heavy, tight and flush, as the marketing site sets them. The negative
+   tracking is what stops Archivo at 800 reading as spaced. */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 800;
+  letter-spacing: -0.018em;
+  line-height: 1.15;
+  color: var(--ink);
+  text-wrap: balance;
+}
+
 a { color: var(--accent-ink); }
+
+::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .wrap { max-width: 960px; margin: 0 auto; padding: 0 20px; }
 .wrap.narrow { max-width: 760px; }
@@ -119,7 +168,7 @@ a { color: var(--accent-ink); }
 /* ── Header ─────────────────────────────────────────────────────────────── */
 
 header.top {
-  border-bottom: 1px solid var(--line);
+  border-bottom: 2px solid var(--line);
   background: var(--panel);
 }
 
@@ -133,18 +182,23 @@ header.top .wrap {
   padding-bottom: 10px;
 }
 
+/* The wordmark, with the joke in the accent, exactly as the marketing site
+   sets it. The <b> is the ".lol". */
 header.top .brand {
-  font-weight: 700;
-  letter-spacing: 0;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
   text-decoration: none;
   color: var(--ink);
 }
 
+header.top .brand b { color: var(--accent); font-weight: 800; }
+
 header.top nav { margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px 20px; min-width: 0; }
-header.top nav a { color: var(--muted); text-decoration: none; font-size: 15px; }
+header.top nav a { color: var(--body); text-decoration: none; font-size: 15px; font-weight: 500; }
 header.top nav form { display: inline; margin: 0; }
-header.top nav button { border: 0; padding: 0; background: transparent; color: var(--muted); font: inherit; font-size: 15px; cursor: pointer; }
-header.top nav a:hover, header.top nav a.on, header.top nav button:hover { color: var(--ink); }
+header.top nav button { border: 0; padding: 0; background: transparent; color: var(--body); font: inherit; font-size: 15px; font-weight: 500; cursor: pointer; }
+header.top nav a:hover, header.top nav a.on, header.top nav button:hover { color: var(--accent-ink); }
 
 @media (max-width: 384px) {
   header.top .wrap {
@@ -168,17 +222,18 @@ header.top nav a:hover, header.top nav a.on, header.top nav button:hover { color
 /* ── Blocks ─────────────────────────────────────────────────────────────── */
 
 .hero { padding: 56px 0 28px; }
-.hero h1 { margin: 0 0 10px; font-size: 34px; line-height: 1.2; letter-spacing: 0; }
-.hero p { margin: 0; color: var(--muted); font-size: 18px; max-width: 60ch; }
+.hero h1 { margin: 0 0 10px; font-size: 40px; line-height: 1.06; letter-spacing: -0.028em; }
+.hero p { margin: 0; color: var(--body); font-size: 18px; max-width: 60ch; }
 
 section { padding: 8px 0 40px; }
-h2 { font-size: 21px; margin: 34px 0 12px; letter-spacing: 0; }
+h2 { font-size: 24px; margin: 34px 0 12px; }
 h3 { font-size: 17px; margin: 26px 0 8px; }
 
+/* A card is told apart from the page by its rule, not by a shadow. That is the
+   whole reason the two greys behind them can sit this close together. */
 .panel {
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
+  border: 2px solid var(--line);
   padding: 22px 24px;
 }
 
@@ -189,63 +244,85 @@ h3 { font-size: 17px; margin: 26px 0 8px; }
 /* ── Plans ──────────────────────────────────────────────────────────────── */
 
 .plan { position: relative; display: flex; flex-direction: column; }
-.plan .price { font-size: 34px; font-weight: 700; letter-spacing: 0; margin: 6px 0 2px; }
+.plan .price { font-size: 44px; font-weight: 800; letter-spacing: -0.028em; line-height: 1; margin: 6px 0 6px; color: var(--ink); font-variant-numeric: tabular-nums; }
 .plan .per { color: var(--muted); font-size: 15px; }
 .plan ul { list-style: none; padding: 0; margin: 16px 0 22px; }
+
+/* The bullet is a small square of the accent, the same mark the marketing
+   site's plan list uses. A tick would be a second shape doing one job. */
 .plan li { padding: 5px 0 5px 24px; position: relative; color: var(--body); }
-.plan li::before { content: "✓"; position: absolute; left: 0; color: var(--good); font-weight: 700; }
+.plan li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12px;
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+}
+
 .plan .save {
-  display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 999px;
-  background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good); font-size: 13px; font-weight: 600;
+  display: inline-block; margin-left: 8px; padding: 2px 8px;
+  background: var(--good); color: var(--panel); font-size: 13px; font-weight: 700;
 }
 .plan form { margin-top: auto; }
 
 /* ── Buttons ────────────────────────────────────────────────────────────── */
 
 .btn {
-  display: inline-block; padding: 11px 20px; border-radius: 8px; border: 1px solid transparent;
-  background: var(--accent); color: var(--accent-fg); font: inherit; font-weight: 600;
-  text-decoration: none; cursor: pointer; width: 100%; text-align: center;
+  display: inline-block; padding: 12px 20px; border: 2px solid transparent;
+  background: var(--accent); color: var(--accent-fg); font: inherit; font-weight: 800; font-size: 15px;
+  line-height: 1.2; text-decoration: none; cursor: pointer; width: 100%; text-align: center;
+  transition: background-color .12s, color .12s, border-color .12s;
 }
-.btn.alt { background: transparent; color: var(--body); border-color: var(--line); }
+.btn:hover:not(:disabled) { background: var(--accent-ink); }
+
+/* The outline button carries the ink rather than the accent, so a screen
+   offering two choices has one red thing on it. */
+.btn.alt { background: transparent; color: var(--ink); border-color: var(--ink); }
+.btn.alt:hover:not(:disabled) { background: var(--ink); color: var(--panel); }
 .btn.inline { width: auto; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 
 /* ── Usage meter ────────────────────────────────────────────────────────── */
 
-.meter { height: 12px; border-radius: 999px; background: var(--line); overflow: hidden; margin: 12px 0 8px; }
-.meter span { display: block; height: 100%; background: var(--good); border-radius: 999px; }
+.meter { height: 14px; background: var(--subtle); border: 2px solid var(--line); overflow: hidden; margin: 12px 0 8px; }
+.meter span { display: block; height: 100%; background: var(--good); }
 .meter.warn span { background: var(--warn); }
 .meter.over span { background: var(--bad); }
 
 .numbers { display: flex; gap: 28px; flex-wrap: wrap; margin-top: 4px; }
 .numbers div { min-width: 120px; }
-.numbers .k { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .05em; }
-.numbers .v { font-size: 22px; font-weight: 650; }
+
+/* The small red uppercase label above a number. It is the brand's substitute
+   for a coloured icon, and the reason these pages can be almost entirely black
+   and white and still look like the site they came from. */
+.numbers .k { color: var(--accent-ink); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+.numbers .v { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; color: var(--ink); font-variant-numeric: tabular-nums; }
 
 /* ── Status banners ─────────────────────────────────────────────────────── */
 
-.banner { border-radius: var(--radius); padding: 16px 18px; margin: 0 0 20px; border: 1px solid; }
+.banner { padding: 16px 18px; margin: 0 0 20px; border: 2px solid; }
 .banner h3 { margin: 0 0 6px; font-size: 16px; }
 .banner p { margin: 0; font-size: 15px; }
-.banner.ok { border-color: color-mix(in srgb, var(--good) 35%, transparent); background: color-mix(in srgb, var(--good) 8%, transparent); }
-.banner.warn { border-color: color-mix(in srgb, var(--warn) 35%, transparent); background: color-mix(in srgb, var(--warn) 8%, transparent); }
-.banner.bad { border-color: color-mix(in srgb, var(--bad) 35%, transparent); background: color-mix(in srgb, var(--bad) 8%, transparent); }
+.banner.ok { border-color: var(--good); background: color-mix(in srgb, var(--good) 8%, transparent); }
+.banner.warn { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.banner.bad { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 8%, transparent); }
 
 /* ── Tables ─────────────────────────────────────────────────────────────── */
 
 table { width: 100%; border-collapse: collapse; font-size: 15px; }
-th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); }
-th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line-soft); }
+th { color: var(--muted); font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; border-bottom-width: 2px; border-bottom-color: var(--line); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .scroll { overflow-x: auto; }
 
 /* ── Timeline ───────────────────────────────────────────────────────────── */
 
 .timeline { list-style: none; margin: 14px 0 0; padding: 0; }
-.timeline li { display: flex; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.timeline li { display: flex; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
 .timeline li:last-child { border-bottom: 0; }
-.timeline .when { min-width: 190px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.timeline .when { min-width: 190px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ink); }
 .timeline .what { color: var(--muted); }
 .timeline li.now .what { color: var(--body); }
 
@@ -261,7 +338,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .docs aside ul { list-style: none; margin: 0; padding: 0; }
 .docs aside li { padding: 4px 0; }
 .docs aside a { color: var(--muted); text-decoration: none; font-size: 15px; }
-.docs aside a:hover, .docs aside a.on { color: var(--ink); font-weight: 600; }
+.docs aside a:hover, .docs aside a.on { color: var(--accent-ink); font-weight: 700; }
 .docs article { min-width: 0; overflow-wrap: anywhere; }
 .docs article > :first-child { margin-top: 0; }
 .docs article table {
@@ -271,11 +348,11 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   -webkit-overflow-scrolling: touch;
 }
 .docs code, .prose code {
-  background: var(--subtle); border: 1px solid var(--line); border-radius: 5px;
+  background: var(--subtle); border: 1px solid var(--line-soft);
   padding: 1px 5px; font-size: 14px; overflow-wrap: anywhere; word-break: break-word;
 }
 pre {
-  background: var(--subtle); border: 1px solid var(--line); border-radius: 10px;
+  background: var(--subtle); border: 2px solid var(--line);
   padding: 14px 16px; overflow-x: auto; font-size: 14px; line-height: 1.5;
 }
 pre code { background: none; border: 0; padding: 0; overflow-wrap: normal; word-break: normal; }
@@ -292,7 +369,7 @@ pre code { background: none; border: 0; padding: 0; overflow-wrap: normal; word-
   header.top nav { width: 100%; margin-left: 0; justify-content: flex-start; gap: 4px 16px; }
   header.top nav a { font-size: 14px; line-height: 1.8; }
   .hero { padding-top: 40px; }
-  .hero h1 { font-size: 30px; }
+  .hero h1 { font-size: 32px; }
   .timeline li { flex-direction: column; gap: 4px; }
   .timeline .when { min-width: 0; }
 }
@@ -300,7 +377,7 @@ pre code { background: none; border: 0; padding: 0; overflow-wrap: normal; word-
 /* ── Footer ─────────────────────────────────────────────────────────────── */
 
 footer.bottom {
-  border-top: 1px solid var(--line);
+  border-top: 2px solid var(--line);
   margin-top: 40px;
   padding: 26px 0 46px;
   color: var(--muted);
@@ -308,4 +385,5 @@ footer.bottom {
 }
 footer.bottom nav { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 14px; }
 footer.bottom nav a { color: var(--muted); text-decoration: none; }
+footer.bottom nav a:hover { color: var(--accent-ink); }
 footer.bottom address { font-style: normal; line-height: 1.55; }

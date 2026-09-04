@@ -68,7 +68,7 @@ export function PeriodPicker({
 		<div ref={wrap} className="relative">
 			{/* One bordered shell, so three hit areas read as one control
 			    rather than as three loose buttons that happen to be adjacent. */}
-			<div className="flex h-control items-stretch overflow-hidden rounded-md border border-line bg-card">
+			<div className="flex h-control items-stretch overflow-hidden border-2 border-line bg-card">
 				<StepButton state={state} direction={-1} onStep={onStep} />
 
 				<button
@@ -87,7 +87,7 @@ export function PeriodPicker({
 			</div>
 
 			{open && (
-				<div role="menu" className="absolute right-0 z-40 mt-1 w-64 rounded-md border border-line bg-card p-1 shadow-lg">
+				<div role="menu" className="absolute right-0 z-40 mt-1 w-64 border-2 border-line bg-card p-1 pop">
 					{PERIODS.map((period, index) => (
 						// The wrapper exists only to hang the divider on the row.
 						// role="none" keeps it out of the menu's own parent-to-
@@ -101,15 +101,15 @@ export function PeriodPicker({
 								type="button"
 								role="menuitem"
 								onClick={() => onPeriod(period)}
-								className={`flex w-full items-center gap-2 rounded-sm px-2.5 py-1.5 text-left text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover ${
-									isCurrent(period, state) ? "font-medium text-accent" : "text-body"
+								className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover ${
+ isCurrent(period, state) ? "font-medium text-accent-ink" : "text-body"
 								}`}
 							>
 								<span className="flex-1">{t(period.labelId)}</span>
 
 								{/* The key is decoration for a reader who can see it,
 								    and part of the row's name for one who cannot. */}
-								<span aria-hidden="true" className="rounded border border-line px-1.5 text-[11px] tracking-wide text-muted uppercase">
+								<span aria-hidden="true" className="border-2 border-line px-1.5 text-[11px] tracking-wide text-muted uppercase">
 									{period.key}
 								</span>
 								<span className="sr-only">{t("dashboard.topbar.shortcut_key", { key: period.key.toUpperCase() })}</span>
@@ -209,7 +209,7 @@ function CustomRange({ from, to, onApply }: { from: string; to: string; onApply:
 					value={start}
 					max={end}
 					onChange={(event) => setStart(event.target.value)}
-					className="h-control rounded-md border border-line bg-card px-2 text-sm text-body"
+					className="h-control border-2 border-line bg-card px-2 text-sm text-body"
 				/>
 			</label>
 			<label className="flex items-center justify-between gap-2 text-xs text-muted">
@@ -219,14 +219,14 @@ function CustomRange({ from, to, onApply }: { from: string; to: string; onApply:
 					value={end}
 					min={start}
 					onChange={(event) => setEnd(event.target.value)}
-					className="h-control rounded-md border border-line bg-card px-2 text-sm text-body"
+					className="h-control border-2 border-line bg-card px-2 text-sm text-body"
 				/>
 			</label>
 			<button
 				type="button"
 				disabled={!start || !end}
 				onClick={() => onApply(start, end)}
-				className="h-control rounded-md bg-accent text-sm font-medium text-white transition-opacity duration-150 ease-[var(--ease-ui)] hover:opacity-90 disabled:opacity-40 dark:text-slate-950"
+				className="h-control bg-accent text-sm font-medium text-fill-fg transition-opacity duration-150 ease-[var(--ease-ui)] hover:opacity-90 disabled:opacity-40"
 			>
 				{t("dashboard.topbar.apply")}
 			</button>

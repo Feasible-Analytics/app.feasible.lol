@@ -184,7 +184,7 @@ export function WorldMap({ rows, onFilter, selected }: Props) {
 
 			{hovered && (
 				<div
-					className="pointer-events-none absolute z-20 w-max max-w-56 -translate-x-1/2 rounded-md border border-line bg-card px-2.5 py-1.5 shadow-lg"
+					className="pointer-events-none absolute z-20 w-max max-w-56 -translate-x-1/2 border-2 border-line bg-card px-2.5 py-1.5 pop"
 					style={{ left: clamp(hovered.x), top: Math.max(0, hovered.y - 46) }}
 				>
 					<p className="flex items-center gap-1.5 text-xs text-body">
@@ -267,5 +267,5 @@ function Legend({ peak, countries, unmapped }: { peak: number; countries: number
 /** Swatch is one square of the scale. The border is what keeps the palest step
  *  visible against a white card. */
 function Swatch({ fill }: { fill: string }) {
-	return <span aria-hidden="true" className="size-3 rounded-[2px] border border-line" style={{ background: fill }} />;
+	return <span aria-hidden="true" className="size-3 border-2 border-line" style={{ background: fill }} />;
 }

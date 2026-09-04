@@ -22,7 +22,7 @@
    dashboard are the same product to the person looking at them, and importing
    the colours rather than restating them is what stops the two surfaces drifting
    on to different accents again. Every colour utility below resolves to one of
-   the roles defined there — a bare `slate-200` or `indigo-600` in a template
+   the roles defined there — a bare `neutral-200` or a raw hex in a template
    means a token is missing, not that a colour was picked. */
 @import "../../ui/tokens.css";
 
@@ -68,18 +68,12 @@
 }
 
 @layer base {
-  /* The page background is painted on <html> as well as <body> so that
-     over-scrolling past the end of a short form shows the theme's own colour
-     rather than the browser's white. */
-  html {
+  /* The signed-in screens set the brand typeface on the body. The dashboard
+     does the same in its own stylesheet; the shared tokens declare the family
+     and the faces, and each surface decides what wears it. */
+  body {
+    font-family: var(--font-sans);
     background-color: var(--fs-page);
-  }
-
-  /* The focus ring is the accent colour on both surfaces. It is declared once
-     here rather than per-control because a keyboard user finding a different
-     ring on every input is how a form starts feeling unfinished. */
-  :focus-visible {
-    outline: 2px solid var(--fs-accent);
-    outline-offset: 2px;
+    color: var(--fs-body);
   }
 }

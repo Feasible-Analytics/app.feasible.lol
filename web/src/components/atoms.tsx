@@ -22,7 +22,7 @@ import { t } from "../lib/i18n";
 export function Spinner({ label = t("common.state.loading") }: { label?: string }) {
 	return (
 		<div className="spinner-grace flex h-full w-full items-center justify-center" role="status" aria-live="polite">
-			<span className="spinner-ring block size-6 rounded-full border-2 border-line border-t-accent" />
+			<span className="spinner-ring block size-6 border-2 border-line border-t-accent" />
 			<span className="sr-only">{label}</span>
 		</div>
 	);
@@ -139,7 +139,7 @@ export function InfoDot({ text }: { text: string | string[] }) {
 				type="button"
 				aria-label={t("dashboard.infodot.label")}
 				aria-describedby={open ? id : undefined}
-				className="flex size-4 items-center justify-center rounded-full border border-line text-[9px] leading-none font-semibold text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:border-accent hover:text-accent"
+				className="flex size-4 items-center justify-center border-2 border-line text-[9px] leading-none font-semibold text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:border-accent hover:text-accent-ink"
 				onMouseEnter={() => setOpen(true)}
 				onMouseLeave={() => setOpen(false)}
 				onFocus={() => setOpen(true)}
@@ -159,7 +159,7 @@ export function InfoDot({ text }: { text: string | string[] }) {
 						id={id}
 						role="tooltip"
 						style={{ left: position.left, top: position.top, visibility: position.ready ? "visible" : "hidden" }}
-						className="fixed z-[100] flex w-64 max-w-[calc(100vw-1rem)] flex-col gap-2 rounded-md border border-line bg-card p-3 text-xs leading-relaxed font-normal text-body shadow-lg"
+						className="fixed z-[100] flex w-64 max-w-[calc(100vw-1rem)] flex-col gap-2 border-2 border-line bg-card p-3 text-xs leading-relaxed font-normal text-body pop"
 					>
 						{paragraphs.map((paragraph) => (
 							<span key={paragraph}>{paragraph}</span>
@@ -200,7 +200,7 @@ export function Failure({ message, onRetry }: { message: string; onRetry: () => 
 			<button
 				type="button"
 				onClick={onRetry}
-				className="h-control rounded-md border border-line px-3 text-xs font-medium text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
+				className="h-control border-2 border-line px-3 text-xs font-medium text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
 			>
 				{t("common.action.retry")}
 			</button>
@@ -225,7 +225,7 @@ export function Favicon({ name }: { name: string }) {
 			width={16}
 			height={16}
 			loading="lazy"
-			className="size-4 shrink-0 rounded-[3px]"
+			className="size-4 shrink-0"
 		/>
 	);
 }
@@ -260,7 +260,7 @@ export function Bar({ share }: { share: number }) {
 	return (
 		<span
 			aria-hidden="true"
-			className="absolute inset-y-px left-0 rounded-sm bg-bar transition-[width,background-color] duration-150 ease-[var(--ease-ui)] group-hover/row:bg-bar-strong"
+			className="absolute inset-y-px left-0 bg-bar transition-[width,background-color] duration-150 ease-[var(--ease-ui)] group-hover/row:bg-bar-strong"
 			style={{ width: `${Math.max(0.6, Math.min(100, share * 100))}%` }}
 		/>
 	);

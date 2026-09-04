@@ -19,12 +19,12 @@
 <title>{{ t .Lang .TitleID }}{{ if .Domain }} — {{ .Domain }}{{ end }} — feasible.lol</title>
 
 <!--
-	The same teal mark the dashboard uses, inlined so it costs no request. A
-	browser asks for /favicon.ico whether or not anything points at one, and the
-	two surfaces showing different marks in adjacent tabs is the same drift the
-	shared palette exists to stop.
+	The mark from the marketing site, served from the binary rather than inlined
+	so every surface points at one file. A browser asks for a favicon whether or
+	not anything points at one, and four copies of the same encoded square is how
+	two of them end up the wrong colour.
 -->
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d9488'/%3E%3Ctext x='16' y='23' text-anchor='middle' fill='white' font-family='system-ui,sans-serif' font-size='21' font-weight='700'%3Ef%3C/text%3E%3C/svg%3E">
+<link rel="icon" href="/app/assets/favicon.svg" type="image/svg+xml">
 
 <!-- The theme is decided before the first paint, from the same key the
      dashboard and the sign-in screens write. Deciding it after the paint is a
@@ -45,6 +45,7 @@
 
 <!-- The stylesheet comes out of the binary. A CDN would be one more thing to be
      blocked, one more thing to be offline, and one more thing to copy. -->
+<link rel="preload" href="/app/assets/fonts/archivo-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/app/assets/app.css">
 <script defer src="/app/assets/alpine.js"></script>
 
@@ -62,11 +63,11 @@
 
 	<main class="min-w-0 flex-1">
 		{{ if .Error }}
-		<div class="mb-6 rounded-xl border border-down/30 bg-down/10 px-4 py-3 text-sm text-down-ink" role="alert">{{ .Error }}</div>
+		<div class="mb-6 border-2 border-down/30 bg-down/10 px-4 py-3 text-sm text-down-ink" role="alert">{{ .Error }}</div>
 		{{ end }}
 
 		{{ if .Message }}
-		<div class="mb-6 rounded-xl border border-up/30 bg-up/10 px-4 py-3 text-sm text-up-ink" role="status">{{ .Message }}</div>
+		<div class="mb-6 border-2 border-up/30 bg-up/10 px-4 py-3 text-sm text-up-ink" role="status">{{ .Message }}</div>
 		{{ end }}
 
 		{{ template "body" . }}
