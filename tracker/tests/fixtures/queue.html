@@ -1,6 +1,7 @@
 <!--
   queue.html
-  Calls made before the bundle exists, and the second global name a migration keeps.
+  Calls made before the bundle exists, the site-configured second global name,
+  and another tool's global that we must leave exactly as we found it.
 
   Created: 2026-08-30
   Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -30,15 +31,18 @@
 					(window.legacy.q = window.legacy.q || []).push(arguments);
 				};
 
-			window.plausible =
-				window.plausible ||
-				function () {
-					(window.plausible.q = window.plausible.q || []).push(arguments);
-				};
+			// Stands in for another analytics tool already on the page. It
+			// records what it receives and, like the real thing, keeps its
+			// configuration on the global itself — so a tracker that seizes
+			// the name silently destroys it.
+			window.rival = function () {
+				(window.rival.seen = window.rival.seen || []).push(arguments[0]);
+			};
+			window.rival.config = { site: "fixture.test" };
 
 			window.feasible("Queued Early", { props: { when: "before" } });
 			window.legacy("Legacy Queued");
-			window.plausible("Plausible Queued", { props: { when: "migration" } });
+			window.rival("Rival Event");
 		</script>
 		<script
 			defer
@@ -51,10 +55,10 @@
 	<body>
 		<h1>Queue fixture</h1>
 		<button id="after" type="button">fire through the alias after load</button>
-		<button id="plausible-after" type="button">fire through the migration alias after load</button>
+		<button id="rival-after" type="button">fire through the other tool after load</button>
 		<script>
 			document.getElementById("after").onclick = () => window.legacy("Legacy Later");
-			document.getElementById("plausible-after").onclick = () => window.plausible("Plausible Later");
+			document.getElementById("rival-after").onclick = () => window.rival("Rival Later");
 		</script>
 	</body>
 </html>

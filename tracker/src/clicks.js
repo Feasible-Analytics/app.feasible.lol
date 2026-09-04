@@ -9,9 +9,8 @@
 import { doc, loc, page } from "./state.js";
 import { send, KEEPALIVE } from "./send.js";
 
-// The class prefixes that tag an element for tracking. The native spelling is
-// first; the second lets a migrating site keep its existing event markup.
-const TAG = /^(feasible|plausible)-event-/;
+// The class prefix that tags an element for tracking.
+const TAG = /^feasible-event-/;
 
 // How far up the tree to look for a tag. A click lands on whatever is under the
 // cursor — the `<svg>` inside a `<span>` inside the `<button>` that carries the
@@ -54,9 +53,8 @@ function tagFor(el) {
 // returning them as a `[name, props]` pair or null when the element carries no
 // usable tag.
 //
-// The native format is `feasible-event-<key>=<value>`; the migration-compatible
-// `plausible-event-` prefix means the same thing. The latter also accepts `--`
-// as the separator because visual site builders commonly rewrite `=` inside a
+// The format is `feasible-event-<key>=<value>`, and `--` is accepted as the
+// separator too because visual site builders commonly rewrite `=` inside a
 // class. `name` names the event, every other key becomes a property, and `+`
 // stands for a space. A bare prefixed class is shorthand for the event name.
 function parseTag(el) {
