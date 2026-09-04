@@ -221,7 +221,7 @@ func TestPublicHeaderHasNarrowViewportContainment(t *testing.T) {
 	css := render(t, handler, "/billing/assets/pages.css").Body.String()
 	for _, want := range []string{
 		"header.top .wrap {", "flex-wrap: wrap", "@media (max-width: 520px)",
-		"header.top .brand { flex-basis: 100%; }", "header.top nav { width: 100%",
+		"header.top .brand { flex-basis: 100%;", "header.top nav { width: 100%",
 	} {
 		if !strings.Contains(css, want) {
 			t.Errorf("narrow header CSS is missing %q", want)
