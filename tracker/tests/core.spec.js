@@ -138,8 +138,7 @@ test("revenue is sent under the dollar key", async ({ page }) => {
 });
 
 // The queue exists so that a call made before the bundle arrives is neither a
-// ReferenceError nor silently lost. Both the built-in migration alias and a
-// site-configured alias keep existing calls working.
+// ReferenceError nor silently lost. A site-configured alias drains the same way.
 test("events queued before the bundle loads are replayed under every API name", async ({ page }) => {
 	const state = await collect(page);
 
@@ -147,16 +146,31 @@ test("events queued before the bundle loads are replayed under every API name", 
 
 	await settledCount(state, "Queued Early", 1);
 	await settledCount(state, "Legacy Queued", 1);
-	await settledCount(state, "Plausible Queued", 1);
 
 	expect(named(state, "Queued Early")[0].p).toEqual({ when: "before" });
-	expect(named(state, "Plausible Queued")[0].p).toEqual({ when: "migration" });
 
 	await page.click("#after");
 	await settledCount(state, "Legacy Later", 1);
+});
 
-	await page.click("#plausible-after");
-	await settledCount(state, "Plausible Later", 1);
+// Another analytics tool on the same page keeps its own global. Seizing it
+// would take that tool's configuration with it and stop it recording anything,
+// with no error for anyone to notice.
+test("another tool's global is left untouched", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/queue.html");
+	await settledCount(state, "Legacy Queued", 1);
+
+	await page.click("#rival-after");
+
+	// Its own calls still reach it, its configuration survived, and none of
+	// what it received was reported to us.
+	expect(await page.evaluate(() => window.rival.seen)).toEqual(["Rival Event", "Rival Later"]);
+	expect(await page.evaluate(() => window.rival.config)).toEqual({ site: "fixture.test" });
+
+	expect(named(state, "Rival Event")).toHaveLength(0);
+	expect(named(state, "Rival Later")).toHaveLength(0);
 });
 
 // The pageview is drained after the queue, so a queued event never arrives

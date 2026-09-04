@@ -160,29 +160,34 @@ test("a tagged element is found from the icon inside it", async ({ page }) => {
 	expect(named(state, "Signup")[0].p).toEqual({ plan: "pro" });
 });
 
-// A site moving from Plausible can replace its script tag without replacing
-// event classes throughout its templates or component library.
-test("Plausible event classes are accepted as migration aliases", async ({ page }) => {
+// Only our own prefix is read. A page commonly carries tags belonging to
+// another analytics tool, and answering to them would invent events the site
+// never asked us for and double-count the ones it did.
+test("another tool's event classes are ignored", async ({ page }) => {
 	const state = await collect(page);
 
 	await page.goto("/basic.html");
 	await settledCount(state, "pageview", 1);
 
-	await page.click("#plausible-tagged-label");
-	await settledCount(state, "Demo Requested", 1);
+	await page.click("#foreign-tagged-label");
 
-	expect(named(state, "Demo Requested")[0].p).toEqual({ plan: "business" });
+	// The following click is tagged for us, so waiting for it proves the
+	// untagged one had its chance to arrive and did not take it.
+	await page.click("#dashes-label");
+	await settledCount(state, "Trial Started", 1);
+
+	expect(named(state, "Demo Requested")).toHaveLength(0);
 });
 
-// Plausible documents the double-dash spelling for site builders that rewrite
-// equals signs in class names, so that spelling is part of migration support.
-test("Plausible double-dash event classes remain compatible", async ({ page }) => {
+// Visual site builders rewrite an equals sign inside a class attribute, so the
+// double-dash spelling is the only one some customers can actually author.
+test("double-dash event classes are read the same as equals", async ({ page }) => {
 	const state = await collect(page);
 
 	await page.goto("/basic.html");
 	await settledCount(state, "pageview", 1);
 
-	await page.click("#plausible-dashes-label");
+	await page.click("#dashes-label");
 	await settledCount(state, "Trial Started", 1);
 
 	expect(named(state, "Trial Started")[0].p).toEqual({ plan: "starter" });
@@ -233,13 +238,13 @@ test("a tagged form reports the name it was tagged with, once", async ({ page })
 	expect(new Set(events.map((event) => event.k)).size).toBe(1);
 });
 
-test("a Plausible-tagged form keeps its event name and properties", async ({ page }) => {
+test("a double-dash tagged form keeps its event name and properties", async ({ page }) => {
 	const state = await collect(page);
 
 	await page.goto("/forms.html");
 	await settledCount(state, "pageview", 1);
 
-	await page.click("#plausible-form button");
+	await page.click("#dashes-form button");
 	await page.waitForURL("**/basic.html?email=reader%40example.com");
 
 	const events = await settledCount(state, "Newsletter Signup", 1);
