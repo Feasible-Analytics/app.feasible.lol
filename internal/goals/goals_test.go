@@ -409,6 +409,55 @@ func TestAutomaticGoalsExistOnEveryNewSite(t *testing.T) {
 	}
 }
 
+// TestIDsForSitesReadsSeveralSitesInOneQuery checks the lookup the all-sites
+// screen runs. It has to key on the site so that one site's goals can never
+// become the filter another site's figure is counted through.
+func TestIDsForSitesReadsSeveralSitesInOneQuery(t *testing.T) {
+	db, _ := newFixture(t)
+	ctx := context.Background()
+
+	const otherSite int64 = 2
+
+	first, err := Create(ctx, db, Goal{SiteID: siteID, Kind: KindEvent, EventName: "Signup"}, fixtureNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := Create(ctx, db, Goal{SiteID: otherSite, Kind: KindEvent, EventName: "Signup"}, fixtureNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found, err := IDsForSites(ctx, db, []int64{siteID, otherSite, 99})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := found[siteID]; len(got) != 1 || got[0] != first.ID {
+		t.Errorf("site %d has goals %v, want just %d", siteID, got, first.ID)
+	}
+
+	if got := found[otherSite]; len(got) != 1 || got[0] != second.ID {
+		t.Errorf("site %d has goals %v, want just %d", otherSite, got, second.ID)
+	}
+
+	// A site with no goals is absent rather than present and empty, so a caller
+	// can skip the query entirely.
+	if got, ok := found[99]; ok {
+		t.Errorf("a site with no goals returned %v, want no entry at all", got)
+	}
+
+	// An empty request must not build a statement with no placeholders in it.
+	empty, err := IDsForSites(ctx, db, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(empty) != 0 {
+		t.Errorf("an empty request returned %d sites", len(empty))
+	}
+}
+
 // TestAutomaticGoalsCannotBeDeleted pins the domain invariant shared by the
 // browser settings page, public API, and MCP. A successful delete followed by
 // automatic provisioning recreating the row would make deletion dishonest.

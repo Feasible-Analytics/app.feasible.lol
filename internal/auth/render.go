@@ -16,8 +16,10 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
+	"math"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -465,6 +467,29 @@ func templateFuncs() template.FuncMap {
 		// dependency for that would be more code than the chart.
 		"sparkline": sparklinePath,
 
+		// chart draws one card's two series on the all-sites screen. It is one
+		// call rather than three because the two series share a scale, and a
+		// scale computed twice is two charts that do not line up.
+		"chart": overviewChart,
+
+		// count puts thousands separators into a figure, so a headline number
+		// is read rather than counted. The separator stays English-shaped for
+		// the same reason `date` does: doing it properly is a per-locale
+		// separator and grouping rule, which is catalogue data belonging beside
+		// the plural rules rather than in a template helper.
+		"count": groupDigits,
+
+		// seconds renders a visit length as a clock. It reads the dashboard's
+		// own catalogue strings so the two surfaces write the same duration the
+		// same way.
+		"seconds": humanDuration,
+
+		// percent renders a rate with no decimal place, which is all the
+		// precision a bounce rate on a card can justify.
+		"percent": func(value float64) string {
+			return strconv.FormatInt(int64(math.Round(value)), 10) + "%"
+		},
+
 		// dict builds a map inline, which is how a partial is given more than
 		// one value without inventing a type for every one of them.
 		"dict": func(values ...any) map[string]any {
@@ -592,4 +617,135 @@ func assetETags(assets fs.FS) map[string]string {
 	}
 
 	return tags
+}
+
+// chartWidth and chartHeight are the drawing box for a site card's chart. Like
+// the sparkline's, they are the viewBox rather than a rendered size: the SVG
+// scales to the card, so these only fix the aspect ratio.
+const (
+	chartWidth  = 240
+	chartHeight = 72
+)
+
+// chartPaths is one card's chart, already projected into the drawing box.
+type chartPaths struct {
+	// Pageviews is a closed area, drawn behind. Pageviews are never fewer than
+	// visitors, so the area is always the outer shape and the line is always
+	// visible inside it.
+	Pageviews template.HTMLAttr
+
+	// Visitors is an open polyline, drawn on top.
+	Visitors template.HTMLAttr
+}
+
+// overviewChart projects two series into one shared scale.
+//
+// The scale is shared between the two series and private to the card. Sharing
+// it within a card is what makes "pageviews per visitor" readable as the gap
+// between the lines; keeping it private to the card is what stops one busy site
+// flattening every other card on the screen into a straight line.
+func overviewChart(visitors, pageviews []int64) chartPaths {
+	if len(visitors) < 2 || len(pageviews) != len(visitors) {
+		return chartPaths{}
+	}
+
+	var peak int64
+	for _, v := range pageviews {
+		if v > peak {
+			peak = v
+		}
+	}
+
+	for _, v := range visitors {
+		if v > peak {
+			peak = v
+		}
+	}
+
+	if peak == 0 {
+		// A flat line along the bottom and no area, for the same reason the
+		// sparkline draws one: an empty box reads as broken, a flat line reads
+		// as quiet.
+		return chartPaths{Visitors: template.HTMLAttr(fmt.Sprintf("0,%d %d,%d",
+			chartHeight-1, chartWidth, chartHeight-1))}
+	}
+
+	return chartPaths{
+		Pageviews: template.HTMLAttr(closedArea(project(pageviews, peak))),
+		Visitors:  template.HTMLAttr(project(visitors, peak)),
+	}
+}
+
+// project turns a series into an SVG points list against a given maximum.
+func project(series []int64, peak int64) string {
+	step := float64(chartWidth) / float64(len(series)-1)
+
+	var out strings.Builder
+
+	for i, value := range series {
+		if i > 0 {
+			out.WriteByte(' ')
+		}
+
+		y := float64(chartHeight) - (float64(value)/float64(peak))*float64(chartHeight-1)
+
+		fmt.Fprintf(&out, "%.1f,%.1f", float64(i)*step, y)
+	}
+
+	return out.String()
+}
+
+// closedArea turns a points list into the same shape closed along the bottom,
+// so it can be filled.
+func closedArea(points string) string {
+	if points == "" {
+		return ""
+	}
+
+	return fmt.Sprintf("%d,%d %s %d,%d", 0, chartHeight, points, chartWidth, chartHeight)
+}
+
+// groupDigits writes a whole number with thousands separators.
+func groupDigits(value int64) string {
+	digits := strconv.FormatInt(value, 10)
+
+	sign := ""
+	if strings.HasPrefix(digits, "-") {
+		sign, digits = "-", digits[1:]
+	}
+
+	var out strings.Builder
+
+	for i, r := range digits {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			out.WriteByte(',')
+		}
+
+		out.WriteRune(r)
+	}
+
+	return sign + out.String()
+}
+
+// humanDuration renders seconds the way the dashboard does, reading the same
+// catalogue strings so a visit length is written identically on both surfaces.
+func humanDuration(locale string, total int64) string {
+	if total < 0 {
+		total = 0
+	}
+
+	hours := total / 3600
+	minutes := (total % 3600) / 60
+	rest := total % 60
+
+	switch {
+	case hours > 0:
+		return i18n.T(locale, "dashboard.format.duration.hours",
+			"hours", hours, "minutes", fmt.Sprintf("%02d", minutes))
+	case minutes > 0:
+		return i18n.T(locale, "dashboard.format.duration.minutes",
+			"minutes", minutes, "seconds", fmt.Sprintf("%02d", rest))
+	default:
+		return i18n.T(locale, "dashboard.format.duration.seconds", "seconds", rest)
+	}
 }

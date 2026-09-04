@@ -17,7 +17,9 @@
       <p class="mt-1 text-sm text-muted">{{ n $.Lang "auth.sites.count" .Data.Total }}</p>
     </div>
 
-    <div class="flex items-center gap-2">
+    <div class="flex flex-wrap items-center gap-2">
+      {{ template "sites_views.html" (dict "Lang" $.Lang "TeamID" $.Data.TeamID "Current" "list") }}
+
       <label for="sort" class="sr-only">{{ t $.Lang "auth.sites.sort_label" }}</label>
       <select id="sort" onchange="window.location = '{{ url $.Lang (printf "/sites?team_id=%d" .Data.TeamID) }}&sort=' + this.value"
               class="border-2 border-field bg-card px-3 py-2 text-sm text-body">

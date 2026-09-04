@@ -79,6 +79,86 @@ func TestSparklineNormalisesToItsOwnMaximum(t *testing.T) {
 	}
 }
 
+// TestOverviewChartSharesOneScaleBetweenTheTwoSeries checks the geometry of a
+// site card's chart. Both series are drawn against the same peak, which is what
+// makes the gap between the lines readable as pageviews per visitor; scaling
+// each to its own maximum would draw the two identically on every card.
+func TestOverviewChartSharesOneScaleBetweenTheTwoSeries(t *testing.T) {
+	// Visitors peak at 5 and pageviews at 10, so visitors must reach halfway up
+	// the box and pageviews must reach the top.
+	drawn := overviewChart([]int64{0, 5}, []int64{0, 10})
+
+	visitors := strings.Fields(string(drawn.Visitors))
+	if len(visitors) != 2 {
+		t.Fatalf("want 2 visitor points, got %d: %s", len(visitors), drawn.Visitors)
+	}
+
+	if visitors[0] != "0.0,72.0" {
+		t.Errorf("an empty first bucket should sit on the floor, got %q", visitors[0])
+	}
+
+	if visitors[1] != "240.0,36.5" {
+		t.Errorf("half the peak should be drawn halfway up, got %q", visitors[1])
+	}
+
+	// The area is the same shape closed along the bottom, so it can be filled
+	// behind the line.
+	area := string(drawn.Pageviews)
+	if !strings.HasPrefix(area, "0,72 ") || !strings.HasSuffix(area, " 240,72") {
+		t.Errorf("the pageview area should close along the floor, got %q", area)
+	}
+
+	// A site with no traffic gets a flat line and no area, for the same reason
+	// the sparkline does: an empty box reads as broken.
+	quiet := overviewChart([]int64{0, 0}, []int64{0, 0})
+	if quiet.Visitors == "" {
+		t.Error("an all-zero series should still draw a line")
+	}
+
+	if quiet.Pageviews != "" {
+		t.Error("an all-zero series should not fill an area")
+	}
+
+	// Two series of different lengths cannot share a scale, and drawing them
+	// anyway would silently misalign the buckets.
+	if mismatched := overviewChart([]int64{0, 1, 2}, []int64{0, 1}); mismatched.Visitors != "" {
+		t.Error("series of different lengths should draw nothing")
+	}
+}
+
+// TestGroupDigitsAndDurationReadAsNumbersDo checks the two formatters the
+// all-sites cards run every figure through.
+func TestGroupDigitsAndDurationReadAsNumbersDo(t *testing.T) {
+	for _, tc := range []struct {
+		value int64
+		want  string
+	}{
+		{0, "0"},
+		{999, "999"},
+		{1000, "1,000"},
+		{1234567, "1,234,567"},
+		{-4321, "-4,321"},
+	} {
+		if got := groupDigits(tc.value); got != tc.want {
+			t.Errorf("groupDigits(%d) = %q, want %q", tc.value, got, tc.want)
+		}
+	}
+
+	for _, tc := range []struct {
+		seconds int64
+		want    string
+	}{
+		{0, "0s"},
+		{45, "45s"},
+		{143, "2m 23s"},
+		{3660, "1h 01m"},
+	} {
+		if got := humanDuration("en", tc.seconds); got != tc.want {
+			t.Errorf("humanDuration(%d) = %q, want %q", tc.seconds, got, tc.want)
+		}
+	}
+}
+
 // TestTemplateHelpers checks the functions the templates are allowed to call,
 // since a wrong one shows up as wrong text on a page rather than a failure
 // anywhere.
