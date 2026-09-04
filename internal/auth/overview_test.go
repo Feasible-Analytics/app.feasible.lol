@@ -28,6 +28,10 @@ type visit struct {
 	duration  int64
 	bounce    int64
 	pageviews int
+
+	// imported marks a visit brought in from another analytics product, which
+	// is where most of a migrated site's history lives.
+	imported int64
 }
 
 // seedVisits writes sessions and their pageview events into an account,
@@ -53,18 +57,18 @@ func seedVisits(t *testing.T, manager *accounts.Manager, accountID int64, visits
 		session := int64(i + 1)
 
 		if _, err := account.Writer().ExecContext(ctx, `
-			INSERT INTO sessions (id, site_id, user_id, started_at, last_seen_at, duration, is_bounce, pageviews)
-			VALUES (?,?,?,?,?,?,?,?)`,
+			INSERT INTO sessions (id, site_id, user_id, started_at, last_seen_at, duration, is_bounce, pageviews, is_imported)
+			VALUES (?,?,?,?,?,?,?,?,?)`,
 			session, v.siteID, v.user, v.startedAt, v.startedAt+v.duration,
-			v.duration, v.bounce, v.pageviews); err != nil {
+			v.duration, v.bounce, v.pageviews, v.imported); err != nil {
 			t.Fatalf("insert session: %v", err)
 		}
 
 		for hit := range v.pageviews {
 			if _, err := account.Writer().ExecContext(ctx, `
-				INSERT INTO events (site_id, timestamp, name_id, user_id, session_id)
-				VALUES (?,?,?,?,?)`,
-				v.siteID, v.startedAt+int64(hit), nameID, v.user, session); err != nil {
+				INSERT INTO events (site_id, timestamp, name_id, user_id, session_id, is_imported)
+				VALUES (?,?,?,?,?,?)`,
+				v.siteID, v.startedAt+int64(hit), nameID, v.user, session, v.imported); err != nil {
 				t.Fatalf("insert event: %v", err)
 			}
 		}
@@ -173,6 +177,82 @@ func TestOverviewChartCoversEveryBucket(t *testing.T) {
 		if value != 0 {
 			t.Errorf("bucket %d holds %d visitors, want an empty bucket", i, value)
 		}
+	}
+}
+
+// TestOverviewCountsMigratedHistory is the bug this screen shipped with.
+//
+// A site imported from another product has most of its year on the imported
+// side, and the dashboard shows that history on every report. A card that
+// counted only what our own tracker saw reported a busy site as an almost dead
+// one — the same site, the same period, two answers an order of magnitude
+// apart.
+func TestOverviewCountsMigratedHistory(t *testing.T) {
+	traffic, manager := newTestTraffic(t)
+	ctx := context.Background()
+
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	when := now.Add(-time.Hour).Unix()
+
+	site := &Site{ID: 1, AccountID: 1, Domain: "migrated.example", Timezone: "Etc/UTC"}
+
+	seedVisits(t, manager, 1, []visit{
+		{siteID: site.ID, user: 10, startedAt: when, duration: 30, pageviews: 1},
+
+		// The history that came in with the migration, which is the bulk of it.
+		{siteID: site.ID, user: 20, startedAt: when, duration: 30, pageviews: 3, imported: 1},
+		{siteID: site.ID, user: 21, startedAt: when, duration: 30, pageviews: 4, imported: 1},
+	})
+
+	overview, err := traffic.Overview(ctx, []*Site{site}, query.RangeLast7Days, now)
+	if err != nil {
+		t.Fatalf("overview: %v", err)
+	}
+
+	card := overview.Sites[0]
+
+	if card.Visitors != 3 || card.Pageviews != 8 {
+		t.Errorf("card = %d visitors, %d pageviews; want 3 and 8 — migrated history is missing",
+			card.Visitors, card.Pageviews)
+	}
+
+	// The graph has to agree with the figures beside it, or the card argues
+	// with itself.
+	var charted int64
+	for _, value := range card.PageviewSeries {
+		charted += value
+	}
+
+	if charted != 8 {
+		t.Errorf("the chart holds %d pageviews and the card says 8", charted)
+	}
+}
+
+// TestOverviewCurrentVisitorsStayNative checks the one window that must not
+// count imported rows. A daily aggregate from another product cannot describe
+// who is on the site right now, and letting it try would put a number under
+// "right now" that no live visitor produced.
+func TestOverviewCurrentVisitorsStayNative(t *testing.T) {
+	traffic, manager := newTestTraffic(t)
+	ctx := context.Background()
+
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	site := &Site{ID: 1, AccountID: 1, Domain: "migrated.example", Timezone: "Etc/UTC"}
+
+	// Both visits are inside the five-minute window, and only one of them is
+	// ours.
+	seedVisits(t, manager, 1, []visit{
+		{siteID: site.ID, user: 10, startedAt: now.Add(-time.Minute).Unix(), pageviews: 1},
+		{siteID: site.ID, user: 20, startedAt: now.Add(-time.Minute).Unix(), pageviews: 1, imported: 1},
+	})
+
+	overview, err := traffic.Overview(ctx, []*Site{site}, query.RangeLast7Days, now)
+	if err != nil {
+		t.Fatalf("overview: %v", err)
+	}
+
+	if got := overview.Sites[0].Current; got != 1 {
+		t.Errorf("right now = %d, want 1 — imported rows must not count as live visitors", got)
 	}
 }
 

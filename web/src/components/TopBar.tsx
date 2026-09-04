@@ -23,6 +23,7 @@ import { useStats } from "../lib/useStats";
 import { useInterval } from "../lib/useStats";
 import { Chevron } from "./atoms";
 import { PeriodPicker } from "./PeriodPicker";
+import { SitePicker } from "./SitePicker";
 
 interface Props {
 	state: UrlState;
@@ -127,9 +128,14 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, fil
 					Feasible<span className="text-accent">.lol</span>
 				</a>
 
+				{/* Site settings lives inside the picker rather than beside it.
+				    A gear in the bar was a second button with no name on it,
+				    whose target changed with whatever the dropdown next to it
+				    was showing. */}
 				<SitePicker
 					current={state.domain}
 					sites={sites}
+					navigation={navigation}
 					onPick={(domain) => {
 						// The authenticated dashboard reloads rather than switching
 						// in place: the per-site navigation links are computed on the
@@ -142,16 +148,6 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, fil
 						onNavigate({ ...state, domain });
 					}}
 				/>
-				{navigation?.site_settings_url && (
-					<a
-						href={navigation.site_settings_url}
-						title={t("dashboard.navigation.site_settings")}
-						aria-label={t("dashboard.navigation.site_settings")}
-						className="flex size-control items-center justify-center border-2 border-line bg-card text-sm text-muted transition-colors hover:bg-hover hover:text-body"
-					>
-						<SettingsIcon />
-					</a>
-				)}
 
 				{!locked && <CurrentVisitors
 					domain={state.domain}
@@ -452,17 +448,6 @@ function MenuRowView({
 	}
 }
 
-/** SettingsIcon is an SVG rather than a text glyph so its weight, alignment,
- * and appearance stay consistent across browsers and operating systems. */
-function SettingsIcon() {
-	return (
-		<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className="size-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-			<circle cx="12" cy="12" r="3" />
-			<path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.6v-.1A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4.1 15a1.7 1.7 0 0 0-1.5-1H2v-4h.6a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06L6.56 4.2l.06.06A1.7 1.7 0 0 0 8.5 4.6a1.7 1.7 0 0 0 1-1.5V3h4v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 18.9 9a1.7 1.7 0 0 0 1.5 1h.6v4h-.6a1.7 1.7 0 0 0-1 .99Z" />
-		</svg>
-	);
-}
-
 /** periodLabel names the current range for the button face. ISO values remain
  *  in the URL and native date inputs, while the visible label follows the
  *  dashboard locale and reads like a date rather than a database value. */
@@ -477,39 +462,6 @@ export function periodLabel(state: UrlState): string {
 	const period = PERIODS.find((entry) => entry.preset === state.preset);
 
 	return period ? t(period.labelId) : state.preset;
-}
-
-/**
- * SitePicker switches sites.
- *
- * It renders as a plain select rather than a custom menu: it is the one control
- * that may hold hundreds of entries, and a native select gets type-ahead,
- * scrolling and mobile pickers for free that a div would have to re-earn.
- */
-function SitePicker({ current, sites, onPick }: { current: string; sites: string[]; onPick: (domain: string) => void }) {
-	if (sites.length === 0) return null;
-
-	return (
-		<label className="relative flex items-center">
-			<span className="sr-only">{t("dashboard.topbar.site")}</span>
-			<select
-				// The id is what the `0` shortcut reaches for. A ref threaded down
-				// from App would be the same lookup with more moving parts, on a
-				// control there is exactly one of.
-				id="site-picker"
-				value={current}
-				onChange={(event) => onPick(event.target.value)}
-				className="h-control cursor-pointer appearance-none border-2 border-line bg-card py-0 pr-7 pl-2.5 text-sm font-medium text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
-			>
-				{sites.map((site) => (
-					<option key={site} value={site}>
-						{site}
-					</option>
-				))}
-			</select>
-			<Chevron className="pointer-events-none absolute right-2" />
-		</label>
-	);
 }
 
 /**
@@ -568,26 +520,52 @@ function CurrentVisitors({
  * same page at all.
  */
 function ComparePicker({ state, onNavigate }: { state: UrlState; onNavigate: (next: UrlState) => void }) {
+	const [open, setOpen] = useState(false);
+	const wrap = useRef<HTMLDivElement>(null);
+
+	useDismiss(wrap, open, () => setOpen(false));
+
 	const modes: CompareMode[] = ["off", "previous_period", "year_over_year"];
 
 	return (
-		<label className="relative flex items-center">
-			<span className="sr-only">{t("dashboard.compare.label")}</span>
-			<select
-				value={state.compare}
-				onChange={(event) => onNavigate({ ...state, compare: event.target.value as CompareMode })}
-				className={`h-control cursor-pointer appearance-none border-2 border-line bg-card py-0 pr-7 pl-2.5 text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover ${
+		<div ref={wrap} className="relative">
+			<button
+				type="button"
+				aria-expanded={open}
+				aria-haspopup="menu"
+				aria-label={t("dashboard.compare.label")}
+				onClick={() => setOpen((was) => !was)}
+				className={`flex h-control items-center gap-1.5 border-2 border-line bg-card px-2.5 text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover ${
  state.compare === "off" ? "text-muted" : "font-medium text-body"
 				}`}
 			>
-				{modes.map((mode) => (
-					<option key={mode} value={mode}>
-						{t(COMPARE_LABELS[mode])}
-					</option>
-				))}
-			</select>
-			<Chevron className="pointer-events-none absolute right-2" />
-		</label>
+				{t(COMPARE_LABELS[state.compare])}
+				<Chevron />
+			</button>
+
+			{open && (
+				<div role="menu" className="absolute right-0 z-40 mt-1 w-48 border-2 border-line bg-card p-1 pop">
+					{modes.map((mode) => (
+						<button
+							key={mode}
+							type="button"
+							role="menuitemradio"
+							aria-checked={mode === state.compare}
+							onClick={() => {
+								setOpen(false);
+								onNavigate({ ...state, compare: mode });
+							}}
+							className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover ${
+ mode === state.compare ? "font-medium text-accent-ink" : "text-body"
+							}`}
+						>
+							<span className="flex-1">{t(COMPARE_LABELS[mode])}</span>
+							{mode === state.compare && <span aria-hidden="true">✓</span>}
+						</button>
+					))}
+				</div>
+			)}
+		</div>
 	);
 }
 

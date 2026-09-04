@@ -357,19 +357,10 @@ function AnalyticsDashboard() {
 		},
 
 		onSites: () => {
-			const picker = document.getElementById("site-picker");
-			if (!(picker instanceof HTMLSelectElement)) return;
-
-			picker.focus();
-
-			// showPicker drops the list open where the browser supports it;
-			// focus alone is the honest fallback, and there is no way to force a
-			// native select open without it.
-			try {
-				picker.showPicker();
-			} catch {
-				/* Focus is enough. */
-			}
+			// The picker is our own menu, so the shortcut opens it the same way
+			// a click does. Its own effect moves focus into the search box, which
+			// is where somebody who pressed a key to get here wants to be.
+			document.getElementById("site-picker")?.click();
 		},
 
 		onHelp: () => setHelp((was) => !was),

@@ -276,6 +276,14 @@ func readSiteOverview(ctx context.Context, engine *query.Engine, site *Site, goa
 		SiteIDs:   []int64{site.ID},
 		Timezone:  site.Timezone,
 		DateRange: query.DateRange{Preset: period},
+
+		// Migrated history is part of the answer here for the same reason it is
+		// part of the dashboard's: a site that was imported into this product
+		// has most of its year on the imported side, and a card reporting only
+		// what our own tracker saw would say a busy site had almost no traffic.
+		// The live window below is native-only, because a daily aggregate
+		// cannot describe who is on the site right now.
+		Include: query.Include{Imports: true},
 	}
 
 	totals := base
@@ -313,6 +321,7 @@ func readSiteOverview(ctx context.Context, engine *query.Engine, site *Site, goa
 	live := base
 	live.Metrics = []string{"visitors"}
 	live.DateRange = query.DateRange{Preset: query.RangeLast5Minutes}
+	live.Include = query.Include{}
 
 	current, err := engine.Run(ctx, live)
 	if err != nil {
