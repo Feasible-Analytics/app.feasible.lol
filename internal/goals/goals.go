@@ -676,6 +676,51 @@ func List(ctx context.Context, db *sql.DB, siteID int64) ([]Goal, error) {
 	return list, nil
 }
 
+// IDsForSites returns the configured goal ids of several sites at once, keyed
+// by site.
+//
+// It is one query for a whole list because the only caller is a screen showing
+// many sites side by side, and a lookup per site there is a round trip per row
+// to read a handful of integers.
+func IDsForSites(ctx context.Context, db *sql.DB, siteIDs []int64) (map[int64][]int64, error) {
+	out := map[int64][]int64{}
+	if len(siteIDs) == 0 {
+		return out, nil
+	}
+
+	// The placeholder list is built from the number of ids, never from their
+	// values, so nothing a caller supplied reaches the statement text.
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(siteIDs)), ",")
+
+	args := make([]any, 0, len(siteIDs))
+	for _, id := range siteIDs {
+		args = append(args, id)
+	}
+
+	rows, err := db.QueryContext(ctx,
+		"SELECT site_id, id FROM goals WHERE site_id IN ("+placeholders+") ORDER BY site_id, created_at, id", args...)
+	if err != nil {
+		return nil, fmt.Errorf("goals: ids for sites: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var siteID, goalID int64
+
+		if err := rows.Scan(&siteID, &goalID); err != nil {
+			return nil, fmt.Errorf("goals: ids for sites: %w", err)
+		}
+
+		out[siteID] = append(out[siteID], goalID)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("goals: ids for sites: %w", err)
+	}
+
+	return out, nil
+}
+
 // Get returns one goal by id, with its constraints.
 func Get(ctx context.Context, db *sql.DB, id int64) (Goal, error) {
 	var (

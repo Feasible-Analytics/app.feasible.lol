@@ -550,6 +550,7 @@ func (h *Handler) routes() *http.ServeMux {
 
 	// Signed in.
 	mux.HandleFunc("GET /sites", h.require(h.showSites))
+	mux.HandleFunc("GET /sites/analytics", h.require(h.showSitesAnalytics))
 	mux.HandleFunc("GET /sites/new", h.require(h.showNewSite))
 	mux.HandleFunc("POST /sites/new", h.require(h.doNewSite))
 	mux.HandleFunc("POST /sites/{id}/pin", h.require(h.doPinSite))

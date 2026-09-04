@@ -1,0 +1,76 @@
+<!--
+  site_card.html
+  One site on the all-sites analytics screen: a chart and six figures.
+
+  Created: 2026-09-04
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+<article class="flex flex-col border-2 border-line bg-card">
+  {{ if not .Locked }}
+    {{ $chart := chart .Card.VisitorSeries .Card.PageviewSeries }}
+    <div class="p-4 pb-0">
+      <svg viewBox="0 0 240 72" class="h-20 w-full" preserveAspectRatio="none" aria-hidden="true">
+        {{ if $chart.Pageviews }}
+          <polygon fill="currentColor" class="text-accent/15" points="{{ $chart.Pageviews }}" />
+        {{ end }}
+        <polyline fill="none" stroke="currentColor" class="text-accent" stroke-width="1.5"
+                  stroke-linejoin="round" points="{{ $chart.Visitors }}" />
+      </svg>
+    </div>
+  {{ end }}
+
+  <header class="flex items-center justify-between gap-3 p-4">
+    <div class="min-w-0">
+      <a href="{{ url .Lang (printf "/dashboard/%s" .Card.Site.Domain) }}"
+         class="block truncate text-sm font-semibold text-heading hover:text-accent-ink">
+        {{ .Card.Site.Label }}
+      </a>
+
+      {{ if ne .Card.Site.DisplayName "" }}
+        <p class="truncate text-xs text-muted">{{ .Card.Site.Domain }}</p>
+      {{ end }}
+    </div>
+
+    <a href="{{ url .Lang (printf "/dashboard/%s" .Card.Site.Domain) }}"
+       class="shrink-0 border-2 border-field px-3 py-1.5 text-xs font-medium text-body hover:bg-hover">
+      {{ t .Lang "auth.site_row.dashboard" }}
+    </a>
+  </header>
+
+  {{ if not .Locked }}
+    <dl class="mt-auto divide-y divide-line border-t border-line text-sm">
+      <div class="flex items-center justify-between px-4 py-2">
+        <dt class="flex items-center gap-2 text-muted">
+          <span class="inline-block size-2 shrink-0 rounded-full {{ if .Card.Current }}bg-accent{{ else }}bg-faint{{ end }}"></span>
+          {{ t .Lang "auth.sites.metric_current" }}
+        </dt>
+        <dd class="tabular-nums text-heading">{{ count .Card.Current }}</dd>
+      </div>
+
+      <div class="flex items-center justify-between px-4 py-2">
+        <dt class="text-muted">{{ t .Lang "auth.sites.metric_visitors" }}</dt>
+        <dd class="tabular-nums text-heading">{{ count .Card.Visitors }}</dd>
+      </div>
+
+      <div class="flex items-center justify-between px-4 py-2">
+        <dt class="text-muted">{{ t .Lang "auth.sites.metric_pageviews" }}</dt>
+        <dd class="tabular-nums text-heading">{{ count .Card.Pageviews }}</dd>
+      </div>
+
+      <div class="flex items-center justify-between px-4 py-2">
+        <dt class="text-muted">{{ t .Lang "auth.sites.metric_visit" }}</dt>
+        <dd class="tabular-nums text-heading">{{ seconds .Lang .Card.AverageVisit }}</dd>
+      </div>
+
+      <div class="flex items-center justify-between px-4 py-2">
+        <dt class="text-muted">{{ t .Lang "auth.sites.metric_bounce" }}</dt>
+        <dd class="tabular-nums text-heading">{{ percent .Card.BounceRate }}</dd>
+      </div>
+
+      <div class="flex items-center justify-between px-4 py-2">
+        <dt class="text-muted">{{ t .Lang "auth.sites.metric_goals" }}</dt>
+        <dd class="tabular-nums text-heading">{{ count .Card.Goals }}</dd>
+      </div>
+    </dl>
+  {{ end }}
+</article>

@@ -1,0 +1,24 @@
+<!--
+  sites_views.html
+  The toggle between the two ways of looking at the same set of sites.
+
+  Created: 2026-09-04
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  It lives in a partial because the two screens it switches between both draw
+  it, and a segmented control whose halves disagree about which one is selected
+  is worse than no control at all.
+-->
+<nav class="flex border-2 border-heading" aria-label="{{ t .Lang "auth.sites.views_label" }}">
+  <a href="{{ url .Lang (printf "/sites?team_id=%d" .TeamID) }}"
+     {{ if eq .Current "list" }}aria-current="page"{{ end }}
+     class="px-4 py-2 text-sm font-medium {{ if eq .Current "list" }}bg-heading text-card{{ else }}text-body hover:bg-hover{{ end }}">
+    {{ t .Lang "auth.sites.view_list" }}
+  </a>
+
+  <a href="{{ url .Lang (printf "/sites/analytics?team_id=%d" .TeamID) }}"
+     {{ if eq .Current "analytics" }}aria-current="page"{{ end }}
+     class="border-s-2 border-heading px-4 py-2 text-sm font-medium {{ if eq .Current "analytics" }}bg-heading text-card{{ else }}text-body hover:bg-hover{{ end }}">
+    {{ t .Lang "auth.sites.view_analytics" }}
+  </a>
+</nav>

@@ -1,0 +1,149 @@
+<!--
+  sites_analytics.html
+  Every site as a card of headline numbers, with the selection's totals on top.
+
+  Created: 2026-09-04
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  The three controls are plain links inside one form rather than anything
+  scripted. Every state this screen can be in is a URL, so it can be bookmarked,
+  shared with a colleague and reloaded, and it works before Alpine has run.
+-->
+{{ define "content" }}
+<div class="flex flex-wrap items-start justify-between gap-3">
+  <div>
+    <h1 class="text-2xl font-semibold text-heading">{{ t $.Lang "auth.sites.title" }}</h1>
+    <p class="mt-1 text-sm text-muted">
+      {{ if .Data.FolderName }}
+        {{ n $.Lang "auth.sites.count_in_folder" .Data.Total "folder" .Data.FolderName }}
+      {{ else }}
+        {{ n $.Lang "auth.sites.count" .Data.Total }}
+      {{ end }}
+    </p>
+  </div>
+
+  <div class="flex flex-wrap items-center gap-2">
+    {{ template "sites_views.html" (dict "Lang" $.Lang "TeamID" $.Data.TeamID "Current" "analytics") }}
+
+    {{ if .Data.CanManage }}
+    <a href="{{ url $.Lang (printf "/sites/new?team_id=%d" .Data.TeamID) }}" class="btn btn-primary">
+      {{ t $.Lang "auth.sites.add" }}
+    </a>
+    {{ end }}
+  </div>
+</div>
+
+<!--
+  Submitting on change keeps the three controls one form: the folder, the period
+  and the order are one question about one screen, and three separate
+  navigations would drop whichever two the reader did not touch last.
+-->
+<form method="get" action="{{ url $.Lang "/sites/analytics" }}" class="mt-6 flex flex-wrap items-center gap-2">
+  <input type="hidden" name="team_id" value="{{ .Data.TeamID }}">
+
+  {{ if .Data.Folders }}
+  <label for="folder" class="sr-only">{{ t $.Lang "auth.sites.folder_filter_label" }}</label>
+  <select id="folder" name="folder" onchange="this.form.submit()"
+          class="border-2 border-field bg-card px-3 py-2 text-sm text-body">
+    <option value="0" {{ if eq (num .Data.Folder) 0 }}selected{{ end }}>{{ t $.Lang "auth.sites.folder_filter_all" }}</option>
+    {{ range .Data.Folders }}
+      <option value="{{ .ID }}" {{ if eq (num $.Data.Folder) (num .ID) }}selected{{ end }}>{{ .Name }}</option>
+    {{ end }}
+  </select>
+  {{ end }}
+
+  <label for="period" class="sr-only">{{ t $.Lang "auth.sites.period_label" }}</label>
+  <select id="period" name="period" onchange="this.form.submit()"
+          class="border-2 border-field bg-card px-3 py-2 text-sm text-body">
+    {{ range .Data.Periods }}
+      <option value="{{ . }}" {{ if eq . $.Data.Period }}selected{{ end }}>{{ t $.Lang (printf "dashboard.topbar.period.%s" .) }}</option>
+    {{ end }}
+  </select>
+
+  <label for="sort" class="sr-only">{{ t $.Lang "auth.sites.sort_label" }}</label>
+  <select id="sort" name="sort" onchange="this.form.submit()"
+          class="border-2 border-field bg-card px-3 py-2 text-sm text-body">
+    <option value="" {{ if eq .Data.Sort "" }}selected{{ end }}>{{ t $.Lang "auth.sites.sort_manual" }}</option>
+    <option value="traffic" {{ if eq .Data.Sort "traffic" }}selected{{ end }}>{{ t $.Lang "auth.sites.sort_traffic" }}</option>
+    <option value="name" {{ if eq .Data.Sort "name" }}selected{{ end }}>{{ t $.Lang "auth.sites.sort_name" }}</option>
+    <option value="created" {{ if eq .Data.Sort "created" }}selected{{ end }}>{{ t $.Lang "auth.sites.sort_newest" }}</option>
+  </select>
+
+  <noscript>
+    <button type="submit" class="border-2 border-field px-4 py-2 text-sm font-medium text-body hover:bg-hover">
+      {{ t $.Lang "auth.sites.apply" }}
+    </button>
+  </noscript>
+</form>
+
+{{ if .Data.Locked }}
+  <div class="mt-6 border-2 border-down/30 bg-down/10 p-5 text-sm text-down-ink" role="status">
+    <h2 class="font-semibold">{{ t $.Lang "auth.sites.locked_title" }}</h2>
+    <p class="mt-1">{{ t $.Lang "auth.sites.locked_body" }}</p>
+    {{ if .Data.CanManageBilling }}
+    <div class="mt-4 flex flex-wrap gap-2">
+      <a href="{{ url $.Lang (printf "/billing?team=%d" .Data.TeamID) }}" class="btn btn-primary">{{ t $.Lang "auth.sites.locked_billing" }}</a>
+      <a href="{{ url $.Lang (printf "/billing/export?team=%d" .Data.TeamID) }}" class="border-2 border-field bg-card px-4 py-2 font-medium text-body hover:bg-hover">{{ t $.Lang "auth.sites.locked_export" }}</a>
+    </div>
+    {{ end }}
+  </div>
+{{ end }}
+
+{{ if not .Data.Overview.Sites }}
+  <div class="mt-10 border-2 border-dashed border-field bg-card p-12 text-center">
+    <h2 class="text-lg font-medium text-heading">{{ t $.Lang "auth.sites.analytics_empty_title" }}</h2>
+    <p class="mx-auto mt-2 max-w-md text-sm text-muted">{{ t $.Lang "auth.sites.analytics_empty_body" }}</p>
+  </div>
+{{ else }}
+
+  {{ if not .Data.Locked }}
+    <!--
+      The selection's totals. Visitors is a sum across sites rather than a
+      distinct count, and the label says "site visitors" for that reason: a
+      visitor id is derived per site by design, so somebody who read two of your
+      sites is two site visitors and there is no honest way to say otherwise.
+    -->
+    {{ $totals := .Data.Overview.Totals }}
+    <dl class="mt-6 grid grid-cols-2 border-2 border-line bg-card sm:grid-cols-3 lg:grid-cols-6">
+      <div class="border-b border-e border-line p-4 sm:border-b-0 lg:border-b-0">
+        <dd class="flex items-center gap-2 font-display text-2xl font-extrabold text-heading">
+          <span class="inline-block size-2 shrink-0 rounded-full {{ if $totals.Current }}bg-accent{{ else }}bg-faint{{ end }}"></span>
+          <span class="tabular-nums">{{ count $totals.Current }}</span>
+        </dd>
+        <dt class="mt-1 text-xs text-muted">{{ t $.Lang "auth.sites.metric_current" }}</dt>
+      </div>
+
+      <div class="border-b border-line p-4 sm:border-e sm:border-b-0 lg:border-b-0">
+        <dd class="font-display text-2xl font-extrabold tabular-nums text-heading">{{ count $totals.Visitors }}</dd>
+        <dt class="mt-1 text-xs text-muted">{{ t $.Lang "auth.sites.metric_visitors" }}</dt>
+      </div>
+
+      <div class="border-b border-e border-line p-4 sm:border-e-0 lg:border-e lg:border-b-0">
+        <dd class="font-display text-2xl font-extrabold tabular-nums text-heading">{{ count $totals.Pageviews }}</dd>
+        <dt class="mt-1 text-xs text-muted">{{ t $.Lang "auth.sites.metric_pageviews" }}</dt>
+      </div>
+
+      <div class="border-b border-line p-4 sm:border-e lg:border-b-0">
+        <dd class="font-display text-2xl font-extrabold tabular-nums text-heading">{{ seconds $.Lang $totals.AverageVisit }}</dd>
+        <dt class="mt-1 text-xs text-muted">{{ t $.Lang "auth.sites.metric_visit" }}</dt>
+      </div>
+
+      <div class="border-e border-line p-4">
+        <dd class="font-display text-2xl font-extrabold tabular-nums text-heading">{{ percent $totals.BounceRate }}</dd>
+        <dt class="mt-1 text-xs text-muted">{{ t $.Lang "auth.sites.metric_bounce" }}</dt>
+      </div>
+
+      <div class="p-4">
+        <dd class="font-display text-2xl font-extrabold tabular-nums text-heading">{{ count $totals.Goals }}</dd>
+        <dt class="mt-1 text-xs text-muted">{{ t $.Lang "auth.sites.metric_goals" }}</dt>
+      </div>
+    </dl>
+  {{ end }}
+
+  <div class="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+    {{ range .Data.Overview.Sites }}
+      {{ template "site_card.html" (dict "Card" . "Lang" $.Lang "Locked" $.Data.Locked) }}
+    {{ end }}
+  </div>
+{{ end }}
+{{ end }}

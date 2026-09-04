@@ -609,6 +609,22 @@ func TestDashboardAndSiteRoutesEnforceEveryRole(t *testing.T) {
 		}
 	}
 
+	// The two sites screens are one surface with two shapes, so a role that can
+	// open one must be able to open the other. Anything else is a screen that
+	// leaks a team's traffic to somebody the list view already refused.
+	for role, c := range clients {
+		list := c.get("/sites")
+		closeResponseBody(t, list)
+
+		analytics := c.get("/sites/analytics")
+		closeResponseBody(t, analytics)
+
+		if list.StatusCode != analytics.StatusCode {
+			t.Errorf("%s got %d from the list and %d from the analytics view",
+				role, list.StatusCode, analytics.StatusCode)
+		}
+	}
+
 	for _, role := range []teams.Role{teams.RoleEditor, teams.RoleGuestEditor} {
 		response := clients[role].post("/sites/"+strconv.FormatInt(site.ID, 10)+"/delete",
 			url.Values{"confirm": {site.Domain}})
@@ -1267,6 +1283,82 @@ func TestRegisterVerifyAndCreateASite(t *testing.T) {
 
 	if !strings.Contains(list, "Marketing site") {
 		t.Error("the sites list should show the display name")
+	}
+}
+
+// TestAllSitesAnalyticsFiltersByFolder drives the second sites screen through
+// the route table.
+//
+// The folder filter is the part worth an end-to-end test: it changes both the
+// cards on the page and the totals above them, and a filter that narrowed one
+// without the other would put a whole account's figures over one client's
+// sites.
+func TestAllSitesAnalyticsFiltersByFolder(t *testing.T) {
+	app := newTestApp(t)
+	c := registerAndVerify(t, app)
+
+	for _, site := range []struct{ domain, name string }{
+		{"client.example", "Client site"},
+		{"internal.example", "Internal site"},
+	} {
+		created := c.post("/sites/new", url.Values{
+			"domain":       {site.domain},
+			"display_name": {site.name},
+			"timezone":     {"Etc/UTC"},
+		})
+		closeResponseBody(t, created)
+	}
+
+	ctx := context.Background()
+
+	client, err := app.store.SiteByDomain(ctx, "client.example")
+	if err != nil {
+		t.Fatalf("the site should exist: %v", err)
+	}
+
+	folder, err := app.store.CreateFolder(ctx, client.TeamID, "Client work")
+	if err != nil {
+		t.Fatalf("create folder: %v", err)
+	}
+
+	if err := app.store.MoveSite(ctx, client.TeamID, client.ID, folder.ID, 1000); err != nil {
+		t.Fatalf("move site: %v", err)
+	}
+
+	// Unfiltered, both sites are on the screen and the list view links to it.
+	everything := c.body("/sites/analytics")
+
+	for _, fragment := range []string{"Client site", "Internal site", "Site visitors", "Bounce rate", "Goals"} {
+		if !strings.Contains(everything, fragment) {
+			t.Errorf("the all-sites screen is missing %q", fragment)
+		}
+	}
+
+	if list := c.body("/sites"); !strings.Contains(list, "/sites/analytics") {
+		t.Error("the list view should offer the analytics view")
+	}
+
+	// Filtered, only the folder's site remains, and the heading counts it.
+	filtered := c.body("/sites/analytics?folder=" + strconv.FormatInt(folder.ID, 10))
+
+	if !strings.Contains(filtered, "Client site") {
+		t.Error("the folder's own site should be on the filtered screen")
+	}
+
+	if strings.Contains(filtered, "Internal site") {
+		t.Error("a site outside the folder should not be on the filtered screen")
+	}
+
+	if !strings.Contains(filtered, "1 site in Client work") {
+		t.Errorf("the filtered heading should name the folder:\n%s", filtered)
+	}
+
+	// A folder id that is not this team's selects nothing rather than erroring,
+	// because the id travels in a URL somebody may have bookmarked.
+	unknown := c.body("/sites/analytics?folder=99999")
+
+	if !strings.Contains(unknown, "Client site") || !strings.Contains(unknown, "Internal site") {
+		t.Error("an unknown folder should fall back to every site")
 	}
 }
 

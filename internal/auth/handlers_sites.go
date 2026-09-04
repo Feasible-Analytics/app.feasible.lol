@@ -125,6 +125,123 @@ func (h *Handler) showSites(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, "sites", p, http.StatusOK)
 }
 
+// showSitesAnalytics renders every site as a card of headline numbers.
+//
+// It is the same set of sites as the list view and a different question about
+// them: the list answers "which sites do I have and how are they organised",
+// this one answers "which of them is busy today". Neither replaces the other,
+// which is why they are two screens with a toggle rather than one screen with a
+// setting.
+func (h *Handler) showSitesAnalytics(w http.ResponseWriter, r *http.Request) {
+	team, err := h.teamForRequest(r, teams.PermViewDashboard)
+	if err != nil {
+		h.teamSelectionError(w, r, err)
+		return
+	}
+
+	list, err := h.Store.ListSites(r.Context(), team.ID, r.URL.Query().Get("sort"))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+
+	folders, err := h.Store.ListFolders(r.Context(), team.ID)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+
+	// A folder id that is not this team's, or not a number, selects nothing
+	// rather than erroring. The id travels in a URL somebody may have
+	// bookmarked before deleting the folder, and a 404 there is a worse answer
+	// than the whole account.
+	folderID := selectedFolder(r.URL.Query().Get("folder"), folders)
+	folderName := ""
+
+	if folderID > 0 {
+		var inFolder []*Site
+
+		for _, site := range list {
+			if site.FolderID == folderID {
+				inFolder = append(inFolder, site)
+			}
+		}
+
+		list = inFolder
+
+		for _, folder := range folders {
+			if folder.ID == folderID {
+				folderName = folder.Name
+			}
+		}
+	}
+
+	period := ValidOverviewPeriod(r.URL.Query().Get("period"))
+
+	// A locked account gets the screen with no figures on it, for the same
+	// reason the list view drops its sparklines: every number here is a report
+	// about an account whose reports are paused.
+	locked := h.Access != nil && h.Access(team.ID)
+
+	overview := &Overview{Period: period}
+
+	if !locked {
+		// A failure degrades the page rather than breaking it. The cards still
+		// name every site and still link to their dashboards, which is more
+		// use than an error screen.
+		read, err := h.Traffic.Overview(r.Context(), list, period, h.Store.Now())
+		if err != nil {
+			h.Log.Warn("could not read the all-sites overview", "team", team.ID, "error", err)
+		} else {
+			overview = read
+		}
+	}
+
+	if len(overview.Sites) == 0 {
+		for _, site := range list {
+			overview.Sites = append(overview.Sites, &SiteOverview{Site: site})
+		}
+	}
+
+	if r.URL.Query().Get("sort") == "traffic" {
+		SortOverviewByTraffic(overview.Sites)
+	}
+
+	p := h.newPage(r, tr(r, "auth.title.sites_analytics"), "sites")
+	p.Data["Overview"] = overview
+	p.Data["Folders"] = folders
+	p.Data["Folder"] = folderID
+	p.Data["FolderName"] = folderName
+	p.Data["Period"] = period
+	p.Data["Periods"] = OverviewPeriods
+	p.Data["Sort"] = r.URL.Query().Get("sort")
+	p.Data["Total"] = len(list)
+	p.Data["Locked"] = locked
+	p.Data["TeamID"] = team.ID
+	role, _ := h.Teams.RoleOf(r.Context(), team.ID, userFrom(r).ID)
+	p.Data["CanManage"] = teams.Can(role, teams.PermManageSites)
+	p.Data["CanManageBilling"] = teams.Can(role, teams.PermManageBilling)
+
+	h.render(w, r, "sites_analytics", p, http.StatusOK)
+}
+
+// selectedFolder resolves the folder id in a URL against the team's own
+// folders, returning zero for anything else.
+func selectedFolder(raw string, folders []*Folder) int64 {
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		return 0
+	}
+
+	for _, folder := range folders {
+		if folder.ID == id {
+			return id
+		}
+	}
+
+	return 0
+}
+
 // showNewSite renders the create-site form.
 func (h *Handler) showNewSite(w http.ResponseWriter, r *http.Request) {
 	team, err := h.teamForRequest(r, teams.PermManageSites)
