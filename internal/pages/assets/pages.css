@@ -365,7 +365,10 @@ pre code { background: none; border: 0; padding: 0; overflow-wrap: normal; word-
 @media (max-width: 520px) {
   .wrap { padding-left: 16px; padding-right: 16px; }
   header.top .wrap { gap: 4px 16px; }
-  header.top .brand { flex-basis: 100%; }
+  /* The wordmark steps down on a phone. At its full size it pushes the nav on
+     to a second row and then off the right edge, and a header that scrolls
+     sideways is the first thing a visitor on a phone notices. */
+  header.top .brand { flex-basis: 100%; font-size: 16px; }
   header.top nav { width: 100%; margin-left: 0; justify-content: flex-start; gap: 4px 16px; }
   header.top nav a { font-size: 14px; line-height: 1.8; }
   .hero { padding-top: 40px; }
