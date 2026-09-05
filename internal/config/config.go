@@ -131,6 +131,12 @@ type Shared struct {
 	InternalKey string
 	TraceEvents bool
 
+	// TraceIdentity turns on the visitor-fingerprint trace, which writes raw IP
+	// addresses to the log. It is off unless someone sets it for a specific
+	// investigation, and it is the only setting in the system that puts an
+	// address on disk.
+	TraceIdentity bool
+
 	// IngestSalt is shared by every ingest process. Each process combines it
 	// with the UTC day locally, so daily visitor identifiers agree without an
 	// app-side salt authority or network request.
@@ -571,6 +577,10 @@ func LoadFrom(l *Loader) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	traceIdentity, err := l.Bool("FEASIBLE_TRACE_IDENTITY", false)
+	if err != nil {
+		return nil, err
+	}
 	hosted, err := l.Bool("FEASIBLE_APP_HOSTED", true)
 	if err != nil {
 		return nil, err
@@ -623,12 +633,13 @@ func LoadFrom(l *Loader) (*Config, error) {
 
 	cfg := &Config{
 		Shared: Shared{
-			Env:         env,
-			LogLevel:    strings.ToLower(l.String("FEASIBLE_LOG_LEVEL", defaultLevel)),
-			LogFormat:   strings.ToLower(l.String("FEASIBLE_LOG_FORMAT", defaultFormat)),
-			TraceEvents: traceEvents,
-			InternalKey: strings.TrimSpace(l.String("FEASIBLE_INTERNAL_KEY", "")),
-			IngestSalt:  l.String("FEASIBLE_INGEST_SALT", DefaultIngestSalt),
+			Env:           env,
+			LogLevel:      strings.ToLower(l.String("FEASIBLE_LOG_LEVEL", defaultLevel)),
+			LogFormat:     strings.ToLower(l.String("FEASIBLE_LOG_FORMAT", defaultFormat)),
+			TraceEvents:   traceEvents,
+			TraceIdentity: traceIdentity,
+			InternalKey:   strings.TrimSpace(l.String("FEASIBLE_INTERNAL_KEY", "")),
+			IngestSalt:    l.String("FEASIBLE_INGEST_SALT", DefaultIngestSalt),
 		},
 		App: App{
 			Listen:          l.String("FEASIBLE_APP_LISTEN", DefaultAppListen),

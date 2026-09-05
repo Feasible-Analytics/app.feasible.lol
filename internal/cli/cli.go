@@ -162,10 +162,11 @@ func Run(opts Options) int {
 	e := &env{
 		cfg: cfg,
 		log: logger.New(logger.Options{
-			Level:       cfg.Shared.LogLevel,
-			Format:      cfg.Shared.LogFormat,
-			TraceEvents: cfg.Shared.TraceEvents,
-			Output:      stdout,
+			Level:         cfg.Shared.LogLevel,
+			Format:        cfg.Shared.LogFormat,
+			TraceEvents:   cfg.Shared.TraceEvents,
+			TraceIdentity: cfg.Shared.TraceIdentity,
+			Output:        stdout,
 		}),
 		stdout:           stdout,
 		stderr:           stderr,

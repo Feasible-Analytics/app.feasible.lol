@@ -251,6 +251,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"client_ip_source", result.Debug.ClientIPSource,
 			)
 		}
+
+		// The fingerprint inputs beside the fingerprint they produced. Two
+		// visits by one person differ here in exactly one field when a network
+		// hands the device a new address, which is the only thing that can
+		// explain one product counting a returning visitor as several.
+		if h.Log.TraceIdentityEnabled() {
+			h.Log.TraceIdentity(
+				"site", event.SiteID,
+				"timestamp", event.Timestamp,
+				"name", event.Name,
+				"pathname", event.Pathname,
+				"user_id", result.Debug.UserID,
+				"previous_user_id", result.Debug.PreviousUserID,
+				"salt_day", result.Debug.SaltDay,
+				"client_ip", result.Debug.ClientIP,
+				"client_ip_source", result.Debug.ClientIPSource,
+				"user_agent", r.Header.Get("User-Agent"),
+				"site_domain", result.Debug.SiteDomain,
+				"root_domain", result.Debug.RootDomain,
+			)
+		}
 	}
 
 	w.WriteHeader(http.StatusAccepted)
