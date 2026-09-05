@@ -75,17 +75,18 @@ func (m *LifecycleMailer) Notify(ctx context.Context, notice lifecycle.Notice) (
 func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 	lapse := notice.Trigger == lifecycle.TriggerLapse
 
-	content := Content{
-		Facts:   lifecycleFacts(notice),
-		Primary: Button{Label: "Upgrade — $9.99/month or $100/year", URL: notice.UpgradeURL},
-		Closing: "Questions, or want to talk about a plan that fits better? Reply to this email and a person will answer.",
+	// One button, because a lapsed subscription is as often an expired card as
+	// a decision and both are fixed on the same screen. Two buttons to one page
+	// asks somebody to guess which of them is the one that helps.
+	label := "Upgrade — $9.99/month or $100/year"
+	if lapse {
+		label = "Update your card or upgrade — $9.99/month or $100/year"
 	}
 
-	// The dunning path gets the card-update link beside every upgrade link. A
-	// lapsed subscription is usually an expired card rather than a decision,
-	// and sending somebody to a pricing page to fix that wastes their time.
-	if lapse && notice.PortalURL != "" {
-		content.Secondary = append(content.Secondary, Button{Label: "Update your card", URL: notice.PortalURL})
+	content := Content{
+		Facts:   lifecycleFacts(notice),
+		Primary: Button{Label: label, URL: notice.BillingURL},
+		Closing: "Questions, or want to talk about a plan that fits better? Reply to this email and a person will answer.",
 	}
 
 	if notice.ExportURL != "" {
@@ -206,7 +207,7 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 		}
 		content.Facts = nil
 		content.Secondary = nil
-		content.Primary = Button{Label: "Start again", URL: notice.UpgradeURL}
+		content.Primary = Button{Label: "Start again", URL: notice.BillingURL}
 
 	default:
 		return Content{}, fmt.Errorf("mail: no copy for lifecycle template %q", notice.Template)

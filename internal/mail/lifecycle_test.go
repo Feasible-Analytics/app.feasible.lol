@@ -36,12 +36,8 @@ func noticeFor(template string, trigger lifecycle.Trigger, day int) lifecycle.No
 		LocksAt:    state.Boundary(lifecycle.PhaseLocked),
 		StopsAt:    state.Boundary(lifecycle.PhaseDormant),
 		DeletesAt:  state.Boundary(lifecycle.PhaseDeleted),
-		UpgradeURL: "https://feasible.lol/billing/upgrade",
+		BillingURL: "https://feasible.lol/billing",
 		ExportURL:  "https://feasible.lol/billing/export",
-	}
-
-	if trigger == lifecycle.TriggerLapse {
-		notice.PortalURL = "https://feasible.lol/billing/portal"
 	}
 
 	return notice
@@ -71,10 +67,10 @@ func TestEveryTemplateRendersInBothVoices(t *testing.T) {
 				t.Errorf("%s/%s has no subject", trigger, entry.Template)
 			}
 
-			if !strings.Contains(msg.HTML, notice.UpgradeURL) {
+			if !strings.Contains(msg.HTML, notice.BillingURL) {
 				t.Errorf("%s/%s has no upgrade link", trigger, entry.Template)
 			}
-			if !strings.Contains(msg.Text, notice.UpgradeURL) {
+			if !strings.Contains(msg.Text, notice.BillingURL) {
 				t.Errorf("%s/%s has no upgrade link in the text part", trigger, entry.Template)
 			}
 
@@ -149,10 +145,11 @@ func TestDeletionWarningsStateLiveAndProviderTiming(t *testing.T) {
 	}
 }
 
-// TestDunningCarriesTheCardLink is the difference between the two voices that
-// actually matters. A lapsed subscription is usually an expired card, and
-// sending somebody to a pricing page to fix that wastes their time.
-func TestDunningCarriesTheCardLink(t *testing.T) {
+// TestDunningNamesTheCardOnItsButton is the difference between the two voices
+// that actually matters. A lapsed subscription is usually an expired card, so
+// the one button has to say so — otherwise somebody whose card expired reads
+// "Upgrade" and assumes the email is not about them.
+func TestDunningNamesTheCardOnItsButton(t *testing.T) {
 	for _, entry := range lifecycle.Sequence {
 		if entry.Template == lifecycle.TemplateAccountDeleted {
 			continue
@@ -163,27 +160,40 @@ func TestDunningCarriesTheCardLink(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		found := false
-		for _, button := range lapse.Secondary {
-			if button.Label == "Update your card" {
-				found = true
-			}
+		if !strings.Contains(lapse.Primary.Label, "card") {
+			t.Errorf("%s on the dunning path never mentions the card: %q", entry.Template, lapse.Primary.Label)
 		}
 
-		if !found {
-			t.Errorf("%s on the dunning path has no card-update link", entry.Template)
-		}
-
-		// The trial path must not offer one: there is no customer at the payment
-		// provider yet, so the link would lead to an error page.
+		// The trial path must not mention one: there is no customer at the
+		// payment provider yet, and there is no card to update.
 		trial, err := LifecycleContent(noticeFor(entry.Template, lifecycle.TriggerTrial, entry.Day))
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		for _, button := range trial.Secondary {
-			if button.Label == "Update your card" {
-				t.Errorf("%s on the trial path offers a card-update link", entry.Template)
+		if strings.Contains(trial.Primary.Label, "card") {
+			t.Errorf("%s on the trial path offers to update a card that does not exist: %q",
+				entry.Template, trial.Primary.Label)
+		}
+	}
+}
+
+// TestEveryMessageHasOneBillingButton keeps the two destinations that used to be
+// separate from reappearing as two buttons to the same screen.
+func TestEveryMessageHasOneBillingButton(t *testing.T) {
+	for _, trigger := range []lifecycle.Trigger{lifecycle.TriggerTrial, lifecycle.TriggerLapse} {
+		for _, entry := range lifecycle.Sequence {
+			notice := noticeFor(entry.Template, trigger, entry.Day)
+
+			content, err := LifecycleContent(notice)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			for _, button := range content.Secondary {
+				if button.URL == notice.BillingURL {
+					t.Errorf("%s/%s repeats the billing link as %q", trigger, entry.Template, button.Label)
+				}
 			}
 		}
 	}

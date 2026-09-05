@@ -98,7 +98,6 @@ func TestEveryPageRenders(t *testing.T) {
 
 	paths := []string{
 		"/billing?team=1",
-		"/billing/upgrade",
 		"/billing/done?team=1",
 		"/billing/export?team=1",
 	}
@@ -134,7 +133,7 @@ func TestLayoutNavigationPreservesTheSelectedTeam(t *testing.T) {
 		return Account{ID: 27, Email: "billing@example.com"}, nil
 	}
 
-	body := render(t, handler, "/billing/upgrade?team=27").Body.String()
+	body := render(t, handler, "/billing?team=27").Body.String()
 	if !strings.Contains(body, `href="/billing?team=27"`) {
 		t.Errorf("selected-team billing navigation is missing: %s", body)
 	}
@@ -146,7 +145,7 @@ func TestLayoutNavigationPreservesTheSelectedTeam(t *testing.T) {
 func TestTheFooterLinksLeaveTheApplication(t *testing.T) {
 	handler, _ := newHandler(t)
 
-	hosted := render(t, handler, "/billing/upgrade").Body.String()
+	hosted := render(t, handler, "/billing?team=1").Body.String()
 	for _, want := range []string{
 		`href="https://feasible.lol/docs"`,
 		`href="https://feasible.lol/legal/privacy"`,
@@ -164,7 +163,7 @@ func TestTheFooterLinksLeaveTheApplication(t *testing.T) {
 	handler.OperatorAddress = "123 Example Street\nPortland, OR"
 	handler.OperatorEmail = "privacy@example.test"
 
-	selfHosted := render(t, handler, "/billing/upgrade").Body.String()
+	selfHosted := render(t, handler, "/billing?team=1").Body.String()
 	if !strings.Contains(selfHosted, `href="https://feasible.lol/docs"`) {
 		t.Error("a self-hosted footer lost the documentation link")
 	}
@@ -174,7 +173,7 @@ func TestTheFooterLinksLeaveTheApplication(t *testing.T) {
 
 	// Nothing in this binary answers the paths the footer points at, which is
 	// the whole point of the links being absolute.
-	for _, path := range []string{"/docs", "/docs/api", "/legal/privacy", "/legal/terms", "/legal/dpa", "/pricing"} {
+	for _, path := range []string{"/docs", "/docs/api", "/legal/privacy", "/legal/terms", "/legal/dpa", "/pricing", "/billing/upgrade"} {
 		if code := render(t, handler, path).Code; code != http.StatusNotFound {
 			t.Errorf("%s answered %d, want 404 — it belongs to the public site", path, code)
 		}
@@ -194,10 +193,18 @@ func TestWritePublicBrowserFixtures(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler, _ := newHandler(t)
+	handler, control := newHandler(t)
+
+	// A lapse clock is started so the billing fixture renders its timeline. The
+	// narrow-viewport rule that stacks each row is only exercised when the rows
+	// are on the page, and a healthy account has none.
+	state := lifecycle.State{Trigger: lifecycle.TriggerLapse, StartedAt: pagesNow.Add(-10 * lifecycle.Day)}
+	if err := lifecycle.NewStore(control).Save(context.Background(), 1, state); err != nil {
+		t.Fatal(err)
+	}
+
 	paths := []string{
 		"/billing?team=1",
-		"/billing/upgrade",
 		"/billing/done?team=1",
 		"/billing/export?team=1",
 	}
@@ -232,7 +239,7 @@ func TestWritePublicBrowserFixtures(t *testing.T) {
 // contract used by browser-capable smoke checks at 320px and 390px.
 func TestPublicHeaderHasNarrowViewportContainment(t *testing.T) {
 	handler, _ := newHandler(t)
-	page := render(t, handler, "/billing/upgrade").Body.String()
+	page := render(t, handler, "/billing?team=1").Body.String()
 	if !strings.Contains(page, `name="viewport" content="width=device-width, initial-scale=1"`) {
 		t.Fatal("public layout is missing its device-width viewport")
 	}
@@ -268,7 +275,7 @@ func TestPublicLanguageChoicePersistsWithoutMislabelingFallback(t *testing.T) {
 	mux := http.NewServeMux()
 	handler.Routes(mux)
 
-	for _, path := range []string{"/billing/upgrade?lang=de"} {
+	for _, path := range []string{"/billing?team=1&lang=de"} {
 		recorder := httptest.NewRecorder()
 		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
 
@@ -285,59 +292,12 @@ func TestPublicLanguageChoicePersistsWithoutMislabelingFallback(t *testing.T) {
 		}
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/billing/upgrade", nil)
+	req := httptest.NewRequest(http.MethodGet, "/billing?team=1", nil)
 	req.AddCookie(&http.Cookie{Name: i18n.CookieName, Value: "de"})
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, req)
 	if !strings.Contains(recorder.Body.String(), `<html lang="en">`) {
 		t.Fatal("a persisted partial locale mislabeled the next page's English fallback")
-	}
-}
-
-// TestPricingStatesBothPrices is the one thing the page exists to say.
-func TestPricingStatesBothPrices(t *testing.T) {
-	handler, _ := newHandler(t)
-
-	body := render(t, handler, "/billing/upgrade").Body.String()
-
-	for _, want := range []string{"$9.99", "$100", "1,000,000 pageviews", "Unlimited sites", "Pro-rata refund within 30 days"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the pricing page never says %q", want)
-		}
-	}
-}
-
-// TestSignedOutPricingStartsAuthentication keeps the public pricing page useful
-// without exposing checkout itself to an unauthenticated browser.
-func TestSignedOutPricingStartsAuthentication(t *testing.T) {
-	handler, _ := newHandler(t)
-
-	body := render(t, handler, "/billing/upgrade").Body.String()
-	for _, want := range []string{
-		"/register?next=%2Fbilling%2Fupgrade%3Fplan%3Dmonthly",
-		"/login?next=%2Fbilling%2Fupgrade%3Fplan%3Dmonthly",
-		"/register?next=%2Fbilling%2Fupgrade%3Fplan%3Dyearly",
-		"/login?next=%2Fbilling%2Fupgrade%3Fplan%3Dyearly",
-		"Create an account",
-		"Sign in to upgrade",
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("signed-out pricing is missing %q: %s", want, body)
-		}
-	}
-	if strings.Contains(body, `action="/billing/checkout"`) {
-		t.Error("signed-out pricing rendered a checkout form")
-	}
-}
-
-// TestPricingRestoresTheChosenPlanAfterAuthentication makes the safe GET
-// destination visibly retain intent while checkout itself remains POST-only.
-func TestPricingRestoresTheChosenPlanAfterAuthentication(t *testing.T) {
-	handler, _ := newHandler(t)
-
-	body := render(t, handler, "/billing/upgrade?plan=yearly&team=1").Body.String()
-	if !strings.Contains(body, "Continue yearly") || strings.Contains(body, "Continue monthly") {
-		t.Fatalf("yearly purchase intent was not restored on pricing: %s", body)
 	}
 }
 
@@ -355,23 +315,23 @@ func TestPortalSessionCreationIsPostOnly(t *testing.T) {
 	}
 }
 
-// TestUpgradeCopyQualifiesManagedPaymentsResponsibilities keeps the screen
-// somebody buys on honest about both the merchant-of-record entity and the tax
-// obligations that remain with the seller outside Managed Payments coverage.
-func TestUpgradeCopyQualifiesManagedPaymentsResponsibilities(t *testing.T) {
+// TestBillingCopyQualifiesManagedPaymentsResponsibilities keeps the screen the
+// buy buttons are on honest about both the merchant-of-record entity and the
+// tax obligations that remain with the seller outside Managed Payments cover.
+func TestBillingCopyQualifiesManagedPaymentsResponsibilities(t *testing.T) {
 	handler, _ := newHandler(t)
 
-	body := strings.Join(strings.Fields(render(t, handler, "/billing/upgrade").Body.String()), " ")
+	body := strings.Join(strings.Fields(render(t, handler, "/billing?team=1").Body.String()), " ")
 
 	for _, want := range []string{"Stripe Managed Payments", "Sold through Link, LLC", "merchant of record", "seller taxes", "does not handle them"} {
 		if !strings.Contains(body, want) {
-			t.Errorf("the upgrade page never says %q", want)
+			t.Errorf("the billing page never says %q", want)
 		}
 	}
 
 	for _, stale := range []string{"We are the merchant of record", "Cloudmanic Labs, LLC appears on your invoice"} {
 		if strings.Contains(body, stale) {
-			t.Errorf("the upgrade page still says %q", stale)
+			t.Errorf("the billing page still says %q", stale)
 		}
 	}
 }
@@ -382,11 +342,11 @@ func TestUpgradeCopyQualifiesManagedPaymentsResponsibilities(t *testing.T) {
 func TestRefundCopyDefersToLinkWhereRequired(t *testing.T) {
 	handler, _ := newHandler(t)
 
-	body := render(t, handler, "/billing/upgrade").Body.String()
+	body := render(t, handler, "/billing?team=1").Body.String()
 
 	for _, want := range []string{"Link support", "refund policy controls", "applicable law"} {
 		if !strings.Contains(body, want) {
-			t.Errorf("the upgrade page never says %q", want)
+			t.Errorf("the billing page never says %q", want)
 		}
 	}
 }
@@ -434,7 +394,7 @@ func TestCheckoutReturnDistinguishesPaidAndPending(t *testing.T) {
 	if strings.Contains(pending, "account is active") || strings.Contains(pending, "payment went through") {
 		t.Errorf("pending checkout promises paid access: %s", pending)
 	}
-	if !strings.Contains(pending, "/billing?team=2") || !strings.Contains(pending, "/billing/upgrade?team=2") {
+	if !strings.Contains(pending, "/billing?team=2") || !strings.Contains(pending, "/billing?team=2") {
 		t.Errorf("pending retry links lost selected team: %s", pending)
 	}
 
@@ -491,21 +451,6 @@ func TestBillingExplainsACompedAccount(t *testing.T) {
 	for _, unwanted := range []string{`action="/billing/checkout"`, "Renews on", "No card on file"} {
 		if strings.Contains(body, unwanted) {
 			t.Errorf("comped billing page contains %q: %s", unwanted, body)
-		}
-	}
-}
-
-// TestPricingPublishesTheLifecycleTimetable is the "we would rather tell you
-// before you buy" promise. All four phases have to be on the page somebody reads
-// while deciding.
-func TestPricingPublishesTheLifecycleTimetable(t *testing.T) {
-	handler, _ := newHandler(t)
-
-	body := render(t, handler, "/billing/upgrade").Body.String()
-
-	for _, want := range []string{"Days 0 – 30", "Days 30 – 60", "Days 60 – 90", "Day 90", "we keep collecting", "live systems", "outside the application", "retried hourly"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the pricing page never mentions %q", want)
 		}
 	}
 }
@@ -725,7 +670,7 @@ func TestCheckoutUsesAuthenticatedAccountAndEmail(t *testing.T) {
 	}
 	for field, want := range map[string]string{
 		"success_url": "https://feasible.lol/billing/done?session={CHECKOUT_SESSION_ID}&team=2",
-		"cancel_url":  "https://feasible.lol/billing/upgrade?plan=monthly&team=2",
+		"cancel_url":  "https://feasible.lol/billing?team=2",
 	} {
 		if got := posted.Get(field); got != want {
 			t.Errorf("Stripe %s is %q, want %q", field, got, want)

@@ -1,22 +1,23 @@
 //
 // pages.go
-// The server-rendered commerce screens: upgrade, billing and checkout.
+// The server-rendered commerce screens: billing and checkout.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-// Package pages serves the commerce screens: the upgrade screen a customer
-// picks a plan on, the billing screen with its usage meter, and the pages
-// checkout returns to.
+// Package pages serves the commerce screens: the billing screen, which carries
+// the usage meter and the buttons a customer buys with, and the pages checkout
+// returns to.
 //
 // They are server-rendered Go templates rather than part of the dashboard
 // bundle because they have to work when the dashboard is locked. A customer
 // whose account has lapsed can still reach the page where they would pay us,
 // which would not be true if it lived inside the thing we locked.
 //
-// Marketing and documentation live on the public site, in its own repository.
-// This binary is the application.
+// The plans are published on the marketing site, in its own repository. What
+// is here is the part that needs an account: the prices are on both, but only
+// this side knows who is buying.
 package pages
 
 import (
@@ -54,11 +55,10 @@ const SiteURL = "https://feasible.lol"
 // docsURL is where a link out of the application lands.
 const docsURL = SiteURL + "/docs"
 
-// The three page templates. Each is parsed with the shared layout so that the
+// The two page templates. Each is parsed with the shared layout so that the
 // footer — which carries the postal address the law requires — cannot be left
 // off one of them.
 var (
-	upgradePage = mustParse("upgrade.html")
 	billingPage = mustParse("billing.html")
 	messagePage = mustParse("message.html")
 )
@@ -108,11 +108,9 @@ type Handler struct {
 	// at a chosen point on the lifecycle clock.
 	Now func() time.Time
 
-	// OptionalAccount attaches account context to the upgrade screen when a
-	// valid session exists. RequireAccount protects every account-specific
-	// commerce route. Both are injected so this package does not import auth.
-	OptionalAccount func(http.Handler) http.Handler
-	RequireAccount  func(http.Handler) http.Handler
+	// RequireAccount protects every route here — all of them are one account's
+	// money. It is injected so this package does not import auth.
+	RequireAccount func(http.Handler) http.Handler
 
 	// CurrentAccount reads only the identity established by the injected
 	// middleware. FormToken and ValidateForm reuse the application's CSRF
@@ -144,23 +142,11 @@ func (h *Handler) now() time.Time {
 // somebody reads to find out what the product serves.
 func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /billing", h.protected(h.billing, false))
-	mux.Handle("GET /billing/upgrade", h.public(h.upgrade))
 	mux.Handle("POST /billing/checkout", h.protected(h.checkout, true))
 	mux.Handle("POST /billing/portal", h.protected(h.portal, true))
 	mux.Handle("GET /billing/done", h.protected(h.done, false))
 	mux.Handle("GET /billing/export", h.protected(h.export, false))
 	mux.HandleFunc("GET /billing/assets/pages.css", h.stylesheet)
-}
-
-// public attaches optional account context without turning a public route into
-// an authenticated one. A standalone pages handler needs no middleware.
-func (h *Handler) public(next http.HandlerFunc) http.Handler {
-	handler := http.Handler(next)
-	if h.OptionalAccount != nil {
-		handler = h.OptionalAccount(handler)
-	}
-
-	return handler
 }
 
 // protected composes account authentication around the route and CSRF around
@@ -265,38 +251,6 @@ func (h *Handler) stylesheet(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/css; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	_, _ = w.Write(body)
-}
-
-// upgradeData is the plan-selection screen.
-type upgradeData struct {
-	shell
-	SelectedPlan string
-
-	// Limit is the plan's included volume, formatted. It is read from the
-	// package that enforces it rather than typed into the page, so the number
-	// somebody buys against and the number their meter is measured against
-	// cannot drift apart.
-	Limit string
-}
-
-// upgrade renders the plans a customer can buy. It is deliberately reachable
-// without a session, because every lifecycle email links straight here: a
-// signed-out reader is offered sign-in rather than a redirect they did not ask
-// for, and a customer whose dashboard is locked can still reach the page where
-// they would pay us.
-func (h *Handler) upgrade(w http.ResponseWriter, r *http.Request) {
-	lang := h.language(w, r)
-	account, _ := h.account(r)
-	selected := r.URL.Query().Get("plan")
-	if selected != "monthly" && selected != "yearly" {
-		selected = ""
-	}
-
-	h.render(w, upgradePage, upgradeData{
-		shell:        h.newShell(w, r, lang, "pages.title.upgrade", "upgrade", account),
-		SelectedPlan: selected,
-		Limit:        thousands(usage.MonthlyLimit),
-	})
 }
 
 // billingData is everything the billing screen shows.
@@ -624,7 +578,7 @@ func (h *Handler) portal(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.message(w, r, lang, "pages.title.billing", i18n.T(lang, "pages.portal.missing.heading"),
 			[]string{err.Error(), i18n.T(lang, "pages.portal.missing.body")},
-			[]link{{Label: i18n.T(lang, "pages.link.plans"), URL: accountURL("/billing/upgrade", account.ID, nil)}})
+			[]link{{Label: i18n.T(lang, "pages.link.plans"), URL: accountURL("/billing", account.ID, nil)}})
 		return
 	}
 
@@ -682,7 +636,7 @@ func (h *Handler) done(w http.ResponseWriter, r *http.Request) {
 	links := []link{{Label: "Open the dashboard", URL: "/dashboard/"},
 		{Label: "Billing", URL: accountURL("/billing", account.ID, nil)}}
 	if status == "unpaid" {
-		links = append(links, link{Label: "Retry checkout", URL: accountURL("/billing/upgrade", account.ID, nil)})
+		links = append(links, link{Label: "Retry checkout", URL: accountURL("/billing", account.ID, nil)})
 	}
 	h.message(w, r, lang, "pages.title.thanks", heading, paragraphs, links)
 }

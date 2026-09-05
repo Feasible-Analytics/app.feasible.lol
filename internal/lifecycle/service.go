@@ -34,20 +34,16 @@ type Links struct {
 	BaseURL string
 }
 
-// Upgrade is the one-click upgrade link for an explicit account. A zero id is
-// used only by the post-deletion "start again" message.
-func (l Links) Upgrade(teamID int64) string {
+// Billing is the one destination every message points at. It is the screen that
+// buys a plan and the screen that updates a card, and the email link performs
+// neither: the signed-in person submits the CSRF-protected form themselves once
+// they arrive. A zero id is used only by the post-deletion "start again"
+// message.
+func (l Links) Billing(teamID int64) string {
 	if teamID < 1 {
-		return l.BaseURL + "/billing/upgrade"
+		return l.BaseURL + "/billing"
 	}
 
-	return fmt.Sprintf("%s/billing/upgrade?team=%d", l.BaseURL, teamID)
-}
-
-// Portal is the safe billing page. The email link performs no provider-side
-// action; the signed-in person explicitly submits the CSRF-protected portal
-// form from there.
-func (l Links) Portal(teamID int64) string {
 	return fmt.Sprintf("%s/billing?team=%d", l.BaseURL, teamID)
 }
 
@@ -402,15 +398,8 @@ func (s *Service) notice(account Account, entry Scheduled, now time.Time) Notice
 		StopsAt:    account.State.Boundary(PhaseDormant),
 		DeletesAt:  account.State.Boundary(PhaseDeleted),
 		Announced:  account.State.Announced(entry),
-		UpgradeURL: s.Links.Upgrade(account.TeamID),
+		BillingURL: s.Links.Billing(account.TeamID),
 		ExportURL:  s.Links.Export(account.TeamID),
-	}
-
-	// The card-update link only makes sense for somebody who has a card. On the
-	// trial path there is no customer at the payment provider at all, so the
-	// link would lead to an error page.
-	if account.State.Trigger == TriggerLapse {
-		notice.PortalURL = s.Links.Portal(account.TeamID)
 	}
 
 	return notice
@@ -434,7 +423,7 @@ func (s *Service) sendConfirmations(ctx context.Context) error {
 		notice := Notice{
 			TeamID: deletion.TeamID, TeamName: deletion.TeamName, To: deletion.Email,
 			Template: TemplateAccountDeleted, Trigger: TriggerNone, Phase: PhaseDeleted,
-			Day: DeletionDays, UpgradeURL: s.Links.Upgrade(0),
+			Day: DeletionDays, BillingURL: s.Links.Billing(0),
 		}
 		claim, claimed, err := s.Store.ClaimNotice(ctx, deletion.StartedAt, notice, s.now())
 		if err != nil {

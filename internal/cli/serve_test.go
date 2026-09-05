@@ -355,19 +355,6 @@ func (s *stack) signedInForm() map[string]string {
 func TestCommerceRoutesUseAuthAccountAndCSRF(t *testing.T) {
 	s := newStack(t)
 
-	upgrade := s.send(t, http.MethodGet, "/billing/upgrade", "", nil)
-	if upgrade.Code != http.StatusOK {
-		t.Fatalf("the upgrade screen answered %d", upgrade.Code)
-	}
-	for _, want := range []string{
-		"/register?next=%2Fbilling%2Fupgrade%3Fplan%3Dmonthly",
-		"/login?next=%2Fbilling%2Fupgrade%3Fplan%3Dyearly",
-	} {
-		if !strings.Contains(upgrade.Body.String(), want) {
-			t.Errorf("the signed-out upgrade screen is missing %q", want)
-		}
-	}
-
 	signedOut := s.send(t, http.MethodGet, "/billing?team=999", "", nil)
 	if signedOut.Code != http.StatusFound || !strings.HasPrefix(signedOut.Header().Get("Location"), "/login?next=") {
 		t.Fatalf("signed-out billing answered %d and redirected to %q", signedOut.Code, signedOut.Header().Get("Location"))
@@ -674,7 +661,6 @@ func TestBillingRoutesRejectCallerSelectedTeamsWithoutASession(t *testing.T) {
 		method, path, body string
 	}{
 		{http.MethodGet, "/billing?team=1&team_id=1", ""},
-		{http.MethodGet, "/billing/upgrade?team=1&team_id=1", ""},
 		{http.MethodGet, "/billing/export?team=1&team_id=1", ""},
 		{http.MethodPost, "/billing/checkout", "team=1&team_id=1&plan=monthly"},
 		{http.MethodPost, "/billing/portal", "team=1&team_id=1"},
@@ -708,8 +694,7 @@ func TestALockedAccountCanStillReachEverythingItNeedsToPay(t *testing.T) {
 		path   string
 		body   string
 	}{
-		{"the billing screen", http.MethodGet, "/billing", ""},
-		{"the plans", http.MethodGet, "/billing/upgrade", ""},
+		{"the billing screen, which carries the plans", http.MethodGet, "/billing", ""},
 		{"starting a checkout", http.MethodPost, "/billing/checkout", ""},
 		{"the payment provider's portal", http.MethodPost, "/billing/portal", ""},
 		{"coming back from checkout", http.MethodGet, "/billing/done", ""},

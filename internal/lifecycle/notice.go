@@ -53,12 +53,10 @@ type Notice struct {
 	// the template quotes in its first sentence.
 	Announced time.Time
 
-	// UpgradeURL is the one-click upgrade link every message carries.
-	// PortalURL is the payment provider's card-update page and is only set on
-	// the dunning path, where "update your card" is the actual fix.
+	// BillingURL is the billing screen every message points at: it buys a plan
+	// and it updates a card, which are the two things a lapsed account needs.
 	// ExportURL is their data, available in every phase.
-	UpgradeURL string
-	PortalURL  string
+	BillingURL string
 	ExportURL  string
 }
 

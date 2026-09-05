@@ -220,7 +220,6 @@ func buildMailer(e *env) (*mail.Mailer, error) {
 // upgrade screen and the provider webhook. Authentication is injected here so
 // pages remains usable without importing auth.
 func (c *commerce) Routes(mux *http.ServeMux, app *auth.Handler) {
-	c.Pages.OptionalAccount = app.OptionalAccount
 	c.Pages.RequireAccount = app.RequireAccount
 	c.Pages.CurrentAccount = func(r *http.Request) (pages.Account, error) {
 		teamID, email, err := app.CurrentAccount(r)

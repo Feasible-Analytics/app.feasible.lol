@@ -124,6 +124,30 @@
   </section>
   {{ end }}
 
+  <!-- The merchant-of-record and refund disclosure sits on the screen the buy
+       buttons are on. Somebody deciding to pay should not have to leave for the
+       marketing site to find out who is actually charging them. -->
+  {{ if not .Comped }}
+  <section>
+    <h2>{{ t .Lang "pages.pricing.tax.heading" }}</h2>
+    <div class="panel">
+	  <p>Prices are exclusive of tax. Sales tax, VAT or GST is calculated at checkout from
+         your billing address and shown before you pay. For transactions in jurisdictions
+         where Managed Payments is available and labelled &ldquo;Sold through Link,&rdquo; Stripe Managed
+         Payments is provided by Sold through Link, LLC, which is the merchant of record. It
+         handles indirect tax in the countries and transactions Managed Payments supports.
+         Cloudmanic Labs, LLC remains the seller of the service and is responsible for domestic
+         or other seller taxes where Managed Payments does not handle them.</p>
+      <p>Our policy refunds yearly plans pro rata within 30 days of purchase; write to us and
+         there is no form or retention flow. For a transaction labelled &ldquo;Sold through Link,&rdquo;
+         you may also request a refund from
+         <a href="https://support.link.com/topics/sold-through-link">Link support</a>.
+		 Sold through Link, LLC's refund policy controls where it gives you broader rights,
+		 and applicable law may give you additional rights.</p>
+    </div>
+  </section>
+  {{ end }}
+
   <section>
     <h2>{{ t .Lang "pages.billing.data.heading" }}</h2>
     <div class="panel">
