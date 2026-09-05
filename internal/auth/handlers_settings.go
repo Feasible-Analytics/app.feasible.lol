@@ -500,6 +500,10 @@ func (h *Handler) doDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Announced before the deletion runs. Afterwards there is no name and no
+	// address left to say who left.
+	h.announceClosure(user, team.ID)
+
 	if err := h.Deleter.DeleteAccount(r.Context(), user.ID, team.ID); err != nil {
 		h.fail(w, r, err)
 		return

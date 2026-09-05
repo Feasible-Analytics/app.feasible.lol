@@ -22,6 +22,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/slack"
 )
 
 // Exit codes. Two is the conventional "you typed it wrong" code and is kept
@@ -71,6 +72,7 @@ Configuration is read from $CONFIG_DIR/<NAME> first, then the environment, then
 type env struct {
 	cfg              *config.Config
 	log              *logger.Logger
+	slack            *slack.Notifier
 	stdout           io.Writer
 	stderr           io.Writer
 	systemMigrations migrate.Set
@@ -159,14 +161,22 @@ func Run(opts Options) int {
 		cfg.Shared.TraceEvents = true
 	}
 
+	log := logger.New(logger.Options{
+		Level:         cfg.Shared.LogLevel,
+		Format:        cfg.Shared.LogFormat,
+		TraceEvents:   cfg.Shared.TraceEvents,
+		TraceIdentity: cfg.Shared.TraceIdentity,
+		Output:        stdout,
+	})
+
 	e := &env{
 		cfg: cfg,
-		log: logger.New(logger.Options{
-			Level:         cfg.Shared.LogLevel,
-			Format:        cfg.Shared.LogFormat,
-			TraceEvents:   cfg.Shared.TraceEvents,
-			TraceIdentity: cfg.Shared.TraceIdentity,
-			Output:        stdout,
+		log: log,
+		slack: slack.New(slack.Options{
+			WebhookURL: cfg.App.SlackWebhookURL,
+			BaseURL:    cfg.App.BaseURL,
+			Env:        cfg.Shared.Env,
+			Log:        log,
 		}),
 		stdout:           stdout,
 		stderr:           stderr,

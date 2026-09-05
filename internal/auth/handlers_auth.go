@@ -129,6 +129,7 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.Log.Info("account created", "user", user.ID, "team", team.ID)
+	h.announceSignup(r, user, team.ID, SignupMethodPassword)
 
 	h.sendVerification(r, user, next)
 	h.startSession(w, r, user)
