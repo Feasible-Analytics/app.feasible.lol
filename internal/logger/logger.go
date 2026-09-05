@@ -28,15 +28,22 @@ type Logger struct {
 	// traceEvents mirrors --trace-events. It is held here so call sites can skip
 	// building an expensive trace payload when nobody will read it.
 	traceEvents bool
+
+	// traceIdentity mirrors FEASIBLE_TRACE_IDENTITY. It is separate from
+	// traceEvents because it is the one switch in the system that puts a
+	// visitor's IP address on disk, and that must never ride along with a flag
+	// somebody turns on to read their channel attribution.
+	traceIdentity bool
 }
 
 // Options configures a logger. It is a struct rather than a long parameter list
 // because every caller sets the same three things and a positional bool is the
 // classic way to end up with JSON logs on a laptop.
 type Options struct {
-	Level       string
-	Format      string
-	TraceEvents bool
+	Level         string
+	Format        string
+	TraceEvents   bool
+	TraceIdentity bool
 
 	// Output defaults to stdout. Everything goes to stdout on purpose: files and
 	// syslog are the supervisor's job, not ours.
@@ -61,7 +68,11 @@ func New(opts Options) *Logger {
 		handler = slog.NewTextHandler(out, handlerOpts)
 	}
 
-	return &Logger{Logger: slog.New(handler), traceEvents: opts.TraceEvents}
+	return &Logger{
+		Logger:        slog.New(handler),
+		traceEvents:   opts.TraceEvents,
+		traceIdentity: opts.TraceIdentity,
+	}
 }
 
 // ParseLevel maps our configuration strings onto slog levels. It is exported
@@ -134,6 +145,28 @@ func (l *Logger) EmailSent(recipient, template, bodyPath string) {
 		"template", template,
 		"body_path", bodyPath,
 	)
+}
+
+// TraceIdentityEnabled reports whether the visitor-identity trace is on, so a
+// caller can skip assembling a payload nobody will read.
+func (l *Logger) TraceIdentityEnabled() bool {
+	return l.traceIdentity
+}
+
+// TraceIdentity prints the inputs and the output of the visitor fingerprint,
+// including the raw IP address and user agent.
+//
+// This is a diagnostic for one question only: two analytics products can
+// disagree about whether four visits are one person or three, and the only way
+// to settle it is to see whether the address changed between them. Nothing else
+// in the system writes an address anywhere, so the line is deliberately loud and
+// its own switch. Leave it off.
+func (l *Logger) TraceIdentity(attrs ...any) {
+	if !l.traceIdentity {
+		return
+	}
+
+	l.Warn("identity trace (writes IP addresses)", attrs...)
 }
 
 // TraceEvent prints a fully derived event — geo, fingerprint, channel, every

@@ -100,6 +100,47 @@ func TestAuthFailureCarriesSkew(t *testing.T) {
 	}
 }
 
+// TestTraceIdentityGating checks the switch that puts an IP address on disk:
+// silent when off, and never turned on by --trace-events.
+func TestTraceIdentityGating(t *testing.T) {
+	var off bytes.Buffer
+
+	New(Options{Level: "debug", Format: "text", Output: &off}).
+		TraceIdentity("client_ip", "203.0.113.5")
+
+	if off.Len() != 0 {
+		t.Fatalf("identity trace logged while disabled: %q", off.String())
+	}
+
+	// The two switches are independent on purpose. A deployment reading its
+	// channel attribution must not start writing addresses as a side effect.
+	var events bytes.Buffer
+
+	eventsOnly := New(Options{Level: "debug", Format: "text", TraceEvents: true, Output: &events})
+	if eventsOnly.TraceIdentityEnabled() {
+		t.Fatal("--trace-events must not enable the identity trace")
+	}
+
+	eventsOnly.TraceIdentity("client_ip", "203.0.113.5")
+
+	if strings.Contains(events.String(), "203.0.113.5") {
+		t.Fatalf("address logged with only --trace-events on: %q", events.String())
+	}
+
+	var on bytes.Buffer
+
+	log := New(Options{Level: "info", Format: "text", TraceIdentity: true, Output: &on})
+	if !log.TraceIdentityEnabled() {
+		t.Fatal("TraceIdentityEnabled should report the flag")
+	}
+
+	log.TraceIdentity("client_ip", "203.0.113.5")
+
+	if !strings.Contains(on.String(), "identity trace") || !strings.Contains(on.String(), "203.0.113.5") {
+		t.Fatalf("identity trace not logged while enabled: %q", on.String())
+	}
+}
+
 // TestTraceEventGating checks both halves of --trace-events: silent when off,
 // and visible at info when on so the flag alone is enough without also raising
 // the log level.

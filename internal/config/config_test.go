@@ -248,10 +248,51 @@ func TestLoadFromRejectsUnknownEnvironment(t *testing.T) {
 	}
 }
 
+// TestTraceIdentityDefaultsOff covers the one setting that writes a visitor's IP
+// address to disk. It must be off unless somebody asked for it by name, and it
+// must not be reachable through the trace flag people actually use.
+func TestTraceIdentityDefaultsOff(t *testing.T) {
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(loader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Shared.TraceIdentity {
+		t.Fatal("the identity trace defaults on")
+	}
+
+	t.Setenv("FEASIBLE_TRACE_EVENTS", "true")
+
+	cfg, err = LoadFrom(loader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Shared.TraceIdentity {
+		t.Fatal("FEASIBLE_TRACE_EVENTS turned the identity trace on")
+	}
+
+	t.Setenv("FEASIBLE_TRACE_IDENTITY", "true")
+
+	cfg, err = LoadFrom(loader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !cfg.Shared.TraceIdentity {
+		t.Fatal("FEASIBLE_TRACE_IDENTITY did not turn the identity trace on")
+	}
+}
+
 // TestLoadFromRejectsMalformedBooleans covers every boolean whose fallback can
 // alter telemetry, legal mode, or SMTP transport security.
 func TestLoadFromRejectsMalformedBooleans(t *testing.T) {
-	for _, name := range []string{"FEASIBLE_TRACE_EVENTS", "FEASIBLE_APP_HOSTED", "FEASIBLE_SMTP_STARTTLS"} {
+	for _, name := range []string{"FEASIBLE_TRACE_EVENTS", "FEASIBLE_TRACE_IDENTITY", "FEASIBLE_APP_HOSTED", "FEASIBLE_SMTP_STARTTLS"} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(name, "truthy")
 			loader, err := NewLoader("", "")
