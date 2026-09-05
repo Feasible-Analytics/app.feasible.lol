@@ -113,16 +113,17 @@ func TestEveryPageRenders(t *testing.T) {
 
 		body := response.Body.String()
 
-		if !strings.Contains(body, "<!DOCTYPE html>") {
+		if !strings.Contains(strings.ToLower(body), "<!doctype html>") {
 			t.Errorf("%s is not a complete document", path)
 		}
+	}
 
-		// The legal entity is required in the footer of every page.
-		for _, line := range []string{"Cloudmanic Labs, LLC", "901 Brutscher Street, D112", "Newberg, OR 97132", "United States"} {
-			if !strings.Contains(body, line) {
-				t.Errorf("%s is missing %q from the footer", path, line)
-			}
-		}
+	// The seller is named on the screen the buy buttons are on. Somebody
+	// deciding to pay should not have to leave for the marketing site to find
+	// out who is actually charging them; the screens that merely report what
+	// already happened do not carry the same duty.
+	if body := render(t, handler, "/billing?team=1").Body.String(); !strings.Contains(body, "Cloudmanic Labs, LLC") {
+		t.Error("the billing screen does not name the seller")
 	}
 }
 
@@ -134,50 +135,60 @@ func TestLayoutNavigationPreservesTheSelectedTeam(t *testing.T) {
 		return Account{ID: 27, Email: "billing@example.com"}, nil
 	}
 
+	// Every route out of this screen carries the team, so a multi-team user who
+	// clicks one is still looking at the account they were looking at. The top
+	// bar is the shared header's and is covered where it is built.
 	body := render(t, handler, "/billing?team=27").Body.String()
-	if !strings.Contains(body, `href="/billing?team=27"`) {
-		t.Errorf("selected-team billing navigation is missing: %s", body)
+	for _, want := range []string{
+		`href="/billing/export?team=27"`,
+		`name="team" value="27"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("selected-team billing navigation is missing %q: %s", want, body)
+		}
 	}
 }
 
-// TestTheFooterLinksLeaveTheApplication proves documentation and the contract
-// are read on the marketing site rather than served from here, and that a
-// self-hosted install offers no link to a contract we are not a party to.
-func TestTheFooterLinksLeaveTheApplication(t *testing.T) {
+// TestThePayerLinksLeaveTheApplication proves the three links a payer needs are
+// on the screen the buy buttons are on, point at the paths the marketing site
+// actually publishes, and that a self-hosted install offers no link to a
+// contract we are not a party to.
+func TestThePayerLinksLeaveTheApplication(t *testing.T) {
 	handler, _ := newHandler(t)
 
 	hosted := render(t, handler, "/billing?team=1").Body.String()
 	for _, want := range []string{
-		`href="https://feasible.lol/docs"`,
-		// These are the paths the marketing site actually publishes. Three of
-		// them sit at the root and only subprocessors is under /legal, which is
-		// exactly the sort of asymmetry a footer written from memory gets wrong.
 		`href="https://feasible.lol/privacy"`,
 		`href="https://feasible.lol/terms"`,
-		`href="https://feasible.lol/dpa"`,
-		`href="https://feasible.lol/legal/subprocessors"`,
+		`href="https://feasible.lol/help/"`,
 	} {
 		if !strings.Contains(hosted, want) {
-			t.Errorf("the hosted footer is missing %q", want)
+			t.Errorf("the billing screen is missing %q", want)
 		}
 	}
 
+	// Three, and only three. A row carrying every document we have published is
+	// a row nobody reads, and this is the assertion that keeps it from growing
+	// back one link at a time.
+	if n := strings.Count(hosted, `href="https://feasible.lol/`); n != 3 {
+		t.Errorf("the billing screen carries %d marketing links, want 3: %s", n, hosted)
+	}
+
 	handler.Hosted = false
-	handler.OperatorName = "Example Operator, Inc."
-	handler.OperatorAddress = "123 Example Street\nPortland, OR"
-	handler.OperatorEmail = "privacy@example.test"
 
 	selfHosted := render(t, handler, "/billing?team=1").Body.String()
-	if !strings.Contains(selfHosted, `href="https://feasible.lol/docs"`) {
-		t.Error("a self-hosted footer lost the documentation link")
+	if !strings.Contains(selfHosted, `href="https://feasible.lol/help/"`) {
+		t.Error("a self-hosted billing screen lost the help link")
 	}
-	if strings.Contains(selfHosted, "/legal/") {
-		t.Errorf("a self-hosted footer links to our contract: %s", selfHosted)
+	for _, gone := range []string{"/privacy", "/terms"} {
+		if strings.Contains(selfHosted, "https://feasible.lol"+gone) {
+			t.Errorf("a self-hosted screen links to our %s, which describes us rather than them", gone)
+		}
 	}
 
-	// Nothing in this binary answers the paths the footer points at, which is
-	// the whole point of the links being absolute.
-	for _, path := range []string{"/docs", "/docs/api", "/legal/privacy", "/legal/terms", "/legal/dpa", "/pricing", "/billing/upgrade"} {
+	// Nothing in this binary answers the paths those links point at, which is
+	// the whole point of them being absolute.
+	for _, path := range []string{"/docs", "/docs/api", "/privacy", "/terms", "/help", "/pricing", "/billing/upgrade"} {
 		if code := render(t, handler, path).Code; code != http.StatusNotFound {
 			t.Errorf("%s answered %d, want 404 — it belongs to the public site", path, code)
 		}
@@ -239,34 +250,29 @@ func TestWritePublicBrowserFixtures(t *testing.T) {
 	}
 }
 
-// TestPublicHeaderHasNarrowViewportContainment checks the static layout
-// contract used by browser-capable smoke checks at 320px and 390px.
-func TestPublicHeaderHasNarrowViewportContainment(t *testing.T) {
+// TestBillingWearsTheApplicationChrome proves these screens are drawn in the
+// shared shell rather than in a second one that looks nearly like it. The
+// narrow-viewport behaviour itself is measured at real widths by the Chromium
+// suite in tracker/tests, which is the only place it can honestly be checked.
+func TestBillingWearsTheApplicationChrome(t *testing.T) {
 	handler, _ := newHandler(t)
 	page := render(t, handler, "/billing?team=1").Body.String()
-	if !strings.Contains(page, `name="viewport" content="width=device-width, initial-scale=1"`) {
-		t.Fatal("public layout is missing its device-width viewport")
+
+	for _, want := range []string{
+		`name="viewport" content="width=device-width, initial-scale=1"`,
+		// The application's compiled stylesheet, not one of this package's own.
+		`href="/app/assets/app.css"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the billing screen is missing %q", want)
+		}
 	}
 
-	css := render(t, handler, "/billing/assets/pages.css").Body.String()
-	for _, want := range []string{
-		"header.top .wrap {", "flex-wrap: wrap", "@media (max-width: 520px)",
-		"header.top .brand { flex-basis: 100%;", "header.top nav { width: 100%",
-	} {
-		if !strings.Contains(css, want) {
-			t.Errorf("narrow header CSS is missing %q", want)
-		}
-	}
-	// Negative tracking belongs on the display type and nowhere near a
-	// paragraph. Archivo at 800 needs it to stop a heading reading as spaced;
-	// applied to a line of body copy at 16px it costs legibility for nothing,
-	// and a narrow viewport is where that first shows up as a word breaking.
-	for _, rule := range []string{"body {", ".hero p {", "header.top nav a {"} {
-		block := css[strings.Index(css, rule):]
-		block = block[:strings.Index(block, "}")]
-		if strings.Contains(block, "letter-spacing: -") {
-			t.Errorf("%s tightens tracking on body text", rule)
-		}
+	// The stylesheet this package used to serve is gone with the template that
+	// wanted it. A route still answering it would be a second surface nobody
+	// maintains.
+	if code := render(t, handler, "/billing/assets/pages.css").Code; code != http.StatusNotFound {
+		t.Errorf("the retired stylesheet answered %d, want 404", code)
 	}
 }
 
@@ -286,7 +292,7 @@ func TestPublicLanguageChoicePersistsWithoutMislabelingFallback(t *testing.T) {
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("%s answered %d", path, recorder.Code)
 		}
-		if !strings.Contains(recorder.Body.String(), `<html lang="en">`) {
+		if !strings.Contains(recorder.Body.String(), `<html lang="en"`) {
 			t.Errorf("%s labelled English fallback content as another language", path)
 		}
 
@@ -300,7 +306,7 @@ func TestPublicLanguageChoicePersistsWithoutMislabelingFallback(t *testing.T) {
 	req.AddCookie(&http.Cookie{Name: i18n.CookieName, Value: "de"})
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, req)
-	if !strings.Contains(recorder.Body.String(), `<html lang="en">`) {
+	if !strings.Contains(recorder.Body.String(), `<html lang="en"`) {
 		t.Fatal("a persisted partial locale mislabeled the next page's English fallback")
 	}
 }
@@ -743,21 +749,6 @@ func TestPortalPreservesTheAuthenticatedTeamInItsReturnURL(t *testing.T) {
 	}
 	if got := posted.Get("return_url"); got != "https://feasible.lol/billing?team=2" {
 		t.Errorf("portal return URL is %q", got)
-	}
-}
-
-// TestStylesheetIsServed checks the one asset these pages depend on. A billing
-// screen with no stylesheet still works, and looks like a broken deploy.
-func TestStylesheetIsServed(t *testing.T) {
-	handler, _ := newHandler(t)
-
-	response := render(t, handler, "/billing/assets/pages.css")
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("status %d", response.Code)
-	}
-	if got := response.Header().Get("Content-Type"); !strings.Contains(got, "text/css") {
-		t.Errorf("content type is %q", got)
 	}
 }
 

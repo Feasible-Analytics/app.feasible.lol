@@ -151,15 +151,12 @@ func buildCommerce(e *env, control *sql.DB, manager *accounts.Manager, siteCache
 		Volume:         sweeper,
 		Gate:           gate,
 		Pages: &pages.Handler{
-			Billing:         billingService,
-			Lifecycle:       lifecycleStore,
-			Usage:           usageStore,
-			Log:             e.log,
-			SalesEmail:      e.cfg.App.SalesEmail,
-			Hosted:          e.cfg.App.Hosted,
-			OperatorName:    e.cfg.App.OperatorName,
-			OperatorAddress: e.cfg.App.OperatorAddress,
-			OperatorEmail:   e.cfg.App.OperatorEmail,
+			Billing:    billingService,
+			Lifecycle:  lifecycleStore,
+			Usage:      usageStore,
+			Log:        e.log,
+			SalesEmail: e.cfg.App.SalesEmail,
+			Hosted:     e.cfg.App.Hosted,
 		},
 		Mailer: mailer,
 	}
@@ -229,6 +226,7 @@ func (c *commerce) Routes(mux *http.ServeMux, app *auth.Handler) {
 	}
 	c.Pages.FormToken = app.FormToken
 	c.Pages.ValidateForm = app.ValidateForm
+	c.Pages.Header = app.HeaderFor
 
 	c.Pages.Routes(mux)
 	mux.Handle(billing.WebhookPath, c.Webhook)

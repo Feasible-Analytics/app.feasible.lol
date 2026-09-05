@@ -1,86 +1,99 @@
-{{ define "layout" }}<!DOCTYPE html>
-<html lang="{{ .Lang }}">
+{{ define "layout" }}<!doctype html>
+<!--
+  layout.html
+  The frame the billing screens are drawn in.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  The header comes from internal/appui and the stylesheet is the one the rest of
+  the server-rendered product compiles, so billing is the same surface as
+  settings and sites rather than a second one that looks nearly like it. This
+  file holds only what is different: the document, and a main column.
+
+  There is no footer. The three links a payer needs sit beside the buy buttons,
+  where somebody deciding to pay can read them without leaving the page.
+-->
+<html lang="{{ .Lang }}"{{ if rtl .Lang }} dir="rtl"{{ end }} class="h-full">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ .Title }} · feasible.lol</title>
+
+<!--
+  The mark from the marketing site, served from the binary rather than inlined
+  so every surface points at one file. A browser asks for a favicon whether or
+  not anything points at one, and four copies of the same encoded square is how
+  two of them end up the wrong colour.
+-->
 <link rel="icon" href="/app/assets/favicon.svg" type="image/svg+xml">
 
-<!-- The theme is decided before the stylesheet paints, or every load flashes
-     white before it turns slate. It reads the same preference key the dashboard
-     and the sign-in screens use: these are all one origin, so choosing dark
-     once should hold everywhere rather than being handed back at each boundary. -->
+<!-- The theme is decided before the first paint, from the same key the dashboard
+     and the sign-in screens write. Deciding it after the paint is a white flash
+     on every navigation for anybody who chose dark. -->
 <script>
-  (function () {
-    try {
-      var saved = localStorage.getItem("feasible.theme");
-      if (saved === "dark") document.documentElement.classList.add("dark");
-      else if (saved === "light") document.documentElement.classList.add("light");
-    } catch (e) {
-      /* A browser with storage disabled falls through to the media query. */
-    }
-  })();
+	(function () {
+		try {
+			var saved = localStorage.getItem("feasible.theme");
+			var dark = saved === "dark" ||
+				(saved !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+
+			if (dark) document.documentElement.classList.add("dark");
+		} catch (e) {
+			/* A browser with storage disabled still gets the system theme. */
+		}
+	})();
 </script>
 
+<!-- The stylesheet comes out of the binary. A CDN would be one more thing to be
+     blocked, one more thing to be offline, and one more thing to copy. -->
 <link rel="preload" href="/app/assets/fonts/archivo-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/billing/assets/pages.css">
+<link rel="stylesheet" href="/app/assets/app.css">
+<script defer src="/app/assets/alpine.js"></script>
+
+<!-- These screens are behind a login and carry no analytics of their own. -->
+<meta name="robots" content="noindex, nofollow">
 </head>
-<body>
-<header class="top">
-  <div class="wrap">
-    <a class="brand" href="/" aria-label="feasible.lol">Feasible<b>.lol</b></a>
-    <nav>
-	  {{ if .Hosted }}
-	  <a href="/billing{{ if .TeamID }}?team={{ .TeamID }}{{ end }}" {{ if eq .Nav "billing" }}class="on"{{ end }}>{{ t .Lang "pages.nav.billing" }}</a>
-	  {{ end }}
-	  {{ if .SignedIn }}
-	  <a href="/dashboard/">{{ t .Lang "pages.nav.dashboard" }}</a>
-	  <a href="/sites{{ if .TeamID }}?team_id={{ .TeamID }}{{ end }}">Sites</a>
-	  <a href="/settings">Settings</a>
-	  <form method="post" action="/logout">
-	    <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
-	    <button type="submit">Sign out</button>
-	  </form>
-	  {{ else }}
-	  <a href="/dashboard/">{{ t .Lang "pages.nav.dashboard" }}</a>
-	  {{ end }}
-    </nav>
-  </div>
-</header>
 
-{{ template "body" . }}
+<body class="min-h-full bg-page text-body antialiased">
 
-<footer class="bottom">
-  <div class="wrap">
-    <nav>
-	  <!-- Documentation and the legal documents are published on the marketing
-	       site, so these leave the application. The legal set is shown only on
-	       the hosted service: those documents are our contract with our own
-	       customers, and pointing a self-hoster's visitors at them would name
-	       the wrong company as their controller. -->
-	  <a href="{{ .Site }}/docs">{{ t .Lang "pages.footer.docs" }}</a>
-	  {{ if .Hosted }}
-      <a href="{{ .Site }}/privacy">{{ t .Lang "pages.footer.privacy" }}</a>
-      <a href="{{ .Site }}/terms">{{ t .Lang "pages.footer.terms" }}</a>
-      <a href="{{ .Site }}/dpa">{{ t .Lang "pages.footer.dpa" }}</a>
-      <a href="{{ .Site }}/legal/subprocessors">{{ t .Lang "pages.footer.subprocessors" }}</a>
-	  {{ end }}
-	  <a href="mailto:{{ .SalesEmail }}">{{ t .Lang "pages.footer.contact" }}</a>
-    </nav>
-    <address>
-      {{ if .Hosted }}
-      Cloudmanic Labs, LLC<br>
-      901 Brutscher Street, D112<br>
-      Newberg, OR 97132<br>
-      United States
-      {{ else }}
-      {{ .OperatorName }}<br>
-      {{ range .OperatorAddress }}{{ . }}<br>{{ end }}
-      <a href="mailto:{{ .OperatorEmail }}">{{ .OperatorEmail }}</a>
-      {{ end }}
-    </address>
-  </div>
-</footer>
+{{ if .SignedIn }}
+	{{ template "app-header" .Header }}
+{{ else }}
+	<!-- A screen rendered for nobody still needs the mark, so the page is not a
+	     paragraph floating on a background. It carries no menu, because there is
+	     no account to open one for. -->
+	<header class="border-b-2 border-line bg-card">
+		<div class="mx-auto flex h-14 w-full max-w-shell items-center px-4 sm:px-5">
+			<a href="/" class="font-display text-lg font-extrabold tracking-tight text-heading" aria-label="feasible.lol">
+				Feasible<span class="text-accent">.lol</span>
+			</a>
+		</div>
+	</header>
+{{ end }}
+
+<main class="mx-auto w-full max-w-shell px-4 py-8 sm:px-5">
+	{{ template "body" . }}
+</main>
+
 </body>
-</html>
+</html>{{ end }}
+
+
+<!--
+  The links a payer needs: what they are agreeing to, and where to get help.
+
+  Three rather than seven, because a row carrying every document we have ever
+  published is a row nobody reads. The legal pair is hosted-only — a self-hosted
+  install is run by somebody else, and our privacy policy and terms describe
+  what we do rather than what they do.
+-->
+{{ define "payer-links" }}
+<p class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+	{{ if .Hosted }}
+	<a href="{{ .Site }}/privacy" class="underline-offset-2 transition-colors hover:text-body hover:underline">{{ t .Lang "pages.links.privacy" }}</a>
+	<a href="{{ .Site }}/terms" class="underline-offset-2 transition-colors hover:text-body hover:underline">{{ t .Lang "pages.links.terms" }}</a>
+	{{ end }}
+	<a href="{{ .Site }}/help/" class="underline-offset-2 transition-colors hover:text-body hover:underline">{{ t .Lang "pages.links.help" }}</a>
+</p>
 {{ end }}
