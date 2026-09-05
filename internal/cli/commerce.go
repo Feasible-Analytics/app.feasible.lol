@@ -17,10 +17,10 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/auth"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/billing"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/billingui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/pages"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/stripe"
 
@@ -48,7 +48,7 @@ type commerce struct {
 	Recorder       *volume.Recorder
 	Volume         *volume.Sweeper
 	Gate           *access.Gate
-	Pages          *pages.Handler
+	Pages          *billingui.Handler
 	Mailer         *mail.Mailer
 }
 
@@ -150,16 +150,13 @@ func buildCommerce(e *env, control *sql.DB, manager *accounts.Manager, siteCache
 		Recorder:       recorder,
 		Volume:         sweeper,
 		Gate:           gate,
-		Pages: &pages.Handler{
-			Billing:         billingService,
-			Lifecycle:       lifecycleStore,
-			Usage:           usageStore,
-			Log:             e.log,
-			SalesEmail:      e.cfg.App.SalesEmail,
-			Hosted:          e.cfg.App.Hosted,
-			OperatorName:    e.cfg.App.OperatorName,
-			OperatorAddress: e.cfg.App.OperatorAddress,
-			OperatorEmail:   e.cfg.App.OperatorEmail,
+		Pages: &billingui.Handler{
+			Billing:    billingService,
+			Lifecycle:  lifecycleStore,
+			Usage:      usageStore,
+			Log:        e.log,
+			SalesEmail: e.cfg.App.SalesEmail,
+			Hosted:     e.cfg.App.Hosted,
 		},
 		Mailer: mailer,
 	}
@@ -222,13 +219,14 @@ func buildMailer(e *env) (*mail.Mailer, error) {
 // pages remains usable without importing auth.
 func (c *commerce) Routes(mux *http.ServeMux, app *auth.Handler) {
 	c.Pages.RequireAccount = app.RequireAccount
-	c.Pages.CurrentAccount = func(r *http.Request) (pages.Account, error) {
+	c.Pages.CurrentAccount = func(r *http.Request) (billingui.Account, error) {
 		teamID, email, err := app.CurrentAccount(r)
 
-		return pages.Account{ID: teamID, Email: email}, err
+		return billingui.Account{ID: teamID, Email: email}, err
 	}
 	c.Pages.FormToken = app.FormToken
 	c.Pages.ValidateForm = app.ValidateForm
+	c.Pages.Header = app.HeaderFor
 
 	c.Pages.Routes(mux)
 	mux.Handle(billing.WebhookPath, c.Webhook)

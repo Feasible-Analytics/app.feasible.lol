@@ -636,6 +636,15 @@ func (h *Handler) currentUser(r *http.Request) (*User, *Session, bool) {
 	return user, session, true
 }
 
+// SignedIn reports whether this request carries a live session. It reads the
+// cookie directly rather than the context, so a route mounted outside every
+// middleware can ask.
+func (h *Handler) SignedIn(r *http.Request) bool {
+	_, _, ok := h.currentUser(r)
+
+	return ok
+}
+
 // optional attaches the signed-in user when there is one and carries on either
 // way. It is what the sign-in and sign-up pages use, so that somebody who is
 // already signed in can be redirected rather than shown a login form.

@@ -1,0 +1,245 @@
+<!--
+  billing.html
+  What you are using, what you are paying, and what happens next.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  The card shapes match the settings screens — border-2 border-line bg-card, a
+  heading, then the content — because it is one product to the reader.
+-->
+{{ define "body" }}
+
+<div class="mb-8">
+	<h1 class="font-display text-3xl font-extrabold tracking-tight text-heading sm:text-4xl">{{ t .Lang "pages.nav.billing" }}</h1>
+	<p class="mt-2 max-w-2xl text-sm text-muted">{{ t .Lang "pages.billing.subtitle" "account" .Account.Name }}</p>
+</div>
+
+{{ with .Status }}
+<!-- A border and a wash rather than a filled block: this sits above the numbers
+     it is about, and a solid panel there reads as the page's subject. -->
+<div class="mb-8 border-2 px-5 py-4
+	{{ if eq .Tone "ok" }}border-up/40 bg-up/10{{ else if eq .Tone "warn" }}border-warn/40 bg-warn/10{{ else }}border-down/40 bg-down/10{{ end }}"
+	role="status">
+	<h2 class="text-sm font-semibold text-heading">{{ .Heading }}</h2>
+	<p class="mt-1 text-sm text-body">{{ .Detail }}</p>
+</div>
+{{ end }}
+
+<section class="border-2 border-line bg-card p-6">
+	<h2 class="text-sm font-semibold text-heading">{{ t .Lang "pages.billing.usage.heading" }}</h2>
+
+	<!-- The bar is capped at 100% while the number beside it is not, because a
+	     bar wider than its track looks like a rendering bug and a percentage
+	     over 100 is simply the truth. -->
+	<div class="mt-4 h-3 w-full border-2 border-line bg-subtle">
+		<div class="h-full {{ if eq .Usage.Tone "over" }}bg-down{{ else if eq .Usage.Tone "warn" }}bg-warn{{ else }}bg-accent{{ end }}"
+		     style="width:{{ .Usage.BarWidth }}%"></div>
+	</div>
+
+	<dl class="mt-5 grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
+		<div>
+			<dt class="text-[11px] font-semibold tracking-wide text-accent-ink uppercase">{{ t .Lang "pages.billing.usage.billable" }}</dt>
+			<dd class="mt-1 font-display text-2xl font-extrabold text-heading">{{ .Usage.Billable }}</dd>
+		</div>
+		<div>
+			<dt class="text-[11px] font-semibold tracking-wide text-accent-ink uppercase">{{ t .Lang "pages.billing.usage.included" }}</dt>
+			<dd class="mt-1 font-display text-2xl font-extrabold text-heading">{{ .Usage.Limit }}</dd>
+		</div>
+		<div>
+			<dt class="text-[11px] font-semibold tracking-wide text-accent-ink uppercase">{{ t .Lang "pages.billing.usage.used" }}</dt>
+			<dd class="mt-1 font-display text-2xl font-extrabold text-heading">{{ .Usage.Percent }}%</dd>
+		</div>
+		{{ if .Usage.Projected }}
+		<div>
+			<dt class="text-[11px] font-semibold tracking-wide text-accent-ink uppercase">{{ t .Lang "pages.billing.usage.projected" }}</dt>
+			<dd class="mt-1 font-display text-2xl font-extrabold text-heading">{{ .Usage.Projected }}</dd>
+		</div>
+		{{ end }}
+	</dl>
+
+	<p class="mt-5 text-sm text-muted">{{ t .Lang "pages.billing.usage.note" }}</p>
+</section>
+
+{{ if .History }}
+<section class="mt-6">
+	<h2 class="kicker mb-3">{{ t .Lang "pages.billing.history.heading" }}</h2>
+
+	<!-- The table scrolls inside its own card rather than pushing the page
+	     sideways. -->
+	<div class="overflow-x-auto border-2 border-line bg-card">
+		<table class="w-full min-w-md text-sm">
+			<thead>
+				<tr class="border-b border-line text-[11px] font-semibold tracking-wide text-muted uppercase">
+					<th class="px-6 py-3 text-start">{{ t $.Lang "pages.billing.history.month" }}</th>
+					<th class="px-6 py-3 text-end">{{ t $.Lang "pages.billing.history.pageviews" }}</th>
+					<th class="px-6 py-3 text-end">{{ t $.Lang "pages.billing.history.custom_events" }}</th>
+					<th class="px-6 py-3 text-end">{{ t $.Lang "pages.billing.history.billable" }}</th>
+				</tr>
+			</thead>
+			<tbody>
+				{{ range .History }}
+				<tr class="border-t border-line">
+					<td class="px-6 py-3 text-body">{{ .Period }}</td>
+					<td class="px-6 py-3 text-end tabular-nums text-body">{{ .Pageviews }}</td>
+					<td class="px-6 py-3 text-end tabular-nums text-body">{{ .CustomEvents }}</td>
+					<td class="px-6 py-3 text-end font-semibold tabular-nums text-heading">{{ .Billable }}</td>
+				</tr>
+				{{ end }}
+			</tbody>
+		</table>
+	</div>
+</section>
+{{ end }}
+
+<section class="mt-6">
+	<h2 class="kicker mb-3">{{ t .Lang "pages.billing.plan.heading" }}</h2>
+
+	<div class="grid gap-6 {{ if not .Comped }}lg:grid-cols-2{{ end }}">
+		<div class="border-2 border-line bg-card p-6">
+			<dl class="grid grid-cols-2 gap-x-6 gap-y-4">
+				<div>
+					<dt class="text-[11px] font-semibold tracking-wide text-accent-ink uppercase">{{ t .Lang "pages.billing.plan.plan" }}</dt>
+					<dd class="mt-1 font-display text-2xl font-extrabold text-heading">{{ .Plan.Label }}</dd>
+				</div>
+				<div>
+					<dt class="text-[11px] font-semibold tracking-wide text-accent-ink uppercase">{{ t .Lang "pages.billing.plan.status" }}</dt>
+					<dd class="mt-1 font-display text-2xl font-extrabold text-heading">{{ .Plan.Status }}</dd>
+				</div>
+				{{ if .Plan.PaymentState }}
+				<div>
+					<dt class="text-[11px] font-semibold tracking-wide text-accent-ink uppercase">{{ t .Lang "pages.billing.plan.payment" }}</dt>
+					<dd class="mt-1 font-display text-2xl font-extrabold text-heading">{{ .Plan.PaymentState }}</dd>
+				</div>
+				{{ end }}
+			</dl>
+
+			{{ if .Plan.RenewsOn }}
+			<p class="mt-5 text-sm text-muted">
+				{{ if .Plan.CancelAtPeriodEnd }}{{ t .Lang "pages.billing.plan.ends" "date" .Plan.RenewsOn }}{{ else }}{{ t .Lang "pages.billing.plan.renews" "date" .Plan.RenewsOn }}{{ end }}
+			</p>
+			{{ end }}
+
+			{{ if .Comped }}
+			<p class="mt-5 text-sm text-muted">{{ t .Lang "pages.billing.plan.comped_detail" }}</p>
+			{{ else if .Plan.HasCustomer }}
+			<form method="POST" action="/billing/portal" class="mt-5">
+				<input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+				<input type="hidden" name="team" value="{{ .TeamID }}">
+				<button type="submit" class="btn btn-secondary">{{ t .Lang "pages.billing.plan.portal" }}</button>
+			</form>
+			{{ else }}
+			<p class="mt-5 text-sm text-muted">{{ t .Lang "pages.billing.plan.no_card" }}</p>
+			{{ end }}
+		</div>
+
+		{{ if not .Comped }}
+		<div class="border-2 border-line bg-card p-6">
+			<p class="text-[11px] font-semibold tracking-wide text-accent-ink uppercase">{{ t .Lang "pages.billing.upgrade.label" }}</p>
+
+			<p class="mt-2 flex items-baseline gap-1.5">
+				<span class="font-display text-4xl font-extrabold tracking-tight text-heading">$9.99</span>
+				<span class="text-sm text-muted">{{ t .Lang "pages.billing.upgrade.per_month" }}</span>
+			</p>
+
+			<p class="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted">
+				{{ t .Lang "pages.billing.upgrade.or_yearly" }}
+				<span class="bg-up/15 px-1.5 py-0.5 text-[10px] font-semibold text-up-ink uppercase">{{ t .Lang "pages.pricing.yearly.saving" }}</span>
+			</p>
+
+			<ul class="mt-5 space-y-2 text-sm text-body">
+				<li class="flex gap-2"><span aria-hidden="true" class="text-up">✓</span>{{ t .Lang "pages.plan.volume" "limit" .Usage.Limit }}</li>
+				<li class="flex gap-2"><span aria-hidden="true" class="text-up">✓</span>{{ t .Lang "pages.billing.upgrade.unlimited" }}</li>
+				<li class="flex gap-2"><span aria-hidden="true" class="text-up">✓</span>{{ t .Lang "pages.billing.upgrade.features" }}</li>
+			</ul>
+
+			<div class="mt-6 flex flex-col gap-3 sm:flex-row">
+				<form method="POST" action="/billing/checkout" class="flex-1">
+					<input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+					<input type="hidden" name="team" value="{{ .TeamID }}">
+					<input type="hidden" name="plan" value="monthly">
+					<button type="submit" class="btn btn-primary w-full" {{ if not .Enabled }}disabled{{ end }}>{{ t .Lang "pages.billing.upgrade.monthly" }}</button>
+				</form>
+				<form method="POST" action="/billing/checkout" class="flex-1">
+					<input type="hidden" name="csrf_token" value="{{ .CSRF }}">
+					<input type="hidden" name="team" value="{{ .TeamID }}">
+					<input type="hidden" name="plan" value="yearly">
+					<button type="submit" class="btn btn-secondary w-full" {{ if not .Enabled }}disabled{{ end }}>{{ t .Lang "pages.billing.upgrade.yearly" }}</button>
+				</form>
+			</div>
+
+			<!-- Under the buttons: this is the moment somebody agrees to them. -->
+			<div class="mt-4">{{ template "payer-links" . }}</div>
+		</div>
+		{{ end }}
+	</div>
+</section>
+
+{{ if .Timeline }}
+<section class="mt-6">
+	<h2 class="kicker mb-3">{{ t .Lang "pages.billing.next.heading" }}</h2>
+
+	<ul class="border-2 border-line bg-card">
+		{{ range .Timeline }}
+		<li class="flex flex-col gap-1 px-6 py-4 sm:flex-row sm:gap-6 {{ if .Now }}bg-hover{{ end }} [&:not(:first-child)]:border-t [&:not(:first-child)]:border-line">
+			<span class="shrink-0 text-sm font-semibold {{ if .Now }}text-heading{{ else }}text-muted{{ end }} sm:w-44">{{ .When }}</span>
+			<span class="text-sm {{ if .Now }}text-heading{{ else }}text-body{{ end }}">{{ .What }}</span>
+		</li>
+		{{ end }}
+	</ul>
+</section>
+{{ end }}
+
+<!-- The merchant-of-record and refund disclosure sits on the screen the buy
+     buttons are on. Somebody deciding to pay should not have to leave for the
+     marketing site to find out who is actually charging them. -->
+{{ if not .Comped }}
+<section class="mt-6">
+	<h2 class="kicker mb-3">{{ t .Lang "pages.pricing.tax.heading" }}</h2>
+
+	<div class="space-y-4 border-2 border-line bg-card p-6 text-sm text-body">
+		<p>Prices are exclusive of tax. Sales tax, VAT or GST is calculated at checkout from your
+		   billing address and shown before you pay. For transactions in jurisdictions where Managed
+		   Payments is available and labelled &ldquo;Sold through Link,&rdquo; Stripe Managed Payments is
+		   provided by Sold through Link, LLC, which is the merchant of record. It handles indirect tax
+		   in the countries and transactions Managed Payments supports. Cloudmanic Labs, LLC remains
+		   the seller of the service and is responsible for domestic or other seller taxes where
+		   Managed Payments does not handle them.</p>
+		<p>Our policy refunds yearly plans pro rata within 30 days of purchase; write to us and there
+		   is no form or retention flow. For a transaction labelled &ldquo;Sold through Link,&rdquo; you may
+		   also request a refund from
+		   <a href="https://support.link.com/topics/sold-through-link" class="text-accent-ink underline underline-offset-2">Link support</a>.
+		   Sold through Link, LLC's refund policy controls where it gives you broader rights, and
+		   applicable law may give you additional rights.</p>
+	</div>
+</section>
+{{ end }}
+
+<section class="mt-6">
+	<h2 class="kicker mb-3">{{ t .Lang "pages.billing.data.heading" }}</h2>
+
+	<div class="border-2 border-line bg-card p-6">
+		<p class="text-sm text-body">{{ t .Lang "pages.billing.data.body" }}</p>
+		<a href="/billing/export?team={{ .TeamID }}" class="btn btn-secondary mt-5">{{ t .Lang "pages.billing.data.cta" }}</a>
+	</div>
+</section>
+
+{{ if .Growing }}
+<section class="mt-6">
+	<h2 class="kicker mb-3">{{ t .Lang "pages.billing.growing.heading" }}</h2>
+
+	<div class="border-2 border-line bg-card p-6">
+		<p class="text-sm text-body">{{ t .Lang "pages.billing.growing.body" }}</p>
+		<a href="mailto:{{ .SalesEmail }}?subject={{ t .Lang "pages.billing.growing.subject" "account" .Account.Name }}"
+		   class="btn btn-primary mt-5">{{ t .Lang "pages.pricing.volume.cta" "email" .SalesEmail }}</a>
+	</div>
+</section>
+{{ end }}
+
+<!-- A comped account has no upgrade card, and the links belong on the screen
+     either way. -->
+{{ if .Comped }}
+<div class="mt-8">{{ template "payer-links" . }}</div>
+{{ end }}
+
+{{ end }}

@@ -1,14 +1,16 @@
 //
-// pages.go
+// billingui.go
 // The server-rendered commerce screens: billing and checkout.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-// Package pages serves the commerce screens: the billing screen, which carries
-// the usage meter and the buttons a customer buys with, and the pages checkout
-// returns to.
+// Package billingui serves the billing screens: the one carrying the usage
+// meter and the buttons a customer buys with, and the ones checkout returns to.
+//
+// internal/billing is the service that talks to the payment provider; this is
+// what a customer looks at while it does.
 //
 // They are server-rendered Go templates rather than part of the dashboard
 // bundle because they have to work when the dashboard is locked. A customer
@@ -18,7 +20,7 @@
 // The plans are published on the marketing site, in its own repository. What
 // is here is the part that needs an account: the prices are on both, but only
 // this side knows who is buying.
-package pages
+package billingui
 
 import (
 	"embed"
@@ -30,6 +32,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/appui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/billing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
@@ -37,14 +40,11 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/usage"
 )
 
-// templates and assets hold the rendered pages and the one stylesheet. Both are
-// embedded so a release stays a single binary.
+// templates holds the rendered pages. They are embedded so a release stays a
+// single binary.
 //
 //go:embed templates/*.html
 var templateFS embed.FS
-
-//go:embed assets/pages.css
-var assetFS embed.FS
 
 // SiteURL is the public marketing site. Documentation and the legal documents
 // are published there, from their own repository, because they are read by
@@ -52,8 +52,12 @@ var assetFS embed.FS
 // be a second version that goes stale the first time a policy changes.
 const SiteURL = "https://feasible.lol"
 
-// docsURL is where a link out of the application lands.
+// docsURL is the reference manual, for a link that means a specific page of it.
 const docsURL = SiteURL + "/docs"
+
+// HelpURL is the help centre. The trailing slash is the marketing site's own
+// shape; without it every click takes a redirect.
+const HelpURL = SiteURL + "/help/"
 
 // The two page templates. Each is parsed with the shared layout so that the
 // footer — which carries the postal address the law requires — cannot be left
@@ -66,8 +70,10 @@ var (
 // mustParse builds one page template. A broken template is a programmer error
 // caught by the first test run, so panicking is honest.
 func mustParse(name string) *template.Template {
-	return template.Must(template.New(name).Funcs(templateFuncs()).
+	parsed := template.Must(template.New(name).Funcs(templateFuncs()).
 		ParseFS(templateFS, "templates/layout.html", "templates/"+name))
+
+	return template.Must(parsed.ParseFS(appui.Templates, "templates/*.html"))
 }
 
 // templateFuncs is the one helper these templates may call.
@@ -80,6 +86,26 @@ func templateFuncs() template.FuncMap {
 	return template.FuncMap{
 		"t": func(locale, id string, args ...any) string {
 			return i18n.T(locale, id, args...)
+		},
+
+		"n": func(locale, id string, count int, args ...any) string {
+			return i18n.N(locale, id, count, args...)
+		},
+
+		// The shared chrome needs both: the layout sets dir on the html element,
+		// and the header builds every destination through the locale prefix.
+		"url": func(locale, target string) string {
+			return i18n.LocalURL(target, locale)
+		},
+
+		"rtl": func(locale string) bool {
+			for _, l := range i18n.Locales() {
+				if l.Tag == locale {
+					return l.RTL
+				}
+			}
+
+			return false
 		},
 	}
 }
@@ -99,14 +125,15 @@ type Handler struct {
 	// Hosted selects the hosted service's own identity in the footer and the
 	// links to its contract. A self-hosted install names its own operator and
 	// links to no contract of ours, because we are not a party to it.
-	Hosted          bool
-	OperatorName    string
-	OperatorAddress string
-	OperatorEmail   string
+	Hosted bool
 
 	// Now is injectable so a screenshot or a test can render the billing screen
 	// at a chosen point on the lifecycle clock.
 	Now func() time.Time
+
+	// Header builds the application's top bar. It is injected because the bar
+	// knows the signed-in person and this package must not import auth.
+	Header func(*http.Request) appui.Header
 
 	// RequireAccount protects every route here — all of them are one account's
 	// money. It is injected so this package does not import auth.
@@ -146,7 +173,6 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /billing/portal", h.protected(h.portal, true))
 	mux.Handle("GET /billing/done", h.protected(h.done, false))
 	mux.Handle("GET /billing/export", h.protected(h.export, false))
-	mux.HandleFunc("GET /billing/assets/pages.css", h.stylesheet)
 }
 
 // protected composes account authentication around the route and CSRF around
@@ -172,19 +198,22 @@ func (h *Handler) protected(next http.HandlerFunc, csrf bool) http.Handler {
 
 // shell is what every template's layout reads.
 type shell struct {
-	Title           string
-	Nav             string
-	Lang            string
-	Site            string
-	SalesEmail      string
-	Enabled         bool
-	SignedIn        bool
-	TeamID          int64
-	CSRF            string
-	Hosted          bool
-	OperatorName    string
-	OperatorAddress []string
-	OperatorEmail   string
+	Title      string
+	Lang       string
+	Site       string
+	SalesEmail string
+	Enabled    bool
+	SignedIn   bool
+	TeamID     int64
+	CSRF       string
+
+	// Hosted gates the links to our own contract. Our privacy policy and terms
+	// describe what we do, and a self-hosted install is run by somebody else.
+	Hosted bool
+
+	// Header is the application's top bar, or the zero value on a screen
+	// rendered for nobody, where the layout draws the mark alone.
+	Header appui.Header
 }
 
 // newShell builds the common part of a page.
@@ -192,7 +221,7 @@ type shell struct {
 // The title arrives as a catalogue id rather than as text so that a page's tab
 // and its heading cannot end up in two different languages, which is what
 // happens the moment one of them is translated and the other is a literal.
-func (h *Handler) newShell(w http.ResponseWriter, r *http.Request, lang, titleID, nav string, account Account) shell {
+func (h *Handler) newShell(w http.ResponseWriter, r *http.Request, lang, titleID string, account Account) shell {
 	sales := h.SalesEmail
 	if sales == "" {
 		sales = "sales@feasible.lol"
@@ -203,20 +232,22 @@ func (h *Handler) newShell(w http.ResponseWriter, r *http.Request, lang, titleID
 		csrf = h.FormToken(w, r)
 	}
 
+	header := appui.Header{}
+	if h.Header != nil {
+		header = h.Header(r)
+	}
+
 	return shell{
-		Title:           i18n.T(lang, titleID),
-		Nav:             nav,
-		Lang:            lang,
-		Site:            SiteURL,
-		SalesEmail:      sales,
-		Enabled:         h.Billing != nil && h.Billing.Enabled(),
-		SignedIn:        account.ID > 0,
-		TeamID:          account.ID,
-		CSRF:            csrf,
-		Hosted:          h.Hosted,
-		OperatorName:    h.OperatorName,
-		OperatorAddress: strings.Split(h.OperatorAddress, "\n"),
-		OperatorEmail:   h.OperatorEmail,
+		Title:      i18n.T(lang, titleID),
+		Lang:       lang,
+		Site:       SiteURL,
+		SalesEmail: sales,
+		Enabled:    h.Billing != nil && h.Billing.Enabled(),
+		SignedIn:   account.ID > 0,
+		TeamID:     account.ID,
+		CSRF:       csrf,
+		Hosted:     h.Hosted,
+		Header:     header,
 	}
 }
 
@@ -236,21 +267,6 @@ func (h *Handler) language(w http.ResponseWriter, r *http.Request) string {
 	}
 
 	return requested
-}
-
-// stylesheet serves the one CSS file. It is cached for an hour rather than
-// forever because it carries no digest in its URL, and a deploy that nobody can
-// see for a year is worse than one extra request an hour.
-func (h *Handler) stylesheet(w http.ResponseWriter, _ *http.Request) {
-	body, err := assetFS.ReadFile("assets/pages.css")
-	if err != nil {
-		http.Error(w, "stylesheet missing", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=3600")
-	_, _ = w.Write(body)
 }
 
 // billingData is everything the billing screen shows.
@@ -328,7 +344,7 @@ func (h *Handler) billing(w http.ResponseWriter, r *http.Request) {
 	}
 	teamID := account.ID
 
-	data := billingData{shell: h.newShell(w, r, lang, "pages.title.billing", "billing", account)}
+	data := billingData{shell: h.newShell(w, r, lang, "pages.title.billing", account)}
 	data.Account.Name = i18n.T(lang, "pages.account.fallback", "id", teamID)
 
 	if h.Lifecycle != nil {
@@ -697,7 +713,7 @@ func (h *Handler) message(w http.ResponseWriter, r *http.Request, lang, titleID,
 		Paragraphs []string
 		Links      []link
 		Extra      template.HTML
-	}{shell: h.newShell(w, r, lang, titleID, "billing", account), Heading: heading, Paragraphs: paragraphs, Links: links})
+	}{shell: h.newShell(w, r, lang, titleID, account), Heading: heading, Paragraphs: paragraphs, Links: links})
 }
 
 // render writes one page, or reports the failure rather than sending half a

@@ -1,6 +1,6 @@
 //
 // public-layout.spec.js
-// Browser layout checks for every server-rendered public page at narrow viewports.
+// Browser layout checks for the billing screens at narrow viewports.
 //
 // Created: 2026-08-31
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -14,15 +14,17 @@ import { fileURLToPath } from "node:url";
 
 import { expect, test } from "@playwright/test";
 
-const css = readFileSync(new URL("../../internal/pages/assets/pages.css", import.meta.url), "utf8");
+// The application's compiled stylesheet, the same file the binary serves at
+// /app/assets/app.css. It is the CSS that decides whether these screens fit.
+const css = readFileSync(new URL("../../internal/auth/assets/app.css", import.meta.url), "utf8");
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
-const fixtureDir = mkdtempSync(join(tmpdir(), "feasible-public-pages-"));
+const fixtureDir = mkdtempSync(join(tmpdir(), "feasible-billing-pages-"));
 
 // The Go test renders through the real route table into a temporary directory.
 // Chromium receives complete documents with inline production CSS, so no HTTP
 // listener or application server is involved.
-execFileSync("go", ["test", "./internal/pages", "-run", "^TestWritePublicBrowserFixtures$", "-count=1"], {
+execFileSync("go", ["test", "./internal/billingui", "-run", "^TestWritePublicBrowserFixtures$", "-count=1"], {
 	cwd: repoRoot,
 	env: { ...process.env, FEASIBLE_PUBLIC_FIXTURE_DIR: fixtureDir },
 	stdio: "inherit",
@@ -40,30 +42,39 @@ for (const width of [320, 381, 390]) {
 		await page.setViewportSize({ width, height: 640 });
 		await page.setContent(body.replace("</head>", `<style>${css}</style></head>`));
 
-		const layout = await page.evaluate(() => ({
-			documentWidth: document.documentElement.scrollWidth,
-			viewportWidth: window.innerWidth,
-			brand: document.querySelector(".brand").getBoundingClientRect().toJSON(),
-			nav: document.querySelector("header nav").getBoundingClientRect().toJSON(),
-			links: [...document.querySelectorAll("header nav a")].map((link) => link.getBoundingClientRect().toJSON()),
-			brandFont: Number.parseFloat(getComputedStyle(document.querySelector(".brand")).fontSize),
-			navFont: Number.parseFloat(getComputedStyle(document.querySelector("header nav a")).fontSize),
-		}));
+		const layout = await page.evaluate(() => {
+			// Every element that draws something, measured against the viewport.
+			// The document's scroll width alone misses a box overflowing to the
+			// left, which is the one a right-to-left reader sees first.
+			const overflowing = [...document.querySelectorAll("body *")]
+				.filter((element) => {
+					const box = element.getBoundingClientRect();
 
+					return box.width > 0 && (box.left < -0.5 || box.right > window.innerWidth + 0.5);
+				})
+				.map((element) => `${element.tagName.toLowerCase()}.${element.className}`.slice(0, 120));
+
+			return {
+				documentWidth: document.documentElement.scrollWidth,
+				viewportWidth: window.innerWidth,
+				overflowing: overflowing.slice(0, 5),
+				header: document.querySelector("header").getBoundingClientRect().toJSON(),
+				// A buy button off the side of a phone is a sale that does not
+				// happen.
+				buttons: [...document.querySelectorAll("button[type=submit], a.btn")]
+					.map((element) => element.getBoundingClientRect().toJSON()),
+			};
+		});
+
+		expect(layout.overflowing).toEqual([]);
 		expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
-		expect(layout.brand.x).toBeGreaterThanOrEqual(0);
-		expect(layout.brand.right).toBeLessThanOrEqual(width);
-		expect(layout.nav.x).toBeGreaterThanOrEqual(0);
-		expect(layout.nav.right).toBeLessThanOrEqual(width);
-		for (const link of layout.links) {
-			expect(link.x).toBeGreaterThanOrEqual(0);
-			expect(link.right).toBeLessThanOrEqual(width);
-		}
-		expect(layout.brandFont).toBeLessThanOrEqual(16);
-		expect(layout.navFont).toBe(14);
-		if (fixture.path === "/billing?team=1" && width === 320) {
-			const directions = await page.locator(".timeline li").evaluateAll((elements) => elements.map((element) => getComputedStyle(element).flexDirection));
-			expect(directions).toEqual(["column", "column", "column"]);
+
+		expect(layout.header.x).toBeGreaterThanOrEqual(0);
+		expect(layout.header.right).toBeLessThanOrEqual(width);
+
+		for (const button of layout.buttons) {
+			expect(button.x).toBeGreaterThanOrEqual(0);
+			expect(button.right).toBeLessThanOrEqual(width);
 		}
 	});
 }

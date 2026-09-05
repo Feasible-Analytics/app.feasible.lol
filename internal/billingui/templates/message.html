@@ -1,0 +1,33 @@
+<!--
+  message.html
+  One panel: what happened, and where to go next.
+
+  Created: 2026-08-30
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  Several outcomes share this — a finished checkout, an install with no payment
+  provider, an account with no portal yet — because each is "here is what
+  happened and here is where to go next".
+-->
+{{ define "body" }}
+<div class="max-w-2xl">
+	<h1 class="font-display text-3xl font-extrabold tracking-tight text-heading">{{ .Heading }}</h1>
+
+	<div class="mt-6 border-2 border-line bg-card p-6">
+		<div class="space-y-4 text-sm text-body">
+			{{ range .Paragraphs }}<p>{{ . }}</p>{{ end }}
+			{{ if .Extra }}{{ .Extra }}{{ end }}
+		</div>
+
+		{{ if .Links }}
+		<div class="mt-6 flex flex-wrap gap-3">
+			{{ range .Links }}
+			<a href="{{ .URL }}" class="btn btn-secondary">{{ .Label }}</a>
+			{{ end }}
+		</div>
+		{{ end }}
+	</div>
+
+	<div class="mt-6">{{ template "payer-links" . }}</div>
+</div>
+{{ end }}

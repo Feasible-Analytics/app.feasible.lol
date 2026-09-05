@@ -22,6 +22,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/auth"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/avatar"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/billingui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dashboard"
@@ -35,7 +36,6 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/outbound"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/pages"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/pathclean"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/rollup"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/settings"
@@ -355,7 +355,7 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 		Slack:               e.slack,
 		OutboundPolicy:      outbound.PolicyFor(e.cfg),
 		Avatars:             newAvatarRefresher(e, control),
-		HelpURL:             pages.SiteURL + "/docs",
+		HelpURL:             billingui.HelpURL,
 		SupportURL:          "mailto:" + supportAddress(e),
 	})
 }
@@ -630,10 +630,15 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 
 	mux.Handle(avatar.Pattern, app.AvatarHandler())
 
-	// The root is the dashboard until the marketing site and the auth screens
-	// exist. A bare hostname answering 404 looks like a failed deploy, which is
-	// the first thing anybody checks and the last thing we want it to look like.
+	// Where a bare hostname goes. Somebody signed out on the hosted service
+	// almost always meant the marketing site; everyone else wants the dashboard,
+	// and a self-hosted install has no marketing site to send anybody to.
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		if e.cfg.App.Hosted && !app.SignedIn(r) {
+			http.Redirect(w, r, billingui.SiteURL, http.StatusFound)
+			return
+		}
+
 		http.Redirect(w, r, dashboard.PathPrefix, http.StatusFound)
 	})
 	// /api/v1/*, /api/v2/*, /mcp and the OAuth endpoints. They are mounted on

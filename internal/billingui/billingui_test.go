@@ -1,12 +1,12 @@
 //
-// pages_test.go
+// billingui_test.go
 // Every commerce screen: it renders, it prices correctly, and it carries the address.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-package pages
+package billingui
 
 import (
 	"context"
@@ -113,16 +113,15 @@ func TestEveryPageRenders(t *testing.T) {
 
 		body := response.Body.String()
 
-		if !strings.Contains(body, "<!DOCTYPE html>") {
+		if !strings.Contains(strings.ToLower(body), "<!doctype html>") {
 			t.Errorf("%s is not a complete document", path)
 		}
+	}
 
-		// The legal entity is required in the footer of every page.
-		for _, line := range []string{"Cloudmanic Labs, LLC", "901 Brutscher Street, D112", "Newberg, OR 97132", "United States"} {
-			if !strings.Contains(body, line) {
-				t.Errorf("%s is missing %q from the footer", path, line)
-			}
-		}
+	// The seller is named on the screen the buy buttons are on: somebody
+	// deciding to pay should not have to leave to find out who is charging them.
+	if body := render(t, handler, "/billing?team=1").Body.String(); !strings.Contains(body, "Cloudmanic Labs, LLC") {
+		t.Error("the billing screen does not name the seller")
 	}
 }
 
@@ -134,50 +133,61 @@ func TestLayoutNavigationPreservesTheSelectedTeam(t *testing.T) {
 		return Account{ID: 27, Email: "billing@example.com"}, nil
 	}
 
+	// Every route out of this screen carries the team, so a multi-team user who
+	// clicks one stays on the account they were looking at.
 	body := render(t, handler, "/billing?team=27").Body.String()
-	if !strings.Contains(body, `href="/billing?team=27"`) {
-		t.Errorf("selected-team billing navigation is missing: %s", body)
+	for _, want := range []string{
+		`href="/billing/export?team=27"`,
+		`name="team" value="27"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("selected-team billing navigation is missing %q: %s", want, body)
+		}
 	}
 }
 
-// TestTheFooterLinksLeaveTheApplication proves documentation and the contract
-// are read on the marketing site rather than served from here, and that a
-// self-hosted install offers no link to a contract we are not a party to.
-func TestTheFooterLinksLeaveTheApplication(t *testing.T) {
+// TestThePayerLinksLeaveTheApplication checks the three links a payer needs are
+// on the screen the buy buttons are on, point at paths the marketing site
+// publishes, and that a self-hosted install links to no contract of ours.
+func TestThePayerLinksLeaveTheApplication(t *testing.T) {
 	handler, _ := newHandler(t)
 
 	hosted := render(t, handler, "/billing?team=1").Body.String()
 	for _, want := range []string{
-		`href="https://feasible.lol/docs"`,
-		// These are the paths the marketing site actually publishes. Three of
-		// them sit at the root and only subprocessors is under /legal, which is
-		// exactly the sort of asymmetry a footer written from memory gets wrong.
 		`href="https://feasible.lol/privacy"`,
 		`href="https://feasible.lol/terms"`,
-		`href="https://feasible.lol/dpa"`,
-		`href="https://feasible.lol/legal/subprocessors"`,
+		`href="https://feasible.lol/help/"`,
 	} {
 		if !strings.Contains(hosted, want) {
-			t.Errorf("the hosted footer is missing %q", want)
+			t.Errorf("the billing screen is missing %q", want)
 		}
 	}
 
+	// Three, and only three. A row carrying every document we publish is a row
+	// nobody reads.
+	if n := strings.Count(hosted, `href="https://feasible.lol/`); n != 3 {
+		t.Errorf("the billing screen carries %d marketing links, want 3: %s", n, hosted)
+	}
+
+	// The account menu's Help and this one are the same destination.
+	if HelpURL != "https://feasible.lol/help/" {
+		t.Errorf("Help points at %q", HelpURL)
+	}
+
 	handler.Hosted = false
-	handler.OperatorName = "Example Operator, Inc."
-	handler.OperatorAddress = "123 Example Street\nPortland, OR"
-	handler.OperatorEmail = "privacy@example.test"
 
 	selfHosted := render(t, handler, "/billing?team=1").Body.String()
-	if !strings.Contains(selfHosted, `href="https://feasible.lol/docs"`) {
-		t.Error("a self-hosted footer lost the documentation link")
+	if !strings.Contains(selfHosted, `href="https://feasible.lol/help/"`) {
+		t.Error("a self-hosted billing screen lost the help link")
 	}
-	if strings.Contains(selfHosted, "/legal/") {
-		t.Errorf("a self-hosted footer links to our contract: %s", selfHosted)
+	for _, gone := range []string{"/privacy", "/terms"} {
+		if strings.Contains(selfHosted, "https://feasible.lol"+gone) {
+			t.Errorf("a self-hosted screen links to our %s, which describes us rather than them", gone)
+		}
 	}
 
-	// Nothing in this binary answers the paths the footer points at, which is
-	// the whole point of the links being absolute.
-	for _, path := range []string{"/docs", "/docs/api", "/legal/privacy", "/legal/terms", "/legal/dpa", "/pricing", "/billing/upgrade"} {
+	// Nothing in this binary answers the paths those links point at.
+	for _, path := range []string{"/docs", "/docs/api", "/privacy", "/terms", "/help", "/pricing", "/billing/upgrade"} {
 		if code := render(t, handler, path).Code; code != http.StatusNotFound {
 			t.Errorf("%s answered %d, want 404 — it belongs to the public site", path, code)
 		}
@@ -239,34 +249,26 @@ func TestWritePublicBrowserFixtures(t *testing.T) {
 	}
 }
 
-// TestPublicHeaderHasNarrowViewportContainment checks the static layout
-// contract used by browser-capable smoke checks at 320px and 390px.
-func TestPublicHeaderHasNarrowViewportContainment(t *testing.T) {
+// TestBillingWearsTheApplicationChrome checks these screens are drawn in the
+// shared shell. The narrow-viewport behaviour is measured at real widths by the
+// Chromium suite in tracker/tests, which is the only place it can be.
+func TestBillingWearsTheApplicationChrome(t *testing.T) {
 	handler, _ := newHandler(t)
 	page := render(t, handler, "/billing?team=1").Body.String()
-	if !strings.Contains(page, `name="viewport" content="width=device-width, initial-scale=1"`) {
-		t.Fatal("public layout is missing its device-width viewport")
+
+	for _, want := range []string{
+		`name="viewport" content="width=device-width, initial-scale=1"`,
+		// The application's compiled stylesheet, not one of this package's own.
+		`href="/app/assets/app.css"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the billing screen is missing %q", want)
+		}
 	}
 
-	css := render(t, handler, "/billing/assets/pages.css").Body.String()
-	for _, want := range []string{
-		"header.top .wrap {", "flex-wrap: wrap", "@media (max-width: 520px)",
-		"header.top .brand { flex-basis: 100%;", "header.top nav { width: 100%",
-	} {
-		if !strings.Contains(css, want) {
-			t.Errorf("narrow header CSS is missing %q", want)
-		}
-	}
-	// Negative tracking belongs on the display type and nowhere near a
-	// paragraph. Archivo at 800 needs it to stop a heading reading as spaced;
-	// applied to a line of body copy at 16px it costs legibility for nothing,
-	// and a narrow viewport is where that first shows up as a word breaking.
-	for _, rule := range []string{"body {", ".hero p {", "header.top nav a {"} {
-		block := css[strings.Index(css, rule):]
-		block = block[:strings.Index(block, "}")]
-		if strings.Contains(block, "letter-spacing: -") {
-			t.Errorf("%s tightens tracking on body text", rule)
-		}
+	// This package serves no stylesheet of its own.
+	if code := render(t, handler, "/billing/assets/pages.css").Code; code != http.StatusNotFound {
+		t.Errorf("the retired stylesheet answered %d, want 404", code)
 	}
 }
 
@@ -286,7 +288,7 @@ func TestPublicLanguageChoicePersistsWithoutMislabelingFallback(t *testing.T) {
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("%s answered %d", path, recorder.Code)
 		}
-		if !strings.Contains(recorder.Body.String(), `<html lang="en">`) {
+		if !strings.Contains(recorder.Body.String(), `<html lang="en"`) {
 			t.Errorf("%s labelled English fallback content as another language", path)
 		}
 
@@ -300,7 +302,7 @@ func TestPublicLanguageChoicePersistsWithoutMislabelingFallback(t *testing.T) {
 	req.AddCookie(&http.Cookie{Name: i18n.CookieName, Value: "de"})
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, req)
-	if !strings.Contains(recorder.Body.String(), `<html lang="en">`) {
+	if !strings.Contains(recorder.Body.String(), `<html lang="en"`) {
 		t.Fatal("a persisted partial locale mislabeled the next page's English fallback")
 	}
 }
@@ -398,12 +400,9 @@ func TestCheckoutReturnDistinguishesPaidAndPending(t *testing.T) {
 	if strings.Contains(pending, "account is active") || strings.Contains(pending, "payment went through") {
 		t.Errorf("pending checkout promises paid access: %s", pending)
 	}
-	// The retry link is the one this page adds over the paid one, and it is the
-	// one a customer whose card is still settling actually clicks. It is matched
-	// as an anchor rather than as a bare path, because every message page
-	// already carries two ways back to billing and a path on its own would pass
-	// on those alone. The attributes between the two are skipped so that a
-	// change of styling is not a failing test.
+	// Matched as an anchor rather than a bare path: every message page carries
+	// two other ways back to billing, and a path alone would pass on those. The
+	// attributes between href and label are skipped so styling can change.
 	retry := regexp.MustCompile(`href="/billing\?team=2"[^>]*>Retry checkout<`)
 	if !retry.MatchString(pending) {
 		t.Errorf("pending retry link lost selected team: %s", pending)
@@ -743,21 +742,6 @@ func TestPortalPreservesTheAuthenticatedTeamInItsReturnURL(t *testing.T) {
 	}
 	if got := posted.Get("return_url"); got != "https://feasible.lol/billing?team=2" {
 		t.Errorf("portal return URL is %q", got)
-	}
-}
-
-// TestStylesheetIsServed checks the one asset these pages depend on. A billing
-// screen with no stylesheet still works, and looks like a broken deploy.
-func TestStylesheetIsServed(t *testing.T) {
-	handler, _ := newHandler(t)
-
-	response := render(t, handler, "/billing/assets/pages.css")
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("status %d", response.Code)
-	}
-	if got := response.Header().Get("Content-Type"); !strings.Contains(got, "text/css") {
-		t.Errorf("content type is %q", got)
 	}
 }
 

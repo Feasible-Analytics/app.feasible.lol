@@ -22,7 +22,9 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/access"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/auth"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/billingui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/dashboard"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
@@ -346,6 +348,43 @@ func (s *stack) signedInForm() map[string]string {
 		"Content-Type": "application/x-www-form-urlencoded",
 		"Cookie":       auth.SessionCookieName + "=" + s.sessionToken + "; " + s.csrfCookie,
 	}
+}
+
+// TestTheRootSendsAVisitorSomewhereUseful covers the one URL people type from
+// memory.
+func TestTheRootSendsAVisitorSomewhereUseful(t *testing.T) {
+	t.Run("hosted", func(t *testing.T) {
+		t.Setenv("FEASIBLE_APP_HOSTED", "true")
+		s := newStack(t)
+
+		// Signed out on the hosted service almost always means the marketing site.
+		signedOut := s.send(t, http.MethodGet, "/", "", nil)
+		if signedOut.Code != http.StatusFound || signedOut.Header().Get("Location") != billingui.SiteURL {
+			t.Errorf("signed-out root answered %d to %q, want the marketing site",
+				signedOut.Code, signedOut.Header().Get("Location"))
+		}
+
+		// Signed in, it is a shortcut to their own numbers.
+		signedIn := s.send(t, http.MethodGet, "/", "", s.signedInForm())
+		if signedIn.Code != http.StatusFound || signedIn.Header().Get("Location") != dashboard.PathPrefix {
+			t.Errorf("signed-in root answered %d to %q, want the dashboard",
+				signedIn.Code, signedIn.Header().Get("Location"))
+		}
+	})
+
+	t.Run("self-hosted", func(t *testing.T) {
+		t.Setenv("FEASIBLE_APP_HOSTED", "false")
+		s := newStack(t)
+
+		// There is no marketing site to send anybody to.
+		for _, headers := range []map[string]string{nil, s.signedInForm()} {
+			response := s.send(t, http.MethodGet, "/", "", headers)
+			if response.Code != http.StatusFound || response.Header().Get("Location") != dashboard.PathPrefix {
+				t.Errorf("self-hosted root answered %d to %q, want the dashboard",
+					response.Code, response.Header().Get("Location"))
+			}
+		}
+	})
 }
 
 // TestCommerceRoutesUseAuthAccountAndCSRF drives the assembled mux that ships.
