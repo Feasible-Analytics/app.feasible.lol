@@ -412,6 +412,13 @@ func TestPageTitleEnrichmentUsesCleanedSourcesAndThePathTimeIndex(t *testing.T) 
 	q := baseQuery("events")
 	q.Dimensions = []string{"event:page"}
 	q.Include.PageTitles = true
+
+	// Native-only, because the three seeded "Excluded candidate" rows are a
+	// custom event, an imported row and a bot hit, and this asserts all three
+	// are refused as titles. An imported row is a legitimate candidate when the
+	// query includes imports, which is a different assertion.
+	q.Include.ExcludeImports = true
+
 	result := run(t, engine, q)
 	if len(result.Results) != 1 || result.Results[0].Dimensions[0] != "/products/:id" {
 		t.Fatalf("cleaned page rows = %+v", result.Results)

@@ -247,7 +247,7 @@ func TestTheRouterRefusesEverythingItCannotAnswerExactly(t *testing.T) {
 		},
 		{
 			name:   "imported history included",
-			query:  Query{SiteIDs: []int64{1}, Metrics: []string{"visitors"}, Include: Include{Imports: true}},
+			query:  Query{SiteIDs: []int64{1}, Metrics: []string{"visitors"}, Include: Include{}},
 			rollup: true,
 			why: "the summary holds the native rows only, and imported ones are added by their own pass — " +
 				"refusing here would put every dashboard report on a raw scan",

@@ -283,7 +283,6 @@ func readSiteOverview(ctx context.Context, engine *query.Engine, site *Site, goa
 		// what our own tracker saw would say a busy site had almost no traffic.
 		// The live window below is native-only, because a daily aggregate
 		// cannot describe who is on the site right now.
-		Include: query.Include{Imports: true},
 	}
 
 	totals := base

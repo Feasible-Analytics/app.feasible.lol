@@ -351,7 +351,16 @@ func decode(body []byte) (*request, error) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 
-	parsed := &request{}
+	// The request starts at the wire's defaults, not at Go's.
+	//
+	// Include's `imports` is stored inverted so that a Go caller building a
+	// query gets migrated history without asking. A custom UnmarshalJSON puts
+	// the wire back the right way round — but only when the key is present, and
+	// a body with no `include` at all never reaches it. Seeding the wire default
+	// here is what keeps an omitted `include` meaning what it has always meant
+	// to an API client.
+	parsed := &request{Include: query.Include{ExcludeImports: true}}
+
 	if err := decoder.Decode(parsed); err != nil {
 		return nil, readableJSONError(err)
 	}

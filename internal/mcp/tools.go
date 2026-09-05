@@ -175,10 +175,10 @@ func (s *Server) runStats(ctx context.Context, key *apikeys.Key, raw json.RawMes
 		Pagination: query.Pagination{Limit: args.Limit, Offset: args.Offset},
 		Exact:      args.Exact,
 		Include: query.Include{
-			Bots:        args.IncludeBots,
-			Imports:     args.IncludeImports,
-			TotalRows:   args.TotalRows,
-			Comparisons: comparison,
+			Bots:           args.IncludeBots,
+			ExcludeImports: !args.IncludeImports,
+			TotalRows:      args.TotalRows,
+			Comparisons:    comparison,
 		},
 	})
 	if err != nil {

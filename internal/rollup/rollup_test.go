@@ -694,7 +694,7 @@ func TestImportedHistoryAgreesFromEitherSource(t *testing.T) {
 				Pagination: query.Pagination{Limit: query.MaxLimit},
 
 				// The flag the dashboard sets on every report it makes.
-				Include: query.Include{Imports: true},
+				Include: query.Include{},
 			}
 
 			fromRaw, rawErr := raw.Run(context.Background(), q)

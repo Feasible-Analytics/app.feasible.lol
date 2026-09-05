@@ -143,9 +143,9 @@ func (v *v1Request) toQuery(dimensions []string, pagination query.Pagination) qu
 		Pagination: pagination,
 		Exact:      true,
 		Include: query.Include{
-			Bots:        v.WithBots,
-			Imports:     v.WithImported,
-			Comparisons: v.Compare,
+			Bots:           v.WithBots,
+			ExcludeImports: !v.WithImported,
+			Comparisons:    v.Compare,
 		},
 	}
 }

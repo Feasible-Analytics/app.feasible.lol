@@ -254,7 +254,7 @@ func TestPlausibleArchiveMigration(t *testing.T) {
 	}
 
 	base := query.Query{
-		SiteIDs: []int64{1}, Include: query.Include{Imports: true},
+		SiteIDs: []int64{1},
 		DateRange: query.DateRange{Preset: query.RangeCustom,
 			Start: time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC),
 			End:   time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC)},
@@ -522,7 +522,7 @@ func compare(t *testing.T, engine *query.Engine, label string, dimensions []stri
 				Start:  time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC),
 				End:    time.Date(2026, 8, 30, 23, 0, 0, 0, time.UTC),
 			},
-			Include:    query.Include{Imports: imports},
+			Include:    query.Include{ExcludeImports: !imports},
 			Pagination: query.Pagination{Limit: 100},
 		})
 		if err != nil {
