@@ -148,9 +148,12 @@ func TestTheFooterLinksLeaveTheApplication(t *testing.T) {
 	hosted := render(t, handler, "/billing?team=1").Body.String()
 	for _, want := range []string{
 		`href="https://feasible.lol/docs"`,
-		`href="https://feasible.lol/legal/privacy"`,
-		`href="https://feasible.lol/legal/terms"`,
-		`href="https://feasible.lol/legal/dpa"`,
+		// These are the paths the marketing site actually publishes. Three of
+		// them sit at the root and only subprocessors is under /legal, which is
+		// exactly the sort of asymmetry a footer written from memory gets wrong.
+		`href="https://feasible.lol/privacy"`,
+		`href="https://feasible.lol/terms"`,
+		`href="https://feasible.lol/dpa"`,
 		`href="https://feasible.lol/legal/subprocessors"`,
 	} {
 		if !strings.Contains(hosted, want) {
