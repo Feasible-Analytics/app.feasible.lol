@@ -43,7 +43,6 @@ func TestGeneratedSetsDoNotConsumeSQLiteVariables(t *testing.T) {
 
 	q := baseQuery("pageviews")
 	q.Include.Bots = true
-	q.Include.Imports = true
 	q.Filters = make([]Filter, MaxFilters)
 	for i := range q.Filters {
 		q.Filters[i] = Filter{Operator: OpIs, Dimension: "event:name", Values: values}
@@ -74,7 +73,6 @@ func TestGeneratedSetsDoNotConsumeSQLiteVariables(t *testing.T) {
 	}}
 	exact := baseQuery("pageviews")
 	exact.Include.Bots = true
-	exact.Include.Imports = true
 	builder := newWhereBuilder(tableEvents, compileContext{sampleRate: 1}, nil, exact.SiteIDs,
 		Resolved{Start: time.Unix(at(24, 0, 0), 0), End: time.Unix(at(31, 0, 0), 0)})
 	condition, err := builder.hasDone(hasDone)
@@ -164,7 +162,6 @@ func TestAdversarialGiantVisitorAndSessionStayRowBounded(t *testing.T) {
 
 	q := baseQuery("events")
 	q.Include.Bots = true
-	q.Include.Imports = true
 	q.SampleRate = MinSampleRate
 	result := run(t, engine, q)
 	estimate := result.Results[0].Metrics[0]
@@ -186,7 +183,6 @@ func TestAdversarialGiantVisitorAndSessionStayRowBounded(t *testing.T) {
 	}
 
 	visits := baseQuery("bounce_rate")
-	visits.Include.Imports = true
 	visits.SampleRate = MinSampleRate
 	visits.Filters = []Filter{{Operator: OpIs, Dimension: "event:page_title", Values: []string{""}}}
 	started = time.Now()
@@ -379,7 +375,6 @@ func TestSkewedNumericStatisticsAreDirectAndDisclosed(t *testing.T) {
 		"p95(event:props:value)",
 	)
 	q.Include.Bots = true
-	q.Include.Imports = true
 	q.SampleRate = MinSampleRate
 
 	result := run(t, engine, q)
@@ -933,7 +928,6 @@ func TestSampledFactQueriesUseTheBucketIndexes(t *testing.T) {
 
 	q := baseQuery("pageviews")
 	q.Include.Bots = true
-	q.Include.Imports = true
 	q.SampleRate = 1.0 / 16
 	range_ := Resolved{Start: time.Unix(at(24, 0, 0), 0), End: time.Unix(at(31, 0, 0), 0)}
 
@@ -991,7 +985,6 @@ func TestSampledVisitSelectorsKeepTheirMeaningAndTheirBound(t *testing.T) {
 	q := baseQuery("visits")
 	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:props:plan", Values: []string{"pro"}}}
 	q.Include.Bots = true
-	q.Include.Imports = true
 	q.SampleRate = 0.5
 
 	result := run(t, engine, q)

@@ -93,7 +93,7 @@ func (b *whereBuilder) base(q *Query) []expr {
 
 	// Imported data is excluded unless it is asked for, so that finishing an
 	// import never changes a number nobody asked to change.
-	if !q.Include.Imports {
+	if q.Include.ExcludeImports {
 		conditions = append(conditions, expr{SQL: b.alias + ".is_imported = 0"})
 	}
 

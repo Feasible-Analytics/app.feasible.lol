@@ -246,6 +246,13 @@ func TestTheRouterRefusesEverythingItCannotAnswerExactly(t *testing.T) {
 			why:   "the summary excluded automated traffic when it was built",
 		},
 		{
+			name:   "imported history included",
+			query:  Query{SiteIDs: []int64{1}, Metrics: []string{"visitors"}, Include: Include{}},
+			rollup: true,
+			why: "the summary holds the native rows only, and imported ones are added by their own pass — " +
+				"refusing here would put every dashboard report on a raw scan",
+		},
+		{
 			name:  "time on page",
 			query: Query{SiteIDs: []int64{1}, Metrics: []string{"time_on_page"}},
 			why:   "it is averaged over the visits that reported engagement, which is a distinct count of visits",

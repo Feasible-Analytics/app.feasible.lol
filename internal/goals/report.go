@@ -202,7 +202,6 @@ func periodFor(ctx context.Context, engine *query.Engine, req ReportRequest, win
 		DateRange: customRange(window, loc),
 		Timezone:  req.Timezone,
 		Exact:     req.Exact,
-		Include:   query.Include{Imports: true},
 	}
 
 	result, err := engine.Run(ctx, q)
@@ -251,7 +250,6 @@ func countGoal(ctx context.Context, engine *query.Engine, req ReportRequest, goa
 		Timezone:  req.Timezone,
 		Currency:  reportCurrency(req, goal),
 		Exact:     req.Exact,
-		Include:   query.Include{Imports: true},
 	}
 
 	result, err := engine.Run(ctx, q)

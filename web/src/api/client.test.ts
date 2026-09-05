@@ -59,9 +59,11 @@ test("every stats query carries the shared-link capability", async () => {
 	assert.equal(presented, capability);
 });
 
-/** Historical dashboard queries include migrated history by default while live
- * traffic remains a native-only view and an explicit API choice is preserved. */
-test("historical dashboard queries include imports without changing realtime", async () => {
+/** Dashboard queries include migrated history by default, and an explicit
+ * choice is preserved. Live windows need no exception here: the engine refuses
+ * imports on them for every caller, so the browser no longer carries a rule it
+ * could forget. */
+test("dashboard queries include imports unless the caller says otherwise", async () => {
 	const presented: Record<string, unknown>[] = [];
 	globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
 		presented.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
@@ -74,7 +76,7 @@ test("historical dashboard queries include imports without changing realtime", a
 	await query("example.com", { metrics: ["visitors"], date_range: "all", include: { imports: false } });
 
 	assert.deepEqual(presented[0]?.include, { imports: true });
-	assert.equal(presented[1]?.include, undefined);
+	assert.deepEqual(presented[1]?.include, { imports: true });
 	assert.deepEqual(presented[2]?.include, { imports: false });
 });
 

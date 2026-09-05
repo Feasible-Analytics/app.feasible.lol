@@ -618,6 +618,175 @@ func TestSeededDatabaseAnswersIdenticallyFromEitherSource(t *testing.T) {
 	t.Logf("%d of %d reports were answered from the summary tables", summaryUsed, len(ranges)*len(dimensions))
 }
 
+// TestImportedHistoryAgreesFromEitherSource is the same equivalence check with
+// migrated history in the account.
+//
+// The summary tables hold native, non-bot rows only — the builder writes
+// `is_imported = 0` into both fact selects — and imported history is added by a
+// separate pass over its own table. So the summary is a valid substitute for
+// the native half whether or not imports were asked for, and this proves it
+// across every range and breakdown rather than by reading the builder.
+//
+// It exists because the router used to refuse the summary outright whenever
+// imports were included. Since the dashboard asks for imports on every report,
+// that refusal put every dashboard query in the product on a raw scan.
+func TestImportedHistoryAgreesFromEitherSource(t *testing.T) {
+	if testing.Short() {
+		t.Skip("generating a realistic dataset takes a few seconds")
+	}
+
+	account, site, now := seedDatabase(t)
+
+	location := site.Location()
+	today := query.RollupBucketStart(now.In(location), query.GrainDay, location)
+
+	// History that predates the seeded traffic, which is the shape a migration
+	// actually has: the old product covers the months before our tracker was
+	// installed. A totals sheet and a sources sheet describing the same days,
+	// so the "one shape per import" arithmetic is exercised too.
+	seedImportedHistory(t, account, site, today)
+
+	builder := rollup.New(account.Writer())
+	builder.Now = func() time.Time { return now }
+
+	for _, grain := range []query.Grain{query.GrainDay, query.GrainHour} {
+		to := today
+		if grain == query.GrainDay {
+			to = today.AddDate(0, 0, 1)
+		}
+
+		if err := builder.Rebuild(context.Background(), rollup.Request{
+			Site: site, Grain: grain, From: today.AddDate(0, 0, -60), To: to, CoverThrough: today,
+			FromBeginning: true,
+		}); err != nil {
+			t.Fatalf("rebuild %s: %v", grain, err)
+		}
+	}
+
+	raw := query.New(account.Reader())
+	raw.Router = query.RawRouter{}
+	raw.Now = func() time.Time { return now }
+
+	rolled := query.New(account.Reader())
+	rolled.Now = func() time.Time { return now }
+
+	metrics := []string{"visitors", "visits", "pageviews", "bounce_rate", "visit_duration"}
+
+	ranges := []query.DateRange{
+		{Preset: query.RangeLast7Days},
+		{Preset: query.RangeLast28Days},
+		{Preset: query.RangeLast12Months},
+		{Preset: query.RangeAll},
+	}
+
+	dimensions := [][]string{nil, {"time"}, {"time:day"}, {"time:month"}, {"visit:source"}, {"event:page"}}
+
+	summaryUsed := 0
+
+	for _, dateRange := range ranges {
+		for _, dimension := range dimensions {
+			q := query.Query{
+				SiteIDs:    []int64{site.ID},
+				Metrics:    metrics,
+				Dimensions: dimension,
+				DateRange:  dateRange,
+				Timezone:   site.Timezone,
+				Pagination: query.Pagination{Limit: query.MaxLimit},
+
+				// The flag the dashboard sets on every report it makes.
+				Include: query.Include{},
+			}
+
+			fromRaw, rawErr := raw.Run(context.Background(), q)
+			fromRollup, rollupErr := rolled.Run(context.Background(), q)
+
+			if (rawErr == nil) != (rollupErr == nil) {
+				t.Errorf("%v %v: raw error %v, roll-up error %v", dateRange.Preset, dimension, rawErr, rollupErr)
+				continue
+			}
+
+			if rawErr != nil {
+				continue
+			}
+
+			name := fmt.Sprintf("%s %v with imports", dateRange.Preset, dimension)
+
+			for _, source := range fromRollup.Meta.Sources {
+				if source == "rollup" {
+					summaryUsed++
+				}
+			}
+
+			// The gaps have to match too. A report where the summary quietly
+			// dropped an import would otherwise pass on the numbers it did
+			// return.
+			if len(fromRaw.Meta.ImportGaps) != len(fromRollup.Meta.ImportGaps) {
+				t.Errorf("%s: raw reported %d import gaps, roll-up reported %d",
+					name, len(fromRaw.Meta.ImportGaps), len(fromRollup.Meta.ImportGaps))
+			}
+
+			compare(t, name, metrics, fromRaw, fromRollup)
+		}
+	}
+
+	if summaryUsed == 0 {
+		t.Fatal("no report with imports was answered from a summary — the test proved nothing")
+	}
+
+	t.Logf("%d reports with imported history were answered from the summary tables", summaryUsed)
+}
+
+// seedImportedHistory writes a completed import covering the days before the
+// seeded traffic starts, in the two sheet shapes a real export produces.
+func seedImportedHistory(t *testing.T, account *accounts.Account, site rollup.Site, today time.Time) {
+	t.Helper()
+
+	ctx := context.Background()
+
+	if _, err := account.Writer().ExecContext(ctx,
+		"INSERT INTO imports (id, site_id, source, label, status, dimensions, created_at) "+
+			"VALUES (1, ?, 'csv', 'fixture', 'completed', ?, 0)",
+		site.ID, `["visit:source"]`); err != nil {
+		t.Fatal(err)
+	}
+
+	totals, err := query.ImportedCoverage(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sources, err := query.ImportedCoverage([]string{"visit:source"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sourceID, err := account.Intern.ID(ctx, intern.Source, "Google")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Thirty days ending a fortnight before the seeded traffic, so the imported
+	// and native windows do not overlap. An overlap is a real situation, but it
+	// is a question about de-duplication rather than about which table answered.
+	for day := 45; day > 15; day-- {
+		at := today.AddDate(0, 0, -day).Unix()
+
+		if _, err := account.Writer().ExecContext(ctx,
+			"INSERT INTO imported_rollups (import_id, site_id, timestamp, covered, visitors, visits, pageviews, events, bounces, duration_total) "+
+				"VALUES (1, ?, ?, ?, 40, 50, 120, 120, 20, 3000)",
+			site.ID, at, int64(totals)); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := account.Writer().ExecContext(ctx,
+			"INSERT INTO imported_rollups (import_id, site_id, timestamp, covered, source_id, visitors, visits, pageviews, events, bounces, duration_total) "+
+				"VALUES (1, ?, ?, ?, ?, 40, 50, 120, 120, 20, 3000)",
+			site.ID, at, int64(sources), sourceID); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // seedDatabase generates a realistic dataset and hands back the site it belongs
 // to. The generator runs the real derive pipeline, so the visitor ids are
 // hashed with a salt that really does rotate at UTC midnight — which is what

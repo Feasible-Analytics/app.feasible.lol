@@ -488,7 +488,7 @@ func (x *executor) execute(ctx context.Context, restrict map[int][]any) (*groupS
 	// imported roll-ups: those are merged in memory after the fact tables have
 	// been read, exactly like a split range.
 	x.pushDown = x.canPushDown() && len(segments) == 1 && !timeOnly(x.query) &&
-		!x.comparison && !x.query.Include.Imports
+		!x.comparison && x.query.Include.ExcludeImports
 	x.segments = segments
 
 	groups := newGroupSet()
@@ -1094,7 +1094,7 @@ func pageTitleEnrichmentQuery(pathIDs, siteIDs []int64, r Resolved, q *Query, pa
 	if !q.Include.Bots {
 		conditions = append(conditions, expr{SQL: "candidate.bot_reason_id = 0"})
 	}
-	if !q.Include.Imports {
+	if q.Include.ExcludeImports {
 		conditions = append(conditions, expr{SQL: "candidate.is_imported = 0"})
 	}
 	if q.SampleRate > 0 && q.SampleRate < 1 {

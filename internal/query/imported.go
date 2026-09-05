@@ -241,7 +241,7 @@ type importCandidate struct {
 // them — which is the same failure as importing marginals, arrived at from the
 // other direction.
 func (x *executor) importedPass(ctx context.Context, r Resolved, groups *groupSet, restrict map[int][]any) error {
-	if !x.query.Include.Imports {
+	if x.query.Include.ExcludeImports {
 		return nil
 	}
 

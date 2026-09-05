@@ -166,10 +166,20 @@ type Pagination struct {
 // Include is the optional extras a caller can ask for. Everything here costs
 // an extra query or an extra scan, which is why none of it is unconditional.
 type Include struct {
-	// Imports includes data brought in from another analytics product. It
-	// defaults to false so that a number never changes the day an import
-	// finishes without anybody asking for it.
-	Imports bool `json:"imports,omitempty"`
+	// ExcludeImports leaves out history brought in from another analytics
+	// product.
+	//
+	// It is stored inverted from the wire's `imports` so that the zero value is
+	// the one every screen in this product wants, exactly as CaseInsensitive is
+	// on Filter. An import's whole purpose is that the destination shows the
+	// history, so a Go caller building a Query with a struct literal gets it —
+	// and with the field the other way round, forgetting it reported a site
+	// with a year of migrated traffic as very nearly dead.
+	//
+	// The wire keeps the opposite default, because it is an established query
+	// API's contract and an integration's totals must not change under it.
+	// UnmarshalJSON and MarshalJSON below are where the two meet.
+	ExcludeImports bool `json:"-"`
 
 	// Bots includes traffic we classified as automated. It defaults to false
 	// because bot traffic in a dashboard is simply a wrong number; the events
@@ -191,6 +201,50 @@ type Include struct {
 	PageTitles bool `json:"page_titles,omitempty"`
 
 	Comparisons *Comparison `json:"comparisons,omitempty"`
+}
+
+// wireInclude is Include exactly as the query API writes it, with `imports`
+// the right way round. It exists so the inversion happens in one pair of
+// methods rather than at every boundary that decodes a request.
+type wireInclude struct {
+	Imports     bool        `json:"imports,omitempty"`
+	Bots        bool        `json:"bots,omitempty"`
+	TimeLabels  bool        `json:"time_labels,omitempty"`
+	TotalRows   bool        `json:"total_rows,omitempty"`
+	PageTitles  bool        `json:"page_titles,omitempty"`
+	Comparisons *Comparison `json:"comparisons,omitempty"`
+}
+
+// UnmarshalJSON reads the wire's `imports` and stores its opposite.
+func (i *Include) UnmarshalJSON(data []byte) error {
+	var wire wireInclude
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+
+	*i = Include{
+		ExcludeImports: !wire.Imports,
+		Bots:           wire.Bots,
+		TimeLabels:     wire.TimeLabels,
+		TotalRows:      wire.TotalRows,
+		PageTitles:     wire.PageTitles,
+		Comparisons:    wire.Comparisons,
+	}
+
+	return nil
+}
+
+// MarshalJSON writes the wire's `imports`, so the echoed query describes the
+// request the caller actually made.
+func (i Include) MarshalJSON() ([]byte, error) {
+	return json.Marshal(wireInclude{
+		Imports:     !i.ExcludeImports,
+		Bots:        i.Bots,
+		TimeLabels:  i.TimeLabels,
+		TotalRows:   i.TotalRows,
+		PageTitles:  i.PageTitles,
+		Comparisons: i.Comparisons,
+	})
 }
 
 // Comparison asks for the same query over an earlier period. It exists as a
@@ -266,6 +320,14 @@ func (q *Query) Normalise() {
 
 	if len(q.OrderBy) == 0 {
 		q.OrderBy = defaultOrder(q)
+	}
+
+	// A live window is native-only whatever the caller asked for. Imported
+	// history is a stack of daily totals, and a daily total cannot describe who
+	// is on the site in the last five minutes. Deciding it here means no caller
+	// has to know that, and the echoed query says so.
+	if q.DateRange.Preset == RangeRealtime || q.DateRange.Preset == RangeLast5Minutes {
+		q.Include.ExcludeImports = true
 	}
 }
 

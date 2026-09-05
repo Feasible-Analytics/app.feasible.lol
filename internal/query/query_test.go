@@ -246,3 +246,88 @@ func TestClampHoldsRatesInsideTheirRange(t *testing.T) {
 		t.Errorf("a zero denominator gives %v, want 0", got)
 	}
 }
+
+// TestTheWireKeepsImportsTheRightWayRound is the contract test for the one
+// inverted field on this struct.
+//
+// The Go zero value includes migrated history, because every screen in this
+// product wants it and forgetting reported a busy site as a dead one. The wire
+// keeps the opposite default, because it is an established query API's contract
+// and an integration's totals must not move under it. Both halves are asserted
+// here so neither can be changed alone.
+func TestTheWireKeepsImportsTheRightWayRound(t *testing.T) {
+	// A Go caller who says nothing gets migrated history.
+	if (Include{}).ExcludeImports {
+		t.Error("the zero value must include imported history")
+	}
+
+	// A wire caller who says nothing does not.
+	var quiet Include
+	if err := json.Unmarshal([]byte(`{}`), &quiet); err != nil {
+		t.Fatal(err)
+	}
+
+	if !quiet.ExcludeImports {
+		t.Error(`a request with no "imports" key must stay native-only`)
+	}
+
+	var asked Include
+	if err := json.Unmarshal([]byte(`{"imports":true,"bots":true}`), &asked); err != nil {
+		t.Fatal(err)
+	}
+
+	if asked.ExcludeImports {
+		t.Error(`"imports": true must include imported history`)
+	}
+
+	if !asked.Bots {
+		t.Error("the other fields must survive the inversion")
+	}
+
+	// The echo speaks the wire's word, so a caller can read back the request
+	// they actually made.
+	encoded, err := json.Marshal(Include{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(encoded), `"imports":true`) {
+		t.Errorf("echo = %s, want it to report imports:true", encoded)
+	}
+
+	native, err := json.Marshal(Include{ExcludeImports: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(string(native), "imports") {
+		t.Errorf("echo = %s, want imports omitted when it is off", native)
+	}
+}
+
+// TestALiveWindowIsAlwaysNativeOnly pins the rule that used to live in the
+// browser. Imported history is a stack of daily totals, and a daily total
+// cannot describe who is on the site in the last five minutes — so no caller,
+// in any language, gets to ask for that combination.
+func TestALiveWindowIsAlwaysNativeOnly(t *testing.T) {
+	for _, preset := range []string{RangeRealtime, RangeLast5Minutes} {
+		q := Query{
+			SiteIDs:   []int64{1},
+			Metrics:   []string{"visitors"},
+			DateRange: DateRange{Preset: preset},
+		}
+		q.Normalise()
+
+		if !q.Include.ExcludeImports {
+			t.Errorf("%s must be native-only, whatever the caller asked for", preset)
+		}
+	}
+
+	// Every other range keeps what the caller wanted.
+	q := Query{SiteIDs: []int64{1}, Metrics: []string{"visitors"}, DateRange: DateRange{Preset: RangeLast28Days}}
+	q.Normalise()
+
+	if q.Include.ExcludeImports {
+		t.Error("a historical range must keep the imported history it defaults to")
+	}
+}

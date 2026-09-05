@@ -447,3 +447,38 @@ func TestComparisonComesBackWithTheRows(t *testing.T) {
 		t.Error("the comparison window must be echoed back")
 	}
 }
+
+// TestAnOmittedIncludeKeepsTheWireDefault is the case a test on Include alone
+// cannot reach.
+//
+// `imports` is stored inverted so a Go caller gets migrated history without
+// asking, and a custom UnmarshalJSON puts the wire back the right way round —
+// but Go never calls it for a key that is not in the body. An API client that
+// sends no `include` at all has to keep getting the native-only answer it has
+// always had, and the only place that can go wrong is here.
+func TestAnOmittedIncludeKeepsTheWireDefault(t *testing.T) {
+	for _, body := range []string{
+		`{"metrics":["visitors"]}`,
+		`{"metrics":["visitors"],"include":{}}`,
+		`{"metrics":["visitors"],"include":{"bots":true}}`,
+	} {
+		parsed, err := decode([]byte(body))
+		if err != nil {
+			t.Fatalf("%s: %v", body, err)
+		}
+
+		if !parsed.Include.ExcludeImports {
+			t.Errorf("%s: imported history was included without the caller asking", body)
+		}
+	}
+
+	// And the caller who does ask still gets it.
+	parsed, err := decode([]byte(`{"metrics":["visitors"],"include":{"imports":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if parsed.Include.ExcludeImports {
+		t.Error(`"imports": true was not honoured`)
+	}
+}

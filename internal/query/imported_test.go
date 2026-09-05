@@ -125,6 +125,10 @@ func TestImportedDataSurvivesAFilter(t *testing.T) {
 		Metrics:   []string{"pageviews"},
 		DateRange: importedRange(),
 		Filters:   []Filter{{Operator: OpIs, Dimension: "visit:source", Values: []string{"Google"}}},
+
+		// The baseline is deliberately native-only, so the next run shows what
+		// the imported rows contributed rather than what they happened to be.
+		Include: Include{ExcludeImports: true},
 	}
 
 	// Native only: the fixture has four Google pageviews across visits 1 and 2.
@@ -133,7 +137,7 @@ func TestImportedDataSurvivesAFilter(t *testing.T) {
 		t.Fatalf("native pageviews under a source filter = %v, want 4", got)
 	}
 
-	filtered.Include.Imports = true
+	filtered.Include.ExcludeImports = false
 
 	withImports := run(t, engine, filtered)
 	if got := withImports.Results[0].Metrics[0]; got != 104 {
@@ -171,7 +175,7 @@ func TestImportedGapIsLabelledNotZero(t *testing.T) {
 		Metrics:   []string{"pageviews"},
 		DateRange: importedRange(),
 		Filters:   []Filter{{Operator: OpIs, Dimension: "visit:country", Values: []string{"US"}}},
-		Include:   Include{Imports: true},
+		Include:   Include{},
 	})
 
 	if len(result.Meta.ImportGaps) != 1 {
@@ -218,7 +222,7 @@ func TestImportedSheetsAreNotDoubleCounted(t *testing.T) {
 		SiteIDs:   []int64{1},
 		Metrics:   []string{"pageviews"},
 		DateRange: importedRange(),
-		Include:   Include{Imports: true},
+		Include:   Include{},
 	})
 
 	// Seven native pageviews in the fixture, plus 112 from each import.
@@ -249,7 +253,6 @@ func TestImportedComparisonCoversBothPeriods(t *testing.T) {
 			End:    time.Date(2026, 8, 30, 23, 59, 59, 0, time.UTC),
 		},
 		Include: Include{
-			Imports:     true,
 			Comparisons: &Comparison{Mode: ComparePreviousPeriod},
 		},
 	})
@@ -381,7 +384,7 @@ func TestAGoalFilterIsAnImportGapNotAnError(t *testing.T) {
 		Metrics:   []string{"pageviews"},
 		DateRange: importedRange(),
 		Filters:   []Filter{{Operator: OpIs, Dimension: "event:goal", Values: []string{strconv.FormatInt(goalID, 10)}}},
-		Include:   Include{Imports: true},
+		Include:   Include{},
 	})
 
 	if len(result.Meta.ImportGaps) != 1 || result.Meta.ImportGaps[0].Dimension != "event:goal" {

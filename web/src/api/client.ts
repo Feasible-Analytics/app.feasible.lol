@@ -137,15 +137,16 @@ function strip<T>(value: T): T {
 	return value;
 }
 
-/** withImportedHistory makes migration data part of every historical dashboard
- * report unless a caller deliberately opts out. The public query API keeps
- * imports opt-in so an integration cannot change totals unexpectedly, but the
- * dashboard is the destination of an import and must show that history without
- * requiring a hidden request flag. Realtime windows stay native-only because a
- * daily aggregate cannot describe who is on the site right now. */
+/** withImportedHistory makes migration data part of every dashboard report
+ * unless a caller deliberately opts out. The query API keeps imports opt-in so
+ * an integration cannot change totals unexpectedly, but the dashboard is the
+ * destination of an import and must show that history without requiring a
+ * hidden request flag.
+ *
+ * Live windows need no exception here. A daily aggregate cannot describe who is
+ * on the site right now, and the engine refuses that combination for every
+ * caller rather than trusting each one to remember. */
 function withImportedHistory(body: StatsRequest): StatsRequest {
-	if (body.date_range === "5m" || body.date_range === "realtime") return body;
-
 	return {
 		...body,
 		include: {
