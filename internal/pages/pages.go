@@ -1,20 +1,22 @@
 //
 // pages.go
-// The server-rendered screens: pricing, billing, checkout, docs and the legal pages.
+// The server-rendered commerce screens: upgrade, billing and checkout.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-// Package pages serves everything in the product that is not the React
-// dashboard: the pricing and upgrade screens, the billing screen with its usage
-// meter, the documentation, and the three legal documents.
+// Package pages serves the commerce screens: the upgrade screen a customer
+// picks a plan on, the billing screen with its usage meter, and the pages
+// checkout returns to.
 //
 // They are server-rendered Go templates rather than part of the dashboard
-// bundle because they have to work with no JavaScript toolchain installed and,
-// more importantly, because they have to work when the dashboard is locked. A
-// customer whose account has lapsed can still reach the page where they would
-// pay us, which would not be true if it lived inside the thing we locked.
+// bundle because they have to work when the dashboard is locked. A customer
+// whose account has lapsed can still reach the page where they would pay us,
+// which would not be true if it lived inside the thing we locked.
+//
+// Marketing and documentation live on the public site, in its own repository.
+// This binary is the application.
 package pages
 
 import (
@@ -43,14 +45,21 @@ var templateFS embed.FS
 //go:embed assets/pages.css
 var assetFS embed.FS
 
-// The four page templates. Each is parsed with the shared layout so that the
+// SiteURL is the public marketing site. Documentation and the legal documents
+// are published there, from their own repository, because they are read by
+// people who have not installed anything — and a self-hosted copy of them would
+// be a second version that goes stale the first time a policy changes.
+const SiteURL = "https://feasible.lol"
+
+// docsURL is where a link out of the application lands.
+const docsURL = SiteURL + "/docs"
+
+// The three page templates. Each is parsed with the shared layout so that the
 // footer — which carries the postal address the law requires — cannot be left
 // off one of them.
 var (
-	pricingPage = mustParse("pricing.html")
+	upgradePage = mustParse("upgrade.html")
 	billingPage = mustParse("billing.html")
-	docsPage    = mustParse("docs.html")
-	docPage     = mustParse("doc.html")
 	messagePage = mustParse("message.html")
 )
 
@@ -87,7 +96,9 @@ type Handler struct {
 	// SalesEmail is where the "talk to us about volume" links point.
 	SalesEmail string
 
-	// Hosted selects the hosted-service legal identity and commercial pages.
+	// Hosted selects the hosted service's own identity in the footer and the
+	// links to its contract. A self-hosted install names its own operator and
+	// links to no contract of ours, because we are not a party to it.
 	Hosted          bool
 	OperatorName    string
 	OperatorAddress string
@@ -97,8 +108,8 @@ type Handler struct {
 	// at a chosen point on the lifecycle clock.
 	Now func() time.Time
 
-	// OptionalAccount attaches account context to public pricing requests when
-	// a valid session exists. RequireAccount protects every account-specific
+	// OptionalAccount attaches account context to the upgrade screen when a
+	// valid session exists. RequireAccount protects every account-specific
 	// commerce route. Both are injected so this package does not import auth.
 	OptionalAccount func(http.Handler) http.Handler
 	RequireAccount  func(http.Handler) http.Handler
@@ -132,17 +143,13 @@ func (h *Handler) now() time.Time {
 // one place so that a new screen cannot be added without appearing in the list
 // somebody reads to find out what the product serves.
 func (h *Handler) Routes(mux *http.ServeMux) {
-	mux.Handle("GET /pricing", h.public(h.pricing))
 	mux.Handle("GET /billing", h.protected(h.billing, false))
-	mux.Handle("GET /billing/upgrade", h.public(h.pricing))
+	mux.Handle("GET /billing/upgrade", h.public(h.upgrade))
 	mux.Handle("POST /billing/checkout", h.protected(h.checkout, true))
 	mux.Handle("POST /billing/portal", h.protected(h.portal, true))
 	mux.Handle("GET /billing/done", h.protected(h.done, false))
 	mux.Handle("GET /billing/export", h.protected(h.export, false))
 	mux.HandleFunc("GET /billing/assets/pages.css", h.stylesheet)
-	mux.HandleFunc("GET /docs", h.docs)
-	mux.HandleFunc("GET /docs/{slug}", h.doc)
-	mux.HandleFunc("GET /legal/{slug}", h.legal)
 }
 
 // public attaches optional account context without turning a public route into
@@ -182,6 +189,7 @@ type shell struct {
 	Title           string
 	Nav             string
 	Lang            string
+	Site            string
 	SalesEmail      string
 	Enabled         bool
 	SignedIn        bool
@@ -213,6 +221,7 @@ func (h *Handler) newShell(w http.ResponseWriter, r *http.Request, lang, titleID
 		Title:           i18n.T(lang, titleID),
 		Nav:             nav,
 		Lang:            lang,
+		Site:            SiteURL,
 		SalesEmail:      sales,
 		Enabled:         h.Billing != nil && h.Billing.Enabled(),
 		SignedIn:        account.ID > 0,
@@ -223,16 +232,6 @@ func (h *Handler) newShell(w http.ResponseWriter, r *http.Request, lang, titleID
 		OperatorAddress: strings.Split(h.OperatorAddress, "\n"),
 		OperatorEmail:   h.OperatorEmail,
 	}
-}
-
-// titled builds a shell for a page whose title is content rather than an
-// interface string — a documentation page is named by the document, not by the
-// catalogue, and translating it would mean translating the page it names.
-func (h *Handler) titled(w http.ResponseWriter, r *http.Request, lang, title, nav string, account Account) shell {
-	s := h.newShell(w, r, lang, "pages.title.docs", nav, account)
-	s.Title = title
-
-	return s
 }
 
 // language applies an explicit language choice and returns a locale whose page
@@ -253,14 +252,6 @@ func (h *Handler) language(w http.ResponseWriter, r *http.Request) string {
 	return requested
 }
 
-// proseLanguage persists the reader's choice but labels embedded documentation
-// and legal prose as English until translated copies of those documents exist.
-func (h *Handler) proseLanguage(w http.ResponseWriter, r *http.Request) string {
-	i18n.Apply(w, r)
-
-	return i18n.DefaultLocale
-}
-
 // stylesheet serves the one CSS file. It is cached for an hour rather than
 // forever because it carries no digest in its URL, and a deploy that nobody can
 // see for a year is worse than one extra request an hour.
@@ -276,8 +267,8 @@ func (h *Handler) stylesheet(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write(body)
 }
 
-// pricingData is the pricing and upgrade screen.
-type pricingData struct {
+// upgradeData is the plan-selection screen.
+type upgradeData struct {
 	shell
 	SelectedPlan string
 
@@ -288,10 +279,12 @@ type pricingData struct {
 	Limit string
 }
 
-// pricing renders the plans. It is deliberately reachable without a session:
-// somebody deciding whether to pay should not have to log in to see the price,
-// and somebody whose dashboard is locked has to be able to reach it.
-func (h *Handler) pricing(w http.ResponseWriter, r *http.Request) {
+// upgrade renders the plans a customer can buy. It is deliberately reachable
+// without a session, because every lifecycle email links straight here: a
+// signed-out reader is offered sign-in rather than a redirect they did not ask
+// for, and a customer whose dashboard is locked can still reach the page where
+// they would pay us.
+func (h *Handler) upgrade(w http.ResponseWriter, r *http.Request) {
 	lang := h.language(w, r)
 	account, _ := h.account(r)
 	selected := r.URL.Query().Get("plan")
@@ -299,8 +292,8 @@ func (h *Handler) pricing(w http.ResponseWriter, r *http.Request) {
 		selected = ""
 	}
 
-	h.render(w, pricingPage, pricingData{
-		shell:        h.newShell(w, r, lang, "pages.title.pricing", "pricing", account),
+	h.render(w, upgradePage, upgradeData{
+		shell:        h.newShell(w, r, lang, "pages.title.upgrade", "upgrade", account),
 		SelectedPlan: selected,
 		Limit:        thousands(usage.MonthlyLimit),
 	})
@@ -631,7 +624,7 @@ func (h *Handler) portal(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.message(w, r, lang, "pages.title.billing", i18n.T(lang, "pages.portal.missing.heading"),
 			[]string{err.Error(), i18n.T(lang, "pages.portal.missing.body")},
-			[]link{{Label: i18n.T(lang, "pages.link.plans"), URL: accountURL("/pricing", account.ID, nil)}})
+			[]link{{Label: i18n.T(lang, "pages.link.plans"), URL: accountURL("/billing/upgrade", account.ID, nil)}})
 		return
 	}
 
@@ -689,7 +682,7 @@ func (h *Handler) done(w http.ResponseWriter, r *http.Request) {
 	links := []link{{Label: "Open the dashboard", URL: "/dashboard/"},
 		{Label: "Billing", URL: accountURL("/billing", account.ID, nil)}}
 	if status == "unpaid" {
-		links = append(links, link{Label: "Retry checkout", URL: accountURL("/pricing", account.ID, nil)})
+		links = append(links, link{Label: "Retry checkout", URL: accountURL("/billing/upgrade", account.ID, nil)})
 	}
 	h.message(w, r, lang, "pages.title.thanks", heading, paragraphs, links)
 }
@@ -715,7 +708,7 @@ func (h *Handler) export(w http.ResponseWriter, r *http.Request) {
 		},
 		[]link{
 			{Label: i18n.T(lang, "pages.link.billing"), URL: accountURL("/billing", account.ID, nil)},
-			{Label: i18n.T(lang, "pages.link.export_docs"), URL: "/docs/api"},
+			{Label: i18n.T(lang, "pages.link.export_docs"), URL: docsURL + "/api"},
 		})
 }
 
@@ -729,80 +722,6 @@ func accountURL(path string, teamID int64, values url.Values) string {
 	values.Set("team", strconv.FormatInt(teamID, 10))
 
 	return path + "?" + values.Encode()
-}
-
-// docs renders the documentation index.
-func (h *Handler) docs(w http.ResponseWriter, r *http.Request) {
-	lang := h.proseLanguage(w, r)
-
-	h.render(w, docsPage, struct {
-		shell
-		Index []Doc
-	}{shell: h.newShell(w, r, lang, "pages.title.docs", "docs", Account{}), Index: documentation})
-}
-
-// doc renders one documentation page.
-func (h *Handler) doc(w http.ResponseWriter, r *http.Request) {
-	lang := h.proseLanguage(w, r)
-	page, ok := findDoc(documentation, r.PathValue("slug"))
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-
-	h.render(w, docPage, struct {
-		shell
-		Doc   Doc
-		Index []Doc
-	}{shell: h.titled(w, r, lang, page.Title, "docs", Account{}), Doc: page, Index: documentation})
-}
-
-// legal renders one of the three legal documents.
-func (h *Handler) legal(w http.ResponseWriter, r *http.Request) {
-	lang := h.proseLanguage(w, r)
-	page, ok := findDoc(legal, r.PathValue("slug"))
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-
-	if !h.Hosted && (page.Slug == "privacy" || page.Slug == "dpa") {
-		page = h.selfHostedLegal(page)
-	}
-
-	h.render(w, docPage, struct {
-		shell
-		Doc   Doc
-		Index []Doc
-	}{shell: h.titled(w, r, lang, page.Title, "legal", Account{}), Doc: page, Index: legal})
-}
-
-// selfHostedLegal replaces hosted-controller identity with the configured
-// operator while escaping every operator-supplied value. Cloudmanic remains
-// named only where the DPA explains that the software author is not a
-// self-hoster's processor.
-func (h *Handler) selfHostedLegal(page Doc) Doc {
-	name := template.HTMLEscapeString(h.OperatorName)
-	address := template.HTMLEscapeString(h.OperatorAddress)
-	address = strings.ReplaceAll(address, "\n", "<br>\n  ")
-	email := template.HTMLEscapeString(h.OperatorEmail)
-	body := string(page.Body)
-
-	if page.Slug == "privacy" {
-		body = strings.Replace(body,
-			"<strong>Cloudmanic Labs, LLC</strong><br>\n  901 Brutscher Street, D112<br>\n  Newberg, OR 97132<br>\n  United States<br>\n  <a href=\"mailto:privacy@feasible.lol\">privacy@feasible.lol</a>",
-			"<strong>"+name+"</strong><br>\n  "+address+"<br>\n  <a href=\"mailto:"+email+"\">"+email+"</a>", 1)
-		body = strings.ReplaceAll(body, "mailto:privacy@feasible.lol\">privacy@feasible.lol", "mailto:"+email+"\">"+email)
-	}
-	if page.Slug == "dpa" {
-		body = strings.ReplaceAll(body, "mailto:privacy@feasible.lol\">privacy@feasible.lol", "mailto:"+email+"\">"+email)
-		body = strings.Replace(body,
-			"<strong>Processor:</strong> Cloudmanic Labs, LLC<br>\n  901 Brutscher Street, D112<br>\n  Newberg, OR 97132<br>\n  United States",
-			"<strong>Processor:</strong> "+name+"<br>\n  "+address, 1)
-	}
-
-	page.Body = template.HTML(body) //nolint:gosec // operator values were escaped before substitution
-	return page
 }
 
 // link is one button on a message page.

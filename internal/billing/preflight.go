@@ -338,7 +338,7 @@ func (s *Service) preflightCheckout(ctx context.Context, report *PreflightReport
 		session, err := s.Stripe.CreateCheckoutSession(ctx, stripe.CheckoutParams{
 			PriceID:        plan.priceID,
 			SuccessURL:     strings.TrimRight(s.BaseURL, "/") + "/billing/done?session={CHECKOUT_SESSION_ID}",
-			CancelURL:      strings.TrimRight(s.BaseURL, "/") + "/pricing",
+			CancelURL:      strings.TrimRight(s.BaseURL, "/") + "/billing/upgrade",
 			IdempotencyKey: "managed-payments-preflight-create-" + plan.name + "-" + stamp,
 		})
 		if err != nil {

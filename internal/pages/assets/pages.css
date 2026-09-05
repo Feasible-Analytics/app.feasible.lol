@@ -1,6 +1,6 @@
 /*
  * pages.css
- * The server-rendered screens: pricing, billing, docs and the legal pages.
+ * The server-rendered commerce screens: upgrade, billing and checkout.
  *
  * Created: 2026-08-30
  * Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -331,23 +331,9 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .timeline .when { min-width: 0; }
 }
 
-/* ── Docs ───────────────────────────────────────────────────────────────── */
+/* ── Prose ──────────────────────────────────────────────────────────────── */
 
-.docs { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 34px; align-items: start; }
-.docs aside { position: sticky; top: 20px; }
-.docs aside ul { list-style: none; margin: 0; padding: 0; }
-.docs aside li { padding: 4px 0; }
-.docs aside a { color: var(--muted); text-decoration: none; font-size: 15px; }
-.docs aside a:hover, .docs aside a.on { color: var(--accent-ink); font-weight: 700; }
-.docs article { min-width: 0; overflow-wrap: anywhere; }
-.docs article > :first-child { margin-top: 0; }
-.docs article table {
-  display: block;
-  max-width: 100%;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-}
-.docs code, .prose code {
+.prose code {
   background: var(--subtle); border: 1px solid var(--line-soft);
   padding: 1px 5px; font-size: 14px; overflow-wrap: anywhere; word-break: break-word;
 }
@@ -356,11 +342,6 @@ pre {
   padding: 14px 16px; overflow-x: auto; font-size: 14px; line-height: 1.5;
 }
 pre code { background: none; border: 0; padding: 0; overflow-wrap: normal; word-break: normal; }
-
-@media (max-width: 760px) {
-  .docs { grid-template-columns: minmax(0, 1fr); }
-  .docs aside { position: static; }
-}
 
 @media (max-width: 520px) {
   .wrap { padding-left: 16px; padding-right: 16px; }

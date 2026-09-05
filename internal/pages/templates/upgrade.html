@@ -36,8 +36,8 @@
             <button class="btn" type="submit" {{ if not .Enabled }}disabled{{ end }}>{{ if eq .SelectedPlan "monthly" }}Continue monthly{{ else }}Start monthly{{ end }}</button>
           </form>
         {{ else }}
-          <a class="btn" href="/register?next=%2Fpricing%3Fplan%3Dmonthly">Create an account</a>
-		  <p class="per" style="margin-top:10px"><a href="/login?next=%2Fpricing%3Fplan%3Dmonthly">Sign in to upgrade</a></p>
+          <a class="btn" href="/register?next=%2Fbilling%2Fupgrade%3Fplan%3Dmonthly">Create an account</a>
+		  <p class="per" style="margin-top:10px"><a href="/login?next=%2Fbilling%2Fupgrade%3Fplan%3Dmonthly">Sign in to upgrade</a></p>
 		{{ end }}
       </div>
 
@@ -60,8 +60,8 @@
             <button class="btn" type="submit" {{ if not .Enabled }}disabled{{ end }}>{{ if eq .SelectedPlan "yearly" }}Continue yearly{{ else }}Start yearly{{ end }}</button>
           </form>
         {{ else }}
-          <a class="btn" href="/register?next=%2Fpricing%3Fplan%3Dyearly">Create an account</a>
-		  <p class="per" style="margin-top:10px"><a href="/login?next=%2Fpricing%3Fplan%3Dyearly">Sign in to upgrade</a></p>
+          <a class="btn" href="/register?next=%2Fbilling%2Fupgrade%3Fplan%3Dyearly">Create an account</a>
+		  <p class="per" style="margin-top:10px"><a href="/login?next=%2Fbilling%2Fupgrade%3Fplan%3Dyearly">Sign in to upgrade</a></p>
 		{{ end }}
       </div>
 

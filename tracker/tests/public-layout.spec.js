@@ -61,7 +61,7 @@ for (const width of [320, 381, 390]) {
 		}
 		expect(layout.brandFont).toBeLessThanOrEqual(16);
 		expect(layout.navFont).toBe(14);
-		if (fixture.path === "/pricing" && width === 320) {
+		if (fixture.path === "/billing/upgrade" && width === 320) {
 			const directions = await page.locator(".timeline li").evaluateAll((elements) => elements.map((element) => getComputedStyle(element).flexDirection));
 			expect(directions).toEqual(["column", "column", "column", "column"]);
 		}

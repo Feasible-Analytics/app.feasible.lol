@@ -31,10 +31,8 @@
     <a class="brand" href="/" aria-label="feasible.lol">Feasible<b>.lol</b></a>
     <nav>
 	  {{ if .Hosted }}
-	  <a href="/pricing{{ if .TeamID }}?team={{ .TeamID }}{{ end }}" {{ if eq .Nav "pricing" }}class="on"{{ end }}>{{ t .Lang "pages.nav.pricing" }}</a>
 	  <a href="/billing{{ if .TeamID }}?team={{ .TeamID }}{{ end }}" {{ if eq .Nav "billing" }}class="on"{{ end }}>{{ t .Lang "pages.nav.billing" }}</a>
 	  {{ end }}
-	  <a href="/docs" {{ if eq .Nav "docs" }}class="on"{{ end }}>{{ t .Lang "pages.nav.docs" }}</a>
 	  {{ if .SignedIn }}
 	  <a href="/dashboard/">{{ t .Lang "pages.nav.dashboard" }}</a>
 	  <a href="/sites{{ if .TeamID }}?team_id={{ .TeamID }}{{ end }}">Sites</a>
@@ -55,12 +53,18 @@
 <footer class="bottom">
   <div class="wrap">
     <nav>
-	  {{ if .Hosted }}<a href="/pricing{{ if .TeamID }}?team={{ .TeamID }}{{ end }}">{{ t .Lang "pages.footer.pricing" }}</a>{{ end }}
-	  <a href="/docs">{{ t .Lang "pages.footer.docs" }}</a>
-      <a href="/legal/privacy">{{ t .Lang "pages.footer.privacy" }}</a>
-      <a href="/legal/terms">{{ t .Lang "pages.footer.terms" }}</a>
-      <a href="/legal/dpa">{{ t .Lang "pages.footer.dpa" }}</a>
-	  <a href="https://feasible.lol/legal/subprocessors">Subprocessors</a>
+	  <!-- Documentation and the legal documents are published on the marketing
+	       site, so these leave the application. The legal set is shown only on
+	       the hosted service: those documents are our contract with our own
+	       customers, and pointing a self-hoster's visitors at them would name
+	       the wrong company as their controller. -->
+	  <a href="{{ .Site }}/docs">{{ t .Lang "pages.footer.docs" }}</a>
+	  {{ if .Hosted }}
+      <a href="{{ .Site }}/legal/privacy">{{ t .Lang "pages.footer.privacy" }}</a>
+      <a href="{{ .Site }}/legal/terms">{{ t .Lang "pages.footer.terms" }}</a>
+      <a href="{{ .Site }}/legal/dpa">{{ t .Lang "pages.footer.dpa" }}</a>
+	  <a href="{{ .Site }}/legal/subprocessors">Subprocessors</a>
+	  {{ end }}
 	  <a href="mailto:{{ .SalesEmail }}">{{ t .Lang "pages.footer.contact" }}</a>
     </nav>
     <address>

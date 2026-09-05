@@ -191,7 +191,7 @@ func newStack(t *testing.T) *stack {
 	}
 
 	csrfResponse := httptest.NewRecorder()
-	csrfToken := app.FormToken(csrfResponse, httptest.NewRequest(http.MethodGet, "/pricing", nil))
+	csrfToken := app.FormToken(csrfResponse, httptest.NewRequest(http.MethodGet, "/billing/upgrade", nil))
 	csrfCookie := ""
 	for _, cookie := range csrfResponse.Result().Cookies() {
 		if cookie.Name == "feasible_csrf" {
@@ -355,16 +355,16 @@ func (s *stack) signedInForm() map[string]string {
 func TestCommerceRoutesUseAuthAccountAndCSRF(t *testing.T) {
 	s := newStack(t)
 
-	pricing := s.send(t, http.MethodGet, "/pricing", "", nil)
-	if pricing.Code != http.StatusOK {
-		t.Fatalf("public pricing answered %d", pricing.Code)
+	upgrade := s.send(t, http.MethodGet, "/billing/upgrade", "", nil)
+	if upgrade.Code != http.StatusOK {
+		t.Fatalf("the upgrade screen answered %d", upgrade.Code)
 	}
 	for _, want := range []string{
-		"/register?next=%2Fpricing%3Fplan%3Dmonthly",
-		"/login?next=%2Fpricing%3Fplan%3Dyearly",
+		"/register?next=%2Fbilling%2Fupgrade%3Fplan%3Dmonthly",
+		"/login?next=%2Fbilling%2Fupgrade%3Fplan%3Dyearly",
 	} {
-		if !strings.Contains(pricing.Body.String(), want) {
-			t.Errorf("signed-out pricing is missing %q", want)
+		if !strings.Contains(upgrade.Body.String(), want) {
+			t.Errorf("the signed-out upgrade screen is missing %q", want)
 		}
 	}
 
@@ -709,8 +709,7 @@ func TestALockedAccountCanStillReachEverythingItNeedsToPay(t *testing.T) {
 		body   string
 	}{
 		{"the billing screen", http.MethodGet, "/billing", ""},
-		{"the plans", http.MethodGet, "/pricing", ""},
-		{"the upgrade link on the locked page", http.MethodGet, "/billing/upgrade", ""},
+		{"the plans", http.MethodGet, "/billing/upgrade", ""},
 		{"starting a checkout", http.MethodPost, "/billing/checkout", ""},
 		{"the payment provider's portal", http.MethodPost, "/billing/portal", ""},
 		{"coming back from checkout", http.MethodGet, "/billing/done", ""},
@@ -722,7 +721,6 @@ func TestALockedAccountCanStillReachEverythingItNeedsToPay(t *testing.T) {
 		{"the sites list", http.MethodGet, "/sites", ""},
 		{"the tracker script", http.MethodGet, tracker.PathLegacy, ""},
 		{"the pixel fallback", http.MethodGet, tracker.PixelPath + "?n=pageview&u=https://example.com/&d=example.com", ""},
-		{"the docs", http.MethodGet, "/docs", ""},
 
 		// The site configuration screens hold the other way out: the export
 		// that gets somebody's data off this install. They answer a redirect to

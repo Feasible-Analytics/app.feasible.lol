@@ -35,6 +35,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/outbound"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/pages"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/pathclean"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/rollup"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/settings"
@@ -353,7 +354,7 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 		Log:                 e.log,
 		OutboundPolicy:      outbound.PolicyFor(e.cfg),
 		Avatars:             newAvatarRefresher(e, control),
-		HelpURL:             "/docs",
+		HelpURL:             pages.SiteURL + "/docs",
 		SupportURL:          "mailto:" + supportAddress(e),
 	})
 }
@@ -615,8 +616,9 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 		extra.mount(mux, e, app, shell, secret)
 	}
 
-	// Pricing, billing, docs and legal pages remain reachable outside the
-	// payment gate, while commerce applies the current account and CSRF guards.
+	// The upgrade and billing screens stay reachable outside the payment gate —
+	// a locked account has to be able to pay — while commerce applies the
+	// current account and CSRF guards.
 	com.Routes(mux, app)
 
 	// The source icons the report rows are drawn with. Fetching them here

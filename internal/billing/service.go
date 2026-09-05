@@ -1405,7 +1405,7 @@ func (s *Service) Checkout(ctx context.Context, teamID int64, planKey, email str
 				"session": {"{CHECKOUT_SESSION_ID}"},
 				"team":    {strconv.FormatInt(teamID, 10)},
 			}),
-			CancelURL: s.returnURL("/pricing", url.Values{
+			CancelURL: s.returnURL("/billing/upgrade", url.Values{
 				"plan": {claim.Plan},
 				"team": {strconv.FormatInt(teamID, 10)},
 			}),
