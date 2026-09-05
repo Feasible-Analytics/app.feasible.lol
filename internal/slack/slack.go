@@ -110,11 +110,16 @@ type Referral struct {
 	Source   string
 	Medium   string
 	Campaign string
+
+	// Landing is the first page of ours they arrived on. It is the part that
+	// survives when a browser sends no referrer at all, which is most of them.
+	Landing string
 }
 
 // Empty reports whether we learned nothing at all.
 func (r Referral) Empty() bool {
-	return r.Referrer == "" && r.Source == "" && r.Medium == "" && r.Campaign == ""
+	return r.Referrer == "" && r.Source == "" && r.Medium == "" &&
+		r.Campaign == "" && r.Landing == ""
 }
 
 // Signup is a new account.
@@ -265,6 +270,7 @@ func referralLines(r Referral) []string {
 		{"Source", r.Source},
 		{"Medium", r.Medium},
 		{"Campaign", r.Campaign},
+		{"Landed on", r.Landing},
 	} {
 		if field.value != "" {
 			lines = append(lines, bullet(field.label, field.value))

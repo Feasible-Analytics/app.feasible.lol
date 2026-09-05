@@ -240,6 +240,7 @@ func NewHandler(opts Options) (*Handler, error) {
 // ServeHTTP dispatches to the route table.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	i18n.Apply(w, r)
+	h.recordFirstTouch(w, r)
 	h.mux.ServeHTTP(&languageResponseWriter{ResponseWriter: w, request: r}, r)
 }
 

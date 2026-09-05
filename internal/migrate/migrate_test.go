@@ -1188,7 +1188,7 @@ func TestCoordinatedMigrationNumbers(t *testing.T) {
 		want []int
 	}{
 		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14}},
-		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}},
+		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := make([]int, 0, len(test.set.Migrations))
