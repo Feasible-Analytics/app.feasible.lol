@@ -30,9 +30,10 @@ const BcryptCost = 12
 // Length is the only rule. Composition rules — a digit, a symbol, mixed case —
 // measurably push people towards `Password1!` and towards writing it down,
 // while doing nothing an attacker's wordlist has not already accounted for. A
-// floor of twelve characters and a check against the obvious ones is a better
-// trade than a regular expression nobody can satisfy.
-const MinPasswordLength = 12
+// low floor plus a check against the obvious ones is a better trade than a
+// regular expression nobody can satisfy, and online guessing is answered by
+// rate limiting and bcrypt rather than by the length of the field.
+const MinPasswordLength = 6
 
 // MaxPasswordLength is the longest password accepted. bcrypt silently truncates
 // at 72 bytes, so anything past it is not merely ignored — it makes two
@@ -41,19 +42,39 @@ const MaxPasswordLength = 72
 
 // commonPasswords are the strings that are long enough to pass the length rule
 // and still worthless. The list is deliberately short: the value is in catching
-// the handful of things people type when a form asks for twelve characters, not
-// in shipping a dictionary.
+// the handful of things people type when a form asks for the minimum, not in
+// shipping a dictionary.
 var commonPasswords = map[string]bool{
+	"password":         true,
+	"password1":        true,
+	"password123":      true,
 	"password1234":     true,
 	"passwordpassword": true,
+	"123456":           true,
+	"1234567":          true,
+	"12345678":         true,
+	"123456789":        true,
+	"1234567890":       true,
 	"123456789012":     true,
+	"qwerty":           true,
+	"qwerty123":        true,
 	"qwertyuiop12":     true,
+	"abc123":           true,
+	"letmein":          true,
 	"letmein12345":     true,
+	"iloveyou":         true,
 	"iloveyou1234":     true,
+	"monkey":           true,
+	"dragon":           true,
+	"football":         true,
+	"admin":            true,
 	"administrator":    true,
+	"changeme":         true,
 	"changeme1234":     true,
+	"welcome":          true,
 	"welcome12345":     true,
-	"111111111111":     true,
+	"secret":           true,
+	"trustno1":         true,
 }
 
 // HashPassword produces the stored form of a password.

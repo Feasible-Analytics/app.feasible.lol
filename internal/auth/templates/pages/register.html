@@ -45,9 +45,9 @@
 
     <div>
       <label for="password" class="block text-sm font-medium text-body">{{ t $.Lang "auth.register.password" }}</label>
-      <input id="password" name="password" type="password" autocomplete="new-password" required minlength="12"
+      <input id="password" name="password" type="password" autocomplete="new-password" required minlength="{{ .Data.MinLength }}"
              class="mt-1 block w-full border-2 border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
-      <p class="mt-1 text-xs text-muted">{{ t $.Lang "auth.register.password_help" }}</p>
+      <p class="mt-1 text-xs text-muted">{{ n $.Lang "auth.register.password_help" .Data.MinLength }}</p>
     </div>
 
     <button type="submit"

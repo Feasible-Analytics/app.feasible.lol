@@ -24,7 +24,7 @@ import { Drawer } from "./Drawer";
 import { FilterBar } from "./FilterBar";
 import { GoalsCard } from "./GoalsCard";
 import type { ChartType } from "./MainGraph";
-import { CHART_TYPES, ChartToggle, MARKER_ATTRIBUTE, MainGraph } from "./MainGraph";
+import { CHART_TYPES, MARKER_ATTRIBUTE, MainGraph } from "./MainGraph";
 import { Realtime } from "./Realtime";
 import { ReportCard } from "./ReportCard";
 import type { ShortcutActions } from "./Shortcuts";
@@ -444,20 +444,13 @@ function AnalyticsDashboard() {
 
 						<TopStats stats={totals} selected={metric} onSelect={setMetric} comparing={comparing} />
 						<div className="p-4 sm:p-5">
-							{/* Above the plot rather than inside it: the control
-							    changes the whole chart, and a button sitting on
-							    the drawing it edits is a button that covers data
-							    at some width. */}
-							<div className="mb-2 flex justify-end">
-								<ChartToggle chart={chart} onChart={setChart} />
-							</div>
-
 							<MainGraph
 								stats={graph}
 								metric={metric}
 								comparing={comparing}
 								annotations={notes}
 								chart={chart}
+								onChart={setChart}
 							/>
 						</div>
 					</section>
