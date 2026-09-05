@@ -36,7 +36,6 @@ const (
 	DefaultAppMailTransport = MailTransportLog
 	DefaultAppMailFrom      = "feasible.lol <hello@feasible.lol>"
 	DefaultAppSalesEmail    = "sales@feasible.lol"
-	DefaultAppHelpURL       = "https://feasible.lol/help/"
 	DefaultSMTPPort         = 587
 
 	// DefaultSESRegion is where feasible.lol's own sending domain is verified.
@@ -164,12 +163,6 @@ type App struct {
 	// SalesEmail is where the volume ladder points a growing customer. It is
 	// configurable because a self-hoster's "talk to us" address is not ours.
 	SalesEmail string
-
-	// HelpURL is where the account menu's Help goes. Ours is the help centre on
-	// the marketing site, which a self-hosted install has no reason to send its
-	// people to: they are running somebody else's build against their own
-	// runbook, and the answers there are about our deployment.
-	HelpURL string
 
 	// SlackWebhookURL receives our own commercial notices — a signup, a
 	// subscription starting or ending, an account closing. It is ours rather
@@ -662,7 +655,6 @@ func LoadFrom(l *Loader) (*Config, error) {
 			ShardID:         shardID,
 			MailFrom:        l.String("FEASIBLE_APP_MAIL_FROM", DefaultAppMailFrom),
 			SalesEmail:      l.String("FEASIBLE_APP_SALES_EMAIL", DefaultAppSalesEmail),
-			HelpURL:         strings.TrimSpace(l.String("FEASIBLE_APP_HELP_URL", DefaultAppHelpURL)),
 			SlackWebhookURL: strings.TrimSpace(l.String("FEASIBLE_SLACK_WEBHOOK_URL", "")),
 			OperatorEmail:   strings.TrimSpace(l.String("FEASIBLE_OPERATOR_EMAIL", "")),
 			SecretKey:       strings.TrimSpace(l.String("FEASIBLE_APP_SECRET_KEY", "")),

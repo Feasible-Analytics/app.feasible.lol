@@ -57,10 +57,17 @@ const SiteURL = "https://feasible.lol"
 // docsURL is the reference manual, for a link that means a specific page of it.
 const docsURL = SiteURL + "/docs"
 
-// HelpURL is where "Help" goes. It is the help centre rather than the reference
-// manual, because somebody who has clicked Help has a question rather than a
-// symbol they want the signature of. The trailing slash is the marketing site's
-// own shape; without it every click takes a redirect.
+// HelpURL is where "Help" goes, on every build.
+//
+// It is the help centre rather than the reference manual, because somebody who
+// has clicked Help has a question rather than a symbol they want the signature
+// of. The trailing slash is the marketing site's own shape; without it every
+// click takes a redirect.
+//
+// It is not configurable. A self-hoster runs our build, so our answers are
+// their answers — nobody is going to write a second copy of this software's
+// documentation, and a knob offering them the chance is a knob that ships
+// pointing at nothing.
 const HelpURL = SiteURL + "/help/"
 
 // The two page templates. Each is parsed with the shared layout so that the
