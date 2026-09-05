@@ -118,10 +118,8 @@ func TestEveryPageRenders(t *testing.T) {
 		}
 	}
 
-	// The seller is named on the screen the buy buttons are on. Somebody
-	// deciding to pay should not have to leave for the marketing site to find
-	// out who is actually charging them; the screens that merely report what
-	// already happened do not carry the same duty.
+	// The seller is named on the screen the buy buttons are on: somebody
+	// deciding to pay should not have to leave to find out who is charging them.
 	if body := render(t, handler, "/billing?team=1").Body.String(); !strings.Contains(body, "Cloudmanic Labs, LLC") {
 		t.Error("the billing screen does not name the seller")
 	}
@@ -136,8 +134,7 @@ func TestLayoutNavigationPreservesTheSelectedTeam(t *testing.T) {
 	}
 
 	// Every route out of this screen carries the team, so a multi-team user who
-	// clicks one is still looking at the account they were looking at. The top
-	// bar is the shared header's and is covered where it is built.
+	// clicks one stays on the account they were looking at.
 	body := render(t, handler, "/billing?team=27").Body.String()
 	for _, want := range []string{
 		`href="/billing/export?team=27"`,
@@ -149,10 +146,9 @@ func TestLayoutNavigationPreservesTheSelectedTeam(t *testing.T) {
 	}
 }
 
-// TestThePayerLinksLeaveTheApplication proves the three links a payer needs are
-// on the screen the buy buttons are on, point at the paths the marketing site
-// actually publishes, and that a self-hosted install offers no link to a
-// contract we are not a party to.
+// TestThePayerLinksLeaveTheApplication checks the three links a payer needs are
+// on the screen the buy buttons are on, point at paths the marketing site
+// publishes, and that a self-hosted install links to no contract of ours.
 func TestThePayerLinksLeaveTheApplication(t *testing.T) {
 	handler, _ := newHandler(t)
 
@@ -167,15 +163,13 @@ func TestThePayerLinksLeaveTheApplication(t *testing.T) {
 		}
 	}
 
-	// Three, and only three. A row carrying every document we have published is
-	// a row nobody reads, and this is the assertion that keeps it from growing
-	// back one link at a time.
+	// Three, and only three. A row carrying every document we publish is a row
+	// nobody reads.
 	if n := strings.Count(hosted, `href="https://feasible.lol/`); n != 3 {
 		t.Errorf("the billing screen carries %d marketing links, want 3: %s", n, hosted)
 	}
 
-	// Help means the help centre, and the account menu's own Help agrees. Two
-	// links with one label and two destinations is the state this pins shut.
+	// The account menu's Help and this one are the same destination.
 	if HelpURL != "https://feasible.lol/help/" {
 		t.Errorf("Help points at %q", HelpURL)
 	}
@@ -192,8 +186,7 @@ func TestThePayerLinksLeaveTheApplication(t *testing.T) {
 		}
 	}
 
-	// Nothing in this binary answers the paths those links point at, which is
-	// the whole point of them being absolute.
+	// Nothing in this binary answers the paths those links point at.
 	for _, path := range []string{"/docs", "/docs/api", "/privacy", "/terms", "/help", "/pricing", "/billing/upgrade"} {
 		if code := render(t, handler, path).Code; code != http.StatusNotFound {
 			t.Errorf("%s answered %d, want 404 — it belongs to the public site", path, code)
@@ -256,10 +249,9 @@ func TestWritePublicBrowserFixtures(t *testing.T) {
 	}
 }
 
-// TestBillingWearsTheApplicationChrome proves these screens are drawn in the
-// shared shell rather than in a second one that looks nearly like it. The
-// narrow-viewport behaviour itself is measured at real widths by the Chromium
-// suite in tracker/tests, which is the only place it can honestly be checked.
+// TestBillingWearsTheApplicationChrome checks these screens are drawn in the
+// shared shell. The narrow-viewport behaviour is measured at real widths by the
+// Chromium suite in tracker/tests, which is the only place it can be.
 func TestBillingWearsTheApplicationChrome(t *testing.T) {
 	handler, _ := newHandler(t)
 	page := render(t, handler, "/billing?team=1").Body.String()
@@ -274,9 +266,7 @@ func TestBillingWearsTheApplicationChrome(t *testing.T) {
 		}
 	}
 
-	// The stylesheet this package used to serve is gone with the template that
-	// wanted it. A route still answering it would be a second surface nobody
-	// maintains.
+	// This package serves no stylesheet of its own.
 	if code := render(t, handler, "/billing/assets/pages.css").Code; code != http.StatusNotFound {
 		t.Errorf("the retired stylesheet answered %d, want 404", code)
 	}
@@ -410,12 +400,9 @@ func TestCheckoutReturnDistinguishesPaidAndPending(t *testing.T) {
 	if strings.Contains(pending, "account is active") || strings.Contains(pending, "payment went through") {
 		t.Errorf("pending checkout promises paid access: %s", pending)
 	}
-	// The retry link is the one this page adds over the paid one, and it is the
-	// one a customer whose card is still settling actually clicks. It is matched
-	// as an anchor rather than as a bare path, because every message page
-	// already carries two ways back to billing and a path on its own would pass
-	// on those alone. The attributes between the two are skipped so that a
-	// change of styling is not a failing test.
+	// Matched as an anchor rather than a bare path: every message page carries
+	// two other ways back to billing, and a path alone would pass on those. The
+	// attributes between href and label are skipped so styling can change.
 	retry := regexp.MustCompile(`href="/billing\?team=2"[^>]*>Retry checkout<`)
 	if !retry.MatchString(pending) {
 		t.Errorf("pending retry link lost selected team: %s", pending)

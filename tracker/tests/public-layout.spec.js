@@ -15,8 +15,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 
 // The application's compiled stylesheet, the same file the binary serves at
-// /app/assets/app.css. These screens wear the product's own chrome, so this is
-// the CSS that decides whether they fit.
+// /app/assets/app.css. It is the CSS that decides whether these screens fit.
 const css = readFileSync(new URL("../../internal/auth/assets/app.css", import.meta.url), "utf8");
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
@@ -45,9 +44,8 @@ for (const width of [320, 381, 390]) {
 
 		const layout = await page.evaluate(() => {
 			// Every element that draws something, measured against the viewport.
-			// Checking the document's scroll width alone misses a box that
-			// overflows to the left, which is the one a right-to-left reader
-			// sees first.
+			// The document's scroll width alone misses a box overflowing to the
+			// left, which is the one a right-to-left reader sees first.
 			const overflowing = [...document.querySelectorAll("body *")]
 				.filter((element) => {
 					const box = element.getBoundingClientRect();
@@ -61,8 +59,8 @@ for (const width of [320, 381, 390]) {
 				viewportWidth: window.innerWidth,
 				overflowing: overflowing.slice(0, 5),
 				header: document.querySelector("header").getBoundingClientRect().toJSON(),
-				// The buy buttons are the reason this screen exists. A button
-				// that is off the side of a phone is a sale that does not happen.
+				// A buy button off the side of a phone is a sale that does not
+				// happen.
 				buttons: [...document.querySelectorAll("button[type=submit], a.btn")]
 					.map((element) => element.getBoundingClientRect().toJSON()),
 			};

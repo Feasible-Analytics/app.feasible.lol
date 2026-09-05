@@ -8,11 +8,8 @@
 
   The header comes from internal/appui and the stylesheet is the one the rest of
   the server-rendered product compiles, so billing is the same surface as
-  settings and sites rather than a second one that looks nearly like it. This
-  file holds only what is different: the document, and a main column.
-
-  There is no footer. The three links a payer needs sit beside the buy buttons,
-  where somebody deciding to pay can read them without leaving the page.
+  settings and sites. This file holds only what is different: the document, and
+  a main column.
 -->
 <html lang="{{ .Lang }}"{{ if rtl .Lang }} dir="rtl"{{ end }} class="h-full">
 <head>
@@ -60,9 +57,8 @@
 {{ if .SignedIn }}
 	{{ template "app-header" .Header }}
 {{ else }}
-	<!-- A screen rendered for nobody still needs the mark, so the page is not a
-	     paragraph floating on a background. It carries no menu, because there is
-	     no account to open one for. -->
+	<!-- A screen rendered for nobody gets the mark and no menu: there is no
+	     account to open one for. -->
 	<header class="border-b-2 border-line bg-card">
 		<div class="mx-auto flex h-14 w-full max-w-shell items-center px-4 sm:px-5">
 			<a href="/" class="font-display text-lg font-extrabold tracking-tight text-heading" aria-label="feasible.lol">
@@ -83,10 +79,8 @@
 <!--
   The links a payer needs: what they are agreeing to, and where to get help.
 
-  Three rather than seven, because a row carrying every document we have ever
-  published is a row nobody reads. The legal pair is hosted-only — a self-hosted
-  install is run by somebody else, and our privacy policy and terms describe
-  what we do rather than what they do.
+  The legal pair is hosted-only. Our privacy policy and terms describe what we
+  do, and a self-hosted install is run by somebody else.
 -->
 {{ define "payer-links" }}
 <p class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">

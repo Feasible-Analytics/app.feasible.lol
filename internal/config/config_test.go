@@ -448,8 +448,7 @@ func TestLoadFromProductionLoggingDefaults(t *testing.T) {
 }
 
 // TestSelfHostedProductionRequiresOperatorIdentity keeps a self-hosted build
-// from booting with no support address, which would leave its people writing to
-// somebody who can see neither their data nor their machine.
+// from booting with no support address for its own people to write to.
 func TestSelfHostedProductionRequiresOperatorIdentity(t *testing.T) {
 	t.Setenv("FEASIBLE_ENV", EnvProduction)
 	t.Setenv("FEASIBLE_APP_HOSTED", "false")

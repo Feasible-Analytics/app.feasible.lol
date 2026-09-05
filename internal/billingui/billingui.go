@@ -9,10 +9,8 @@
 // Package billingui serves the billing screens: the one carrying the usage
 // meter and the buttons a customer buys with, and the ones checkout returns to.
 //
-// It is named for the pair it completes. internal/billing is the service that
-// talks to the payment provider; this is what a customer looks at while it
-// does. The name it had before — "pages" — collected everything that rendered
-// a page and ended up owning Stripe.
+// internal/billing is the service that talks to the payment provider; this is
+// what a customer looks at while it does.
 //
 // They are server-rendered Go templates rather than part of the dashboard
 // bundle because they have to work when the dashboard is locked. A customer
@@ -57,17 +55,8 @@ const SiteURL = "https://feasible.lol"
 // docsURL is the reference manual, for a link that means a specific page of it.
 const docsURL = SiteURL + "/docs"
 
-// HelpURL is where "Help" goes, on every build.
-//
-// It is the help centre rather than the reference manual, because somebody who
-// has clicked Help has a question rather than a symbol they want the signature
-// of. The trailing slash is the marketing site's own shape; without it every
-// click takes a redirect.
-//
-// It is not configurable. A self-hoster runs our build, so our answers are
-// their answers — nobody is going to write a second copy of this software's
-// documentation, and a knob offering them the chance is a knob that ships
-// pointing at nothing.
+// HelpURL is the help centre. The trailing slash is the marketing site's own
+// shape; without it every click takes a redirect.
 const HelpURL = SiteURL + "/help/"
 
 // The two page templates. Each is parsed with the shared layout so that the
@@ -103,9 +92,8 @@ func templateFuncs() template.FuncMap {
 			return i18n.N(locale, id, count, args...)
 		},
 
-		// Both are the shared chrome's, not this package's: the layout sets dir
-		// on the html element, and the header builds every destination through
-		// the locale prefix.
+		// The shared chrome needs both: the layout sets dir on the html element,
+		// and the header builds every destination through the locale prefix.
 		"url": func(locale, target string) string {
 			return i18n.LocalURL(target, locale)
 		},
@@ -143,9 +131,8 @@ type Handler struct {
 	// at a chosen point on the lifecycle clock.
 	Now func() time.Time
 
-	// Header builds the application's own top bar. It is injected for the same
-	// reason RequireAccount is: the bar knows the signed-in person, and this
-	// package must not import auth to find that out.
+	// Header builds the application's top bar. It is injected because the bar
+	// knows the signed-in person and this package must not import auth.
 	Header func(*http.Request) appui.Header
 
 	// RequireAccount protects every route here — all of them are one account's
@@ -220,13 +207,12 @@ type shell struct {
 	TeamID     int64
 	CSRF       string
 
-	// Hosted gates the links to our own contract. A self-hosted install is run
-	// by somebody else, and our privacy policy and terms describe what we do
-	// rather than what they do.
+	// Hosted gates the links to our own contract. Our privacy policy and terms
+	// describe what we do, and a self-hosted install is run by somebody else.
 	Hosted bool
 
 	// Header is the application's top bar, or the zero value on a screen
-	// rendered for nobody, where the layout draws the mark alone instead.
+	// rendered for nobody, where the layout draws the mark alone.
 	Header appui.Header
 }
 

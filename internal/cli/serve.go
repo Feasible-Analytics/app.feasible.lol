@@ -630,17 +630,9 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 
 	mux.Handle(avatar.Pattern, app.AvatarHandler())
 
-	// Where a bare hostname goes.
-	//
-	// On the hosted service somebody signed out at app.feasible.lol has almost
-	// always mistyped the marketing site, so they are sent there rather than
-	// bounced through a login form they did not ask for. Signed in, the same URL
-	// is a shortcut to their own dashboard.
-	//
-	// A self-hosted install has no marketing site to send anybody to, so it
-	// keeps the dashboard for everyone. A bare hostname answering 404 looks like
-	// a failed deploy, which is the first thing anybody checks and the last
-	// thing we want it to look like.
+	// Where a bare hostname goes. Somebody signed out on the hosted service
+	// almost always meant the marketing site; everyone else wants the dashboard,
+	// and a self-hosted install has no marketing site to send anybody to.
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		if e.cfg.App.Hosted && !app.SignedIn(r) {
 			http.Redirect(w, r, billingui.SiteURL, http.StatusFound)

@@ -638,8 +638,7 @@ func (h *Handler) currentUser(r *http.Request) (*User, *Session, bool) {
 
 // SignedIn reports whether this request carries a live session. It reads the
 // cookie directly rather than the context, so a route mounted outside every
-// middleware — the root, which has to decide where to send somebody before it
-// knows anything else about them — can still ask.
+// middleware can ask.
 func (h *Handler) SignedIn(r *http.Request) bool {
 	_, _, ok := h.currentUser(r)
 

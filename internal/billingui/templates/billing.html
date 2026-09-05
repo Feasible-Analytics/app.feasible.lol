@@ -5,9 +5,8 @@
   Created: 2026-08-30
   Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 
-  The card shapes match the settings screens exactly — border-2 border-line
-  bg-card, a heading, then the content — because this is the same product and a
-  paying customer should not be able to tell which package rendered a screen.
+  The card shapes match the settings screens — border-2 border-line bg-card, a
+  heading, then the content — because it is one product to the reader.
 -->
 {{ define "body" }}
 
@@ -17,9 +16,8 @@
 </div>
 
 {{ with .Status }}
-<!-- The tone is a border and a wash rather than a filled block: this banner sits
-     above the numbers it is about, and a solid panel there reads as the page's
-     subject rather than as a note on it. -->
+<!-- A border and a wash rather than a filled block: this sits above the numbers
+     it is about, and a solid panel there reads as the page's subject. -->
 <div class="mb-8 border-2 px-5 py-4
 	{{ if eq .Tone "ok" }}border-up/40 bg-up/10{{ else if eq .Tone "warn" }}border-warn/40 bg-warn/10{{ else }}border-down/40 bg-down/10{{ end }}"
 	role="status">
@@ -68,8 +66,7 @@
 	<h2 class="kicker mb-3">{{ t .Lang "pages.billing.history.heading" }}</h2>
 
 	<!-- The table scrolls inside its own card rather than pushing the page
-	     sideways, which on a phone is the difference between a readable screen
-	     and one that jiggles. -->
+	     sideways. -->
 	<div class="overflow-x-auto border-2 border-line bg-card">
 		<table class="w-full min-w-md text-sm">
 			<thead>
@@ -171,8 +168,7 @@
 				</form>
 			</div>
 
-			<!-- Directly under the buttons, because this is the moment somebody
-			     is agreeing to it. -->
+			<!-- Under the buttons: this is the moment somebody agrees to them. -->
 			<div class="mt-4">{{ template "payer-links" . }}</div>
 		</div>
 		{{ end }}
@@ -240,8 +236,8 @@
 </section>
 {{ end }}
 
-<!-- A comped account never sees the upgrade card, so the links it carries would
-     go with it. They belong on the screen either way. -->
+<!-- A comped account has no upgrade card, and the links belong on the screen
+     either way. -->
 {{ if .Comped }}
 <div class="mt-8">{{ template "payer-links" . }}</div>
 {{ end }}

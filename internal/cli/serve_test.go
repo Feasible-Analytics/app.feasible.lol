@@ -351,22 +351,20 @@ func (s *stack) signedInForm() map[string]string {
 }
 
 // TestTheRootSendsAVisitorSomewhereUseful covers the one URL people type from
-// memory. Getting it wrong is not an error page — it is a signed-out visitor
-// bounced into a login form they never asked for.
+// memory.
 func TestTheRootSendsAVisitorSomewhereUseful(t *testing.T) {
 	t.Run("hosted", func(t *testing.T) {
 		t.Setenv("FEASIBLE_APP_HOSTED", "true")
 		s := newStack(t)
 
-		// Almost everybody typing the bare app hostname signed out meant the
-		// marketing site, so that is where they go.
+		// Signed out on the hosted service almost always means the marketing site.
 		signedOut := s.send(t, http.MethodGet, "/", "", nil)
 		if signedOut.Code != http.StatusFound || signedOut.Header().Get("Location") != billingui.SiteURL {
 			t.Errorf("signed-out root answered %d to %q, want the marketing site",
 				signedOut.Code, signedOut.Header().Get("Location"))
 		}
 
-		// Signed in, the same URL is a shortcut to their own numbers.
+		// Signed in, it is a shortcut to their own numbers.
 		signedIn := s.send(t, http.MethodGet, "/", "", s.signedInForm())
 		if signedIn.Code != http.StatusFound || signedIn.Header().Get("Location") != dashboard.PathPrefix {
 			t.Errorf("signed-in root answered %d to %q, want the dashboard",
@@ -378,8 +376,7 @@ func TestTheRootSendsAVisitorSomewhereUseful(t *testing.T) {
 		t.Setenv("FEASIBLE_APP_HOSTED", "false")
 		s := newStack(t)
 
-		// There is no marketing site to send anybody to, so both answers are the
-		// dashboard and the login form is reached the ordinary way.
+		// There is no marketing site to send anybody to.
 		for _, headers := range []map[string]string{nil, s.signedInForm()} {
 			response := s.send(t, http.MethodGet, "/", "", headers)
 			if response.Code != http.StatusFound || response.Header().Get("Location") != dashboard.PathPrefix {

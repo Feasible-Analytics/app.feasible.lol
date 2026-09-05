@@ -170,9 +170,8 @@ type App struct {
 	// normal state everywhere but our own deployment, sends nothing.
 	SlackWebhookURL string
 
-	// OperatorEmail is who a self-hosted deployment's people write to. Pointing
-	// them at us is pointing them at somebody who can see neither their data nor
-	// their machine.
+	// OperatorEmail is who a self-hosted deployment's people write to for
+	// support. We can see neither their data nor their machine.
 	OperatorEmail string
 
 	// SecretKey encrypts the two-factor secrets and signs the short-lived
