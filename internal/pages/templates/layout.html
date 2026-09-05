@@ -60,10 +60,10 @@
 	       the wrong company as their controller. -->
 	  <a href="{{ .Site }}/docs">{{ t .Lang "pages.footer.docs" }}</a>
 	  {{ if .Hosted }}
-      <a href="{{ .Site }}/legal/privacy">{{ t .Lang "pages.footer.privacy" }}</a>
-      <a href="{{ .Site }}/legal/terms">{{ t .Lang "pages.footer.terms" }}</a>
-      <a href="{{ .Site }}/legal/dpa">{{ t .Lang "pages.footer.dpa" }}</a>
-	  <a href="{{ .Site }}/legal/subprocessors">Subprocessors</a>
+      <a href="{{ .Site }}/privacy">{{ t .Lang "pages.footer.privacy" }}</a>
+      <a href="{{ .Site }}/terms">{{ t .Lang "pages.footer.terms" }}</a>
+      <a href="{{ .Site }}/dpa">{{ t .Lang "pages.footer.dpa" }}</a>
+      <a href="{{ .Site }}/legal/subprocessors">{{ t .Lang "pages.footer.subprocessors" }}</a>
 	  {{ end }}
 	  <a href="mailto:{{ .SalesEmail }}">{{ t .Lang "pages.footer.contact" }}</a>
     </nav>
