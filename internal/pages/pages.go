@@ -50,8 +50,14 @@ var templateFS embed.FS
 // be a second version that goes stale the first time a policy changes.
 const SiteURL = "https://feasible.lol"
 
-// docsURL is where a link out of the application lands.
+// docsURL is the reference manual, for a link that means a specific page of it.
 const docsURL = SiteURL + "/docs"
+
+// HelpURL is where "Help" goes. It is the help centre rather than the reference
+// manual, because somebody who has clicked Help has a question rather than a
+// symbol they want the signature of. The trailing slash is the marketing site's
+// own shape; without it every click takes a redirect.
+const HelpURL = SiteURL + "/help/"
 
 // The two page templates. Each is parsed with the shared layout so that the
 // footer — which carries the postal address the law requires — cannot be left

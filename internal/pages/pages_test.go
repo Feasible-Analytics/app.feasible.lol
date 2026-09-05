@@ -174,6 +174,12 @@ func TestThePayerLinksLeaveTheApplication(t *testing.T) {
 		t.Errorf("the billing screen carries %d marketing links, want 3: %s", n, hosted)
 	}
 
+	// Help means the help centre, and the account menu's own Help agrees. Two
+	// links with one label and two destinations is the state this pins shut.
+	if HelpURL != "https://feasible.lol/help/" {
+		t.Errorf("Help points at %q", HelpURL)
+	}
+
 	handler.Hosted = false
 
 	selfHosted := render(t, handler, "/billing?team=1").Body.String()

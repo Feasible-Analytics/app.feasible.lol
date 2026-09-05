@@ -355,7 +355,7 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 		Slack:               e.slack,
 		OutboundPolicy:      outbound.PolicyFor(e.cfg),
 		Avatars:             newAvatarRefresher(e, control),
-		HelpURL:             pages.SiteURL + "/docs",
+		HelpURL:             pages.HelpURL,
 		SupportURL:          "mailto:" + supportAddress(e),
 	})
 }
