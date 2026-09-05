@@ -11,6 +11,7 @@ import { test } from "node:test";
 
 import type { Filter, Navigation } from "../api/types";
 import type { UrlState } from "../lib/url";
+import { CHART_TYPES } from "./MainGraph";
 import { accountMenuGroups, currentVisitorsRequest, periodLabel, siteSwitchURL } from "./TopBar";
 
 test("the current visitors number always requests an exact answer", () => {
@@ -113,15 +114,15 @@ function rowIDs(groups: ReturnType<typeof accountMenuGroups>): string[] {
 }
 
 test("the account menu is grouped, and ends with a separated sign out", () => {
-	const groups = accountMenuGroups(account(), "system", true);
+	const groups = accountMenuGroups(account(), "system", "line", true);
 
-	assert.deepEqual(groups.map((group) => group.id), ["destinations", "help", "theme", "session"]);
+	assert.deepEqual(groups.map((group) => group.id), ["destinations", "help", "graph", "theme", "session"]);
 
-	// Only the theme group carries a heading: the others are self-evident, and
-	// a heading over one row reads as a label for that row.
+	// Only the two groups of choices carry a heading: the others are
+	// self-evident, and a heading over one row reads as a label for that row.
 	assert.deepEqual(
 		groups.filter((group) => group.label).map((group) => group.id),
-		["theme"],
+		["graph", "theme"],
 	);
 
 	assert.deepEqual(groups.at(-1)?.rows.map((row) => row.kind), ["signout"]);
@@ -131,16 +132,16 @@ test("a destination nobody may reach is not in the menu", () => {
 	// Billing is absent for a member who cannot manage it, and site settings is
 	// absent when no site is in scope. The server decides both by omitting the
 	// URL, so the menu must key off the URL rather than re-deriving the rule.
-	assert.ok(rowIDs(accountMenuGroups(account(), "system", true)).includes("billing"));
-	assert.ok(!rowIDs(accountMenuGroups(account({ billing_url: undefined }), "system", true)).includes("billing"));
+	assert.ok(rowIDs(accountMenuGroups(account(), "system", "line", true)).includes("billing"));
+	assert.ok(!rowIDs(accountMenuGroups(account({ billing_url: undefined }), "system", "line", true)).includes("billing"));
 
-	assert.ok(rowIDs(accountMenuGroups(account(), "system", true)).includes("site_settings"));
-	assert.ok(!rowIDs(accountMenuGroups(account({ site_settings_url: undefined }), "system", true)).includes("site_settings"));
+	assert.ok(rowIDs(accountMenuGroups(account(), "system", "line", true)).includes("site_settings"));
+	assert.ok(!rowIDs(accountMenuGroups(account({ site_settings_url: undefined }), "system", "line", true)).includes("site_settings"));
 
 	// The two that are always there stay there.
 	for (const id of ["sites", "account", "shortcuts", "signout"]) {
 		assert.ok(
-			rowIDs(accountMenuGroups(account({ billing_url: undefined, site_settings_url: undefined }), "system", true)).includes(id),
+			rowIDs(accountMenuGroups(account({ billing_url: undefined, site_settings_url: undefined }), "system", "line", true)).includes(id),
 			`${id} must be in every menu`,
 		);
 	}
@@ -148,7 +149,7 @@ test("a destination nobody may reach is not in the menu", () => {
 
 test("exactly one theme is marked current, and it is the one in force", () => {
 	for (const theme of ["light", "dark", "system"] as const) {
-		const rows = accountMenuGroups(account(), theme, true)
+		const rows = accountMenuGroups(account(), theme, "line", true)
 			.flatMap((group) => group.rows)
 			.filter((row) => row.kind === "theme");
 
@@ -164,7 +165,7 @@ test("exactly one theme is marked current, and it is the one in force", () => {
 test("the shortcut row advertises the key that opens the overlay", () => {
 	// The whole reason the button left the bar is that the key is discoverable
 	// from the menu instead. A row with no key printed loses that.
-	const shortcuts = accountMenuGroups(account(), "system", true)
+	const shortcuts = accountMenuGroups(account(), "system", "line", true)
 		.flatMap((group) => group.rows)
 		.find((row) => row.id === "shortcuts");
 
@@ -174,13 +175,29 @@ test("the shortcut row advertises the key that opens the overlay", () => {
 
 test("a locked account is offered no shortcut row it cannot use", () => {
 	// A locked dashboard binds no keys at all, so the row would close the menu
-	// and do nothing — the silent no-op the house rules forbid.
-	const groups = accountMenuGroups(account(), "system", false);
+	// and do nothing — the silent no-op the house rules forbid. It draws no
+	// graph either, so the shape rows go with them for the same reason.
+	const groups = accountMenuGroups(account(), "system", null, false);
 
 	assert.deepEqual(groups.map((group) => group.id), ["destinations", "theme", "session"]);
 	assert.ok(!rowIDs(groups).includes("shortcuts"));
+	assert.ok(!rowIDs(groups).includes("chart:line"));
 
 	// Everything else still stands: a locked account still signs out.
 	assert.ok(rowIDs(groups).includes("signout"));
 	assert.ok(rowIDs(groups).includes("sites"));
+});
+
+test("exactly one graph shape is marked current, and it is the one drawn", () => {
+	for (const shape of CHART_TYPES) {
+		const rows = accountMenuGroups(account(), "system", shape, true)
+			.flatMap((group) => group.rows)
+			.filter((row) => row.kind === "chart");
+
+		assert.deepEqual(rows.map((row) => row.id), ["chart:line", "chart:bar"]);
+
+		const current = rows.filter((row) => row.kind === "chart" && row.current);
+		assert.equal(current.length, 1, shape);
+		assert.equal(current[0]?.id, `chart:${shape}`);
+	}
 });

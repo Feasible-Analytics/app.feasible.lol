@@ -1,6 +1,6 @@
 //
 // MainGraph.tsx
-// The main graph: a hand-rolled SVG line chart, 368px tall.
+// The main graph: a hand-rolled SVG line or bar chart, 368px tall.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -34,6 +34,38 @@ const PAD = { top: 16, right: 14, bottom: 26, left: 60 };
 
 /** The graph's height, from the design system. */
 const HEIGHT = 368;
+
+/**
+ * The two shapes the same series can be drawn as.
+ *
+ * A line answers "which way is this going", and bars answer "how big was each
+ * day". Both are legitimate readings of the same numbers, and which one a person
+ * wants is about the question they arrived with rather than about the data, so it
+ * is theirs to pick rather than ours to guess.
+ */
+export const CHART_TYPES = ["line", "bar"] as const;
+
+export type ChartType = (typeof CHART_TYPES)[number];
+
+/** The message id behind each shape's row in the account menu. */
+export const CHART_LABELS: Record<ChartType, string> = {
+	line: "dashboard.graph.shape_line",
+	bar: "dashboard.graph.shape_bar",
+};
+
+/** The share of a bucket's slot one bar fills. A proportional gap keeps a year
+ *  of daily buckets separable, where a gap fixed in pixels closes up entirely
+ *  once the slots are narrower than the gap. */
+const BAR_FILL = 0.72;
+
+/** The widest one bar is drawn. Past this a three-bucket range stops reading as
+ *  a chart and starts reading as a filled panel with slots cut out of it. */
+const BAR_MAX = 56;
+
+/** The shortest a bar carrying a real value is drawn. One visitor against a
+ *  ceiling of two hundred rounds away to nothing, and a bucket that is invisible
+ *  looks exactly like a bucket the tracker never heard from. */
+const BAR_MIN = 2;
 
 /** The attribute the keyboard shortcut finds a marker by. A data attribute
  *  rather than a class, because a class is a styling decision somebody will
@@ -97,6 +129,53 @@ export function visibleAnnotationTooltip(state: AnnotationTooltipState): number 
 	return state.pinned ?? state.focused ?? state.hovered;
 }
 
+/**
+ * bucketX is where one bucket sits across the plot.
+ *
+ * The two shapes measure the axis differently, and everything else on the chart
+ * follows from it. A line has points, so the first and last sit hard against the
+ * edges and the width is divided into one fewer gap than there are buckets. Bars
+ * have slots, so each bucket owns an equal share of the width and is drawn in the
+ * middle of its own — otherwise the first and last bars hang half off the plot.
+ *
+ * The markers, the hover highlight and the comparison overlay all read this, so a
+ * marker lands on the bar it belongs to rather than on the boundary beside it.
+ */
+export function bucketX(chart: ChartType, index: number, plotWidth: number, buckets: number): number {
+	if (chart === "bar") return PAD.left + ((index + 0.5) * plotWidth) / Math.max(1, buckets);
+
+	return PAD.left + (buckets <= 1 ? plotWidth / 2 : (index * plotWidth) / (buckets - 1));
+}
+
+/** bucketAt is the inverse: which bucket a pointer `offset` pixels from the
+ *  chart's left edge is over, or null when it is past the plot. Bars claim the
+ *  slot the pointer is inside; a line claims the nearest point, which keeps half
+ *  a step of tolerance around each end. */
+export function bucketAt(chart: ChartType, offset: number, plotWidth: number, buckets: number): number | null {
+	if (buckets === 0) return null;
+
+	const inside = offset - PAD.left;
+	const index =
+		chart === "bar"
+			? Math.floor((inside * buckets) / plotWidth)
+			: Math.round(inside / (buckets <= 1 ? plotWidth : plotWidth / (buckets - 1)));
+
+	if (index < 0 || index >= buckets) return null;
+
+	// Rounding a pointer just left of the first point gives negative zero. It
+	// indexes an array perfectly well, but it compares unequal to zero under
+	// Object.is, so it is normalised here rather than left to surprise whoever
+	// next identifies a bucket by its number.
+	return index === 0 ? 0 : index;
+}
+
+/** barWidth is how wide one bar is drawn, given the plot it has to share. */
+export function barWidth(plotWidth: number, buckets: number): number {
+	const slot = plotWidth / Math.max(1, buckets);
+
+	return Math.max(1, Math.min(slot * BAR_FILL, BAR_MAX));
+}
+
 interface Props {
 	stats: { data: StatsResponse | null; loading: boolean; error: string | null; reload: () => void };
 	metric: Metric;
@@ -107,6 +186,9 @@ interface Props {
 	/** The dated notes to render as markers. Empty is the normal case and costs
 	 *  one map over an empty array. */
 	annotations?: Annotation[];
+	/** Which shape to draw the series as. A line is the default because it is the
+	 *  one that survives a year of daily buckets. */
+	chart?: ChartType;
 }
 
 /**
@@ -116,7 +198,7 @@ interface Props {
  * engine only returns buckets that had traffic, so a chart built from the rows
  * alone would silently close up an empty Tuesday and draw a week as six days.
  */
-export function MainGraph({ stats, metric, comparing, annotations = [] }: Props) {
+export function MainGraph({ stats, metric, comparing, annotations = [], chart = "line" }: Props) {
 	// Zero until the wrapper has been measured. The chart is not drawn at a
 	// guessed width: a default that happens to be wider than the container
 	// paints a graph that runs off the side of its own card, and on a phone that
@@ -228,9 +310,14 @@ export function MainGraph({ stats, metric, comparing, annotations = [] }: Props)
 	const peak = Math.max(1, ...plotted);
 	const ceiling = niceCeiling(peak);
 
-	const x = (index: number) =>
-		PAD.left + (labels.length <= 1 ? plotWidth / 2 : (index * plotWidth) / (labels.length - 1));
+	const x = (index: number) => bucketX(chart, index, plotWidth, labels.length);
 	const y = (value: number) => PAD.top + plotHeight - (value / ceiling) * plotHeight;
+
+	// One bucket's slot, and the bar drawn inside it. The slot is also what the
+	// hover highlight covers, so the band a pointer lights up is exactly the band
+	// the tooltip is reading from.
+	const slot = plotWidth / Math.max(1, labels.length);
+	const bar = barWidth(plotWidth, labels.length);
 
 	// Where the plot stops and the axis begins. The markers hang off it, so it
 	// is named once rather than added up at four call sites.
@@ -248,6 +335,23 @@ export function MainGraph({ stats, metric, comparing, annotations = [] }: Props)
 	const markers = placeMarkers(annotations, labels, interval);
 	const marker = visibleAnnotationTooltip(markerState);
 	const openMarker = marker !== null ? markers[marker] : undefined;
+
+	// The comparison is a line under both shapes. Ghost bars beside the real ones
+	// would double the number of shapes on an axis that already carries a year of
+	// them, and the overlay's job is to be a reference the eye can follow rather
+	// than a second series competing for the same slots.
+	const comparisonLine = earlierRuns.map((run) => (
+		<path
+			key={`earlier-${run.from}`}
+			d={linePath(previous, run.from, run.to, x, y)}
+			fill="none"
+			stroke="var(--fs-faint)"
+			strokeWidth={1.5}
+			strokeDasharray="3 3"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+		/>
+	));
 
 	return (
 		<div ref={wrap} className="relative px-1" style={{ height: HEIGHT }}>
@@ -272,11 +376,8 @@ export function MainGraph({ stats, metric, comparing, annotations = [] }: Props)
 				aria-label={t("dashboard.graph.aria", { metric: tileLabel(metric) })}
 				onPointerMove={(event) => {
 					const rect = event.currentTarget.getBoundingClientRect();
-					const offset = event.clientX - rect.left;
-					const step = labels.length <= 1 ? plotWidth : plotWidth / (labels.length - 1);
-					const index = Math.round((offset - PAD.left) / step);
 
-					setHover(index >= 0 && index < labels.length ? index : null);
+					setHover(bucketAt(chart, event.clientX - rect.left, plotWidth, labels.length));
 				}}
 				onPointerLeave={() => setHover(null)}
 			>
@@ -289,6 +390,16 @@ export function MainGraph({ stats, metric, comparing, annotations = [] }: Props)
 						<stop offset="100%" stopColor="var(--fs-accent)" stopOpacity="0.01" />
 					</linearGradient>
 				</defs>
+
+				{/* Bars leave no line for a hover rule to meet, so the pointer
+				    lights up the whole slot instead. It is drawn under the grid
+				    as well as under the series: an opaque band over the bar
+				    washes out the one value the reader is asking about, and an
+				    opaque band over the gridlines erases the scale they are
+				    reading it against. */}
+				{chart === "bar" && hover !== null && (
+					<rect x={x(hover) - slot / 2} y={PAD.top} width={slot} height={plotHeight} fill="var(--fs-hover)" />
+				)}
 
 				{ticks.map((tick) => (
 					<g key={tick}>
@@ -325,65 +436,94 @@ export function MainGraph({ stats, metric, comparing, annotations = [] }: Props)
 					) : null,
 				)}
 
-				{/* The earlier period is drawn first, thin and neutral, so the
-				    current period reads as the subject and the comparison as the
+				{/* The earlier period is thin, neutral and dashed, so the current
+				    period reads as the subject and the comparison as the
 				    backdrop. Reversing the weight makes the chart look like two
 				    series of equal standing, which is not the question anybody
-				    opened it to answer. */}
-				{earlierRuns.map((run) => (
-					<path
-						key={`earlier-${run.from}`}
-						d={linePath(previous, run.from, run.to, x, y)}
-						fill="none"
-						stroke="var(--fs-faint)"
-						strokeWidth={1.5}
-						strokeDasharray="3 3"
-						strokeLinecap="round"
-						strokeLinejoin="round"
-					/>
-				))}
+				    opened it to answer.
 
-				{runs.map((run) => {
-					// The in-progress bucket is dashed, and only that one edge
-					// is. Without it the last point of every live chart looks
-					// like a collapse, and somebody asks what broke this
-					// morning.
-					const dashFrom = present !== null && present === run.to && run.to > run.from ? run.to : -1;
-					const solidTo = dashFrom > 0 ? dashFrom - 1 : run.to;
+				    Under a line it goes first, so the line crosses over it. Under
+				    bars it goes last: a hairline behind a solid bar is a hairline
+				    nobody can see. */}
+				{chart === "line" && comparisonLine}
 
-					return (
-						<g key={run.from}>
-							<path
-								d={areaPath(points, run.from, run.to, x, y, axis)}
-								fill="url(#fs-area)"
-								stroke="none"
+				{chart === "bar" &&
+					points.map((value, index) => {
+						if (value === null) return null;
+
+						const height = Math.max(value > 0 ? BAR_MIN : 0, axis - y(value));
+
+						// The in-progress bucket is drawn hollow for the reason
+						// the line dashes it: a day that is three hours old,
+						// shown at full weight beside finished ones, reads as
+						// traffic falling off a cliff this morning.
+						const pending = present === index;
+
+						return (
+							<rect
+								key={labels[index]}
+								x={x(index) - bar / 2}
+								y={axis - height}
+								width={bar}
+								height={height}
+								fill="var(--fs-accent)"
+								fillOpacity={pending ? 0.3 : 1}
+								stroke={pending ? "var(--fs-accent)" : "none"}
+								strokeWidth={pending ? 1.5 : 0}
+								strokeDasharray={pending ? "4 4" : undefined}
 							/>
-							{solidTo > run.from && (
+						);
+					})}
+
+				{chart === "bar" && comparisonLine}
+
+				{chart === "line" &&
+					runs.map((run) => {
+						// The in-progress bucket is dashed, and only that one
+						// edge is. Without it the last point of every live chart
+						// looks like a collapse, and somebody asks what broke
+						// this morning.
+						const dashFrom = present !== null && present === run.to && run.to > run.from ? run.to : -1;
+						const solidTo = dashFrom > 0 ? dashFrom - 1 : run.to;
+
+						return (
+							<g key={run.from}>
 								<path
-									d={linePath(points, run.from, solidTo, x, y)}
-									fill="none"
-									stroke="var(--fs-accent)"
-									strokeWidth={2}
-									strokeLinecap="round"
-									strokeLinejoin="round"
+									d={areaPath(points, run.from, run.to, x, y, axis)}
+									fill="url(#fs-area)"
+									stroke="none"
 								/>
-							)}
-							{dashFrom > 0 && (
-								<path
-									d={linePath(points, dashFrom - 1, dashFrom, x, y)}
-									fill="none"
-									stroke="var(--fs-accent)"
-									strokeWidth={2}
-									strokeDasharray="4 4"
-									strokeLinecap="round"
-								/>
-							)}
-							{run.from === run.to && points[run.from] !== null && (
-								<circle cx={x(run.from)} cy={y(points[run.from] as number)} r={3} fill="var(--fs-accent)" />
-							)}
-						</g>
-					);
-				})}
+								{solidTo > run.from && (
+									<path
+										d={linePath(points, run.from, solidTo, x, y)}
+										fill="none"
+										stroke="var(--fs-accent)"
+										strokeWidth={2}
+										strokeLinecap="round"
+										strokeLinejoin="round"
+									/>
+								)}
+								{dashFrom > 0 && (
+									<path
+										d={linePath(points, dashFrom - 1, dashFrom, x, y)}
+										fill="none"
+										stroke="var(--fs-accent)"
+										strokeWidth={2}
+										strokeDasharray="4 4"
+										strokeLinecap="round"
+									/>
+								)}
+								{run.from === run.to && points[run.from] !== null && (
+									<circle
+										cx={x(run.from)}
+										cy={y(points[run.from] as number)}
+										r={3}
+										fill="var(--fs-accent)"
+									/>
+								)}
+							</g>
+						);
+					})}
 
 				{/* Annotations are drawn after both series, so a marker sits on
 				    top of the comparison line rather than under it, and they
@@ -493,7 +633,7 @@ export function MainGraph({ stats, metric, comparing, annotations = [] }: Props)
 					);
 				})}
 
-				{hover !== null && (
+				{chart === "line" && hover !== null && (
 					<g>
 						<line
 							x1={x(hover)}
@@ -606,6 +746,30 @@ export function MainGraph({ stats, metric, comparing, annotations = [] }: Props)
 				</p>
 			)}
 		</div>
+	);
+}
+
+/** ShapeIcon draws each shape as itself, at the size of the label beside it. */
+export function ShapeIcon({ type }: { type: ChartType }) {
+	return (
+		<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" className="shrink-0">
+			{type === "line" ? (
+				<polyline
+					points="0.5,9 3.5,5.5 6.5,7.5 11.5,1.5"
+					fill="none"
+					stroke="currentColor"
+					strokeWidth="1.5"
+					strokeLinecap="round"
+					strokeLinejoin="round"
+				/>
+			) : (
+				<g fill="currentColor">
+					<rect x="0.5" y="6" width="3" height="5.5" />
+					<rect x="4.5" y="2.5" width="3" height="9" />
+					<rect x="8.5" y="4.5" width="3" height="7" />
+				</g>
+			)}
+		</svg>
 	);
 }
 

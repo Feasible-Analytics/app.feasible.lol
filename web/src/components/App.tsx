@@ -23,7 +23,8 @@ import { useStats } from "../lib/useStats";
 import { Drawer } from "./Drawer";
 import { FilterBar } from "./FilterBar";
 import { GoalsCard } from "./GoalsCard";
-import { MARKER_ATTRIBUTE, MainGraph } from "./MainGraph";
+import type { ChartType } from "./MainGraph";
+import { CHART_TYPES, MARKER_ATTRIBUTE, MainGraph } from "./MainGraph";
 import { Realtime } from "./Realtime";
 import { ReportCard } from "./ReportCard";
 import type { ShortcutActions } from "./Shortcuts";
@@ -86,6 +87,7 @@ function AnalyticsDashboard() {
 	// mean every shared link silently changed the recipient's graph.
 	const [metric, setMetric] = usePref<Metric>("metric", "visitors", GRAPH_METRICS);
 	const [interval, setIntervalPref] = usePref<IntervalPref>("interval", "auto", INTERVALS);
+	const [chart, setChart] = usePref<ChartType>("chart", "line", CHART_TYPES);
 
 	// Bumped to ask the top bar to open its custom-range form, which is what the
 	// `c` shortcut means. A nonce rather than a boolean: pressing `c` twice has
@@ -342,6 +344,8 @@ function AnalyticsDashboard() {
 			setIntervalPref(INTERVALS[(at + 1) % INTERVALS.length] as IntervalPref);
 		},
 
+		onShape: () => setChart(chart === "line" ? "bar" : "line"),
+
 		onAnnotations: () => {
 			// The markers are focusable, so Tab reaches them on its own once
 			// you are near them. This is the way in from anywhere on the page,
@@ -398,6 +402,8 @@ function AnalyticsDashboard() {
 					onNavigate={(next) => navigate(next)}
 					theme={theme}
 					onTheme={setTheme}
+					chart={chart}
+					onChart={setChart}
 					resolved={totals.data?.query.date_range}
 					filters={filters}
 					onHelp={() => setHelp(true)}
@@ -440,7 +446,7 @@ function AnalyticsDashboard() {
 
 						<TopStats stats={totals} selected={metric} onSelect={setMetric} comparing={comparing} />
 						<div className="p-4 sm:p-5">
-							<MainGraph stats={graph} metric={metric} comparing={comparing} annotations={notes} />
+							<MainGraph stats={graph} metric={metric} comparing={comparing} annotations={notes} chart={chart} />
 						</div>
 					</section>
 				)}
@@ -514,6 +520,8 @@ function LockedDashboard({ boot }: { boot: Bootstrap }) {
 				onNavigate={(next) => navigate(next)}
 				theme={theme}
 				onTheme={setTheme}
+				chart={null}
+				onChart={() => {}}
 				resolved={undefined}
 				filters={[]}
 				onHelp={() => {}}

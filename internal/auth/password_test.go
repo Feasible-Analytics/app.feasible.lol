@@ -22,6 +22,16 @@ func TestPasswordRules(t *testing.T) {
 		t.Error("a short password should be rejected")
 	}
 
+	// The floor itself, pinned from both sides. A rule nobody tests at its
+	// boundary is a rule that drifts by one the next time somebody edits it.
+	if err := ValidatePassword(strings.Repeat("ab", MinPasswordLength)[:MinPasswordLength-1]); err == nil {
+		t.Error("one character under the floor should be rejected")
+	}
+
+	if err := ValidatePassword(strings.Repeat("ab", MinPasswordLength)[:MinPasswordLength]); err != nil {
+		t.Errorf("exactly the floor should be accepted: %v", err)
+	}
+
 	if err := ValidatePassword(strings.Repeat("a", MaxPasswordLength+1)); err == nil {
 		t.Error("a password longer than bcrypt's 72 bytes should be rejected")
 	}

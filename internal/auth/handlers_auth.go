@@ -48,6 +48,7 @@ func (h *Handler) showRegister(w http.ResponseWriter, r *http.Request) {
 
 	p := h.newPage(r, tr(r, "auth.title.register"), "")
 	p.Data["Next"] = next
+	p.Data["MinLength"] = MinPasswordLength
 	if invitation, ok := h.pendingInvitation(r); ok {
 		p.Data["Email"] = invitation.Email
 		p.Data["Next"] = "/invitations/accept"
@@ -86,6 +87,7 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 	p.Data["Email"] = email
 	p.Data["Name"] = name
 	p.Data["Next"] = next
+	p.Data["MinLength"] = MinPasswordLength
 
 	fail := func(message string) {
 		p.Error = message

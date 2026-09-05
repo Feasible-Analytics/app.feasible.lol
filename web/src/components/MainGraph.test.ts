@@ -13,6 +13,9 @@ import type { Annotation } from "../api/types";
 import { metricAxisValue } from "../lib/format";
 import {
 	annotationTooltipReducer,
+	barWidth,
+	bucketAt,
+	bucketX,
 	placeMarkers,
 	visibleAnnotationTooltip,
 	type AnnotationTooltipState,
@@ -123,4 +126,68 @@ test("every headline metric can drive the main graph", () => {
 test("engagement graph axes retain their units", () => {
 	assert.equal(metricAxisValue("views_per_visit", 2.5), "2.5");
 	assert.equal(metricAxisValue("bounce_rate", 57.25), "57.25%");
+});
+
+// The plot the scale tests measure against. 400 pixels over four buckets makes
+// every slot a round hundred, so a wrong answer is a readable number rather than
+// a rounding argument.
+const PLOT = 400;
+const BUCKETS = 4;
+
+test("a line reaches both edges of the plot and bars sit inside their own slots", () => {
+	assert.equal(bucketX("line", 0, PLOT, BUCKETS), 60);
+	assert.equal(bucketX("line", BUCKETS - 1, PLOT, BUCKETS), 460);
+
+	// Half a slot in from each edge, which is what stops the first and last bar
+	// hanging off the plot.
+	assert.equal(bucketX("bar", 0, PLOT, BUCKETS), 110);
+	assert.equal(bucketX("bar", BUCKETS - 1, PLOT, BUCKETS), 410);
+});
+
+test("one bucket is centred under either shape", () => {
+	assert.equal(bucketX("line", 0, PLOT, 1), 260);
+	assert.equal(bucketX("bar", 0, PLOT, 1), 260);
+});
+
+test("a pointer anywhere in a bar's slot picks that bar", () => {
+	assert.equal(bucketAt("bar", 60, PLOT, BUCKETS), 0);
+	assert.equal(bucketAt("bar", 159, PLOT, BUCKETS), 0);
+	assert.equal(bucketAt("bar", 160, PLOT, BUCKETS), 1);
+	assert.equal(bucketAt("bar", 459, PLOT, BUCKETS), 3);
+});
+
+test("a pointer on a line picks the nearest point rather than a slot", () => {
+	// Two thirds of the way towards the second point, which a slot would still
+	// call the first bucket.
+	assert.equal(bucketAt("line", 60 + 90, PLOT, BUCKETS), 1);
+	assert.equal(bucketAt("line", 60 + 60, PLOT, BUCKETS), 0);
+});
+
+test("a pointer past the end of the plot is over no bucket at all", () => {
+	// A bar's slot has hard edges, so one pixel outside is already outside.
+	assert.equal(bucketAt("bar", 59, PLOT, BUCKETS), null);
+	assert.equal(bucketAt("bar", 461, PLOT, BUCKETS), null);
+
+	// A point has no edges, so it keeps half a step of tolerance on each side and
+	// only clears past that. Anything tighter would make the first and last
+	// buckets of every chart the two hardest to hover.
+	assert.equal(bucketAt("line", 59, PLOT, BUCKETS), 0);
+	assert.equal(bucketAt("line", 60 - 70, PLOT, BUCKETS), null);
+	assert.equal(bucketAt("line", 460 + 70, PLOT, BUCKETS), null);
+});
+
+test("an empty chart is over no bucket wherever the pointer is", () => {
+	for (const shape of ["line", "bar"] as const) assert.equal(bucketAt(shape, 200, PLOT, 0), null, shape);
+});
+
+test("bars keep a gap at every range and never grow into a slab", () => {
+	// A year of daily buckets: the bar is thin but still drawn, because a bar
+	// rounded away is indistinguishable from a bucket with no data.
+	assert.ok(barWidth(PLOT, 365) >= 1);
+
+	// A normal range: narrower than its slot, so consecutive bars stay apart.
+	assert.ok(barWidth(PLOT, 10) < PLOT / 10);
+
+	// A three-day range: capped, rather than three slabs filling the card.
+	assert.equal(barWidth(PLOT, 3), 56);
 });
