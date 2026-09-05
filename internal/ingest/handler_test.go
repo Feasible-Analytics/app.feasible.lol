@@ -9,6 +9,7 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/salts"
 )
 
@@ -290,6 +292,63 @@ func TestDebugRequestReturnsEverything(t *testing.T) {
 	}
 	if got := h.eventCount(t); got != 0 {
 		t.Fatalf("a debug request wrote %d events, want 0", got)
+	}
+}
+
+// TestIdentityTraceLogsTheFingerprintInputs covers the switch that exists to
+// answer one question: whether a returning visitor's address changed between
+// visits. The line is useless unless the address and the agent sit beside the id
+// they produced, so all three are asserted together.
+func TestIdentityTraceLogsTheFingerprintInputs(t *testing.T) {
+	h := newHandlerHarness(t)
+
+	var out bytes.Buffer
+
+	h.service.Handler.Log = logger.New(logger.Options{
+		Level:         "debug",
+		Format:        "text",
+		TraceIdentity: true,
+		Output:        &out,
+	})
+
+	if recorder := post(t, h, "text/plain", validBody, nil); recorder.Code != http.StatusAccepted {
+		t.Fatalf("event not accepted: %d", recorder.Code)
+	}
+
+	line := out.String()
+	for _, want := range []string{"identity trace", visitors[0].ip, "Chrome/120.0.0.0", "user_id", "salt_day", "root_domain"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("identity trace missing %q: %s", want, line)
+		}
+	}
+}
+
+// TestEventTraceKeepsTheAddressOff is the other half of the guarantee. The trace
+// people actually reach for must not start writing addresses, because the flag
+// gets turned on in production to read an attribution and left on.
+func TestEventTraceKeepsTheAddressOff(t *testing.T) {
+	h := newHandlerHarness(t)
+
+	var out bytes.Buffer
+
+	h.service.Handler.Log = logger.New(logger.Options{
+		Level:       "debug",
+		Format:      "text",
+		TraceEvents: true,
+		Output:      &out,
+	})
+
+	if recorder := post(t, h, "text/plain", validBody, nil); recorder.Code != http.StatusAccepted {
+		t.Fatalf("event not accepted: %d", recorder.Code)
+	}
+
+	line := out.String()
+	if !strings.Contains(line, "event trace") {
+		t.Fatalf("event trace not logged: %s", line)
+	}
+
+	if strings.Contains(line, visitors[0].ip) {
+		t.Fatalf("--trace-events wrote the visitor address: %s", line)
 	}
 }
 
