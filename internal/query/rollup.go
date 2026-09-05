@@ -564,9 +564,16 @@ func planRollupRead(q *Query, resolved Resolved) (rollupRead, bool) {
 	}
 
 	// A filter narrows the rows a summary has already collapsed, so there is
-	// nothing left to filter. Sampling and the two inclusions change which rows
+	// nothing left to filter. Sampling and including bots change which rows
 	// were counted, and the summary counted the default set.
-	if len(q.Filters) > 0 || q.SampleRate != 1 || q.Include.Imports || q.Include.Bots {
+	//
+	// Including imported history does not. The builder writes native, non-bot
+	// rows only, which is exactly the set the raw native pass reads, and
+	// imported rows are added afterwards by a statement over their own table.
+	// The summary is therefore a valid substitute for the native half either
+	// way — and since the dashboard asks for imports on every report, treating
+	// it as a refusal put every dashboard query in the product on a raw scan.
+	if len(q.Filters) > 0 || q.SampleRate != 1 || q.Include.Bots {
 		return read, false
 	}
 
