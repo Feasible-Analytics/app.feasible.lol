@@ -402,6 +402,8 @@ function AnalyticsDashboard() {
 					onNavigate={(next) => navigate(next)}
 					theme={theme}
 					onTheme={setTheme}
+					chart={chart}
+					onChart={setChart}
 					resolved={totals.data?.query.date_range}
 					filters={filters}
 					onHelp={() => setHelp(true)}
@@ -444,14 +446,7 @@ function AnalyticsDashboard() {
 
 						<TopStats stats={totals} selected={metric} onSelect={setMetric} comparing={comparing} />
 						<div className="p-4 sm:p-5">
-							<MainGraph
-								stats={graph}
-								metric={metric}
-								comparing={comparing}
-								annotations={notes}
-								chart={chart}
-								onChart={setChart}
-							/>
+							<MainGraph stats={graph} metric={metric} comparing={comparing} annotations={notes} chart={chart} />
 						</div>
 					</section>
 				)}
@@ -525,6 +520,8 @@ function LockedDashboard({ boot }: { boot: Bootstrap }) {
 				onNavigate={(next) => navigate(next)}
 				theme={theme}
 				onTheme={setTheme}
+				chart={null}
+				onChart={() => {}}
 				resolved={undefined}
 				filters={[]}
 				onHelp={() => {}}

@@ -9,7 +9,6 @@
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 
 import type { Annotation, Metric, StatsResponse } from "../api/types";
-import { useDismiss } from "../lib/dom";
 import { changePercent, comparisonSeries, previousBucketLabel } from "../lib/compare";
 import { bucketLong, bucketShort, metricAxisValue, metricTitle, metricValue, rangeLabel } from "../lib/format";
 import { n, t } from "../lib/i18n";
@@ -48,8 +47,8 @@ export const CHART_TYPES = ["line", "bar"] as const;
 
 export type ChartType = (typeof CHART_TYPES)[number];
 
-/** The message id behind each shape's button. */
-const CHART_LABELS: Record<ChartType, string> = {
+/** The message id behind each shape's row in the account menu. */
+export const CHART_LABELS: Record<ChartType, string> = {
 	line: "dashboard.graph.shape_line",
 	bar: "dashboard.graph.shape_bar",
 };
@@ -190,10 +189,6 @@ interface Props {
 	/** Which shape to draw the series as. A line is the default because it is the
 	 *  one that survives a year of daily buckets. */
 	chart?: ChartType;
-	/** Called when the reader picks a different shape. Passing it is what puts
-	 *  the shape menu on the chart, so a view with no say in the matter — the
-	 *  live one — gets no control it cannot honour. */
-	onChart?: (next: ChartType) => void;
 }
 
 /**
@@ -203,7 +198,7 @@ interface Props {
  * engine only returns buckets that had traffic, so a chart built from the rows
  * alone would silently close up an empty Tuesday and draw a week as six days.
  */
-export function MainGraph({ stats, metric, comparing, annotations = [], chart = "line", onChart }: Props) {
+export function MainGraph({ stats, metric, comparing, annotations = [], chart = "line" }: Props) {
 	// Zero until the wrapper has been measured. The chart is not drawn at a
 	// guessed width: a default that happens to be wider than the container
 	// paints a graph that runs off the side of its own card, and on a phone that
@@ -370,8 +365,6 @@ export function MainGraph({ stats, metric, comparing, annotations = [], chart = 
 			<div className="pointer-events-none absolute top-0 left-12 z-10">
 				<SampledMark sampling={data.meta.sampling} />
 			</div>
-
-			{onChart && <ChartMenu chart={chart} onChart={onChart} />}
 
 			{/* A group rather than an image: an image role hides everything inside
 			    it from assistive technology, and the annotation markers below are
@@ -745,11 +738,7 @@ export function MainGraph({ stats, metric, comparing, annotations = [], chart = 
 			{/* The legend names the window the dashes are, because "previous
 			    period" is ambiguous the moment the range is a custom one. */}
 			{comparing && comparisonBounds && (
-				<p
-					className={`pointer-events-none absolute top-0 flex items-center gap-1.5 text-[11px] text-muted ${
-						onChart ? "right-8" : "right-1"
-					}`}
-				>
+				<p className="pointer-events-none absolute top-0 right-1 flex items-center gap-1.5 text-[11px] text-muted">
 					<svg width="16" height="2" aria-hidden="true" className="shrink-0">
 						<line x1="0" y1="1" x2="16" y2="1" stroke="var(--fs-faint)" strokeWidth="2" strokeDasharray="3 3" />
 					</svg>
@@ -760,112 +749,8 @@ export function MainGraph({ stats, metric, comparing, annotations = [], chart = 
 	);
 }
 
-/**
- * ChartMenu is the shape control, and it floats over the chart.
- *
- * It is a corner button rather than a row above the plot because a row is
- * permanent height spent on a setting almost nobody changes twice, and the
- * graph is the thing people came for. A gear says "there are options here"
- * without claiming to be one of them.
- */
-function ChartMenu({ chart, onChart }: { chart: ChartType; onChart: (next: ChartType) => void }) {
-	const [open, setOpen] = useState(false);
-	const wrap = useRef<HTMLDivElement>(null);
-
-	useDismiss(wrap, open, () => setOpen(false));
-
-	return (
-		<div ref={wrap} className="absolute top-0 right-0 z-30">
-			<button
-				type="button"
-				aria-expanded={open}
-				aria-haspopup="menu"
-				aria-label={t("dashboard.graph.shape")}
-				title={t("dashboard.graph.shape")}
-				onClick={() => setOpen((was) => !was)}
-				className={`flex h-6 w-6 cursor-pointer items-center justify-center transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover hover:text-body ${
-					open ? "bg-hover text-body" : "text-muted"
-				}`}
-			>
-				<GearIcon />
-			</button>
-
-			{open && (
-				<div role="menu" className="absolute top-full right-0 z-40 mt-1 w-40 border-2 border-line bg-card p-1 pop">
-					{CHART_TYPES.map((type) => {
-						const active = chart === type;
-
-						return (
-							<button
-								key={type}
-								type="button"
-								role="menuitemradio"
-								aria-checked={active}
-								onClick={() => {
-									onChart(type);
-									setOpen(false);
-								}}
-								className={`flex w-full cursor-pointer items-center gap-2 px-2.5 py-1.5 text-left text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover ${
-									active ? "font-medium text-accent-ink" : "text-body"
-								}`}
-							>
-								<ShapeIcon type={type} />
-								<span className="flex-1">{t(CHART_LABELS[type])}</span>
-								{active && <CheckIcon />}
-							</button>
-						);
-					})}
-				</div>
-			)}
-		</div>
-	);
-}
-
-/** GearIcon is a ring with eight teeth, drawn from one line rotated around the
- *  centre rather than eight hand-placed ones. */
-function GearIcon() {
-	return (
-		<svg
-			width="14"
-			height="14"
-			viewBox="0 0 16 16"
-			aria-hidden="true"
-			fill="none"
-			stroke="currentColor"
-			strokeWidth="1.5"
-			strokeLinecap="round"
-		>
-			<circle cx="8" cy="8" r="4.2" />
-			<circle cx="8" cy="8" r="1.5" />
-			{[0, 45, 90, 135, 180, 225, 270, 315].map((angle) => (
-				<line key={angle} x1="8" y1="1.7" x2="8" y2="3.8" transform={`rotate(${angle} 8 8)`} />
-			))}
-		</svg>
-	);
-}
-
-/** CheckIcon marks the shape currently on the chart. */
-function CheckIcon() {
-	return (
-		<svg
-			width="12"
-			height="12"
-			viewBox="0 0 12 12"
-			aria-hidden="true"
-			className="shrink-0"
-			fill="none"
-			stroke="currentColor"
-			strokeWidth="2"
-			strokeLinecap="round"
-			strokeLinejoin="round"
-		>
-			<polyline points="1.5,6.5 4.5,9.5 10.5,2.5" />
-		</svg>
-	);
-}
-
 /** ShapeIcon draws each shape as itself, at the size of the label beside it. */
-function ShapeIcon({ type }: { type: ChartType }) {
+export function ShapeIcon({ type }: { type: ChartType }) {
 	return (
 		<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" className="shrink-0">
 			{type === "line" ? (

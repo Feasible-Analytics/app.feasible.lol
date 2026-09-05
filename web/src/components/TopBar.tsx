@@ -22,6 +22,8 @@ import type { UrlState } from "../lib/url";
 import { useStats } from "../lib/useStats";
 import { useInterval } from "../lib/useStats";
 import { Chevron } from "./atoms";
+import type { ChartType } from "./MainGraph";
+import { CHART_LABELS, CHART_TYPES, ShapeIcon } from "./MainGraph";
 import { PeriodPicker } from "./PeriodPicker";
 import { SitePicker } from "./SitePicker";
 
@@ -31,6 +33,11 @@ interface Props {
 	onNavigate: (next: UrlState) => void;
 	theme: Theme;
 	onTheme: (next: Theme) => void;
+	/** The shape the graph is drawn as, or null on a screen that has no graph.
+	 *  Null removes the rows rather than disabling them: a choice that changes
+	 *  nothing visible is a choice that reads as broken. */
+	chart: ChartType | null;
+	onChart: (next: ChartType) => void;
 	/** The window the server actually used, shown under a preset name. */
 	resolved: string[] | undefined;
 	/** The filters in force. The live pill carries them too, so the number in the
@@ -113,7 +120,7 @@ export function currentVisitorsRequest(filters: Filter[]): StatsRequest {
  * address bar is always a description of what is on screen — which is what
  * makes a dashboard link worth sending to somebody.
  */
-export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, filters, onHelp, onStep, onPeriod, asked, navigation, locked = false }: Props) {
+export function TopBar({ state, sites, onNavigate, theme, onTheme, chart, onChart, resolved, filters, onHelp, onStep, onPeriod, asked, navigation, locked = false }: Props) {
 	const label = periodLabel(state);
 	const live = state.preset === "realtime" && !state.from;
 
@@ -183,6 +190,8 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, resolved, fil
 							navigation={navigation}
 							theme={theme}
 							onTheme={onTheme}
+							chart={chart}
+							onChart={onChart}
 							onHelp={onHelp}
 							shortcuts={!locked}
 						/>
@@ -226,6 +235,7 @@ export type MenuRow =
 	| { kind: "link"; id: string; label: string; href: string }
 	| { kind: "action"; id: string; label: string; hint: string }
 	| { kind: "theme"; id: string; label: string; theme: Theme; glyph: string; current: boolean }
+	| { kind: "chart"; id: string; label: string; chart: ChartType; current: boolean }
 	| { kind: "signout"; id: string; label: string };
 
 /** MenuGroup is one divider-separated run of rows, with a heading when the rows
@@ -253,7 +263,12 @@ const THEME_ROWS: { theme: Theme; glyph: string; labelId: string }[] = [
  * `shortcuts` is false on a locked account, which binds no keys: a row that
  * closes the menu and does nothing else is worse than no row.
  */
-export function accountMenuGroups(navigation: Navigation, theme: Theme, shortcuts: boolean): MenuGroup[] {
+export function accountMenuGroups(
+	navigation: Navigation,
+	theme: Theme,
+	chart: ChartType | null,
+	shortcuts: boolean,
+): MenuGroup[] {
 	const destinations: MenuRow[] = [
 		{ kind: "link", id: "sites", label: t("dashboard.navigation.sites"), href: navigation.sites_url },
 	];
@@ -292,6 +307,20 @@ export function accountMenuGroups(navigation: Navigation, theme: Theme, shortcut
 		});
 	}
 
+	if (chart) {
+		groups.push({
+			id: "graph",
+			label: t("dashboard.menu.graph"),
+			rows: CHART_TYPES.map((type) => ({
+				kind: "chart" as const,
+				id: `chart:${type}`,
+				label: t(CHART_LABELS[type]),
+				chart: type,
+				current: type === chart,
+			})),
+		});
+	}
+
 	groups.push(
 		{
 			id: "theme",
@@ -321,12 +350,16 @@ function AccountMenu({
 	navigation,
 	theme,
 	onTheme,
+	chart,
+	onChart,
 	onHelp,
 	shortcuts,
 }: {
 	navigation: Navigation;
 	theme: Theme;
 	onTheme: (next: Theme) => void;
+	chart: ChartType | null;
+	onChart: (next: ChartType) => void;
 	onHelp: () => void;
 	shortcuts: boolean;
 }) {
@@ -335,7 +368,7 @@ function AccountMenu({
 
 	useDismiss(wrap, open, () => setOpen(false));
 
-	const groups = accountMenuGroups(navigation, theme, shortcuts);
+	const groups = accountMenuGroups(navigation, theme, chart, shortcuts);
 
 	return (
 		<div ref={wrap} className="relative">
@@ -373,6 +406,7 @@ function AccountMenu({
 									row={row}
 									navigation={navigation}
 									onTheme={onTheme}
+									onChart={onChart}
 									onHelp={() => {
 										setOpen(false);
 										onHelp();
@@ -387,17 +421,20 @@ function AccountMenu({
 	);
 }
 
-/** MenuRowView draws one row. Choosing a theme leaves the menu open, because
- * the page changes underneath it and the next choice is one click away. */
+/** MenuRowView draws one row. Choosing a theme or a graph shape leaves the menu
+ * open, because the page changes underneath it and the next choice is one click
+ * away. */
 function MenuRowView({
 	row,
 	navigation,
 	onTheme,
+	onChart,
 	onHelp,
 }: {
 	row: MenuRow;
 	navigation: Navigation;
 	onTheme: (next: Theme) => void;
+	onChart: (next: ChartType) => void;
 	onHelp: () => void;
 }) {
 	const base = "flex w-full items-center gap-2 px-2.5 py-2 text-left text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover";
@@ -430,6 +467,23 @@ function MenuRowView({
 					className={`${base} ${row.current ? "font-medium text-body" : "text-body"}`}
 				>
 					<span aria-hidden="true" className="w-4 text-center text-muted">{row.glyph}</span>
+					<span className="flex-1">{row.label}</span>
+					{row.current && <span aria-hidden="true" className="text-accent-ink">✓</span>}
+				</button>
+			);
+
+		case "chart":
+			return (
+				<button
+					type="button"
+					role="menuitemradio"
+					aria-checked={row.current}
+					onClick={() => onChart(row.chart)}
+					className={`${base} ${row.current ? "font-medium text-body" : "text-body"}`}
+				>
+					<span aria-hidden="true" className="flex w-4 justify-center text-muted">
+						<ShapeIcon type={row.chart} />
+					</span>
 					<span className="flex-1">{row.label}</span>
 					{row.current && <span aria-hidden="true" className="text-accent-ink">✓</span>}
 				</button>
