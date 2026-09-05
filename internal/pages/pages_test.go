@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -148,9 +149,12 @@ func TestTheFooterLinksLeaveTheApplication(t *testing.T) {
 	hosted := render(t, handler, "/billing?team=1").Body.String()
 	for _, want := range []string{
 		`href="https://feasible.lol/docs"`,
-		`href="https://feasible.lol/legal/privacy"`,
-		`href="https://feasible.lol/legal/terms"`,
-		`href="https://feasible.lol/legal/dpa"`,
+		// These are the paths the marketing site actually publishes. Three of
+		// them sit at the root and only subprocessors is under /legal, which is
+		// exactly the sort of asymmetry a footer written from memory gets wrong.
+		`href="https://feasible.lol/privacy"`,
+		`href="https://feasible.lol/terms"`,
+		`href="https://feasible.lol/dpa"`,
 		`href="https://feasible.lol/legal/subprocessors"`,
 	} {
 		if !strings.Contains(hosted, want) {
@@ -394,8 +398,15 @@ func TestCheckoutReturnDistinguishesPaidAndPending(t *testing.T) {
 	if strings.Contains(pending, "account is active") || strings.Contains(pending, "payment went through") {
 		t.Errorf("pending checkout promises paid access: %s", pending)
 	}
-	if !strings.Contains(pending, "/billing?team=2") || !strings.Contains(pending, "/billing?team=2") {
-		t.Errorf("pending retry links lost selected team: %s", pending)
+	// The retry link is the one this page adds over the paid one, and it is the
+	// one a customer whose card is still settling actually clicks. It is matched
+	// as an anchor rather than as a bare path, because every message page
+	// already carries two ways back to billing and a path on its own would pass
+	// on those alone. The attributes between the two are skipped so that a
+	// change of styling is not a failing test.
+	retry := regexp.MustCompile(`href="/billing\?team=2"[^>]*>Retry checkout<`)
+	if !retry.MatchString(pending) {
+		t.Errorf("pending retry link lost selected team: %s", pending)
 	}
 
 	other := render(t, handler, "/billing/done?team=2&session=cs_other")
