@@ -430,7 +430,7 @@ func scanForIDs(t *testing.T) map[string]bool {
 		filepath.Join("..", "dashboard"):        {".go"},
 		filepath.Join("..", "health"):           {".go"},
 		filepath.Join("..", "sharing"):          {".go"},
-		filepath.Join("..", "pages"):            {".html", ".go"},
+		filepath.Join("..", "billingui"):        {".html", ".go"},
 		filepath.Join("..", "..", "web", "src"): {".ts", ".tsx"},
 	}
 

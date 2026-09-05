@@ -20,12 +20,12 @@ import { expect, test } from "@playwright/test";
 const css = readFileSync(new URL("../../internal/auth/assets/app.css", import.meta.url), "utf8");
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
-const fixtureDir = mkdtempSync(join(tmpdir(), "feasible-public-pages-"));
+const fixtureDir = mkdtempSync(join(tmpdir(), "feasible-billing-pages-"));
 
 // The Go test renders through the real route table into a temporary directory.
 // Chromium receives complete documents with inline production CSS, so no HTTP
 // listener or application server is involved.
-execFileSync("go", ["test", "./internal/pages", "-run", "^TestWritePublicBrowserFixtures$", "-count=1"], {
+execFileSync("go", ["test", "./internal/billingui", "-run", "^TestWritePublicBrowserFixtures$", "-count=1"], {
 	cwd: repoRoot,
 	env: { ...process.env, FEASIBLE_PUBLIC_FIXTURE_DIR: fixtureDir },
 	stdio: "inherit",

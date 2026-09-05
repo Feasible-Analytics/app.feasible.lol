@@ -36,7 +36,7 @@
 @source "./templates";
 @source "../settings/templates";
 @source "../appui/templates";
-@source "../pages/templates";
+@source "../billingui/templates";
 
 /* The settings navigation is a disclosure on a phone and a plain column from
    `sm` up, and it is one list either way. Rendering it twice and hiding one

@@ -19,7 +19,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +36,7 @@ const (
 	DefaultAppMailTransport = MailTransportLog
 	DefaultAppMailFrom      = "feasible.lol <hello@feasible.lol>"
 	DefaultAppSalesEmail    = "sales@feasible.lol"
+	DefaultAppHelpURL       = "https://feasible.lol/help/"
 	DefaultSMTPPort         = 587
 
 	// DefaultSESRegion is where feasible.lol's own sending domain is verified.
@@ -165,17 +165,22 @@ type App struct {
 	// configurable because a self-hoster's "talk to us" address is not ours.
 	SalesEmail string
 
+	// HelpURL is where the account menu's Help goes. Ours is the help centre on
+	// the marketing site, which a self-hosted install has no reason to send its
+	// people to: they are running somebody else's build against their own
+	// runbook, and the answers there are about our deployment.
+	HelpURL string
+
 	// SlackWebhookURL receives our own commercial notices — a signup, a
 	// subscription starting or ending, an account closing. It is ours rather
 	// than a customer's, so it is not the customer webhook system; empty, the
 	// normal state everywhere but our own deployment, sends nothing.
 	SlackWebhookURL string
 
-	// Operator identifies the legal entity responsible for a self-hosted
-	// deployment. Hosted pages continue to identify Cloudmanic explicitly.
-	OperatorName    string
-	OperatorAddress string
-	OperatorEmail   string
+	// OperatorEmail is who a self-hosted deployment's people write to. Pointing
+	// them at us is pointing them at somebody who can see neither their data nor
+	// their machine.
+	OperatorEmail string
 
 	// SecretKey encrypts the two-factor secrets and signs the short-lived
 	// cookies, as 32 hex-encoded bytes. Empty means one is generated under the
@@ -657,9 +662,8 @@ func LoadFrom(l *Loader) (*Config, error) {
 			ShardID:         shardID,
 			MailFrom:        l.String("FEASIBLE_APP_MAIL_FROM", DefaultAppMailFrom),
 			SalesEmail:      l.String("FEASIBLE_APP_SALES_EMAIL", DefaultAppSalesEmail),
+			HelpURL:         strings.TrimSpace(l.String("FEASIBLE_APP_HELP_URL", DefaultAppHelpURL)),
 			SlackWebhookURL: strings.TrimSpace(l.String("FEASIBLE_SLACK_WEBHOOK_URL", "")),
-			OperatorName:    strings.TrimSpace(l.String("FEASIBLE_OPERATOR_NAME", "")),
-			OperatorAddress: strings.TrimSpace(l.String("FEASIBLE_OPERATOR_ADDRESS", "")),
 			OperatorEmail:   strings.TrimSpace(l.String("FEASIBLE_OPERATOR_EMAIL", "")),
 			SecretKey:       strings.TrimSpace(l.String("FEASIBLE_APP_SECRET_KEY", "")),
 			Worker:          worker,
@@ -711,16 +715,8 @@ func LoadFrom(l *Loader) (*Config, error) {
 		return nil, err
 	}
 	cfg.Ingest.Shards = shards
-	if !cfg.App.Hosted && cfg.Shared.Env == EnvDevelopment {
-		if cfg.App.OperatorName == "" {
-			cfg.App.OperatorName = "Operator of " + cfg.App.BaseURL
-		}
-		if cfg.App.OperatorAddress == "" {
-			cfg.App.OperatorAddress = cfg.App.BaseURL
-		}
-		if cfg.App.OperatorEmail == "" {
-			cfg.App.OperatorEmail = cfg.App.SalesEmail
-		}
+	if !cfg.App.Hosted && cfg.Shared.Env == EnvDevelopment && cfg.App.OperatorEmail == "" {
+		cfg.App.OperatorEmail = cfg.App.SalesEmail
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -887,20 +883,8 @@ func (c *Config) Validate() error {
 	}
 
 	if c.IsProduction() && !c.App.Hosted {
-		operatorFields := map[string]string{
-			"FEASIBLE_OPERATOR_NAME":    c.App.OperatorName,
-			"FEASIBLE_OPERATOR_ADDRESS": c.App.OperatorAddress,
-			"FEASIBLE_OPERATOR_EMAIL":   c.App.OperatorEmail,
-		}
-		var missing []string
-		for name, value := range operatorFields {
-			if strings.TrimSpace(value) == "" {
-				missing = append(missing, name)
-			}
-		}
-		if len(missing) > 0 {
-			sort.Strings(missing)
-			return fmt.Errorf("self-hosted production operator identity is incomplete; missing %s", strings.Join(missing, ", "))
+		if strings.TrimSpace(c.App.OperatorEmail) == "" {
+			return fmt.Errorf("a self-hosted production build needs a support address; set FEASIBLE_OPERATOR_EMAIL")
 		}
 	}
 	if c.App.SecretKey != "" && len(c.App.SecretKey) != 64 {

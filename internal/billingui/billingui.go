@@ -1,14 +1,18 @@
 //
-// pages.go
+// billingui.go
 // The server-rendered commerce screens: billing and checkout.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-// Package pages serves the commerce screens: the billing screen, which carries
-// the usage meter and the buttons a customer buys with, and the pages checkout
-// returns to.
+// Package billingui serves the billing screens: the one carrying the usage
+// meter and the buttons a customer buys with, and the ones checkout returns to.
+//
+// It is named for the pair it completes. internal/billing is the service that
+// talks to the payment provider; this is what a customer looks at while it
+// does. The name it had before — "pages" — collected everything that rendered
+// a page and ended up owning Stripe.
 //
 // They are server-rendered Go templates rather than part of the dashboard
 // bundle because they have to work when the dashboard is locked. A customer
@@ -18,7 +22,7 @@
 // The plans are published on the marketing site, in its own repository. What
 // is here is the part that needs an account: the prices are on both, but only
 // this side knows who is buying.
-package pages
+package billingui
 
 import (
 	"embed"

@@ -1,12 +1,12 @@
 //
-// pages_test.go
+// billingui_test.go
 // Every commerce screen: it renders, it prices correctly, and it carries the address.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-package pages
+package billingui
 
 import (
 	"context"

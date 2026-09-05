@@ -22,9 +22,7 @@ import (
 func setProductionOperator(t *testing.T) {
 	t.Helper()
 	t.Setenv("FEASIBLE_APP_HOSTED", "false")
-	t.Setenv("FEASIBLE_OPERATOR_NAME", "Example Operator, Inc.")
-	t.Setenv("FEASIBLE_OPERATOR_ADDRESS", "123 Example Street")
-	t.Setenv("FEASIBLE_OPERATOR_EMAIL", "privacy@example.test")
+	t.Setenv("FEASIBLE_OPERATOR_EMAIL", "support@example.test")
 	t.Setenv("FEASIBLE_INGEST_SALT", "a-production-salt-nobody-else-knows")
 }
 
@@ -449,8 +447,9 @@ func TestLoadFromProductionLoggingDefaults(t *testing.T) {
 	}
 }
 
-// TestSelfHostedProductionRequiresOperatorIdentity prevents public privacy and
-// DPA pages from booting with a generic URL where a legal operator must appear.
+// TestSelfHostedProductionRequiresOperatorIdentity keeps a self-hosted build
+// from booting with no support address, which would leave its people writing to
+// somebody who can see neither their data nor their machine.
 func TestSelfHostedProductionRequiresOperatorIdentity(t *testing.T) {
 	t.Setenv("FEASIBLE_ENV", EnvProduction)
 	t.Setenv("FEASIBLE_APP_HOSTED", "false")
@@ -459,7 +458,7 @@ func TestSelfHostedProductionRequiresOperatorIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "FEASIBLE_OPERATOR_NAME") || !strings.Contains(err.Error(), "FEASIBLE_OPERATOR_ADDRESS") || !strings.Contains(err.Error(), "FEASIBLE_OPERATOR_EMAIL") {
+	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "FEASIBLE_OPERATOR_EMAIL") {
 		t.Fatalf("missing self-hosted operator error = %v", err)
 	}
 
