@@ -216,11 +216,10 @@ func buildMailer(e *env) (*mail.Mailer, error) {
 	})
 }
 
-// Routes adds the commercial surface to the mux: authenticated account pages,
-// public pricing and documentation, and the provider webhook. Authentication
-// is injected here so pages remains usable without importing auth.
+// Routes adds the commercial surface to the mux: the billing screens, the
+// upgrade screen and the provider webhook. Authentication is injected here so
+// pages remains usable without importing auth.
 func (c *commerce) Routes(mux *http.ServeMux, app *auth.Handler) {
-	c.Pages.OptionalAccount = app.OptionalAccount
 	c.Pages.RequireAccount = app.RequireAccount
 	c.Pages.CurrentAccount = func(r *http.Request) (pages.Account, error) {
 		teamID, email, err := app.CurrentAccount(r)

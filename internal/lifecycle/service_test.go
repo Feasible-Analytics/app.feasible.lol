@@ -396,7 +396,9 @@ func TestPendingEmailsAreCancelledOnPayment(t *testing.T) {
 }
 
 // TestLapseNoticeLinksToSafeSelectedBillingPage keeps email prefetchers away
-// from the side-effecting portal action while retaining the intended account.
+// from any side-effecting action while retaining the intended account. Both
+// links are plain GETs on a screen; the provider session is created only when
+// the signed-in person submits a form there.
 func TestLapseNoticeLinksToSafeSelectedBillingPage(t *testing.T) {
 	h := newHarness(t)
 	account := Account{
@@ -407,12 +409,9 @@ func TestLapseNoticeLinksToSafeSelectedBillingPage(t *testing.T) {
 	}
 
 	notice := h.service.notice(account, Sequence[0], day0)
-	if notice.PortalURL != "https://feasible.lol/billing?team=1" {
-		t.Fatalf("lapse notice portal URL is %q", notice.PortalURL)
-	}
-	if notice.UpgradeURL != "https://feasible.lol/billing/upgrade?team=1" ||
+	if notice.BillingURL != "https://feasible.lol/billing?team=1" ||
 		notice.ExportURL != "https://feasible.lol/billing/export?team=1" {
-		t.Fatalf("lapse account URLs are upgrade=%q export=%q", notice.UpgradeURL, notice.ExportURL)
+		t.Fatalf("lapse account URLs are billing=%q export=%q", notice.BillingURL, notice.ExportURL)
 	}
 }
 
@@ -634,7 +633,7 @@ func TestLifecycleOutboxRetryUsesItsOriginalPayload(t *testing.T) {
 	}
 	got := h.sent[0]
 	if got.To != original.To || got.TeamName != original.TeamName || got.Day != original.Day ||
-		got.UpgradeURL != original.UpgradeURL || got.ExportURL != original.ExportURL || got.MessageKey != claim.MessageKey {
+		got.BillingURL != original.BillingURL || got.ExportURL != original.ExportURL || got.MessageKey != claim.MessageKey {
 		t.Fatalf("payload changed across retry: original=%+v retry=%+v", original, got)
 	}
 }
