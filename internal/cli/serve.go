@@ -352,6 +352,7 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 		DisableCommerce:     !e.cfg.App.Hosted,
 		BaseURL:             e.cfg.App.BaseURL,
 		Log:                 e.log,
+		Slack:               e.slack,
 		OutboundPolicy:      outbound.PolicyFor(e.cfg),
 		Avatars:             newAvatarRefresher(e, control),
 		HelpURL:             pages.SiteURL + "/docs",

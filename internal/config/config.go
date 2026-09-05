@@ -165,6 +165,12 @@ type App struct {
 	// configurable because a self-hoster's "talk to us" address is not ours.
 	SalesEmail string
 
+	// SlackWebhookURL receives our own commercial notices — a signup, a
+	// subscription starting or ending, an account closing. It is ours rather
+	// than a customer's, so it is not the customer webhook system; empty, the
+	// normal state everywhere but our own deployment, sends nothing.
+	SlackWebhookURL string
+
 	// Operator identifies the legal entity responsible for a self-hosted
 	// deployment. Hosted pages continue to identify Cloudmanic explicitly.
 	OperatorName    string
@@ -651,6 +657,7 @@ func LoadFrom(l *Loader) (*Config, error) {
 			ShardID:         shardID,
 			MailFrom:        l.String("FEASIBLE_APP_MAIL_FROM", DefaultAppMailFrom),
 			SalesEmail:      l.String("FEASIBLE_APP_SALES_EMAIL", DefaultAppSalesEmail),
+			SlackWebhookURL: strings.TrimSpace(l.String("FEASIBLE_SLACK_WEBHOOK_URL", "")),
 			OperatorName:    strings.TrimSpace(l.String("FEASIBLE_OPERATOR_NAME", "")),
 			OperatorAddress: strings.TrimSpace(l.String("FEASIBLE_OPERATOR_ADDRESS", "")),
 			OperatorEmail:   strings.TrimSpace(l.String("FEASIBLE_OPERATOR_EMAIL", "")),

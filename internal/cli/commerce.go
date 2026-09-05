@@ -89,6 +89,7 @@ func buildCommerce(e *env, control *sql.DB, manager *accounts.Manager, siteCache
 			Yearly:  stripeYearly,
 		},
 		Log:           e.log,
+		Slack:         e.slack,
 		WebhookSecret: stripeWebhook,
 		BaseURL:       e.cfg.App.BaseURL,
 	}

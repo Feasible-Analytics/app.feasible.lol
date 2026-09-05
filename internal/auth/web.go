@@ -28,6 +28,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/outbound"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/slack"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
 )
@@ -107,6 +108,11 @@ type Handler struct {
 	BaseURL string
 	Log     *logger.Logger
 
+	// Slack announces commercial events to our own team chat: an account
+	// created, an account closed. Nil sends nothing, which is what a
+	// self-hosted install and every test get.
+	Slack *slack.Notifier
+
 	// Verifier fetches a customer's page during the installation check. It is a
 	// field so a test can answer without a network, and so the timeout is set
 	// in one place. It dials through the outbound policy: the domain is a value
@@ -166,6 +172,7 @@ type Options struct {
 	DisableCommerce     bool
 	BaseURL             string
 	Log                 *logger.Logger
+	Slack               *slack.Notifier
 
 	// OutboundPolicy bounds where the installation check may connect. Its zero
 	// value refuses loopback and every private range, which is the safe default
@@ -217,6 +224,7 @@ func NewHandler(opts Options) (*Handler, error) {
 		DisableCommerce:     opts.DisableCommerce,
 		BaseURL:             strings.TrimRight(opts.BaseURL, "/"),
 		Log:                 opts.Log,
+		Slack:               opts.Slack,
 		Verifier:            opts.OutboundPolicy.NewClient(verifyTimeout),
 		Avatars:             opts.Avatars,
 		HelpURL:             opts.HelpURL,
@@ -232,6 +240,7 @@ func NewHandler(opts Options) (*Handler, error) {
 // ServeHTTP dispatches to the route table.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	i18n.Apply(w, r)
+	h.recordFirstTouch(w, r)
 	h.mux.ServeHTTP(&languageResponseWriter{ResponseWriter: w, request: r}, r)
 }
 

@@ -130,6 +130,9 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 
 	h.Log.Info("account created", "user", user.ID, "team", team.ID)
 
+	referral := h.captureReferral(w, r, user.ID)
+	h.announceSignup(user, team.ID, SignupMethodPassword, referral)
+
 	h.sendVerification(r, user, next)
 	h.startSession(w, r, user)
 

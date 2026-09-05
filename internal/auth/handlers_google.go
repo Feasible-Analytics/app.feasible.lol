@@ -102,6 +102,7 @@ func (h *Handler) finishGoogle(w http.ResponseWriter, r *http.Request) {
 
 	if created {
 		h.Log.Info("account created through google", "user", user.ID)
+		h.announceGoogleSignup(r.Context(), user, h.captureReferral(w, r, user.ID))
 	}
 
 	// Every sign-in, not only the first: somebody who changes their Google
