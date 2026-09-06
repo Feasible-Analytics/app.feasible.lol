@@ -379,3 +379,69 @@ func TestCommonTimezonesAreRealZones(t *testing.T) {
 		}
 	}
 }
+
+// TestUpdateSiteGeneralLeavesPublishingAlone pins the split of ownership: the
+// General screen renames a site and moves its day boundary, and publishing is
+// Visibility's to write. A stale form posting is_public must not be able to put
+// a site's traffic on the open internet.
+func TestUpdateSiteGeneralLeavesPublishingAlone(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	_, team, err := s.CreateUser(ctx, "a@example.com", "", "hash", "")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	site, err := s.CreateSite(ctx, team.ID, "example.com", "", "Etc/UTC")
+	if err != nil {
+		t.Fatalf("create site: %v", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, `UPDATE sites SET is_public = 1 WHERE id = ?`, site.ID); err != nil {
+		t.Fatalf("publish site: %v", err)
+	}
+
+	if err := s.UpdateSiteGeneral(ctx, team.ID, site.ID, "Renamed", "America/Los_Angeles"); err != nil {
+		t.Fatalf("update general: %v", err)
+	}
+
+	saved, err := s.SiteByID(ctx, team.ID, site.ID)
+	if err != nil {
+		t.Fatalf("read site: %v", err)
+	}
+
+	if saved.DisplayName != "Renamed" {
+		t.Errorf("want the new display name, got %q", saved.DisplayName)
+	}
+
+	if saved.Timezone != "America/Los_Angeles" {
+		t.Errorf("want the new timezone, got %q", saved.Timezone)
+	}
+
+	if !saved.IsPublic {
+		t.Error("saving General must not un-publish a site — Visibility owns that flag")
+	}
+}
+
+// TestUpdateSiteGeneralRejectsANonZone checks the timezone guard, because a
+// name SQLite will happily store but Go cannot load re-buckets every chart into
+// an error on the next read.
+func TestUpdateSiteGeneralRejectsANonZone(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	_, team, err := s.CreateUser(ctx, "a@example.com", "", "hash", "")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	site, err := s.CreateSite(ctx, team.ID, "example.com", "", "Etc/UTC")
+	if err != nil {
+		t.Fatalf("create site: %v", err)
+	}
+
+	if err := s.UpdateSiteGeneral(ctx, team.ID, site.ID, "Renamed", "Mars/Olympus_Mons"); err == nil {
+		t.Fatal("want an error for a name that is not a timezone")
+	}
+}
