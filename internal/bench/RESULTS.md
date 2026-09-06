@@ -18,8 +18,9 @@ one running everything else a laptop runs, so **read the shape of the curve
 rather than the third significant figure.** Repeat runs of the same benchmark
 vary by a third either way, and the ranges below say by how much.
 
-**Write numbers taken:** 6 September 2026. The read and storage sections below
-are older and are dated where they are described.
+**Write numbers taken:** 6 September 2026, re-taken the same day after the
+account-handle work. The read and storage sections below are older and are dated
+where they are described.
 
 **Driver:** `modernc.org/sqlite` (pure Go), with whatever pragmas
 `internal/store/store.go` sets. At the time of measurement: WAL,
@@ -34,32 +35,43 @@ are older and are dated where they are described.
 50,000 events per run through the real accept path: the same handler,
 derivation, write buffer and shard writer a request takes, at the production
 buffer bounds (250 events or 500 ms), 5,000 distinct visitors, one site per
-account. Four runs of each; the rate is the median with the range beside it, and
-the latency columns are the range across the four.
+account. Three runs of each on an otherwise idle machine; the rate is the median
+with the range beside it, and the latency columns are the range across the
+three.
 
 **Every number here is measured under saturation.** The driver keeps 250
 requests in flight at once, matching the buffer bound, because a sequential
 driver would produce one-event flushes and measure nothing about batching. Read
 the latencies as "what a shard under sustained load does", not as what a quiet
-site's visitors see. The quiet case is the section after the table.
+site's visitors see. What a quiet site costs has a section of its own below.
 
 **The request waits for a durable commit.** `/api/event` answers 202 only after
-the batch carrying that event has been fsynced, so the accept latency is the
-visitor's wait, not a hand-off. That is what a 202 means here, and it is the
-reason `synchronous=FULL` is in force.
+the batch carrying that event has been fsynced, so the accept latency below is
+an event reaching disk rather than an event reaching a buffer. That is what a
+202 means here, and it is the reason `synchronous=FULL` is in force. It is not a
+visitor's page load: the tracker sends with `keepalive` and never reads the
+answer. What it holds is a connection and a goroutine per event in flight.
 
 | Accounts | Events/s | Accept p50 | Accept p99 | Flush p50 | Flush p99 |
 |---:|---:|---:|---:|---:|---:|
-| 1 | 3,843 (3,215–5,550) | 31–69 ms | 86–183 ms | 29–66 ms | 83–154 ms |
-| 4 | 2,662 (1,843–2,926) | 80–133 ms | 156–261 ms | 77–129 ms | 127–251 ms |
-| 16 | 1,280 (1,203–1,404) | 126–149 ms | 338–487 ms | 81–107 ms | 186–374 ms |
-| 64 | 605 (540–690) | 240–281 ms | 4.0–11.6 s | 89–110 ms | 303–389 ms |
-| 256 | 413 (399–432) | 244–266 ms | 15.1–16.9 s | 78–94 ms | 293–358 ms |
+| 1 | 4,739 (4,328–4,986) | 47–54 ms | 71–102 ms | 44–52 ms | 66–95 ms |
+| 4 | 3,018 (2,616–3,021) | 76–92 ms | 128–214 ms | 72–88 ms | 125–190 ms |
+| 16 | 1,661 (1,429–2,072) | 105–117 ms | 183–486 ms | 92–114 ms | 178–406 ms |
+| 64 | 691 (661–768) | 199–227 ms | 5.0–9.0 s | 69–87 ms | 336–467 ms |
+| 256 | 486 (450–522) | 220–236 ms | 11.4–14.8 s | 74–75 ms | 288–383 ms |
+
+These sit 13–30% above the first set of the same day. **Do not read that as an
+improvement anything here caused.** Repeat runs of this benchmark vary by a
+third either way, which is wider than the whole gap, and the first set was taken
+while the test suite was still running. Two unrelated pieces of work landed in
+between — the account-handle cache and the fold-state prune index — and neither
+can be separated from the noise by these numbers. The table is a fresh baseline,
+not a before-and-after.
 
 **What this says.**
 
 - **Throughput falls with the account count, and there is no plateau.** From one
-  account to 256 the rate drops roughly nine-fold, and every step down the column
+  account to 256 the rate drops roughly ten-fold, and every step down the column
   costs something. This is the number that decides how many accounts belong on
   one shard, and it is the opposite of what the first measurement said.
 - **The mechanism is batch fan-out, not the file count on its own.** One shared
@@ -67,24 +79,28 @@ reason `synchronous=FULL` is in force.
   each separately fsynced: about 250 events per commit at one account and about
   one at 256. That points at batching per account rather than at fewer files.
 - **Sixteen accounts cost about two thirds of the single-account rate**
-  (60/65/67/77% across the four passes). The 1→4 step is not measurable at this
-  noise level — the four passes disagree by 67%, 33%, 29% and 9% — so where
-  exactly the curve turns is not something these numbers can say.
+  (56/67/67% across the three passes). The 1→4 step is the noisiest in the table
+  — the three passes put it at 30%, 36% and 48% — so where exactly the curve
+  turns is not something these numbers can say.
 - **Accept p99 goes from under half a second to seconds.** Under 490 ms to
-  sixteen accounts; 4–12 s at 64 and 15–17 s at 256. That is a saturated shard,
+  sixteen accounts; 5–9 s at 64 and 11–15 s at 256. That is a saturated shard,
   not 256 ordinary accounts, and it is not a visitor's page load either: the
   tracker sends with `keepalive`, so the browser does not wait for the answer.
   What it does hold is a connection and a goroutine per event in flight, which
   is the resource that runs out first.
-- **Flush latency no longer grows with the load.** 29–129 ms across every size,
+- **Flush latency no longer grows with the load.** 44–114 ms across every size,
   against seconds in the first measurement. The buffer is not growing past its
   bound while it waits, because the requests filling it are themselves blocked on
   the previous commit. The queue moved from the buffer to the request.
 
 ### How much of this is `synchronous=FULL`
 
+Taken against the first set of FULL numbers, before the account-handle work. The
+shape is what it says; the absolute figures are one revision behind the table
+above.
+
 **One** comparison pass on the same code with the pragma set to `NORMAL`, against
-the four-pass FULL range above. One sample is enough to say which side of a
+the FULL range as it then stood. One sample is enough to say which side of a
 range it falls on and not enough to put a ratio on it, so that is all this claims:
 
 | Accounts | NORMAL events/s | FULL range | Reading |
@@ -235,6 +251,24 @@ The same dataset on disk, with every index and both roll-up grains built:
 A million pageviews is about 300 MB once it is indexed and summarised. Raw rows
 age out and roll-ups do not, so the long-run figure per year is lower than
 multiplying that by twelve suggests.
+
+### What the fold-state prune indexes cost
+
+Unlike the throughput figures, this one is deterministic — SQLite writes the
+same pages every time — so it is worth recording exactly.
+
+Measured 6 September 2026 on 20,000 rows in each fold-state table:
+
+| | Pages | Bytes per row |
+|---|---:|---:|
+| `ingest_session_state_expiry` | 62 | ~13 |
+| `ingest_orphan_engagements_expiry` | 140 | ~29 |
+
+Together they add 202 pages to the two tables' 697, so on a seed with small
+payloads the fold-state tables grow by 29%. A real payload is larger, so the
+share on a live database is smaller than that. Both tables are bounded by the
+48-hour retention the prune enforces, so this is a fraction of two small tables,
+not of the account database.
 
 ## The driver
 

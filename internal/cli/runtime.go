@@ -145,8 +145,10 @@ func ingestHealth(checks *health.Set, control *sql.DB, service *ingest.Service, 
 			"idle_closes": stats.IdleCloses,
 			"overshoots":  stats.Overshoots,
 
-			// Any at all and this process may be holding a handle to an
-			// account somebody else has deleted.
+			// Watchers never follows the account count. Any watch failure at
+			// all and this process may be holding a handle to an account
+			// somebody else has deleted.
+			"watchers":       int64(stats.Watchers),
 			"watch_failures": stats.WatchFailures,
 		}
 	})

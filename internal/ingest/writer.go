@@ -423,11 +423,7 @@ func durableFoldRanges(events []Event) map[sessionKey]durableFoldRange {
 // loadDurableFoldKey restores serialized fold state and durable orphan events
 // into a transaction-local cache.
 func loadDurableFoldKey(ctx context.Context, tx *sql.Tx, cache *SessionCache, accountID int64, key sessionKey, first, last int64) error {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT payload FROM ingest_session_state
-		WHERE site_id = ? AND user_id = ?
-		  AND started_at <= ? AND last_seen_at >= ?
-		ORDER BY started_at`,
+	rows, err := tx.QueryContext(ctx, selectVisitorSessionState,
 		key.siteID, key.userID, last+sessionTimeoutSeconds, first-sessionTimeoutSeconds)
 	if err != nil {
 		return fmt.Errorf("write batch: read durable sessions: %w", err)
@@ -456,11 +452,7 @@ func loadDurableFoldKey(ctx context.Context, tx *sql.Tx, cache *SessionCache, ac
 		return err
 	}
 
-	orphans, err := tx.QueryContext(ctx, `
-		SELECT payload FROM ingest_orphan_engagements
-		WHERE site_id = ? AND user_id = ?
-		  AND timestamp BETWEEN ? AND ?
-		ORDER BY timestamp`,
+	orphans, err := tx.QueryContext(ctx, selectVisitorOrphans,
 		key.siteID, key.userID, first-sessionTimeoutSeconds, last+sessionTimeoutSeconds)
 	if err != nil {
 		return fmt.Errorf("write batch: read durable orphans: %w", err)
@@ -603,6 +595,38 @@ func loadLegacyFoldKey(ctx context.Context, tx *sql.Tx, cache *SessionCache, acc
 // the sessions table, and a parked ping is a drop with a reason.
 const foldStateRetention = 48 * time.Hour
 
+// The five statements that read and prune the fold-state tables.
+//
+// They are constants rather than string literals at the call sites so that a
+// test can plan the statement the writer actually issues. A plan assertion over
+// a copy of the SQL passes while the real query scans every session a site has
+// had, which is exactly the regression such a test exists to catch.
+const (
+	selectExpiredOrphans = `
+		SELECT payload FROM ingest_orphan_engagements
+		WHERE site_id = ? AND timestamp < ?`
+
+	deleteExpiredOrphans = `
+		DELETE FROM ingest_orphan_engagements
+		WHERE site_id = ? AND timestamp < ?`
+
+	deleteExpiredSessionState = `
+		DELETE FROM ingest_session_state
+		WHERE site_id = ? AND last_seen_at < ?`
+
+	selectVisitorSessionState = `
+		SELECT payload FROM ingest_session_state
+		WHERE site_id = ? AND user_id = ?
+		  AND started_at <= ? AND last_seen_at >= ?
+		ORDER BY started_at`
+
+	selectVisitorOrphans = `
+		SELECT payload FROM ingest_orphan_engagements
+		WHERE site_id = ? AND user_id = ?
+		  AND timestamp BETWEEN ? AND ?
+		ORDER BY timestamp`
+)
+
 // pruneFoldState removes fold state past the retention window for the sites in
 // a batch and returns the parked pings that will now never find their pageview,
 // so they can be reported after commit. Without this both tables grow for the
@@ -632,9 +656,7 @@ func (w *Writer) pruneFoldState(ctx context.Context, tx *sql.Tx, events []Event)
 		}
 		pruned[siteID] = struct{}{}
 
-		rows, err := tx.QueryContext(ctx, `
-			SELECT payload FROM ingest_orphan_engagements
-			WHERE site_id = ? AND timestamp < ?`, siteID, cutoff)
+		rows, err := tx.QueryContext(ctx, selectExpiredOrphans, siteID, cutoff)
 		if err != nil {
 			return nil, fmt.Errorf("write batch: read expired orphans: %w", err)
 		}
@@ -655,12 +677,10 @@ func (w *Writer) pruneFoldState(ctx context.Context, tx *sql.Tx, events []Event)
 			return nil, fmt.Errorf("write batch: read expired orphans: %w", err)
 		}
 
-		if _, err := tx.ExecContext(ctx,
-			"DELETE FROM ingest_orphan_engagements WHERE site_id = ? AND timestamp < ?", siteID, cutoff); err != nil {
+		if _, err := tx.ExecContext(ctx, deleteExpiredOrphans, siteID, cutoff); err != nil {
 			return nil, fmt.Errorf("write batch: prune expired orphans: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx,
-			"DELETE FROM ingest_session_state WHERE site_id = ? AND last_seen_at < ?", siteID, cutoff); err != nil {
+		if _, err := tx.ExecContext(ctx, deleteExpiredSessionState, siteID, cutoff); err != nil {
 			return nil, fmt.Errorf("write batch: prune fold state: %w", err)
 		}
 	}
