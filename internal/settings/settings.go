@@ -836,14 +836,15 @@ func (h *Handler) refreshShields(ctx context.Context, db *sql.DB, siteID int64, 
 
 // stampRules records the change in system.db.
 //
-// This process already pushed the new rules into its own snapshot; the marker
-// is for every other one. Without it a second app shard, or the ingest tier,
-// would go on applying the old rules until the hourly full pass.
+// This process already pushed the new rules into its own snapshot. The marker
+// is how every other process sharing this data directory finds out — an
+// ingester, a worker, a second web process — and without it they go on applying
+// the old rules until the hourly full pass.
 //
-// A failure here is logged rather than returned: the rule is saved, and the
-// worst case is that the other processes pick it up within the hour.
+// A failure is logged rather than returned. The rule is saved and this process
+// is already applying it; the cost is that the others are up to an hour behind.
 func (h *Handler) stampRules(ctx context.Context, accountID int64) {
-	if err := h.Sites.StampRules(ctx, accountID, time.Now().UTC()); err != nil && h.Log != nil {
+	if err := h.Sites.StampRules(ctx, accountID, h.now().UTC()); err != nil && h.Log != nil {
 		h.Log.Error("a rule change was not stamped, so other processes will not see it "+
 			"until the next full refresh", "account", accountID, "error", err)
 	}

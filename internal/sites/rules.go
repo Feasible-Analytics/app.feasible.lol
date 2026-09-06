@@ -10,6 +10,7 @@ package sites
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -44,11 +45,14 @@ func (c *Cache) StampRules(ctx context.Context, accountID int64, now time.Time) 
 // Nanoseconds, not seconds: two edits inside the same second are two edits, and
 // a refresh that compared seconds would miss the second one for an hour.
 func (c *Cache) RuleVersions(ctx context.Context) (map[int64]int64, error) {
-	versions := map[int64]int64{}
-
-	if c.db == nil {
-		return versions, nil
+	// An empty map here would read as "no account has ever changed a rule",
+	// which is indistinguishable from the answer on a healthy install and would
+	// quietly drop every rule change to the hourly pass.
+	if c == nil || c.db == nil {
+		return nil, errors.New("sites: rule versions need a control database")
 	}
+
+	versions := map[int64]int64{}
 
 	rows, err := c.db.QueryContext(ctx, "SELECT account_id, changed_at FROM account_rule_versions")
 	if err != nil {

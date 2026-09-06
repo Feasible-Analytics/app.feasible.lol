@@ -28,12 +28,20 @@ type countingOpener struct {
 	inner   *accounts.Manager
 	opens   int
 	refuses map[int64]bool
+
+	// before runs on every open, which is how a test lands a save in the window
+	// between a refresh reading the snapshot and publishing one.
+	before func()
 }
 
 // Acquire counts the call and hands back a real lease unless the test wants
 // this id to fail.
 func (c *countingOpener) Acquire(ctx context.Context, id int64) (*accounts.Lease, error) {
 	c.opens++
+
+	if c.before != nil {
+		c.before()
+	}
 
 	if c.refuses[id] {
 		return nil, errors.New("this account is busy")
@@ -277,5 +285,65 @@ func TestTheFullPassRebuildsWhateverTheMarkerSays(t *testing.T) {
 
 	if got := f.cache.Clean(1, "/x/7"); got != "/x/:id" {
 		t.Errorf("the full pass did not pick up the unstamped rule: %q", got)
+	}
+}
+
+// TestAFullPassLeavesNothingToDo is the bookkeeping half of the saving: a full
+// pass that recorded nothing about what it read would make the next incremental
+// pass re-open every stamped account.
+func TestAFullPassLeavesNothingToDo(t *testing.T) {
+	f := newCacheFixture(t)
+	ctx := context.Background()
+
+	for _, id := range []int64{1, 2} {
+		if err := f.sites.StampRules(ctx, id, f.now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := f.cache.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	before := f.opener.opens
+
+	if err := f.cache.RefreshChanged(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if opened := f.opener.opens - before; opened != 0 {
+		t.Errorf("the pass after a full pass opened %d accounts, want none", opened)
+	}
+}
+
+// TestASaveDuringARefreshSurvivesIt keeps a rule the settings page pushed from
+// being thrown away by a pass that was already running.
+func TestASaveDuringARefreshSurvivesIt(t *testing.T) {
+	f := newCacheFixture(t)
+	ctx := context.Background()
+
+	if err := f.cache.RefreshChanged(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	saved, err := Compile([]Rule{
+		{Position: 1, Pattern: "^/saved/(\\d+)$", Replacement: "/saved/:id", Enabled: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.opener.before = func() {
+		f.opener.before = nil
+
+		f.cache.Set(1, saved)
+	}
+
+	if err := f.cache.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := f.cache.Clean(1, "/saved/7"); got != "/saved/:id" {
+		t.Errorf("the rule the settings page pushed was thrown away by the pass that was running: %q", got)
 	}
 }

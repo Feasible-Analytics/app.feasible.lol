@@ -713,11 +713,25 @@ func TestSavingARuleStampsTheAccount(t *testing.T) {
 		t.Fatal("the account was stamped before anything was saved")
 	}
 
-	for name, request := range map[string]*http.Request{
-		"a shield rule": postForm(t, "/settings/sites/example.com/shields/add",
-			url.Values{"kind": {"page"}, "value": {"/admin*"}, "note": {""}}),
-		"a path rule": postForm(t, "/settings/sites/example.com/paths/trailing-slash", nil),
+	// A moving clock, so the second save's marker is genuinely later rather
+	// than equal, and a slice so the two run in a fixed order.
+	tick := time.Unix(1_800_000_000, 0)
+	handler.Now = func() time.Time {
+		tick = tick.Add(time.Second)
+
+		return tick
+	}
+
+	for _, save := range []struct {
+		name    string
+		request *http.Request
+	}{
+		{"a shield rule", postForm(t, "/settings/sites/example.com/shields/add",
+			url.Values{"kind": {"page"}, "value": {"/admin*"}, "note": {""}})},
+		{"a path rule", postForm(t, "/settings/sites/example.com/paths/trailing-slash", nil)},
 	} {
+		name, request := save.name, save.request
+
 		before := stamp()
 
 		recorder := httptest.NewRecorder()
