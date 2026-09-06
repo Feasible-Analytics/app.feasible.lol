@@ -125,7 +125,7 @@ func (h *Handler) doChangePassword(w http.ResponseWriter, r *http.Request) {
 
 	h.Log.Info("password changed", "user", user.ID)
 
-	if err := h.Mailer.SendPasswordChanged(r.Context(), user.Email, user.Name); err != nil {
+	if err := h.Mailer.SendPasswordChanged(r.Context(), user.Email); err != nil {
 		h.Log.Warn("could not send the password-changed email", "user", user.ID, "error", err)
 	}
 

@@ -51,7 +51,7 @@ func newTestMailer(t *testing.T) (*Mailer, *capture) {
 func TestVerificationCarriesBothTheCodeAndTheLink(t *testing.T) {
 	mailer, sender := newTestMailer(t)
 
-	err := mailer.SendVerification(context.Background(), "a@example.com", "Sam",
+	err := mailer.SendVerification(context.Background(), "a@example.com",
 		"12345678", "https://example.com/verify-email/confirm?token=abc")
 	if err != nil {
 		t.Fatalf("send verification: %v", err)
@@ -67,7 +67,7 @@ func TestVerificationCarriesBothTheCodeAndTheLink(t *testing.T) {
 		t.Errorf("wrong recipient: %q", msg.To)
 	}
 
-	for _, fragment := range []string{"12345678", "verify-email/confirm?token=abc", "Sam"} {
+	for _, fragment := range []string{"12345678", "verify-email/confirm?token=abc"} {
 		if !strings.Contains(msg.HTML, fragment) {
 			t.Errorf("the HTML part is missing %q", fragment)
 		}
@@ -80,21 +80,21 @@ func TestVerificationCarriesBothTheCodeAndTheLink(t *testing.T) {
 	}
 }
 
-// TestEveryMessageRenders checks all four templates, since a template that
-// fails to execute means an email nobody ever receives.
+// TestEveryMessageRenders drives the senders that carry no assertion of their
+// own, since a message that fails to render is an email nobody ever receives.
 func TestEveryMessageRenders(t *testing.T) {
 	mailer, sender := newTestMailer(t)
 	ctx := context.Background()
 
-	if err := mailer.SendPasswordReset(ctx, "a@example.com", "Sam", "https://example.com/reset"); err != nil {
+	if err := mailer.SendPasswordReset(ctx, "a@example.com", "https://example.com/reset"); err != nil {
 		t.Fatalf("send reset: %v", err)
 	}
 
-	if err := mailer.SendPasswordChanged(ctx, "a@example.com", "Sam"); err != nil {
+	if err := mailer.SendPasswordChanged(ctx, "a@example.com"); err != nil {
 		t.Fatalf("send password changed: %v", err)
 	}
 
-	if err := mailer.SendNewLogin(ctx, "a@example.com", "Sam", "Chrome on macOS", timefmt.Cycle24, time.Now()); err != nil {
+	if err := mailer.SendNewLogin(ctx, "a@example.com", "Chrome on macOS", timefmt.Cycle24, time.Now()); err != nil {
 		t.Fatalf("send new login: %v", err)
 	}
 
@@ -214,43 +214,6 @@ func TestBaseURLLosesItsTrailingSlash(t *testing.T) {
 	}
 }
 
-// TestTextFromHTMLKeepsTheContent checks the crude tag strip. It only has to
-// handle four templates we wrote ourselves, and what matters is that the code
-// and the link survive.
-func TestTextFromHTMLKeepsTheContent(t *testing.T) {
-	text := textFromHTML(`<div><p>Hi Sam,</p>
-
-	<p>Your code is <strong>12345678</strong>.</p>
-
-	<p><a href="https://example.com/x">https://example.com/x</a></p></div>`)
-
-	for _, fragment := range []string{"Hi Sam,", "12345678", "https://example.com/x"} {
-		if !strings.Contains(text, fragment) {
-			t.Errorf("the text part lost %q:\n%s", fragment, text)
-		}
-	}
-
-	if strings.Contains(text, "<") || strings.Contains(text, ">") {
-		t.Errorf("tags should be stripped:\n%s", text)
-	}
-
-	// Stripping block tags leaves runs of blank lines, and a column of gaps is
-	// not a readable message.
-	if strings.Contains(text, "\n\n\n") {
-		t.Errorf("blank lines should be collapsed:\n%q", text)
-	}
-}
-
-// TestTextFromHTMLUnescapesLinkQueries keeps multi-parameter links clickable in
-// plain-text mail clients instead of exposing the template's &amp; entity.
-func TestTextFromHTMLUnescapesLinkQueries(t *testing.T) {
-	text := textFromHTML(`<p><a href="https://example.test/path?a=1&amp;b=2">https://example.test/path?a=1&amp;b=2</a></p>`)
-
-	if text != "https://example.test/path?a=1&b=2" {
-		t.Fatalf("plain-text link is %q", text)
-	}
-}
-
 // TestTheNewLoginMailFollowsTheReadersClock covers the mail that is read in a
 // hurry. "Was that three in the afternoon or three in the morning" is the first
 // question somebody has about a sign-in they do not recognise.
@@ -266,7 +229,7 @@ func TestTheNewLoginMailFollowsTheReadersClock(t *testing.T) {
 		sender := &capture{}
 		mailer := NewWithTransport(sender, "feasible <no-reply@example.com>", "https://feasible.lol")
 
-		if err := mailer.SendNewLogin(ctx, "a@example.com", "Sam", "Chrome on macOS", cycle, at); err != nil {
+		if err := mailer.SendNewLogin(ctx, "a@example.com", "Chrome on macOS", cycle, at); err != nil {
 			t.Fatalf("send new login: %v", err)
 		}
 
@@ -277,5 +240,154 @@ func TestTheNewLoginMailFollowsTheReadersClock(t *testing.T) {
 		if !strings.Contains(sender.messages[0].Text, want) {
 			t.Errorf("the %q dial produced %q, want it to contain %q", cycle, sender.messages[0].Text, want)
 		}
+	}
+}
+
+// accountMessages builds one of each account email, for the assertions that
+// have to hold across all four.
+func accountMessages(t *testing.T) map[string]Message {
+	t.Helper()
+
+	mailer, sender := newTestMailer(t)
+	ctx := context.Background()
+
+	if err := mailer.SendVerification(ctx, "a@example.com", "12345678", "https://example.com/verify?token=abc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mailer.SendPasswordReset(ctx, "a@example.com", "https://example.com/reset?token=xyz&from=email"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mailer.SendPasswordChanged(ctx, "a@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mailer.SendNewLogin(ctx, "a@example.com", "Chrome on macOS", timefmt.Cycle24,
+		time.Date(2026, 9, 4, 15, 4, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+
+	byTag := map[string]Message{}
+	for _, message := range sender.messages {
+		byTag[message.Tag] = message
+	}
+
+	if len(byTag) != 4 {
+		t.Fatalf("built %d distinct messages, want 4", len(byTag))
+	}
+
+	return byTag
+}
+
+// TestTheAccountEmailsCarryTheFooter is what CAN-SPAM needs and what tells a
+// reader the message is from us. These four ask somebody to click a link and
+// type a password, so an unbranded one with no sender identity is exactly the
+// shape they have to be distinguishable from.
+func TestTheAccountEmailsCarryTheFooter(t *testing.T) {
+	for tag, message := range accountMessages(t) {
+		for _, fragment := range []string{"Cloudmanic Labs, LLC", "901 Brutscher Street, D112", "Newberg, OR 97132"} {
+			if !strings.Contains(message.HTML, fragment) {
+				t.Errorf("%s: the HTML part is missing %q", tag, fragment)
+			}
+
+			if !strings.Contains(message.Text, fragment) {
+				t.Errorf("%s: the text part is missing %q", tag, fragment)
+			}
+		}
+
+		if !strings.Contains(message.HTML, "Feasible<span") {
+			t.Errorf("%s: the HTML part has no wordmark", tag)
+		}
+	}
+}
+
+// TestTheAccountEmailsHaveAReadablePlainTextPart covers the client that refuses
+// HTML. The text part is built from the same data the HTML is, so it carries
+// the content rather than a scrape of the markup.
+func TestTheAccountEmailsHaveAReadablePlainTextPart(t *testing.T) {
+	for tag, message := range accountMessages(t) {
+		if strings.TrimSpace(message.Text) == "" {
+			t.Errorf("%s: the text part is empty", tag)
+		}
+
+		if strings.ContainsAny(message.Text, "<>") {
+			t.Errorf("%s: the text part carries markup:\n%s", tag, message.Text)
+		}
+
+		if message.Subject == "" {
+			t.Errorf("%s: no subject", tag)
+		}
+	}
+}
+
+// TestTheResetEmailShowsItsLink covers the one email that hands over account
+// control. A button hides where it goes and there is no hover on a phone, so
+// the URL is in the body as well as behind the button.
+func TestTheResetEmailShowsItsLink(t *testing.T) {
+	message := accountMessages(t)["password_reset"]
+
+	// Two parameters, so the escaping html/template applies to an ampersand in
+	// a query is actually exercised rather than assumed.
+	link := "https://example.com/reset?token=xyz&from=email"
+	escaped := "https://example.com/reset?token=xyz&amp;from=email"
+
+	if !strings.Contains(message.HTML, `href="`+escaped+`"`) {
+		t.Error("the reset email has no button pointing at the link")
+	}
+
+	// Visible text, not only an href. A button hides where it goes, and there
+	// is no hover on a phone.
+	if !strings.Contains(message.HTML, ">"+escaped+"<") {
+		t.Errorf("the reset link is not shown as text:\n%s", message.HTML)
+	}
+
+	if !strings.Contains(message.Text, link) {
+		t.Error("the plain-text part does not carry the reset link")
+	}
+}
+
+// TestTheNewSignInEmailRendersItsFacts checks the device and the time land in
+// the facts table, which is what it is for.
+func TestTheNewSignInEmailRendersItsFacts(t *testing.T) {
+	message := accountMessages(t)["new_login"]
+
+	for _, fragment := range []string{"Device", "Chrome on macOS", "Signed in", "4 September 2026 at 15:04 UTC"} {
+		if !strings.Contains(message.HTML, fragment) {
+			t.Errorf("the HTML part is missing %q", fragment)
+		}
+
+		if !strings.Contains(message.Text, fragment) {
+			t.Errorf("the text part is missing %q", fragment)
+		}
+	}
+}
+
+// TestTheAccountEmailSubjectsAreUnchanged pins what a person sees in their
+// inbox list and what delivery reporting groups on beside the tag.
+func TestTheAccountEmailSubjectsAreUnchanged(t *testing.T) {
+	want := map[string]string{
+		"verify_email":     "Your feasible.lol verification code",
+		"password_reset":   "Reset your feasible.lol password",
+		"password_changed": "Your feasible.lol password was changed",
+		"new_login":        "New sign-in to your feasible.lol account",
+	}
+
+	for tag, message := range accountMessages(t) {
+		if message.Subject != want[tag] {
+			t.Errorf("%s subject = %q, want %q", tag, message.Subject, want[tag])
+		}
+	}
+}
+
+// TestAMessageWithNoClosingHasNoEmptyParagraph keeps a blank block above the
+// address on the one message that has nothing to add after its buttons.
+func TestAMessageWithNoClosingHasNoEmptyParagraph(t *testing.T) {
+	message := accountMessages(t)["password_changed"]
+
+	if strings.Contains(message.HTML, "color:#605d5d;\">\n\n</p>") {
+		t.Errorf("an empty closing paragraph was rendered:\n%s", message.HTML)
+	}
+
+	// The address still starts the footer, with room above it.
+	if !strings.Contains(message.HTML, "margin:18px 0 0 0") {
+		t.Errorf("the footer lost its spacing when the closing was absent:\n%s", message.HTML)
 	}
 }

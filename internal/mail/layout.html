@@ -23,6 +23,13 @@
 {{ range .Body }}
 <p style="margin:0 0 14px 0; color:#444141;">{{ . }}</p>
 {{ end }}
+{{ if .Link }}
+<p style="margin:0 0 14px 0; word-break:break-all;"><a href="{{ .Link }}" style="color:#ec3013;">{{ .Link }}</a></p>
+{{ end }}
+{{ if .Code }}
+<p style="margin:24px 0; font-size:30px; line-height:1.2; letter-spacing:6px; font-weight:800;
+          font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color:#201e1d;">{{ .Code }}</p>
+{{ end }}
 </td>
 </tr>
 {{ if .Facts }}
@@ -47,18 +54,21 @@
    style="display:inline-block; padding:12px 22px; background:#ec3013;
           color:#f3f2f2; font-weight:800; text-decoration:none;">{{ .Primary.Label }}</a>
 {{ end }}
-{{ range .Secondary }}
-<a href="{{ .URL }}"
-   style="display:inline-block; padding:12px 18px; margin-left:6px; border:2px solid #201e1d; color:#201e1d; font-weight:800; text-decoration:none;">{{ .Label }}</a>
+{{ $primary := .Primary.URL }}
+{{ range $index, $button := .Secondary }}
+<a href="{{ $button.URL }}"
+   style="display:inline-block; padding:12px 18px;{{ if or $primary $index }} margin-left:6px;{{ end }} border:2px solid #201e1d; color:#201e1d; font-weight:800; text-decoration:none;">{{ $button.Label }}</a>
 {{ end }}
 </td>
 </tr>
 <tr>
 <td style="padding:0 32px 26px 32px; border-top:2px solid #d1d0d0;">
+{{ if .Closing }}
 <p style="margin:18px 0 6px 0; font-size:13px; color:#605d5d;">
 {{ .Closing }}
 </p>
-<p style="margin:0; font-size:12px; line-height:1.6; color:#7d7979;">
+{{ end }}
+<p style="margin:{{ if .Closing }}0{{ else }}18px 0 0 0{{ end }}; font-size:12px; line-height:1.6; color:#7d7979;">
 Cloudmanic Labs, LLC<br>
 901 Brutscher Street, D112<br>
 Newberg, OR 97132<br>

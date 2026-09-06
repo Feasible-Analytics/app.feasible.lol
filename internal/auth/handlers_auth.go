@@ -167,7 +167,7 @@ func (h *Handler) sendVerification(r *http.Request, user *User, next string) {
 		link += "&next=" + url.QueryEscape(safeNext(next))
 	}
 
-	if err := h.Mailer.SendVerification(r.Context(), user.Email, user.Name, code, link); err != nil {
+	if err := h.Mailer.SendVerification(r.Context(), user.Email, code, link); err != nil {
 		h.Log.Error("could not send the verification email", "user", user.ID, "error", err)
 	}
 }
@@ -209,7 +209,7 @@ func (h *Handler) startSession(w http.ResponseWriter, r *http.Request, user *Use
 		// which has no request to read one from.
 		cycle := timefmt.Resolve(user.TimeFormat, r)
 
-		if err := h.Mailer.SendNewLogin(r.Context(), user.Email, user.Name, label, cycle, h.Store.Now()); err != nil {
+		if err := h.Mailer.SendNewLogin(r.Context(), user.Email, label, cycle, h.Store.Now()); err != nil {
 			h.Log.Warn("could not send the new-device email", "user", user.ID, "error", err)
 		}
 	}
@@ -656,7 +656,7 @@ func (h *Handler) doForgot(w http.ResponseWriter, r *http.Request) {
 
 		link := h.BaseURL + "/reset-password?token=" + url.QueryEscape(token)
 
-		if err := h.Mailer.SendPasswordReset(r.Context(), user.Email, user.Name, link); err != nil {
+		if err := h.Mailer.SendPasswordReset(r.Context(), user.Email, link); err != nil {
 			h.Log.Error("could not send the password reset email", "user", user.ID, "error", err)
 		}
 	} else if !errors.Is(err, ErrNotFound) {
@@ -728,7 +728,7 @@ func (h *Handler) doReset(w http.ResponseWriter, r *http.Request) {
 	h.Log.Info("password reset", "user", userID)
 
 	if user, err := h.Store.UserByID(r.Context(), userID); err == nil {
-		if err := h.Mailer.SendPasswordChanged(r.Context(), user.Email, user.Name); err != nil {
+		if err := h.Mailer.SendPasswordChanged(r.Context(), user.Email); err != nil {
 			h.Log.Warn("could not send the password-changed email", "user", userID, "error", err)
 		}
 	}
