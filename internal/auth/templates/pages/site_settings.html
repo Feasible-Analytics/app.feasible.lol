@@ -39,7 +39,7 @@
   <div class="flex flex-col gap-2 border-t border-line px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
     <span class="flex items-center gap-1.5 text-sm font-medium text-body">
       <label for="timezone">{{ t $.Lang "auth.site_settings.timezone" }}</label>
-      <span class="cursor-help text-muted" title="{{ t $.Lang "auth.site_settings.timezone_help" }}" aria-label="{{ t $.Lang "auth.site_settings.timezone_help" }}">ⓘ</span>
+      {{ template "hint.html" (dict "Lang" $.Lang "ID" "timezone" "Text" (t $.Lang "auth.site_settings.timezone_help")) }}
     </span>
     <select id="timezone" name="timezone"
             class="w-full border-2 border-field px-3 py-2 text-sm focus:border-accent focus:ring-2 focus:ring-accent/25 focus:outline-none sm:w-72">

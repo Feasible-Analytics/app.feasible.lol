@@ -24,6 +24,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/destructive"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
@@ -1999,6 +2000,53 @@ func TestGeneralSettingsPointAtVisibilityAndCannotPublish(t *testing.T) {
 
 	if saved.IsPublic {
 		t.Error("a posted is_public must be ignored, or a stale form can publish a site")
+	}
+}
+
+// TestSettingsHelpIsAButtonNotATitleAttribute pins the delivery mechanism. A
+// title attribute needs a second of motionless hover, ignores a click, does not
+// exist on touch and cannot be tabbed to, so a glyph carrying one reads as
+// broken. type="button" is what keeps it from submitting the form it sits in.
+func TestSettingsHelpIsAButtonNotATitleAttribute(t *testing.T) {
+	app := newTestApp(t)
+	c := registerAndVerify(t, app)
+
+	resp := c.post("/sites/new", url.Values{
+		"domain":   {"hinted.example.com"},
+		"timezone": {"Etc/UTC"},
+	})
+	closeResponseBody(t, resp)
+
+	site, err := app.store.SiteByDomain(context.Background(), "hinted.example.com")
+	if err != nil {
+		t.Fatalf("read site: %v", err)
+	}
+
+	body := c.body("/sites/" + itoa(site.ID) + "/settings")
+
+	help := i18n.T("en", "auth.site_settings.timezone_help")
+	if !strings.Contains(body, help) {
+		t.Errorf("the timezone help text should be on the page, want %q", help)
+	}
+
+	if strings.Contains(body, `title="`+help+`"`) {
+		t.Error("the help must not be delivered as a title attribute")
+	}
+
+	at := strings.Index(body, `id="hint-timezone"`)
+	if at < 0 || !strings.Contains(body, `aria-describedby="hint-panel-timezone"`) {
+		t.Fatal("the trigger must be a real control described by its panel")
+	}
+
+	trigger := body[at:]
+	trigger = trigger[:strings.Index(trigger, ">")]
+
+	if !strings.Contains(body[:at], `<button type="button"`) {
+		t.Error("the trigger must be type=button, or opening the hint submits the form")
+	}
+
+	if strings.Contains(trigger, "aria-label=") {
+		t.Error("the label belongs on the panel, not as an aria-label on an unreachable element")
 	}
 }
 

@@ -1,0 +1,67 @@
+<!--
+  hint.html
+  The ⓘ help control beside a setting whose consequence is not obvious.
+
+  Created: 2026-09-06
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  A real button rather than a span carrying a title attribute. A title needs a
+  second of motionless hover, has nothing to do with a click, does not exist on
+  touch, and cannot be reached by tabbing — four separate ways for help to look
+  inert on a glyph that reads as a button.
+
+  Opening dispatches on the window so any other hint closes, because two open
+  panels overlapping is worse than either one.
+
+  The panel hangs from the trigger, and the trigger sits wherever its label
+  ends, so on a phone it can start close enough to the right edge to run off it.
+  place() measures once the panel is on screen and pulls it back inside.
+
+  Takes "Lang", "ID" — unique on the page — and "Text".
+-->
+<span class="relative inline-flex"
+      x-data="{
+        open: false,
+        delay: null,
+        shift: 0,
+        show() {
+          this.open = true;
+          this.$dispatch('hint-opened', '{{ .ID }}');
+          this.$nextTick(() => requestAnimationFrame(() => this.place()));
+        },
+
+        // A hidden panel measures as a zero-sized box at the origin, so this
+        // runs a frame after x-show has painted it.
+        place() {
+          this.shift = 0;
+          const box = this.$refs.panel.getBoundingClientRect();
+          const spill = box.right - (window.innerWidth - 12);
+          if (spill > 0) this.shift = -spill;
+        }
+      }"
+      @hint-opened.window="if ($event.detail !== '{{ .ID }}') open = false"
+      @keydown.escape.window="open = false"
+      @resize.window="if (open) place()"
+      @click.outside="open = false"
+      @mouseenter="delay = setTimeout(() => show(), 400)"
+      @mouseleave="clearTimeout(delay)">
+  <button type="button"
+          id="hint-{{ .ID }}"
+          aria-describedby="hint-panel-{{ .ID }}"
+          :aria-expanded="open ? 'true' : 'false'"
+          @click="open ? open = false : show()"
+          @blur="open = false"
+          class="cursor-help leading-none text-muted hover:text-body focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none">
+    ⓘ<span class="sr-only">{{ t .Lang "common.action.help" }}</span>
+  </button>
+
+  <span id="hint-panel-{{ .ID }}"
+        x-ref="panel"
+        role="tooltip"
+        x-show="open"
+        x-cloak
+        :style="{ marginLeft: shift + 'px' }"
+        class="absolute top-full left-0 z-20 mt-1.5 w-64 max-w-[calc(100vw-1.5rem)] border-2 border-line bg-card px-3 py-2 text-xs leading-relaxed font-normal text-body normal-case">
+    {{ .Text }}
+  </span>
+</span>
