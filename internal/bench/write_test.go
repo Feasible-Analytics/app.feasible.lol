@@ -26,7 +26,10 @@ const writeEvents = 50_000
 // to find where the rate stops being flat. Every write is a separate database
 // file, a separate write lock and a separate WAL, which is the whole reason the
 // number cannot be assumed.
-var accountCounts = []int{1, 4, 16, 64}
+//
+// It runs to 256 because the degradation starts at 64, and a curve that stops
+// at the point it turns is an extrapolation rather than a measurement.
+var accountCounts = []int{1, 4, 16, 64, 256}
 
 // BenchmarkWrite measures sustained events per second through the accept path.
 //
