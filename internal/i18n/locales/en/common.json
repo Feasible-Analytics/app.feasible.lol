@@ -2,7 +2,7 @@
   "common.action.cancel": "Cancel",
   "common.action.confirm": "Confirm",
   "common.action.copied": "Copied",
-  "common.action.help": "Help",
+  "common.action.help_about": "Help about {setting}",
   "common.action.retry": "Try again",
   "common.action.save": "Save",
   "common.state.dash": "—",

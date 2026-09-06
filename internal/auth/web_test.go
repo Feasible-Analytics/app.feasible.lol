@@ -2033,21 +2033,46 @@ func TestSettingsHelpIsAButtonNotATitleAttribute(t *testing.T) {
 		t.Error("the help must not be delivered as a title attribute")
 	}
 
-	at := strings.Index(body, `id="hint-timezone"`)
-	if at < 0 || !strings.Contains(body, `aria-describedby="hint-panel-timezone"`) {
-		t.Fatal("the trigger must be a real control described by its panel")
+	// The tag carrying the id, not the page — the account menu in the shared
+	// header already renders a type="button", so a whole-page search for one is
+	// satisfied whatever the hint turns out to be.
+	trigger := openingTag(t, body, `id="hint-timezone"`)
+
+	if !strings.HasPrefix(trigger, "<button ") || !strings.Contains(trigger, `type="button"`) {
+		t.Errorf("the trigger must be a button of type button, or opening the hint submits the form: %q", trigger)
 	}
 
-	trigger := body[at:]
-	trigger = trigger[:strings.Index(trigger, ">")]
+	if !strings.Contains(trigger, `aria-describedby="hint-panel-timezone"`) {
+		t.Errorf("the trigger must be described by its panel, got %q", trigger)
+	}
 
-	if !strings.Contains(body[:at], `<button type="button"`) {
-		t.Error("the trigger must be type=button, or opening the hint submits the form")
+	if !strings.Contains(trigger, `:aria-expanded=`) {
+		t.Errorf("the trigger must report whether the panel is open, got %q", trigger)
 	}
 
 	if strings.Contains(trigger, "aria-label=") {
-		t.Error("the label belongs on the panel, not as an aria-label on an unreachable element")
+		t.Error("the help text belongs in the panel, not as an aria-label on the trigger")
 	}
+}
+
+// openingTag returns the whole opening tag of the element carrying the given
+// attribute, so an assertion about one control cannot be satisfied by a
+// different control elsewhere on the page.
+func openingTag(t *testing.T, body, attribute string) string {
+	t.Helper()
+
+	at := strings.Index(body, attribute)
+	if at < 0 {
+		t.Fatalf("no element carrying %s on the page", attribute)
+	}
+
+	start := strings.LastIndex(body[:at], "<")
+	end := strings.Index(body[at:], ">")
+	if start < 0 || end < 0 {
+		t.Fatalf("the element carrying %s is not a well-formed tag", attribute)
+	}
+
+	return body[start : at+end+1]
 }
 
 // generalRow returns the markup of the General card row carrying the given
