@@ -322,7 +322,13 @@ func (h *Handler) saveFunnel(w http.ResponseWriter, r *http.Request, site sites.
 		return
 	}
 
-	funnel := goals.Funnel{SiteID: site.ID, Name: r.PostFormValue("name"), StrictOrder: r.PostFormValue("mode") == "strict"}
+	// An unchecked checkbox posts nothing at all, so the stored flag is the
+	// inverse of the field being present.
+	funnel := goals.Funnel{
+		SiteID:      site.ID,
+		Name:        r.PostFormValue("name"),
+		StrictOrder: r.PostFormValue("allow_between") == "",
+	}
 	funnel.ID, _ = strconv.ParseInt(r.PostFormValue("funnel_id"), 10, 64)
 	for _, rawID := range r.PostForm["goal_id"] {
 		id, err := strconv.ParseInt(rawID, 10, 64)

@@ -17,7 +17,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/goals"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
@@ -110,7 +112,7 @@ func TestConversionsPageManagesGoalsPropertiesAndFunnels(t *testing.T) {
 	}
 
 	duplicate := conversionPost(t, handler, conversionsPath("example.com")+"/funnels/save", url.Values{
-		"name": {"Broken checkout"}, "mode": {"strict"},
+		"name":    {"Broken checkout"},
 		"goal_id": {formatID(first.ID), formatID(first.ID)},
 	})
 	if duplicate.Code != http.StatusSeeOther || !strings.Contains(duplicate.Header().Get("Location"), "appears+more+than+once") {
@@ -118,7 +120,7 @@ func TestConversionsPageManagesGoalsPropertiesAndFunnels(t *testing.T) {
 	}
 
 	created := conversionPost(t, handler, conversionsPath("example.com")+"/funnels/save", url.Values{
-		"name": {"Checkout"}, "mode": {"sequential"},
+		"name": {"Checkout"}, "allow_between": {"1"},
 		"goal_id": {formatID(first.ID), formatID(second.ID)},
 	})
 	if created.Code != http.StatusSeeOther {
@@ -248,4 +250,153 @@ func TestUnseenPropertiesDoesNotRescopeConfiguredNames(t *testing.T) {
 // formatID renders a database identifier for an HTML form value.
 func formatID(id int64) string {
 	return strconv.FormatInt(id, 10)
+}
+
+// TestTheFunnelActivitySwitchStoresBothWays is the one way this form can
+// silently corrupt every funnel it saves.
+//
+// An unchecked checkbox posts nothing at all, so the stored flag is the inverse
+// of a field being present. Read it the other way round and every funnel flips
+// its meaning, with no error and numbers that merely look wrong — which is why
+// both directions are asserted rather than the on state alone.
+func TestTheFunnelActivitySwitchStoresBothWays(t *testing.T) {
+	for name, test := range map[string]struct {
+		posted url.Values
+		strict bool
+	}{
+		"the switch is on":  {url.Values{"allow_between": {"1"}}, false},
+		"the switch is off": {url.Values{}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			handler, manager := newHandler(t)
+			handler.Role = func(*http.Request, sites.Site) teams.Role { return teams.RoleOwner }
+
+			account, err := manager.Open(context.Background(), 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			first, second := twoGoals(t, handler, account)
+
+			form := url.Values{"name": {"Checkout"}, "goal_id": {formatID(first), formatID(second)}}
+			for key, values := range test.posted {
+				form[key] = values
+			}
+
+			if response := conversionPost(t, handler,
+				conversionsPath("example.com")+"/funnels/save", form); response.Code != http.StatusSeeOther {
+				t.Fatalf("the save answered %d: %s", response.Code, response.Header().Get("Location"))
+			}
+
+			funnels, err := goals.ListFunnels(context.Background(), account.Reader(), 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if len(funnels) != 1 {
+				t.Fatalf("%d funnels were stored, want one", len(funnels))
+			}
+
+			if funnels[0].StrictOrder != test.strict {
+				t.Errorf("strict_order stored as %v, want %v", funnels[0].StrictOrder, test.strict)
+			}
+		})
+	}
+}
+
+// TestTheFunnelSwitchShowsWhatIsStored checks the other half of the round trip.
+// A switch that always renders on would save the right thing once and then
+// quietly turn every edited funnel back to the default.
+func TestTheFunnelSwitchShowsWhatIsStored(t *testing.T) {
+	for name, test := range map[string]struct {
+		strict  bool
+		checked bool
+	}{
+		"a funnel that allows other activity": {false, true},
+		"a funnel that requires consecutive":  {true, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			handler, manager := newHandler(t)
+			handler.Role = func(*http.Request, sites.Site) teams.Role { return teams.RoleOwner }
+
+			account, err := manager.Open(context.Background(), 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			first, second := twoGoals(t, handler, account)
+
+			if _, err := goals.CreateFunnel(context.Background(), account.Writer(), goals.Funnel{
+				SiteID: 1, Name: "Checkout", StrictOrder: test.strict,
+				Steps: []goals.Step{{GoalID: first}, {GoalID: second}},
+			}, handler.now()); err != nil {
+				t.Fatal(err)
+			}
+
+			body := get(t, handler, conversionsPath("example.com")).Body.String()
+
+			// The add form below the list always renders checked, so the
+			// funnel's own switch is the one before it.
+			edit, _, found := strings.Cut(body, i18n.T(i18n.DefaultLocale, "settings.conversions.add_funnel"))
+			if !found {
+				t.Fatal("the add-a-funnel form is not on the page, so this is reading the wrong switch")
+			}
+
+			state := strings.Contains(edit, `name="allow_between" value="1" checked`)
+			if state != test.checked {
+				t.Errorf("the stored funnel renders its switch checked=%v, want %v", state, test.checked)
+			}
+		})
+	}
+}
+
+// TestTheFunnelFormNamesNeitherMode is what the rewording was for. Both words
+// mean "in order", so neither tells the reader what actually differs, and a
+// screen that still shows one has only half changed.
+func TestTheFunnelFormNamesNeitherMode(t *testing.T) {
+	handler, manager := newHandler(t)
+	handler.Role = func(*http.Request, sites.Site) teams.Role { return teams.RoleOwner }
+
+	account, err := manager.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, second := twoGoals(t, handler, account)
+
+	if _, err := goals.CreateFunnel(context.Background(), account.Writer(), goals.Funnel{
+		SiteID: 1, Name: "Checkout", StrictOrder: true,
+		Steps: []goals.Step{{GoalID: first}, {GoalID: second}},
+	}, handler.now()); err != nil {
+		t.Fatal(err)
+	}
+
+	body := get(t, handler, conversionsPath("example.com")).Body.String()
+
+	for _, word := range []string{"Sequential", "Strict", "Matching mode"} {
+		if strings.Contains(body, word) {
+			t.Errorf("the screen still says %q", word)
+		}
+	}
+}
+
+// twoGoals is the pair every funnel test needs before it can build one.
+func twoGoals(t *testing.T, handler *Handler, account *accounts.Account) (int64, int64) {
+	t.Helper()
+
+	first, err := goals.Create(context.Background(), account.Writer(), goals.Goal{
+		SiteID: 1, Kind: goals.KindPage, DisplayName: "Pricing viewed", PagePattern: "/pricing",
+	}, handler.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := goals.Create(context.Background(), account.Writer(), goals.Goal{
+		SiteID: 1, Kind: goals.KindEvent, DisplayName: "Purchased", EventName: "Purchase",
+	}, handler.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return first.ID, second.ID
 }

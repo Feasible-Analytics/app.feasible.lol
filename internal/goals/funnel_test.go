@@ -264,3 +264,108 @@ func TestFunnelStepsKeepTheirOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestAHeartbeatDoesNotBreakAStrictRun pins the promise the funnel form makes
+// to the person choosing this setting: turning off "allow other activity"
+// demands consecutive events, and an engagement ping is not one of them.
+//
+// Without this, strict mode would be unsatisfiable on any page a visitor
+// spends more than a few seconds on, and the form would be telling them
+// something untrue.
+func TestAHeartbeatDoesNotBreakAStrictRun(t *testing.T) {
+	db, engine := newFixture(t)
+
+	// Visit 3 walks the whole checkout in order. One heartbeat lands between
+	// the cart and the checkout page, where a strict run is at its most
+	// fragile.
+	writeHeartbeat(t, db, nextEventID(t, db), 3, visitorC, at(30, 9, 0)+1, "/cart")
+
+	result := runFunnel(t, db, engine, buildFunnel(t, db, true))
+
+	if got := result.Steps[len(result.Steps)-1].Visitors; got != 1 {
+		t.Errorf("%d visitors finished the strict funnel with a heartbeat mid-run, want 1", got)
+	}
+}
+
+// TestABrokenStrictRunReportsTheFurthestAttempt is the other promise: a
+// visitor is credited with how far they ever got, not with wherever they
+// happened to stop.
+//
+// The visit reaches the second step, does something unrelated, and comes back
+// to the first — so its last attempt is shallower than its first. Reporting the
+// last one would make a funnel look worse the harder a visitor tried.
+//
+// It is a visitor the fixture does not otherwise have, so the assertion is that
+// they are counted rather than that two numbers match. Two numbers matching is
+// also what a test whose rows never arrived looks like.
+func TestABrokenStrictRunReportsTheFurthestAttempt(t *testing.T) {
+	db, engine := newFixture(t)
+	before := runFunnel(t, db, engine, buildFunnel(t, db, true)).Steps[1].Visitors
+
+	db, engine = newFixture(t)
+
+	const (
+		session = 99
+		visitor = 1099
+	)
+
+	writePageview(t, db, nextEventID(t, db), session, visitor, at(30, 14, 0), "/cart")
+	writePageview(t, db, nextEventID(t, db), session, visitor, at(30, 14, 1), "/checkout")
+
+	// The break, and then a restart that gets no further than the first step.
+	writePageview(t, db, nextEventID(t, db), session, visitor, at(30, 14, 2), "/pricing")
+	writePageview(t, db, nextEventID(t, db), session, visitor, at(30, 14, 3), "/cart")
+
+	after := runFunnel(t, db, engine, buildFunnel(t, db, true)).Steps[1].Visitors
+
+	if after != before+1 {
+		t.Errorf("%d visitors reached the second step, want %d — the visitor who got there and "+
+			"then restarted shallower is not being credited with their deepest attempt",
+			after, before+1)
+	}
+}
+
+// nextEventID reserves an event id past everything the fixture holds, so a test
+// that adds a row cannot collide with the next helper that does.
+func nextEventID(t *testing.T, db *sql.DB) int64 {
+	t.Helper()
+
+	var highest int64
+	if err := db.QueryRowContext(context.Background(),
+		"SELECT COALESCE(MAX(id), 0) FROM events").Scan(&highest); err != nil {
+		t.Fatal(err)
+	}
+
+	return highest + 1
+}
+
+// writeHeartbeat adds one engagement ping, which is a measurement rather than
+// something the visitor did.
+func writeHeartbeat(t *testing.T, db *sql.DB, id, session, user, timestamp int64, page string) {
+	t.Helper()
+
+	writeStepEvent(t, db, id, session, user, timestamp, ingest.EventEngagement, page)
+}
+
+// writePageview adds one ordinary pageview, which is something the visitor did
+// and so can break a strict run.
+func writePageview(t *testing.T, db *sql.DB, id, session, user, timestamp int64, page string) {
+	t.Helper()
+
+	writeStepEvent(t, db, id, session, user, timestamp, ingest.EventPageview, page)
+}
+
+// writeStepEvent inserts one event by its columns, which is what these tests
+// have: a database rather than the account handle writeEvent takes.
+func writeStepEvent(t *testing.T, db *sql.DB, id, session, user, timestamp int64, name, page string) {
+	t.Helper()
+
+	if _, err := db.ExecContext(context.Background(), `
+		INSERT INTO events (id, site_id, timestamp, name_id, user_id, session_id, pathname_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, siteID, timestamp,
+		internID(t, db, "dim_event_name", name), user, session,
+		internID(t, db, "dim_pathname", page)); err != nil {
+		t.Fatal(err)
+	}
+}
