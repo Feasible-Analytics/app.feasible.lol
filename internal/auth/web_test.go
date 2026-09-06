@@ -24,6 +24,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/destructive"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
@@ -2000,6 +2001,78 @@ func TestGeneralSettingsPointAtVisibilityAndCannotPublish(t *testing.T) {
 	if saved.IsPublic {
 		t.Error("a posted is_public must be ignored, or a stale form can publish a site")
 	}
+}
+
+// TestSettingsHelpIsAButtonNotATitleAttribute pins the delivery mechanism. A
+// title attribute needs a second of motionless hover, ignores a click, does not
+// exist on touch and cannot be tabbed to, so a glyph carrying one reads as
+// broken. type="button" is what keeps it from submitting the form it sits in.
+func TestSettingsHelpIsAButtonNotATitleAttribute(t *testing.T) {
+	app := newTestApp(t)
+	c := registerAndVerify(t, app)
+
+	resp := c.post("/sites/new", url.Values{
+		"domain":   {"hinted.example.com"},
+		"timezone": {"Etc/UTC"},
+	})
+	closeResponseBody(t, resp)
+
+	site, err := app.store.SiteByDomain(context.Background(), "hinted.example.com")
+	if err != nil {
+		t.Fatalf("read site: %v", err)
+	}
+
+	body := c.body("/sites/" + itoa(site.ID) + "/settings")
+
+	help := i18n.T("en", "auth.site_settings.timezone_help")
+	if !strings.Contains(body, help) {
+		t.Errorf("the timezone help text should be on the page, want %q", help)
+	}
+
+	if strings.Contains(body, `title="`+help+`"`) {
+		t.Error("the help must not be delivered as a title attribute")
+	}
+
+	// The tag carrying the id, not the page — the account menu in the shared
+	// header already renders a type="button", so a whole-page search for one is
+	// satisfied whatever the hint turns out to be.
+	trigger := openingTag(t, body, `id="hint-timezone"`)
+
+	if !strings.HasPrefix(trigger, "<button ") || !strings.Contains(trigger, `type="button"`) {
+		t.Errorf("the trigger must be a button of type button, or opening the hint submits the form: %q", trigger)
+	}
+
+	if !strings.Contains(trigger, `aria-describedby="hint-panel-timezone"`) {
+		t.Errorf("the trigger must be described by its panel, got %q", trigger)
+	}
+
+	if !strings.Contains(trigger, `:aria-expanded=`) {
+		t.Errorf("the trigger must report whether the panel is open, got %q", trigger)
+	}
+
+	if strings.Contains(trigger, "aria-label=") {
+		t.Error("the help text belongs in the panel, not as an aria-label on the trigger")
+	}
+}
+
+// openingTag returns the whole opening tag of the element carrying the given
+// attribute, so an assertion about one control cannot be satisfied by a
+// different control elsewhere on the page.
+func openingTag(t *testing.T, body, attribute string) string {
+	t.Helper()
+
+	at := strings.Index(body, attribute)
+	if at < 0 {
+		t.Fatalf("no element carrying %s on the page", attribute)
+	}
+
+	start := strings.LastIndex(body[:at], "<")
+	end := strings.Index(body[at:], ">")
+	if start < 0 || end < 0 {
+		t.Fatalf("the element carrying %s is not a well-formed tag", attribute)
+	}
+
+	return body[start : at+end+1]
 }
 
 // generalRow returns the markup of the General card row carrying the given

@@ -1,0 +1,70 @@
+<!--
+  hint.html
+  The ⓘ help control beside a setting whose consequence is not obvious.
+
+  Created: 2026-09-06
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  Takes "Lang", "Setting" — the label of the setting it sits beside, which
+  becomes the button's accessible name — "Text", and "ID", which must be a
+  literal: it is interpolated into an Alpine string, so anything derived from
+  input would break out of it.
+-->
+<span class="relative inline-flex"
+      x-data="{
+        open: false,
+        delay: null,
+
+        show(hovered) {
+          clearTimeout(this.delay);
+          this.delay = null;
+          this.open = true;
+          this.byHover = hovered;
+          this.$dispatch('hint-opened', '{{ .ID }}');
+          this.$nextTick(() => requestAnimationFrame(() => this.place()));
+        },
+
+        hide() {
+          clearTimeout(this.delay);
+          this.delay = null;
+          this.open = false;
+        },
+
+        // The panel hangs from the trigger, and the trigger sits wherever its
+        // label ends, so on a phone it can start close enough to the right edge
+        // to run off it. Alpine flushes a style binding on a microtask and a
+        // hidden panel measures as a zero box, so the margin is written to the
+        // element and read back in the same frame rather than through :style.
+        place() {
+          const panel = this.$refs.panel;
+          panel.style.marginLeft = '0px';
+          const spill = panel.getBoundingClientRect().right - (window.innerWidth - 12);
+          panel.style.marginLeft = spill > 0 ? -spill + 'px' : '0px';
+        }
+      }"
+      @hint-opened.window="if ($event.detail !== '{{ .ID }}') hide()"
+      @keydown.escape.window="hide()"
+      @resize.window="if (open) place()"
+      @click.outside="hide()"
+      @focusout="if (!$el.contains($event.relatedTarget)) hide()"
+      @mouseenter="if (!open) delay = setTimeout(() => show(true), 400)"
+      @mouseleave="byHover ? hide() : clearTimeout(delay)">
+  <button type="button"
+          id="hint-{{ .ID }}"
+          aria-controls="hint-panel-{{ .ID }}"
+          aria-describedby="hint-panel-{{ .ID }}"
+          :aria-expanded="open ? 'true' : 'false'"
+          @click="open ? hide() : show(false)"
+          class="cursor-pointer rounded-full p-0.5 leading-none text-muted hover:text-body focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none">
+    <span aria-hidden="true">ⓘ</span>
+    <span class="sr-only">{{ t .Lang "common.action.help_about" "setting" .Setting }}</span>
+  </button>
+
+  <span id="hint-panel-{{ .ID }}"
+        x-ref="panel"
+        x-show="open"
+        x-cloak
+        class="absolute top-full left-0 z-20 mt-1.5 w-64 max-w-[calc(100vw-1.5rem)] border-2 border-line bg-card px-3 py-2 text-xs leading-relaxed font-normal text-body">
+    {{ .Text }}
+  </span>
+</span>
