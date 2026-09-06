@@ -22,13 +22,13 @@ import (
 const writeEvents = 50_000
 
 // accountCounts is the axis the run sweeps. One account is the self-hoster; the
-// rest are what a shard looks like as it fills up, and the point of the sweep is
-// to find where the rate stops being flat. Every write is a separate database
-// file, a separate write lock and a separate WAL, which is the whole reason the
-// number cannot be assumed.
+// rest are what a shard looks like as it fills up. Every write is a separate
+// database file, a separate write lock and a separate WAL, and one shared buffer
+// spread over more of them makes smaller transactions, so the rate cannot be
+// assumed from the single-account number.
 //
-// It runs to 256 because the degradation starts at 64, and a curve that stops
-// at the point it turns is an extrapolation rather than a measurement.
+// It runs to 256 because the rate is still falling at 64, and a curve measured
+// only to the last point it was falling is an extrapolation.
 var accountCounts = []int{1, 4, 16, 64, 256}
 
 // BenchmarkWrite measures sustained events per second through the accept path.

@@ -216,18 +216,21 @@ SQLite can write its way out of.
 **Throughput.** A single-account install sustains around three and a half
 thousand events a second through the whole accept path — far more than a site
 sending a million pageviews a month generates, which is under half an event a
-second on average. The rate falls as one process serves more accounts, because
-each is its own database file and its own write lock: about 1,300 a second at
-sixteen accounts and 400 at 256.
+second on average. The rate falls as one process serves more accounts,
+because one shared write buffer spread over more databases makes smaller
+transactions: about 1,300 a second at sixteen accounts and 400 at 256.
 
 A success response waits for a durable commit, either the direct account commit
-or the hosted ingester outbox commit, so accepting an event takes tens of
-milliseconds rather than microseconds. That is the promise a 202 makes here.
-`internal/bench/RESULTS.md` has the curve and the tail latencies.
+or the hosted ingester outbox commit. That is the promise a 202 makes here, and
+it means an accept is measured in hundreds of milliseconds rather than
+microseconds: a quiet site waits out the 500 ms flush timer on every event, and
+a busy one is quicker per event because the batch fills before the timer fires.
+The visitor never waits for any of it — the tracker sends with `keepalive` and
+does not read the answer. `internal/bench/RESULTS.md` has the curve.
 
-Reports read from summary tables in under a tenth of a second over a year of
-data; the same report from raw rows takes seconds, which is why the roll-up
-worker exists.
+Reports read from summary tables in tens of milliseconds over 28 days and under
+a second over a year; the same report from raw rows takes seconds, which is why
+the roll-up worker exists.
 
 **Building** needs Node as well, because the dashboard and the stylesheet are
 compiled before Go embeds them. Running never does.
