@@ -13,6 +13,7 @@ import type { Annotation, Bootstrap, Metric, StatsRequest } from "../api/types";
 import type { FilterLabels, FilterState } from "../lib/filters";
 import { toApi, toggle } from "../lib/filters";
 import { t } from "../lib/i18n";
+import { useLoading } from "../lib/loading";
 import { canStep, step, today, yesterday } from "../lib/period";
 import { usePref, useTheme } from "../lib/prefs";
 import type { CardDef, Tab } from "../lib/reports";
@@ -396,22 +397,29 @@ function AnalyticsDashboard() {
 			    chrome the host page did not ask for. A shared link that is not
 			    embedded keeps them: it is a page in its own right. */}
 			{!embedded && (
-				<TopBar
-					state={state}
-					sites={sites}
-					onNavigate={(next) => navigate(next)}
-					theme={theme}
-					onTheme={setTheme}
-					chart={chart}
-					onChart={setChart}
-					resolved={totals.data?.query.date_range}
-					filters={filters}
-					onHelp={() => setHelp(true)}
-					onStep={actions.onStep}
-					onPeriod={actions.onPeriod}
-					asked={asked}
-					navigation={bootstrap().navigation}
-				/>
+				<>
+					{/* The loading bar is chrome too. An embed is a component on
+					    somebody else's page, and a bar pinned to the top of that
+					    frame belongs to the host's layout, not to ours. */}
+					<LoadingBar />
+
+					<TopBar
+						state={state}
+						sites={sites}
+						onNavigate={(next) => navigate(next)}
+						theme={theme}
+						onTheme={setTheme}
+						chart={chart}
+						onChart={setChart}
+						resolved={totals.data?.query.date_range}
+						filters={filters}
+						onHelp={() => setHelp(true)}
+						onStep={actions.onStep}
+						onPeriod={actions.onPeriod}
+						asked={asked}
+						navigation={bootstrap().navigation}
+					/>
+				</>
 			)}
 
 			<main className="mx-auto max-w-shell px-4 py-5 sm:px-5">
@@ -496,6 +504,43 @@ function AnalyticsDashboard() {
 			)}
 
 			{help && <ShortcutsModal onClose={() => setHelp(false)} />}
+		</>
+	);
+}
+
+/**
+ * LoadingBar is the page's one answer to "is a newer number coming?".
+ *
+ * Every card keeps its previous answer while the next one loads, which is the
+ * right call — a page that blanks eight cards on every date change is unusable.
+ * The cost of that call is a screen full of confident figures that are already
+ * stale, and this bar is what pays it. It is deliberately one bar for the whole
+ * page: ten cards reloading is one piece of news, not ten.
+ *
+ * The per-card hairlines and spinners stay. They say *which* card is reloading,
+ * which one bar across the top cannot.
+ */
+function LoadingBar() {
+	const loading = useLoading();
+
+	return (
+		<>
+			{loading && (
+				<div
+					aria-hidden="true"
+					className="pointer-events-none fixed inset-x-0 top-0 z-[110] h-[3px] overflow-hidden bg-accent/20"
+				>
+					<span className="progress-slide block h-full w-1/5 bg-accent" />
+				</div>
+			)}
+
+			{/* The live region is in the tree whether or not anything is loading.
+			    A region that appears at the same instant as its own text is not
+			    reliably announced — screen readers watch regions they already
+			    know about. */}
+			<div role="status" aria-live="polite" className="sr-only">
+				{loading ? t("dashboard.loading.page") : ""}
+			</div>
 		</>
 	);
 }

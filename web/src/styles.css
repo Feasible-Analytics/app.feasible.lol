@@ -133,6 +133,34 @@
 	animation: fs-spin 700ms linear infinite;
 }
 
+/* The page-level loading bar's travelling segment. Indeterminate rather than a
+   percentage: nobody knows how far along a SQL query is, and a bar that jumps
+   to 90% and then waits is the pattern every reader has learnt to distrust. */
+@keyframes fs-progress-slide {
+	from {
+		transform: translateX(-100%);
+	}
+
+	to {
+		transform: translateX(500%);
+	}
+}
+
+.progress-slide {
+	animation: fs-progress-slide 1200ms var(--ease-ui) infinite;
+}
+
+/* Reduced motion keeps the bar and drops the travel. The bar is information —
+   a newer answer is on its way — and the sliding is only decoration, so the
+   segment fills the track and simply appears. */
+@media (prefers-reduced-motion: reduce) {
+	.progress-slide {
+		width: 100%;
+		transform: none;
+		animation: none;
+	}
+}
+
 /* The drawer's entry. Transform is what makes it read as a panel arriving from
    off-screen rather than a box appearing; under prefers-reduced-motion it fades
    in place instead, because the slide is exactly the movement that hurts. */
