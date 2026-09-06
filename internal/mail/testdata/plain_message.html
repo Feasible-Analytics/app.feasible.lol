@@ -7,24 +7,26 @@
 <meta name="supported-color-schemes" content="light dark">
 <title>Your site is close to its pageview limit</title>
 <style>
+  :root { color-scheme: light dark; }
+
    
   @media (prefers-color-scheme: dark) {
-    .page    { background: #141312 !important; }
-    .card    { background: #232120 !important; border-color: #4a4645 !important; }
+    .page    { background: #161514 !important; }
+    .card    { background: #201e1d !important; border-color: #5f5e5d !important; }
     .ink     { color: #f3f2f2 !important; }
-    .text    { color: #cfcbca !important; }
-    .muted   { color: #a5a09f !important; }
-    .faint   { color: #969090 !important; }
-    .accent  { color: #ff6a4d !important; }
-    .rule    { border-color: #4a4645 !important; }
-    .facts   { background: #2b2827 !important; border-color: #4a4645 !important; }
-    .note    { color: #fde68a !important; background: #3a2f14 !important;
-               border-color: #a16207 !important; }
+    .text    { color: #eae7e7 !important; }
+    .muted   { color: #bab6b6 !important; }
+    .accent  { color: #ff8f77 !important; }
+    .rule    { border-color: #3e3c3b !important; }
+    .facts   { background: #2b2827 !important; border-color: #5f5e5d !important; }
+    .note    { color: #fcd34d !important; background: #2b2827 !important;
+               border-color: #fbbf24 !important; }
+    .fill    { background: #ff5a3c !important; color: #161514 !important; }
     .outline { border-color: #f3f2f2 !important; color: #f3f2f2 !important; }
-    .up      { color: #4ade80 !important; }
-    .down    { color: #f87171 !important; }
-    .flat    { color: #9aa5b1 !important; }
-    .alarm   { color: #ff6b6b !important; }
+    .up      { color: #86efac !important; }
+    .down    { color: #fca5a5 !important; }
+    .flat    { color: #bab6b6 !important; }
+    .alarm   { color: #fca5a5 !important; }
   }
 
    
@@ -32,6 +34,7 @@
     .pad    { padding-left: 20px !important; padding-right: 20px !important; }
     .button { display: block !important; margin: 0 0 8px 0 !important; text-align: center !important; }
     .figure { display: block !important; width: 100% !important; padding-right: 0 !important; }
+    .spacer { display: none !important; }
   }
 </style>
 </head>
@@ -39,11 +42,12 @@
              font:16px/1.55 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
 
 <div style="display:none; max-height:0; overflow:hidden; mso-hide:all;">harbor.my has used 87% of the pageviews included in your plan this month.</div>
-<div style="display:none; max-height:0; overflow:hidden; mso-hide:all;">&#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847;</div>
+<div style="display:none; max-height:0; overflow:hidden; mso-hide:all;">&#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847;</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="page"
        style="background:#eae9e9; padding:32px 12px;">
 <tr>
 <td align="center">
+
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="card"
        style="max-width:560px; background:#f3f2f2; border:2px solid #9f9d9d;">
 <tr>
@@ -69,19 +73,19 @@ Your site is close to its pageview limit
        style="border:2px solid #9f9d9d; background:#eae7e7;">
 
 <tr>
-<td class="muted" style="padding:11px 14px; font-size:13px; line-height:1.4; color:#605d5d;">Used this month</td>
+<td class="muted" style="padding:11px 14px; font-size:14px; line-height:1.4; color:#605d5d;">Used this month</td>
 <td class="ink" style="padding:11px 14px 11px 8px; font-size:14px; line-height:1.4; color:#201e1d;
            text-align:right; font-weight:700;">870,412</td>
 </tr>
 
 <tr>
-<td class="muted" style="padding:11px 14px; font-size:13px; line-height:1.4; color:#605d5d;">Included</td>
+<td class="muted" style="padding:11px 14px; font-size:14px; line-height:1.4; color:#605d5d;">Included</td>
 <td class="ink" style="padding:11px 14px 11px 8px; font-size:14px; line-height:1.4; color:#201e1d;
            text-align:right; font-weight:700;">1,000,000</td>
 </tr>
 
 <tr>
-<td class="muted" style="padding:11px 14px; font-size:13px; line-height:1.4; color:#605d5d;">Resets</td>
+<td class="muted" style="padding:11px 14px; font-size:14px; line-height:1.4; color:#605d5d;">Resets</td>
 <td class="ink" style="padding:11px 14px 11px 8px; font-size:14px; line-height:1.4; color:#201e1d;
            text-align:right; font-weight:700;">Tue, 1 October 2026</td>
 </tr>
@@ -93,21 +97,21 @@ Your site is close to its pageview limit
 <tr>
 <td class="pad" style="padding:16px 32px 30px 32px;">
 
-<a class="button" href="https://app.feasible.lol/harbor.my"
-   style="display:inline-block; padding:13px 22px; font-size:15px; background:#ec3013;
-          color:#ffffff; font-weight:800; text-decoration:none;">Open the dashboard</a>
+<a class="button fill" href="https://app.feasible.lol/harbor.my"
+   style="display:inline-block; padding:13px 22px; font-size:16px; background:#ec3013;
+          color:#f3f2f2; font-weight:800; text-decoration:none;">Open the dashboard</a>
 
 
 
 <a class="button outline" href="https://app.feasible.lol/billing"
-   style="display:inline-block; padding:11px 18px; margin-left:6px; font-size:15px; border:2px solid #201e1d; color:#201e1d; font-weight:800; text-decoration:none;">See the plans</a>
+   style="display:inline-block; padding:11px 18px; margin-left:6px; font-size:16px; border:2px solid #201e1d; color:#201e1d; font-weight:800; text-decoration:none;">See the plans</a>
 
 </td>
 </tr>
 
 <tr>
 <td class="pad rule" style="padding:18px 32px 0 32px; border-top:2px solid #d1d0d0;">
-<p class="muted" style="margin:0; font-size:13px; line-height:1.55; color:#605d5d;">
+<p class="muted" style="margin:0; font-size:14px; line-height:1.55; color:#605d5d;">
 You are receiving this because you own this site.
 </p>
 </td>
@@ -115,7 +119,7 @@ You are receiving this because you own this site.
 
 <tr>
 <td class="pad" style="padding:20px 32px 26px 32px;">
-<p class="faint" style="margin:0; font-size:12px; line-height:1.7; color:#6b6767;">
+<p class="muted" style="margin:0; font-size:12px; line-height:1.7; color:#605d5d;">
 Cloudmanic Labs, LLC<br>
 901 Brutscher Street, D112<br>
 Newberg, OR 97132<br>
@@ -124,6 +128,7 @@ United States
 </td>
 </tr>
 </table>
+
 </td>
 </tr>
 </table>

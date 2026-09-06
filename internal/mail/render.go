@@ -40,44 +40,40 @@ const DateFormat = "Mon, 2 January 2006"
 // Palette is every colour the layout paints with.
 //
 // An email cannot use a CSS variable — every colour is inlined on the element
-// it applies to — so a template holding its own hex literals is the only other
-// option, and that is what let the report drift a private green and a private
-// red before it rendered here.
+// it applies to — so the values are resolved here instead. Every one comes from
+// ui/tokens.css, and a test reads that file and refuses a value that has
+// drifted from it.
 type Palette struct {
-	Page   template.CSS // behind the card
-	Card   template.CSS // the card itself
-	Border template.CSS
-	Rule   template.CSS // the lines between sections
-	Ink    template.CSS // headings and values
-	Text   template.CSS // body copy
-	Muted  template.CSS // labels and the footer
-	Faint  template.CSS // the address block
+	Page   template.CSS // --fs-page, behind the card
+	Card   template.CSS // --fs-card
+	Border template.CSS // --fs-line over the card: the card's edge
+	Rule   template.CSS // --fs-line-soft over the card: the lines inside it
+	Ink    template.CSS // --fs-heading
+	Text   template.CSS // --fs-body
+	Muted  template.CSS // --fs-muted: labels, the footer, a figure that did not move
+
 	// Accent is the primary button's ground and OnAccent its text. AccentText
-	// is the same red used as text, which has to be darker than the button's
-	// ground to be readable on the card.
-	Accent     template.CSS
-	OnAccent   template.CSS
-	AccentText template.CSS
+	// is the accent used as text, which is several shades off the fill.
+	Accent     template.CSS // --fs-accent
+	OnAccent   template.CSS // --fs-fill-fg
+	AccentText template.CSS // --fs-accent-ink
 
-	// The facts table's own ground, a shade off the card so the block reads as
-	// one object.
-	FactsBackground template.CSS
+	FactsBackground template.CSS // --fs-subtle
 
-	// The note panel: a warning that is read, not skipped.
-	NoteText       template.CSS
+	NoteText       template.CSS // --fs-warn-ink
 	NoteBackground template.CSS
-	NoteBorder     template.CSS
+	NoteBorder     template.CSS // --fs-warn
 
 	// A figure that moved, and the tone of a kicker on a message about
-	// something wrong.
-	Up    template.CSS
-	Down  template.CSS
-	Flat  template.CSS
-	Alarm template.CSS
+	// something wrong. All three are the ink variants: these are text, and the
+	// fill variants are a shade too light to read at 12px.
+	Up    template.CSS // --fs-up-ink
+	Down  template.CSS // --fs-down-ink
+	Flat  template.CSS // --fs-muted
+	Alarm template.CSS // --fs-down-ink
 }
 
-// Colours is the light palette, and the one every colour in the layout is
-// inlined from. The greys and the accent are the product's own tokens.
+// Colours is the light palette.
 var Colours = Palette{
 	Page:            "#eae9e9",
 	Card:            "#f3f2f2",
@@ -86,48 +82,43 @@ var Colours = Palette{
 	Ink:             "#201e1d",
 	Text:            "#444141",
 	Muted:           "#605d5d",
-	Faint:           "#6b6767",
 	Accent:          "#ec3013",
-	OnAccent:        "#ffffff",
+	OnAccent:        "#f3f2f2",
 	AccentText:      "#ae1800",
 	FactsBackground: "#eae7e7",
 	NoteText:        "#854d0e",
 	NoteBackground:  "#f7f0dd",
 	NoteBorder:      "#a16207",
-	Up:              "#146c33",
-	Down:            "#b91c1c",
-	Flat:            "#616e7c",
-	Alarm:           "#b91c1c",
+	Up:              "#166534",
+	Down:            "#991b1b",
+	Flat:            "#605d5d",
+	Alarm:           "#991b1b",
 }
 
 // Dark is the palette a client in dark mode is given instead.
 //
-// It is here rather than left to the client because Apple Mail and Outlook
-// invert a light palette on their own and do it badly: a near-white card on a
-// near-white page becomes two near-identical greys with only the border holding
-// the layout together. Every value was checked for contrast against the dark
-// card, the accent and the change colours especially — the light greens and
-// reds are unreadable on it.
+// It is here rather than left to the client: Apple Mail and Outlook invert a
+// light palette themselves, and a near-white card on a near-white page becomes
+// two identical greys with only the border holding the layout together.
 var Dark = Palette{
-	Page:            "#141312",
-	Card:            "#232120",
-	Border:          "#4a4645",
-	Rule:            "#4a4645",
+	Page:            "#161514",
+	Card:            "#201e1d",
+	Border:          "#5f5e5d",
+	Rule:            "#3e3c3b",
 	Ink:             "#f3f2f2",
-	Text:            "#cfcbca",
-	Muted:           "#a5a09f",
-	Faint:           "#969090",
-	Accent:          "#ec3013",
-	OnAccent:        "#ffffff",
-	AccentText:      "#ff6a4d",
+	Text:            "#eae7e7",
+	Muted:           "#bab6b6",
+	Accent:          "#ff5a3c",
+	OnAccent:        "#161514",
+	AccentText:      "#ff8f77",
 	FactsBackground: "#2b2827",
-	NoteText:        "#fde68a",
-	NoteBackground:  "#3a2f14",
-	NoteBorder:      "#a16207",
-	Up:              "#4ade80",
-	Down:            "#f87171",
-	Flat:            "#9aa5b1",
-	Alarm:           "#ff6b6b",
+	NoteText:        "#fcd34d",
+	NoteBackground:  "#2b2827",
+	NoteBorder:      "#fbbf24",
+	Up:              "#86efac",
+	Down:            "#fca5a5",
+	Flat:            "#bab6b6",
+	Alarm:           "#fca5a5",
 }
 
 // Tone picks the kicker's colour. It is a type rather than a string so a
@@ -167,29 +158,43 @@ type Figure struct {
 	Direction string
 }
 
+// changes maps a direction onto the class the dark block overrides and the
+// colour inlined for every other client. One table, because a class and a
+// colour that disagree render a falling metric green at night and nothing about
+// the light rendering says so.
+var changes = map[string]struct {
+	Class string
+	Light template.CSS
+	Dark  template.CSS
+}{
+	"up":   {"up", Colours.Up, Dark.Up},
+	"down": {"down", Colours.Down, Dark.Down},
+	"":     {"flat", Colours.Flat, Dark.Flat},
+}
+
+// change is the entry for a direction, defaulting to flat.
+func change(direction string) (class string, light, dark template.CSS) {
+	entry, ok := changes[direction]
+	if !ok {
+		entry = changes[""]
+	}
+
+	return entry.Class, entry.Light, entry.Dark
+}
+
 // Class is the dark-mode hook for the change colour, since a media query can
 // only reach a class and the light colour is inlined.
 func (f Figure) Class() string {
-	switch f.Direction {
-	case "up":
-		return "up"
-	case "down":
-		return "down"
-	default:
-		return "flat"
-	}
+	class, _, _ := change(f.Direction)
+
+	return class
 }
 
 // Colour is the change colour for a direction.
 func (f Figure) Colour() template.CSS {
-	switch f.Direction {
-	case "up":
-		return Colours.Up
-	case "down":
-		return Colours.Down
-	default:
-		return Colours.Flat
-	}
+	_, light, _ := change(f.Direction)
+
+	return light
 }
 
 // figuresPerRow is how many figures share a line before the row wraps.
@@ -337,22 +342,39 @@ func (c Content) Colours() Palette {
 	return Colours
 }
 
-// KickerClass is the dark-mode hook for the kicker's tone.
-func (c Content) KickerClass() string {
-	if c.KickerTone == ToneAlarm {
-		return "alarm"
+// kicker is the class and colour for a tone. Paired for the same reason the
+// change table is: two switches over one input drift apart silently.
+var kickers = map[Tone]struct {
+	Class string
+	Light template.CSS
+	Dark  template.CSS
+}{
+	ToneAlarm: {"alarm", Colours.Alarm, Dark.Alarm},
+	"":        {"accent", Colours.AccentText, Dark.AccentText},
+}
+
+// tone is the entry for a kicker tone, defaulting to the accent.
+func tone(t Tone) (class string, light, dark template.CSS) {
+	entry, ok := kickers[t]
+	if !ok {
+		entry = kickers[""]
 	}
 
-	return "accent"
+	return entry.Class, entry.Light, entry.Dark
+}
+
+// KickerClass is the dark-mode hook for the kicker's tone.
+func (c Content) KickerClass() string {
+	class, _, _ := tone(c.KickerTone)
+
+	return class
 }
 
 // KickerColour is the colour of the kicker line.
 func (c Content) KickerColour() template.CSS {
-	if c.KickerTone == ToneAlarm {
-		return Colours.Alarm
-	}
+	_, light, _ := tone(c.KickerTone)
 
-	return Colours.AccentText
+	return light
 }
 
 // HTML renders the content through the shared layout.

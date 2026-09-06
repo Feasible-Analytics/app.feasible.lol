@@ -214,11 +214,8 @@ func usageNotice(level usage.Level) usage.Notice {
 	}
 }
 
-// Index is a page showing every rendered message side by side.
-//
-// One page rather than twenty-four files to open one at a time: a shared layout
-// is judged on whether the set looks like one product, which cannot be seen a
-// message at a time.
+// Index is a page showing every rendered message side by side, because a
+// shared layout is judged on whether the set looks like one product.
 func Index(tags []string) string {
 	var b strings.Builder
 

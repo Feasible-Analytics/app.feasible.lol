@@ -84,10 +84,9 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 	}
 
 	content := Content{
-		// Every subject in the sequence already names the date of the thing it
-		// is announcing, so repeating it in the inbox preview wastes the one
-		// line beside it. The deletion date is the one people are afraid of and
-		// the one furthest away, so that is what the preview answers.
+		// The subject already names the date this message is about, so the
+		// preview beside it answers the next question instead. Each case below
+		// sets its own; this is the one for anything that does not.
 		Preheader: "Nothing is deleted before " + day(notice.DeletesAt) + ", and your export works throughout.",
 		Facts:     lifecycleFacts(notice),
 		Primary:   Button{Label: label, URL: notice.BillingURL},
@@ -100,6 +99,7 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 
 	switch notice.Template {
 	case lifecycle.TemplateEndingSoon:
+		content.Preheader = "Nothing changes today. Everything works until then."
 		if lapse {
 			content.Subject = "We could not charge your card — your dashboard locks on " + day(notice.LocksAt)
 			content.Heading = "Your last payment did not go through"
@@ -119,6 +119,7 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 		}
 
 	case lifecycle.TemplateEndingTomorrow:
+		content.Preheader = "We keep collecting for another thirty days, so nothing is lost."
 		if lapse {
 			content.Subject = "Your dashboard locks tomorrow, " + day(notice.LocksAt)
 			content.Heading = "Your dashboard locks tomorrow"
@@ -138,6 +139,7 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 		}
 
 	case lifecycle.TemplateDashboardLocked:
+		content.Preheader = "We are still collecting. Come back before " + day(notice.StopsAt) + " and there is no gap."
 		content.Subject = "Your dashboard is locked — we are still collecting until " + day(notice.StopsAt)
 		content.Heading = "Your dashboard is locked. Nothing is lost."
 		content.Body = []string{
@@ -148,6 +150,7 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 		}
 
 	case lifecycle.TemplateCollectionStopsIn15:
+		content.Preheader = "After that date the missing days cannot be reconstructed."
 		content.Subject = "Fifteen days until we stop collecting, on " + day(notice.StopsAt)
 		content.Heading = "We stop collecting on " + day(notice.StopsAt)
 		content.Body = []string{
@@ -157,6 +160,7 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 		}
 
 	case lifecycle.TemplateCollectionStopsTomorrow:
+		content.Preheader = "The last day a gap can still be avoided."
 		content.Subject = "We stop collecting tomorrow, " + day(notice.StopsAt)
 		content.Heading = "We stop collecting tomorrow"
 		content.Body = []string{
@@ -166,6 +170,7 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 		}
 
 	case lifecycle.TemplateCollectionStopped:
+		content.Preheader = "Everything already recorded is safe until " + day(notice.DeletesAt) + "."
 		content.Subject = "We have stopped collecting — your data is safe until " + day(notice.DeletesAt)
 		content.Heading = "We have stopped collecting"
 		content.Body = []string{
@@ -175,6 +180,7 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 		}
 
 	case lifecycle.TemplateDeletionIn15:
+		content.Preheader = "Download everything, or pay any time before then and keep it."
 		content.Subject = "Fifteen days until your data is deleted, on " + day(notice.DeletesAt)
 		content.Heading = "Your live data is removed on " + day(notice.DeletesAt)
 		content.Body = []string{
@@ -184,6 +190,7 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 		}
 
 	case lifecycle.TemplateDeletionIn5:
+		content.Preheader = "Download everything, or pay any time before then and keep it."
 		content.Subject = "Five days until your data is deleted, on " + day(notice.DeletesAt)
 		content.Heading = "Five days until deletion"
 		content.Body = []string{
@@ -192,6 +199,7 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 		}
 
 	case lifecycle.TemplateDeletionTomorrow:
+		content.Preheader = "The last day to download your data or keep the account."
 		content.Subject = "We delete your account tomorrow, " + day(notice.DeletesAt)
 		content.Heading = "We delete your account tomorrow"
 		content.Body = []string{

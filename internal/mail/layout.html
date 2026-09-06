@@ -9,12 +9,11 @@
 <meta name="supported-color-schemes" content="light dark">
 <title>{{ .Subject }}</title>
 <style>
-  /*
-    Every colour is inlined on the element it applies to, because a mail client
-    may strip this block entirely. What is here is only what an inline style
-    cannot express: the dark palette and the phone layout. A client that drops
-    it gets the light design at full width, which is a correct email.
+  :root { color-scheme: light dark; }
 
+  /*
+    Only what an inline style cannot express: the dark palette and the phone
+    layout. A client that strips this block gets the light design at full width.
     The overrides need !important to beat the inline styles they replace.
   */
   @media (prefers-color-scheme: dark) {
@@ -23,12 +22,12 @@
     .ink     { color: {{ $d.Ink }} !important; }
     .text    { color: {{ $d.Text }} !important; }
     .muted   { color: {{ $d.Muted }} !important; }
-    .faint   { color: {{ $d.Faint }} !important; }
     .accent  { color: {{ $d.AccentText }} !important; }
     .rule    { border-color: {{ $d.Rule }} !important; }
     .facts   { background: {{ $d.FactsBackground }} !important; border-color: {{ $d.Border }} !important; }
     .note    { color: {{ $d.NoteText }} !important; background: {{ $d.NoteBackground }} !important;
                border-color: {{ $d.NoteBorder }} !important; }
+    .fill    { background: {{ $d.Accent }} !important; color: {{ $d.OnAccent }} !important; }
     .outline { border-color: {{ $d.Ink }} !important; color: {{ $d.Ink }} !important; }
     .up      { color: {{ $d.Up }} !important; }
     .down    { color: {{ $d.Down }} !important; }
@@ -45,6 +44,7 @@
     .pad    { padding-left: 20px !important; padding-right: 20px !important; }
     .button { display: block !important; margin: 0 0 8px 0 !important; text-align: center !important; }
     .figure { display: block !important; width: 100% !important; padding-right: 0 !important; }
+    .spacer { display: none !important; }
   }
 </style>
 </head>
@@ -56,11 +56,14 @@
   scraping there rather than running on into the wordmark.
 -->
 <div style="display:none; max-height:0; overflow:hidden; mso-hide:all;">{{ .PreheaderText }}</div>
-<div style="display:none; max-height:0; overflow:hidden; mso-hide:all;">&#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847;</div>
+<div style="display:none; max-height:0; overflow:hidden; mso-hide:all;">&#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847;</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="page"
        style="background:{{ $c.Page }}; padding:32px 12px;">
 <tr>
 <td align="center">
+<!--[if mso]>
+<table role="presentation" width="560" cellpadding="0" cellspacing="0" border="0"><tr><td>
+<![endif]-->
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="card"
        style="max-width:560px; background:{{ $c.Card }}; border:2px solid {{ $c.Border }};">
 <tr>
@@ -102,7 +105,7 @@
 {{- $width := .Width }}
 <tr>
 {{- range .Cells }}
-<td class="figure" width="{{ $width }}" style="width:{{ $width }}; padding:14px 10px 14px 0; vertical-align:top;">
+<td class="figure{{ if not .Label }} spacer{{ end }}" width="{{ $width }}" style="width:{{ $width }}; padding:14px 10px 14px 0; vertical-align:top;">
 {{- if .Label }}
 <div class="muted" style="font-size:12px; line-height:1.4; color:{{ $c.Muted }};">{{ .Label }}</div>
 <div class="ink" style="font-size:20px; line-height:1.25; font-weight:800; color:{{ $c.Ink }}; margin-top:3px;">{{ .Value }}</div>
@@ -124,12 +127,12 @@
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
 {{ range .Rows }}
 <tr>
-<td class="text" style="padding:5px 0; font-size:14px; line-height:1.45; color:{{ $c.Text }};">{{ .Label }}</td>
+<td class="text" style="padding:5px 0; font-size:14px; line-height:1.45; word-break:break-word; color:{{ $c.Text }};">{{ .Label }}</td>
 <td class="ink" align="right" style="padding:5px 0 5px 12px; font-size:14px; line-height:1.45; color:{{ $c.Ink }};
                          white-space:nowrap; font-variant-numeric:tabular-nums;">{{ .Value }}</td>
 </tr>
 {{ else }}
-<tr><td class="faint" style="padding:5px 0; font-size:14px; line-height:1.45; color:{{ $c.Faint }};">{{ .Empty }}</td></tr>
+<tr><td class="muted" style="padding:5px 0; font-size:14px; line-height:1.45; color:{{ $c.Muted }};">{{ .Empty }}</td></tr>
 {{ end }}
 </table>
 </td>
@@ -142,7 +145,7 @@
        style="border:2px solid {{ $c.Border }}; background:{{ $c.FactsBackground }};">
 {{ range .Facts }}
 <tr>
-<td class="muted" style="padding:11px 14px; font-size:13px; line-height:1.4; color:{{ $c.Muted }};">{{ .Label }}</td>
+<td class="muted" style="padding:11px 14px; font-size:14px; line-height:1.4; color:{{ $c.Muted }};">{{ .Label }}</td>
 <td class="ink" style="padding:11px 14px 11px 8px; font-size:14px; line-height:1.4; color:{{ $c.Ink }};
            text-align:right; font-weight:700;">{{ .Value }}</td>
 </tr>
@@ -154,21 +157,21 @@
 <tr>
 <td class="pad" style="padding:16px 32px 30px 32px;">
 {{ if .Primary.URL }}
-<a class="button" href="{{ .Primary.URL }}"
-   style="display:inline-block; padding:13px 22px; font-size:15px; background:{{ $c.Accent }};
+<a class="button fill" href="{{ .Primary.URL }}"
+   style="display:inline-block; padding:13px 22px; font-size:16px; background:{{ $c.Accent }};
           color:{{ $c.OnAccent }}; font-weight:800; text-decoration:none;">{{ .Primary.Label }}</a>
 {{ end }}
 {{ $primary := .Primary.URL }}
 {{ range $index, $button := .Secondary }}
 <a class="button outline" href="{{ $button.URL }}"
-   style="display:inline-block; padding:11px 18px;{{ if or $primary $index }} margin-left:6px;{{ end }} font-size:15px; border:2px solid {{ $c.Ink }}; color:{{ $c.Ink }}; font-weight:800; text-decoration:none;">{{ $button.Label }}</a>
+   style="display:inline-block; padding:11px 18px;{{ if or $primary $index }} margin-left:6px;{{ end }} font-size:16px; border:2px solid {{ $c.Ink }}; color:{{ $c.Ink }}; font-weight:800; text-decoration:none;">{{ $button.Label }}</a>
 {{ end }}
 </td>
 </tr>
 {{ if .Closing }}
 <tr>
 <td class="pad rule" style="padding:18px 32px 0 32px; border-top:2px solid {{ $c.Rule }};">
-<p class="muted" style="margin:0; font-size:13px; line-height:1.55; color:{{ $c.Muted }};">
+<p class="muted" style="margin:0; font-size:14px; line-height:1.55; color:{{ $c.Muted }};">
 {{ .Closing }}
 </p>
 </td>
@@ -176,7 +179,7 @@
 {{ end }}
 <tr>
 <td class="pad{{ if not .Closing }} rule{{ end }}" style="padding:20px 32px 26px 32px;{{ if not .Closing }} border-top:2px solid {{ $c.Rule }};{{ end }}">
-<p class="faint" style="margin:0; font-size:12px; line-height:1.7; color:{{ $c.Faint }};">
+<p class="muted" style="margin:0; font-size:12px; line-height:1.7; color:{{ $c.Muted }};">
 {{- $from := .Company }}
 {{ $from.Name }}
 {{- range $from.AddressLines }}<br>
@@ -186,6 +189,9 @@
 </td>
 </tr>
 </table>
+<!--[if mso]>
+</td></tr></table>
+<![endif]-->
 </td>
 </tr>
 </table>

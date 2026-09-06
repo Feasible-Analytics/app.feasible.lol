@@ -435,8 +435,8 @@ func TestTheReportHTMLShowsTheNumbers(t *testing.T) {
 		// html/template writes a plus in text as &#43;, which a mail client
 		// renders back as "+18%".
 		"a change":           "&#43;18%",
-		"a growth colour":    string(mail.Colours.Up),
-		"a decline colour":   string(mail.Colours.Down),
+		"a growth colour":    "#166534",
+		"a decline colour":   "#991b1b",
 		"a top page":         "/blog/2026/08/a-reasonably-long-article-slug-that-people-really-do-write-0",
 		"a top page count":   "12,004",
 		"a top source":       "news.ycombinator.com/item?id=1234567890",
@@ -477,7 +477,7 @@ func TestTheAlertHTMLShowsWhatFired(t *testing.T) {
 
 	for name, want := range map[string]string{
 		"the kicker":     ">Spike alert</p>",
-		"the alarm tone": string(mail.Colours.Alarm),
+		"the alarm tone": "#991b1b",
 		"the headline":   "412 visitors are on the site right now",
 		"the detail":     "Something is sending you traffic.",
 		"the observed":   ">412<",

@@ -376,8 +376,7 @@ func TestAMessageWithNoClosingHasNoEmptyParagraph(t *testing.T) {
 		t.Errorf("an empty closing paragraph was rendered:\n%s", without.HTML)
 	}
 
-	// The rule above the footer moves onto the address block rather than
-	// disappearing with the closing.
+	// The address block keeps a rule above it either way.
 	rules := func(html string) int { return strings.Count(html, "border-top:2px solid") }
 
 	if rules(without.HTML) != rules(withClosing.HTML) {

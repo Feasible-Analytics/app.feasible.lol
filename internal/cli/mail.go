@@ -74,6 +74,21 @@ func mailPreview(e *env, args []string) int {
 		return ExitError
 	}
 
+	// A renamed message would otherwise leave its old file behind, unlinked
+	// from the index and indistinguishable from a current one.
+	stale, err := filepath.Glob(filepath.Join(*out, "*"))
+	if err != nil {
+		fmt.Fprintf(e.stderr, "mail preview: %v\n", err)
+		return ExitError
+	}
+
+	for _, path := range stale {
+		if err := os.Remove(path); err != nil {
+			fmt.Fprintf(e.stderr, "mail preview: %v\n", err)
+			return ExitError
+		}
+	}
+
 	tags := make([]string, 0, len(messages))
 	for tag := range messages {
 		tags = append(tags, tag)
