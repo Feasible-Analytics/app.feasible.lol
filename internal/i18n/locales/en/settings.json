@@ -2,7 +2,7 @@
   "settings.conversions.add_funnel": "Add a funnel",
   "settings.conversions.add_goal": "Add a goal",
   "settings.conversions.allow_between": "Allow other activity between funnel steps",
-  "settings.conversions.allow_between_hint": "Off means the steps must happen back to back, with nothing else in between. Engagement pings do not count.",
+  "settings.conversions.allow_between_hint": "Off means the steps must happen back to back, with nothing else in between. Our own measurements of how long a page was read do not count as activity.",
   "settings.conversions.automatic_body": "It stays available so tracker-detected activity is always measured. You can change only the name shown in reports.",
   "settings.conversions.automatic_display_name": "Report name",
   "settings.conversions.automatic_heading": "Feasible manages this goal's matching rule.",

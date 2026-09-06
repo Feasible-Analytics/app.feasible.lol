@@ -361,7 +361,7 @@ function FunnelChart({ report }: { report: FunnelReport }) {
 
 	return (
 		<div className="px-4 pb-3 sm:px-5">
-			<div className="mb-2 flex items-center justify-between text-xs text-muted"><span>{report.funnel.strict_order ? t("dashboard.behavior.funnels.strict") : t("dashboard.behavior.funnels.sequential")}</span><span>{t("dashboard.behavior.funnels.overall", { rate: metricAxisValue("conversion_rate", report.steps.at(-1)?.conversion_rate ?? 0) })}</span></div>
+			<div className="mb-2 flex items-center justify-between text-xs text-muted"><span>{report.funnel.strict_order ? t("dashboard.behavior.funnels.consecutive_only") : t("dashboard.behavior.funnels.allows_between")}</span><span>{t("dashboard.behavior.funnels.overall", { rate: metricAxisValue("conversion_rate", report.steps.at(-1)?.conversion_rate ?? 0) })}</span></div>
 			{report.steps.length === 0 ? <BehaviorEmpty title={t("dashboard.behavior.funnels.no_data")} body={t("dashboard.empty.hint")} /> : (
 				<ol className="space-y-2">
 					{report.steps.map((step, index) => (

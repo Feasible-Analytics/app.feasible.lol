@@ -322,9 +322,8 @@ func (h *Handler) saveFunnel(w http.ResponseWriter, r *http.Request, site sites.
 		return
 	}
 
-	// An unchecked checkbox posts nothing at all, so the stored field is the
-	// inverse of a field being present. Reading it the other way round would
-	// flip the meaning of every funnel with no error anywhere.
+	// An unchecked checkbox posts nothing at all, so the stored flag is the
+	// inverse of the field being present.
 	funnel := goals.Funnel{
 		SiteID:      site.ID,
 		Name:        r.PostFormValue("name"),
