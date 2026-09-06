@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,9 +80,6 @@ type Account struct {
 	// Permanent deletion waits for an exclusive lock before it can report
 	// success, which fences handles cached by every cooperating process.
 	lifetimeLock *os.File
-	stopWatch    chan struct{}
-	watchDone    chan struct{}
-	stopOnce     sync.Once
 	closeOnce    sync.Once
 	closeErr     error
 	useMu        sync.Mutex
@@ -141,6 +139,14 @@ type Manager struct {
 	Now func() time.Time
 
 	stats HandleStats
+
+	// stopWatch ends the tombstone watcher, and watchOnce starts it on the
+	// first open rather than at construction: a manager that never opens an
+	// account never starts a goroutine.
+	watchOnce    sync.Once
+	stopWatch    chan struct{}
+	watchStop    sync.Once
+	watchStopped chan struct{}
 }
 
 // The bounds a manager uses when none are set.
@@ -177,11 +183,13 @@ type HandleStats struct {
 // account never touches the disk.
 func NewManager(dataDir string) *Manager {
 	return &Manager{
-		dataDir: dataDir,
-		open:    map[int64]*Account{},
-		blocked: map[int64]struct{}{},
-		used:    map[int64]time.Time{},
-		rank:    map[int64]int64{},
+		dataDir:      dataDir,
+		open:         map[int64]*Account{},
+		blocked:      map[int64]struct{}{},
+		used:         map[int64]time.Time{},
+		rank:         map[int64]int64{},
+		stopWatch:    make(chan struct{}),
+		watchStopped: make(chan struct{}),
 	}
 }
 
@@ -306,16 +314,10 @@ func lockAccountLifetime(dataDir string, id int64, exclusive bool) (*os.File, er
 // lease exactly once. Waiting for the watcher keeps shutdown from leaking a
 // goroutine that still references the account.
 func (a *Account) close() error {
-	if a.stopWatch != nil {
-		a.stopOnce.Do(func() { close(a.stopWatch) })
-	}
 	a.useMu.Lock()
 	a.closing = true
 	a.useMu.Unlock()
 	a.closeResources()
-	if a.watchDone != nil {
-		<-a.watchDone
-	}
 
 	return a.closeErr
 }
@@ -396,27 +398,6 @@ func (a *Account) closeResources() {
 		a.closeErr = a.DB.Close()
 		unlockAccount(a.lifetimeLock)
 	})
-}
-
-// watchDeletion cooperatively closes a cached handle when another manager or
-// process publishes the durable deletion marker.
-func (a *Account) watchDeletion(marker string) {
-	defer close(a.watchDone)
-	ticker := time.NewTicker(deletionWatchInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-a.stopWatch:
-			return
-		case <-ticker.C:
-			if _, err := os.Stat(marker); err == nil {
-				if a.closeForDeletion() {
-					return
-				}
-			}
-		}
-	}
 }
 
 // Path returns the path this manager would use for an account.
@@ -544,7 +525,6 @@ func (m *Manager) openGuarded(ctx context.Context, id int64, promote bool) (acco
 
 	account = &Account{
 		ID: id, DB: db, Intern: cache, lifetimeLock: lifetimeLock,
-		stopWatch: make(chan struct{}), watchDone: make(chan struct{}),
 	}
 	// A struct literal built four lines above is never closing, so this cannot
 	// fire. It closes the database anyway rather than only the lock, because a
@@ -558,6 +538,7 @@ func (m *Manager) openGuarded(ctx context.Context, id int64, promote bool) (acco
 
 	m.open[id] = account
 	m.stats.Opens++
+	m.startWatch()
 
 	// A handle a scan opened is stamped as never used and ranked below every
 	// other. It is put back when the scan releases it, and until then it is the
@@ -571,8 +552,6 @@ func (m *Manager) openGuarded(ctx context.Context, id int64, promote bool) (acco
 		borrowed = true
 	}
 
-	go account.watchDeletion(DeletedMarker(m.dataDir, id))
-
 	// A borrowed handle is closed again the moment the scan releases it, so it
 	// does not need room made for it — and making room would mean evicting an
 	// account real traffic is on, which the scan rule exists to prevent. The
@@ -584,6 +563,126 @@ func (m *Manager) openGuarded(ctx context.Context, id int64, promote bool) (acco
 	}
 
 	return account, borrowed, evicting, nil
+}
+
+// watchTombstones closes any open handle whose account another process has
+// tombstoned, and refuses it from then on.
+//
+// One goroutine reads the tombstone directory once a tick, rather than one
+// goroutine per open handle stat-ing its own marker. At two thousand accounts
+// that is one readdir every hundred milliseconds instead of twenty thousand
+// stat calls a second, to notice something that happens a few times a year.
+//
+// Deletion waits for this. BeginDeletion takes the lifetime lock exclusively
+// and every open handle holds it shared, so a tombstone only becomes a deletion
+// once this loop has closed the handle — which makes the interval a latency
+// bound on deletion rather than a correctness one.
+func (m *Manager) watchTombstones() {
+	ticker := time.NewTicker(deletionWatchInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.stopWatch:
+			return
+		case <-ticker.C:
+			m.closeTombstoned()
+		}
+	}
+}
+
+// closeTombstoned is one pass of the watcher.
+//
+// A handle somebody is using is left alone and retried on the next tick, which
+// is what stops a deletion cutting an acknowledged write in half. It is already
+// refused to new callers by then, because the block is recorded first.
+func (m *Manager) closeTombstoned() {
+	deleted, err := tombstonedIDs(m.dataDir)
+	if err != nil || len(deleted) == 0 {
+		return
+	}
+
+	m.mu.Lock()
+
+	var victims []*Account
+
+	for id := range deleted {
+		if _, open := m.open[id]; !open {
+			continue
+		}
+
+		m.blocked[id] = struct{}{}
+
+		if account := m.takeLocked(id); account != nil {
+			victims = append(victims, account)
+		}
+	}
+
+	m.mu.Unlock()
+
+	closeAll(victims)
+}
+
+// tombstonedIDs reads every account id carrying a deletion tombstone, in one
+// pass of the directory.
+func tombstonedIDs(dataDir string) (map[int64]struct{}, error) {
+	entries, err := os.ReadDir(filepath.Join(dataDir, guardDirectory))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	found := map[int64]struct{}{}
+
+	for _, entry := range entries {
+		name := entry.Name()
+
+		if !strings.HasPrefix(name, "account-") || !strings.HasSuffix(name, ".deleted") {
+			continue
+		}
+
+		id, err := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(name, "account-"), ".deleted"), 10, 64)
+		if err != nil {
+			continue
+		}
+
+		found[id] = struct{}{}
+	}
+
+	return found, nil
+}
+
+// startWatch begins the tombstone watcher the first time a handle is opened.
+func (m *Manager) startWatch() {
+	m.watchOnce.Do(func() {
+		go func() {
+			defer close(m.watchStopped)
+
+			m.watchTombstones()
+		}()
+	})
+}
+
+// stopWatching ends the watcher and waits for it, so a closed manager leaves no
+// goroutine reading a directory a test is about to remove.
+func (m *Manager) stopWatching() {
+	started := false
+
+	m.watchOnce.Do(func() { started = true })
+
+	if started {
+		// Nothing was ever opened, so nothing was ever started.
+		close(m.watchStopped)
+
+		return
+	}
+
+	m.watchStop.Do(func() { close(m.stopWatch) })
+
+	<-m.watchStopped
 }
 
 // promoteLocked marks one handle as the most recently used.
@@ -677,12 +776,7 @@ func (m *Manager) forgetLocked(id int64) {
 // sync on the open path.
 func closeAll(victims []*Account) {
 	for _, account := range victims {
-		account.stopOnce.Do(func() { close(account.stopWatch) })
 		account.closeResources()
-
-		if account.watchDone != nil {
-			<-account.watchDone
-		}
 	}
 }
 
@@ -800,7 +894,24 @@ func (m *Manager) AcquireForScan(ctx context.Context, id int64) (*Lease, error) 
 }
 
 // acquire takes the fence and the handle.
+//
+// The fast path is a handle this process already holds. It costs one mutex and
+// no filesystem call at all, where the slow path is four file opens, four flock
+// calls and two stats — on a hot loop that runs once per account per write
+// batch and once per dashboard request.
+//
+// It is safe because the open handle already holds the account's lifetime lock
+// shared, and permanent deletion has to take that lock exclusively before it
+// unlinks anything. So a deletion cannot get past a handle this process is
+// holding, whichever process started it. What the fast path skips is only the
+// tombstone check, and the watcher does that for every handle once a tick — so
+// a handle stops being usable within one deletionWatchInterval of another
+// process tombstoning the account.
 func (m *Manager) acquire(ctx context.Context, id int64, promote bool) (*Lease, error) {
+	if lease, ok := m.acquireCached(id, promote); ok {
+		return lease, nil
+	}
+
 	guard, err := m.BeginWrite(id)
 	if err != nil {
 		return nil, err
@@ -826,6 +937,43 @@ func (l *Lease) Release() error {
 	guard := l.guard
 	l.guard = nil
 	return guard.Release()
+}
+
+// acquireCached hands back a handle this process already holds, without
+// touching the filesystem. It reports false when there is no such handle, or
+// when the watcher has seen a tombstone for it.
+func (m *Manager) acquireCached(id int64, promote bool) (*Lease, bool) {
+	if id < 1 {
+		return nil, false
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, blocked := m.blocked[id]; blocked {
+		return nil, false
+	}
+
+	account, open := m.open[id]
+	if !open {
+		return nil, false
+	}
+
+	if err := account.beginUse(); err != nil {
+		// Closing: the watcher or a deletion got there first. The slow path
+		// will produce the right error.
+		return nil, false
+	}
+
+	borrowed := false
+
+	if promote {
+		m.promoteLocked(id)
+	} else {
+		borrowed = m.used[id].IsZero()
+	}
+
+	return &Lease{Account: account, guard: &WriteGuard{manager: m, id: id, account: account, borrowed: borrowed}}, true
 }
 
 // BeginWrite acquires the account's shared lock and checks the durable
@@ -895,7 +1043,13 @@ func (g *WriteGuard) open(ctx context.Context, promote bool) (*Account, error) {
 // Release drops a shared account guard. Calling it more than once is harmless,
 // which keeps deferred cleanup safe on every return path.
 func (g *WriteGuard) Release() error {
-	if g == nil || g.file == nil {
+	if g == nil {
+		return nil
+	}
+
+	// A guard from the cached path holds no lock file, and still holds a use
+	// count and possibly a borrowed handle.
+	if g.file == nil && g.account == nil {
 		return nil
 	}
 
@@ -925,6 +1079,10 @@ func (g *WriteGuard) Release() error {
 	// is never.
 	if evict {
 		g.manager.evict()
+	}
+
+	if file == nil {
+		return nil
 	}
 
 	return unlock(file)
@@ -1252,6 +1410,8 @@ func writeTombstone(dataDir string, id int64) error {
 // account is checkpointed on the way out rather than left for the next start-up
 // to recover.
 func (m *Manager) CloseAll() error {
+	m.stopWatching()
+
 	m.mu.Lock()
 	accounts := make([]*Account, 0, len(m.open))
 	for _, account := range m.open {

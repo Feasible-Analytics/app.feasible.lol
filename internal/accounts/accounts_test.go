@@ -14,7 +14,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1260,5 +1262,176 @@ func TestAnEvictedAccountCanStillBeDeleted(t *testing.T) {
 
 	if _, err := manager.Acquire(ctx, 1); !errors.Is(err, ErrDeleted) {
 		t.Errorf("a deleted account re-opened after eviction: %v", err)
+	}
+}
+
+// BenchmarkAcquireCached is the number this cache exists to keep small. It runs
+// once per account per write batch and once per dashboard request, so a change
+// that puts the file locks back on the cached path shows up here.
+func BenchmarkAcquireCached(b *testing.B) {
+	manager := NewManager(b.TempDir())
+
+	b.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			b.Errorf("close: %v", err)
+		}
+	})
+
+	ctx := context.Background()
+
+	warm, err := manager.Acquire(ctx, 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	if err := warm.Release(); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		lease, err := manager.Acquire(ctx, 1)
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		if err := lease.Release(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkAcquireCachedParallel is the same acquire from many goroutines,
+// because the cached path used to serialise every account behind one mutex and
+// that is exactly when a box is busy.
+func BenchmarkAcquireCachedParallel(b *testing.B) {
+	manager := NewManager(b.TempDir())
+
+	b.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			b.Errorf("close: %v", err)
+		}
+	})
+
+	ctx := context.Background()
+
+	for id := int64(1); id <= 16; id++ {
+		warm, err := manager.Acquire(ctx, id)
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		if err := warm.Release(); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	var next atomic.Int64
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			id := next.Add(1)%16 + 1
+
+			lease, err := manager.Acquire(ctx, id)
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			if err := lease.Release(); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+// TestACachedHandleStopsWorkingAfterAnotherManagerDeletesIt is the guarantee the
+// fast path must not weaken.
+//
+// The cached acquire skips the tombstone check, so a handle stays usable until
+// the watcher notices — at most one deletionWatchInterval, currently 100 ms.
+// This asserts that bound rather than assuming it.
+func TestACachedHandleStopsWorkingAfterAnotherManagerDeletesIt(t *testing.T) {
+	dir := t.TempDir()
+
+	mine := NewManager(dir)
+	t.Cleanup(func() { _ = mine.CloseAll() })
+
+	theirs := NewManager(dir)
+	t.Cleanup(func() { _ = theirs.CloseAll() })
+
+	ctx := context.Background()
+
+	// Cached here, so a later acquire takes the fast path.
+	lease, err := mine.Acquire(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	if again, err := mine.Acquire(ctx, 1); err != nil {
+		t.Fatal(err)
+	} else if err := again.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted := make(chan error, 1)
+	go func() { deleted <- theirs.Delete(1) }()
+
+	// The watcher has to close the handle before the other manager can take the
+	// lifetime lock, so the deletion completing is itself proof it ran.
+	select {
+	case err := <-deleted:
+		if err != nil {
+			t.Fatalf("the other manager could not delete the account: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the deletion hung, so the watcher never closed the cached handle")
+	}
+
+	if _, err := mine.Acquire(ctx, 1); !errors.Is(err, ErrDeleted) {
+		t.Errorf("the cached handle is still usable after the account was deleted: %v", err)
+	}
+}
+
+// TestTheWatcherIsOneGoroutineWhateverTheAccountCount is the other half of the
+// saving. One stat loop per open handle at 100 ms is twenty thousand stat calls
+// a second on a two-thousand-account shard.
+func TestTheWatcherIsOneGoroutineWhateverTheAccountCount(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	manager.MaxOpen = 100
+
+	ctx := context.Background()
+
+	before := runtime.NumGoroutine()
+
+	for id := int64(1); id <= 40; id++ {
+		lease, err := manager.Acquire(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := lease.Release(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Four goroutines per handle belong to SQLite; what must not scale is the
+	// deletion watching, so the budget is generous and the shape is the point.
+	perHandle := (runtime.NumGoroutine() - before) / 40
+
+	if perHandle > 5 {
+		t.Errorf("%d goroutines per open handle, want the watcher not to be one of them", perHandle)
+	}
+
+	if err := manager.CloseAll(); err != nil {
+		t.Fatal(err)
 	}
 }
