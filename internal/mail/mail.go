@@ -36,12 +36,8 @@
 package mail
 
 import (
-	"bytes"
 	"context"
-	"embed"
 	"fmt"
-	htmlstd "html"
-	"html/template"
 	"strings"
 	"time"
 
@@ -49,20 +45,6 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
-
-// templates holds the account messages' bodies — the ones with their own
-// markup rather than the shared lifecycle layout. They are embedded for the
-// same reason every other asset is: a release is one binary, and a template
-// directory that has to be copied alongside it is a directory that will be
-// missing.
-//
-//go:embed templates
-var templates embed.FS
-
-// accountTemplates is parsed once at start-up. A broken embedded template is a
-// programmer error the first test run catches, so panicking is honest: the
-// binary cannot send the verification email and should not pretend it can.
-var accountTemplates = template.Must(template.ParseFS(templates, "templates/*.html"))
 
 // PostalAddress is the legal entity behind the service, in the form that goes
 // in every footer. CAN-SPAM requires a valid physical postal address in
@@ -298,99 +280,27 @@ func (m *Mailer) Send(ctx context.Context, msg Message) (Result, error) {
 	return result, nil
 }
 
-// data is what every account template is rendered with. It carries the base URL
-// on every message so a template author never has to remember to pass it, which
-// is the mistake that produces an email full of links to "/reset-password".
-type data struct {
-	BaseURL string
-	Name    string
-	Code    string
-	Link    string
-	Device  string
-	When    string
-	Extra   string
-}
-
-// render turns one account template into a message body. Both a plain-text and
-// an HTML part are produced from the same template output: some clients refuse
-// HTML outright, and a code the recipient cannot read is a code they cannot use.
-func (m *Mailer) render(name string, d data) (string, string, error) {
-	var buf bytes.Buffer
-
-	if err := accountTemplates.ExecuteTemplate(&buf, name, d); err != nil {
-		return "", "", fmt.Errorf("mail: render %s: %w", name, err)
-	}
-
-	html := buf.String()
-
-	return html, textFromHTML(html), nil
-}
-
-// textFromHTML derives the plain-text part from rendered HTML. The lifecycle
-// and volume messages build their text part from the same Content the HTML came
-// from, so this is only for the account templates, which are hand-written
-// markup with no data behind them.
-//
-// It is a crude tag strip rather than a real converter, which is honest for four
-// templates we write ourselves: a dependency that renders arbitrary HTML to text
-// would be a lot of code to make our own known markup slightly prettier.
-func textFromHTML(source string) string {
-	var out strings.Builder
-	depth := 0
-
-	for _, r := range source {
-		switch {
-		case r == '<':
-			depth++
-		case r == '>':
-			if depth > 0 {
-				depth--
-			}
-		case depth == 0:
-			out.WriteRune(r)
-		}
-	}
-
-	// Collapse the run of blank lines that stripping block tags leaves behind,
-	// so the text part reads as paragraphs rather than as a column of gaps.
-	lines := strings.Split(out.String(), "\n")
-	kept := make([]string, 0, len(lines))
-	blank := false
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			if blank {
-				continue
-			}
-			blank = true
-		} else {
-			blank = false
-		}
-
-		kept = append(kept, line)
-	}
-
-	return htmlstd.UnescapeString(strings.TrimSpace(strings.Join(kept, "\n")))
-}
-
 // SendVerification emails the code and the one-click link that prove an
 // address. Both are in the same message on purpose: the link is one tap on a
 // phone, and the code is what someone types when they opened the email on a
 // different device from the one they registered on.
-func (m *Mailer) SendVerification(ctx context.Context, to, name, code, link string) error {
-	html, text, err := m.render("verify_email.html", data{BaseURL: m.baseURL, Name: name, Code: code, Link: link})
+func (m *Mailer) SendVerification(ctx context.Context, to, _, code, link string) error {
+	content := Content{
+		Subject: "Your feasible.lol verification code",
+		Heading: "Confirm your email address",
+		Body:    []string{"Confirm your email address to finish setting up feasible.lol."},
+		Code:    code,
+		Primary: Button{Label: "Confirm your email address", URL: link},
+		Closing: "The code and the link both expire in 30 minutes. If you did not create an account, " +
+			"ignore this email and nothing happens.",
+	}
+
+	message, err := content.Message(to, "verify_email")
 	if err != nil {
 		return err
 	}
 
-	_, err = m.Send(ctx, Message{
-		To:      to,
-		Subject: "Your feasible.lol verification code",
-		HTML:    html,
-		Text:    text,
-		Tag:     "verify_email",
-	})
+	_, err = m.Send(ctx, message)
 
 	return err
 }
@@ -430,19 +340,29 @@ func (m *Mailer) SendInvitation(ctx context.Context, to, teamName, inviterName, 
 // a reset grants far more than proving an address does, so it is worth making
 // the recipient come back through a URL we minted rather than something they
 // can read out over the phone to whoever asked them for it.
-func (m *Mailer) SendPasswordReset(ctx context.Context, to, name, link string) error {
-	html, text, err := m.render("password_reset.html", data{BaseURL: m.baseURL, Name: name, Link: link})
+func (m *Mailer) SendPasswordReset(ctx context.Context, to, _, link string) error {
+	content := Content{
+		Subject: "Reset your feasible.lol password",
+		Heading: "Reset your password",
+		Body: []string{
+			"Someone asked to reset the password on your feasible.lol account. Use this link to choose a new one:",
+
+			// The URL in the body as well as behind the button. A button hides
+			// where it goes and there is no hover on a phone, so the one email
+			// that hands over account control shows its destination.
+			link,
+		},
+		Primary: Button{Label: "Choose a new password", URL: link},
+		Closing: "The link works once and expires in an hour. If you did not ask for this, you can ignore " +
+			"this email — your password has not changed.",
+	}
+
+	message, err := content.Message(to, "password_reset")
 	if err != nil {
 		return err
 	}
 
-	_, err = m.Send(ctx, Message{
-		To:      to,
-		Subject: "Reset your feasible.lol password",
-		HTML:    html,
-		Text:    text,
-		Tag:     "password_reset",
-	})
+	_, err = m.Send(ctx, message)
 
 	return err
 }
@@ -450,19 +370,23 @@ func (m *Mailer) SendPasswordReset(ctx context.Context, to, name, link string) e
 // SendPasswordChanged tells someone their password moved. It is sent after the
 // change rather than before, because its only job is to be the alarm that goes
 // off when the person reading it did not do it.
-func (m *Mailer) SendPasswordChanged(ctx context.Context, to, name string) error {
-	html, text, err := m.render("password_changed.html", data{BaseURL: m.baseURL, Name: name})
+func (m *Mailer) SendPasswordChanged(ctx context.Context, to, _ string) error {
+	content := Content{
+		Subject: "Your feasible.lol password was changed",
+		Heading: "Your password was changed",
+		Body: []string{
+			"The password on your feasible.lol account was just changed, and every other signed-in browser was signed out.",
+			"If that was not you, reset your password immediately.",
+		},
+		Secondary: []Button{{Label: "Reset your password", URL: m.baseURL + "/forgot-password"}},
+	}
+
+	message, err := content.Message(to, "password_changed")
 	if err != nil {
 		return err
 	}
 
-	_, err = m.Send(ctx, Message{
-		To:      to,
-		Subject: "Your feasible.lol password was changed",
-		HTML:    html,
-		Text:    text,
-		Tag:     "password_changed",
-	})
+	_, err = m.Send(ctx, message)
 
 	return err
 }
@@ -470,24 +394,25 @@ func (m *Mailer) SendPasswordChanged(ctx context.Context, to, name string) error
 // SendNewLogin reports a sign-in from a device we have not seen before. The
 // device label and time are the two things that let someone recognise their own
 // login at a glance and act on one that is not.
-func (m *Mailer) SendNewLogin(ctx context.Context, to, name, device, cycle string, when time.Time) error {
-	html, text, err := m.render("new_login.html", data{
-		BaseURL: m.baseURL,
-		Name:    name,
-		Device:  device,
-		When:    timefmt.Clock(cycle, when.UTC(), "2 January 2006 at 15:04 MST"),
-	})
+func (m *Mailer) SendNewLogin(ctx context.Context, to, _, device, cycle string, when time.Time) error {
+	content := Content{
+		Subject: "New sign-in to your feasible.lol account",
+		Heading: "New sign-in to your account",
+		Body:    []string{"Your feasible.lol account was signed in on a new device."},
+		Facts: []Fact{
+			{Label: "Device", Value: device},
+			{Label: "Signed in", Value: timefmt.Clock(cycle, when.UTC(), "2 January 2006 at 15:04 MST")},
+		},
+		Secondary: []Button{{Label: "Review your sessions", URL: m.baseURL + "/settings/sessions"}},
+		Closing:   "If that was not you, sign that session out and change your password.",
+	}
+
+	message, err := content.Message(to, "new_login")
 	if err != nil {
 		return err
 	}
 
-	_, err = m.Send(ctx, Message{
-		To:      to,
-		Subject: "New sign-in to your feasible.lol account",
-		HTML:    html,
-		Text:    text,
-		Tag:     "new_login",
-	})
+	_, err = m.Send(ctx, message)
 
 	return err
 }

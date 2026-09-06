@@ -23,6 +23,10 @@
 {{ range .Body }}
 <p style="margin:0 0 14px 0; color:#444141;">{{ . }}</p>
 {{ end }}
+{{ if .Code }}
+<p style="margin:24px 0; font-size:30px; line-height:1.2; letter-spacing:6px; font-weight:800;
+          font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color:#201e1d;">{{ .Code }}</p>
+{{ end }}
 </td>
 </tr>
 {{ if .Facts }}

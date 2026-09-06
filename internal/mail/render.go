@@ -55,9 +55,16 @@ type Fact struct {
 // assert, in one test over every message, that each one names a real date and
 // carries an upgrade link.
 type Content struct {
-	Subject   string
-	Heading   string
-	Body      []string
+	Subject string
+	Heading string
+	Body    []string
+
+	// Code is a short credential the reader retypes — the verification code is
+	// the only one today. It is its own field rather than a Body entry or a
+	// Fact because it has to be the largest thing on the screen, and a facts
+	// row is a small right-aligned value.
+	Code string
+
 	Facts     []Fact
 	Primary   Button
 	Secondary []Button
@@ -86,6 +93,11 @@ func (c Content) Text() string {
 
 	for _, paragraph := range c.Body {
 		b.WriteString(paragraph)
+		b.WriteString("\n\n")
+	}
+
+	if c.Code != "" {
+		b.WriteString(c.Code)
 		b.WriteString("\n\n")
 	}
 
