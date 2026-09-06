@@ -7,12 +7,12 @@
 //
 
 // Package mailsample builds one representative message for every tag in
-// mail.Tags.
+// mail.Tags, using the same builders the product uses.
 //
-// It exists because no single package can otherwise see the whole set: the
-// account and lifecycle copy lives in internal/mail, the report and the alert
-// live in internal/reports, and internal/mail must not import internal/reports.
-// A guard that walks every message the product sends has to sit above both.
+// It is a package rather than a test file so that the set has one name and one
+// home: its own test is the guard that every message carries a postal address,
+// and rendering the set to disk is how a change to the shared layout is looked
+// at before it is sent to anybody.
 package mailsample
 
 import (
@@ -32,7 +32,7 @@ const Recipient = "sam@example.com"
 const baseURL = "https://app.feasible.lol"
 
 // at is the instant every sample date is measured from, so two runs produce the
-// same bytes and a rendered set can be compared with the last one.
+// same bytes.
 var at = time.Date(2026, 9, 6, 14, 32, 0, 0, time.UTC)
 
 // Messages builds one message per tag, keyed by tag.
@@ -40,9 +40,14 @@ var at = time.Date(2026, 9, 6, 14, 32, 0, 0, time.UTC)
 // Every entry goes through the same builder the product uses, so a message that
 // would not render for a customer does not render here either.
 func Messages() (map[string]mail.Message, error) {
+	pieces, err := contents()
+	if err != nil {
+		return nil, err
+	}
+
 	built := map[string]mail.Message{}
 
-	for tag, content := range contents() {
+	for tag, content := range pieces {
 		message, err := content.Message(Recipient, tag)
 		if err != nil {
 			return nil, fmt.Errorf("mailsample: %s: %w", tag, err)
@@ -51,15 +56,20 @@ func Messages() (map[string]mail.Message, error) {
 		built[tag] = message
 	}
 
-	for tag, rendered := range rendered() {
-		built[tag] = rendered.Message(Recipient, tag)
+	produced, err := rendered()
+	if err != nil {
+		return nil, err
+	}
+
+	for tag, one := range produced {
+		built[tag] = one.Message(Recipient, tag)
 	}
 
 	return built, nil
 }
 
 // contents is every message built from a mail.Content.
-func contents() map[string]mail.Content {
+func contents() (map[string]mail.Content, error) {
 	built := map[string]mail.Content{
 		mail.TagVerifyEmail:          mail.VerificationContent("483920", baseURL+"/verify?token=abc123"),
 		mail.TagPasswordReset:        mail.PasswordResetContent(baseURL + "/reset-password?token=9f2c4d8e"),
@@ -73,9 +83,7 @@ func contents() map[string]mail.Content {
 	for _, scheduled := range lifecycle.Sequence {
 		content, err := mail.LifecycleContent(lifecycleNotice(scheduled))
 		if err != nil {
-			// A template with no copy is a message nobody receives, so it is
-			// worth failing the walk rather than quietly skipping.
-			panic(fmt.Sprintf("mailsample: lifecycle %s: %v", scheduled.Template, err))
+			return nil, fmt.Errorf("mailsample: lifecycle %s: %w", scheduled.Template, err)
 		}
 
 		built[scheduled.Template] = content
@@ -84,17 +92,17 @@ func contents() map[string]mail.Content {
 	for _, level := range []usage.Level{usage.LevelWarn, usage.LevelNear, usage.LevelReached} {
 		content, err := mail.UsageContent(usageNotice(level))
 		if err != nil {
-			panic(fmt.Sprintf("mailsample: usage %s: %v", level, err))
+			return nil, fmt.Errorf("mailsample: usage %s: %w", level, err)
 		}
 
 		built["usage_"+string(level)] = content
 	}
 
-	return built
+	return built, nil
 }
 
 // rendered is every message built in internal/reports.
-func rendered() map[string]reports.Rendered {
+func rendered() (map[string]reports.Rendered, error) {
 	report := reports.Report{
 		Domain:       "harbor.my",
 		PeriodLabel:  "31 August – 6 September 2026",
@@ -142,7 +150,7 @@ func rendered() map[string]reports.Rendered {
 
 		one, err := reports.RenderReport(report, reports.FallbackClock)
 		if err != nil {
-			panic(fmt.Sprintf("mailsample: %s: %v", tag, err))
+			return nil, fmt.Errorf("mailsample: %s: %w", tag, err)
 		}
 
 		built[tag] = one
@@ -156,13 +164,13 @@ func rendered() map[string]reports.Rendered {
 
 		one, err := reports.RenderAlert(alert, reports.FallbackClock)
 		if err != nil {
-			panic(fmt.Sprintf("mailsample: %s: %v", tag, err))
+			return nil, fmt.Errorf("mailsample: %s: %w", tag, err)
 		}
 
 		built[tag] = one
 	}
 
-	return built
+	return built, nil
 }
 
 // lifecycleNotice is a trial account partway through the clock.

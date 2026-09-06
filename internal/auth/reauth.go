@@ -157,8 +157,7 @@ func (h *Handler) doSendConfirmation(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, withQuery(next, "confirm", "sent"), http.StatusFound)
 }
 
-// sendConfirmationCode writes and sends the email. The code is the largest
-// thing on the page: it is what the reader is here to copy.
+// sendConfirmationCode sends the code that confirms a security change.
 func (h *Handler) sendConfirmationCode(r *http.Request, user *User, code string) error {
 	message, err := mail.SettingsConfirmationContent(code).Message(user.Email, mail.TagSettingsConfirmation)
 	if err != nil {

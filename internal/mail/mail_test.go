@@ -277,22 +277,11 @@ func accountMessages(t *testing.T) map[string]Message {
 	return byTag
 }
 
-// TestTheAccountEmailsCarryTheFooter is what CAN-SPAM needs and what tells a
-// reader the message is from us. These four ask somebody to click a link and
-// type a password, so an unbranded one with no sender identity is exactly the
-// shape they have to be distinguishable from.
-func TestTheAccountEmailsCarryTheFooter(t *testing.T) {
+// TestTheAccountEmailsCarryTheWordmark is what tells a reader, at a glance,
+// that the message asking them to type a password is from us. The postal
+// address is checked over all twenty-four in internal/mailsample.
+func TestTheAccountEmailsCarryTheWordmark(t *testing.T) {
 	for tag, message := range accountMessages(t) {
-		for _, fragment := range []string{"Cloudmanic Labs, LLC", "901 Brutscher Street, D112", "Newberg, OR 97132"} {
-			if !strings.Contains(message.HTML, fragment) {
-				t.Errorf("%s: the HTML part is missing %q", tag, fragment)
-			}
-
-			if !strings.Contains(message.Text, fragment) {
-				t.Errorf("%s: the text part is missing %q", tag, fragment)
-			}
-		}
-
 		if !strings.Contains(message.HTML, "Feasible<span") {
 			t.Errorf("%s: the HTML part has no wordmark", tag)
 		}

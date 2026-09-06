@@ -315,9 +315,9 @@ func (m *Mailer) send(ctx context.Context, to, tag string, content Content) erro
 	return err
 }
 
-// SettingsConfirmationContent is the copy for the code that confirms a
-// security change on an account with no password. It is sent from
-// internal/auth, and lives here because every message's copy does.
+// SettingsConfirmationContent is the copy for the code that confirms a security
+// change on an account with no password. It is sent from internal/auth and
+// written here, where the guard over every message can reach it.
 func SettingsConfirmationContent(code string) Content {
 	return Content{
 		Subject: "Your feasible.lol confirmation code",
@@ -343,8 +343,8 @@ func (m *Mailer) SendVerification(ctx context.Context, to, code, link string) er
 	return m.send(ctx, to, TagVerifyEmail, VerificationContent(code, link))
 }
 
-// VerificationContent is the copy. It is separate from the send so the message
-// can be rendered and inspected without a transport.
+// VerificationContent is the copy. Each builder is separate from its send so a
+// message can be rendered and read without a transport.
 func VerificationContent(code, link string) Content {
 	return Content{
 		Subject: "Your feasible.lol verification code",
@@ -364,7 +364,8 @@ func (m *Mailer) SendInvitation(ctx context.Context, to, teamName, inviterName, 
 	return m.send(ctx, to, TagTeamInvitation, InvitationContent(teamName, inviterName, role, link, expires))
 }
 
-// InvitationContent is the copy.
+// InvitationContent is the copy. The link is the invitation: anybody holding
+// it can accept, which is why it is never logged.
 func InvitationContent(teamName, inviterName, role, link string, expires time.Time) Content {
 	inviter := strings.TrimSpace(inviterName)
 	if inviter == "" {
@@ -392,7 +393,8 @@ func (m *Mailer) SendPasswordReset(ctx context.Context, to, link string) error {
 	return m.send(ctx, to, TagPasswordReset, PasswordResetContent(link))
 }
 
-// PasswordResetContent is the copy.
+// PasswordResetContent is the copy. The URL appears as text as well as behind
+// the button, so the one email that hands over an account shows where it goes.
 func PasswordResetContent(link string) Content {
 	return Content{
 		Subject: "Reset your feasible.lol password",
@@ -414,7 +416,8 @@ func (m *Mailer) SendPasswordChanged(ctx context.Context, to string) error {
 	return m.send(ctx, to, TagPasswordChanged, PasswordChangedContent(m.baseURL))
 }
 
-// PasswordChangedContent is the copy.
+// PasswordChangedContent is the copy. It has no primary button because its
+// reader is either satisfied or alarmed, and only the alarmed one acts.
 func PasswordChangedContent(baseURL string) Content {
 	return Content{
 		Subject: "Your feasible.lol password was changed",
@@ -434,7 +437,8 @@ func (m *Mailer) SendNewLogin(ctx context.Context, to, device, cycle string, whe
 	return m.send(ctx, to, TagNewLogin, NewLoginContent(m.baseURL, device, cycle, when))
 }
 
-// NewLoginContent is the copy.
+// NewLoginContent is the copy. The device and the time are a facts row because
+// they are what somebody scans to decide whether they recognise the sign-in.
 func NewLoginContent(baseURL, device, cycle string, when time.Time) Content {
 	return Content{
 		Subject: "New sign-in to your feasible.lol account",

@@ -257,10 +257,9 @@ func TestBothMessagesCarryThePostalAddress(t *testing.T) {
 	}
 
 	for name, rendered := range map[string]Rendered{"report": report, "alert": alert} {
-		// The wordmark, the company, and the street the company is on. The
-		// address is wrapped in the HTML, so the street is what is checked
-		// there rather than the whole block.
-		for _, want := range []string{"Feasible", "Cloudmanic Labs, LLC", "901 Brutscher Street"} {
+		// The address is wrapped in the HTML, so the lines are checked one at
+		// a time rather than as a block.
+		for _, want := range append([]string{"Feasible", mail.Company.Name}, mail.Company.AddressLines...) {
 			if !strings.Contains(rendered.HTML, want) {
 				t.Errorf("the %s HTML is missing %q", name, want)
 			}

@@ -118,8 +118,8 @@ func TestAMessageUsingOnlyTheOldBlocksIsUnchanged(t *testing.T) {
 	}
 
 	if got != string(want) {
-		t.Errorf("the layout changed for a message using none of the new blocks:\n--- want ---\n%s\n--- got ---\n%s",
-			want, got)
+		t.Errorf("the layout changed for a message using none of the new blocks. If the office moved, "+
+			"regenerate testdata/plain_message.html.\n--- want ---\n%s\n--- got ---\n%s", want, got)
 	}
 }
 

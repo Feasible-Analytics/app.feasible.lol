@@ -61,10 +61,6 @@ func TestEveryRungRenders(t *testing.T) {
 		if !strings.Contains(msg.HTML, "sales@feasible.lol") {
 			t.Errorf("%s does not point at sales", level)
 		}
-		if !strings.Contains(msg.HTML, "Cloudmanic Labs, LLC") {
-			t.Errorf("%s has no postal address", level)
-		}
-
 		if !strings.Contains(msg.Text, thousands(billable)) {
 			t.Errorf("%s never states the number the customer is at", level)
 		}

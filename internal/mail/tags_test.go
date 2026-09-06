@@ -12,36 +12,109 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 )
 
-// packagesThatSendMail is every directory holding a call to Message. The scan
-// below reads them as source rather than importing them, because internal/mail
-// must not depend on the packages that use it.
-var packagesThatSendMail = []string{".", "../auth", "../reports"}
+// packagesThatSendMail is every package allowed to address a message.
+//
+// It is an allow-list rather than a search result: a new package that starts
+// sending email has to be added here, and adding it is the moment somebody
+// notices its messages are not in Tags or in the sample. internal/mailsample
+// is on it because it builds one of everything for the guard.
+var packagesThatSendMail = map[string]bool{
+	"mail":       true,
+	"auth":       true,
+	"reports":    true,
+	"mailsample": true,
+}
 
 // TestNoSenderInventsItsOwnTag walks the source for a tag written as a literal
-// at a send site and refuses one Tags does not know about.
-//
-// This is what stops the next email being added without being added to the
-// inventory — which is how six messages came to be sent with no postal address
-// and no test that noticed.
+// at a send site and refuses one Tags does not know about. A message outside
+// the inventory is a message no guard checks.
 func TestNoSenderInventsItsOwnTag(t *testing.T) {
 	known := map[string]bool{}
 	for _, tag := range Tags() {
 		known[tag] = true
 	}
 
-	for _, dir := range packagesThatSendMail {
+	for _, dir := range sendingDirs(t) {
 		for where, tag := range literalTags(t, dir) {
 			if !known[tag] {
 				t.Errorf("%s sends %q, which is not in mail.Tags", where, tag)
 			}
 		}
 	}
+}
+
+// TestOnlyTheKnownPackagesSendMail is the guard the literal scan cannot be on
+// its own.
+//
+// A sender that names its tag with a constant is invisible to a scan for
+// literals, so the thing worth catching is not the tag — it is a package that
+// has started sending email at all. Every one of those has messages that need
+// to be in Tags and in the sample.
+func TestOnlyTheKnownPackagesSendMail(t *testing.T) {
+	for _, dir := range sendingDirs(t) {
+		name := filepath.Base(dir)
+
+		if !packagesThatSendMail[name] {
+			t.Errorf("internal/%s addresses a mail message. Add its messages to mail.Tags and to "+
+				"internal/mailsample, then add it to packagesThatSendMail.", name)
+		}
+	}
+}
+
+// sendingDirs lists every package under internal that addresses a message.
+func sendingDirs(t *testing.T) []string {
+	t.Helper()
+
+	const root = ".."
+
+	dirs := []string{}
+
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if !entry.IsDir() {
+			return nil
+		}
+
+		// The root of the walk is "..", which would otherwise look like a
+		// hidden directory and skip the whole tree.
+		if path != root && (entry.Name() == "testdata" || strings.HasPrefix(entry.Name(), ".")) {
+			return fs.SkipDir
+		}
+
+		if len(addressedIn(t, path)) > 0 {
+			dirs = append(dirs, path)
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk internal: %v", err)
+	}
+
+	return dirs
+}
+
+// addressedIn finds every call that turns copy into an addressed message.
+func addressedIn(t *testing.T, dir string) []ast.Expr {
+	t.Helper()
+
+	tags := []ast.Expr{}
+
+	forEachMessageCall(t, dir, func(_ *token.FileSet, _ string, call *ast.CallExpr) {
+		tags = append(tags, call.Args[1])
+	})
+
+	return tags
 }
 
 // TestEveryTagConstantIsInTheInventory catches the other half: a constant added
@@ -77,14 +150,37 @@ func TestATagIsNeverReused(t *testing.T) {
 func literalTags(t *testing.T, dir string) map[string]string {
 	t.Helper()
 
+	found := map[string]string{}
+
+	forEachMessageCall(t, dir, func(fset *token.FileSet, path string, call *ast.CallExpr) {
+		literal, ok := call.Args[1].(*ast.BasicLit)
+		if !ok || literal.Kind != token.STRING {
+			return
+		}
+
+		tag, err := strconv.Unquote(literal.Value)
+		if err != nil {
+			return
+		}
+
+		found[filepath.Base(path)+":"+strconv.Itoa(fset.Position(literal.Pos()).Line)] = tag
+	})
+
+	return found
+}
+
+// forEachMessageCall visits every `x.Message(to, tag)` in one directory. The
+// source is read rather than imported, because internal/mail must not depend on
+// the packages that use it.
+func forEachMessageCall(t *testing.T, dir string, visit func(*token.FileSet, string, *ast.CallExpr)) {
+	t.Helper()
+
 	fset := token.NewFileSet()
 
 	packages, err := parser.ParseDir(fset, dir, nil, 0)
 	if err != nil {
 		t.Fatalf("parse %s: %v", dir, err)
 	}
-
-	found := map[string]string{}
 
 	for _, pkg := range packages {
 		for path, file := range pkg.Files {
@@ -94,45 +190,38 @@ func literalTags(t *testing.T, dir string) map[string]string {
 					return true
 				}
 
-				selector, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok || selector.Sel.Name != "Message" {
-					return true
+				if selector, ok := call.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "Message" {
+					visit(fset, path, call)
 				}
-
-				literal, ok := call.Args[1].(*ast.BasicLit)
-				if !ok || literal.Kind != token.STRING {
-					return true
-				}
-
-				tag, err := strconv.Unquote(literal.Value)
-				if err != nil {
-					return true
-				}
-
-				found[filepath.Base(path)+":"+strconv.Itoa(fset.Position(literal.Pos()).Line)] = tag
 
 				return true
 			})
 		}
 	}
-
-	return found
 }
 
-// tagConstants reads the Tag… constants out of this package's own source.
+// tagConstants reads every Tag… constant in this package, from every file in
+// it, so one declared beside a new sender is seen as well.
 func tagConstants(t *testing.T) map[string]string {
 	t.Helper()
 
 	fset := token.NewFileSet()
 
-	file, err := parser.ParseFile(fset, "tags.go", nil, 0)
+	packages, err := parser.ParseDir(fset, ".", nil, 0)
 	if err != nil {
-		t.Fatalf("parse tags.go: %v", err)
+		t.Fatalf("parse the package: %v", err)
 	}
 
 	found := map[string]string{}
+	declarations := []ast.Decl{}
 
-	for _, declaration := range file.Decls {
+	for _, pkg := range packages {
+		for _, file := range pkg.Files {
+			declarations = append(declarations, file.Decls...)
+		}
+	}
+
+	for _, declaration := range declarations {
 		general, ok := declaration.(*ast.GenDecl)
 		if !ok || general.Tok != token.CONST {
 			continue
@@ -163,7 +252,7 @@ func tagConstants(t *testing.T) map[string]string {
 	}
 
 	if len(found) == 0 {
-		t.Fatal("no Tag constants were found in tags.go")
+		t.Fatal("no Tag constants were found in the package")
 	}
 
 	return found

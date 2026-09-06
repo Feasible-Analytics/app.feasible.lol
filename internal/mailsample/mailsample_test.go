@@ -16,12 +16,32 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
 )
 
-// TestEveryMessageCarriesTheCompanyAndAddress is the assertion the postal
-// address existed for and never had.
+// TestTheAddressIsAWholeAddress is what stops the guard below being circular.
 //
-// It was checked on two messages out of twenty-four, per message, which is how
-// six of them came to be sent with no sender identity at all. Here it is
-// checked on every one, in both bodies.
+// That guard builds what it looks for out of mail.Company, so an empty
+// mail.Company satisfies it on every message. This is the one place a test
+// writes the address out, and it is what a move of office has to change.
+func TestTheAddressIsAWholeAddress(t *testing.T) {
+	if mail.Company.Name != "Cloudmanic Labs, LLC" {
+		t.Errorf("the company is %q", mail.Company.Name)
+	}
+
+	want := []string{"901 Brutscher Street, D112", "Newberg, OR 97132", "United States"}
+
+	if len(mail.Company.AddressLines) != len(want) {
+		t.Fatalf("the address has %d lines, want %d: %q", len(mail.Company.AddressLines), len(want),
+			mail.Company.AddressLines)
+	}
+
+	for i, line := range want {
+		if mail.Company.AddressLines[i] != line {
+			t.Errorf("address line %d is %q, want %q", i+1, mail.Company.AddressLines[i], line)
+		}
+	}
+}
+
+// TestEveryMessageCarriesTheCompanyAndAddress is the assertion CAN-SPAM needs,
+// on every message rather than on whichever ones have a test of their own.
 func TestEveryMessageCarriesTheCompanyAndAddress(t *testing.T) {
 	messages, err := Messages()
 	if err != nil {
@@ -44,8 +64,7 @@ func TestEveryMessageCarriesTheCompanyAndAddress(t *testing.T) {
 }
 
 // TestTheSampleCoversEveryTag is what makes the test above a guard rather than
-// a snapshot. A new sender that is not added here fails, instead of quietly
-// not being checked.
+// a snapshot. A tag with no sample fails, instead of quietly not being checked.
 func TestTheSampleCoversEveryTag(t *testing.T) {
 	messages, err := Messages()
 	if err != nil {
@@ -57,19 +76,65 @@ func TestTheSampleCoversEveryTag(t *testing.T) {
 		built = append(built, tag)
 	}
 
-	want := mail.Tags()
-
-	sort.Strings(built)
-	sort.Strings(want)
-
-	if strings.Join(built, "\n") != strings.Join(want, "\n") {
-		t.Errorf("the sample and mail.Tags disagree.\n--- sample ---\n%s\n--- tags ---\n%s",
-			strings.Join(built, "\n"), strings.Join(want, "\n"))
+	if missing, extra := compare(built, mail.Tags()); len(missing) > 0 || len(extra) > 0 {
+		t.Errorf("the sample and mail.Tags disagree. Not sampled: %q. Not in Tags: %q.", missing, extra)
 	}
 }
 
+// TestAnIncompleteSampleIsCaught shows the guard guarding, since a completeness
+// check that cannot fail is the whole failure mode being defended against.
+func TestAnIncompleteSampleIsCaught(t *testing.T) {
+	all := mail.Tags()
+
+	missing, extra := compare(all[1:], all)
+	if len(missing) != 1 || missing[0] != all[0] {
+		t.Errorf("dropping %q from the sample was not reported: missing=%q", all[0], missing)
+	}
+
+	if len(extra) != 0 {
+		t.Errorf("nothing was added, but %q was reported as extra", extra)
+	}
+
+	missing, extra = compare(append(all, "brand_new"), all)
+	if len(extra) != 1 || extra[0] != "brand_new" {
+		t.Errorf("a sample with no tag was not reported: extra=%q", extra)
+	}
+
+	if len(missing) != 0 {
+		t.Errorf("nothing was dropped, but %q was reported as missing", missing)
+	}
+}
+
+// compare reports what is in one list and not the other, both ways round.
+func compare(sample, tags []string) (missing, extra []string) {
+	sampled := map[string]bool{}
+	for _, tag := range sample {
+		sampled[tag] = true
+	}
+
+	listed := map[string]bool{}
+	for _, tag := range tags {
+		listed[tag] = true
+
+		if !sampled[tag] {
+			missing = append(missing, tag)
+		}
+	}
+
+	for _, tag := range sample {
+		if !listed[tag] {
+			extra = append(extra, tag)
+		}
+	}
+
+	sort.Strings(missing)
+	sort.Strings(extra)
+
+	return missing, extra
+}
+
 // TestMovingTheAddressMovesBothFooters proves there is one definition and not
-// two. Before this, the HTML footer held its own copy of the four lines.
+// two: move it, and both footers follow.
 func TestMovingTheAddressMovesBothFooters(t *testing.T) {
 	was := mail.Company
 	t.Cleanup(func() { mail.Company = was })
@@ -95,8 +160,16 @@ func TestMovingTheAddressMovesBothFooters(t *testing.T) {
 			}
 		}
 
-		if strings.Contains(message.HTML, was.AddressLines[0]) {
-			t.Errorf("%s: the HTML still carries the old street", tag)
+		// The company name and the street, not the country: a report can
+		// legitimately list "United States" as a top country.
+		for _, old := range []string{was.Name, was.AddressLines[0]} {
+			if strings.Contains(message.HTML, old) {
+				t.Errorf("%s: the HTML still carries the old %q", tag, old)
+			}
+
+			if strings.Contains(message.Text, old) {
+				t.Errorf("%s: the text still carries the old %q", tag, old)
+			}
 		}
 	}
 }

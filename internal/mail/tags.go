@@ -24,8 +24,8 @@ const (
 	TagTeamInvitation       = "team_invitation"
 )
 
-// The tags for the two messages built in internal/reports. They are named here
-// rather than there because the footer guard has to know the whole set, and
+// The tags for the messages built in internal/reports. They are named here
+// rather than there because the guard below has to know the whole set, and
 // internal/mail must not import internal/reports.
 const (
 	TagReportWeekly  = "report_weekly"
@@ -37,10 +37,13 @@ const (
 
 // Tags is every message the product can send.
 //
-// It is a written-out list rather than anything derived, because its job is to
-// be the thing a new sender has to be added to. The guard in mail_test.go walks
-// it, renders each one, and refuses a message with no postal address on it —
-// which is how six of these came to be missing one.
+// The eleven one-off messages are written out, because the list's job is to be
+// the thing a new sender has to be added to. The lifecycle sequence and the
+// volume ladder are read from the same source their senders read, so a rung
+// added there cannot be missing here.
+//
+// internal/mailsample builds one of each and its test refuses a message with no
+// postal address on it.
 func Tags() []string {
 	tags := []string{
 		TagVerifyEmail,
