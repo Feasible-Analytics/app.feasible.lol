@@ -16,6 +16,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
 // showAccountSettings renders the profile and password screen.
@@ -23,6 +24,13 @@ func (h *Handler) showAccountSettings(w http.ResponseWriter, r *http.Request) {
 	p := h.newPage(r, tr(r, "auth.title.account"), "settings")
 	p.Data["MinLength"] = MinPasswordLength
 	p.Data["ReauthMode"] = reauthMode(userFrom(r))
+
+	// The clock select offers two dials and no "follow my device", because
+	// nobody can predict what their device is set to and a label that names an
+	// outcome the reader cannot picture is not a choice. So the form shows the
+	// dial they are on right now, resolved the same way every screen resolves
+	// it, and saving pins it.
+	p.Data["HourCycle"] = h.HourCycleFor(r)
 
 	switch r.URL.Query().Get("saved") {
 	case "profile":
@@ -43,7 +51,7 @@ func (h *Handler) showAccountSettings(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, "settings_account", p, http.StatusOK)
 }
 
-// doUpdateProfile saves the display name and theme.
+// doUpdateProfile saves the display name, the theme and the clock preference.
 func (h *Handler) doUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	if !h.CheckFormToken(w, r) {
 		return
@@ -56,7 +64,16 @@ func (h *Handler) doUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		theme = "system"
 	}
 
-	if err := h.Store.UpdateProfile(r.Context(), user.ID, strings.TrimSpace(r.PostFormValue("name")), theme); err != nil {
+	// Whitelisted the same way the theme above is. The select offers only the
+	// two dials, so anything else is a value we did not send; it becomes the
+	// dial this person was actually looking at rather than a guess, which is
+	// what makes saving the form pin what they saw.
+	clock := timefmt.Normalise(r.PostFormValue("time_format"))
+	if clock == timefmt.System {
+		clock = h.HourCycleFor(r)
+	}
+
+	if err := h.Store.UpdateProfile(r.Context(), user.ID, strings.TrimSpace(r.PostFormValue("name")), theme, clock); err != nil {
 		h.fail(w, r, err)
 		return
 	}

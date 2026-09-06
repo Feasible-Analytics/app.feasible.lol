@@ -40,6 +40,15 @@
         </select>
       </div>
 
+      <div>
+        <label for="time_format" class="block text-sm font-medium text-body">{{ t $.Lang "auth.settings_account.time_format" }}</label>
+        <select id="time_format" name="time_format"
+                class="mt-1 block w-full border-2 border-field px-3 py-2 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+          <option value="12" {{ if eq $.Data.HourCycle "12" }}selected{{ end }}>{{ t $.Lang "auth.settings_account.time_format_12" }}</option>
+          <option value="24" {{ if eq $.Data.HourCycle "24" }}selected{{ end }}>{{ t $.Lang "auth.settings_account.time_format_24" }}</option>
+        </select>
+      </div>
+
       <button type="submit"
               class="btn btn-primary">
         {{ t $.Lang "common.action.save" }}

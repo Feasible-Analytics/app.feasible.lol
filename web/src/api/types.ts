@@ -354,6 +354,11 @@ export interface Bootstrap {
 	lock?: AccountLock;
 	/** The locale the server negotiated, for Intl and for the plural rules. */
 	locale: string;
+	/** "12" or "24", already resolved by the server — never "system". The clock
+	 *  is a personal preference and is deliberately not derived from `locale`:
+	 *  an American who wants a 24-hour dial is an ordinary person, and reading
+	 *  the language to guess gets them wrong on every graph they open. */
+	hour_cycle: string;
 	/** Every string the dashboard can ask for, already merged over English by
 	 *  the server. It arrives resolved rather than as a locale to look up so the
 	 *  browser needs no catalogue and no fallback rule of its own. */

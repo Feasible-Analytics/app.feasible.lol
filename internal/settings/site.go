@@ -20,6 +20,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
 // subscriptionView is one scheduled report as the form renders it.
@@ -332,6 +333,7 @@ func (h *TeamHandler) reportsPage(r *http.Request, site sites.Site) (screen, err
 	}
 
 	now := time.Now().UTC()
+	cycle := h.clock(r)
 
 	view := screen{
 		TitleID:  "settings.nav.reports",
@@ -349,8 +351,8 @@ func (h *TeamHandler) reportsPage(r *http.Request, site sites.Site) (screen, err
 			Enabled:         subscription.Enabled,
 			RecipientList:   strings.Join(subscription.Recipients, ", "),
 			SlackWebhookURL: subscription.SlackWebhookURL,
-			NextRun:         nextRun(kind, site.Timezone, now),
-			LastSent:        lastSent(lastByKind[kind]),
+			NextRun:         nextRun(kind, site.Timezone, cycle, now),
+			LastSent:        lastSent(lastByKind[kind], cycle),
 		})
 	}
 
@@ -386,7 +388,7 @@ func (h *TeamHandler) reportsPage(r *http.Request, site sites.Site) (screen, err
 			Kind:       delivery.Kind,
 			PeriodKey:  delivery.PeriodKey,
 			Recipients: delivery.Recipients,
-			SentAt:     stamp(delivery.SentAt),
+			SentAt:     stamp(delivery.SentAt, cycle),
 		})
 	}
 
@@ -406,7 +408,7 @@ func alertDescription(rule reports.AlertRule) string {
 // nextRun works out when a scheduled report goes out next, in the site's own
 // timezone. It is computed rather than described so nobody has to work out what
 // "Monday 00:00" means for a site in Kathmandu.
-func nextRun(kind, timezone string, now time.Time) string {
+func nextRun(kind, timezone, cycle string, now time.Time) string {
 	location, err := time.LoadLocation(timezone)
 	if err != nil {
 		return "unknown — " + timezone + " is not a timezone we can load"
@@ -417,7 +419,7 @@ func nextRun(kind, timezone string, now time.Time) string {
 	if kind == reports.KindMonthly {
 		next := time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, location).AddDate(0, 1, 0)
 
-		return next.Format("Mon 2 Jan 15:04 MST")
+		return timefmt.Clock(cycle, next, "Mon 2 Jan 15:04 MST")
 	}
 
 	midnight := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location)
@@ -429,16 +431,16 @@ func nextRun(kind, timezone string, now time.Time) string {
 		days = 7
 	}
 
-	return midnight.AddDate(0, 0, days).Format("Mon 2 Jan 15:04 MST")
+	return timefmt.Clock(cycle, midnight.AddDate(0, 0, days), "Mon 2 Jan 15:04 MST")
 }
 
 // lastSent renders the last delivery, or says there was not one.
-func lastSent(at int64) string {
+func lastSent(at int64, cycle string) string {
 	if at == 0 {
 		return ""
 	}
 
-	return stamp(at)
+	return stamp(at, cycle)
 }
 
 // saveSubscription writes one scheduled report, and optionally sends one now.
@@ -578,7 +580,7 @@ func (h *TeamHandler) healthRoute(w http.ResponseWriter, r *http.Request, identi
 
 	lastAt := "—"
 	if panel.LastRequest != nil {
-		lastAt = stamp(panel.LastRequest.ReceivedAt)
+		lastAt = stamp(panel.LastRequest.ReceivedAt, h.clock(r))
 	}
 
 	h.render(w, r, "health", screen{

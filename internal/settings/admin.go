@@ -27,6 +27,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
 // keyCookie carries a freshly-minted API key across the redirect that follows
@@ -457,13 +458,13 @@ func plural(count int, unit string) string {
 	return fmt.Sprintf("%d %ss", count, unit)
 }
 
-// stamp renders a unix time for a table cell.
-func stamp(unix int64) string {
+// stamp renders a unix time for a table cell, on the reader's own dial.
+func stamp(unix int64, cycle string) string {
 	if unix == 0 {
 		return "—"
 	}
 
-	return time.Unix(unix, 0).UTC().Format("2 Jan 15:04 MST")
+	return timefmt.Clock(cycle, time.Unix(unix, 0).UTC(), "2 Jan 15:04 MST")
 }
 
 // headerFor asks the application for the bar.
@@ -482,4 +483,15 @@ func (h *TeamHandler) headerFor(r *http.Request) appui.Header {
 	}
 
 	return h.Header(r)
+}
+
+// clock is the dial this reader's times are printed on. It reads the account
+// bar for the same reason the Handler's own does, and falls back to the
+// browser's cookie when a screen is rendered without one.
+func (h *TeamHandler) clock(r *http.Request) string {
+	if cycle := h.headerFor(r).HourCycle; cycle != "" {
+		return cycle
+	}
+
+	return timefmt.FromCookie(r)
 }

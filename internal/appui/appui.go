@@ -71,6 +71,12 @@ type Header struct {
 	Name  string
 	Email string
 
+	// HourCycle is "12" or "24", already resolved — never "system". Every
+	// screen wearing this bar prints its clock times on it, so the decision is
+	// made once, where the user row is already in hand, rather than in each
+	// package that happens to print a time.
+	HourCycle string
+
 	// AvatarURL is empty for somebody with no stored picture, which leaves the
 	// letter circle the dashboard uses.
 	AvatarURL string

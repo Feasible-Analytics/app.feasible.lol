@@ -7,7 +7,7 @@
 //
 
 import type { Interval, Metric } from "../api/types";
-import { formatterLocale, n, t } from "./i18n";
+import { formatterLocale, hourCycle, n, t } from "./i18n";
 import { pad } from "./period";
 
 /** The month names, built once per locale. They come from Intl rather than from
@@ -190,6 +190,28 @@ export function bucketDate(label: string): { y: number; m: number; d: number; h:
 	return { y: Number(y), m: Number(m), d: Number(d), h: Number(h), min: Number(min) };
 }
 
+/**
+ * clockParts turns a 24-hour hour into what the catalogue's clock keys take.
+ *
+ * `h % 12` alone is the classic bug here: it prints midnight as "0 AM" and noon
+ * as "0 PM", both of which look plausible enough to ship. The `|| 12` is the
+ * correction, and both boundaries are covered by a test.
+ *
+ * On a 24-hour dial the meridiem is empty and the caller uses the keys that do
+ * not take one, so this is only ever read for the 12-hour ones.
+ */
+function clockParts(h: number): { hour: number; meridiem: string } {
+	return {
+		hour: h % 12 || 12,
+		meridiem: t(h < 12 ? "dashboard.format.meridiem_am" : "dashboard.format.meridiem_pm"),
+	};
+}
+
+/** twelve reports whether this reader is on a 12-hour clock. */
+function twelve(): boolean {
+	return hourCycle() === "12";
+}
+
 /** bucketShort is the axis label: as few characters as still identify the
  *  bucket, because a crowded axis is an unread axis. */
 export function bucketShort(label: string, interval: Interval): string {
@@ -197,8 +219,24 @@ export function bucketShort(label: string, interval: Interval): string {
 
 	switch (interval) {
 		case "minute":
+			if (twelve()) {
+				const clock = clockParts(at.h);
+
+				return t("dashboard.format.time_12", {
+					hour: clock.hour,
+					minute: pad(at.min),
+					meridiem: clock.meridiem,
+				});
+			}
+
 			return t("dashboard.format.time", { hour: at.h, minute: pad(at.min) });
 		case "hour":
+			if (twelve()) {
+				const clock = clockParts(at.h);
+
+				return t("dashboard.format.hour_12", { hour: clock.hour, meridiem: clock.meridiem });
+			}
+
 			return t("dashboard.format.hour", { hour: at.h });
 		case "month":
 			return t("dashboard.format.month_short", { month: monthName(at.m), year: String(at.y).slice(2) });
@@ -215,8 +253,29 @@ export function bucketLong(label: string, interval: Interval): string {
 
 	switch (interval) {
 		case "minute":
+			if (twelve()) {
+				const clock = clockParts(at.h);
+
+				return t("dashboard.format.date_time_12", {
+					date: day,
+					hour: clock.hour,
+					minute: pad(at.min),
+					meridiem: clock.meridiem,
+				});
+			}
+
 			return t("dashboard.format.date_time", { date: day, hour: at.h, minute: pad(at.min) });
 		case "hour":
+			if (twelve()) {
+				const clock = clockParts(at.h);
+
+				return t("dashboard.format.date_hour_12", {
+					date: day,
+					hour: clock.hour,
+					meridiem: clock.meridiem,
+				});
+			}
+
 			return t("dashboard.format.date_hour", { date: day, hour: at.h });
 		case "week":
 			return t("dashboard.format.week_of", { date: day });

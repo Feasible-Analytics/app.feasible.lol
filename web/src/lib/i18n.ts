@@ -32,6 +32,7 @@ const DEFAULT_LOCALE = "en";
 
 interface Catalogue {
 	locale: string;
+	hourCycle: string;
 	messages: Record<string, string>;
 }
 
@@ -48,7 +49,11 @@ function catalogue(): Catalogue {
 
 	const boot = bootstrap();
 
-	loaded = { locale: boot.locale || DEFAULT_LOCALE, messages: boot.messages };
+	loaded = {
+		locale: boot.locale || DEFAULT_LOCALE,
+		hourCycle: boot.hour_cycle === "12" ? "12" : "24",
+		messages: boot.messages,
+	};
 
 	return loaded;
 }
@@ -57,6 +62,18 @@ function catalogue(): Catalogue {
  *  language itself rather than on a string. */
 export function locale(): string {
 	return catalogue().locale;
+}
+
+/**
+ * hourCycle is the dial to print clock times on: "12" or "24".
+ *
+ * It is read from the bootstrap and never from `locale()`. The two travel
+ * together and mean different things — the language chooses the words, this
+ * chooses the clock — and the whole point of the setting is that a reader can
+ * have one without the other.
+ */
+export function hourCycle(): string {
+	return catalogue().hourCycle;
 }
 
 /** The tag Intl has already accepted, so the check runs once rather than on

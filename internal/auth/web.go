@@ -30,6 +30,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/slack"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
 )
 
@@ -1056,6 +1057,23 @@ func requestLogPath(r *http.Request) string {
 	}
 
 	return r.URL.Path
+}
+
+// HourCycleFor answers the dial this request's reader wants their clock times
+// on, as "12" or "24" and never "system".
+//
+// It is exported because the dashboard shell is assembled outside this package
+// and has no other way to reach the user row. A signed-out request — a shared
+// link, a public dashboard — has no stored preference and falls through to the
+// visitor's own browser, which is deliberate: the link owner's personal
+// setting is not something to impose on strangers.
+func (h *Handler) HourCycleFor(r *http.Request) string {
+	user := userFrom(r)
+	if user == nil {
+		return timefmt.FromCookie(r)
+	}
+
+	return timefmt.Resolve(user.TimeFormat, r)
 }
 
 // userFrom pulls the signed-in user back out of the request context.
