@@ -25,6 +25,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -75,9 +76,7 @@ const (
 // one SQLite writer per account, and a health feature that took that writer for
 // every event would slow down the thing it exists to report on.
 type Recorder struct {
-	// Accounts is how the flush reaches each account's database. It is an
-	// interface so a test can count the opens one flush performs, which is the
-	// number this grouping exists to keep at one per account.
+	// Accounts is how the flush reaches each account's database.
 	Accounts opener
 	Sites    *sites.Cache
 	Log      *logger.Logger
@@ -93,6 +92,14 @@ type Recorder struct {
 	counts   map[countKey]int64
 	observed map[observationKey]*observation
 	last     map[int64]*lastRequest
+
+	// observations counts what arrived since the last flush, so a flush that
+	// wrote nothing can be told apart from an install that received nothing.
+	observations int64
+
+	// quiet counts consecutive flushes that wrote nothing while events were
+	// arriving. It is only read and written by the flush loop.
+	quiet int
 }
 
 // countKey is one counted fact: a site, an exact second, what happened, and why.
@@ -128,7 +135,9 @@ type lastRequest struct {
 	at        int64
 }
 
-// opener is how the flush reaches an account database.
+// opener is how the flush reaches an account database. It is an interface so a
+// test can count the opens one flush performs, which is the number this
+// grouping keeps at one per account.
 type opener interface {
 	Acquire(ctx context.Context, id int64) (*accounts.Lease, error)
 }
@@ -172,6 +181,10 @@ func (r *Recorder) Observe(o ingest.Observation) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Counted whatever the observation turns into, so a flush that writes
+	// nothing can be told apart from an install that received nothing.
+	r.observations++
 
 	if !o.Pending {
 		switch {
@@ -359,6 +372,52 @@ func truncationReasons(t ingest.Truncation) []truncationCount {
 	return out
 }
 
+// QuietFlushes is how many consecutive minutes of traffic-with-no-rows it takes
+// to say something.
+//
+// A recorder that has stopped writing produces a panel that reads "no drops",
+// which is the most dangerous thing this panel can say wrongly — and it looks
+// exactly like a healthy quiet site. Ten minutes of a process that is receiving
+// events and recording none of them is the difference.
+const QuietFlushes = 10
+
+// noteFlush watches for a recorder that is receiving events and writing
+// nothing.
+func (r *Recorder) noteFlush(written int, err error) {
+	if err != nil {
+		// A failure is already reported, and is not this.
+		r.quiet = 0
+
+		return
+	}
+
+	if written > 0 {
+		r.quiet = 0
+
+		return
+	}
+
+	r.mu.Lock()
+	seen := r.observations
+	r.observations = 0
+	r.mu.Unlock()
+
+	if seen == 0 {
+		// Nothing arrived, so nothing to write. A genuinely quiet install.
+		r.quiet = 0
+
+		return
+	}
+
+	r.quiet++
+
+	if r.quiet == QuietFlushes && r.Log != nil {
+		r.Log.Error("the ingestion health record has written nothing for "+
+			"several flushes while events are still arriving — the health panel will read as though "+
+			"nothing was dropped", "flushes", r.quiet, "observations", seen)
+	}
+}
+
 // Flush writes everything aggregated so far and reports how many rows it wrote.
 //
 // The count is returned rather than discarded because a recorder that has
@@ -384,6 +443,13 @@ func (r *Recorder) Flush(ctx context.Context) (int, error) {
 	for accountID, pending := range work {
 		wrote, err := r.writeAccount(ctx, accountID, pending)
 		written += wrote
+
+		if errors.Is(err, accounts.ErrDeleted) {
+			// The account is gone. Requeueing would hold these rows in memory
+			// and log a failure every minute for ever, over health data about
+			// a customer who no longer exists.
+			continue
+		}
 
 		if err != nil {
 			firstErr = keepFirst(firstErr, err)
@@ -447,9 +513,12 @@ func groupByAccount(counts map[countKey]int64, observed map[observationKey]*obse
 // syncs a minute, contending with event writes for the same connection and the
 // same disk.
 //
-// The requeue granularity is the account rather than the row. That is the trade
-// the transaction buys, and it is the safe direction — a rolled-back account is
-// retried whole rather than half-written.
+// Two things this costs. The requeue granularity becomes the account rather
+// than the row, which is the safe direction: a rolled-back account is retried
+// whole rather than left half-written. And the account's single writer
+// connection is held for the whole flush, so an event write for that account
+// queues behind it instead of interleaving between rows — a minute's health
+// data against a batch that was going to wait for one of these syncs anyway.
 func (r *Recorder) writeAccount(ctx context.Context, accountID int64, work *pending) (int, error) {
 	lease, err := r.Accounts.Acquire(ctx, accountID)
 	if err != nil {
@@ -463,7 +532,7 @@ func (r *Recorder) writeAccount(ctx context.Context, accountID int64, work *pend
 		return 0, fmt.Errorf("health: begin flush: %w", err)
 	}
 
-	defer func() { _ = tx.Rollback() }()
+	defer tx.Rollback() //nolint:errcheck // a rollback after commit is a no-op
 
 	written, err := writePending(ctx, tx, work)
 	if err != nil {
@@ -481,32 +550,50 @@ func (r *Recorder) writeAccount(ctx context.Context, accountID int64, work *pend
 func writePending(ctx context.Context, tx *sql.Tx, work *pending) (int, error) {
 	written := 0
 
-	for key, count := range work.counts {
-		if _, err := tx.ExecContext(ctx, `
+	if len(work.counts) > 0 {
+		insert, err := tx.PrepareContext(ctx, `
 			INSERT INTO ingest_health (site_id, observed_at, kind, reason, count)
 			VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT (site_id, observed_at, kind, reason) DO UPDATE SET count = count + excluded.count
-		`, key.siteID, key.observedAt, key.kind, key.reason, count); err != nil {
-			return 0, fmt.Errorf("health: write counts: %w", err)
+			ON CONFLICT (site_id, observed_at, kind, reason) DO UPDATE SET count = count + excluded.count`)
+		if err != nil {
+			return 0, fmt.Errorf("health: prepare counts: %w", err)
 		}
 
-		written++
-	}
+		defer insert.Close() //nolint:errcheck // the statement dies with the transaction
 
-	for key, seen := range work.observed {
-		for observedAt, count := range seen.buckets {
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO ingest_observations
-					(site_id, observed_at, kind, value, count, first_seen_at, last_seen_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT (site_id, observed_at, kind, value) DO UPDATE SET
-					count = count + excluded.count,
-					last_seen_at = MAX(last_seen_at, excluded.last_seen_at)
-			`, key.siteID, observedAt, key.kind, key.value, count, observedAt, observedAt); err != nil {
-				return 0, fmt.Errorf("health: write observations: %w", err)
+		for key, count := range work.counts {
+			if _, err := insert.ExecContext(ctx,
+				key.siteID, key.observedAt, key.kind, key.reason, count); err != nil {
+				return 0, fmt.Errorf("health: write counts: %w", err)
 			}
 
 			written++
+		}
+	}
+
+	if len(work.observed) > 0 {
+		insert, err := tx.PrepareContext(ctx, `
+			INSERT INTO ingest_observations
+				(site_id, observed_at, kind, value, count, first_seen_at, last_seen_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (site_id, observed_at, kind, value) DO UPDATE SET
+				count = count + excluded.count,
+				last_seen_at = MAX(last_seen_at, excluded.last_seen_at)`)
+		if err != nil {
+			return 0, fmt.Errorf("health: prepare observations: %w", err)
+		}
+
+		defer insert.Close() //nolint:errcheck // the statement dies with the transaction
+
+		for key, seen := range work.observed {
+			for observedAt, count := range seen.buckets {
+				if _, err := insert.ExecContext(ctx, key.siteID, observedAt, key.kind, key.value,
+					count, observedAt, observedAt); err != nil {
+					return 0, fmt.Errorf("health: write observations: %w", err)
+				}
+
+				written++
+			}
 		}
 	}
 
@@ -581,11 +668,26 @@ func (r *Recorder) requeueObservation(key observationKey, failed *observation) {
 
 	current, ok := r.observed[key]
 	if !ok {
+		// The same admission caps the hot path obeys. A site behind wildcard
+		// DNS produces a new hostname every request, and a flush that kept
+		// failing would otherwise put fifty more of them back every minute
+		// with nothing to stop it.
+		if r.trackedValues(key.accountID, key.siteID) >= MaxTrackedValues {
+			return
+		}
+
+		if len(r.observed) >= MaxTrackedValuesGlobal &&
+			!r.makeFairObservationRoom(key.accountID, key.siteID, r.trackedValues(key.accountID, key.siteID)) {
+			return
+		}
+
 		buckets := make(map[int64]int64, len(failed.buckets))
 		for at, count := range failed.buckets {
 			buckets[at] = count
 		}
+
 		r.observed[key] = &observation{buckets: buckets}
+
 		return
 	}
 
@@ -629,9 +731,12 @@ func (r *Recorder) Run(ctx context.Context) {
 			return
 
 		case <-ticker.C:
-			if _, err := r.Flush(ctx); err != nil && r.Log != nil {
+			written, err := r.Flush(ctx)
+			if err != nil && r.Log != nil {
 				r.Log.Error("the ingestion health record could not be flushed", "error", err)
 			}
+
+			r.noteFlush(written, err)
 		}
 	}
 }
