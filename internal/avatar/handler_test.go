@@ -301,3 +301,159 @@ func TestTheUrlIsEmptyWithoutAStoredPicture(t *testing.T) {
 		t.Errorf("URL = %q, want /app/avatar/7", got)
 	}
 }
+
+// TestAnExpiredMissIsAskedAboutAgain is the regression that matters. Somebody
+// who signs up, then creates a Gravatar next week, has to get it.
+func TestAnExpiredMissIsAskedAboutAgain(t *testing.T) {
+	ctx := context.Background()
+	avatars, db, userID := newStore(t)
+
+	asks := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		asks++
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(square(t, 64, "png"))
+	}))
+	t.Cleanup(provider.Close)
+
+	refresher := &Refresher{
+		Store:    avatars,
+		Client:   provider.Client(),
+		Gravatar: true,
+		Run:      func(work func()) { work() },
+		gravatar: func(string) string { return provider.URL + "/avatar" },
+	}
+
+	// A miss recorded a fortnight ago.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO user_avatars (user_id, type, etag, source, fetched_at)
+		VALUES (?, '', '', ?, ?)`, userID, SourceGravatar, avatars.now()-2*MissRetry); err != nil {
+		t.Fatal(err)
+	}
+
+	refresher.EnsureGravatar(ctx, userID, "a@example.com")
+
+	if asks != 1 {
+		t.Fatalf("the provider was asked %d times, want 1 — a stale miss is never retried", asks)
+	}
+
+	got, err := avatars.Read(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got.Bytes) == 0 || got.ETag == "" {
+		t.Fatal("the picture that arrived after the miss did not replace it")
+	}
+
+	// And now that there is one, it is left alone.
+	refresher.EnsureGravatar(ctx, userID, "a@example.com")
+
+	if asks != 1 {
+		t.Errorf("the provider was asked %d times, want the stored picture to be kept", asks)
+	}
+}
+
+// TestAFreshMissIsNotRetried is the other half: the miss cache still does its
+// job, or every sign-in costs an outbound request again.
+func TestAFreshMissIsNotRetried(t *testing.T) {
+	ctx := context.Background()
+	avatars, db, userID := newStore(t)
+
+	asks := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		asks++
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(provider.Close)
+
+	refresher := &Refresher{
+		Store:    avatars,
+		Client:   provider.Client(),
+		Gravatar: true,
+		Run:      func(work func()) { work() },
+		gravatar: func(string) string { return provider.URL + "/avatar" },
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO user_avatars (user_id, type, etag, source, fetched_at)
+		VALUES (?, '', '', ?, ?)`, userID, SourceGravatar, avatars.now()-60); err != nil {
+		t.Fatal(err)
+	}
+
+	refresher.EnsureGravatar(ctx, userID, "a@example.com")
+
+	if asks != 0 {
+		t.Errorf("a miss recorded a minute ago cost %d outbound requests", asks)
+	}
+}
+
+// TestABackfillAsksOnceAboutEverybodyWhoWasNeverAsked covers the accounts that
+// predate the feature. A sign-in is the only trigger and a session rolls on a
+// fourteen-day window, so an active person may not sign in for months.
+func TestABackfillAsksOnceAboutEverybodyWhoWasNeverAsked(t *testing.T) {
+	ctx := context.Background()
+	avatars, db, first := newStore(t)
+
+	result, err := db.ExecContext(ctx,
+		`INSERT INTO users (email, name, created_at, updated_at) VALUES ('b@example.com', 'B', 1, 1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _ := result.LastInsertId()
+
+	asked := []string{}
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.URL.Path)
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(square(t, 64, "png"))
+	}))
+	t.Cleanup(provider.Close)
+
+	refresher := &Refresher{
+		Store:    avatars,
+		Client:   provider.Client(),
+		Gravatar: true,
+		Run:      func(work func()) { work() },
+		gravatar: func(email string) string { return provider.URL + "/" + email },
+	}
+
+	// The first was asked about a minute ago; only the second is outstanding.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO user_avatars (user_id, type, etag, source, fetched_at)
+		VALUES (?, '', '', ?, ?)`, first, SourceGravatar, avatars.now()-60); err != nil {
+		t.Fatal(err)
+	}
+
+	people := func(context.Context) ([]Person, error) {
+		return []Person{{ID: first, Email: "a@example.com"}, {ID: second, Email: "b@example.com"}}, nil
+	}
+
+	count, err := refresher.Backfill(ctx, people)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	if count != 1 || len(asked) != 1 || asked[0] != "/b@example.com" {
+		t.Fatalf("the backfill asked about %v, want only the account with no answer on file", asked)
+	}
+
+	// Running it again asks about nobody, so it is safe to run twice.
+	if again, err := refresher.Backfill(ctx, people); err != nil || again != 0 {
+		t.Errorf("a second backfill asked about %d accounts (%v), want none", again, err)
+	}
+}
+
+// TestABackfillRefusesWhenItCannotFetch keeps a command that did nothing from
+// reporting that it did.
+func TestABackfillRefusesWhenItCannotFetch(t *testing.T) {
+	avatars, _, _ := newStore(t)
+
+	off := &Refresher{Store: avatars, Client: http.DefaultClient, Gravatar: false}
+
+	if _, err := off.Backfill(context.Background(), func(context.Context) ([]Person, error) {
+		return nil, nil
+	}); err == nil {
+		t.Error("a backfill with Gravatar switched off reported success")
+	}
+}

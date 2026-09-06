@@ -106,8 +106,13 @@ func (r *Refresher) FromGoogle(ctx context.Context, userID int64, pictureURL str
 //
 // That one guard covers both cases worth covering: somebody who already has a
 // Google picture keeps it, and a mailbox with no Gravatar is not asked about on
-// every sign-in for ever. It is deliberately not "did they use Google" —
-// signing in with Google says nothing about whether Google has a photo.
+// every sign-in. It is deliberately not "did they use Google" — signing in
+// with Google says nothing about whether Google has a photo.
+//
+// A remembered miss expires after MissRetry. Without that, somebody who signs
+// up today and creates a Gravatar next week never gets it: there is no refresh
+// job, no request-time repair, and a session rolls on a fourteen-day window, so
+// the next sign-in may be months away and would short-circuit anyway.
 func (r *Refresher) EnsureGravatar(ctx context.Context, userID int64, email string) {
 	if r == nil || r.Store == nil || r.Client == nil || !r.Gravatar {
 		return
@@ -119,7 +124,7 @@ func (r *Refresher) EnsureGravatar(ctx context.Context, userID int64, email stri
 		return
 	}
 
-	if state.Asked {
+	if state.AskedRecently {
 		return
 	}
 
@@ -131,6 +136,59 @@ func (r *Refresher) EnsureGravatar(ctx context.Context, userID int64, email stri
 	url := build(email)
 
 	r.dispatch(func() { r.store(detached, userID, SourceGravatar, url) })
+}
+
+// Backfill asks a provider about everybody who has never been asked.
+//
+// The only trigger is a sign-in, and a session rolls on a fourteen-day
+// inactivity window, so an active person may not sign in for months. Every
+// account that predates the picture feature would otherwise wait that long for
+// a letter to become a face.
+//
+// It is a command rather than a job: pre-launch there are very few accounts, it
+// is cheap, and "sign out and back in" is not a thing to ask a customer to do
+// to see their own face.
+func (r *Refresher) Backfill(ctx context.Context, people func(context.Context) ([]Person, error)) (int, error) {
+	if r == nil || r.Store == nil || r.Client == nil || !r.Gravatar {
+		return 0, errors.New("avatar: the refresher needs a store, an outbound client, and Gravatar switched on")
+	}
+
+	found, err := people(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	asked := 0
+
+	for _, person := range found {
+		state, err := r.Store.State(ctx, person.ID)
+		if err != nil {
+			return asked, err
+		}
+
+		if state.AskedRecently {
+			continue
+		}
+
+		build := r.gravatar
+		if build == nil {
+			build = GravatarURL
+		}
+
+		// Synchronous, unlike the sign-in path: a command that returns before
+		// its work is done reports a number that means nothing.
+		r.store(ctx, person.ID, SourceGravatar, build(person.Email))
+
+		asked++
+	}
+
+	return asked, nil
+}
+
+// Person is who a backfill asks about.
+type Person struct {
+	ID    int64
+	Email string
 }
 
 // State reports what is known about a person's picture without loading it, so

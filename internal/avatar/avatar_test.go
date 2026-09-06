@@ -329,3 +329,75 @@ func TestReadingSomebodyWithNoPictureIsNotAnError(t *testing.T) {
 		t.Error("a person who does not exist read back a picture")
 	}
 }
+
+// TestAMissGoesStaleAndAPictureDoesNot pins the read the retry depends on.
+//
+// A remembered miss that never expires means somebody who signs up today and
+// creates a Gravatar next week never gets it — there is no refresh job and no
+// request-time repair, so the next sign-in short-circuits for ever.
+func TestAMissGoesStaleAndAPictureDoesNot(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name   string
+		age    int64
+		recent bool
+	}{
+		{"just now", 0, true},
+		{"a day old", 24 * 60 * 60, true},
+		{"a minute inside the week", MissRetry - 60, true},
+		{"a minute past the week", MissRetry + 60, false},
+		{"a year old", 365 * 24 * 60 * 60, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			avatars, db, userID := newStore(t)
+
+			if _, err := db.ExecContext(ctx, `
+				INSERT INTO user_avatars (user_id, type, etag, source, fetched_at)
+				VALUES (?, '', '', ?, ?)`, userID, SourceGravatar, avatars.now()-tc.age); err != nil {
+				t.Fatal(err)
+			}
+
+			state, err := avatars.State(ctx, userID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !state.Asked {
+				t.Error("a row that exists reported as never asked")
+			}
+
+			if state.AskedRecently != tc.recent {
+				t.Errorf("a miss %d seconds old reported recent = %v, want %v", tc.age, state.AskedRecently, tc.recent)
+			}
+		})
+	}
+
+	// A stored picture is never stale here. Google's is refreshed on every
+	// Google sign-in, and a Gravatar that changed is a far smaller problem than
+	// one that never arrives.
+	avatars, _, userID := newStore(t)
+
+	picture, err := Normalise(square(t, 64, "png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := avatars.Save(ctx, userID, SourceGoogle, picture); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := avatars.db.ExecContext(ctx,
+		"UPDATE user_avatars SET fetched_at = ? WHERE user_id = ?", avatars.now()-10*MissRetry, userID); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := avatars.State(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !state.AskedRecently {
+		t.Error("an old stored picture was treated as a stale miss and would be re-fetched")
+	}
+}
