@@ -44,16 +44,20 @@ const DateFormat = "Mon, 2 January 2006"
 // option, and that is what let the report drift a private green and a private
 // red before it rendered here.
 type Palette struct {
-	Page     template.CSS // behind the card
-	Card     template.CSS // the card itself
-	Border   template.CSS
-	Rule     template.CSS // the lines between sections
-	Ink      template.CSS // headings and values
-	Text     template.CSS // body copy
-	Muted    template.CSS // labels and the footer
-	Faint    template.CSS // the address block
-	Accent   template.CSS // the primary button and the kicker
-	OnAccent template.CSS
+	Page   template.CSS // behind the card
+	Card   template.CSS // the card itself
+	Border template.CSS
+	Rule   template.CSS // the lines between sections
+	Ink    template.CSS // headings and values
+	Text   template.CSS // body copy
+	Muted  template.CSS // labels and the footer
+	Faint  template.CSS // the address block
+	// Accent is the primary button's ground and OnAccent its text. AccentText
+	// is the same red used as text, which has to be darker than the button's
+	// ground to be readable on the card.
+	Accent     template.CSS
+	OnAccent   template.CSS
+	AccentText template.CSS
 
 	// The facts table's own ground, a shade off the card so the block reads as
 	// one object.
@@ -72,8 +76,8 @@ type Palette struct {
 	Alarm template.CSS
 }
 
-// Colours is the one definition. The greys and the accent are the product's own
-// tokens; the rest arrived with the blocks that use them.
+// Colours is the light palette, and the one every colour in the layout is
+// inlined from. The greys and the accent are the product's own tokens.
 var Colours = Palette{
 	Page:            "#eae9e9",
 	Card:            "#f3f2f2",
@@ -82,17 +86,48 @@ var Colours = Palette{
 	Ink:             "#201e1d",
 	Text:            "#444141",
 	Muted:           "#605d5d",
-	Faint:           "#7d7979",
+	Faint:           "#6b6767",
 	Accent:          "#ec3013",
-	OnAccent:        "#f3f2f2",
+	OnAccent:        "#ffffff",
+	AccentText:      "#ae1800",
 	FactsBackground: "#eae7e7",
 	NoteText:        "#854d0e",
 	NoteBackground:  "#f7f0dd",
 	NoteBorder:      "#a16207",
-	Up:              "#15803d",
+	Up:              "#146c33",
 	Down:            "#b91c1c",
 	Flat:            "#616e7c",
 	Alarm:           "#b91c1c",
+}
+
+// Dark is the palette a client in dark mode is given instead.
+//
+// It is here rather than left to the client because Apple Mail and Outlook
+// invert a light palette on their own and do it badly: a near-white card on a
+// near-white page becomes two near-identical greys with only the border holding
+// the layout together. Every value was checked for contrast against the dark
+// card, the accent and the change colours especially — the light greens and
+// reds are unreadable on it.
+var Dark = Palette{
+	Page:            "#141312",
+	Card:            "#232120",
+	Border:          "#4a4645",
+	Rule:            "#4a4645",
+	Ink:             "#f3f2f2",
+	Text:            "#cfcbca",
+	Muted:           "#a5a09f",
+	Faint:           "#969090",
+	Accent:          "#ec3013",
+	OnAccent:        "#ffffff",
+	AccentText:      "#ff6a4d",
+	FactsBackground: "#2b2827",
+	NoteText:        "#fde68a",
+	NoteBackground:  "#3a2f14",
+	NoteBorder:      "#a16207",
+	Up:              "#4ade80",
+	Down:            "#f87171",
+	Flat:            "#9aa5b1",
+	Alarm:           "#ff6b6b",
 }
 
 // Tone picks the kicker's colour. It is a type rather than a string so a
@@ -130,6 +165,19 @@ type Figure struct {
 
 	// Direction is "up", "down" or "flat", and picks the colour.
 	Direction string
+}
+
+// Class is the dark-mode hook for the change colour, since a media query can
+// only reach a class and the light colour is inlined.
+func (f Figure) Class() string {
+	switch f.Direction {
+	case "up":
+		return "up"
+	case "down":
+		return "down"
+	default:
+		return "flat"
+	}
 }
 
 // Colour is the change colour for a direction.
@@ -215,6 +263,12 @@ type Content struct {
 
 	Heading string
 
+	// Preheader is the line a phone shows beside the subject in the inbox
+	// list. Left empty it falls back to the first body paragraph, which is
+	// right for most messages and wrong for the ones whose opening sentence is
+	// not the summary.
+	Preheader string
+
 	// Subheading is the quiet line under the heading — the period a report
 	// covers, for instance, which is neither the title nor body copy.
 	Subheading string
@@ -249,10 +303,47 @@ func (c Content) Company() Business {
 	return Company
 }
 
+// PreheaderText is what the inbox list shows beside the subject.
+//
+// The fallback matters more than the field: a message with nothing here shows
+// whatever the client scrapes first, which for a message that opens with a
+// heading is the heading repeated.
+func (c Content) PreheaderText() string {
+	if strings.TrimSpace(c.Preheader) != "" {
+		return c.Preheader
+	}
+
+	for _, paragraph := range c.Body {
+		if strings.TrimSpace(paragraph) != "" {
+			return paragraph
+		}
+	}
+
+	if c.Subheading != "" {
+		return c.Subheading
+	}
+
+	return c.Heading
+}
+
+// DarkColours hands the layout the dark palette for its media query.
+func (c Content) DarkColours() Palette {
+	return Dark
+}
+
 // Colours hands the layout the palette, since a template can only reach what
 // its data holds.
 func (c Content) Colours() Palette {
 	return Colours
+}
+
+// KickerClass is the dark-mode hook for the kicker's tone.
+func (c Content) KickerClass() string {
+	if c.KickerTone == ToneAlarm {
+		return "alarm"
+	}
+
+	return "accent"
 }
 
 // KickerColour is the colour of the kicker line.
@@ -261,7 +352,7 @@ func (c Content) KickerColour() template.CSS {
 		return Colours.Alarm
 	}
 
-	return Colours.Accent
+	return Colours.AccentText
 }
 
 // HTML renders the content through the shared layout.

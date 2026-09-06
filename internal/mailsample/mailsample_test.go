@@ -192,3 +192,30 @@ func TestEveryMessageNamesItselfInTheSubject(t *testing.T) {
 		}
 	}
 }
+
+// TestEveryMessageHasAPreheader keeps the inbox preview from being the heading
+// repeated on any of them.
+func TestEveryMessageHasAPreheader(t *testing.T) {
+	pieces, err := Contents()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for tag, content := range pieces {
+		preview := content.PreheaderText()
+
+		if strings.TrimSpace(preview) == "" {
+			t.Errorf("%s has no inbox preview", tag)
+
+			continue
+		}
+
+		if preview == content.Heading {
+			t.Errorf("%s previews its own heading: %q", tag, preview)
+		}
+
+		if preview == content.Subject {
+			t.Errorf("%s previews its own subject: %q", tag, preview)
+		}
+	}
+}

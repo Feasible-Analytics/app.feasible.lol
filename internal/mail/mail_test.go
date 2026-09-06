@@ -369,14 +369,18 @@ func TestTheAccountEmailSubjectsAreUnchanged(t *testing.T) {
 // TestAMessageWithNoClosingHasNoEmptyParagraph keeps a blank block above the
 // address on the one message that has nothing to add after its buttons.
 func TestAMessageWithNoClosingHasNoEmptyParagraph(t *testing.T) {
-	message := accountMessages(t)["password_changed"]
+	withClosing := accountMessages(t)["password_reset"]
+	without := accountMessages(t)["password_changed"]
 
-	if strings.Contains(message.HTML, "color:#605d5d;\">\n\n</p>") {
-		t.Errorf("an empty closing paragraph was rendered:\n%s", message.HTML)
+	if strings.Contains(without.HTML, ">\n\n</p>") {
+		t.Errorf("an empty closing paragraph was rendered:\n%s", without.HTML)
 	}
 
-	// The address still starts the footer, with room above it.
-	if !strings.Contains(message.HTML, "margin:18px 0 0 0") {
-		t.Errorf("the footer lost its spacing when the closing was absent:\n%s", message.HTML)
+	// The rule above the footer moves onto the address block rather than
+	// disappearing with the closing.
+	rules := func(html string) int { return strings.Count(html, "border-top:2px solid") }
+
+	if rules(without.HTML) != rules(withClosing.HTML) {
+		t.Errorf("the footer lost its rule when the closing was absent:\n%s", without.HTML)
 	}
 }

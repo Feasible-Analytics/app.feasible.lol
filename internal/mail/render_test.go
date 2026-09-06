@@ -57,7 +57,7 @@ func TestAFigureColoursItselfFromItsDirection(t *testing.T) {
 	// The literals, not the constants. Comparing a constant against itself
 	// passes just as happily with growth coloured red.
 	for direction, want := range map[string]string{
-		"up":   "#15803d",
+		"up":   "#146c33",
 		"down": "#b91c1c",
 		"flat": "#616e7c",
 		"":     "#616e7c",
@@ -183,7 +183,7 @@ func TestAPaddingCellCarriesNoLabel(t *testing.T) {
 	}
 
 	// Five labels rendered, not six.
-	if got := strings.Count(html, "font-size:12px; color:"); got != 5 {
+	if got := strings.Count(html, `<div class="muted"`); got != 5 {
 		t.Errorf("%d figure labels rendered, want 5:\n%s", got, html)
 	}
 }
@@ -216,5 +216,135 @@ func TestTheFooterSeparatorsSuitTheirBody(t *testing.T) {
 	// And no <br> leaks into the plain-text part.
 	if strings.Contains(text, "<br>") {
 		t.Errorf("the text footer carries markup:\n%s", text)
+	}
+}
+
+// TestThePreheaderIsRenderedAndHidden covers the ~90 characters a phone shows
+// beside the subject, which with nothing set is whatever the client scrapes.
+func TestThePreheaderIsRenderedAndHidden(t *testing.T) {
+	content := plainMessage()
+	content.Preheader = "870,412 of 1,000,000 pageviews used this month."
+
+	html, err := content.HTML()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(html, content.Preheader) {
+		t.Fatalf("the preheader is not in the message:\n%s", html)
+	}
+
+	// Hidden, and before anything else in the body: a preheader after the
+	// wordmark previews the wordmark.
+	hidden := `<div style="display:none; max-height:0; overflow:hidden; mso-hide:all;">` + content.Preheader
+	if !strings.Contains(html, hidden) {
+		t.Errorf("the preheader is not hidden:\n%s", html)
+	}
+
+	if strings.Index(html, content.Preheader) > strings.Index(html, "Feasible<span") {
+		t.Error("the preheader is rendered after the wordmark")
+	}
+}
+
+// TestAnUnsetPreheaderFallsBackToTheFirstParagraph keeps the preview from being
+// the heading repeated.
+func TestAnUnsetPreheaderFallsBackToTheFirstParagraph(t *testing.T) {
+	for name, expected := range map[string]struct {
+		content Content
+		want    string
+	}{
+		"an explicit preheader": {
+			content: Content{Preheader: "Explicit.", Body: []string{"First."}, Heading: "Heading"},
+			want:    "Explicit.",
+		},
+		"the first paragraph": {
+			content: Content{Body: []string{"First.", "Second."}, Heading: "Heading"},
+			want:    "First.",
+		},
+		"a blank first paragraph is skipped": {
+			content: Content{Body: []string{"  ", "Second."}, Heading: "Heading"},
+			want:    "Second.",
+		},
+		"a message with no body": {
+			content: Content{Subheading: "31 August – 6 September", Heading: "harbor.my"},
+			want:    "31 August – 6 September",
+		},
+		"nothing but a heading": {
+			content: Content{Heading: "harbor.my"},
+			want:    "harbor.my",
+		},
+	} {
+		if got := expected.content.PreheaderText(); got != expected.want {
+			t.Errorf("%s: preheader = %q, want %q", name, got, expected.want)
+		}
+	}
+}
+
+// TestTheLayoutHandlesDarkModeItself keeps Apple Mail and Outlook from
+// inverting the light palette on their own, which turns the card and the page
+// into two near-identical greys.
+func TestTheLayoutHandlesDarkModeItself(t *testing.T) {
+	html, err := plainMessage().HTML()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, want := range map[string]string{
+		"the color-scheme meta":     `<meta name="color-scheme" content="light dark">`,
+		"the supported meta":        `<meta name="supported-color-schemes" content="light dark">`,
+		"a dark block":              "@media (prefers-color-scheme: dark)",
+		"the dark page":             string(Dark.Page),
+		"the dark card":             string(Dark.Card),
+		"the dark ink":              string(Dark.Ink),
+		"a phone breakpoint":        "@media only screen and (max-width: 480px)",
+		"buttons that stack":        ".button { display: block !important;",
+		"padding that steps down":   ".pad    { padding-left: 20px !important;",
+		"the light palette as well": string(Colours.Page),
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("the layout is missing %s (%q)", name, want)
+		}
+	}
+}
+
+// TestEveryDarkColourIsReachable keeps a palette entry that no class applies
+// from looking like dark-mode support it is not.
+func TestEveryDarkColourIsReachable(t *testing.T) {
+	content := plainMessage()
+	content.Kicker = "Weekly report"
+	content.Subheading = "31 August – 6 September 2026"
+	content.Note = "No traffic was recorded in this period."
+	content.Figures = []Figure{
+		{Label: "Up", Value: "1", Change: "+1%", Direction: "up"},
+		{Label: "Down", Value: "2", Change: "−1%", Direction: "down"},
+		{Label: "Flat", Value: "3", Change: "no change", Direction: "flat"},
+	}
+	content.Tables = []Table{{Title: "Top pages", Rows: []Row{{Label: "/", Value: "1"}}}}
+
+	html, err := content.HTML()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	alarm := content
+	alarm.KickerTone = ToneAlarm
+
+	alarmHTML, err := alarm.HTML()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for class := range map[string]bool{
+		"page": true, "card": true, "ink": true, "text": true, "muted": true, "faint": true,
+		"accent": true, "rule": true, "facts": true, "note": true, "outline": true,
+		"up": true, "down": true, "flat": true,
+	} {
+		if !strings.Contains(html, `class="`+class+`"`) && !strings.Contains(html, class+`"`) {
+			t.Errorf("no element carries the %q class, so its dark colour never applies", class)
+		}
+	}
+
+	if !strings.Contains(alarmHTML, `class="alarm"`) {
+		t.Error("an alarm kicker carries no alarm class, so its dark colour never applies")
 	}
 }

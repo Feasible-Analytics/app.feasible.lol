@@ -84,9 +84,14 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 	}
 
 	content := Content{
-		Facts:   lifecycleFacts(notice),
-		Primary: Button{Label: label, URL: notice.BillingURL},
-		Closing: "Questions, or want to talk about a plan that fits better? Reply to this email and a person will answer.",
+		// Every subject in the sequence already names the date of the thing it
+		// is announcing, so repeating it in the inbox preview wastes the one
+		// line beside it. The deletion date is the one people are afraid of and
+		// the one furthest away, so that is what the preview answers.
+		Preheader: "Nothing is deleted before " + day(notice.DeletesAt) + ", and your export works throughout.",
+		Facts:     lifecycleFacts(notice),
+		Primary:   Button{Label: label, URL: notice.BillingURL},
+		Closing:   "Questions, or want to talk about a plan that fits better? Reply to this email and a person will answer.",
 	}
 
 	if notice.ExportURL != "" {
@@ -196,6 +201,7 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 		}
 
 	case lifecycle.TemplateAccountDeleted:
+		content.Preheader = "What we deleted, what we kept, and how to start again."
 		content.Subject = "Your feasible.lol account has been deleted"
 		content.Heading = "Your account has been deleted"
 		content.Body = []string{
