@@ -204,6 +204,43 @@ func TestSeenPropertiesComeFromTheData(t *testing.T) {
 	}
 }
 
+// TestTruncatedPropertiesAreSurfaced checks that the ingest counters become a
+// sentence somebody can act on. The cap is thirty properties an event and it
+// is not configurable, which is only defensible if the customer can see when
+// they hit it.
+func TestTruncatedPropertiesAreSurfaced(t *testing.T) {
+	counters := ingest.NewCounters()
+
+	counters.Truncated(siteID, ingest.Truncation{
+		PropsDropped:        20,
+		PropNamesTruncated:  1,
+		PropValuesTruncated: 2,
+		PropsUnsupported:    3,
+	})
+
+	// Another site's numbers must not leak into this one's panel.
+	counters.Truncated(2, ingest.Truncation{PropsDropped: 99})
+
+	health := PropertyHealth(counters.Snapshot(), siteID)
+
+	if health.OverLimit != 20 {
+		t.Errorf("over-limit properties = %d, want 20", health.OverLimit)
+	}
+
+	if health.NamesTruncated != 1 || health.ValuesTruncated != 2 || health.Unsupported != 3 {
+		t.Errorf("health = %+v, want 1 name, 2 values and 3 unsupported", health)
+	}
+
+	if !strings.Contains(health.Message, "30") {
+		t.Errorf("the message must name the limit, got %q", health.Message)
+	}
+
+	quiet := PropertyHealth(ingest.NewCounters().Snapshot(), siteID)
+	if quiet.Message != "" {
+		t.Errorf("a site with nothing truncated says %q, want nothing", quiet.Message)
+	}
+}
+
 // TestThePIINoticeIsAskedForByID checks the properties screen still has a
 // sentence to show about personal data. Properties are customer-controlled free
 // text that lands verbatim in API responses, and the only defence that works is
