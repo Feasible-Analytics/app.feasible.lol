@@ -13,6 +13,7 @@ import (
 	_ "embed"
 	"fmt"
 	"html/template"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -36,6 +37,73 @@ var layout = template.Must(template.New("layout").Parse(layoutHTML))
 // data is destroyed.
 const DateFormat = "Mon, 2 January 2006"
 
+// Palette is every colour the layout paints with.
+//
+// An email cannot use a CSS variable — every colour is inlined on the element
+// it applies to — so a template holding its own hex literals is the only other
+// option, and that is what let the report drift a private green and a private
+// red before it rendered here.
+type Palette struct {
+	Page     template.CSS // behind the card
+	Card     template.CSS // the card itself
+	Border   template.CSS
+	Rule     template.CSS // the lines between sections
+	Ink      template.CSS // headings and values
+	Text     template.CSS // body copy
+	Muted    template.CSS // labels and the footer
+	Faint    template.CSS // the address block
+	Accent   template.CSS // the primary button and the kicker
+	OnAccent template.CSS
+
+	// The facts table's own ground, a shade off the card so the block reads as
+	// one object.
+	FactsBackground template.CSS
+
+	// The note panel: a warning that is read, not skipped.
+	NoteText       template.CSS
+	NoteBackground template.CSS
+	NoteBorder     template.CSS
+
+	// A figure that moved, and the tone of a kicker on a message about
+	// something wrong.
+	Up    template.CSS
+	Down  template.CSS
+	Flat  template.CSS
+	Alarm template.CSS
+}
+
+// Colours is the one definition. The greys and the accent are the product's own
+// tokens; the rest arrived with the blocks that use them.
+var Colours = Palette{
+	Page:            "#eae9e9",
+	Card:            "#f3f2f2",
+	Border:          "#9f9d9d",
+	Rule:            "#d1d0d0",
+	Ink:             "#201e1d",
+	Text:            "#444141",
+	Muted:           "#605d5d",
+	Faint:           "#7d7979",
+	Accent:          "#ec3013",
+	OnAccent:        "#f3f2f2",
+	FactsBackground: "#eae7e7",
+	NoteText:        "#854d0e",
+	NoteBackground:  "#f7f0dd",
+	NoteBorder:      "#a16207",
+	Up:              "#15803d",
+	Down:            "#b91c1c",
+	Flat:            "#616e7c",
+	Alarm:           "#b91c1c",
+}
+
+// Tone picks the kicker's colour. It is a type rather than a string so a
+// misspelling is a compile error instead of a kicker that quietly renders in
+// the wrong colour.
+type Tone string
+
+// ToneAlarm is for a message that reports something wrong. The zero tone is the
+// brand accent.
+const ToneAlarm Tone = "alarm"
+
 // Button is a link rendered as a call to action.
 type Button struct {
 	Label string
@@ -50,14 +118,112 @@ type Fact struct {
 	Value string
 }
 
+// Figure is one number with an optional comparison against a previous period.
+type Figure struct {
+	Label string
+	Value string
+
+	// Change is pre-rendered as "+18%" or "−4%". It is empty when there is
+	// nothing to compare against, which is a different fact from "no change"
+	// and one a reader cannot tell apart from a zero.
+	Change string
+
+	// Direction is "up", "down" or "flat", and picks the colour.
+	Direction string
+}
+
+// Colour is the change colour for a direction.
+func (f Figure) Colour() template.CSS {
+	switch f.Direction {
+	case "up":
+		return Colours.Up
+	case "down":
+		return Colours.Down
+	default:
+		return Colours.Flat
+	}
+}
+
+// figuresPerRow is how many figures share a line before the row wraps.
+//
+// A 560px card leaves about 124px a column at four. A fifth wraps the labels
+// onto two lines and leaves the values on different baselines, which is what
+// the metric row exists not to do.
+const figuresPerRow = 4
+
+// FigureRow is one line of the metric block, already padded to a full row so
+// the columns above and below it line up.
+type FigureRow struct {
+	Cells []Figure
+
+	// Width is the column width, as a percentage, since an email table has no
+	// grid to divide itself by.
+	Width template.CSS
+}
+
+// FigureRows splits the figures into lines of at most figuresPerRow, as evenly
+// as they divide. Five become three and two rather than four and one.
+func (c Content) FigureRows() []FigureRow {
+	if len(c.Figures) == 0 {
+		return nil
+	}
+
+	lines := (len(c.Figures) + figuresPerRow - 1) / figuresPerRow
+	perLine := (len(c.Figures) + lines - 1) / lines
+	width := template.CSS(strconv.Itoa(100/perLine) + "%")
+
+	rows := make([]FigureRow, 0, lines)
+
+	for start := 0; start < len(c.Figures); start += perLine {
+		end := min(start+perLine, len(c.Figures))
+
+		cells := make([]Figure, perLine)
+		copy(cells, c.Figures[start:end])
+
+		rows = append(rows, FigureRow{Cells: cells, Width: width})
+	}
+
+	return rows
+}
+
+// Row is one line of a table: a label and a number that lines up with the
+// numbers above and below it.
+type Row struct {
+	Label string
+	Value string
+}
+
+// Table is a titled top-N list. Empty is shown in place of the rows when there
+// are none, so a quiet period says so rather than losing the section.
+type Table struct {
+	Title string
+	Rows  []Row
+	Empty string
+}
+
 // Content is a rendered message before it becomes HTML and text. Keeping the
 // copy as data rather than as a template per email is what makes it possible to
 // assert, in one test over every message, that each one names a real date and
 // carries an upgrade link.
 type Content struct {
 	Subject string
+
+	// Kicker is the small uppercase line above the heading, and KickerTone
+	// picks its colour: ToneAlarm for something wrong, otherwise the accent.
+	Kicker     string
+	KickerTone Tone
+
 	Heading string
-	Body    []string
+
+	// Subheading is the quiet line under the heading — the period a report
+	// covers, for instance, which is neither the title nor body copy.
+	Subheading string
+
+	Body []string
+
+	// Note is a boxed sentence about the whole message, used when something
+	// about it needs saying before the numbers rather than after them.
+	Note string
 
 	// Link is a URL shown as its own text, and clickable. A button hides where
 	// it goes and there is no hover on a phone, so the messages that hand over
@@ -69,10 +235,27 @@ type Content struct {
 	// screen, and a facts row is a small right-aligned value.
 	Code string
 
+	Figures   []Figure
+	Tables    []Table
 	Facts     []Fact
 	Primary   Button
 	Secondary []Button
 	Closing   string
+}
+
+// Colours hands the layout the palette, since a template can only reach what
+// its data holds.
+func (c Content) Colours() Palette {
+	return Colours
+}
+
+// KickerColour is the colour of the kicker line.
+func (c Content) KickerColour() template.CSS {
+	if c.KickerTone == ToneAlarm {
+		return Colours.Alarm
+	}
+
+	return Colours.Accent
 }
 
 // HTML renders the content through the shared layout.
@@ -92,8 +275,25 @@ func (c Content) HTML() (string, error) {
 func (c Content) Text() string {
 	var b strings.Builder
 
+	if c.Kicker != "" {
+		b.WriteString(strings.ToUpper(c.Kicker))
+		b.WriteString("\n")
+	}
+
 	b.WriteString(c.Heading)
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+
+	if c.Subheading != "" {
+		b.WriteString(c.Subheading)
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+
+	if c.Note != "" {
+		b.WriteString(c.Note)
+		b.WriteString("\n\n")
+	}
 
 	for _, paragraph := range c.Body {
 		b.WriteString(paragraph)
@@ -110,6 +310,45 @@ func (c Content) Text() string {
 	if c.Code != "" {
 		b.WriteString(c.Code)
 		b.WriteString("\n\n")
+	}
+
+	for _, figure := range c.Figures {
+		b.WriteString(figure.Label)
+		b.WriteString(": ")
+		b.WriteString(figure.Value)
+
+		if figure.Change != "" {
+			b.WriteString(" (")
+			b.WriteString(figure.Change)
+			b.WriteString(")")
+		}
+
+		b.WriteString("\n")
+	}
+
+	if len(c.Figures) > 0 {
+		b.WriteString("\n")
+	}
+
+	for _, table := range c.Tables {
+		b.WriteString(table.Title)
+		b.WriteString("\n")
+
+		for _, row := range table.Rows {
+			b.WriteString("  ")
+			b.WriteString(row.Label)
+			b.WriteString("  ")
+			b.WriteString(row.Value)
+			b.WriteString("\n")
+		}
+
+		if len(table.Rows) == 0 {
+			b.WriteString("  ")
+			b.WriteString(table.Empty)
+			b.WriteString("\n")
+		}
+
+		b.WriteString("\n")
 	}
 
 	for _, fact := range c.Facts {

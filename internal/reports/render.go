@@ -1,6 +1,6 @@
 //
 // render.go
-// Report and alert bodies, from templates that refuse to render a missing variable.
+// Report and alert bodies, which refuse to render with a value nothing assigned.
 //
 // Created: 2026-08-31
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -9,9 +9,9 @@
 package reports
 
 import (
-	"bytes"
 	"fmt"
 	"html/template"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,54 +19,27 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
-// The two markers Go's template package leaves behind when a value did not
-// survive rendering.
+// blankedValue is what html/template writes in place of a URL it cannot prove
+// is safe. It is the shape the failure below actually takes: not visibly
+// missing text, but a dead href that looks like a working button.
+const blankedValue = "ZgotmplZ"
+
+// ErrUndefinedVariable is what a message with a value nothing ever assigned
+// produces.
 //
-// "<no value>" is what a nil writes in ordinary content. "ZgotmplZ" is what
-// html/template substitutes when a value reaches a URL attribute and it cannot
-// prove the value is safe — which is exactly what a nil dashboard link produces,
-// and which renders as a dead href rather than as visibly missing text.
-//
-// Both are checked because missingkey cannot catch either: the key is present,
-// it just holds nothing. A report that reaches a customer with a dead link
-// where the dashboard should be is worse than one that did not arrive.
-const (
-	missingValue = "<no value>"
-	blankedValue = "ZgotmplZ"
+// This is a named error rather than a generic failure because of the specific
+// bug it prevents: an incumbent's spike alert referenced a dashboard link that
+// nothing ever set, their template language rendered it as nothing, and the
+// emails shipped for months with a missing link and no error anywhere. A value
+// that was never assigned has to be a hard failure, every time.
+var ErrUndefinedVariable = fmt.Errorf("reports: a message carried a value that was never assigned")
+
+// Figure and Entry are the layout's own types, so a number is formatted once
+// and rendered as it was formatted.
+type (
+	Figure = mail.Figure
+	Entry  = mail.Row
 )
-
-// ErrUndefinedVariable is what a template referencing something that was never
-// assigned produces.
-//
-// This is a named error rather than a generic template failure because of the
-// specific bug it prevents: an incumbent's spike alert referenced a dashboard
-// link variable that nothing ever set, their template language rendered it as
-// nothing, and the emails shipped for months with a missing link and no error
-// anywhere. A template variable that is not assigned has to be a hard failure,
-// every time, or that bug is only a matter of when.
-var ErrUndefinedVariable = fmt.Errorf("reports: a template referenced a variable that was never assigned")
-
-// Figure is one number on a report, already formatted.
-type Figure struct {
-	Label string
-	Value string
-
-	// Change is the comparison against the previous period, pre-rendered as
-	// "+18%" or "−4%", and empty when there is nothing to compare against. It
-	// is empty rather than "0%" because "no previous period" and "no change"
-	// are different facts and a reader cannot tell them apart from a zero.
-	Change string
-
-	// Direction is "up", "down" or "flat", so the template can colour the
-	// figure without parsing the string above.
-	Direction string
-}
-
-// Entry is one row of a top-N list.
-type Entry struct {
-	Label string
-	Value string
-}
 
 // Report is everything a scheduled report says. Building it as a struct and
 // converting it in one place means there is exactly one list of the names a
@@ -125,106 +98,120 @@ func (r Rendered) Message(to, tag string) mail.Message {
 // that already obeys the 998-octet line limit rather than trusting one of them
 // to remember.
 func RenderReport(report Report, cycle string) (Rendered, error) {
-	subject := fmt.Sprintf("%s — %s report for %s", report.Domain, titleOf(report.Kind), report.PeriodLabel)
+	kind := titleOf(report.Kind)
+	generated := timefmt.Clock(cycle, report.GeneratedAt.UTC(), "2 January 2006 15:04 MST")
 
-	data := map[string]any{
-		"Domain":       report.Domain,
-		"Kind":         titleOf(report.Kind),
-		"PeriodLabel":  report.PeriodLabel,
-		"DashboardURL": report.DashboardURL,
-		"Figures":      report.Figures,
-		"TopPages":     report.TopPages,
-		"TopSources":   report.TopSources,
-		"Countries":    report.Countries,
-		"Note":         report.Note,
-		"GeneratedAt":  timefmt.Clock(cycle, report.GeneratedAt.UTC(), "2 January 2006 15:04 MST"),
+	content := mail.Content{
+		Subject:    fmt.Sprintf("%s — %s report for %s", report.Domain, kind, report.PeriodLabel),
+		Kicker:     kind + " report",
+		Heading:    report.Domain,
+		Subheading: report.PeriodLabel,
+		Note:       report.Note,
+		Figures:    report.Figures,
+		Tables: []mail.Table{
+			{Title: "Top pages", Rows: report.TopPages, Empty: "No pages were viewed in this period."},
+			{Title: "Top sources", Rows: report.TopSources, Empty: "No referrers were recorded in this period."},
+			{Title: "Top countries", Rows: report.Countries, Empty: "No locations were recorded in this period."},
+		},
+		Primary: mail.Button{Label: "Open the dashboard", URL: report.DashboardURL},
+		Closing: fmt.Sprintf("Generated %s. You are receiving this because somebody added your address "+
+			"to this site's %s report.", generated, kind),
 	}
 
-	html, err := renderStrict(reportHTML, data)
-	if err != nil {
-		return Rendered{}, err
-	}
-
-	text, err := renderStrict(reportText, data)
-	if err != nil {
-		return Rendered{}, err
-	}
-
-	return Rendered{Subject: subject, HTML: mail.Wrap(html, mail.MaxLineLength), Text: text}, nil
+	return render(content, []Assigned{
+		{"Domain", report.Domain},
+		{"Kind", kind},
+		{"PeriodLabel", report.PeriodLabel},
+		{"DashboardURL", report.DashboardURL},
+		{"GeneratedAt", generated},
+	})
 }
 
 // RenderAlert builds a spike or drop email.
 func RenderAlert(alert Alert, cycle string) (Rendered, error) {
-	subject := fmt.Sprintf("%s — %s", alert.Domain, alert.Headline)
+	kind := titleOf(alert.Kind)
+	triggered := timefmt.Clock(cycle, alert.TriggeredAt.UTC(), "2 January 2006 15:04 MST")
 
-	data := map[string]any{
-		"Domain":       alert.Domain,
-		"Kind":         titleOf(alert.Kind),
-		"Headline":     alert.Headline,
-		"Detail":       alert.Detail,
-		"Threshold":    alert.Threshold,
-		"Observed":     alert.Observed,
-		"DashboardURL": alert.DashboardURL,
-		"TriggeredAt":  timefmt.Clock(cycle, alert.TriggeredAt.UTC(), "2 January 2006 15:04 MST"),
+	content := mail.Content{
+		Subject:    fmt.Sprintf("%s — %s", alert.Domain, alert.Headline),
+		Kicker:     kind + " alert",
+		KickerTone: mail.ToneAlarm,
+		Heading:    alert.Domain,
+		Body:       []string{alert.Headline, alert.Detail},
+
+		Figures: []mail.Figure{
+			{Label: "Observed", Value: strconv.Itoa(alert.Observed)},
+			{Label: "Threshold", Value: strconv.Itoa(alert.Threshold)},
+		},
+		Primary: mail.Button{Label: "Open the dashboard", URL: alert.DashboardURL},
+		Closing: fmt.Sprintf("Triggered %s. At most two alerts are sent per site per day, so this "+
+			"will not repeat every hour.", triggered),
 	}
 
-	html, err := renderStrict(alertHTML, data)
-	if err != nil {
-		return Rendered{}, err
-	}
-
-	text, err := renderStrict(alertText, data)
-	if err != nil {
-		return Rendered{}, err
-	}
-
-	return Rendered{Subject: subject, HTML: mail.Wrap(html, mail.MaxLineLength), Text: text}, nil
+	return render(content, []Assigned{
+		{"Domain", alert.Domain},
+		{"Kind", kind},
+		{"Headline", alert.Headline},
+		{"Detail", alert.Detail},
+		{"DashboardURL", alert.DashboardURL},
+		{"TriggeredAt", triggered},
+	})
 }
 
-// renderStrict parses and executes a template with every silent failure turned
-// into a loud one.
+// render turns content into both bodies with every silent failure turned into
+// a loud one.
 //
-// Two settings do the work. missingkey=error makes a lookup of a key the data
-// map does not hold an execution error instead of an empty string, which is the
-// exact failure this package refuses to ship. The scan for "<no value>"
-// afterwards catches the one case missingkey cannot: a nil reaching the output
-// from inside a slice element, where there is no map lookup to fail on.
-func renderStrict(source string, data map[string]any) (string, error) {
-	// A key that exists and holds nil is the incumbent's bug exactly: the
-	// variable was referenced, something was meant to assign it, nothing did,
-	// and html/template renders it as an empty string with no complaint. It has
-	// to be rejected before rendering, because after rendering it is
-	// indistinguishable from a value that is legitimately empty.
-	for name, value := range data {
-		if value == nil {
-			return "", fmt.Errorf("%w: %s was assigned nothing", ErrUndefinedVariable, name)
+// The required list names the values whose absence is invisible in a mail
+// client. Each is checked before rendering, because afterwards a value nothing
+// assigned is indistinguishable from one that is legitimately empty. Every link
+// is then looked for in the rendered HTML, which is what catches a URL
+// html/template refused to trust and blanked into a dead href.
+//
+// Nothing scans the bodies for a marker. A page path is written by a visitor,
+// so a scan for a literal like "<no value>" is a string one crafted page view
+// could use to stop a site's reports rendering for good.
+//
+// The HTML is wrapped here rather than only when it is encoded. The log
+// transport writes this string straight to disk and the Slack fallback reads
+// it, so wrapping at the point of generation means every consumer sees a body
+// that already obeys the 998-octet line limit.
+func render(content mail.Content, required []Assigned) (Rendered, error) {
+	for _, value := range required {
+		if strings.TrimSpace(value.Value) == "" {
+			return Rendered{}, fmt.Errorf("%w: %s was assigned nothing", ErrUndefinedVariable, value.Name)
 		}
 	}
 
-	tmpl, err := template.New("body").Option("missingkey=error").Parse(source)
+	html, err := content.HTML()
 	if err != nil {
-		return "", fmt.Errorf("reports: parse template: %w", err)
+		return Rendered{}, fmt.Errorf("%w: %s", ErrUndefinedVariable, err)
 	}
 
-	var out bytes.Buffer
+	for _, button := range append([]mail.Button{content.Primary}, content.Secondary...) {
+		if button.URL == "" {
+			continue
+		}
 
-	if err := tmpl.Execute(&out, data); err != nil {
-		return "", fmt.Errorf("%w: %s", ErrUndefinedVariable, err)
-	}
-
-	body := out.String()
-
-	for _, marker := range []string{missingValue, blankedValue} {
-		if strings.Contains(body, marker) {
-			return "", fmt.Errorf("%w: the rendered body contains %s", ErrUndefinedVariable, marker)
+		if !strings.Contains(html, `href="`+template.HTMLEscapeString(button.URL)+`"`) {
+			return Rendered{}, fmt.Errorf("%w: %q did not survive into the %s button, which now points at %s",
+				ErrUndefinedVariable, button.URL, button.Label, blankedValue)
 		}
 	}
 
-	if longest := mail.LongestLine(mail.Wrap(body, mail.MaxLineLength)); longest >= mail.MaxLineLength {
-		return "", fmt.Errorf("reports: the rendered body has a %d-octet line, over the SMTP limit", longest)
+	wrapped := mail.Wrap(html, mail.MaxLineLength)
+
+	if longest := mail.LongestLine(wrapped); longest >= mail.MaxLineLength {
+		return Rendered{}, fmt.Errorf("reports: the rendered body has a %d-octet line, over the SMTP limit", longest)
 	}
 
-	return body, nil
+	return Rendered{Subject: content.Subject, HTML: wrapped, Text: content.Text()}, nil
+}
+
+// Assigned is one named value the guard above refuses to render without. It is
+// a slice rather than a map so two blanks always name the same one.
+type Assigned struct {
+	Name  string
+	Value string
 }
 
 // titleOf capitalises a kind for a subject line, without pulling in a
@@ -236,135 +223,6 @@ func titleOf(kind string) string {
 
 	return strings.ToUpper(kind[:1]) + kind[1:]
 }
-
-// The email bodies are inline strings rather than embedded files because they
-// are the one place in the product where the markup has to be table-based,
-// inline-styled and readable in a mail client from 2009 — and keeping them next
-// to the struct that fills them in is what makes an unassigned variable
-// obvious in review as well as at run time.
-const reportHTML = `<!doctype html>
-<html lang="en">
-<body style="margin:0;padding:0;background:#eae9e9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#444141;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eae9e9;padding:24px 12px;">
-<tr><td align="center">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:620px;background:#f3f2f2;border:2px solid #9f9d9d;">
-<tr><td style="padding:22px 24px 8px 24px;">
-<div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#ae1800;font-weight:700;">{{.Kind}} report</div>
-<div style="font-size:22px;font-weight:700;margin-top:4px;">{{.Domain}}</div>
-<div style="font-size:14px;color:#605d5d;margin-top:2px;">{{.PeriodLabel}}</div>
-{{if .Note}}<div style="font-size:14px;color:#854d0e;background:#f7f0dd;border:2px solid #a16207;padding:10px 12px;margin-top:14px;">{{.Note}}</div>{{end}}
-</td></tr>
-<tr><td style="padding:8px 24px 0 24px;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0">
-<tr>
-{{range .Figures}}
-<td style="padding:12px 8px;border-top:1px solid #d1d0d0;vertical-align:top;">
-<div style="font-size:12px;color:#605d5d;">{{.Label}}</div>
-<div style="font-size:20px;font-weight:700;margin-top:2px;">{{.Value}}</div>
-{{if .Change}}<div style="font-size:12px;margin-top:2px;color:{{if eq .Direction "up"}}#15803d{{else if eq .Direction "down"}}#b91c1c{{else}}#616e7c{{end}};">{{.Change}}</div>{{end}}
-</td>
-{{end}}
-</tr>
-</table>
-</td></tr>
-<tr><td style="padding:6px 24px 0 24px;">
-<div style="font-size:13px;font-weight:700;margin-top:16px;border-top:1px solid #d1d0d0;padding-top:14px;">Top pages</div>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:6px;">
-{{range .TopPages}}
-<tr><td style="font-size:14px;padding:4px 0;color:#444141;">{{.Label}}</td><td align="right" style="font-size:14px;padding:4px 0;font-variant-numeric:tabular-nums;">{{.Value}}</td></tr>
-{{else}}
-<tr><td style="font-size:14px;padding:4px 0;color:#7d7979;">No pages were viewed in this period.</td></tr>
-{{end}}
-</table>
-<div style="font-size:13px;font-weight:700;margin-top:18px;">Top sources</div>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:6px;">
-{{range .TopSources}}
-<tr><td style="font-size:14px;padding:4px 0;color:#444141;">{{.Label}}</td><td align="right" style="font-size:14px;padding:4px 0;font-variant-numeric:tabular-nums;">{{.Value}}</td></tr>
-{{else}}
-<tr><td style="font-size:14px;padding:4px 0;color:#7d7979;">No referrers were recorded in this period.</td></tr>
-{{end}}
-</table>
-<div style="font-size:13px;font-weight:700;margin-top:18px;">Top countries</div>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:6px;">
-{{range .Countries}}
-<tr><td style="font-size:14px;padding:4px 0;color:#444141;">{{.Label}}</td><td align="right" style="font-size:14px;padding:4px 0;font-variant-numeric:tabular-nums;">{{.Value}}</td></tr>
-{{else}}
-<tr><td style="font-size:14px;padding:4px 0;color:#7d7979;">No locations were recorded in this period.</td></tr>
-{{end}}
-</table>
-</td></tr>
-<tr><td style="padding:20px 24px 24px 24px;">
-<a href="{{.DashboardURL}}" style="display:inline-block;background:#ec3013;color:#f3f2f2;text-decoration:none;font-size:14px;font-weight:800;padding:12px 18px;">Open the dashboard</a>
-<div style="font-size:12px;color:#7d7979;margin-top:16px;">Generated {{.GeneratedAt}}. You are receiving this because somebody added your address to this site's {{.Kind}} report.</div>
-</td></tr>
-</table>
-</td></tr>
-</table>
-</body>
-</html>`
-
-const reportText = `{{.Domain}} — {{.Kind}} report
-{{.PeriodLabel}}
-{{if .Note}}
-{{.Note}}
-{{end}}
-{{range .Figures}}{{.Label}}: {{.Value}}{{if .Change}} ({{.Change}}){{end}}
-{{end}}
-Top pages
-{{range .TopPages}}  {{.Label}}  {{.Value}}
-{{else}}  No pages were viewed in this period.
-{{end}}
-Top sources
-{{range .TopSources}}  {{.Label}}  {{.Value}}
-{{else}}  No referrers were recorded in this period.
-{{end}}
-Top countries
-{{range .Countries}}  {{.Label}}  {{.Value}}
-{{else}}  No locations were recorded in this period.
-{{end}}
-Open the dashboard: {{.DashboardURL}}
-
-Generated {{.GeneratedAt}}.
-`
-
-const alertHTML = `<!doctype html>
-<html lang="en">
-<body style="margin:0;padding:0;background:#eae9e9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#444141;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eae9e9;padding:24px 12px;">
-<tr><td align="center">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#f3f2f2;border:2px solid #9f9d9d;">
-<tr><td style="padding:22px 24px;">
-<div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#b91c1c;font-weight:700;">{{.Kind}} alert</div>
-<div style="font-size:20px;font-weight:700;margin-top:4px;">{{.Domain}}</div>
-<div style="font-size:16px;margin-top:10px;">{{.Headline}}</div>
-<div style="font-size:14px;color:#444141;margin-top:8px;">{{.Detail}}</div>
-<table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:16px;border-top:1px solid #d1d0d0;width:100%;">
-<tr>
-<td style="padding:12px 0;"><div style="font-size:12px;color:#605d5d;">Observed</div><div style="font-size:20px;font-weight:700;">{{.Observed}}</div></td>
-<td style="padding:12px 0;"><div style="font-size:12px;color:#605d5d;">Threshold</div><div style="font-size:20px;font-weight:700;">{{.Threshold}}</div></td>
-</tr>
-</table>
-<a href="{{.DashboardURL}}" style="display:inline-block;background:#ec3013;color:#f3f2f2;text-decoration:none;font-size:14px;font-weight:800;padding:12px 18px;margin-top:8px;">Open the dashboard</a>
-<div style="font-size:12px;color:#7d7979;margin-top:16px;">Triggered {{.TriggeredAt}}. At most two alerts are sent per site per day, so this will not repeat every hour.</div>
-</td></tr>
-</table>
-</td></tr>
-</table>
-</body>
-</html>`
-
-const alertText = `{{.Domain}} — {{.Kind}} alert
-
-{{.Headline}}
-{{.Detail}}
-
-Observed:  {{.Observed}}
-Threshold: {{.Threshold}}
-
-Open the dashboard: {{.DashboardURL}}
-
-Triggered {{.TriggeredAt}}. At most two alerts are sent per site per day.
-`
 
 // FallbackClock is the dial for a destination with no stored preference: an
 // address belonging to no user, one whose preference is still "system" — which
