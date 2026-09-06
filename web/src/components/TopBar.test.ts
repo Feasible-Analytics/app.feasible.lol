@@ -12,7 +12,7 @@ import { test } from "node:test";
 import type { Filter, Navigation } from "../api/types";
 import type { UrlState } from "../lib/url";
 import { CHART_TYPES } from "./MainGraph";
-import { accountMenuGroups, currentVisitorsRequest, periodLabel, siteSwitchURL } from "./TopBar";
+import { accountMenuGroups, currentVisitorsRequest, periodLabel, siteSwitchURL, viewGroups } from "./TopBar";
 
 test("the current visitors number always requests an exact answer", () => {
 	const filter: Filter = ["is", "visit:country", ["US"]];
@@ -200,4 +200,58 @@ test("exactly one graph shape is marked current, and it is the one drawn", () =>
 		assert.equal(current.length, 1, shape);
 		assert.equal(current[0]?.id, `chart:${shape}`);
 	}
+});
+
+test("a dashboard with no account is offered both shapes and all three themes", () => {
+	// The whole point of the gear: a public dashboard is the copy strangers
+	// read, and it was the one copy with no way to switch the graph to bars.
+	const groups = viewGroups("system", "line");
+
+	assert.deepEqual(groups.map((group) => group.id), ["graph", "theme"]);
+
+	const rows = groups.flatMap((group) => group.rows);
+
+	assert.deepEqual(
+		rows.filter((row) => row.kind === "chart").map((row) => row.id),
+		["chart:line", "chart:bar"],
+	);
+	assert.deepEqual(
+		rows.filter((row) => row.kind === "theme").map((row) => row.id),
+		["theme:light", "theme:dark", "theme:system"],
+	);
+
+	// A reader with no account has nowhere to go and nothing to sign out of.
+	assert.ok(!rows.some((row) => row.kind === "link" || row.kind === "signout"));
+});
+
+test("both menus build their Graph and Theme rows from the same function", () => {
+	// This is the assertion that stops the two menus drifting. The shape rows
+	// went missing from the public dashboard because each menu owned its own
+	// copy of them.
+	for (const theme of ["light", "dark", "system"] as const) {
+		for (const shape of CHART_TYPES) {
+			const shared = accountMenuGroups(account(), theme, shape, true)
+				.filter((group) => group.id === "graph" || group.id === "theme");
+
+			assert.deepEqual(viewGroups(theme, shape), shared, `${theme} / ${shape}`);
+		}
+	}
+});
+
+test("a screen with no graph offers the theme and nothing about a graph", () => {
+	// Same rule the account menu follows: a choice that changes nothing visible
+	// reads as broken, so the rows go rather than being disabled.
+	assert.deepEqual(viewGroups("system", null).map((group) => group.id), ["theme"]);
+});
+
+test("the sign out row carries its own form target and token", () => {
+	// The row is drawn by a renderer shared with a menu that has no account
+	// behind it, so it cannot reach back for the URL and the token.
+	const signout = accountMenuGroups(account(), "system", "line", true)
+		.flatMap((group) => group.rows)
+		.find((row) => row.id === "signout");
+
+	assert.equal(signout?.kind, "signout");
+	assert.equal(signout?.kind === "signout" ? signout.action : "", "/logout");
+	assert.equal(signout?.kind === "signout" ? signout.csrf : "", "token");
 });

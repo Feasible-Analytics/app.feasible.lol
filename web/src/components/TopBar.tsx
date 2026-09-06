@@ -6,6 +6,7 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
+import type { KeyboardEvent, ReactNode } from "react";
 import { useRef, useState } from "react";
 
 import type { Filter, Preset, StatsRequest } from "../api/types";
@@ -179,12 +180,12 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, chart, onChar
 						onPeriod={onPeriod}
 						asked={asked}
 					/>}
-					{/* A shared or public dashboard has no account, so it has no
-					    menu to fold these into. The keys are still bound there,
-					    so without the buttons the whole layer is unreachable for
-					    the readers least able to ask for it back. */}
+					{/* A shared or public dashboard has no account menu to fold
+					    these into, so it gets its own pair. The keys are still
+					    bound there, and without a button the whole layer is
+					    unreachable for the readers least able to ask for it back. */}
 					{!navigation && !locked && <HelpButton onHelp={onHelp} />}
-					{!navigation && <ThemeToggle theme={theme} onTheme={onTheme} />}
+					{!navigation && <SettingsMenu theme={theme} onTheme={onTheme} chart={chart} onChart={onChart} onHelp={onHelp} />}
 					{navigation && (
 						<AccountMenu
 							navigation={navigation}
@@ -228,15 +229,28 @@ function AccountFace({ navigation }: { navigation: Navigation }) {
 	);
 }
 
-/** MenuRow is one row in the account menu. The kinds differ because they are
- * different controls, not different labels: a destination is a link, a theme is
- * one of an exclusive set, and signing out is a form that carries a token. */
+/** MenuRow is one row in a menu. The kinds differ because they are different
+ * controls, not different labels: a destination is a link, a theme is one of an
+ * exclusive set, and signing out is a form that carries a token.
+ *
+ * A row carries everything it needs to be drawn, including the sign-out form's
+ * target and token, so a menu can render a group of rows without also knowing
+ * which account produced them. */
 export type MenuRow =
 	| { kind: "link"; id: string; label: string; href: string }
 	| { kind: "action"; id: string; label: string; hint: string }
 	| { kind: "theme"; id: string; label: string; theme: Theme; glyph: string; current: boolean }
 	| { kind: "chart"; id: string; label: string; chart: ChartType; current: boolean }
-	| { kind: "signout"; id: string; label: string };
+	| { kind: "signout"; id: string; label: string; action: string; csrf: string };
+
+/** MenuActions are the handlers a row can invoke. Every menu supplies all of
+ * them, so a row added to the shared builders works wherever it lands rather
+ * than being live in one menu and inert in the other. */
+export interface MenuActions {
+	onTheme: (next: Theme) => void;
+	onChart: (next: ChartType) => void;
+	onHelp: () => void;
+}
 
 /** MenuGroup is one divider-separated run of rows, with a heading when the rows
  * need one to make sense. */
@@ -307,6 +321,34 @@ export function accountMenuGroups(
 		});
 	}
 
+	groups.push(...viewGroups(theme, chart));
+
+	groups.push({
+		id: "session",
+		rows: [{
+			kind: "signout",
+			id: "signout",
+			label: t("dashboard.navigation.sign_out"),
+			action: navigation.logout_url,
+			csrf: navigation.csrf,
+		}],
+	});
+
+	return groups;
+}
+
+/**
+ * viewGroups is how the graph is drawn and what colour the page is, in the
+ * order both menus show them, and it is the whole of the settings menu.
+ *
+ * One function rather than a list per menu. The shape control was missing from
+ * a public dashboard because its rows lived in the account menu's own markup,
+ * so there was nowhere else for them to come from; a builder both callers share
+ * cannot drift like that again.
+ */
+export function viewGroups(theme: Theme, chart: ChartType | null): MenuGroup[] {
+	const groups: MenuGroup[] = [];
+
 	if (chart) {
 		groups.push({
 			id: "graph",
@@ -321,24 +363,18 @@ export function accountMenuGroups(
 		});
 	}
 
-	groups.push(
-		{
-			id: "theme",
-			label: t("dashboard.menu.theme"),
-			rows: THEME_ROWS.map((row) => ({
-				kind: "theme" as const,
-				id: `theme:${row.theme}`,
-				label: t(row.labelId),
-				theme: row.theme,
-				glyph: row.glyph,
-				current: row.theme === theme,
-			})),
-		},
-		{
-			id: "session",
-			rows: [{ kind: "signout", id: "signout", label: t("dashboard.navigation.sign_out") }],
-		},
-	);
+	groups.push({
+		id: "theme",
+		label: t("dashboard.menu.theme"),
+		rows: THEME_ROWS.map((row) => ({
+			kind: "theme" as const,
+			id: `theme:${row.theme}`,
+			label: t(row.labelId),
+			theme: row.theme,
+			glyph: row.glyph,
+			current: row.theme === theme,
+		})),
+	});
 
 	return groups;
 }
@@ -371,7 +407,7 @@ function AccountMenu({
 	const groups = accountMenuGroups(navigation, theme, chart, shortcuts);
 
 	return (
-		<div ref={wrap} className="relative">
+		<div ref={wrap} className="relative" onKeyDown={(event) => stepFocus(wrap.current, event)}>
 			<button
 				type="button"
 				aria-expanded={open}
@@ -384,59 +420,172 @@ function AccountMenu({
 			</button>
 
 			{open && (
-				<div
-					role="menu"
-					className="scroll-thin absolute right-0 mt-2 max-h-[calc(100vh-5rem)] w-60 max-w-[calc(100vw-1rem)] overflow-y-auto border-2 border-line bg-card p-1.5 pop"
-				>
-					<div className="px-2.5 py-2">
-						<p className="truncate text-sm font-medium text-body">{navigation.name}</p>
-						<p className="truncate text-xs text-muted">{navigation.email}</p>
-					</div>
-
-					{groups.map((group) => (
-						<div key={group.id} role="group" aria-label={group.label} className="border-t border-line pt-1.5">
-							{group.label && (
-								<p aria-hidden="true" className="px-2.5 pt-1 pb-0.5 text-[10px] font-semibold tracking-wide text-muted uppercase">
-									{group.label}
-								</p>
-							)}
-							{group.rows.map((row) => (
-								<MenuRowView
-									key={row.id}
-									row={row}
-									navigation={navigation}
-									onTheme={onTheme}
-									onChart={onChart}
-									onHelp={() => {
-										setOpen(false);
-										onHelp();
-									}}
-								/>
-							))}
+				<MenuPanel
+					groups={groups}
+					header={
+						<div className="px-2.5 py-2">
+							<p className="truncate text-sm font-medium text-body">{navigation.name}</p>
+							<p className="truncate text-xs text-muted">{navigation.email}</p>
 						</div>
-					))}
-				</div>
+					}
+					actions={{
+						onTheme,
+						onChart,
+						onHelp: () => {
+							setOpen(false);
+							onHelp();
+						},
+					}}
+				/>
 			)}
 		</div>
+	);
+}
+
+/**
+ * SettingsMenu is the same view preferences for a reader with no account.
+ *
+ * A shared or public dashboard is the copy strangers see, and it is the one
+ * where nobody can ask us for a missing control. It gets the graph shape and
+ * the theme from the same builder the account menu uses.
+ */
+function SettingsMenu({
+	theme,
+	onTheme,
+	chart,
+	onChart,
+	onHelp,
+}: {
+	theme: Theme;
+	onTheme: (next: Theme) => void;
+	chart: ChartType | null;
+	onChart: (next: ChartType) => void;
+	onHelp: () => void;
+}) {
+	const [open, setOpen] = useState(false);
+	const wrap = useRef<HTMLDivElement>(null);
+
+	useDismiss(wrap, open, () => setOpen(false));
+
+	return (
+		<div ref={wrap} className="relative" onKeyDown={(event) => stepFocus(wrap.current, event)}>
+			<button
+				type="button"
+				aria-expanded={open}
+				aria-haspopup="menu"
+				aria-label={t("dashboard.topbar.settings")}
+				title={t("dashboard.topbar.settings")}
+				onClick={() => setOpen((was) => !was)}
+				className="flex size-control items-center justify-center border-2 border-line bg-card text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
+			>
+				<GearIcon />
+			</button>
+
+			{open && (
+				<MenuPanel
+					groups={viewGroups(theme, chart)}
+					actions={{
+						onTheme,
+						onChart,
+						onHelp: () => {
+							setOpen(false);
+							onHelp();
+						},
+					}}
+				/>
+			)}
+		</div>
+	);
+}
+
+/**
+ * MenuPanel is the popover both menus draw into.
+ *
+ * It is the rows and their grouping; the arrow keys belong to the wrapper
+ * outside it, because a menu that has only just been opened still has the focus
+ * on its button.
+ */
+function MenuPanel({
+	groups,
+	header,
+	actions,
+}: {
+	groups: MenuGroup[];
+	header?: ReactNode;
+	actions: MenuActions;
+}) {
+	return (
+		<div
+			role="menu"
+			className="scroll-thin absolute right-0 mt-2 max-h-[calc(100vh-5rem)] w-60 max-w-[calc(100vw-1rem)] overflow-y-auto border-2 border-line bg-card p-1.5 pop"
+		>
+			{header}
+
+			{groups.map((group, index) => (
+				<div
+					key={group.id}
+					role="group"
+					aria-label={group.label}
+					className={`pt-1.5 ${header || index > 0 ? "border-t border-line" : ""}`}
+				>
+					{group.label && (
+						<p aria-hidden="true" className="px-2.5 pt-1 pb-0.5 text-[10px] font-semibold tracking-wide text-muted uppercase">
+							{group.label}
+						</p>
+					)}
+					{group.rows.map((row) => (
+						<MenuRowView key={row.id} row={row} actions={actions} />
+					))}
+				</div>
+			))}
+		</div>
+	);
+}
+
+/**
+ * stepFocus moves the focus between rows on the arrow keys, wrapping at both
+ * ends so a reader cannot get stuck against the last row.
+ *
+ * `role=menu` promises a screen reader that the rows are arrow-navigable, so
+ * both menus call this rather than one of them keeping the promise.
+ */
+function stepFocus(wrap: HTMLElement | null, event: KeyboardEvent<HTMLDivElement>) {
+	const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
+
+	if (step === 0 || !wrap) return;
+
+	const rows = Array.from(wrap.querySelectorAll<HTMLElement>('[role^="menuitem"]'));
+
+	if (rows.length === 0) return;
+
+	// The browser would scroll the panel on an arrow key otherwise, moving the
+	// rows out from under the focus they are meant to be following.
+	event.preventDefault();
+
+	const at = rows.indexOf(document.activeElement as HTMLElement);
+	const next = at === -1 ? (step === 1 ? 0 : rows.length - 1) : (at + step + rows.length) % rows.length;
+
+	rows[next]?.focus();
+}
+
+/** GearIcon is the settings button's face. Drawn rather than typed, because the
+ *  ⚙ character renders at a different weight and baseline in every font the
+ *  dashboard can fall back to. */
+function GearIcon() {
+	return (
+		<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" className="fill-current">
+			<path
+				fillRule="evenodd"
+				d="M12.92,6.49 L14.87,6.66 L14.87,9.34 L12.92,9.51 A5.15,5.15 0 0 1 12.55,10.42 L13.80,11.91 L11.91,13.80 L10.42,12.55 A5.15,5.15 0 0 1 9.51,12.92 L9.34,14.87 L6.66,14.87 L6.49,12.92 A5.15,5.15 0 0 1 5.58,12.55 L4.09,13.80 L2.20,11.91 L3.45,10.42 A5.15,5.15 0 0 1 3.08,9.51 L1.13,9.34 L1.13,6.66 L3.08,6.49 A5.15,5.15 0 0 1 3.45,5.58 L2.20,4.09 L4.09,2.20 L5.58,3.45 A5.15,5.15 0 0 1 6.49,3.08 L6.66,1.13 L9.34,1.13 L9.51,3.08 A5.15,5.15 0 0 1 10.42,3.45 L11.91,2.20 L13.80,4.09 L12.55,5.58 A5.15,5.15 0 0 1 12.92,6.49 Z M8,5.6 A2.4,2.4 0 1 0 8,10.4 A2.4,2.4 0 1 0 8,5.6 Z"
+			/>
+		</svg>
 	);
 }
 
 /** MenuRowView draws one row. Choosing a theme or a graph shape leaves the menu
  * open, because the page changes underneath it and the next choice is one click
  * away. */
-function MenuRowView({
-	row,
-	navigation,
-	onTheme,
-	onChart,
-	onHelp,
-}: {
-	row: MenuRow;
-	navigation: Navigation;
-	onTheme: (next: Theme) => void;
-	onChart: (next: ChartType) => void;
-	onHelp: () => void;
-}) {
+function MenuRowView({ row, actions }: { row: MenuRow; actions: MenuActions }) {
 	const base = "flex w-full items-center gap-2 px-2.5 py-2 text-left text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover";
 
 	switch (row.kind) {
@@ -448,7 +597,7 @@ function MenuRowView({
 				<button
 					type="button"
 					role="menuitem"
-					onClick={onHelp}
+					onClick={actions.onHelp}
 					aria-label={t("dashboard.shortcuts.open")}
 					className={`${base} text-body`}
 				>
@@ -463,7 +612,7 @@ function MenuRowView({
 					type="button"
 					role="menuitemradio"
 					aria-checked={row.current}
-					onClick={() => onTheme(row.theme)}
+					onClick={() => actions.onTheme(row.theme)}
 					className={`${base} ${row.current ? "font-medium text-body" : "text-body"}`}
 				>
 					<span aria-hidden="true" className="w-4 text-center text-muted">{row.glyph}</span>
@@ -478,7 +627,7 @@ function MenuRowView({
 					type="button"
 					role="menuitemradio"
 					aria-checked={row.current}
-					onClick={() => onChart(row.chart)}
+					onClick={() => actions.onChart(row.chart)}
 					className={`${base} ${row.current ? "font-medium text-body" : "text-body"}`}
 				>
 					<span aria-hidden="true" className="flex w-4 justify-center text-muted">
@@ -491,8 +640,8 @@ function MenuRowView({
 
 		case "signout":
 			return (
-				<form method="post" action={navigation.logout_url}>
-					<input type="hidden" name="csrf_token" value={navigation.csrf} />
+				<form method="post" action={row.action}>
+					<input type="hidden" name="csrf_token" value={row.csrf} />
 					<button type="submit" role="menuitem" className={`${base} text-down`}>{row.label}</button>
 				</form>
 			);
@@ -639,34 +788,3 @@ function HelpButton({ onHelp }: { onHelp: () => void }) {
 		</button>
 	);
 }
-
-/** What each theme is called mid-sentence. The ids are written out rather than
- *  built from the theme name, so every string the dashboard can ask for is
- *  findable by searching the source for its id. */
-const THEME_NAMES: Record<Theme, string> = {
-	light: "dashboard.theme.light",
-	dark: "dashboard.theme.dark",
-	system: "dashboard.theme.system",
-};
-
-/** ThemeToggle cycles light, dark and system. Three states rather than two
- *  because "follow the OS" is the setting most people actually want, and a
- *  two-way switch has no way to express it. */
-function ThemeToggle({ theme, onTheme }: { theme: Theme; onTheme: (next: Theme) => void }) {
-	const next: Theme = theme === "system" ? "light" : theme === "light" ? "dark" : "system";
-	const glyph = theme === "system" ? "◐" : theme === "light" ? "☀" : "☾";
-	const description = t("dashboard.topbar.theme", { current: t(THEME_NAMES[theme]), next: t(THEME_NAMES[next]) });
-
-	return (
-		<button
-			type="button"
-			onClick={() => onTheme(next)}
-			title={description}
-			aria-label={description}
-			className="flex size-control items-center justify-center border-2 border-line bg-card text-sm text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
-		>
-			{glyph}
-		</button>
-	);
-}
-
