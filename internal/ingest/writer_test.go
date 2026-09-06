@@ -1473,6 +1473,78 @@ func planDatabase(t *testing.T) *sql.DB {
 	return account.Writer()
 }
 
+// TestThePruneReadsTheExpiredRowsAndNoOthers is the cost property: the prune's
+// work follows what it deletes, not what the site has.
+//
+// It runs the prune's own predicate twice over one database — once as the
+// writer issues it, once pinned to the index that existed before — and compares
+// them. Both passes see the same b-tree at the same size with the same pages
+// cached, so the only difference between them is how many rows each has to look
+// at, which is the thing being claimed. Timing two databases of different sizes
+// would not show that: deleting from a bigger tree costs more page reads even
+// when the plan is perfect.
+func TestThePruneReadsTheExpiredRowsAndNoOthers(t *testing.T) {
+	ctx := context.Background()
+	db := planDatabase(t)
+
+	const (
+		expired = 500
+		live    = 20_000
+	)
+
+	now := fixtureStart.Unix()
+	cutoff := now - int64(foldStateRetention/time.Second)
+
+	seedFoldState(t, ctx, db, expired, cutoff-1)
+	seedFoldState(t, ctx, db, live, now)
+
+	// Counting rather than deleting: a delete would empty the table on the
+	// first pass and leave the second measuring nothing.
+	const counted = "SELECT COUNT(*) FROM ingest_session_state %s WHERE site_id = ? AND last_seen_at < ?"
+
+	seeking := fmt.Sprintf(counted, "")
+	scanning := fmt.Sprintf(counted, "INDEXED BY ingest_session_state_visitor")
+
+	if plan := queryPlan(t, ctx, db, seeking); !strings.Contains(plan, "ingest_session_state_expiry") {
+		t.Fatalf("the control is not measuring what it thinks:\n%s", plan)
+	}
+
+	// Both statements once first, so neither pays for the other's cold pages.
+	countExpired(t, ctx, db, seeking, expired)
+	countExpired(t, ctx, db, scanning, expired)
+
+	started := time.Now()
+	countExpired(t, ctx, db, seeking, expired)
+	seek := time.Since(started)
+
+	started = time.Now()
+	countExpired(t, ctx, db, scanning, expired)
+	scan := time.Since(started)
+
+	// The seek reads 500 index entries and the scan reads 20,500, so the gap is
+	// forty-fold. Five is the floor a loaded machine still clears.
+	if ratio := float64(scan) / float64(seek); ratio < 5 {
+		t.Errorf("seeking the expired rows was only %.1fx faster than reading the whole site "+
+			"(%v against %v), so the prune is not skipping the history", ratio, seek, scan)
+	}
+}
+
+// countExpired runs one form of the prune's predicate and checks it found the
+// rows the prune would delete.
+func countExpired(t *testing.T, ctx context.Context, db *sql.DB, query string, want int) {
+	t.Helper()
+
+	var found int
+	if err := db.QueryRowContext(ctx, query, 1,
+		fixtureStart.Unix()-int64(foldStateRetention/time.Second)).Scan(&found); err != nil {
+		t.Fatal(err)
+	}
+
+	if found != want {
+		t.Fatalf("%q matched %d rows, want %d", query, found, want)
+	}
+}
+
 // seedFoldState fills site 1 with session state and parked engagement, all
 // stamped at one time.
 func seedFoldState(t *testing.T, ctx context.Context, db *sql.DB, rows int, at int64) {
