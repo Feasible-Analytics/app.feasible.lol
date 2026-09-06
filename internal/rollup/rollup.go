@@ -92,11 +92,62 @@ type Builder struct {
 	// Now is the clock a build measures "today" against, injectable because
 	// every interesting property of a roll-up is about which day it is.
 	Now func() time.Time
+
+	// Yield is how long a build rests between chunks, as a multiple of how long
+	// the chunk itself took. One means a rebuild spends at most half its
+	// wall-clock time holding the write lock.
+	//
+	// Roll-up freshness is a cache and storing an event is not, so when the two
+	// want the same lock the cache has to lose. A rebuild that takes all night
+	// costs nobody anything; an hour in which no event is stored for any site
+	// on the machine costs everybody. Zero means DefaultYield.
+	Yield float64
+
+	// Sleep is how the rest is taken. It is injectable so a test can drive a
+	// many-chunk rebuild without waiting for it, and it takes the context so a
+	// shutdown does not have to wait out a pause.
+	Sleep func(ctx context.Context, d time.Duration) error
 }
+
+// DefaultYield is the resting multiple a build uses when none is set, and
+// MaxYield caps one rest so a single slow chunk cannot stall a rebuild for
+// minutes.
+const (
+	DefaultYield = 1.0
+	MaxYield     = 5 * time.Second
+)
 
 // New builds a builder over an account's writer handle.
 func New(db *sql.DB) *Builder {
 	return &Builder{DB: db, Now: func() time.Time { return time.Now().UTC() }}
+}
+
+// rest pauses in proportion to the work just done, so a rebuild that is cheap
+// barely pauses and one that is expensive gives most of the lock away.
+func (b *Builder) rest(ctx context.Context, took time.Duration) error {
+	ratio := b.Yield
+	if ratio == 0 {
+		ratio = DefaultYield
+	}
+
+	pause := min(time.Duration(float64(took)*ratio), MaxYield)
+	if pause <= 0 {
+		return ctx.Err()
+	}
+
+	if b.Sleep != nil {
+		return b.Sleep(ctx, pause)
+	}
+
+	timer := time.NewTimer(pause)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // now reads the builder's clock.
@@ -163,24 +214,59 @@ func (b *Builder) Rebuild(ctx context.Context, request Request) error {
 		return err
 	}
 
-	for start := from; start.Before(to); start = b.chunkEnd(start, grain, to, location) {
+	for start := from; start.Before(to); {
 		end := b.chunkEnd(start, grain, to, location)
+
+		// A stopwatch rather than b.now(), which is a fixed clock in a test and
+		// answers "which day is it", not "how long did that take".
+		began := time.Now()
 
 		if err := b.buildChunk(ctx, site, grain, names, start, end); err != nil {
 			return fmt.Errorf("rollup: build %s %s..%s: %w", grain, start.Format(time.RFC3339), end.Format(time.RFC3339), err)
 		}
+
+		// Banked here rather than after the loop. A rebuild of a site with
+		// years of history does not fit between two restarts, and coverage
+		// written only at the end means every interruption throws the whole
+		// thing away and the next run starts from the first event again — which
+		// never converges and burns a core for ever. Days inside the banked
+		// range read the summary; days outside fall back to raw, which is
+		// slower and correct.
+		if err := b.bankCoverage(ctx, request, from, end, location); err != nil {
+			return err
+		}
+
+		start = end
+
+		if start.Before(to) {
+			if err := b.rest(ctx, time.Since(began)); err != nil {
+				return err
+			}
+		}
 	}
 
-	covered := to
+	return nil
+}
+
+// bankCoverage widens the trusted window to everything built so far.
+//
+// The end is capped at CoverThrough because the day in progress is built but
+// never served: it is still filling up, and a report drawn from a partial
+// bucket is simply wrong.
+func (b *Builder) bankCoverage(ctx context.Context, request Request, from, built time.Time, location *time.Location) error {
+	covered := built
+
 	if !request.CoverThrough.IsZero() {
-		covered = query.RollupBucketStart(request.CoverThrough.In(location), grain, location)
+		if limit := query.RollupBucketStart(request.CoverThrough.In(location), request.Grain, location); limit.Before(covered) {
+			covered = limit
+		}
 	}
 
 	if !covered.After(from) {
 		return nil
 	}
 
-	return b.recordCoverage(ctx, site, grain, from, covered, request.FromBeginning)
+	return b.recordCoverage(ctx, request.Site, request.Grain, from, covered, request.FromBeginning)
 }
 
 // chunkEnd is the end of the piece of work that starts at a given bucket.
@@ -833,6 +919,74 @@ func (b *Builder) Prune(ctx context.Context, site Site) error {
 	}
 
 	return nil
+}
+
+// Progress is how much of a site's history the daily summary holds.
+//
+// It exists so the product can say what it is doing. A timezone change is an
+// ordinary settings action that invalidates every bucket, and the only thing a
+// customer sees is that their dashboard went slow — from which the reasonable
+// conclusion is that the product is broken.
+type Progress struct {
+	// Building is true while the summary does not yet reach the last finished
+	// day. Every number stays correct throughout; the days outside the built
+	// range are simply read the slow way.
+	Building bool
+
+	// Percent is how much of the site's history is built, 0 to 100. It is only
+	// meaningful while Building.
+	Percent int
+}
+
+// Progress reports how far the daily summary has got for one site.
+//
+// The daily grain is the one worth reporting: it is what a rebuild spends its
+// time on, and the hourly grain only ever covers the retention window.
+func (b *Builder) Progress(ctx context.Context, site Site) (Progress, error) {
+	location := site.Location()
+	today := query.RollupBucketStart(b.now().In(location), query.GrainDay, location)
+
+	earliest, err := FirstEvent(ctx, b.DB, site.ID)
+	if err != nil {
+		return Progress{}, err
+	}
+
+	// A site with no events has nothing to build, so it is not waiting on
+	// anything and must not be told that it is.
+	if earliest.IsZero() {
+		return Progress{}, nil
+	}
+
+	start := query.RollupBucketStart(earliest.In(location), query.GrainDay, location)
+
+	target := query.RollupLocalUnix(today, location)
+	from := query.RollupLocalUnix(start, location)
+
+	if target <= from {
+		return Progress{}, nil
+	}
+
+	coverage, found, err := b.Coverage(ctx, site.ID, query.GrainDay)
+	if err != nil {
+		return Progress{}, err
+	}
+
+	// Nothing built, or built against a timezone the site no longer uses — the
+	// next pass throws it away either way, so it is worth nothing now.
+	if !found || coverage.Timezone != site.Zone() {
+		return Progress{Building: true}, nil
+	}
+
+	if coverage.Through >= target {
+		return Progress{}, nil
+	}
+
+	done := coverage.Through - from
+	if done < 0 {
+		done = 0
+	}
+
+	return Progress{Building: true, Percent: int(done * 100 / (target - from))}, nil
 }
 
 // Coverage reports what is built for one site and grain, for the status command

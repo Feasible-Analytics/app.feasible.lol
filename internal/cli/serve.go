@@ -446,6 +446,40 @@ func (s *siteRules) background(e *env) func(context.Context, func(func())) {
 	}
 }
 
+// rebuildNotice reports whether the site being looked at is having its reports
+// rebuilt, so the dashboard can say why it is slow.
+//
+// Nothing here fails the page. A dashboard that will not render is a far worse
+// outcome than one with no notice on it, so an account that cannot be opened,
+// a domain that is not in the path, or a read that errors all return nothing.
+func rebuildNotice(r *http.Request, cache *sites.Cache, manager *accounts.Manager) *dashboard.Rebuild {
+	domain := strings.TrimPrefix(r.URL.Path, dashboard.PathPrefix)
+	if domain == "" || cache == nil || manager == nil {
+		return nil
+	}
+
+	site, ok := cache.Lookup(domain)
+	if !ok {
+		return nil
+	}
+
+	// The account, not the acting team: a transferred site's history stays in
+	// the database it was written to.
+	lease, err := manager.Acquire(r.Context(), site.AccountID)
+	if err != nil {
+		return nil
+	}
+	defer lease.Release() //nolint:errcheck // the page is more useful than an unlock error
+
+	progress, err := rollup.New(lease.Account.Reader()).Progress(r.Context(),
+		rollup.Site{ID: site.ID, Domain: site.Domain, Timezone: site.Timezone})
+	if err != nil || !progress.Building {
+		return nil
+	}
+
+	return &dashboard.Rebuild{Percent: progress.Percent}
+}
+
 // serveRoutes is the app process's public surface: the tracker script, the
 // stats API the dashboard runs on, the server-rendered application, the pages
 // that sell it, the settings screens, and — with the direct transport — the
@@ -598,6 +632,8 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 		if refusal, locked := com.Gate.Check(nav.TeamID); locked {
 			boot.Lock = &dashboard.Lock{Reason: string(refusal.Reason), Error: refusal.Error}
 		}
+
+		boot.Rebuild = rebuildNotice(r, service.Sites, manager)
 
 		return boot
 	}

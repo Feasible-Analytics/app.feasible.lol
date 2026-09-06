@@ -68,6 +68,36 @@ export function App() {
 	return <AnalyticsDashboard />;
 }
 
+/** RebuildNotice explains a slow dashboard while a site's summary is rebuilt.
+ *
+ * Without it the reader sees only that the product got slow after they changed
+ * a setting, and the reasonable conclusion is that it is broken. The numbers are
+ * correct throughout, which is the first thing the notice says. */
+function RebuildNotice() {
+	const rebuild = bootstrap().rebuild;
+
+	if (!rebuild) return null;
+
+	return (
+		<div role="status" className="mb-3 border-2 border-line bg-card px-4 py-3">
+			<p className="text-sm text-body">{t("dashboard.rebuild.notice")}</p>
+			<div className="mt-2 flex items-center gap-3">
+				<div
+					role="progressbar"
+					aria-valuenow={rebuild.percent}
+					aria-valuemin={0}
+					aria-valuemax={100}
+					aria-label={t("dashboard.rebuild.label")}
+					className="h-1.5 flex-1 bg-subtle"
+				>
+					<div className="h-full bg-accent" style={{ width: `${rebuild.percent}%` }} />
+				</div>
+				<span className="tnum shrink-0 text-xs text-muted">{t("dashboard.rebuild.percent", { percent: String(rebuild.percent) })}</span>
+			</div>
+		</div>
+	);
+}
+
 /** AnalyticsDashboard owns every report hook. Keeping it below the lock branch
  * guarantees a locked account mounts no data-fetching component at all. */
 function AnalyticsDashboard() {
@@ -423,6 +453,8 @@ function AnalyticsDashboard() {
 			)}
 
 			<main className="mx-auto max-w-shell px-4 py-5 sm:px-5">
+				<RebuildNotice />
+
 				{/* The pills stay in an embed even though the editor is chrome:
 				    they are the record of what the numbers exclude, and a
 				    filtered figure with nothing saying so is the one that gets
