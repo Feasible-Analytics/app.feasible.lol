@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"unicode"
 )
 
 // build makes a catalogue out of literal JSON, so a test can describe exactly
@@ -314,6 +315,7 @@ func renderingSurfaces() map[string][]string {
 		filepath.Join("..", "auth"):             {".html", ".go"},
 		filepath.Join("..", "settings"):         {".html", ".go"},
 		filepath.Join("..", "appui"):            {".html", ".go"},
+		filepath.Join("..", "goals"):            {".go"},
 		filepath.Join("..", "google"):           {".go"},
 		filepath.Join("..", "shields"):          {".go"},
 		filepath.Join("..", "dashboard"):        {".go"},
@@ -623,4 +625,90 @@ func hasExtension(path string, extensions []string) bool {
 	}
 
 	return false
+}
+
+// catalogueCall matches a template asking the catalogue for a string, in either
+// form the templates use: a literal id, or one held in a field.
+var catalogueCall = regexp.MustCompile(`\{\{-?\s*[tn]\s+\$?\.[A-Za-z.]*Lang\b`)
+
+// templateAction matches one {{ }} so a text node made only of them can be told
+// apart from one that puts words on the screen.
+var templateAction = regexp.MustCompile(`(?s)\{\{.*?\}\}`)
+
+// writesItsOwnWords reports whether a template puts any text on the screen that
+// did not come from the Go layer. A template that renders only supplied values
+// has nothing to translate and nothing to get wrong.
+func writesItsOwnWords(body string) bool {
+	for _, text := range templateProse(body) {
+		if strings.ContainsFunc(templateAction.ReplaceAllString(text, ""), unicode.IsLetter) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// TestEveryScreenWithWordsOnItUsesTheCatalogue is the guard against a whole
+// screen shipping in one language inside a translated product.
+//
+// A template that renders words and asks the catalogue for none of them is also
+// invisible to the two coverage tests above, because they work from the ids a
+// file uses. So the file with no translations is also the file where every
+// other guarantee in this package stops applying, and only a check phrased as
+// "does it ask at all" can see it.
+//
+// A template that renders no words of its own is not a failure: several are
+// pure structure around values the Go layer supplies, and those are recognised
+// by having nothing to translate rather than by being named in a list.
+func TestEveryScreenWithWordsOnItUsesTheCatalogue(t *testing.T) {
+	scanned := 0
+
+	for root, extensions := range renderingSurfaces() {
+		if !slices.Contains(extensions, ".html") {
+			continue
+		}
+
+		if _, err := os.Stat(root); err != nil {
+			// A surface missing from this checkout is not a failure, but it is
+			// also not silence: a guard that scans nothing and passes is the
+			// thing this test exists to prevent.
+			t.Logf("skipping %s: %v", root, err)
+
+			continue
+		}
+
+		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+
+			if entry.IsDir() || !strings.HasSuffix(path, ".html") {
+				return nil
+			}
+
+			body, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+
+			scanned++
+
+			if catalogueCall.Match(body) || !writesItsOwnWords(string(body)) {
+				return nil
+			}
+
+			t.Errorf("%s renders words and asks the catalogue for none of them, so it is "+
+				"English whatever language the reader chose — and the coverage tests above "+
+				"cannot see the file at all", path)
+
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
+	}
+
+	if scanned == 0 {
+		t.Fatal("no templates were read, so this test proves nothing")
+	}
 }

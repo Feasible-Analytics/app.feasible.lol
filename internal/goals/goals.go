@@ -142,12 +142,11 @@ func (g Goal) Label() string {
 	return g.EventName
 }
 
-// NoBackfillNotice is the sentence the creation form has to show. It is a
-// constant here rather than a string in a template because the behaviour is
-// decided by this package, and a warning that lives away from the behaviour is
-// a warning that stops being true.
-const NoBackfillNotice = "Conversions are counted from the moment this goal is created. " +
-	"Traffic that already happened is not counted towards it, even though it is still in your data."
+// NoBackfillNoticeID names the sentence the creation form has to show. The id
+// is a constant here rather than only in a template because the behaviour it
+// warns about is decided by this package: change how goals count history and
+// the compiler brings you to the warning.
+const NoBackfillNoticeID = "settings.conversions.no_backfill_notice"
 
 // Error is a caller's mistake, carrying the message the caller reads. It is a
 // distinct type so the HTTP layer can answer 400 with something useful rather

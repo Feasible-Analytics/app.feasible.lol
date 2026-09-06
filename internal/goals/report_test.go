@@ -299,11 +299,12 @@ func TestRevenueOnAGoalIsCountedInMinorUnits(t *testing.T) {
 	}
 }
 
-// TestTheNoBackfillNoticeExists checks that the sentence the creation form has
-// to show lives beside the behaviour it describes, rather than in a template
-// somebody can edit without noticing what it promises.
-func TestTheNoBackfillNoticeExists(t *testing.T) {
-	if NoBackfillNotice == "" {
+// TestTheNoBackfillNoticeIsAskedForByID checks that the requirement to warn
+// about backfilling lives beside the behaviour that makes it necessary. The
+// words live in the catalogue so they can be translated; what has to stay here
+// is that the screen asks for them at all.
+func TestTheNoBackfillNoticeIsAskedForByID(t *testing.T) {
+	if NoBackfillNoticeID == "" {
 		t.Error("the creation form has no sentence to show about backfilling")
 	}
 }

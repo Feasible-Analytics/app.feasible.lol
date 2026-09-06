@@ -545,9 +545,8 @@ func PropertyHealth(snapshot ingest.Snapshot, siteID int64) Health {
 	return health
 }
 
-// PIINotice is what the properties settings screen has to say out loud.
+// PIINoticeID names what the properties settings screen has to say out loud.
 // Properties are customer-controlled free text that lands verbatim in API
 // responses and in exports, and the only defence that works is telling people
 // plainly not to put personal data in them.
-const PIINotice = "Custom properties are stored and returned exactly as your site sends them. " +
-	"Do not put names, email addresses, or anything else personal in a property value."
+const PIINoticeID = "settings.conversions.property_pii_notice"
