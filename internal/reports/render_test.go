@@ -394,7 +394,7 @@ func TestBothDialsRenderTheSameInstant(t *testing.T) {
 // two renderings, not twenty-five.
 func TestARenderingIsBuiltOncePerDial(t *testing.T) {
 	built := 0
-	renderings := &Renderings{build: func(cycle string) (Rendered, error) {
+	renderings := &Renderings{build: func(cycle, unsubscribe string) (Rendered, error) {
 		built++
 
 		return Rendered{Subject: cycle}, nil

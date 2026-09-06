@@ -375,3 +375,71 @@ func TestSESAcceptsAnUnreadableSuccessBody(t *testing.T) {
 		t.Fatalf("detail does not say the response was unreadable: %q", result.Detail)
 	}
 }
+
+// TestTheSESPathCarriesTheUnsubscribeHeaders is the second transport. SES takes
+// a MIME document rather than a DATA stream, and it is the same builder, so
+// what this pins is that it stays the same builder.
+func TestTheSESPathCarriesTheUnsubscribeHeaders(t *testing.T) {
+	capture := &capturedRoundTrip{}
+	transport := testSESTransport(capture)
+
+	if _, err := transport.Send(context.Background(), Message{
+		To:          "anna@example.com",
+		Subject:     "Weekly report",
+		Text:        "hi",
+		HTML:        "<p>hi</p>",
+		Tag:         TagReportWeekly,
+		Unsubscribe: "https://app.feasible.lol/unsubscribe/abc",
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	var sent sesRequest
+	if err := json.Unmarshal(capture.body, &sent); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := base64.StdEncoding.DecodeString(sent.Content.Raw.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []string{
+		"List-Unsubscribe: <https://app.feasible.lol/unsubscribe/abc>",
+		"List-Unsubscribe-Post: List-Unsubscribe=One-Click",
+	} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("the SES document is missing %q:\n%s", want, raw)
+		}
+	}
+}
+
+// TestTheSESPathLeavesATransactionalMessageAlone is the other half.
+func TestTheSESPathLeavesATransactionalMessageAlone(t *testing.T) {
+	capture := &capturedRoundTrip{}
+	transport := testSESTransport(capture)
+
+	if _, err := transport.Send(context.Background(), Message{
+		To:      "anna@example.com",
+		Subject: "Reset your password",
+		Text:    "hi",
+		HTML:    "<p>hi</p>",
+		Tag:     TagPasswordReset,
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	var sent sesRequest
+	if err := json.Unmarshal(capture.body, &sent); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := base64.StdEncoding.DecodeString(sent.Content.Raw.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(string(raw), "List-Unsubscribe") {
+		t.Errorf("a password reset carries an unsubscribe header:\n%s", raw)
+	}
+}

@@ -108,6 +108,15 @@ type Message struct {
 	// Tag names the template. It is carried through to the transport so a log
 	// line says which message went out, rather than only that one did.
 	Tag string
+
+	// Unsubscribe is where this recipient stops receiving this message, and it
+	// is set only on the report and the alert.
+	//
+	// The other twenty-two are transactional messages to an account holder
+	// about their own account. An unsubscribe link on "we delete your data
+	// tomorrow" would be a way to miss the warning, not a courtesy, so those
+	// carry neither the header nor the footer link.
+	Unsubscribe string
 }
 
 // Result is what a transport observed. It is deliberately not a boolean:

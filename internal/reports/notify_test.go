@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/auth"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
@@ -184,7 +185,7 @@ func TestSlowFanoutRenewsItsLease(t *testing.T) {
 	notifier := &Notifier{Store: f.store, Mail: transport}
 	done := make(chan error, 1)
 	go func() {
-		_, err := notifier.deliverClaim(context.Background(), fixedRendering("Report", "body"), claim, "", "report")
+		_, err := notifier.deliverClaim(context.Background(), fixedRendering("Report", "body"), claim, "", "report_weekly", ListReport)
 		done <- err
 	}()
 	<-transport.started
@@ -215,7 +216,7 @@ func TestProviderAcceptanceBeforeAcknowledgementIsAtLeastOnce(t *testing.T) {
 
 	transport := &acceptedThenFailedTransport{}
 	notifier := &Notifier{Store: f.store, Mail: transport}
-	if _, err := notifier.deliverClaim(ctx, fixedRendering("Report", "body"), claim, "", "report"); err == nil {
+	if _, err := notifier.deliverClaim(ctx, fixedRendering("Report", "body"), claim, "", "report_weekly", ListReport); err == nil {
 		t.Fatal("simulated post-acceptance crash reported success")
 	}
 	if err := f.store.ReleaseDelivery(ctx, claim); err != nil {
@@ -226,7 +227,7 @@ func TestProviderAcceptanceBeforeAcknowledgementIsAtLeastOnce(t *testing.T) {
 	if err != nil || !claimed {
 		t.Fatalf("retry claim = %v, %v", claimed, err)
 	}
-	if _, err := notifier.deliverClaim(ctx, fixedRendering("Report", "body"), retry, "", "report"); err != nil {
+	if _, err := notifier.deliverClaim(ctx, fixedRendering("Report", "body"), retry, "", "report_weekly", ListReport); err != nil {
 		t.Fatal(err)
 	}
 	if len(transport.keys) != 2 || transport.keys[0] != transport.keys[1] {
@@ -908,7 +909,7 @@ func TestSendNowIgnoresTheScheduleAndTheLedger(t *testing.T) {
 // fixedRendering is one body for either dial, for the delivery tests, which are
 // about the ledger rather than about the clock.
 func fixedRendering(subject, text string) *Renderings {
-	return &Renderings{build: func(string) (Rendered, error) {
+	return &Renderings{build: func(string, string) (Rendered, error) {
 		return Rendered{Subject: subject, Text: text}, nil
 	}}
 }
@@ -936,10 +937,10 @@ func TestEachRecipientGetsTheClockTheyChose(t *testing.T) {
 		GeneratedAt:  time.Date(2026, 9, 4, 15, 4, 0, 0, time.UTC),
 	})
 	built := renderings.build
-	renderings.build = func(cycle string) (Rendered, error) {
+	renderings.build = func(cycle, unsubscribe string) (Rendered, error) {
 		renders++
 
-		return built(cycle)
+		return built(cycle, "")
 	}
 
 	recipients := []string{
@@ -949,7 +950,7 @@ func TestEachRecipientGetsTheClockTheyChose(t *testing.T) {
 		"alias@example.com",
 	}
 
-	delivered, err := notifier.mail(context.Background(), renderings, recipients, "report")
+	delivered, err := notifier.mail(context.Background(), renderings, recipients, "report_weekly", Unsubscribed{List: ListReport})
 	if err != nil {
 		t.Fatalf("mail: %v", err)
 	}
@@ -1050,13 +1051,13 @@ func TestTheScheduledPathAlsoFollowsEachReadersClock(t *testing.T) {
 		TriggeredAt: time.Date(2026, 9, 4, 15, 4, 0, 0, time.UTC),
 	})
 	built := renderings.build
-	renderings.build = func(cycle string) (Rendered, error) {
+	renderings.build = func(cycle, unsubscribe string) (Rendered, error) {
 		dials[cycle]++
 
-		return built(cycle)
+		return built(cycle, "")
 	}
 
-	delivered, err := notifier.deliverClaim(ctx, renderings, claim, "https://feasible.lol/d", "alert_spike")
+	delivered, err := notifier.deliverClaim(ctx, renderings, claim, "https://feasible.lol/d", "alert_spike", ListAlert)
 	if err != nil {
 		t.Fatalf("deliver: %v", err)
 	}
@@ -1087,5 +1088,159 @@ func TestTheScheduledPathAlsoFollowsEachReadersClock(t *testing.T) {
 
 	if len(poster.posts) != 1 {
 		t.Errorf("posted %d times to Slack, want 1", len(poster.posts))
+	}
+}
+
+// TestEachRecipientGetsTheirOwnLink is the property the whole feature turns on:
+// one person's link must not remove anybody else.
+func TestEachRecipientGetsTheirOwnLink(t *testing.T) {
+	f := newNotifier(t)
+	ctx := context.Background()
+
+	sealer, err := auth.NewSealer(make([]byte, auth.KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.notifier.Unsubscribe = &Unsubscriber{
+		Store:   f.store,
+		Sealer:  sealer,
+		BaseURL: "https://feasible.lol",
+	}
+
+	if err := f.store.SaveSubscription(ctx, Subscription{
+		SiteID:          f.siteA,
+		Kind:            KindWeekly,
+		Recipients:      []string{"anna@example.com", "sam@example.com"},
+		SlackWebhookURL: "https://hooks.example.com/abc",
+		Enabled:         true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	f.now = time.Date(2026, 8, 3, 4, 5, 0, 0, time.UTC)
+
+	if _, err := f.notifier.RunSchedule(ctx, jobs.Job{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if f.mail.count() != 2 {
+		t.Fatalf("%d emails were sent", f.mail.count())
+	}
+
+	tokens := map[string]bool{}
+
+	for _, message := range f.mail.messages {
+		if message.Unsubscribe == "" {
+			t.Fatalf("%s got no unsubscribe link", message.To)
+		}
+
+		token := strings.TrimPrefix(message.Unsubscribe, "https://feasible.lol"+UnsubscribePath)
+		tokens[token] = true
+
+		who, ok := f.notifier.Unsubscribe.read(token)
+		if !ok {
+			t.Fatalf("%s got a link that does not open", message.To)
+		}
+
+		if !strings.EqualFold(who.Address, message.To) {
+			t.Errorf("%s got a link for %s", message.To, who.Address)
+		}
+
+		if who.SiteID != f.siteA || who.Kind != KindWeekly || who.List != ListReport {
+			t.Errorf("%s got a link for %+v", message.To, who)
+		}
+
+		// And the body shows it, for a client that surfaces no header.
+		if !strings.Contains(message.HTML, message.Unsubscribe) {
+			t.Errorf("%s has the header but no footer link", message.To)
+		}
+	}
+
+	if len(tokens) != 2 {
+		t.Errorf("two recipients shared %d token(s)", len(tokens))
+	}
+
+	// A webhook has no recipient, so the chat message carries no link.
+	if len(f.slack.posts) != 1 {
+		t.Fatalf("%d Slack posts", len(f.slack.posts))
+	}
+
+	if strings.Contains(f.slack.posts[0], UnsubscribePath) {
+		t.Errorf("the Slack post carries an unsubscribe link:\n%s", f.slack.posts[0])
+	}
+}
+
+// TestWithNoUnsubscriberTheReportStillGoesOut keeps a self-hosted install with
+// the feature unwired sending its reports, without a link.
+func TestWithNoUnsubscriberTheReportStillGoesOut(t *testing.T) {
+	f := newNotifier(t)
+	ctx := context.Background()
+
+	if err := f.store.SaveSubscription(ctx, Subscription{
+		SiteID:     f.siteA,
+		Kind:       KindWeekly,
+		Recipients: []string{"anna@example.com"},
+		Enabled:    true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	f.now = time.Date(2026, 8, 3, 4, 5, 0, 0, time.UTC)
+
+	if _, err := f.notifier.RunSchedule(ctx, jobs.Job{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if f.mail.count() != 1 {
+		t.Fatalf("%d emails were sent", f.mail.count())
+	}
+
+	if got := f.mail.messages[0].Unsubscribe; got != "" {
+		t.Errorf("an unwired install minted %q", got)
+	}
+}
+
+// TestTheTestReportOffersTheSameWayOut keeps the button on the settings screen
+// from sending the identical report to the identical strangers with no link on
+// it. A test send is often where a recipient first sees a report they never
+// asked for.
+func TestTheTestReportOffersTheSameWayOut(t *testing.T) {
+	f := newNotifier(t)
+	ctx := context.Background()
+
+	sealer, err := auth.NewSealer(make([]byte, auth.KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.notifier.Unsubscribe = &Unsubscriber{Store: f.store, Sealer: sealer, BaseURL: "https://feasible.lol"}
+
+	if _, err := f.notifier.SendNow(ctx, f.siteA, KindWeekly, []string{"anna@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if f.mail.count() != 1 {
+		t.Fatalf("%d emails were sent", f.mail.count())
+	}
+
+	message := f.mail.messages[0]
+
+	if message.Unsubscribe == "" {
+		t.Fatal("the test report carries no unsubscribe link")
+	}
+
+	who, ok := f.notifier.Unsubscribe.read(
+		strings.TrimPrefix(message.Unsubscribe, "https://feasible.lol"+UnsubscribePath))
+	if !ok {
+		t.Fatal("the link does not open")
+	}
+
+	if who.SiteID != f.siteA || who.Kind != KindWeekly || who.Address != "anna@example.com" {
+		t.Errorf("the link is for %+v", who)
+	}
+
+	if !strings.Contains(message.HTML, message.Unsubscribe) {
+		t.Error("the test report has the header but no footer link")
 	}
 }

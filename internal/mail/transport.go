@@ -363,6 +363,14 @@ func renderMessage(from string, msg Message, escape func(string) string) string 
 	if msg.MessageID != "" {
 		b.WriteString("Message-ID: <" + safeName(msg.MessageID) + "@feasible.lol>\r\n")
 	}
+	// RFC 8058. One-click is what Gmail and Yahoo's bulk-sender rules expect on
+	// recurring mail, and the POST is what stops a link-scanning proxy in a
+	// corporate mail path unsubscribing somebody who never clicked.
+	if msg.Unsubscribe != "" {
+		b.WriteString("List-Unsubscribe: <" + headerValue(msg.Unsubscribe) + ">\r\n")
+		b.WriteString("List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n")
+	}
+
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: multipart/alternative; boundary=\"" + boundary + "\"\r\n")
 	b.WriteString("\r\n")

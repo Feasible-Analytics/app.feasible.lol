@@ -90,6 +90,11 @@ type Notifier struct {
 	// caught when the notifier is built rather than in somebody's inbox.
 	BaseURL string
 
+	// Unsubscribe mints the per-recipient link on the report and the alert.
+	// It is optional: a self-hoster with no application key still gets their
+	// reports, without a link.
+	Unsubscribe *Unsubscriber
+
 	// Now is the clock both jobs run against.
 	Now func() time.Time
 }
@@ -254,7 +259,7 @@ func (n *Notifier) sendDue(ctx context.Context, due Due) (bool, string, error) {
 		return false, "", err
 	}
 
-	if _, err := n.deliverClaim(ctx, rendered, claim, dashboardURL, reportTag(due.Kind)); err != nil {
+	if _, err := n.deliverClaim(ctx, rendered, claim, dashboardURL, reportTag(due.Kind), ListReport); err != nil {
 		if releaseErr := n.Store.ReleaseDelivery(ctx, claim); releaseErr != nil && n.Log != nil {
 			n.Log.Error("a claimed report period could not be released",
 				"domain", due.Domain, "period", due.PeriodKey, "error", releaseErr)
@@ -327,14 +332,26 @@ func deliveryTargets(recipients []string, webhookURL string) []DestinationTarget
 // and can collapse that replay; claiming exactly-once without provider
 // participation would be false.
 func (n *Notifier) deliverClaim(ctx context.Context, renderings *Renderings, claim DeliveryClaim,
-	dashboardURL, tag string) (int, error) {
+	dashboardURL, tag, list string) (int, error) {
 	dials, err := n.emailClocks(ctx, claim.Destinations)
 	if err != nil {
 		return 0, err
 	}
 
 	for _, destination := range claim.Destinations {
-		rendered, renderErr := renderings.On(dials.of(destination.Target))
+		// A webhook has no recipient, so it gets no link and shares the one
+		// rendering every other channel-less destination gets.
+		unsubscribe := ""
+		if destination.Channel == ChannelEmail {
+			unsubscribe = n.Unsubscribe.Link(Unsubscribed{
+				List:    list,
+				SiteID:  claim.SiteID,
+				Kind:    claim.Kind,
+				Address: destination.Target,
+			})
+		}
+
+		rendered, renderErr := renderings.For(dials.of(destination.Target), unsubscribe)
 		if renderErr != nil {
 			return 0, renderErr
 		}
@@ -438,7 +455,8 @@ func (n *Notifier) withLeaseHeartbeat(ctx context.Context, claim DeliveryClaim, 
 // list. That is what the shared mailer takes, and it is also the honest shape:
 // a relay that refuses one address should not cost the other four their report,
 // and a single failed send names the address it failed for.
-func (n *Notifier) mail(ctx context.Context, renderings *Renderings, recipients []string, tag string) (int, error) {
+func (n *Notifier) mail(ctx context.Context, renderings *Renderings, recipients []string,
+	tag string, from Unsubscribed) (int, error) {
 	if len(recipients) > 0 && n.Mail == nil {
 		return 0, errors.New("reports: no mailer is configured")
 	}
@@ -451,7 +469,12 @@ func (n *Notifier) mail(ctx context.Context, renderings *Renderings, recipients 
 	delivered := 0
 
 	for _, recipient := range recipients {
-		rendered, err := renderings.On(dials.of(recipient))
+		// The same report, to the same addresses somebody else typed in, so it
+		// carries the same way out. A test send is where a recipient most often
+		// first sees a report they did not ask for.
+		from.Address = recipient
+
+		rendered, err := renderings.For(dials.of(recipient), n.Unsubscribe.Link(from))
 		if err != nil {
 			return delivered, err
 		}
@@ -552,7 +575,7 @@ func (n *Notifier) RunAlerts(ctx context.Context, job jobs.Job) (jobs.Outcome, e
 
 		renderings := AlertRenderings(alert)
 
-		delivered, err := n.deliverClaim(ctx, renderings, claim, alert.DashboardURL, alertTag(claim.Kind))
+		delivered, err := n.deliverClaim(ctx, renderings, claim, alert.DashboardURL, alertTag(claim.Kind), ListAlert)
 		if err != nil {
 			failures = append(failures, n.releaseClaim(ctx, claim,
 				fmt.Sprintf("site %d %s snapshot: %v", claim.SiteID, claim.Kind, err)))
@@ -645,7 +668,7 @@ func (n *Notifier) RunAlerts(ctx context.Context, job jobs.Job) (jobs.Outcome, e
 
 		renderings := AlertRenderings(alert)
 
-		delivered, err := n.deliverClaim(ctx, renderings, claim, alert.DashboardURL, alertTag(rule.Kind))
+		delivered, err := n.deliverClaim(ctx, renderings, claim, alert.DashboardURL, alertTag(rule.Kind), ListAlert)
 		if err != nil {
 			failures = append(failures, n.releaseClaim(ctx, claim,
 				fmt.Sprintf("%s %s: %v", site.Domain, rule.Kind, err)))
@@ -810,7 +833,9 @@ func (n *Notifier) SendNow(ctx context.Context, siteID int64, kind string, recip
 	}
 
 	if len(recipients) > 0 {
-		if _, err := n.mail(ctx, renderings, recipients, mail.TagReportPreview); err != nil {
+		from := Unsubscribed{List: ListReport, SiteID: siteID, Kind: kind}
+
+		if _, err := n.mail(ctx, renderings, recipients, mail.TagReportPreview, from); err != nil {
 			return rendered, err
 		}
 	}

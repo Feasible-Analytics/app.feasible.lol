@@ -130,6 +130,33 @@ func (s *Sealer) Open(sealed string) (string, error) {
 	return string(plaintext), nil
 }
 
+// SealToken is Seal in the URL-safe alphabet, for the sealed values that travel
+// in a path segment rather than in a cookie.
+func (s *Sealer) SealToken(plaintext string) (string, error) {
+	sealed, err := s.Seal(plaintext)
+	if err != nil {
+		return "", err
+	}
+
+	raw, err := base64.RawStdEncoding.DecodeString(sealed)
+	if err != nil {
+		return "", fmt.Errorf("auth: seal token: %w", err)
+	}
+
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+// OpenToken reads what SealToken produced. A token that fails to authenticate
+// is an error, not an empty string.
+func (s *Sealer) OpenToken(token string) (string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		return "", fmt.Errorf("auth: open token: %w", err)
+	}
+
+	return s.Open(base64.RawStdEncoding.EncodeToString(raw))
+}
+
 // SignedValue produces `<value>.<mac>` for the short-lived cookies that carry
 // state between two requests — the pending two-factor user, the OAuth PKCE
 // verifier, the CSRF token. They are signed rather than stored because they are
