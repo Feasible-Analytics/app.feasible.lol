@@ -35,7 +35,7 @@ func TestAvatarBackfillOnlyAsksAboutVerifiedAddresses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer control.Close() //nolint:errcheck // a closed test database needs no assertion
+	defer control.Close()
 
 	ctx := context.Background()
 

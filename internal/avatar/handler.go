@@ -109,10 +109,9 @@ func (r *Refresher) FromGoogle(ctx context.Context, userID int64, pictureURL str
 // every sign-in. It is deliberately not "did they use Google" — signing in
 // with Google says nothing about whether Google has a photo.
 //
-// A remembered miss expires after MissRetry. Without that, somebody who signs
-// up today and creates a Gravatar next week never gets it: there is no refresh
-// job, no request-time repair, and a session rolls on a fourteen-day window, so
-// the next sign-in may be months away and would short-circuit anyway.
+// A remembered miss expires after MissRetry, so a Gravatar created after the
+// first sign-in is still found. Nothing else looks: there is no refresh job and
+// no request-time repair.
 func (r *Refresher) EnsureGravatar(ctx context.Context, userID int64, email string) {
 	if r == nil || r.Store == nil || r.Client == nil || !r.Gravatar {
 		return
@@ -138,57 +137,61 @@ func (r *Refresher) EnsureGravatar(ctx context.Context, userID int64, email stri
 	r.dispatch(func() { r.store(detached, userID, SourceGravatar, url) })
 }
 
-// Backfill asks a provider about everybody who has never been asked.
+// Person is who a backfill asks about.
+type Person struct {
+	ID    int64
+	Email string
+}
+
+// Backfill asks a provider about everybody who has never been asked, and says
+// how many it learned something about and how many it could not reach.
 //
-// The only trigger is a sign-in, and a session rolls on a fourteen-day
+// A sign-in is the only other trigger, and a session rolls on a fourteen-day
 // inactivity window, so an active person may not sign in for months. Every
-// account that predates the picture feature would otherwise wait that long for
-// a letter to become a face.
-//
-// It is a command rather than a job: pre-launch there are very few accounts, it
-// is cheap, and "sign out and back in" is not a thing to ask a customer to do
-// to see their own face.
-func (r *Refresher) Backfill(ctx context.Context, people func(context.Context) ([]Person, error)) (int, error) {
-	if r == nil || r.Store == nil || r.Client == nil || !r.Gravatar {
-		return 0, errors.New("avatar: the refresher needs a store, an outbound client, and Gravatar switched on")
+// account older than the picture feature waits that long for a letter to become
+// a face.
+func (r *Refresher) Backfill(ctx context.Context, people func(context.Context) ([]Person, error)) (asked, failed int, err error) {
+	switch {
+	case r == nil || r.Store == nil:
+		return 0, 0, errors.New("avatar: the refresher has no store")
+	case r.Client == nil:
+		return 0, 0, errors.New("avatar: the refresher has no outbound client")
+	case !r.Gravatar:
+		return 0, 0, errors.New("avatar: Gravatar lookups are switched off")
 	}
 
 	found, err := people(ctx)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
-	asked := 0
+	build := r.gravatar
+	if build == nil {
+		build = GravatarURL
+	}
 
 	for _, person := range found {
 		state, err := r.Store.State(ctx, person.ID)
 		if err != nil {
-			return asked, err
+			return asked, failed, err
 		}
 
 		if state.AskedRecently {
 			continue
 		}
 
-		build := r.gravatar
-		if build == nil {
-			build = GravatarURL
+		// Synchronous. A command that returns before its work is done reports a
+		// number about nothing.
+		if r.store(ctx, person.ID, SourceGravatar, build(person.Email)) {
+			asked++
+
+			continue
 		}
 
-		// Synchronous, unlike the sign-in path: a command that returns before
-		// its work is done reports a number that means nothing.
-		r.store(ctx, person.ID, SourceGravatar, build(person.Email))
-
-		asked++
+		failed++
 	}
 
-	return asked, nil
-}
-
-// Person is who a backfill asks about.
-type Person struct {
-	ID    int64
-	Email string
+	return asked, failed, nil
 }
 
 // State reports what is known about a person's picture without loading it, so
@@ -216,7 +219,7 @@ func (r *Refresher) State(ctx context.Context, userID int64) State {
 // — a timeout, a rate limit, a provider having a bad day — is logged and
 // written nowhere, so the next sign-in tries again rather than recording a
 // temporary failure as a permanent fact about a person.
-func (r *Refresher) store(ctx context.Context, userID int64, source, url string) {
+func (r *Refresher) store(ctx context.Context, userID int64, source, url string) bool {
 	fetch, cancel := context.WithTimeout(ctx, FetchTimeout)
 	defer cancel()
 
@@ -234,11 +237,17 @@ func (r *Refresher) store(ctx context.Context, userID int64, source, url string)
 	case err != nil:
 		r.warn("could not fetch an account picture", userID, source, err)
 
+		return false
+
 	default:
 		if err := r.Store.Save(ctx, userID, source, picture); err != nil {
 			r.warn("could not store an account picture", userID, source, err)
+
+			return false
 		}
 	}
+
+	return true
 }
 
 // warn records what went wrong. A picture nobody could fetch is not worth an

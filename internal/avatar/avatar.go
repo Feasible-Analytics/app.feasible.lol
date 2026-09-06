@@ -30,6 +30,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"golang.org/x/image/draw"
 
@@ -238,15 +239,15 @@ type State struct {
 	// Source names the provider a stored picture came from.
 	Source string
 
-	// Asked reports that a provider has already answered, whether or not it had
-	// anything. It is what stops an address with no Gravatar costing an
-	// outbound request on every sign-in for ever.
+	// Asked reports that a provider has answered at some point, whether or not
+	// it had anything. It says a row exists, and nothing about whether the
+	// answer is still worth trusting.
 	Asked bool
 
-	// AskedRecently is Asked, narrowed to a miss that is still worth trusting.
-	// A stored picture is always recent enough; a remembered miss goes stale,
-	// because somebody who signs up today and creates a Gravatar next week has
-	// to be able to get it.
+	// AskedRecently is the one the lookup branches on: a stored picture, or a
+	// miss recorded within MissRetry. It is what stops an address with no
+	// Gravatar costing an outbound request on every sign-in, without stopping
+	// one that appears later from ever being found.
 	AskedRecently bool
 }
 
@@ -255,7 +256,7 @@ type State struct {
 // A week: long enough that a mailbox with no Gravatar is asked about roughly
 // weekly rather than on every sign-in, short enough that somebody who sets one
 // up sees it within a week.
-const MissRetry = 7 * 24 * 60 * 60
+const MissRetry = 7 * 24 * time.Hour
 
 // State reads one person's picture status. A person with no row is not an
 // error: having no picture is the common case, not a failure.
@@ -276,10 +277,8 @@ func (s *Store) State(ctx context.Context, userID int64) (State, error) {
 
 	state.Asked = true
 
-	// A stored picture never goes stale here; only a miss does. Google's is
-	// refreshed on every Google sign-in, and a Gravatar that changed is a much
-	// smaller problem than one that never arrives.
-	state.AskedRecently = state.ETag != "" || s.now()-fetchedAt < MissRetry
+	// A stored picture never goes stale here; only a miss does.
+	state.AskedRecently = state.ETag != "" || s.now()-fetchedAt < int64(MissRetry.Seconds())
 
 	return state, nil
 }

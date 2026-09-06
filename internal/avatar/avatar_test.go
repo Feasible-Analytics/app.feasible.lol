@@ -338,6 +338,8 @@ func TestReadingSomebodyWithNoPictureIsNotAnError(t *testing.T) {
 func TestAMissGoesStaleAndAPictureDoesNot(t *testing.T) {
 	ctx := context.Background()
 
+	week := int64(MissRetry.Seconds())
+
 	for _, tc := range []struct {
 		name   string
 		age    int64
@@ -345,8 +347,8 @@ func TestAMissGoesStaleAndAPictureDoesNot(t *testing.T) {
 	}{
 		{"just now", 0, true},
 		{"a day old", 24 * 60 * 60, true},
-		{"a minute inside the week", MissRetry - 60, true},
-		{"a minute past the week", MissRetry + 60, false},
+		{"a minute inside the week", week - 60, true},
+		{"a minute past the week", week + 60, false},
 		{"a year old", 365 * 24 * 60 * 60, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -373,9 +375,7 @@ func TestAMissGoesStaleAndAPictureDoesNot(t *testing.T) {
 		})
 	}
 
-	// A stored picture is never stale here. Google's is refreshed on every
-	// Google sign-in, and a Gravatar that changed is a far smaller problem than
-	// one that never arrives.
+	// A stored picture is never stale here, however old the row is.
 	avatars, _, userID := newStore(t)
 
 	picture, err := Normalise(square(t, 64, "png"))
@@ -388,7 +388,7 @@ func TestAMissGoesStaleAndAPictureDoesNot(t *testing.T) {
 	}
 
 	if _, err := avatars.db.ExecContext(ctx,
-		"UPDATE user_avatars SET fetched_at = ? WHERE user_id = ?", avatars.now()-10*MissRetry, userID); err != nil {
+		"UPDATE user_avatars SET fetched_at = ? WHERE user_id = ?", avatars.now()-10*week, userID); err != nil {
 		t.Fatal(err)
 	}
 

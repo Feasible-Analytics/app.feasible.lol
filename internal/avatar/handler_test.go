@@ -302,8 +302,8 @@ func TestTheUrlIsEmptyWithoutAStoredPicture(t *testing.T) {
 	}
 }
 
-// TestAnExpiredMissIsAskedAboutAgain is the regression that matters. Somebody
-// who signs up, then creates a Gravatar next week, has to get it.
+// TestAnExpiredMissIsAskedAboutAgain is the regression that matters: a Gravatar
+// created after the first sign-in has to be found.
 func TestAnExpiredMissIsAskedAboutAgain(t *testing.T) {
 	ctx := context.Background()
 	avatars, db, userID := newStore(t)
@@ -327,7 +327,7 @@ func TestAnExpiredMissIsAskedAboutAgain(t *testing.T) {
 	// A miss recorded a fortnight ago.
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO user_avatars (user_id, type, etag, source, fetched_at)
-		VALUES (?, '', '', ?, ?)`, userID, SourceGravatar, avatars.now()-2*MissRetry); err != nil {
+		VALUES (?, '', '', ?, ?)`, userID, SourceGravatar, avatars.now()-2*int64(MissRetry.Seconds())); err != nil {
 		t.Fatal(err)
 	}
 
@@ -389,8 +389,7 @@ func TestAFreshMissIsNotRetried(t *testing.T) {
 }
 
 // TestABackfillAsksOnceAboutEverybodyWhoWasNeverAsked covers the accounts that
-// predate the feature. A sign-in is the only trigger and a session rolls on a
-// fourteen-day window, so an active person may not sign in for months.
+// predate the feature.
 func TestABackfillAsksOnceAboutEverybodyWhoWasNeverAsked(t *testing.T) {
 	ctx := context.Background()
 	avatars, db, first := newStore(t)
@@ -429,18 +428,59 @@ func TestABackfillAsksOnceAboutEverybodyWhoWasNeverAsked(t *testing.T) {
 		return []Person{{ID: first, Email: "a@example.com"}, {ID: second, Email: "b@example.com"}}, nil
 	}
 
-	count, err := refresher.Backfill(ctx, people)
+	count, failed, err := refresher.Backfill(ctx, people)
 	if err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
 
-	if count != 1 || len(asked) != 1 || asked[0] != "/b@example.com" {
+	if count != 1 || failed != 0 || len(asked) != 1 || asked[0] != "/b@example.com" {
 		t.Fatalf("the backfill asked about %v, want only the account with no answer on file", asked)
 	}
 
 	// Running it again asks about nobody, so it is safe to run twice.
-	if again, err := refresher.Backfill(ctx, people); err != nil || again != 0 {
+	if again, _, err := refresher.Backfill(ctx, people); err != nil || again != 0 {
 		t.Errorf("a second backfill asked about %d accounts (%v), want none", again, err)
+	}
+}
+
+// TestABackfillCountsWhatItCouldNotReach keeps a run where every fetch failed
+// from printing a count and exiting clean.
+func TestABackfillCountsWhatItCouldNotReach(t *testing.T) {
+	ctx := context.Background()
+	avatars, _, userID := newStore(t)
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(provider.Close)
+
+	refresher := &Refresher{
+		Store:    avatars,
+		Client:   provider.Client(),
+		Gravatar: true,
+		gravatar: func(string) string { return provider.URL + "/avatar" },
+	}
+
+	asked, failed, err := refresher.Backfill(ctx, func(context.Context) ([]Person, error) {
+		return []Person{{ID: userID, Email: "a@example.com"}}, nil
+	})
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	if asked != 0 || failed != 1 {
+		t.Errorf("a provider that refused reported asked=%d failed=%d, want 0 and 1", asked, failed)
+	}
+
+	// And nothing was written, so the next run tries again rather than
+	// recording a temporary failure as a fact about a person.
+	state, err := avatars.State(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if state.Asked {
+		t.Error("a failed fetch was recorded as an answer")
 	}
 }
 
@@ -451,9 +491,9 @@ func TestABackfillRefusesWhenItCannotFetch(t *testing.T) {
 
 	off := &Refresher{Store: avatars, Client: http.DefaultClient, Gravatar: false}
 
-	if _, err := off.Backfill(context.Background(), func(context.Context) ([]Person, error) {
+	if _, _, err := off.Backfill(context.Background(), func(context.Context) ([]Person, error) {
 		return nil, nil
-	}); err == nil {
-		t.Error("a backfill with Gravatar switched off reported success")
+	}); err == nil || !strings.Contains(err.Error(), "Gravatar") {
+		t.Errorf("a backfill with Gravatar switched off answered %v, want it named", err)
 	}
 }

@@ -28,11 +28,12 @@ Commands:
 
 const avatarBackfillHelp = `feasible avatar backfill — ask about everybody once.
 
-Asks Gravatar about every account that has no stored picture and no recent miss
-on file. A person who already has one, or who was asked about within the last
-week, is left alone, so running this twice costs nothing.
+Asks Gravatar about every verified account that has no stored picture and no
+recent miss on file. A person who already has one, or who was asked about within
+the last week, is left alone, so running this twice costs nothing.
 
-It needs outbound access and FEASIBLE_APP_GRAVATAR switched on.
+It needs outbound access and FEASIBLE_APP_GRAVATAR switched on, and it exits
+non-zero if any account could not be reached.
 
 Flags:
 `
@@ -76,32 +77,34 @@ func avatarBackfill(e *env, args []string) int {
 	}
 	defer control.Close()
 
-	refresher := newAvatarRefresher(e, control)
-
-	// Synchronous, so the count printed is work that actually finished.
-	refresher.Run = func(work func()) { work() }
-
-	asked, err := refresher.Backfill(ctx, verifiedPeople(control))
+	asked, failed, err := newAvatarRefresher(e, control).Backfill(ctx, verifiedPeople(control))
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError
 	}
 
-	if asked == 0 {
+	if asked == 0 && failed == 0 {
 		fmt.Fprintln(e.stdout, "every account already has a picture or a recent answer on file")
 		return ExitOK
 	}
 
-	fmt.Fprintf(e.stdout, "asked a provider about %d accounts\n", asked)
+	fmt.Fprintf(e.stdout, "asked a provider about %d account(s)\n", asked)
+
+	// A provider that refused every request would otherwise print a count and
+	// exit clean, which is a command reporting work it did not do.
+	if failed > 0 {
+		fmt.Fprintf(e.stderr, "%d account(s) could not be reached — the warnings above name each one\n", failed)
+		return ExitError
+	}
 
 	return ExitOK
 }
 
 // verifiedPeople lists everybody who could have a picture.
 //
-// Unverified addresses are left out: the address has not been proved to belong
-// to the person, and asking a third party about the hash of one somebody typed
-// is a lookup nobody consented to.
+// Unverified addresses are left out. The address has not been proved to belong
+// to the person, and this asks about every account at once rather than about
+// somebody who has just proved they hold the mailbox by signing in.
 func verifiedPeople(control *sql.DB) func(context.Context) ([]avatar.Person, error) {
 	return func(ctx context.Context) ([]avatar.Person, error) {
 		rows, err := control.QueryContext(ctx,
