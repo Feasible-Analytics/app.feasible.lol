@@ -103,6 +103,7 @@ func RenderReport(report Report, cycle string) (Rendered, error) {
 
 	content := mail.Content{
 		Subject:    fmt.Sprintf("%s — %s report for %s", report.Domain, kind, report.PeriodLabel),
+		Preheader:  headline(report.Figures),
 		Kicker:     kind + " report",
 		Heading:    report.Domain,
 		Subheading: report.PeriodLabel,
@@ -137,7 +138,11 @@ func RenderAlert(alert Alert, cycle string) (Rendered, error) {
 		Kicker:     kind + " alert",
 		KickerTone: mail.ToneAlarm,
 		Heading:    alert.Domain,
-		Body:       []string{alert.Headline, alert.Detail},
+
+		// The headline is already the subject, so the preview carries the
+		// numbers behind it instead of saying the same thing twice.
+		Preheader: alert.Detail,
+		Body:      []string{alert.Headline, alert.Detail},
 
 		Figures: []mail.Figure{
 			{Label: "Observed", Value: strconv.Itoa(alert.Observed)},
@@ -156,6 +161,31 @@ func RenderAlert(alert Alert, cycle string) (Rendered, error) {
 		{"DashboardURL", alert.DashboardURL},
 		{"TriggeredAt", triggered},
 	})
+}
+
+// headline is the inbox preview for a report: its first two numbers.
+//
+// A report has no body copy, so with nothing here the preview would be the
+// domain repeated from the subject. The numbers are what somebody wants to know
+// without opening it.
+func headline(figures []Figure) string {
+	parts := make([]string, 0, 2)
+
+	for _, figure := range figures {
+		if len(parts) == 2 {
+			break
+		}
+
+		parts = append(parts, strings.ToLower(figure.Label)+" "+figure.Value)
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+
+	parts[0] = strings.ToUpper(parts[0][:1]) + parts[0][1:]
+
+	return strings.Join(parts, ", ")
 }
 
 // render turns content into both bodies with every silent failure turned into

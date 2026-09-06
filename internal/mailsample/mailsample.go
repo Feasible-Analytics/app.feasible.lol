@@ -17,6 +17,8 @@ package mailsample
 
 import (
 	"fmt"
+	"html/template"
+	"strings"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
@@ -40,7 +42,7 @@ var at = time.Date(2026, 9, 6, 14, 32, 0, 0, time.UTC)
 // Every entry goes through the same builder the product uses, so a message that
 // would not render for a customer does not render here either.
 func Messages() (map[string]mail.Message, error) {
-	pieces, err := contents()
+	pieces, err := Contents()
 	if err != nil {
 		return nil, err
 	}
@@ -68,8 +70,10 @@ func Messages() (map[string]mail.Message, error) {
 	return built, nil
 }
 
-// contents is every message built from a mail.Content.
-func contents() (map[string]mail.Content, error) {
+// Contents is every message the layout renders, before it is addressed. The
+// report and the alert are absent: internal/reports hands back a rendered body
+// rather than the content behind it.
+func Contents() (map[string]mail.Content, error) {
 	built := map[string]mail.Content{
 		mail.TagVerifyEmail:          mail.VerificationContent("483920", baseURL+"/verify?token=abc123"),
 		mail.TagPasswordReset:        mail.PasswordResetContent(baseURL + "/reset-password?token=9f2c4d8e"),
@@ -208,4 +212,35 @@ func usageNotice(level usage.Level) usage.Notice {
 		SalesEmail: mail.SalesAddress,
 		BillingURL: baseURL + "/billing",
 	}
+}
+
+// Index is a page showing every rendered message side by side, because a
+// shared layout is judged on whether the set looks like one product.
+func Index(tags []string) string {
+	var b strings.Builder
+
+	b.WriteString(`<!doctype html>
+<meta charset="utf-8">
+<title>feasible.lol — every email</title>
+<style>
+  body { margin: 0; background: #332f2f; color: #f3f2f2;
+         font: 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+  h1 { font-size: 15px; padding: 16px 16px 0 16px; margin: 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+          gap: 16px; padding: 16px; }
+  .cap { font-weight: 700; padding: 0 0 6px 2px; }
+  iframe { width: 100%; height: 760px; border: 0; background: #eae9e9; }
+</style>
+<h1>Every email the product sends</h1>
+<div class="grid">
+`)
+
+	for _, tag := range tags {
+		b.WriteString(`<div><div class="cap">` + template.HTMLEscapeString(tag) + `</div>`)
+		b.WriteString(`<iframe src="` + template.HTMLEscapeString(tag) + `.html"></iframe></div>` + "\n")
+	}
+
+	b.WriteString("</div>\n")
+
+	return b.String()
 }
