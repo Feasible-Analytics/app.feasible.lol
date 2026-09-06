@@ -145,7 +145,7 @@ func runRollupRebuild(e *env, args []string) int {
 			continue
 		}
 
-		lease, err := worker.Accounts.Acquire(ctx, ref.AccountID)
+		lease, err := worker.Accounts.AcquireForScan(ctx, ref.AccountID)
 		if err != nil {
 			fmt.Fprintf(e.stderr, "%v\n", err)
 			return ExitError
@@ -206,7 +206,7 @@ func runRollupStatus(e *env, args []string) int {
 	}
 
 	for _, ref := range refs {
-		lease, err := worker.Accounts.Acquire(ctx, ref.AccountID)
+		lease, err := worker.Accounts.AcquireForScan(ctx, ref.AccountID)
 		if err != nil {
 			fmt.Fprintf(e.stderr, "%v\n", err)
 			return ExitError
@@ -251,6 +251,7 @@ func buildRollupWorker(ctx context.Context, e *env, dataDir string) (*rollup.Wor
 	}
 
 	manager := accounts.NewManager(dataDir)
+	manager.MaxOpen = e.cfg.App.MaxOpenAccounts
 
 	worker := &rollup.Worker{
 		Accounts: manager,

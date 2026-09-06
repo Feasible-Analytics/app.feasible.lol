@@ -28,9 +28,15 @@ import (
 // the safe, single-machine, self-hoster values: someone who runs the binary with
 // no configuration at all gets a working process bound to loopback.
 const (
-	DefaultEnv              = "development"
-	DefaultAppListen        = "127.0.0.1:19301"
-	DefaultAppDataDir       = "./data"
+	DefaultEnv        = "development"
+	DefaultAppListen  = "127.0.0.1:19301"
+	DefaultAppDataDir = "./data"
+
+	// DefaultMaxOpenAccounts bounds the account databases one process holds
+	// open. Each is about a third of a megabyte and up to fifteen file
+	// descriptors, and a normal one re-opens in about two milliseconds, so a
+	// miss is survivable and the cap can be this tight.
+	DefaultMaxOpenAccounts  = 500
 	DefaultAppBaseURL       = "http://localhost:19300"
 	DefaultAppTransport     = TransportDirect
 	DefaultAppMailTransport = MailTransportLog
@@ -153,6 +159,10 @@ type App struct {
 	// ShardID is this app's one-based stable position in every ingester's
 	// ordered FEASIBLE_INGEST_SHARDS list.
 	ShardID int
+
+	// MaxOpenAccounts bounds the account databases one process holds open. See
+	// accounts.DefaultMaxOpen for what one costs.
+	MaxOpenAccounts int
 
 	// MailFrom is the envelope sender on every message the product sends. A
 	// relay rejects a From it does not own, and that rejection is the most
@@ -605,6 +615,15 @@ func LoadFrom(l *Loader) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	maxOpenAccounts, err := l.Int("FEASIBLE_APP_MAX_OPEN_ACCOUNTS", DefaultMaxOpenAccounts)
+	if err != nil {
+		return nil, err
+	}
+
+	if maxOpenAccounts < 1 {
+		return nil, fmt.Errorf("FEASIBLE_APP_MAX_OPEN_ACCOUNTS must be at least 1, not %d", maxOpenAccounts)
+	}
 	smtpPort, err := l.Int("FEASIBLE_SMTP_PORT", DefaultSMTPPort)
 	if err != nil {
 		return nil, err
@@ -647,6 +666,7 @@ func LoadFrom(l *Loader) (*Config, error) {
 		App: App{
 			Listen:          l.String("FEASIBLE_APP_LISTEN", DefaultAppListen),
 			DataDir:         l.String("FEASIBLE_APP_DATA_DIR", DefaultAppDataDir),
+			MaxOpenAccounts: maxOpenAccounts,
 			BaseURL:         strings.TrimRight(l.String("FEASIBLE_APP_BASE_URL", DefaultAppBaseURL), "/"),
 			Transport:       strings.ToLower(l.String("FEASIBLE_APP_TRANSPORT", DefaultAppTransport)),
 			MailTransport:   strings.ToLower(l.String("FEASIBLE_APP_MAIL_TRANSPORT", DefaultAppMailTransport)),

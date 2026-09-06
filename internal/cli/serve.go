@@ -202,7 +202,7 @@ func runServe(e *env, args []string) int {
 	extra.Notifier.Unsubscribe = unsubscribe
 
 	checks := &health.Set{}
-	ingestHealth(checks, control, service, e.cfg.App.DataDir)
+	ingestHealth(checks, control, service, e.cfg.App.DataDir, manager)
 	if e.cfg.App.Worker {
 		// A worker process is not ready when its durable scheduler has never run,
 		// has failed its latest pass, or has silently stopped ticking.
@@ -244,7 +244,8 @@ func runServe(e *env, args []string) int {
 	go app.RunPrune(pruneCtx)
 
 	return serveUntilSignalWith(e, server, service, worker,
-		backgroundLoops(com.Start, site.background(e), data.background(), extra.background(e)),
+		backgroundLoops(com.Start, site.background(e), data.background(), extra.background(e),
+			idleHandles(e, manager)),
 		func() error { stopPrune(); stopWorker(); return nil }, manager.CloseAll, control.Close)
 }
 
@@ -461,6 +462,22 @@ func buildSiteRules(ctx context.Context, e *env, service *ingest.Service, manage
 	service.Writer.Paths = pathCache
 
 	return &siteRules{shields: shieldCache, paths: pathCache, trusted: trusted}, nil
+}
+
+// idleHandles gives file descriptors back on a box that has gone quiet.
+//
+// It is a loop rather than something the open path does, because a process with
+// no traffic has no open path left to do it on — and a shard holding every
+// account it has ever served is how memory grows until the OOM killer arrives.
+func idleHandles(e *env, manager *accounts.Manager) func(context.Context, func(func())) {
+	return func(ctx context.Context, run func(func())) {
+		run(func() {
+			manager.CloseIdleUntil(ctx, func(closed int) {
+				e.log.Info("closed idle account handles", "closed", closed,
+					"open", manager.OpenCount())
+			})
+		})
+	}
 }
 
 // background refreshes both rule snapshots for the life of the process.

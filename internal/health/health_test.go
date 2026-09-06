@@ -141,3 +141,58 @@ func TestConditionCarriesItsMessage(t *testing.T) {
 		t.Fatalf("a satisfied condition reported %v", err)
 	}
 }
+
+// TestAnObservationIsReportedAndNeverFails is what puts a counter on the health
+// endpoint without dressing it up as a dependency that can be down.
+func TestAnObservationIsReportedAndNeverFails(t *testing.T) {
+	var set Set
+
+	set.Require("working", func(context.Context) error { return nil })
+	set.Report("account_handles", func() map[string]int64 {
+		return map[string]int64{"open": 3, "max": 500}
+	})
+
+	report := set.Run(context.Background())
+
+	if !report.Ready() {
+		t.Fatalf("an observation made the process unready: %+v", report)
+	}
+
+	var found *Component
+
+	for i, component := range report.Components {
+		if component.Name == "account_handles" {
+			found = &report.Components[i]
+		}
+	}
+
+	if found == nil {
+		t.Fatal("the observation is not in the report")
+	}
+
+	if found.Status != StatusOK {
+		t.Errorf("the observation is %q", found.Status)
+	}
+
+	if found.Numbers["open"] != 3 || found.Numbers["max"] != 500 {
+		t.Errorf("the numbers came back as %v", found.Numbers)
+	}
+
+	// Numbers, not prose: an operator graphs these.
+	if found.Detail != "" {
+		t.Errorf("the observation filled in the error field: %q", found.Detail)
+	}
+}
+
+// TestAFailedRequirementStillOutranksAnObservation keeps an observation from
+// making a broken process look ready.
+func TestAFailedRequirementStillOutranksAnObservation(t *testing.T) {
+	var set Set
+
+	set.Report("account_handles", func() map[string]int64 { return map[string]int64{"open": 1} })
+	set.Require("broken", func(context.Context) error { return errors.New("down") })
+
+	if report := set.Run(context.Background()); report.Ready() {
+		t.Errorf("a failed requirement was reported ready: %+v", report)
+	}
+}

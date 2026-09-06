@@ -674,3 +674,591 @@ func TestDiscoverOnAFreshInstall(t *testing.T) {
 		t.Fatalf("discovered %v on an empty data directory", ids)
 	}
 }
+
+// TestTheOpenHandlesStayUnderTheCap is the acceptance criterion: memory must
+// stop growing with the number of accounts a process has served.
+func TestTheOpenHandlesStayUnderTheCap(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	manager.MaxOpen = 4
+
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+
+	ctx := context.Background()
+
+	for id := int64(1); id <= 20; id++ {
+		lease, err := manager.Acquire(ctx, id)
+		if err != nil {
+			t.Fatalf("account %d: %v", id, err)
+		}
+
+		if err := lease.Release(); err != nil {
+			t.Fatal(err)
+		}
+
+		if open := manager.OpenCount(); open > manager.MaxOpen {
+			t.Fatalf("after account %d, %d handles are open, want at most %d", id, open, manager.MaxOpen)
+		}
+	}
+
+	stats := manager.Stats()
+
+	if stats.Opens != 20 {
+		t.Errorf("%d handles were opened, want 20", stats.Opens)
+	}
+
+	if stats.Evictions != 16 {
+		t.Errorf("%d handles were evicted, want 16", stats.Evictions)
+	}
+
+	if stats.Overshoots != 0 {
+		t.Errorf("the cap was passed %d times with nothing held", stats.Overshoots)
+	}
+}
+
+// TestAHeldHandleIsNeverEvicted is the one thing eviction must not do. A lease
+// holds the *Account directly, so closing one out from under it would hand a
+// live operation an unlinked database.
+//
+// The guarantee is the use count's: nothing is closed while it is above zero.
+// Eviction skipping held handles when it chooses one is an optimisation on top,
+// so this asserts the composition rather than either half.
+func TestAHeldHandleIsNeverEvicted(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	manager.MaxOpen = 2
+
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+
+	ctx := context.Background()
+
+	held, err := manager.Acquire(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for id := int64(2); id <= 10; id++ {
+		lease, err := manager.Acquire(ctx, id)
+		if err != nil {
+			t.Fatalf("account %d: %v", id, err)
+		}
+
+		if err := lease.Release(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Still usable, which is the whole claim.
+	if _, err := held.Account.Writer().ExecContext(ctx, "SELECT 1"); err != nil {
+		t.Fatalf("the held account was closed underneath its lease: %v", err)
+	}
+
+	if err := held.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestEveryHandleInUseOvershootsRatherThanBlocking keeps a memory limit from
+// becoming a latency cliff on the write path.
+func TestEveryHandleInUseOvershootsRatherThanBlocking(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	manager.MaxOpen = 2
+
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+
+	ctx := context.Background()
+	held := []*Lease{}
+
+	for id := int64(1); id <= 5; id++ {
+		lease, err := manager.Acquire(ctx, id)
+		if err != nil {
+			t.Fatalf("account %d: %v", id, err)
+		}
+
+		held = append(held, lease)
+	}
+
+	if open := manager.OpenCount(); open != 5 {
+		t.Errorf("%d handles are open, want the cap passed rather than a request blocked", open)
+	}
+
+	if stats := manager.Stats(); stats.Overshoots == 0 {
+		t.Error("the cap was passed and nothing counted it")
+	}
+
+	for _, lease := range held {
+		if err := lease.Release(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestAnEvictedAccountReopensWithItsData is what makes a miss survivable.
+func TestAnEvictedAccountReopensWithItsData(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	manager.MaxOpen = 1
+
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+
+	ctx := context.Background()
+
+	first, err := manager.Acquire(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := first.Account.Intern.ID(ctx, intern.Pathname, "/kept")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := first.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second account evicts the first.
+	second, err := manager.Acquire(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := second.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := manager.Acquire(ctx, 1)
+	if err != nil {
+		t.Fatalf("the evicted account did not re-open: %v", err)
+	}
+
+	defer again.Release() //nolint:errcheck // the assertion below is the point
+
+	// The dimension cache is rebuilt on open, so the same string interns to the
+	// same id rather than to a second row.
+	back, err := again.Account.Intern.ID(ctx, intern.Pathname, "/kept")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if back != id {
+		t.Errorf("the re-opened account interned /kept as %d, was %d", back, id)
+	}
+}
+
+// TestIdleHandlesCloseAndAreCountedSeparately keeps a quiet box giving its file
+// descriptors back, and keeps that number distinguishable from thrashing.
+func TestIdleHandlesCloseAndAreCountedSeparately(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	manager.IdleTimeout = time.Hour
+
+	now := time.Unix(1_800_000_000, 0)
+	manager.Now = func() time.Time { return now }
+
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+
+	ctx := context.Background()
+
+	for id := int64(1); id <= 3; id++ {
+		lease, err := manager.Acquire(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := lease.Release(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if closed := manager.CloseIdle(); closed != 0 {
+		t.Fatalf("%d handles closed before anything was idle", closed)
+	}
+
+	now = now.Add(2 * time.Hour)
+
+	// One is used again, so it is not idle.
+	lease, err := manager.Acquire(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	if closed := manager.CloseIdle(); closed != 2 {
+		t.Errorf("%d idle handles closed, want 2", closed)
+	}
+
+	stats := manager.Stats()
+
+	if stats.Open != 1 {
+		t.Errorf("%d handles are open, want the one that was used", stats.Open)
+	}
+
+	if stats.IdleCloses != 2 || stats.Evictions != 0 {
+		t.Errorf("idle closes = %d and evictions = %d, want them counted apart",
+			stats.IdleCloses, stats.Evictions)
+	}
+}
+
+// TestAScanDoesNotFlushTheWorkingSet is the test the whole scan rule exists
+// for. Without it, an hourly walk over every account leaves the cache holding
+// whichever ones it visited last, and ingest re-opens the real working set one
+// batch at a time.
+func TestAScanDoesNotFlushTheWorkingSet(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	manager.MaxOpen = 3
+
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+
+	ctx := context.Background()
+
+	// The hot set: three accounts taking real traffic.
+	hot := []int64{1, 2, 3}
+	for _, id := range hot {
+		lease, err := manager.Acquire(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := lease.Release(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A roll-up pass over three times the cap.
+	for id := int64(4); id <= 12; id++ {
+		lease, err := manager.AcquireForScan(ctx, id)
+		if err != nil {
+			t.Fatalf("account %d: %v", id, err)
+		}
+
+		if err := lease.Release(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stats := manager.Stats()
+
+	if stats.Open > 3 {
+		t.Fatalf("%d handles are open, want at most the cap", stats.Open)
+	}
+
+	// Every hot account is still resident: a scanned handle is never more
+	// recent than one real traffic touched, so it is always the one evicted.
+	before := manager.Stats().Opens
+
+	for _, id := range hot {
+		lease, err := manager.Acquire(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := lease.Release(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if opened := manager.Stats().Opens - before; opened != 0 {
+		t.Errorf("the scan cost the hot set %d re-opens", opened)
+	}
+}
+
+// TestAScanPutsItsHandleBack keeps a walk over every account from leaving the
+// cache holding what the walk touched instead of what traffic is on.
+func TestAScanPutsItsHandleBack(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	manager.MaxOpen = 100
+
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+
+	ctx := context.Background()
+
+	lease, err := manager.AcquireForScan(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if manager.OpenCount() != 1 {
+		t.Fatal("the scan did not open the account")
+	}
+
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	if open := manager.OpenCount(); open != 0 {
+		t.Errorf("%d handles are still open after the scan released them", open)
+	}
+
+	// An account real traffic is already on is left alone: the scan finds it,
+	// uses it and does not close it.
+	held, err := manager.Acquire(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := held.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	scanned, err := manager.AcquireForScan(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := scanned.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	if open := manager.OpenCount(); open != 1 {
+		t.Errorf("the scan closed a handle it did not open: %d open", open)
+	}
+}
+
+// TestCloseAllStillClosesEverything keeps shutdown whole. Every handle has a
+// write-ahead log to checkpoint, and one left open is one not checkpointed.
+func TestCloseAllStillClosesEverything(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	manager.MaxOpen = 2
+
+	ctx := context.Background()
+
+	for id := int64(1); id <= 6; id++ {
+		lease, err := manager.Acquire(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := lease.Release(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := manager.CloseAll(); err != nil {
+		t.Fatalf("close all: %v", err)
+	}
+
+	if open := manager.OpenCount(); open != 0 {
+		t.Errorf("%d handles survived shutdown", open)
+	}
+}
+
+// TestAnOvershootHealsWhenTheLeasesGoAway keeps a burst from leaving the cache
+// permanently over its bound.
+//
+// A box that bursts past the cap while everything is in use has to come back
+// down when it is not, without waiting for a new account to arrive — on a box
+// that has gone quiet, one never does.
+func TestAnOvershootHealsWhenTheLeasesGoAway(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	manager.MaxOpen = 2
+
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+
+	ctx := context.Background()
+	held := []*Lease{}
+
+	for id := int64(1); id <= 6; id++ {
+		lease, err := manager.Acquire(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		held = append(held, lease)
+	}
+
+	if open := manager.OpenCount(); open != 6 {
+		t.Fatalf("%d handles are open, want the cap passed while everything is held", open)
+	}
+
+	for _, lease := range held {
+		if err := lease.Release(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if open := manager.OpenCount(); open > manager.MaxOpen {
+		t.Errorf("%d handles are still open after every lease was released, want at most %d",
+			open, manager.MaxOpen)
+	}
+}
+
+// TestAScanDoesNotCloseAHandleTrafficTook is the guard putBack turns on. A walk
+// that closed a handle a request had just started using would take the
+// bounding decision away from the thing that measures use.
+func TestAScanDoesNotCloseAHandleTrafficTook(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	manager.MaxOpen = 100
+
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+
+	ctx := context.Background()
+
+	// The scan opens it first, so it is the scan's to put back.
+	scan, err := manager.AcquireForScan(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Real traffic takes the same account, uses it, and lets go — all before
+	// the scan does. Nothing is holding the handle when the scan releases, so
+	// the only thing that can save it is the promotion the traffic left behind.
+	traffic, err := manager.Acquire(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := traffic.Account.Writer().ExecContext(ctx, "SELECT 1"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := traffic.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := scan.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	if open := manager.OpenCount(); open != 1 {
+		t.Fatalf("the scan closed a handle real traffic had claimed: %d open", open)
+	}
+
+	// And the handle still works, which is what closing it would have cost.
+	again, err := manager.Acquire(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := again.Account.Writer().ExecContext(ctx, "SELECT 1"); err != nil {
+		t.Fatalf("the handle was closed: %v", err)
+	}
+
+	if err := again.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestTwoOverlappingScansBothPutTheHandleBack keeps a walk from stranding a
+// handle nobody will close. Three jobs walk every account on the box, and two
+// of them can be on the same one.
+func TestTwoOverlappingScansBothPutTheHandleBack(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	manager.MaxOpen = 100
+
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+
+	ctx := context.Background()
+
+	first, err := manager.AcquireForScan(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := manager.AcquireForScan(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := first.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := second.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	if open := manager.OpenCount(); open != 0 {
+		t.Errorf("%d handles left resident after both scans released", open)
+	}
+}
+
+// TestAnEvictedAccountCanStillBeDeleted keeps eviction from leaving a lifetime
+// lock behind. A deletion takes the exclusive side of that lock, so one left
+// held by a handle nobody holds any more would hang the purge for ever.
+func TestAnEvictedAccountCanStillBeDeleted(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	manager.MaxOpen = 1
+
+	t.Cleanup(func() {
+		if err := manager.CloseAll(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+
+	ctx := context.Background()
+
+	first, err := manager.Acquire(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := first.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second account evicts the first.
+	second, err := manager.Acquire(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := second.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- manager.Delete(1) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("deleting an evicted account: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("deleting an evicted account hung, so eviction left its lifetime lock held")
+	}
+
+	if _, err := manager.Acquire(ctx, 1); !errors.Is(err, ErrDeleted) {
+		t.Errorf("a deleted account re-opened after eviction: %v", err)
+	}
+}

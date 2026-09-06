@@ -54,10 +54,16 @@ type RejectedHostname struct {
 // ListRejected reads one site's rejected hostnames over the last few days,
 // busiest first.
 func (r *Rejections) ListRejected(ctx context.Context, accountID, siteID int64, days int) ([]RejectedHostname, error) {
-	account, err := r.accounts.Open(ctx, accountID)
+	lease, err := r.accounts.Acquire(ctx, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("shields: rejections: open account %d: %w", accountID, err)
 	}
+
+	// Held until the last read: the handle behind it can be closed by the
+	// cache the moment nothing is using it.
+	defer lease.Release() //nolint:errcheck // the rejection list is more useful than an unlock error
+
+	account := lease.Account
 	if days <= 0 {
 		days = 1
 	}

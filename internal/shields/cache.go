@@ -29,7 +29,7 @@ import (
 // test can count the opens a pass performs, which is the whole property this
 // cache's refresh schedule exists to keep at zero.
 type opener interface {
-	Acquire(ctx context.Context, id int64) (*accounts.Lease, error)
+	AcquireForScan(ctx context.Context, id int64) (*accounts.Lease, error)
 }
 
 // Cache holds the compiled rules for every site this process serves. It is a
@@ -289,7 +289,9 @@ func carriedForward(current *snapshot, accountID, version int64, siteIDs []int64
 
 // readAccount opens one account and reads its rules.
 func (c *Cache) readAccount(ctx context.Context, accountID int64) (map[int64][]Rule, error) {
-	lease, err := c.accounts.Acquire(ctx, accountID)
+	// A scan. The hourly full pass walks every account, and no read here is
+	// ever a customer's request.
+	lease, err := c.accounts.AcquireForScan(ctx, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("shields: refresh account %d: %w", accountID, err)
 	}

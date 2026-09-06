@@ -818,3 +818,54 @@ func TestPlaintextShardEntryIsValidated(t *testing.T) {
 		}
 	}
 }
+
+// TestTheAccountHandleCapIsBoundedAndValidated keeps a misconfigured cap from
+// meaning "hold nothing", which would re-open a database on every event.
+func TestTheAccountHandleCapIsBoundedAndValidated(t *testing.T) {
+	loader, err := NewLoader(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(loader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.App.MaxOpenAccounts != DefaultMaxOpenAccounts {
+		t.Errorf("the default cap is %d, want %d", cfg.App.MaxOpenAccounts, DefaultMaxOpenAccounts)
+	}
+
+	for name, value := range map[string]string{
+		"zero":       "0",
+		"negative":   "-1",
+		"not-number": "many",
+	} {
+		t.Setenv("FEASIBLE_APP_MAX_OPEN_ACCOUNTS", value)
+
+		loader, err := NewLoader(t.TempDir(), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := LoadFrom(loader); err == nil {
+			t.Errorf("a %s cap was accepted", name)
+		}
+	}
+
+	t.Setenv("FEASIBLE_APP_MAX_OPEN_ACCOUNTS", "40")
+
+	loader, err = NewLoader(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err = LoadFrom(loader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.App.MaxOpenAccounts != 40 {
+		t.Errorf("the configured cap is %d, want 40", cfg.App.MaxOpenAccounts)
+	}
+}

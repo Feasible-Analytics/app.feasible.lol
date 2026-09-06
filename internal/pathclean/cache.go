@@ -35,7 +35,7 @@ const FullRefreshInterval = time.Hour
 // test can count the opens one pass performs, which is the number this refresh
 // schedule exists to keep at zero when nothing changed.
 type opener interface {
-	Acquire(ctx context.Context, id int64) (*accounts.Lease, error)
+	AcquireForScan(ctx context.Context, id int64) (*accounts.Lease, error)
 }
 
 // Cache holds every site's compiled rules. Compiling a regular expression per
@@ -229,7 +229,9 @@ func joined(failures []error) error {
 
 // readAccount opens one account and compiles every site's rules in it.
 func (c *Cache) readAccount(ctx context.Context, accountID int64) (map[int64]*Ruleset, error) {
-	lease, err := c.accounts.Acquire(ctx, accountID)
+	// A scan. The hourly full pass walks every account, and no read here is
+	// ever a customer's request.
+	lease, err := c.accounts.AcquireForScan(ctx, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("pathclean: refresh account %d: %w", accountID, err)
 	}

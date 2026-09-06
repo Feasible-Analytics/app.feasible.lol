@@ -87,6 +87,7 @@ func buildIngest(ctx context.Context, e *env, dataDir string) (*ingest.Service, 
 	}
 
 	manager := accounts.NewManager(dataDir)
+	manager.MaxOpen = e.cfg.App.MaxOpenAccounts
 
 	service, err := ingest.NewService(ctx, control, manager, ingest.Options{
 		DataDir:        dataDir,
@@ -111,7 +112,8 @@ func buildIngest(ctx context.Context, e *env, dataDir string) (*ingest.Service, 
 // system is designed to run without — a missing one means countries are
 // unknown, not that events are lost — and a readiness probe that failed on it
 // would turn a downgraded dashboard into an outage.
-func ingestHealth(checks *health.Set, control *sql.DB, service *ingest.Service, dataDir string) {
+func ingestHealth(checks *health.Set, control *sql.DB, service *ingest.Service, dataDir string,
+	manager *accounts.Manager) {
 	checks.Require("system_db", health.Database(control))
 
 	// Every account database is created under here on an account's first
@@ -123,6 +125,23 @@ func ingestHealth(checks *health.Set, control *sql.DB, service *ingest.Service, 
 		_, missing := service.Geo.(geo.Unknown)
 		return !missing
 	}, "no geolocation database is loaded — countries will be unknown"))
+
+	// Not a dependency: a number. Memory grows with the handles a process
+	// holds, and the two close counters are reported separately because rolled
+	// into one a box thrashing against its cap and a box quietly giving
+	// descriptors back look identical.
+	checks.Report("account_handles", func() map[string]int64 {
+		stats := manager.Stats()
+
+		return map[string]int64{
+			"open":        int64(stats.Open),
+			"max":         int64(stats.Max),
+			"opens":       stats.Opens,
+			"evictions":   stats.Evictions,
+			"idle_closes": stats.IdleCloses,
+			"overshoots":  stats.Overshoots,
+		}
+	})
 }
 
 // processRoutes combines a process's customer-facing and signed internal

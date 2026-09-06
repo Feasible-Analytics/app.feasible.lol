@@ -203,10 +203,16 @@ func (s *Store) Panel(ctx context.Context, domain string) (Panel, error) {
 		return Panel{}, ErrUnknownSite
 	}
 
-	account, err := s.Accounts.Open(ctx, site.AccountID)
+	lease, err := s.Accounts.Acquire(ctx, site.AccountID)
 	if err != nil {
 		return Panel{}, fmt.Errorf("health: open account %d: %w", site.AccountID, err)
 	}
+
+	// Held until the last read: the handle behind it can be closed by the
+	// cache the moment nothing is using it.
+	defer lease.Release() //nolint:errcheck // the panel is more useful than an unlock error
+
+	account := lease.Account
 
 	now := s.now()
 	from := now.Add(-Window).Unix()
@@ -428,10 +434,16 @@ func (s *Store) AllowHostname(ctx context.Context, domain, hostname string) erro
 		return fmt.Errorf("health: allow hostname: %w", err)
 	}
 
-	account, err := s.Accounts.Open(ctx, site.AccountID)
+	lease, err := s.Accounts.Acquire(ctx, site.AccountID)
 	if err != nil {
 		return fmt.Errorf("health: open account %d: %w", site.AccountID, err)
 	}
+
+	// Held until the last read: the handle behind it can be closed by the
+	// cache the moment nothing is using it.
+	defer lease.Release() //nolint:errcheck // the result is more useful than an unlock error
+
+	account := lease.Account
 
 	if _, err := account.Writer().ExecContext(ctx, `
 		DELETE FROM ingest_observations WHERE site_id = ? AND kind = ? AND value = ?

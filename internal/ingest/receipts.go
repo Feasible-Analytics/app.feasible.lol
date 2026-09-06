@@ -171,7 +171,9 @@ func (p *ReceiptPruner) Run(ctx context.Context, _ jobs.Job) (jobs.Outcome, erro
 
 // pruneAccount deletes one account's aged receipts, a batch at a time.
 func (p *ReceiptPruner) pruneAccount(ctx context.Context, accountID, cutoff int64) (int, error) {
-	lease, err := p.Accounts.Acquire(ctx, accountID)
+	// A scan: this walks every account on the shard every hour, and promoting
+	// each one would leave the handle cache holding whichever it visited last.
+	lease, err := p.Accounts.AcquireForScan(ctx, accountID)
 	if err != nil {
 		return 0, err
 	}
