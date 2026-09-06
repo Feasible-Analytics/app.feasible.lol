@@ -168,6 +168,12 @@ type Debug struct {
 	EngagementTime int64 `json:"engagement_time"`
 	Interactive    bool  `json:"interactive"`
 
+	// AutomationSignals is the letter string the tracker reported, kept whether
+	// or not it classified. Production showed the classifier convicting real
+	// visitors, and nothing stored said what had been reported, so the verdict
+	// could not be checked against its own input.
+	AutomationSignals string `json:"automation_signals"`
+
 	BotReason  string     `json:"bot_reason"`
 	DropReason string     `json:"drop_reason"`
 	Truncation Truncation `json:"truncation"`
@@ -271,6 +277,8 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 	// age is one of the things classification reads. The parse is cached, so
 	// moving it earlier costs nothing.
 	agent := p.Agents.Parse(rawUserAgent)
+
+	result.Debug.AutomationSignals = payload.Automated
 
 	botReason := p.classify(rawUserAgent, agent, client.Addr, source.Referrer, payload.Automated)
 	result.Debug.BotReason = botReason
@@ -541,24 +549,38 @@ func (p *Pipeline) classify(userAgent string, agent useragent.Result, addr netip
 // a template can classify real traffic with nothing anywhere saying so.
 const AutomationSignals = "os"
 
+// ConclusiveAutomationSignals are the letters that convict on their own.
+//
+// "o" — no outer window size — is not among them. Across a week of production
+// traffic two thirds of the sessions it flagged also contained events
+// classified as human, all of them Chromium desktop. A real browser can report
+// no outer size, so the letter is corroboration and never a verdict.
+const ConclusiveAutomationSignals = "s"
+
 // automatedSignals reads the tracker's report of what looked wrong.
 //
-// One signal is enough. Each is a claim a browser cannot truthfully make about
-// itself, and the tracker only reports the ones no privacy setting produces, so
-// there is nothing to weigh up here. Anything unrecognised is ignored rather
-// than trusted.
+// A verdict needs either a conclusive letter or two letters agreeing. Anything
+// unrecognised is ignored rather than trusted, and an unrecognised letter
+// invalidates the whole report: a mangled string is not evidence about a
+// visitor.
 func automatedSignals(reported string) bool {
 	if reported == "" || len(reported) > len(AutomationSignals) {
 		return false
 	}
 
+	conclusive := false
+
 	for _, signal := range reported {
 		if !strings.ContainsRune(AutomationSignals, signal) {
 			return false
 		}
+
+		if strings.ContainsRune(ConclusiveAutomationSignals, signal) {
+			conclusive = true
+		}
 	}
 
-	return true
+	return conclusive || len(reported) > 1
 }
 
 // locate geolocates an address, bucketing datacentre traffic separately.

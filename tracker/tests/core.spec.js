@@ -23,7 +23,7 @@ test("a pageview carries exactly the documented keys", async ({ page }) => {
 	expect(pageview.d).toBe("fixture.test");
 	expect(pageview.u).toContain("/basic.html");
 	expect(pageview.t).toBe("Basic — tracker fixture");
-	expect(pageview.v).toBe(1);
+	expect(pageview.v).toBe(2);
 
 	// The viewport width rides on every event. It is what the screen-size report
 	// is built from, and it is read per send rather than once: a window gets
@@ -56,6 +56,43 @@ test("a browser with no window at all is reported as automated", async ({ page }
 	await settledCount(state, "pageview", 1);
 
 	expect(named(state, "pageview")[0].a).toBe("o");
+});
+
+// A document can be created before it has a window to be drawn in — Chromium
+// does this — and acquire one later. Production data showed that state costing
+// real visitors: the signal was captured while the window was missing and then
+// attached to every event the person went on to generate.
+test("a window that gains a size stops being reported as automated", async ({ page }) => {
+	await page.addInitScript(() => {
+		// Zero until the page says otherwise, which is the shape of the real
+		// thing: a property that answers differently later in the document's life.
+		window.__drawn = false;
+
+		for (const side of ["outerWidth", "outerHeight"]) {
+			const real = window[side];
+			Object.defineProperty(window, side, {
+				configurable: true,
+				get: () => (window.__drawn ? real : 0),
+			});
+		}
+	});
+
+	const state = await collect(page);
+
+	await page.goto("/spa.html");
+	await settledCount(state, "pageview", 1);
+
+	// The first pageview is sent while the window is still missing, and says so.
+	expect(named(state, "pageview")[0].a).toBe("o");
+
+	await page.evaluate(() => {
+		window.__drawn = true;
+	});
+
+	await page.click("#push");
+	await settledCount(state, "pageview", 2);
+
+	expect(named(state, "pageview")[1].a).toBeUndefined();
 });
 
 // Emulating a device rewrites the user agent and leaves the platform alone, and

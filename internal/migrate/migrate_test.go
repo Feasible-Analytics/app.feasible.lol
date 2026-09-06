@@ -1063,8 +1063,8 @@ func TestAccountV7ToCurrentKeepsPopulatedSessionOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 7 || result.To != 16 || fmt.Sprint(result.Applied) != "[8 9 10 11 12 13 14 15 16]" {
-		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 16 via [8 9 10 11 12 13 14 15 16]",
+	if result.From != 7 || result.To != 17 || fmt.Sprint(result.Applied) != "[8 9 10 11 12 13 14 15 16 17]" {
+		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 17 via [8 9 10 11 12 13 14 15 16 17]",
 			result.From, result.To, result.Applied)
 	}
 
@@ -1186,14 +1186,15 @@ func TestPlausibleChannelParityMigration(t *testing.T) {
 // bytes in 14, where each person came from in 15, the clock they read in 16 and
 // when each account last changed a rule in 17.
 // The account chain then carries the lossless imported-rollup fields in 13, the
-// channel parity for those imports in 14, the event-receipt prune index in 15
-// and the session-prune-by-time indexes in 16.
+// channel parity for those imports in 14, the event-receipt prune index in 15,
+// the session-prune-by-time indexes in 16 and the automation letters the
+// tracker reported in 17.
 func TestCoordinatedMigrationNumbers(t *testing.T) {
 	for name, test := range map[string]struct {
 		set  Set
 		want []int
 	}{
-		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
+		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}},
 		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}},
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -36,7 +36,7 @@ const Window = 24 * time.Hour
 // what makes the "old tracker version detected" warning possible at all: a
 // script sits in browser caches and in copy-pasted snippets for months, and a
 // customer running a build from before a fix has no other way to find out.
-const CurrentTrackerVersion = 1
+const CurrentTrackerVersion = 2
 
 // ProxyWarningShare is the fraction of traffic resolved straight from the
 // socket that means a proxy is not forwarding the visitor's address.
@@ -161,6 +161,11 @@ type Panel struct {
 	IPSources        []Seen       `json:"ip_sources"`
 	UnknownHostnames []Seen       `json:"unknown_hostnames"`
 	AllowedHostnames []string     `json:"allowed_hostnames"`
+
+	// AutomationSignals is what the tracker reported about the browser, by
+	// letter string. A verdict of "automated" is only as good as this, so it is
+	// reported beside the classifications rather than derived from them.
+	AutomationSignals []Seen `json:"automation_signals"`
 }
 
 // Store reads the panel and applies its one-click remedy.
@@ -346,6 +351,8 @@ func (s *Store) readObservations(ctx context.Context, db *sql.DB, panel *Panel, 
 			panel.IPSources = append(panel.IPSources, seen)
 		case KindUnknownHostname:
 			panel.UnknownHostnames = append(panel.UnknownHostnames, seen)
+		case KindAutomationSignals:
+			panel.AutomationSignals = append(panel.AutomationSignals, seen)
 		}
 	}
 

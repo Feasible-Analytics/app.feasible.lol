@@ -11,6 +11,7 @@ package ingest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -568,10 +569,11 @@ func TestDeriveNeedsNoGeoDatabase(t *testing.T) {
 // real traffic — which is the failure this product exists to not have.
 func TestAutomationSignalsAreAClosedSet(t *testing.T) {
 	reported := map[string]bool{
-		"o":  true,
 		"s":  true,
 		"os": true,
 		"so": true,
+
+		"o": false, // a real browser reports this; see the test below
 
 		"":          false, // nothing reported
 		"p":         false, // a signal that was written and then withdrawn
@@ -583,8 +585,60 @@ func TestAutomationSignalsAreAClosedSet(t *testing.T) {
 	}
 
 	for signal, want := range reported {
-		if got := automatedSignals(signal); got != want {
-			t.Errorf("automatedSignals(%q) = %v, want %v", signal, got, want)
-		}
+		t.Run(signal, func(t *testing.T) {
+			if got := automatedSignals(signal); got != want {
+				t.Errorf("automatedSignals(%q) = %v, want %v", signal, got, want)
+			}
+		})
+	}
+}
+
+// TestNoOuterWindowSizeAloneIsNotAutomation is the whole point of the letter
+// being advisory.
+//
+// Across a week of production traffic, two thirds of the sessions flagged on
+// this signal also contained events classified as human — the same visitor, the
+// same visit, both verdicts — and every one of them was Chromium desktop. A
+// real browser reports no outer size, so a conviction needs more than this.
+func TestNoOuterWindowSizeAloneIsNotAutomation(t *testing.T) {
+	if automatedSignals("o") {
+		t.Error("a browser reporting no outer window size on its own is classified as automated")
+	}
+
+	if !automatedSignals("os") {
+		t.Error("a browser reporting no window and no screen is not classified as automated")
+	}
+}
+
+// TestTheReportedSignalsAreKeptWhateverTheVerdict is what makes the classifier
+// checkable. Without the letters on the derived event there is no way to ask
+// whether a verdict matched what was reported, which is how the wrong threshold
+// survived a week of convicting real visitors.
+func TestTheReportedSignalsAreKeptWhateverTheVerdict(t *testing.T) {
+	for reported, want := range map[string]string{
+		"o":  "",               // reported, kept, and not convicted on
+		"os": ReasonAutomation, // reported, kept, and convicted on
+	} {
+		t.Run(reported, func(t *testing.T) {
+			h := newHandlerHarness(t)
+
+			body := fmt.Sprintf(
+				`{"n":"pageview","u":"https://example.com/pricing","d":"example.com","a":%q}`, reported)
+			recorder := post(t, h, "text/plain", body, map[string]string{HeaderDebug: "true"})
+
+			var debug Debug
+			if err := json.NewDecoder(recorder.Body).Decode(&debug); err != nil {
+				t.Fatal(err)
+			}
+
+			if debug.AutomationSignals != reported {
+				t.Errorf("automation_signals = %q, want the reported %q",
+					debug.AutomationSignals, reported)
+			}
+
+			if debug.BotReason != want {
+				t.Errorf("bot_reason = %q, want %q", debug.BotReason, want)
+			}
+		})
 	}
 }

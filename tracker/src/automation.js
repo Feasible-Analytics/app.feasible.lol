@@ -17,6 +17,9 @@ const NO_SCREEN = "s";
 * signals reports what looks wrong about this browser, or undefined when
 * nothing does.
 *
+* It is called per event rather than once. These are properties of the window a
+* document is drawn in, and a document can be created before it has one.
+*
 * It reports rather than decides. The server classifies, which means the
 * threshold can change without reshipping a script that lives on other
 * people's pages, and a visitor we get wrong is a stored row with a reason
@@ -37,8 +40,10 @@ export function signals() {
 	let found = "";
 
 	try {
-		// A real browser is drawn inside a window with tabs and an address bar,
-		// so it has an outer size. A headless one has no window at all.
+		// A headless browser has no window and so no outer size. A real one can
+		// also report zero here — Chromium does, for a document that has not
+		// been drawn yet — so this is reported as corroboration and the server
+		// does not convict on it alone.
 		if (!win.outerWidth && !win.outerHeight) found += NO_WINDOW;
 
 		// A browser with no display to be on.
