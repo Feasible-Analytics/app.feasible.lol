@@ -120,7 +120,7 @@ func New(sites DomainSource) *Handler {
 			panic(fmt.Sprintf("dashboard: %s is missing — run `make assets` before building: %v", name, err))
 		}
 
-		h.files[name] = assets.File{Body: body, ContentType: contentTypeOf(name), Digest: assets.Digest(body)}
+		h.files[name] = assets.File{Body: body, ContentType: assets.ContentType(name), Digest: assets.Digest(body)}
 	}
 
 	shell, err := assetFS.ReadFile("assets/index.html")
@@ -133,6 +133,11 @@ func New(sites DomainSource) *Handler {
 		rendered = strings.ReplaceAll(rendered, placeholderFor(name), h.files.URL(AssetPrefix, name))
 	}
 
+	// The icon belongs to the shared chrome rather than to this bundle: all
+	// four surfaces point at one file, so it is addressed the way the other
+	// three address it.
+	rendered = strings.ReplaceAll(rendered, iconPlaceholder, assets.URL("favicon.svg"))
+
 	head, tail, found := strings.Cut(rendered, bootstrapPlaceholder)
 	if !found {
 		panic("dashboard: the shell has no " + bootstrapPlaceholder + " placeholder to write the site list into")
@@ -143,6 +148,9 @@ func New(sites DomainSource) *Handler {
 	return h
 }
 
+// iconPlaceholder is the token the built shell carries for the shared icon.
+const iconPlaceholder = "__ICON__"
+
 // placeholderFor is the token the built shell carries for one asset.
 func placeholderFor(name string) string {
 	if strings.HasSuffix(name, ".css") {
@@ -150,16 +158,6 @@ func placeholderFor(name string) string {
 	}
 
 	return "__JS__"
-}
-
-// contentTypeOf names the two compiled files. The extensions are known, so this
-// is a table rather than a lookup that could answer with a guess.
-func contentTypeOf(name string) string {
-	if strings.HasSuffix(name, ".css") {
-		return "text/css; charset=utf-8"
-	}
-
-	return "text/javascript; charset=utf-8"
 }
 
 // ServeHTTP routes one request to the asset it named, or to the shell.

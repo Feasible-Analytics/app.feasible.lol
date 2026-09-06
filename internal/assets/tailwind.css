@@ -31,7 +31,7 @@
    which do not share this stylesheet. Every directory that loads this file is
    named here: a class used only in one of them would otherwise be missing from
    the build, with nothing to say so but an unstyled page. */
-@source "./templates";
+@source "../appui/templates";
 @source "../auth/templates";
 @source "../settings/templates";
 @source "../billingui/templates";

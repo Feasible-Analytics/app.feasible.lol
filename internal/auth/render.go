@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/appui"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/assets"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/avatar"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
@@ -342,7 +343,7 @@ func templateFuncs() template.FuncMap {
 		// asset addresses one of the files every server-rendered screen loads.
 		// The digest is never typed by hand: a URL that says immutable and does
 		// not change with the bytes is a page served against the wrong CSS.
-		"asset": appui.AssetURL,
+		"asset": assets.URL,
 
 		// url carries the current language through an internal link or form.
 		"url": func(locale, target string) string {

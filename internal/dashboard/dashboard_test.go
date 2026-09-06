@@ -193,47 +193,19 @@ func TestClientRoutesRenderTheShell(t *testing.T) {
 	}
 }
 
-// TestVersionedAssetIsImmutable covers the two cache lifetimes. The digest in
-// the query string is the whole basis for holding an asset for a year, so an
-// unversioned request must not get the same promise.
-func TestVersionedAssetIsImmutable(t *testing.T) {
+// TestTheBundleIsServedByTheSharedPolicy checks the wiring rather than the
+// policy: internal/assets owns the two lifetimes and tests them, and what this
+// package has to get right is handing it the digest the shell rendered.
+func TestTheBundleIsServedByTheSharedPolicy(t *testing.T) {
 	h := New(fakeSites{})
 	digest := h.files["app.js"].Digest
 
-	versioned := get(t, h, AssetPrefix+"app.js?v="+digest)
-	if got := versioned.Header().Get("Cache-Control"); got != assets.Immutable {
-		t.Errorf("versioned asset answered Cache-Control %q, want %q", got, assets.Immutable)
+	if got := get(t, h, AssetPrefix+"app.js?v="+digest).Header().Get("Cache-Control"); got != assets.Immutable {
+		t.Errorf("the URL the shell renders answered Cache-Control %q, want %q", got, assets.Immutable)
 	}
 
-	bare := get(t, h, AssetPrefix+"app.js")
-	if got := bare.Header().Get("Cache-Control"); got != assets.Revalidate {
-		t.Errorf("unversioned asset answered Cache-Control %q, want %q", got, assets.Revalidate)
-	}
-
-	stale := get(t, h, AssetPrefix+"app.js?v=notthedigest")
-	if got := stale.Header().Get("Cache-Control"); got != assets.Revalidate {
-		t.Errorf("a wrong digest answered Cache-Control %q, want %q", got, assets.Revalidate)
-	}
-}
-
-// TestAssetRevalidates covers the conditional request the unversioned path makes
-// every minute. Without it, a bookmarked asset URL costs a full download a
-// minute for as long as the tab is open.
-func TestAssetRevalidates(t *testing.T) {
-	h := New(fakeSites{})
-
-	request := httptest.NewRequest(http.MethodGet, AssetPrefix+"app.css", nil)
-	request.Header.Set("If-None-Match", `"`+h.files["app.css"].Digest+`"`)
-
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, request)
-
-	if w.Code != http.StatusNotModified {
-		t.Fatalf("a matching ETag answered %d, want 304", w.Code)
-	}
-
-	if w.Body.Len() != 0 {
-		t.Fatalf("a 304 carried %d bytes of body", w.Body.Len())
+	if got := get(t, h, AssetPrefix+"app.js").Header().Get("Cache-Control"); got != assets.Revalidate {
+		t.Errorf("a bookmarked URL answered Cache-Control %q, want %q", got, assets.Revalidate)
 	}
 }
 

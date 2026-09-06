@@ -8,61 +8,23 @@
 
 // Package appui holds the chrome every signed-in server-rendered screen wears.
 //
-// Those screens are split across two packages for reasons that are about
+// Those screens are split across several packages for reasons that are about
 // handlers, not about what a reader sees: to them it is one product. So the top
 // header, the settings section list and the card styles live here, in a package
-// both can import, rather than being written twice and drifting.
+// all of them import, rather than being written more than once and drifting.
+// The stylesheet those classes are compiled into lives in internal/assets,
+// which is a leaf and can therefore also be imported by the dashboard.
 package appui
 
 import (
 	"embed"
 	"fmt"
-	"io/fs"
-	"net/http"
 	"net/url"
 	"strings"
 
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/assets"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/shields"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
-
-// assetFS is every file the server-rendered screens load: the stylesheet, the
-// script that drives the disclosures, the icon and the fonts. They live beside
-// the shared chrome because all three surfaces that render that chrome load
-// them, and a second copy in one of them is how two screens end up styled by
-// two stylesheets.
-//
-//go:embed assets
-var assetFS embed.FS
-
-// AssetPrefix is where those files are served from.
-const AssetPrefix = "/app/assets/"
-
-// Assets is the tree, read and hashed once at start-up.
-var Assets = assets.Load(assetSub(), "appui")
-
-// assetSub is the embedded tree with its directory prefix removed.
-func assetSub() fs.FS {
-	sub, err := fs.Sub(assetFS, "assets")
-	if err != nil {
-		panic(fmt.Sprintf("appui: embedded assets are missing: %v", err))
-	}
-
-	return sub
-}
-
-// AssetURL is what a template renders for one asset: the path with the content
-// digest on it, so a deploy is a new URL and the answer can be cached for a
-// year rather than revalidated on every page load.
-func AssetURL(name string) string {
-	return Assets.URL(AssetPrefix, name)
-}
-
-// AssetHandler serves the tree.
-func AssetHandler() http.Handler {
-	return Assets.Handler()
-}
 
 // Templates carries the shared header and section navigation. Both packages
 // parse it alongside their own, so there is one copy of the markup.

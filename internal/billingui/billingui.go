@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/appui"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/assets"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/billing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
@@ -95,7 +96,7 @@ func templateFuncs() template.FuncMap {
 		// asset addresses one of the files every server-rendered screen loads,
 		// with the content digest on it. The chrome owns the tree, so all three
 		// surfaces that wear it load the same stylesheet.
-		"asset": appui.AssetURL,
+		"asset": assets.URL,
 
 		// The shared chrome needs both: the layout sets dir on the html element,
 		// and the header builds every destination through the locale prefix.
