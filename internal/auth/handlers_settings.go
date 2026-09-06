@@ -16,6 +16,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
 // showAccountSettings renders the profile and password screen.
@@ -43,7 +44,7 @@ func (h *Handler) showAccountSettings(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, "settings_account", p, http.StatusOK)
 }
 
-// doUpdateProfile saves the display name and theme.
+// doUpdateProfile saves the display name, the theme and the clock preference.
 func (h *Handler) doUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	if !h.CheckFormToken(w, r) {
 		return
@@ -56,7 +57,12 @@ func (h *Handler) doUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		theme = "system"
 	}
 
-	if err := h.Store.UpdateProfile(r.Context(), user.ID, strings.TrimSpace(r.PostFormValue("name")), theme); err != nil {
+	// Whitelisted the same way the theme above is: a posted value is a string
+	// from the network, and anything that is not one of the three the select
+	// offers becomes "system" rather than reaching the database.
+	clock := timefmt.Normalise(r.PostFormValue("time_format"))
+
+	if err := h.Store.UpdateProfile(r.Context(), user.ID, strings.TrimSpace(r.PostFormValue("name")), theme, clock); err != nil {
 		h.fail(w, r, err)
 		return
 	}

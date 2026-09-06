@@ -123,6 +123,70 @@ export function usePref<T extends string>(key: string, fallback: T, allowed: rea
 	return [value, set];
 }
 
+/**
+ * CLOCK_COOKIE carries the browser's own hour cycle back to the server.
+ *
+ * Nothing in an HTTP request says what clock somebody set on their device, and
+ * the negotiated language is not a stand-in for it — that is the guess this
+ * whole feature exists to avoid. Only the browser can answer, so it writes the
+ * answer down once and every server-rendered screen reads it afterwards.
+ */
+const CLOCK_COOKIE = "feasible_clock";
+
+/** A year, matching the language cookie. A clock preference does not go stale,
+ *  and this is rewritten whenever the device's answer changes. */
+const CLOCK_MAX_AGE = 365 * 24 * 60 * 60;
+
+/**
+ * deviceHourCycle reads the clock this browser is set to, as "12" or "24".
+ *
+ * The formatter is built **with an hour component**, and that is the whole
+ * trick. `Intl.DateTimeFormat()` with no options resolves no time fields, so it
+ * omits `hourCycle` from resolvedOptions() entirely — the obvious one-liner
+ * returns undefined in every browser and would quietly put every "match my
+ * device" reader on a 24-hour clock.
+ *
+ * The formatted string is the fallback for an engine that still reports no
+ * cycle: a locale that prints a day period is a 12-hour locale.
+ */
+function deviceHourCycle(): string {
+	const format = new Intl.DateTimeFormat(undefined, { hour: "numeric" });
+	const cycle = format.resolvedOptions().hourCycle;
+
+	if (cycle) return cycle === "h11" || cycle === "h12" ? "12" : "24";
+
+	return /[ap]\.?m/i.test(format.format(new Date(2020, 0, 1, 13))) ? "12" : "24";
+}
+
+/**
+ * reportHourCycle tells the server which dial this device is set to.
+ *
+ * It runs on load rather than on a settings save because it is not a setting:
+ * it is a fact about the browser, and the person whose profile says "match my
+ * device" never visits a screen to confirm it.
+ *
+ * It is skipped entirely inside an embed. A third-party iframe writing a cookie
+ * is a third-party cookie — blocked by default in most browsers and pointless
+ * in the rest — and the embed has no account whose preference it could be
+ * answering anyway.
+ */
+export function reportHourCycle(): void {
+	if (!storable()) return;
+
+	try {
+		const value = deviceHourCycle();
+
+		// Written unconditionally rather than only on a change: reading it back
+		// to compare costs a parse of the whole cookie header to save a write
+		// that happens once per page load, and re-writing also renews the year.
+		document.cookie = `${CLOCK_COOKIE}=${value};path=/;max-age=${CLOCK_MAX_AGE};samesite=lax${
+			location.protocol === "https:" ? ";secure" : ""
+		}`;
+	} catch {
+		/* No Intl, or cookies are off. The server keeps its 24-hour default. */
+	}
+}
+
 export type Theme = "light" | "dark" | "system";
 
 const THEME_KEY = "theme";

@@ -27,6 +27,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/avatar"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
 // templateFS and assetFS hold the interface. Both are embedded because a
@@ -214,13 +215,18 @@ func (h *Handler) HeaderFor(r *http.Request) appui.Header {
 	}
 
 	header := appui.Header{
-		Lang:     i18n.Negotiate(r),
-		Name:     user.DisplayName(),
-		Email:    user.Email,
-		Commerce: !h.DisableCommerce,
-		CSRF:     h.csrfToken(r),
-		Help:     h.HelpURL,
-		Support:  h.SupportURL,
+		Lang: i18n.Negotiate(r),
+		Name: user.DisplayName(),
+
+		// Resolved here because this is where the stored preference and the
+		// request are both in hand; nothing downstream should have to know
+		// that "system" means "ask the browser".
+		HourCycle: timefmt.Resolve(user.TimeFormat, r),
+		Email:     user.Email,
+		Commerce:  !h.DisableCommerce,
+		CSRF:      h.csrfToken(r),
+		Help:      h.HelpURL,
+		Support:   h.SupportURL,
 	}
 
 	if _, teamID, err := h.Identify(r); err == nil {

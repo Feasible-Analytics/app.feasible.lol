@@ -55,6 +55,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/shields"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
 // PathPrefix is the segment the whole settings surface hangs off.
@@ -1060,7 +1061,7 @@ func (h *Handler) imports(w http.ResponseWriter, r *http.Request, site sites.Sit
 		Lang:    i18n.Negotiate(r),
 		Message: message, Error: failure,
 		Imports:               records,
-		Exports:               h.exportViews(site.Domain, i18n.Negotiate(r), exports),
+		Exports:               h.exportViews(site.Domain, i18n.Negotiate(r), h.clock(r), exports),
 		SheetNames:            dataio.SheetNames(),
 		GoogleEnabled:         h.Google != nil,
 		SearchConsoleNoticeID: google.SearchConsoleDelayNotice,
@@ -1097,17 +1098,17 @@ func (h *Handler) logConnection(siteID int64, provider string, err error) {
 // exportViews renders the export list. The download URL is only ever built from
 // a token the caller already holds, which is why a completed export whose token
 // this process did not just mint shows no link.
-func (h *Handler) exportViews(domain, locale string, exports []dataio.Export) []exportView {
+func (h *Handler) exportViews(domain, locale, cycle string, exports []dataio.Export) []exportView {
 	now := h.now()
 
 	views := make([]exportView, 0, len(exports))
 
 	for _, export := range exports {
 		view := exportView{
-			Prepared: time.Unix(export.CreatedAt, 0).UTC().Format("2006-01-02 15:04 MST"),
+			Prepared: timefmt.Clock(cycle, time.Unix(export.CreatedAt, 0).UTC(), "2006-01-02 15:04 MST"),
 			Status:   export.Status,
 			Size:     humanBytes(export.Bytes),
-			Expires:  time.Unix(export.ExpiresAt, 0).UTC().Format("15:04 MST"),
+			Expires:  timefmt.Clock(cycle, time.Unix(export.ExpiresAt, 0).UTC(), "15:04 MST"),
 			Expired:  export.Expired(now),
 			Failure:  export.Failure,
 			Ready:    export.Status == dataio.StatusCompleted,
@@ -1530,4 +1531,18 @@ func (h *Handler) headerFor(r *http.Request) appui.Header {
 	}
 
 	return h.Header(r)
+}
+
+// clock is the dial this reader's times are printed on.
+//
+// It comes from the account bar because that is where the signed-in user is
+// already resolved. A screen rendered without one — a test, or a request that
+// somehow reached here signed out — falls back to the browser's own cookie
+// rather than to a guess.
+func (h *Handler) clock(r *http.Request) string {
+	if cycle := h.headerFor(r).HourCycle; cycle != "" {
+		return cycle
+	}
+
+	return timefmt.FromCookie(r)
 }

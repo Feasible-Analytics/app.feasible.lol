@@ -11,6 +11,7 @@ import { createRoot } from "react-dom/client";
 
 import { App } from "./components/App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { reportHourCycle } from "./lib/prefs";
 
 /**
  * mount boots the SPA.
@@ -37,5 +38,10 @@ function mount(): void {
 		</StrictMode>,
 	);
 }
+
+// Before the first render, so a server-rendered screen opened straight after
+// this one already has the answer. It only affects the next page load — this
+// one was handed its dial by the server.
+reportHourCycle();
 
 mount();

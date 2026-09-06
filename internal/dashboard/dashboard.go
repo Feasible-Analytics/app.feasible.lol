@@ -36,6 +36,7 @@ import (
 	"strings"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
 // assets holds the compiled bundle. The build writes app.js, app.css and
@@ -257,6 +258,12 @@ type Bootstrap struct {
 	// Locale is the tag the server negotiated, for Intl and the plural rules.
 	Locale string `json:"locale"`
 
+	// HourCycle is "12" or "24", already resolved — never "system". The
+	// dashboard must not have to work out what "system" means, because the
+	// answer depends on a cookie the server has already read, and a second
+	// implementation of that rule is a second answer to the same question.
+	HourCycle string `json:"hour_cycle"`
+
 	// Messages is every string the dashboard can ask for, already merged over
 	// English. They travel with the page for the same reason the site list
 	// does: they are needed before the first paint, and fetching them would put
@@ -371,6 +378,15 @@ func (h *Handler) WriteShell(w http.ResponseWriter, r *http.Request, boot Bootst
 
 	if boot.Messages == nil {
 		boot.Messages = i18n.Messages(boot.Locale)
+	}
+
+	// Resolved here so that every shell gets one, whatever rendered it. A
+	// caller holding a signed-in user fills it from that person's own stored
+	// preference; a shared link and a public dashboard leave it blank and get
+	// the visitor's own browser, which is the point — a personal setting is
+	// not something to push onto strangers on the internet.
+	if boot.HourCycle == "" {
+		boot.HourCycle = timefmt.FromCookie(r)
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

@@ -167,3 +167,63 @@ func TestDeleteTeamRemovesEverything(t *testing.T) {
 		}
 	}
 }
+
+// TestTimeFormatRoundTrips covers the column's whole life: the default a new
+// account is created with, a saved choice, and a value that must never survive
+// a write. The clock is stored per person and read on every screen, so a value
+// the render path cannot recognise would show up as a wrong time rather than as
+// an error somebody notices.
+func TestTimeFormatRoundTrips(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	user, _, err := s.CreateUser(ctx, "clock@example.com", "Clock", "hash", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A new account defers to the device rather than picking a dial for
+	// somebody who has not been asked yet.
+	if user.TimeFormat != "system" {
+		t.Fatalf("a new user's time format = %q, want %q", user.TimeFormat, "system")
+	}
+
+	stored, err := s.UserByEmail(ctx, "clock@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.TimeFormat != "system" {
+		t.Fatalf("the stored default read back as %q, want %q", stored.TimeFormat, "system")
+	}
+
+	for _, test := range []struct {
+		name    string
+		written string
+		want    string
+	}{
+		{"an explicit twelve is kept", "12", "12"},
+		{"an explicit twenty-four is kept", "24", "24"},
+		{"back to the device", "system", "system"},
+
+		// Anything that is not a dial is stored as "system". The handler
+		// whitelists it too, but a second caller must not be able to write a
+		// value the render path would then have to guess about.
+		{"an unknown value never reaches the column", "h12", "system"},
+		{"an empty value never reaches the column", "", "system"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := s.UpdateProfile(ctx, user.ID, "Clock", "system", test.written); err != nil {
+				t.Fatal(err)
+			}
+
+			after, err := s.UserByEmail(ctx, "clock@example.com")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if after.TimeFormat != test.want {
+				t.Fatalf("wrote %q, read back %q, want %q", test.written, after.TimeFormat, test.want)
+			}
+		})
+	}
+}

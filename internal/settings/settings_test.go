@@ -27,10 +27,12 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/pathclean"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/reports"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/shields"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
 // newHandler builds a handler over a temporary install holding one site.
@@ -582,5 +584,91 @@ func TestGoogleConnectBindsTheStateToTheBrowser(t *testing.T) {
 
 	if state := target.Query().Get("state"); state != "example.com|search_console|test-csrf" {
 		t.Fatalf("state = %q, want the site, the provider and this browser's form token", state)
+	}
+}
+
+// TestExportViewsHonourTheReadersClock covers the exports table on both dials.
+// The "prepared" stamp carries a date and the "expires" stamp does not, so the
+// two together check that the meridiem lands with the time and never after the
+// timezone abbreviation.
+func TestExportViewsHonourTheReadersClock(t *testing.T) {
+	handler, _ := newHandler(t)
+
+	prepared := time.Date(2026, 9, 4, 14, 30, 0, 0, time.UTC)
+	exports := []dataio.Export{{
+		ID:        1,
+		Status:    dataio.StatusCompleted,
+		CreatedAt: prepared.Unix(),
+		ExpiresAt: prepared.Add(24 * time.Hour).Unix(),
+	}}
+
+	for _, test := range []struct {
+		cycle        string
+		wantPrepared string
+		wantExpires  string
+	}{
+		{timefmt.Cycle24, "2026-09-04 14:30 UTC", "14:30 UTC"},
+		{timefmt.Cycle12, "2026-09-04 2:30 PM UTC", "2:30 PM UTC"},
+	} {
+		t.Run(test.cycle, func(t *testing.T) {
+			views := handler.exportViews("example.com", "en", test.cycle, exports)
+
+			if len(views) != 1 {
+				t.Fatalf("got %d export rows, want 1", len(views))
+			}
+
+			if views[0].Prepared != test.wantPrepared {
+				t.Fatalf("prepared = %q, want %q", views[0].Prepared, test.wantPrepared)
+			}
+
+			if views[0].Expires != test.wantExpires {
+				t.Fatalf("expires = %q, want %q", views[0].Expires, test.wantExpires)
+			}
+		})
+	}
+}
+
+// TestNextRunHonoursTheReadersClock covers the reports badge. The weekly case
+// is the one worth pinning: it returns exactly midnight, which is the boundary
+// a 12-hour clock gets wrong by printing "0:00 AM".
+func TestNextRunHonoursTheReadersClock(t *testing.T) {
+	// A Wednesday, so the next weekly send is the following Monday and the next
+	// monthly send is the first of October.
+	now := time.Date(2026, 9, 2, 9, 0, 0, 0, time.UTC)
+
+	for _, test := range []struct {
+		name  string
+		kind  string
+		cycle string
+		want  string
+	}{
+		{"weekly midnight on twenty-four", reports.KindWeekly, timefmt.Cycle24, "Mon 7 Sep 00:00 UTC"},
+		{"weekly midnight on twelve", reports.KindWeekly, timefmt.Cycle12, "Mon 7 Sep 12:00 AM UTC"},
+		{"monthly midnight on twenty-four", reports.KindMonthly, timefmt.Cycle24, "Thu 1 Oct 00:00 UTC"},
+		{"monthly midnight on twelve", reports.KindMonthly, timefmt.Cycle12, "Thu 1 Oct 12:00 AM UTC"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := nextRun(test.kind, "UTC", test.cycle, now); got != test.want {
+				t.Fatalf("nextRun(%s, %s) = %q, want %q", test.kind, test.cycle, got, test.want)
+			}
+		})
+	}
+}
+
+// TestStampHonoursTheReadersClock covers the delivery and admin table cells,
+// including the empty case that must stay a dash rather than becoming 1970.
+func TestStampHonoursTheReadersClock(t *testing.T) {
+	at := time.Date(2026, 9, 4, 14, 30, 0, 0, time.UTC).Unix()
+
+	if got := stamp(at, timefmt.Cycle24); got != "4 Sep 14:30 UTC" {
+		t.Fatalf("stamp on twenty-four = %q", got)
+	}
+
+	if got := stamp(at, timefmt.Cycle12); got != "4 Sep 2:30 PM UTC" {
+		t.Fatalf("stamp on twelve = %q", got)
+	}
+
+	if got := stamp(0, timefmt.Cycle12); got != "—" {
+		t.Fatalf("an absent time stamped as %q, want a dash", got)
 	}
 }

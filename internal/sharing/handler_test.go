@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dashboard"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
 // recordingShell captures the bootstrap the handler would have rendered, so a
@@ -352,4 +353,54 @@ func formRequest(path, body string) *http.Request {
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	return request
+}
+
+// TestASharedLinkNeverCarriesAStoredClockPreference is the other half of the
+// rule the dashboard shell enforces.
+//
+// A shared link and a public dashboard are read by strangers on the internet.
+// The link owner's clock is a personal setting on their own profile, and
+// pushing it onto a visitor would be the same mistake as pushing their theme.
+// So these two handlers leave HourCycle blank and let the shell fill it from
+// the visitor's own browser — this test is what stops somebody "helpfully"
+// filling it in from the owner later.
+func TestASharedLinkNeverCarriesAStoredClockPreference(t *testing.T) {
+	handler, f, shell := newHandler(t, "http://localhost:19300")
+	ctx := context.Background()
+
+	link, err := f.store.CreateLinkForOwner(ctx, f.siteID, f.teamID, "client", "", 0, 0)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// A tokenised link. The cookie is present and deliberately disagrees with
+	// any preference an owner might have had.
+	request := httptest.NewRequest(http.MethodGet, link.Path(), nil)
+	request.AddCookie(&http.Cookie{Name: timefmt.CookieName, Value: "12"})
+
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+
+	if !shell.seen {
+		t.Fatal("the shared dashboard did not render")
+	}
+
+	if shell.boot.HourCycle != "" {
+		t.Fatalf("a shared link handed the shell hour cycle %q; it must leave the visitor's own browser to answer",
+			shell.boot.HourCycle)
+	}
+
+	// And the same for a public dashboard.
+	if err := f.store.SetPublicForOwner(ctx, f.siteID, f.teamID, true); err != nil {
+		t.Fatalf("set public: %v", err)
+	}
+
+	shell.boot = dashboard.Bootstrap{}
+	public := httptest.NewRequest(http.MethodGet, PublicPrefix+f.domain, nil)
+	public.AddCookie(&http.Cookie{Name: timefmt.CookieName, Value: "12"})
+
+	handler.ServeHTTP(httptest.NewRecorder(), public)
+
+	if shell.boot.HourCycle != "" {
+		t.Fatalf("a public dashboard handed the shell hour cycle %q", shell.boot.HourCycle)
+	}
 }

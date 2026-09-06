@@ -16,6 +16,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
 // fakeSites is a routing map with a fixed answer.
@@ -273,4 +274,65 @@ func TestShellIsNotFramable(t *testing.T) {
 	if got := w.Header().Get("Cache-Control"); got != shellCacheControl {
 		t.Fatalf("the shell may be cached: %q — it carries the site list", got)
 	}
+}
+
+// TestTheShellResolvesTheReadersClock pins the rule that keeps a personal
+// setting personal.
+//
+// A caller holding a signed-in user fills HourCycle from that person's own
+// stored preference and it is left alone. A caller with no user — the shared
+// link and public dashboard handlers — leaves it blank, and the shell fills it
+// from the visitor's own browser rather than from whoever built the link. The
+// bootstrap must never carry "system": resolving that is the server's job, and
+// a second implementation in the browser is a second answer.
+func TestTheShellResolvesTheReadersClock(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		given  string
+		cookie string
+		want   string
+	}{
+		{"a signed-in choice is kept", "12", "24", "12"},
+		{"a signed-in 24 is kept over a 12 cookie", "24", "12", "24"},
+		{"a shared link follows the visitor's browser", "", "12", "12"},
+		{"a shared link with a 24 browser", "", "24", "24"},
+
+		// The documented one-page gap: a browser that has never loaded the
+		// dashboard has no cookie yet and reads 24 rather than nothing.
+		{"no cookie at all falls back to 24", "", "", "24"},
+		{"a junk cookie falls back to 24", "", "h11", "24"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler := New(fakeSites{domains: []string{"example.com"}})
+
+			request := httptest.NewRequest(http.MethodGet, "/dashboard/example.com", nil)
+			if test.cookie != "" {
+				request.AddCookie(&http.Cookie{Name: timefmt.CookieName, Value: test.cookie})
+			}
+
+			w := httptest.NewRecorder()
+			handler.WriteShell(w, request, Bootstrap{Sites: []string{"example.com"}, HourCycle: test.given})
+
+			body := w.Body.String()
+			if !strings.Contains(body, `"hour_cycle":"`+test.want+`"`) {
+				t.Fatalf("the shell did not carry hour_cycle %q; bootstrap was:\n%s", test.want, bootstrapBlock(body))
+			}
+		})
+	}
+}
+
+// bootstrapBlock pulls the embedded JSON out of a rendered shell so a failure
+// shows the blob rather than the whole page.
+func bootstrapBlock(page string) string {
+	start := strings.Index(page, `{"sites"`)
+	if start < 0 {
+		return page
+	}
+
+	end := strings.Index(page[start:], "</script>")
+	if end < 0 {
+		return page[start:]
+	}
+
+	return page[start : start+end]
 }

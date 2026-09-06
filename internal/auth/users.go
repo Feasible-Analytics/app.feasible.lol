@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
 // TrialDays is how long a new team has before it needs a subscription. No card
@@ -34,13 +36,18 @@ type User struct {
 	GoogleSub       string
 	EmailVerifiedAt int64
 	Theme           string
-	TOTPSecret      string
-	TOTPRecovery    string
-	TOTPEnabledAt   int64
-	TOTPLastStep    int64
-	CreatedAt       int64
-	UpdatedAt       int64
-	LastSeenAt      int64
+
+	// TimeFormat is "system", "12" or "24". It is a personal preference and is
+	// never derived from the language or the site's timezone; "system" is
+	// resolved against the browser's own clock by internal/timefmt.
+	TimeFormat    string
+	TOTPSecret    string
+	TOTPRecovery  string
+	TOTPEnabledAt int64
+	TOTPLastStep  int64
+	CreatedAt     int64
+	UpdatedAt     int64
+	LastSeenAt    int64
 }
 
 // Verified reports whether this address has been proven. Google linking and
@@ -226,6 +233,7 @@ func (s *Store) createUser(ctx context.Context, email, name, passwordHash, googl
 		GoogleSub:       googleSub,
 		EmailVerifiedAt: nullUnix(verifiedAt),
 		Theme:           "system",
+		TimeFormat:      timefmt.System,
 		CreatedAt:       now.Unix(),
 		UpdatedAt:       now.Unix(),
 	}
@@ -256,8 +264,8 @@ func nullUnix(value any) int64 {
 // the struct is added in one place rather than in six queries that will
 // otherwise drift.
 const userColumns = `id, email, name, password_hash, COALESCE(google_sub, ''),
-	email_verified_at, theme, totp_secret, totp_recovery_codes, totp_enabled_at,
-	totp_last_used_step, created_at, updated_at, last_seen_at`
+	email_verified_at, theme, time_format, totp_secret, totp_recovery_codes,
+	totp_enabled_at, totp_last_used_step, created_at, updated_at, last_seen_at`
 
 // scanUser reads one row in the shape userColumns produces.
 func scanUser(row interface{ Scan(...any) error }) (*User, error) {
@@ -269,8 +277,8 @@ func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	)
 
 	err := row.Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.GoogleSub,
-		&verifiedAt, &u.Theme, &u.TOTPSecret, &u.TOTPRecovery, &totpAt,
-		&u.TOTPLastStep, &u.CreatedAt, &u.UpdatedAt, &lastSeen)
+		&verifiedAt, &u.Theme, &u.TimeFormat, &u.TOTPSecret, &u.TOTPRecovery,
+		&totpAt, &u.TOTPLastStep, &u.CreatedAt, &u.UpdatedAt, &lastSeen)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -310,11 +318,15 @@ func (s *Store) UserByGoogleSub(ctx context.Context, sub string) (*User, error) 
 		"SELECT "+userColumns+" FROM users WHERE google_sub = ?", sub))
 }
 
-// UpdateProfile changes the display name and the theme preference.
-func (s *Store) UpdateProfile(ctx context.Context, userID int64, name, theme string) error {
+// UpdateProfile changes the display name, the theme and the clock preference.
+//
+// The clock value is normalised here as well as at the form, so a caller that
+// is not the settings handler cannot store a value the render path would then
+// have to guess about.
+func (s *Store) UpdateProfile(ctx context.Context, userID int64, name, theme, timeFormat string) error {
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE users SET name = ?, theme = ?, updated_at = ? WHERE id = ?
-	`, name, theme, s.now().Unix(), userID)
+		UPDATE users SET name = ?, theme = ?, time_format = ?, updated_at = ? WHERE id = ?
+	`, name, theme, timefmt.Normalise(timeFormat), s.now().Unix(), userID)
 	if err != nil {
 		return fmt.Errorf("auth: update profile: %w", err)
 	}

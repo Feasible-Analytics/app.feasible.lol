@@ -580,6 +580,12 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 		nav := app.NavigationForDashboard(w, navRequest)
 		boot := dashboard.Bootstrap{
 			Sites: domains,
+
+			// The signed-in reader's own stored preference wins here. Left
+			// blank it would fall through to the browser cookie in WriteShell,
+			// which is right for a shared link but would quietly ignore a
+			// choice this person made on their profile screen.
+			HourCycle: app.HourCycleFor(r),
 			Navigation: &dashboard.Navigation{
 				Name: nav.Name, Email: nav.Email, SitesURL: nav.SitesURL,
 				SiteSettingsURL: nav.SiteSettingsURL, ConversionsURL: nav.ConversionsURL,
