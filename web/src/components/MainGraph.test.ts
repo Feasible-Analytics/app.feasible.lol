@@ -8,12 +8,18 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
 import type { Annotation } from "../api/types";
 import { metricAxisValue } from "../lib/format";
 import {
 	annotationTooltipReducer,
+	Bars,
+	ComparisonSwatch,
+	barRects,
 	barWidth,
+	comparisonShape,
 	bucketAt,
 	bucketX,
 	placeMarkers,
@@ -190,4 +196,136 @@ test("bars keep a gap at every range and never grow into a slab", () => {
 
 	// A three-day range: capped, rather than three slabs filling the card.
 	assert.equal(barWidth(PLOT, 3), 56);
+});
+
+test("a comparison splits the slot without changing a single-series chart", () => {
+	// One series is exactly what it was: the default argument is what keeps
+	// every existing caller and every existing width unchanged.
+	assert.equal(barWidth(PLOT, 10, 1), barWidth(PLOT, 10));
+
+	// Two series share the slot, so each bar is half as wide and the pair
+	// occupies what one bar used to.
+	assert.equal(barWidth(PLOT, 10, 2), barWidth(PLOT, 10) / 2);
+
+	// A bar is as close to the 1px floor as its share of the slot allows. At 365
+	// paired buckets the share is under a pixel, and a sliver inside the slot
+	// beats a full pixel spilling over the bucket beside it.
+	assert.equal(barWidth(PLOT, 365, 2), PLOT / 365 / 2);
+	assert.equal(barWidth(PLOT, 365, 1), 1);
+
+	// The pair always fits inside its slot, at every bucket count. That is what
+	// keeps both bars under the hover highlight and off the bucket beside them,
+	// however thin the chart gets.
+	for (const buckets of [3, 12, 24, 100, 365, 1000]) {
+		assert.ok(barWidth(PLOT, buckets, 2) * 2 <= PLOT / buckets + 1e-9, `${buckets} buckets`);
+	}
+});
+
+test("a compared bucket draws two bars, one either side of its centre", () => {
+	const rects = barRects(10, 4, true, 100, 12);
+
+	assert.deepEqual(rects, [
+		{ series: "current", value: 10, x: 88, width: 12 },
+		{ series: "earlier", value: 4, x: 100, width: 12 },
+	]);
+
+	// The pair is centred on the x the markers and the hover highlight use, so
+	// one bucket is still one slot.
+	assert.equal((rects[0]!.x + rects[1]!.x + rects[1]!.width) / 2, 100);
+});
+
+test("an uncompared bucket draws one bar, centred, exactly as before", () => {
+	assert.deepEqual(barRects(10, null, false, 100, 12), [
+		{ series: "current", value: 10, x: 94, width: 12 },
+	]);
+});
+
+test("a missing value leaves its half of the slot empty", () => {
+	// The current bar does not drift right into the space the earlier one would
+	// have taken: two buckets are only comparable by eye if a bar stays put.
+	assert.deepEqual(barRects(10, null, true, 100, 12), [
+		{ series: "current", value: 10, x: 88, width: 12 },
+	]);
+
+	assert.deepEqual(barRects(null, 4, true, 100, 12), [
+		{ series: "earlier", value: 4, x: 100, width: 12 },
+	]);
+
+	// Nothing at all draws nothing at all.
+	assert.deepEqual(barRects(null, null, true, 100, 12), []);
+});
+
+/** drawn renders the bar layer on its own. MainGraph measures its container
+ * before it draws anything, so outside a browser the component itself only ever
+ * produces its loading state. */
+function drawn(comparing: boolean, previous: (number | null)[] = [40, null, 60]) {
+	return renderToStaticMarkup(
+		createElement(Bars, {
+			points: [10, 20, 30],
+			previous,
+			labels: ["a", "b", "c"],
+			comparing,
+			present: 2,
+			bar: 12,
+			x: (index: number) => 100 + index * 40,
+			y: (value: number) => 200 - value,
+			axis: 200,
+		}),
+	);
+}
+
+test("a compared bar chart draws two rects per bucket, in two colours", () => {
+	const markup = drawn(true);
+
+	// fill, not any mention: the in-progress bar strokes in the accent colour too.
+	assert.equal(markup.match(/fill="var\(--fs-accent\)"/g)?.length, 3, "one accent bar per bucket");
+	assert.equal(markup.match(/fill="var\(--fs-faint\)"/g)?.length, 2, "one neutral bar per bucket that has one");
+	assert.doesNotMatch(markup, /stroke-dasharray="3 3"/, "the dashed comparison line has no place in bar mode");
+});
+
+test("an uncompared bar chart draws exactly what it always did", () => {
+	const markup = drawn(false);
+
+	assert.equal(markup.match(/fill="var\(--fs-accent\)"/g)?.length, 3);
+	assert.doesNotMatch(markup, /fill="var\(--fs-faint\)"/, "there is no earlier period to draw");
+});
+
+test("only the current bar is drawn hollow", () => {
+	// present is bucket 2, which has both a current and an earlier value. The
+	// earlier period has no bucket still filling up, so it is solid.
+	const markup = drawn(true, [40, 50, 60]);
+	const buckets = markup.split("<g>").slice(1);
+	const pending = buckets[2]!;
+
+	assert.match(pending, /var\(--fs-accent\)[^>]*fill-opacity="0.3"/, "the in-progress current bar is hollow");
+	assert.doesNotMatch(
+		pending.slice(pending.indexOf("--fs-faint")),
+		/fill-opacity="0.3"/,
+		"the earlier bar is solid",
+	);
+});
+
+test("the legend swatch is the mark the chart actually draws", () => {
+	assert.match(renderToStaticMarkup(createElement(ComparisonSwatch, { chart: "bar" })), /<rect[^>]*fill="var\(--fs-faint\)"/);
+	assert.doesNotMatch(renderToStaticMarkup(createElement(ComparisonSwatch, { chart: "bar" })), /stroke-dasharray/);
+
+	assert.match(renderToStaticMarkup(createElement(ComparisonSwatch, { chart: "line" })), /stroke-dasharray="3 3"/);
+});
+
+test("only a line chart draws the comparison as a line, and only a bar chart pairs", () => {
+	assert.equal(comparisonShape("bar", true, true), "paired");
+	assert.equal(comparisonShape("line", true, true), "line");
+
+	// A bar chart never draws the dashed overlay, which is the whole change.
+	assert.notEqual(comparisonShape("bar", true, true), "line");
+});
+
+test("a comparison that is on but not yet answered draws nothing", () => {
+	// The response is held while the next one loads. Halving every bar on the
+	// setting alone would shift them left and snap them back a moment later.
+	assert.equal(comparisonShape("bar", true, false), "none");
+	assert.equal(comparisonShape("line", true, false), "none");
+
+	assert.equal(comparisonShape("bar", false, true), "none");
+	assert.equal(comparisonShape("line", false, true), "none");
 });
