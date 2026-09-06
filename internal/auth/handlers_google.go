@@ -11,6 +11,8 @@ package auth
 import (
 	"context"
 	"net/http"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 )
 
 // startGoogle redirects to Google's consent screen.
@@ -19,10 +21,13 @@ import (
 // redirect. The button is hidden on the sign-in page, so reaching here at all
 // means somebody typed the URL — and an honest "this is not configured" is more
 // use to them than a 404.
+//
+// The reason names no variable. Which one to set is the operator's question and
+// it is answered where the operator is looking, in the start-up log.
 func (h *Handler) startGoogle(w http.ResponseWriter, r *http.Request) {
 	if !h.Google.Configured() {
 		p := h.newPage(r, tr(r, "auth.title.google_disabled"), "")
-		p.Error = h.Google.DisabledReason() + "."
+		p.Error = i18n.T(p.Lang, "auth.error.google_disabled")
 
 		h.render(w, r, "error", p, http.StatusNotFound)
 

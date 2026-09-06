@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -304,24 +305,53 @@ var referencePattern = regexp.MustCompile(
 // a namespace nobody listed is a screen this check cannot see.
 var namespaces = []string{"common", "auth", "dashboard", "settings", "pages"}
 
+// renderingSurfaces are the trees that put a catalogue string in front of a
+// person, and the file kinds worth reading in each. Adding a surface means
+// adding it here, which is a deliberate speed bump: a tree nobody listed is a
+// screen no check in this file can see.
+func renderingSurfaces() map[string][]string {
+	return map[string][]string{
+		filepath.Join("..", "auth"):             {".html", ".go"},
+		filepath.Join("..", "settings"):         {".html", ".go"},
+		filepath.Join("..", "appui"):            {".html", ".go"},
+		filepath.Join("..", "google"):           {".go"},
+		filepath.Join("..", "shields"):          {".go"},
+		filepath.Join("..", "dashboard"):        {".go"},
+		filepath.Join("..", "health"):           {".go"},
+		filepath.Join("..", "sharing"):          {".go"},
+		filepath.Join("..", "billingui"):        {".html", ".go"},
+		filepath.Join("..", "..", "web", "src"): {".ts", ".tsx"},
+	}
+}
+
 // pluralSuffixes are the categories an id can be split into. They are stripped
 // before comparing so that a catalogue holding "sites.count_one" and
 // "sites.count_other" matches a call site that only ever names "sites.count".
 var pluralSuffixes = []string{"_one", "_other", "_zero", "_two", "_few", "_many"}
 
-// operatorVocabulary is what must never reach a signed-in screen: an
-// environment variable, an HTTP header name, or a protocol acronym a customer
-// has no way to act on. The signed-in UI is written for a customer of the
-// hosted product, who has no shell and no server to change.
-var operatorVocabulary = regexp.MustCompile(`FEASIBLE_[A-Z_]+|X-Frame-Options|X-Forwarded-For`)
-
-// TestNoOperatorVocabularyReachesACustomer walks the customer-facing catalogues
-// and the screens that render them.
+// operatorVocabulary is what a customer of the hosted product must never be
+// shown: an environment variable, an HTTP header name, or a shell command.
+// They have no shell and no server, so every one of these is an instruction
+// they cannot follow, which reads as "something is wrong with your account and
+// you cannot fix it".
 //
-// An unactionable instruction is worse than silence: it reads as "something is
-// wrong with your account and you cannot fix it". The alternative — branching
-// the copy on hosted versus self-hosted — doubles every string and every test,
-// so the rule is absolute and this is what keeps it.
+// Content-Security-Policy is deliberately absent. It appears on the tracker
+// install screen, where the reader is putting a script tag on their own site
+// and that is the exact name of the thing blocking them.
+var operatorVocabulary = regexp.MustCompile(`FEASIBLE_[A-Z_]+|X-[A-Z][A-Za-z]*(?:-[A-Za-z]+)+|\bHSTS\b|\bcurl\b`)
+
+// TestNoOperatorVocabularyReachesACustomer walks every catalogue and the prose
+// in every template that renders one.
+//
+// The alternative to an absolute rule is branching the copy on hosted versus
+// self-hosted, which doubles every string and every test and pays for it with a
+// maintenance seam on screens whose primary audience is not the operator. This
+// is what makes the rule cost nothing to keep.
+//
+// Go is not scanned. Every sentence a customer reads comes from the catalogue,
+// and a Go string holding "X-Forwarded-For" is far more likely to be the header
+// the code actually sets than a sentence about it — a scan there reports the
+// working parts of the product and teaches people to ignore this test.
 func TestNoOperatorVocabularyReachesACustomer(t *testing.T) {
 	var offences []string
 
@@ -333,9 +363,47 @@ func TestNoOperatorVocabularyReachesACustomer(t *testing.T) {
 		}
 	}
 
-	for _, root := range []string{filepath.Join("..", "settings"), filepath.Join("..", "auth")} {
+	offences = append(offences, scanTemplatesForOperatorVocabulary(t)...)
+
+	sort.Strings(offences)
+
+	if len(offences) > 0 {
+		t.Fatalf("%d places show a customer something only an operator can change:\n  %s",
+			len(offences), strings.Join(offences, "\n  "))
+	}
+}
+
+// scanTemplatesForOperatorVocabulary reads the visible prose of every template
+// on a rendering surface.
+//
+// Only text between tags is read, and only after the scripts are removed: a
+// header name a page sends is the page working, and a header name a page prints
+// is the fault this test is about.
+func scanTemplatesForOperatorVocabulary(t *testing.T) []string {
+	t.Helper()
+
+	var offences []string
+
+	for root, extensions := range renderingSurfaces() {
+		if !slices.Contains(extensions, ".html") {
+			continue
+		}
+
+		if _, err := os.Stat(root); err != nil {
+			// A surface missing from this checkout is not a failure, but it is
+			// also not silence: a guard that scans nothing and passes is the
+			// thing this test exists to prevent.
+			t.Logf("skipping %s: %v", root, err)
+
+			continue
+		}
+
 		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".html") {
+			if err != nil {
+				return err
+			}
+
+			if entry.IsDir() || !strings.HasSuffix(path, ".html") {
 				return nil
 			}
 
@@ -344,8 +412,10 @@ func TestNoOperatorVocabularyReachesACustomer(t *testing.T) {
 				return err
 			}
 
-			if hit := operatorVocabulary.FindString(string(body)); hit != "" {
-				offences = append(offences, fmt.Sprintf("%s names %q", path, hit))
+			for _, text := range templateProse(string(body)) {
+				if hit := operatorVocabulary.FindString(text); hit != "" {
+					offences = append(offences, fmt.Sprintf("%s names %q", path, hit))
+				}
 			}
 
 			return nil
@@ -355,12 +425,31 @@ func TestNoOperatorVocabularyReachesACustomer(t *testing.T) {
 		}
 	}
 
-	sort.Strings(offences)
+	return offences
+}
 
-	if len(offences) > 0 {
-		t.Fatalf("%d places show a customer something only an operator can change:\n  %s",
-			len(offences), strings.Join(offences, "\n  "))
+// scriptBlock and htmlComment are what comes out before the prose is read, and
+// textNode is what is left worth reading.
+var (
+	scriptBlock = regexp.MustCompile(`(?s)<script\b.*?</script>`)
+	htmlComment = regexp.MustCompile(`(?s)<!--.*?-->`)
+	textNode    = regexp.MustCompile(`>([^<>]*)<`)
+)
+
+// templateProse returns the text a reader sees, with the scripts, the comments
+// and every tag's attributes left behind.
+func templateProse(body string) []string {
+	body = scriptBlock.ReplaceAllString(body, "")
+	body = htmlComment.ReplaceAllString(body, "")
+
+	var out []string
+	for _, match := range textNode.FindAllStringSubmatch(body, -1) {
+		if text := strings.TrimSpace(match[1]); text != "" {
+			out = append(out, text)
+		}
 	}
+
+	return out
 }
 
 // TestEveryIDInUseHasAString is the completeness check, and it is the reason
@@ -476,22 +565,9 @@ func stripPlural(id string) string {
 func scanForIDs(t *testing.T) map[string]bool {
 	t.Helper()
 
-	roots := map[string][]string{
-		filepath.Join("..", "auth"):             {".html", ".go"},
-		filepath.Join("..", "settings"):         {".html", ".go"},
-		filepath.Join("..", "appui"):            {".html", ".go"},
-		filepath.Join("..", "google"):           {".go"},
-		filepath.Join("..", "shields"):          {".go"},
-		filepath.Join("..", "dashboard"):        {".go"},
-		filepath.Join("..", "health"):           {".go"},
-		filepath.Join("..", "sharing"):          {".go"},
-		filepath.Join("..", "billingui"):        {".html", ".go"},
-		filepath.Join("..", "..", "web", "src"): {".ts", ".tsx"},
-	}
-
 	found := map[string]bool{}
 
-	for root, extensions := range roots {
+	for root, extensions := range renderingSurfaces() {
 		if _, err := os.Stat(root); err != nil {
 			// A surface that is not in this checkout is not a failure — the
 			// front end is built from the same tree, but a partial checkout

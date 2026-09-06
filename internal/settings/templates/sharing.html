@@ -134,12 +134,12 @@
 	</section>
 
 	<section class="mt-6 border-2 border-line bg-card p-6">
-		<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.sharing.transport_heading" }}</h2>
+		<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.sharing.link_security_heading" }}</h2>
 		<p class="mt-1 text-sm text-muted">
 			{{if .HTTPS}}
-				{{ t $.Lang "settings.sharing.transport_https" }}
+				{{ t $.Lang "settings.sharing.link_security_encrypted" }}
 			{{else}}
-				{{ t $.Lang "settings.sharing.transport_plain" }}
+				{{ t $.Lang "settings.sharing.link_security_plain" }}
 			{{end}}
 		</p>
 	</section>
