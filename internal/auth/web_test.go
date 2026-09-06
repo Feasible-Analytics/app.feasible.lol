@@ -1778,6 +1778,24 @@ func TestGoogleButtonIsHiddenWithoutCredentials(t *testing.T) {
 	}
 }
 
+// TestTheGoogleDisabledPageNamesNoVariable checks the one place an operator's
+// vocabulary reached a browser. The start-up log still names the variable; a
+// person who typed the URL gets told what to do instead.
+func TestTheGoogleDisabledPageNamesNoVariable(t *testing.T) {
+	app := newTestApp(t)
+	c := newClient(t, app)
+
+	page := c.body("/auth/google")
+
+	if strings.Contains(page, "FEASIBLE_") {
+		t.Error("an environment variable is on a page a customer can reach")
+	}
+
+	if !strings.Contains(page, "does not have Google sign-in switched on") {
+		t.Errorf("the page does not say why the sign-in is unavailable: %s", page)
+	}
+}
+
 // TestSessionsScreenListsAndRevokes checks the login-management screen through
 // the browser, including that revoking the current session signs it out.
 func TestSessionsScreenListsAndRevokes(t *testing.T) {

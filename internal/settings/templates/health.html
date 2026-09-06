@@ -60,11 +60,7 @@
 	<section class="mt-6 border-2 border-line bg-card p-6">
 		<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.health.last_request_heading" }}</h2>
 		<p class="mt-1 text-sm text-muted">
-			{{ t $.Lang "settings.health.last_request_hint_before" }}
-			<code class="bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">X-Debug-Request</code>
-			{{ t $.Lang "settings.health.last_request_hint_middle" }}
-			<code class="bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">curl</code>
-			{{ t $.Lang "settings.health.last_request_hint_after" }}
+			{{ t $.Lang "settings.health.last_request_hint" }}
 		</p>
 		{{if .Panel.LastRequest}}
 			<div class="mt-4 overflow-x-auto">
@@ -131,6 +127,7 @@
 			{{ t $.Lang "settings.health.test_hint_before" }}
 			<code class="break-all bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">{{.BaseURL}}/api/event</code>
 			{{ t $.Lang "settings.health.test_hint_after" }}
+			{{ t $.Lang "settings.health.test_hint_result" }}
 		</p>
 		<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/health/test-event" .Domain) }}" class="mt-4">
 			<input type="hidden" name="csrf_token" value="{{.CSRF}}" />

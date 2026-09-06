@@ -236,8 +236,9 @@ type Viewer struct {
 	// Warning names the catalogue string to show when Private is true. It is an
 	// id rather than the sentence, because this package has no request and so
 	// no language, and because the copy a customer reads belongs in the one
-	// catalogue. The string it names gives the fix rather than the symptom:
-	// nobody can act on "this looks like a private address".
+	// catalogue. The string it names says what the address means and what the
+	// consequence is; on a hosted account the proxy is ours, so the fix is not
+	// the reader's to make.
 	Warning string
 }
 

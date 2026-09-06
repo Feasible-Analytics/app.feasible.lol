@@ -78,6 +78,9 @@ func TestGoogleIsOptional(t *testing.T) {
 		t.Fatal("no credentials should mean not configured")
 	}
 
+	// This reason is for the start-up log, where the reader runs the process and
+	// "which variable do I set" is the only question worth answering. The page a
+	// customer lands on says something else — see below.
 	if !strings.Contains(google.DisabledReason(), "FEASIBLE_GOOGLE_CLIENT_ID") {
 		t.Errorf("the reason should name the variable to set: %q", google.DisabledReason())
 	}

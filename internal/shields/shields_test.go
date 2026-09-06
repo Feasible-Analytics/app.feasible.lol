@@ -14,11 +14,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 )
 
@@ -200,6 +202,40 @@ func TestNormaliseRejectsRulesThatCannotMatch(t *testing.T) {
 
 		if got != tc.want {
 			t.Errorf("%s %q normalised to %q, want %q", tc.kind, tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestThePrivateAddressWarningNamesNoConfiguration pins the shape of the string
+// this package chooses. On a hosted account the proxy in front of us is ours,
+// so handing the reader a configuration change is telling them to fix our bug
+// on infrastructure they cannot reach.
+func TestThePrivateAddressWarningNamesNoConfiguration(t *testing.T) {
+	trusted, err := clientip.ParseTrustedProxies(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/settings/sites/example.com/shields", nil)
+	request.RemoteAddr = "10.0.0.7:52344"
+
+	viewer := ResolveViewer(request, trusted)
+
+	if viewer.Warning != "auth.shields.warning_private" {
+		t.Fatalf("warning id = %q, want the private-address warning", viewer.Warning)
+	}
+
+	warning := i18n.T("en", viewer.Warning)
+
+	for _, want := range []string{"private or shared proxy address", "would block everyone"} {
+		if !strings.Contains(warning, want) {
+			t.Errorf("the diagnosis no longer says %q: %s", want, warning)
+		}
+	}
+
+	for _, unwanted := range []string{"FEASIBLE_", "X-Forwarded-For"} {
+		if strings.Contains(warning, unwanted) {
+			t.Errorf("the warning hands the reader %q, which is not theirs to change", unwanted)
 		}
 	}
 }

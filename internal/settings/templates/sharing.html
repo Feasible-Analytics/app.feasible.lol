@@ -124,8 +124,7 @@
 
 		<div class="mt-4 border-2 border-down/30 bg-down/10 px-4 py-3 text-sm text-down-ink">
 			<strong class="font-semibold">{{ t $.Lang "settings.sharing.embed_password_title" }}</strong>
-			{{ t $.Lang "settings.sharing.embed_password_before" }}
-			<code class="bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">X-Frame-Options</code>{{ t $.Lang "settings.sharing.embed_password_after" }}
+			{{ t $.Lang "settings.sharing.embed_password_body" }}
 		</div>
 
 		<div class="mt-4 border-2 border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn-ink">
@@ -135,14 +134,12 @@
 	</section>
 
 	<section class="mt-6 border-2 border-line bg-card p-6">
-		<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.sharing.transport_heading" }}</h2>
+		<h2 class="text-lg font-medium text-heading">{{ t $.Lang "settings.sharing.link_security_heading" }}</h2>
 		<p class="mt-1 text-sm text-muted">
 			{{if .HTTPS}}
-				{{ t $.Lang "settings.sharing.transport_https" }}
+				{{ t $.Lang "settings.sharing.link_security_encrypted" }}
 			{{else}}
-				{{ t $.Lang "settings.sharing.transport_plain_before" }}
-				<code class="bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">FEASIBLE_APP_BASE_URL</code>
-				{{ t $.Lang "settings.sharing.transport_plain_after" }}
+				{{ t $.Lang "settings.sharing.link_security_plain" }}
 			{{end}}
 		</p>
 	</section>

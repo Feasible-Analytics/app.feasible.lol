@@ -268,6 +268,67 @@ func TestTheSharingScreenStatesTheThreeRules(t *testing.T) {
 	}
 }
 
+// TestLinkSecuritySpeaksToACustomerNotAnOperator covers both branches of the
+// card. Every instruction on a signed-in screen is addressed to somebody with a
+// shell, and a customer of the hosted product has neither a shell nor a server
+// — so an unactionable instruction reads as "something is wrong with your
+// account and you cannot fix it".
+func TestLinkSecuritySpeaksToACustomerNotAnOperator(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{"encrypted", "https://stats.example.com", "never sent in the clear"},
+		{"plain", "http://localhost:19300", "travel in the clear"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.handler.BaseURL = tc.baseURL
+			f.as(f.owner)
+
+			body := f.get(t, "/settings/sites/acme.example/sharing").Body.String()
+
+			if strings.Contains(body, "FEASIBLE_") {
+				t.Error("an environment variable is on a customer's screen")
+			}
+
+			if strings.Contains(body, "X-Frame-Options") || strings.Contains(body, "HSTS") {
+				t.Error("a header name or protocol acronym is on a customer's screen")
+			}
+
+			// The state is not what is being hidden. A reader on an install
+			// without encryption must still be told their links are not
+			// protected; only the shell instruction goes.
+			if !strings.Contains(body, tc.want) {
+				t.Errorf("the card does not say what is true of this install, want %q", tc.want)
+			}
+
+			if !strings.Contains(body, "Link security") {
+				t.Error("the card is still titled for an operator")
+			}
+		})
+	}
+}
+
+// TestEmbedPasswordWarningKeepsItsReasoning is what stops a later cleanup
+// deleting the warning along with the jargon. Why a password form cannot be
+// framed is worth saying; the name of the header is not.
+func TestEmbedPasswordWarningKeepsItsReasoning(t *testing.T) {
+	f := newFixture(t)
+	f.as(f.owner)
+
+	body := f.get(t, "/settings/sites/acme.example/sharing").Body.String()
+
+	if !strings.Contains(body, "invisibly under a button on their own page") {
+		t.Error("the reason a password-protected link cannot be embedded is gone")
+	}
+
+	if !strings.Contains(body, "Create a second link without a password") {
+		t.Error("the warning no longer says what to do instead")
+	}
+}
+
 // TestAViewerCannotReachSiteSettings checks that dashboard-only roles cannot
 // read configuration or mutate it by posting directly.
 func TestAViewerCannotChangeSiteSettings(t *testing.T) {
