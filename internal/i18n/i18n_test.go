@@ -9,6 +9,7 @@
 package i18n
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -307,6 +308,60 @@ var namespaces = []string{"common", "auth", "dashboard", "settings", "pages"}
 // before comparing so that a catalogue holding "sites.count_one" and
 // "sites.count_other" matches a call site that only ever names "sites.count".
 var pluralSuffixes = []string{"_one", "_other", "_zero", "_two", "_few", "_many"}
+
+// operatorVocabulary is what must never reach a signed-in screen: an
+// environment variable, an HTTP header name, or a protocol acronym a customer
+// has no way to act on. The signed-in UI is written for a customer of the
+// hosted product, who has no shell and no server to change.
+var operatorVocabulary = regexp.MustCompile(`FEASIBLE_[A-Z_]+|X-Frame-Options|X-Forwarded-For`)
+
+// TestNoOperatorVocabularyReachesACustomer walks the customer-facing catalogues
+// and the screens that render them.
+//
+// An unactionable instruction is worse than silence: it reads as "something is
+// wrong with your account and you cannot fix it". The alternative — branching
+// the copy on hosted versus self-hosted — doubles every string and every test,
+// so the rule is absolute and this is what keeps it.
+func TestNoOperatorVocabularyReachesACustomer(t *testing.T) {
+	var offences []string
+
+	for locale, messages := range Default.messages {
+		for id, text := range messages {
+			if hit := operatorVocabulary.FindString(text); hit != "" {
+				offences = append(offences, fmt.Sprintf("%s/%s names %q", locale, id, hit))
+			}
+		}
+	}
+
+	for _, root := range []string{filepath.Join("..", "settings"), filepath.Join("..", "auth")} {
+		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".html") {
+				return nil
+			}
+
+			body, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+
+			if hit := operatorVocabulary.FindString(string(body)); hit != "" {
+				offences = append(offences, fmt.Sprintf("%s names %q", path, hit))
+			}
+
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
+	}
+
+	sort.Strings(offences)
+
+	if len(offences) > 0 {
+		t.Fatalf("%d places show a customer something only an operator can change:\n  %s",
+			len(offences), strings.Join(offences, "\n  "))
+	}
+}
 
 // TestEveryIDInUseHasAString is the completeness check, and it is the reason
 // this file scans the source tree at all.

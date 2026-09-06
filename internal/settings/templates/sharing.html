@@ -124,8 +124,7 @@
 
 		<div class="mt-4 border-2 border-down/30 bg-down/10 px-4 py-3 text-sm text-down-ink">
 			<strong class="font-semibold">{{ t $.Lang "settings.sharing.embed_password_title" }}</strong>
-			{{ t $.Lang "settings.sharing.embed_password_before" }}
-			<code class="bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">X-Frame-Options</code>{{ t $.Lang "settings.sharing.embed_password_after" }}
+			{{ t $.Lang "settings.sharing.embed_password_body" }}
 		</div>
 
 		<div class="mt-4 border-2 border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn-ink">
@@ -140,9 +139,7 @@
 			{{if .HTTPS}}
 				{{ t $.Lang "settings.sharing.transport_https" }}
 			{{else}}
-				{{ t $.Lang "settings.sharing.transport_plain_before" }}
-				<code class="bg-subtle px-1.5 py-0.5 font-mono text-xs text-body">FEASIBLE_APP_BASE_URL</code>
-				{{ t $.Lang "settings.sharing.transport_plain_after" }}
+				{{ t $.Lang "settings.sharing.transport_plain" }}
 			{{end}}
 		</p>
 	</section>

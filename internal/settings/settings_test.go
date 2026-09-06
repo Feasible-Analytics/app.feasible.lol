@@ -261,9 +261,10 @@ func TestShieldsPageShowsTheResolvedAddress(t *testing.T) {
 	}
 }
 
-// TestShieldsPageWarnsAboutALANAddress covers the self-hosting trap: behind a
-// proxy that does not forward X-Forwarded-For, the address on this page is the
-// customer's shared proxy, and manually blocking it blocks every visitor.
+// TestShieldsPageWarnsAboutALANAddress covers the proxy trap: when the address
+// reaching us is a shared proxy rather than the visitor's own, manually
+// blocking it blocks every visitor. The warning names the effect and stops
+// there — fixing the proxy is not a customer's job and not their vocabulary.
 func TestShieldsPageWarnsAboutALANAddress(t *testing.T) {
 	handler, _ := newHandler(t)
 
@@ -282,8 +283,8 @@ func TestShieldsPageWarnsAboutALANAddress(t *testing.T) {
 		t.Fatal("the warning does not explain the effect of manually blocking the shared address")
 	}
 
-	if !strings.Contains(body, "X-Forwarded-For") {
-		t.Fatal("the warning does not name the header the customer has to fix")
+	if strings.Contains(body, "X-Forwarded-For") || strings.Contains(body, "FEASIBLE_") {
+		t.Fatal("the warning hands a customer a configuration change they cannot make")
 	}
 
 	if strings.Contains(body, "Block my own traffic") {
