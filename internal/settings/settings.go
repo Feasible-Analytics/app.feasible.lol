@@ -747,7 +747,7 @@ func (h *Handler) addShield(w http.ResponseWriter, r *http.Request, site sites.S
 		return
 	}
 
-	h.refreshShields(r.Context(), account.Reader(), site.ID)
+	h.refreshShields(r.Context(), account.Reader(), site.ID, site.AccountID)
 
 	h.redirect(w, r, site.Domain, "shields", tr(r, "auth.shields.flash_added", "rule", rule.Value), "")
 }
@@ -774,7 +774,7 @@ func (h *Handler) deleteShield(w http.ResponseWriter, r *http.Request, site site
 		return
 	}
 
-	h.refreshShields(r.Context(), account.Reader(), site.ID)
+	h.refreshShields(r.Context(), account.Reader(), site.ID, site.AccountID)
 
 	h.redirect(w, r, site.Domain, "shields", tr(r, "auth.shields.flash_removed"), "")
 }
@@ -808,14 +808,16 @@ func (h *Handler) allowRejectedHostname(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	h.refreshShields(r.Context(), account.Reader(), site.ID)
+	h.refreshShields(r.Context(), account.Reader(), site.ID, site.AccountID)
 	h.redirect(w, r, site.Domain, "shields", tr(r, "auth.shields.flash_hostname_allowed", "hostname", rule.Value), "")
 }
 
 // refreshShields pushes a site's rules into the running snapshot. Waiting for
 // the timer would mean a customer clicks save, generates a test event, sees it
 // counted, and reports the feature as broken.
-func (h *Handler) refreshShields(ctx context.Context, db *sql.DB, siteID int64) {
+func (h *Handler) refreshShields(ctx context.Context, db *sql.DB, siteID int64, accountID int64) {
+	h.stampRules(ctx, accountID)
+
 	if h.Shields == nil {
 		return
 	}
@@ -830,6 +832,21 @@ func (h *Handler) refreshShields(ctx context.Context, db *sql.DB, siteID int64) 
 	}
 
 	h.Shields.Set(siteID, rules)
+}
+
+// stampRules records the change in system.db.
+//
+// This process already pushed the new rules into its own snapshot; the marker
+// is for every other one. Without it a second app shard, or the ingest tier,
+// would go on applying the old rules until the hourly full pass.
+//
+// A failure here is logged rather than returned: the rule is saved, and the
+// worst case is that the other processes pick it up within the hour.
+func (h *Handler) stampRules(ctx context.Context, accountID int64) {
+	if err := h.Sites.StampRules(ctx, accountID, time.Now().UTC()); err != nil && h.Log != nil {
+		h.Log.Error("a rule change was not stamped, so other processes will not see it "+
+			"until the next full refresh", "account", accountID, "error", err)
+	}
 }
 
 // paths renders the path cleaning rules, and a preview when one was asked for.
@@ -911,7 +928,7 @@ func (h *Handler) savePaths(w http.ResponseWriter, r *http.Request, site sites.S
 		return
 	}
 
-	moved, err := h.applyPaths(r.Context(), account, site.ID)
+	moved, err := h.applyPaths(r.Context(), account, site.ID, site.AccountID)
 	if err != nil {
 		h.redirect(w, r, site.Domain, "paths", "", err.Error())
 		return
@@ -924,11 +941,13 @@ func (h *Handler) savePaths(w http.ResponseWriter, r *http.Request, site sites.S
 // applyPaths rebuilds the query-time map and updates the running snapshot. Both
 // halves are needed: the map is what makes the rules retroactive, and the
 // snapshot is what stops the dimension table growing from the next event on.
-func (h *Handler) applyPaths(ctx context.Context, account *accounts.Account, siteID int64) (int, error) {
+func (h *Handler) applyPaths(ctx context.Context, account *accounts.Account, siteID, accountID int64) (int, error) {
 	moved, err := pathclean.Materialise(ctx, account.Writer(), account.Intern, siteID)
 	if err != nil {
 		return 0, err
 	}
+
+	h.stampRules(ctx, accountID)
 
 	if h.Paths != nil {
 		set, err := pathclean.RulesetFor(ctx, account.Reader(), siteID)
@@ -1030,7 +1049,7 @@ func (h *Handler) toggleTrailingSlash(w http.ResponseWriter, r *http.Request, si
 		return
 	}
 
-	if _, err := h.applyPaths(r.Context(), account, site.ID); err != nil {
+	if _, err := h.applyPaths(r.Context(), account, site.ID, site.AccountID); err != nil {
 		h.redirect(w, r, site.Domain, "paths", "", err.Error())
 		return
 	}

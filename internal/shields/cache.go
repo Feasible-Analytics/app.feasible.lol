@@ -11,6 +11,7 @@ package shields
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/netip"
@@ -23,13 +24,20 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 )
 
+// opener is how a refresh reaches an account database. It is an interface so a
+// test can count the opens a pass performs, which is the whole property this
+// cache's refresh schedule exists to keep at zero.
+type opener interface {
+	Acquire(ctx context.Context, id int64) (*accounts.Lease, error)
+}
+
 // Cache holds the compiled rules for every site this process serves. It is a
 // snapshot swapped whole for the same reason the routing map is: an event
 // lookup is one atomic load and one map read, with no lock and no I/O on a path
 // that runs for every request on the box.
 type Cache struct {
 	sites    *sites.Cache
-	accounts *accounts.Manager
+	accounts opener
 
 	// Rejections reads hostname facts already committed by the writer for the
 	// settings page's one-click allow flow.
@@ -40,62 +48,161 @@ type Cache struct {
 
 // snapshot is one immutable build of the rules.
 type snapshot struct {
-	bySite  map[int64]*Ruleset
+	bySite map[int64]*Ruleset
+
+	// rules is what each site compiled from, kept so an account whose marker
+	// has not moved can be carried forward without opening its database.
+	rules map[int64][]Rule
+
+	// versions is the marker each account was last read at. An account absent
+	// from it has never been read.
+	versions map[int64]int64
+
 	builtAt time.Time
 }
 
 // New builds an empty cache. Nothing is read until Refresh runs, so a process
 // can construct it before it has decided whether it will serve traffic.
-func New(siteCache *sites.Cache, manager *accounts.Manager) *Cache {
+func New(siteCache *sites.Cache, manager opener) *Cache {
 	cache := &Cache{sites: siteCache, accounts: manager}
-	cache.snap.Store(&snapshot{bySite: map[int64]*Ruleset{}})
+	cache.snap.Store(&snapshot{
+		bySite:   map[int64]*Ruleset{},
+		rules:    map[int64][]Rule{},
+		versions: map[int64]int64{},
+	})
 
 	return cache
 }
 
-// Refresh rebuilds the snapshot. It reads one query per account rather than one
-// per site: a team with forty sites is one read, and the rule tables are small
-// enough that reading all of them is cheaper than working out which changed.
+// Refresh rebuilds every account's rules, whatever their marker says.
+//
+// It is the first pass at start-up and the hourly backstop. A marker that was
+// never stamped — an install upgraded mid-flight, a rule written by something
+// that does not stamp — is invisible to the incremental pass, and this is what
+// covers it.
 func (c *Cache) Refresh(ctx context.Context) error {
+	return c.refresh(ctx, nil)
+}
+
+// RefreshChanged re-reads only the accounts whose rules have moved since the
+// last pass, which in the common case is none of them.
+//
+// One query against system.db replaces one database open and one read per
+// account. At two thousand accounts that is the difference between about a
+// second of work every fifteen seconds and none.
+func (c *Cache) RefreshChanged(ctx context.Context) error {
+	versions, err := c.sites.RuleVersions(ctx)
+	if err != nil {
+		return err
+	}
+
+	return c.refresh(ctx, versions)
+}
+
+// refresh rebuilds the snapshot. Nil versions rebuilds everything; otherwise an
+// account whose marker matches the one it was last read at is carried forward.
+//
+// One account that cannot be opened is skipped with its previous rules intact,
+// and every other account is still published. Abandoning the pass would leave
+// every customer on the box holding a stale snapshot because one database was
+// busy, and the odds of at least one being busy rise with the account count.
+func (c *Cache) refresh(ctx context.Context, versions map[int64]int64) error {
+	current := c.snap.Load()
+
 	byAccount := map[int64][]int64{}
 	for _, site := range c.sites.All() {
 		byAccount[site.AccountID] = append(byAccount[site.AccountID], site.ID)
 	}
 
-	bySite := map[int64]*Ruleset{}
 	rulesBySite := map[int64][]Rule{}
+	read := map[int64]int64{}
+
+	var failures []error
 
 	for accountID := range byAccount {
-		lease, err := c.accounts.Acquire(ctx, accountID)
-		if err != nil {
-			// The refresh is abandoned rather than published half-built, so the
-			// previous snapshot stays in force for every account. That is the
-			// safe direction: a rule the customer wrote keeps being applied
-			// rather than silently lapsing because one database was busy.
-			return fmt.Errorf("shields: refresh account %d: %w", accountID, err)
+		if versions != nil && carriedForward(current, accountID, versions[accountID], byAccount[accountID], rulesBySite) {
+			read[accountID] = current.versions[accountID]
+
+			continue
 		}
 
-		rules, err := allRules(ctx, lease.Account.Reader())
+		rules, err := c.readAccount(ctx, accountID)
 		if err != nil {
-			_ = lease.Release()
-			return err
-		}
-		if err := lease.Release(); err != nil {
-			return fmt.Errorf("shields: release account %d: %w", accountID, err)
+			failures = append(failures, err)
+
+			// The account keeps the rules it had. A rule the customer wrote
+			// goes on being applied rather than lapsing because of a lock.
+			for _, siteID := range byAccount[accountID] {
+				if had, ok := current.rules[siteID]; ok {
+					rulesBySite[siteID] = had
+				}
+			}
+
+			if was, ok := current.versions[accountID]; ok {
+				read[accountID] = was
+			}
+
+			continue
 		}
 
 		for siteID, list := range rules {
 			rulesBySite[siteID] = list
 		}
+
+		read[accountID] = versions[accountID]
 	}
 
+	bySite := map[int64]*Ruleset{}
 	for _, site := range c.sites.All() {
 		bySite[site.ID] = CompileFor(site.Domain, rulesBySite[site.ID])
 	}
 
-	c.snap.Store(&snapshot{bySite: bySite, builtAt: time.Now()})
+	c.snap.Store(&snapshot{
+		bySite:   bySite,
+		rules:    rulesBySite,
+		versions: read,
+		builtAt:  time.Now(),
+	})
 
-	return nil
+	return errors.Join(failures...)
+}
+
+// carriedForward copies one account's compiled input from the previous snapshot
+// when its marker has not moved, and reports whether it could.
+func carriedForward(current *snapshot, accountID, version int64, siteIDs []int64, into map[int64][]Rule) bool {
+	was, seen := current.versions[accountID]
+	if !seen || was != version {
+		return false
+	}
+
+	for _, siteID := range siteIDs {
+		if had, ok := current.rules[siteID]; ok {
+			into[siteID] = had
+		}
+	}
+
+	return true
+}
+
+// readAccount opens one account and reads its rules.
+func (c *Cache) readAccount(ctx context.Context, accountID int64) (map[int64][]Rule, error) {
+	lease, err := c.accounts.Acquire(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("shields: refresh account %d: %w", accountID, err)
+	}
+
+	rules, err := allRules(ctx, lease.Account.Reader())
+	if err != nil {
+		_ = lease.Release()
+
+		return nil, err
+	}
+
+	if err := lease.Release(); err != nil {
+		return nil, fmt.Errorf("shields: release account %d: %w", accountID, err)
+	}
+
+	return rules, nil
 }
 
 // allRules reads every site's rules from one account database.
@@ -144,7 +251,22 @@ func (c *Cache) Set(siteID int64, rules []Rule) {
 	}
 	bySite[siteID] = CompileFor(domain, rules)
 
-	c.snap.Store(&snapshot{bySite: bySite, builtAt: current.builtAt})
+	// The compiled input travels with it. Dropping it would make the next
+	// incremental pass believe no account had ever been read, and re-open all
+	// of them.
+	byInput := make(map[int64][]Rule, len(current.rules)+1)
+	for id, list := range current.rules {
+		byInput[id] = list
+	}
+
+	byInput[siteID] = rules
+
+	c.snap.Store(&snapshot{
+		bySite:   bySite,
+		rules:    byInput,
+		versions: current.versions,
+		builtAt:  current.builtAt,
+	})
 }
 
 // Ruleset returns one site's compiled rules, or nil when it has none.
@@ -187,21 +309,34 @@ func (c *Cache) AllowsHostname(siteID int64, hostname string) bool {
 	return c.snap.Load().bySite[siteID].HostnameAllowed(hostname)
 }
 
-// Run refreshes on a ticker until the context is cancelled. The interval
-// matches the site-cache refresh, so rules and newly added sites propagate on
-// the same bounded schedule.
+// Run refreshes on a ticker until the context is cancelled.
+//
+// Two intervals. The short one matches the site-cache refresh, so a rule saved
+// in the dashboard is live on every process within fifteen seconds, and it
+// costs one query against system.db when nothing changed. The long one rebuilds
+// everything regardless, because a marker that was never stamped is invisible
+// to the short pass and an hour is a bounded time to be wrong for.
 func (c *Cache) Run(ctx context.Context, onError func(error)) {
-	ticker := time.NewTicker(RefreshInterval)
-	defer ticker.Stop()
+	changed := time.NewTicker(RefreshInterval)
+	defer changed.Stop()
+
+	full := time.NewTicker(FullRefreshInterval)
+	defer full.Stop()
+
+	report := func(err error) {
+		if err != nil && onError != nil {
+			onError(err)
+		}
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			if err := c.Refresh(ctx); err != nil && onError != nil {
-				onError(err)
-			}
+		case <-changed.C:
+			report(c.RefreshChanged(ctx))
+		case <-full.C:
+			report(c.Refresh(ctx))
 		}
 	}
 }
