@@ -148,6 +148,35 @@ The seed generator reaches **13,987 events/s** on the same machine, but it is no
 comparable: it writes in bulk with the indexes dropped and rebuilt afterwards.
 The gap between the two is what indexing and per-batch transactions cost.
 
+## Acquiring an account handle
+
+Taken 6 September 2026, three passes each, on the same machine. `go test
+./internal/accounts -bench BenchmarkAcquireCached`.
+
+This runs once per account per write batch, once per dashboard request and once
+per account per health flush, so it is the most frequently executed thing in the
+process that is not the accept path itself.
+
+| | Before | After |
+|---|---:|---:|
+| One goroutine | 67–88 µs | **69–77 ns** |
+| Ten goroutines over sixteen accounts | 70–162 µs | **143–213 ns** |
+| Allocations | 27 | 2 |
+| Filesystem operations | 4 opens, 4 flocks, 2 stats | none |
+
+A handle this process already holds is now a read lock and a map read. The file
+locks are still taken when a handle is opened, which is where a file is actually
+created; what went away is paying for them again on every later use of a handle
+that already holds the account's lifetime lease.
+
+**There is still a global lock on this path**, taken for reading. Ten goroutines
+cost twice what one does rather than the same, so it is a contention point — one
+about a thousand times smaller than it was. The next thing to do about it, if it
+ever matters, is to shard the map by account id.
+
+The benchmark is in the repository so that a change putting those locks back on
+the cached path is visible as a number rather than as a slow afternoon.
+
 ## Reading
 
 **Read numbers taken:** 31 August 2026, and not re-taken since — a change to the
