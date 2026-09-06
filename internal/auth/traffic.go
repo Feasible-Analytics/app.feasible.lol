@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/rollup"
 )
 
 // Traffic reads the per-site numbers the sites list and the onboarding poll
@@ -187,4 +188,30 @@ func (t *Traffic) FirstEventAt(ctx context.Context, accountID, siteID int64) (in
 	}
 
 	return nullInt64(at), nil
+}
+
+// RollupProgress reports whether a site's reports are still being rebuilt, and
+// how far along.
+//
+// Changing a site's timezone invalidates every summary bucket, so the settings
+// screen that causes the rebuild is where a reader should be told about it. A
+// site whose account cannot be opened reports nothing rather than failing the
+// page: a settings screen that will not render is worse than one with no notice
+// on it.
+func (t *Traffic) RollupProgress(ctx context.Context, accountID int64, site rollup.Site, now time.Time) rollup.Progress {
+	lease, err := t.manager.Acquire(ctx, accountID)
+	if err != nil {
+		return rollup.Progress{}
+	}
+	defer lease.Release() //nolint:errcheck // the page is more useful than an unlock error
+
+	builder := rollup.New(lease.Account.Reader())
+	builder.Now = func() time.Time { return now }
+
+	progress, err := builder.Progress(ctx, site)
+	if err != nil {
+		return rollup.Progress{}
+	}
+
+	return progress
 }

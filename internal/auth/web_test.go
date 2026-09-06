@@ -39,8 +39,9 @@ import (
 type testApp struct {
 	*Handler
 
-	store *Store
-	sent  *captureSender
+	store    *Store
+	sent     *captureSender
+	accounts *accounts.Manager
 }
 
 // captureSender keeps every message in memory instead of sending it, so a test
@@ -109,7 +110,7 @@ func newTestApp(t *testing.T) *testApp {
 		t.Fatalf("build handler: %v", err)
 	}
 
-	return &testApp{Handler: handler, store: store, sent: sender}
+	return &testApp{Handler: handler, store: store, sent: sender, accounts: manager}
 }
 
 // client is a cookie-keeping HTTP client over a test server, which is what
@@ -2018,6 +2019,63 @@ func TestGeneralSettingsPointAtVisibilityAndCannotPublish(t *testing.T) {
 
 	if saved.IsPublic {
 		t.Error("a posted is_public must be ignored, or a stale form can publish a site")
+	}
+}
+
+// TestTheSettingsScreenSaysWhenReportsAreBeingRebuilt covers the notice beside
+// the control that causes one.
+//
+// Changing the timezone re-cuts every bucket on the new local day. Without this
+// the only thing a customer sees is that their dashboard went slow after a
+// settings change, and the reasonable conclusion is that we are broken.
+func TestTheSettingsScreenSaysWhenReportsAreBeingRebuilt(t *testing.T) {
+	app := newTestApp(t)
+	c := registerAndVerify(t, app)
+	ctx := context.Background()
+
+	resp := c.post("/sites/new", url.Values{
+		"domain":   {"rebuilding.example.com"},
+		"timezone": {"Etc/UTC"},
+	})
+	closeResponseBody(t, resp)
+
+	site, err := app.store.SiteByDomain(ctx, "rebuilding.example.com")
+	if err != nil {
+		t.Fatalf("read site: %v", err)
+	}
+
+	path := "/sites/" + itoa(site.ID) + "/settings"
+
+	// A site with no events is not waiting on anything, so it gets no notice.
+	if strings.Contains(c.body(path), "being rebuilt") {
+		t.Error("a site with no traffic was told its reports are being rebuilt")
+	}
+
+	lease, err := app.accounts.Acquire(ctx, site.AccountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lease.Account.Writer().ExecContext(ctx,
+		"INSERT INTO events (site_id, session_id, user_id, timestamp, name_id) VALUES (?, 1, 1, ?, 1)",
+		site.ID, app.store.Now().AddDate(0, 0, -30).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	body := c.body(path)
+
+	if !strings.Contains(body, "being rebuilt") {
+		t.Error("a site with unbuilt history says nothing about why its reports are slow")
+	}
+
+	if !strings.Contains(body, `role="progressbar"`) {
+		t.Error("the notice shows no progress, so a reader cannot tell whether it is moving")
+	}
+
+	if !strings.Contains(body, "Every number stays correct while it runs") {
+		t.Error("the notice does not say the numbers are still right, which is the first thing to say")
 	}
 }
 

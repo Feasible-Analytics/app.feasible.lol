@@ -59,6 +59,11 @@ type Worker struct {
 
 	// Every is how often Run rebuilds. Zero means Interval.
 	Every time.Duration
+
+	// Rest is how each build hands the write lock back between chunks. Nil is
+	// the builder's own pacing, which is what a running server wants; a rebuild
+	// on a machine with nothing else writing can pass rollup.NoRest.
+	Rest func(ctx context.Context, d time.Duration) error
 }
 
 // now reads the worker's clock.
@@ -166,12 +171,13 @@ func (w *Worker) buildSite(ctx context.Context, ref SiteRef) error {
 
 	builder := New(account.Writer())
 	builder.Now = w.now
+	builder.Sleep = w.Rest
 
 	location := ref.Site.Location()
 	now := w.now().In(location)
 	today := query.RollupBucketStart(now, query.GrainDay, location)
 
-	earliest, err := firstEvent(ctx, account.Reader(), ref.Site.ID)
+	earliest, err := FirstEvent(ctx, account.Reader(), ref.Site.ID)
 	if err != nil {
 		return err
 	}
@@ -268,9 +274,9 @@ func localToInstant(local int64, location *time.Location, grain query.Grain) tim
 	return query.RollupBucketStart(at, grain, location)
 }
 
-// firstEvent finds when a site's history starts, which is as far back as a
-// backfill can usefully go.
-func firstEvent(ctx context.Context, db *sql.DB, siteID int64) (time.Time, error) {
+// FirstEvent finds when a site's history starts, which is as far back as a
+// backfill can usefully go and the point a rebuild's progress is measured from.
+func FirstEvent(ctx context.Context, db *sql.DB, siteID int64) (time.Time, error) {
 	var earliest sql.NullInt64
 
 	if err := db.QueryRowContext(ctx, "SELECT MIN(timestamp) FROM events WHERE site_id = ?", siteID).Scan(&earliest); err != nil {

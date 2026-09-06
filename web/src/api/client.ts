@@ -61,7 +61,7 @@ export function bootstrap(): Bootstrap {
  *  sites yet is a real state, and it should reach the empty screen rather than
  *  a white one. An absent catalogue is the same bargain — every label renders
  *  as its own id, which is visible rather than blank. */
-function readBootstrap(): Bootstrap {
+export function readBootstrap(): Bootstrap {
 	const node = document.getElementById("feasible-bootstrap");
 
 	if (!node?.textContent) return { sites: [], locale: "", hour_cycle: "", messages: {} };
@@ -70,14 +70,15 @@ function readBootstrap(): Bootstrap {
 		const parsed = JSON.parse(node.textContent) as Partial<Bootstrap>;
 		const messages = parsed.messages;
 
+		// Spread, then coerce the four the dashboard cannot run without. Every
+		// other field the server sends arrives on its own, so one nobody
+		// remembered to name here is not silently dropped.
 		return {
+			...parsed,
 			sites: Array.isArray(parsed.sites) ? parsed.sites : [],
 			locale: typeof parsed.locale === "string" ? parsed.locale : "",
 			hour_cycle: parsed.hour_cycle === "12" ? "12" : "24",
 			messages: messages && typeof messages === "object" && !Array.isArray(messages) ? messages : {},
-			shared: parsed.shared,
-			navigation: parsed.navigation,
-			lock: parsed.lock,
 		};
 	} catch {
 		return { sites: [], locale: "", hour_cycle: "", messages: {} };

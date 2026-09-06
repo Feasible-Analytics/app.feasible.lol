@@ -50,6 +50,24 @@
     </select>
   </div>
 
+  {{ with .Data.Rebuild }}
+    {{ if .Building }}
+      <!-- Beside the control that causes it. Changing the timezone re-cuts every
+           bucket on the new local day, and without this the only thing a reader
+           sees is that their dashboard went slow. -->
+      <div class="border-t border-line px-6 py-4" role="status">
+        <p class="text-sm text-body">{{ t $.Lang "auth.site_settings.rebuilding" }}</p>
+        <div class="mt-2 flex items-center gap-3">
+          <div class="h-1.5 flex-1 bg-subtle" role="progressbar" aria-valuenow="{{ .Percent }}" aria-valuemin="0" aria-valuemax="100"
+               aria-label="{{ t $.Lang "auth.site_settings.rebuilding_label" }}">
+            <div class="h-full bg-accent" style="width: {{ .Percent }}%"></div>
+          </div>
+          <span class="tnum shrink-0 text-xs text-muted">{{ t $.Lang "auth.site_settings.rebuilding_percent" "percent" .Percent }}</span>
+        </div>
+      </div>
+    {{ end }}
+  {{ end }}
+
   <div class="flex flex-col gap-2 border-t border-line px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
     <label for="folder_id" class="text-sm font-medium text-body">{{ t $.Lang "auth.site_settings.folder" }}</label>
     <select id="folder_id" name="folder_id"

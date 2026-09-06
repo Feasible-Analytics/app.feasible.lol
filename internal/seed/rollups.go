@@ -32,6 +32,7 @@ import (
 func buildRollups(ctx context.Context, run *accountRun, from, now time.Time) error {
 	builder := rollup.New(run.account.Writer())
 	builder.Now = func() time.Time { return now }
+	builder.Sleep = rollup.NoRest
 
 	for _, site := range run.sites {
 		target := rollup.Site{

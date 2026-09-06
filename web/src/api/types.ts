@@ -364,6 +364,19 @@ export interface Bootstrap {
 	 *  browser needs no catalogue and no fallback rule of its own. */
 	messages: Record<string, string>;
 	shared?: Shared;
+	/** Present while this site's reports are being rebuilt, which a timezone
+	 *  change causes. A snapshot taken when the page was served: it appears on
+	 *  the next load and goes away on the one after the rebuild finishes, which
+	 *  is honest for something that runs for minutes to hours and costs no
+	 *  polling. */
+	rebuild?: RollupRebuild;
+}
+
+/** How far a site's summary has got. Every number on the dashboard is correct
+ * while one runs — the reports are just read the slow way until it catches up,
+ * and a reader who is not told that concludes the product is broken. */
+export interface RollupRebuild {
+	percent: number;
 }
 
 /** Server-authored authenticated destinations. They are absent from every

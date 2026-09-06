@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import test, { before } from "node:test";
 
-import { funnelReport, goalsReport, journeyReport, properties, propertyReport, query } from "./client";
+import { funnelReport, goalsReport, journeyReport, properties, propertyReport, query, readBootstrap } from "./client";
 import type { Filter } from "./types";
 
 const capability = "unguessable-shared-link";
@@ -169,4 +169,41 @@ test("property, funnel, and journey reports keep the dashboard query contract", 
 		assert.match(url, /visit:country/);
 		assert.match(url, /exact=true/);
 	}
+});
+
+test("nothing the server puts in the bootstrap is dropped on the way in", () => {
+	const sent = {
+		sites: ["example.com"],
+		locale: "de",
+		hour_cycle: "12",
+		messages: { "a.b.c": "x" },
+		navigation: { name: "A", email: "a@example.com", sites_url: "/sites", account_url: "/settings", logout_url: "/logout", csrf: "t" },
+		lock: { reason: "volume", error: "too much" },
+		shared: { mode: "share", base: "/share/x", domain: "example.com", capability: "x", embed: false, storage: true },
+		rebuild: { percent: 42 },
+	};
+
+	globalThis.document = {
+		getElementById: () => ({ textContent: JSON.stringify(sent) }),
+	} as unknown as Document;
+
+	// Field by field against what the server sent, because the failure this
+	// catches is a field arriving and being quietly left behind: the page still
+	// renders, just without whatever it was.
+	assert.deepEqual(readBootstrap(), sent);
+});
+
+test("a bootstrap whose required fields are wrong still yields a usable one", () => {
+	globalThis.document = {
+		getElementById: () => ({ textContent: JSON.stringify({ sites: "not-a-list", hour_cycle: "nonsense", messages: [] }) }),
+	} as unknown as Document;
+
+	const boot = readBootstrap();
+
+	// Field by field, because the four coerced ones are the point here and a
+	// whole-object compare would also be satisfied by them arriving untouched.
+	assert.deepEqual(boot.sites, []);
+	assert.equal(boot.locale, "");
+	assert.equal(boot.hour_cycle, "24", "an unrecognised dial falls back to 24 rather than through to the page");
+	assert.deepEqual(boot.messages, {}, "an array is not a catalogue");
 });

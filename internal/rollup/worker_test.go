@@ -29,6 +29,7 @@ func workerOver(t *testing.T, dir string, accountID int64, now time.Time) *rollu
 	return &rollup.Worker{
 		Accounts: manager,
 		Now:      func() time.Time { return now },
+		Rest:     rollup.NoRest,
 		Sites: func(context.Context) ([]rollup.SiteRef, error) {
 			return []rollup.SiteRef{{AccountID: accountID, Site: testSite}}, nil
 		},
@@ -229,6 +230,7 @@ func TestOneSiteFailingDoesNotStopTheRest(t *testing.T) {
 	worker := &rollup.Worker{
 		Accounts: reopened,
 		Now:      func() time.Time { return fixtureNow },
+		Rest:     rollup.NoRest,
 		Sites: func(context.Context) ([]rollup.SiteRef, error) {
 			return []rollup.SiteRef{
 				// Account 0 is not a valid id, so opening it fails.
@@ -253,5 +255,79 @@ func TestOneSiteFailingDoesNotStopTheRest(t *testing.T) {
 		t.Fatal(err)
 	} else if !found {
 		t.Error("the site after the failing one was never built")
+	}
+}
+
+// TestTheWorkerResumesAPartialBank is the resume the banking exists for, driven
+// through the worker rather than a helper.
+//
+// A rebuild interrupted part way leaves a partial range in rollup_state. The
+// next pass must carry on from there instead of starting at the first event
+// again, and the finished coverage must be indistinguishable from one built in
+// a single run.
+func TestTheWorkerResumesAPartialBank(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	manager := accounts.NewManager(dir)
+	account, err := manager.Open(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, events := carryFixture()
+	writeFixture(t, account, sessions, events)
+
+	today := query.RollupBucketStart(fixtureNow.In(losAngeles), query.GrainDay, losAngeles)
+	cut := local(29, 0)
+
+	// Stand in for a rebuild that was stopped after one chunk.
+	partial := rollup.New(account.Writer())
+	partial.Now = func() time.Time { return fixtureNow }
+	partial.Sleep = rollup.NoRest
+
+	if err := partial.Rebuild(ctx, rollup.Request{
+		Site: testSite, Grain: query.GrainDay, From: today.AddDate(0, 0, -30), To: cut,
+		CoverThrough: today, FromBeginning: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	banked, _, err := partial.Coverage(ctx, testSite.ID, query.GrainDay)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.CloseAll(); err != nil {
+		t.Fatal(err)
+	}
+
+	worker := workerOver(t, dir, 1, fixtureNow)
+
+	if err := worker.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := worker.Accounts.Open(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	after, found, err := rollup.New(reopened.Writer()).Coverage(ctx, testSite.ID, query.GrainDay)
+	if err != nil || !found {
+		t.Fatalf("the resumed pass banked nothing: %v", err)
+	}
+
+	if after.Through != query.RollupLocalUnix(today, losAngeles) {
+		t.Errorf("coverage reaches %d after the resumed pass, want the start of today at %d",
+			after.Through, query.RollupLocalUnix(today, losAngeles))
+	}
+
+	if after.From != 0 {
+		t.Errorf("covered_from = %d, want the banked 0 to survive the resume", after.From)
+	}
+
+	if banked.Through >= after.Through {
+		t.Errorf("the resumed pass reached %d, no further than the banked %d", after.Through, banked.Through)
 	}
 }

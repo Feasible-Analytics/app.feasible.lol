@@ -20,6 +20,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/appui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/rollup"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
@@ -404,6 +405,7 @@ func (h *Handler) showSiteSettings(w http.ResponseWriter, r *http.Request) {
 	p.Data["DualWriteHours"] = int(DualWriteWindow.Hours())
 	p.Data["TransferTeams"] = h.transferDestinations(r.Context(), userFrom(r).ID, team.ID)
 	p.Data["CurrentTeamID"] = team.ID
+	p.Data["Rebuild"] = h.rollupProgress(r, site, team.ID)
 	if problem := strings.TrimSpace(r.URL.Query().Get("transfer_error")); problem != "" {
 		p.Error = problem
 	}
@@ -586,6 +588,20 @@ func transferErrorMessage(err error) string {
 	default:
 		return "The site could not be transferred."
 	}
+}
+
+// rollupProgress reports whether this site's reports are still being rebuilt.
+//
+// Changing the timezone is the ordinary action that triggers one, and it is the
+// control this notice sits beside — so the screen that causes the slowdown is
+// the screen that explains it.
+func (h *Handler) rollupProgress(r *http.Request, site *Site, teamID int64) rollup.Progress {
+	if h.Traffic == nil {
+		return rollup.Progress{}
+	}
+
+	return h.Traffic.RollupProgress(r.Context(), teamID,
+		rollup.Site{ID: site.ID, Domain: site.Domain, Timezone: site.Timezone}, h.Store.Now())
 }
 
 // doSiteGeneral saves the display name, timezone and folder.

@@ -276,6 +276,20 @@ type Bootstrap struct {
 	// link or a public dashboard. Its absence is what tells the front end it is
 	// the ordinary authenticated dashboard.
 	Shared *Shared `json:"shared,omitempty"`
+
+	// Rebuild is present while the site being looked at is having its reports
+	// rebuilt, which a timezone change causes. It is a snapshot taken when the
+	// page was served, so it appears on the reader's next load and goes away on
+	// the one after the rebuild finishes — close enough for something that runs
+	// for minutes to hours, and it costs no polling.
+	Rebuild *Rebuild `json:"rebuild,omitempty"`
+}
+
+// Rebuild is how far a site's summary has got. Every number the dashboard shows
+// is correct while one runs; the reports are simply read the slow way until the
+// summary catches up.
+type Rebuild struct {
+	Percent int `json:"percent"`
 }
 
 // Navigation is the authenticated product map rendered in the dashboard menu.
