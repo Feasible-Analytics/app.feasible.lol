@@ -36,6 +36,22 @@ var layout = template.Must(template.New("layout").Parse(layoutHTML))
 // data is destroyed.
 const DateFormat = "Mon, 2 January 2006"
 
+// The colours the layout uses for a value that moved and for the two kicker
+// tones. They are constants rather than hex literals in the markup because an
+// email cannot use a CSS variable — every colour is inlined on the element —
+// so the only way to have one definition is to put it here.
+const (
+	colourAccent = "#ae1800"
+	colourAlarm  = "#b91c1c"
+	colourUp     = "#15803d"
+	colourDown   = "#b91c1c"
+	colourFlat   = "#616e7c"
+)
+
+// ToneAlarm is the kicker tone for a message that reports something wrong. The
+// default tone is the brand accent.
+const ToneAlarm = "alarm"
+
 // Button is a link rendered as a call to action.
 type Button struct {
 	Label string
@@ -50,14 +66,73 @@ type Fact struct {
 	Value string
 }
 
+// Figure is one number with an optional comparison against a previous period.
+type Figure struct {
+	Label string
+	Value string
+
+	// Change is pre-rendered as "+18%" or "−4%", and empty when there is
+	// nothing to compare against. Empty rather than "0%" because "no previous
+	// period" and "no change" are different facts a reader cannot tell apart
+	// from a zero.
+	Change string
+
+	// Direction is "up", "down" or "flat", so the colour is chosen from a word
+	// rather than by parsing the string above.
+	Direction string
+}
+
+// Colour is the change colour for a direction.
+func (f Figure) Colour() string {
+	switch f.Direction {
+	case "up":
+		return colourUp
+	case "down":
+		return colourDown
+	default:
+		return colourFlat
+	}
+}
+
+// Row is one line of a table: a label and a number that lines up with the
+// numbers above and below it.
+type Row struct {
+	Label string
+	Value string
+}
+
+// Table is a titled top-N list. Empty is what is shown in place of the rows
+// when there are none, because a section that vanishes reads as a bug and a
+// section that says why it is empty reads as an answer.
+type Table struct {
+	Title string
+	Rows  []Row
+	Empty string
+}
+
 // Content is a rendered message before it becomes HTML and text. Keeping the
 // copy as data rather than as a template per email is what makes it possible to
 // assert, in one test over every message, that each one names a real date and
 // carries an upgrade link.
 type Content struct {
 	Subject string
+
+	// Kicker is the small uppercase line above the heading, and KickerTone
+	// picks its colour: ToneAlarm for something wrong, otherwise the accent.
+	Kicker     string
+	KickerTone string
+
 	Heading string
-	Body    []string
+
+	// Subheading is the quiet line under the heading — the period a report
+	// covers, for instance, which is neither the title nor body copy.
+	Subheading string
+
+	Body []string
+
+	// Note is a boxed sentence about the whole message, used when something
+	// about it needs saying before the numbers rather than after them.
+	Note string
 
 	// Link is a URL shown as its own text, and clickable. A button hides where
 	// it goes and there is no hover on a phone, so the messages that hand over
@@ -69,10 +144,21 @@ type Content struct {
 	// screen, and a facts row is a small right-aligned value.
 	Code string
 
+	Figures   []Figure
+	Tables    []Table
 	Facts     []Fact
 	Primary   Button
 	Secondary []Button
 	Closing   string
+}
+
+// KickerColour is the colour of the kicker line.
+func (c Content) KickerColour() string {
+	if c.KickerTone == ToneAlarm {
+		return colourAlarm
+	}
+
+	return colourAccent
 }
 
 // HTML renders the content through the shared layout.
@@ -92,8 +178,25 @@ func (c Content) HTML() (string, error) {
 func (c Content) Text() string {
 	var b strings.Builder
 
+	if c.Kicker != "" {
+		b.WriteString(strings.ToUpper(c.Kicker))
+		b.WriteString("\n")
+	}
+
 	b.WriteString(c.Heading)
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+
+	if c.Subheading != "" {
+		b.WriteString(c.Subheading)
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+
+	if c.Note != "" {
+		b.WriteString(c.Note)
+		b.WriteString("\n\n")
+	}
 
 	for _, paragraph := range c.Body {
 		b.WriteString(paragraph)
@@ -110,6 +213,45 @@ func (c Content) Text() string {
 	if c.Code != "" {
 		b.WriteString(c.Code)
 		b.WriteString("\n\n")
+	}
+
+	for _, figure := range c.Figures {
+		b.WriteString(figure.Label)
+		b.WriteString(": ")
+		b.WriteString(figure.Value)
+
+		if figure.Change != "" {
+			b.WriteString(" (")
+			b.WriteString(figure.Change)
+			b.WriteString(")")
+		}
+
+		b.WriteString("\n")
+	}
+
+	if len(c.Figures) > 0 {
+		b.WriteString("\n")
+	}
+
+	for _, table := range c.Tables {
+		b.WriteString(table.Title)
+		b.WriteString("\n")
+
+		for _, row := range table.Rows {
+			b.WriteString("  ")
+			b.WriteString(row.Label)
+			b.WriteString("  ")
+			b.WriteString(row.Value)
+			b.WriteString("\n")
+		}
+
+		if len(table.Rows) == 0 {
+			b.WriteString("  ")
+			b.WriteString(table.Empty)
+			b.WriteString("\n")
+		}
+
+		b.WriteString("\n")
 	}
 
 	for _, fact := range c.Facts {

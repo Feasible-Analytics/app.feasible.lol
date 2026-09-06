@@ -112,24 +112,40 @@ func TestAnAlertAlsoStaysUnderTheLimit(t *testing.T) {
 // shipped for months with a missing link and no error anywhere. A variable that
 // was never assigned has to be a hard failure, every time.
 func TestAnUndefinedVariableFailsLoudly(t *testing.T) {
-	_, err := renderStrict(`<a href="{{.DashboardURL}}">{{.NeverAssigned}}</a>`, map[string]any{
-		"DashboardURL": "https://example.com",
-	})
+	_, err := render(mail.Content{Heading: "hello"}, map[string]string{"DashboardURL": ""})
 
 	if !errors.Is(err, ErrUndefinedVariable) {
-		t.Fatalf("an unassigned variable rendered without error: %v", err)
+		t.Fatalf("an unassigned value rendered without error: %v", err)
 	}
 }
 
-// TestANilValueIsAlsoRefused checks the case missingkey cannot catch: a key
-// that exists but holds nothing, which Go renders as the literal "<no value>".
-func TestANilValueIsAlsoRefused(t *testing.T) {
-	_, err := renderStrict(`<a href="{{.DashboardURL}}">link</a>`, map[string]any{
-		"DashboardURL": nil,
-	})
+// TestAnAlertWithNoDashboardLinkIsRefused walks the real renderer, which is
+// where the incumbent's bug actually lived.
+func TestAnAlertWithNoDashboardLinkIsRefused(t *testing.T) {
+	_, err := RenderAlert(Alert{
+		Domain:      "quiet.example",
+		Kind:        KindSpike,
+		Headline:    "412 visitors are on the site right now",
+		Detail:      "Something is sending you traffic.",
+		TriggeredAt: time.Date(2026, 8, 3, 9, 15, 0, 0, time.UTC),
+	}, FallbackClock)
 
 	if !errors.Is(err, ErrUndefinedVariable) {
-		t.Fatalf("a nil value rendered without error: %v", err)
+		t.Fatalf("an alert with no dashboard link rendered without error: %v", err)
+	}
+}
+
+// TestAMarkerInTheRenderedBodyIsRefused checks what the field-by-field check
+// cannot catch: a value that reached the output from inside a slice, where
+// there is no named field to test.
+func TestAMarkerInTheRenderedBodyIsRefused(t *testing.T) {
+	_, err := render(mail.Content{
+		Heading: "hello",
+		Tables:  []mail.Table{{Title: "Top pages", Rows: []mail.Row{{Label: missingValue, Value: "1"}}}},
+	}, nil)
+
+	if !errors.Is(err, ErrUndefinedVariable) {
+		t.Fatalf("a body containing %s rendered without error: %v", missingValue, err)
 	}
 }
 
@@ -176,14 +192,78 @@ func TestAnEmptyReportStillRenders(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 
+	// The three section titles as well as the three empty lines: a section that
+	// vanishes when a site had no traffic reads as a broken email, and a
+	// section that says why it is empty reads as an answer.
 	for _, want := range []string{
 		"No visitors were recorded in this period.",
-		"No pages were viewed in this period.",
-		"No referrers were recorded in this period.",
+		"Top pages", "No pages were viewed in this period.",
+		"Top sources", "No referrers were recorded in this period.",
+		"Top countries", "No locations were recorded in this period.",
 	} {
 		if !strings.Contains(rendered.HTML, want) {
-			t.Errorf("the empty report is missing %q", want)
+			t.Errorf("the empty report is missing %q from its HTML", want)
 		}
+
+		if !strings.Contains(rendered.Text, want) {
+			t.Errorf("the empty report is missing %q from its text", want)
+		}
+	}
+}
+
+// TestBothMessagesCarryThePostalAddress is what CAN-SPAM needs and what tells a
+// reader who sent the thing. The report is the message a customer sees every
+// week for years, and it had no sender identity on it at all.
+func TestBothMessagesCarryThePostalAddress(t *testing.T) {
+	report, err := RenderReport(bigReport(), FallbackClock)
+	if err != nil {
+		t.Fatalf("render report: %v", err)
+	}
+
+	alert, err := RenderAlert(Alert{
+		Domain:       "quiet.example",
+		Kind:         KindSpike,
+		Headline:     "412 visitors are on the site right now",
+		Detail:       "Something is sending you traffic.",
+		Threshold:    10,
+		Observed:     412,
+		DashboardURL: "https://feasible.lol/dashboard/quiet.example",
+		TriggeredAt:  time.Date(2026, 8, 3, 9, 15, 0, 0, time.UTC),
+	}, FallbackClock)
+	if err != nil {
+		t.Fatalf("render alert: %v", err)
+	}
+
+	for name, rendered := range map[string]Rendered{"report": report, "alert": alert} {
+		// The wordmark, the company, and the street the company is on. The
+		// address is wrapped in the HTML, so the street is what is checked
+		// there rather than the whole block.
+		for _, want := range []string{"Feasible", "Cloudmanic Labs, LLC", "901 Brutscher Street"} {
+			if !strings.Contains(rendered.HTML, want) {
+				t.Errorf("the %s HTML is missing %q", name, want)
+			}
+		}
+
+		if !strings.Contains(rendered.Text, mail.PostalAddress) {
+			t.Errorf("the %s text is missing the postal address", name)
+		}
+	}
+}
+
+// TestThePlainTextReportIsNotHTMLEscaped keeps a reader from seeing the markup
+// entity for a plus sign where a growth figure should be.
+func TestThePlainTextReportIsNotHTMLEscaped(t *testing.T) {
+	rendered, err := RenderReport(bigReport(), FallbackClock)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	if strings.Contains(rendered.Text, "&#") || strings.Contains(rendered.Text, "&amp;") {
+		t.Errorf("the text alternative carries an HTML entity:\n%s", rendered.Text)
+	}
+
+	if !strings.Contains(rendered.Text, "+18%") {
+		t.Error("the text alternative does not show a growth figure as +18%")
 	}
 }
 

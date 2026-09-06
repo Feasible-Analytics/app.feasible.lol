@@ -38,3 +38,63 @@ func TestAContentWithNoCodeRendersNoCodeBlock(t *testing.T) {
 		t.Error("the plain-text part lost the code")
 	}
 }
+
+// TestAContentWithNoNewBlocksRendersNoneOfTheirMarkup is what proves the
+// nineteen messages that carry no kicker, figures or tables did not move when
+// the report and the alert arrived.
+func TestAContentWithNoNewBlocksRendersNoneOfTheirMarkup(t *testing.T) {
+	content := Content{
+		Subject: "A plain message",
+		Heading: "A plain message",
+		Body:    []string{"One paragraph."},
+		Primary: Button{Label: "Do the thing", URL: "https://example.com"},
+		Closing: "That is all.",
+	}
+
+	html, err := content.HTML()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, fragment := range map[string]string{
+		"a kicker":        "text-transform:uppercase",
+		"a note panel":    "#f7f0dd",
+		"a figures row":   "padding:12px 8px 12px 0; vertical-align:top;",
+		"a table":         "tabular-nums",
+		"a change colour": colourUp,
+	} {
+		if strings.Contains(html, fragment) {
+			t.Errorf("a plain message rendered %s:\n%s", name, html)
+		}
+	}
+
+	if strings.Contains(content.Text(), "\n\n\n") {
+		t.Errorf("a plain message rendered a blank gap where a new block would be:\n%q", content.Text())
+	}
+}
+
+// TestAFigureColoursItselfFromItsDirection keeps the three change colours in
+// one place, since they are inlined on the element and cannot be a variable.
+func TestAFigureColoursItselfFromItsDirection(t *testing.T) {
+	for direction, want := range map[string]string{
+		"up":   colourUp,
+		"down": colourDown,
+		"flat": colourFlat,
+		"":     colourFlat,
+	} {
+		if got := (Figure{Direction: direction}).Colour(); got != want {
+			t.Errorf("direction %q coloured %s, want %s", direction, got, want)
+		}
+	}
+}
+
+// TestTheAlarmKickerIsNotTheAccent keeps a spike alert visually distinct from a
+// weekly report at a glance.
+func TestTheAlarmKickerIsNotTheAccent(t *testing.T) {
+	alarm := Content{Kicker: "Spike alert", KickerTone: ToneAlarm}
+	plain := Content{Kicker: "Weekly report"}
+
+	if alarm.KickerColour() == plain.KickerColour() {
+		t.Errorf("both kicker tones render %s", alarm.KickerColour())
+	}
+}
