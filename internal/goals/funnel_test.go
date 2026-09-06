@@ -264,3 +264,80 @@ func TestFunnelStepsKeepTheirOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestAHeartbeatDoesNotBreakAStrictRun pins the promise the funnel form makes
+// to the person choosing this setting: turning off "allow other activity"
+// demands consecutive events, and an engagement ping is not one of them.
+//
+// Without this, strict mode would be unsatisfiable on any page a visitor
+// spends more than a few seconds on, and the form would be telling them
+// something untrue.
+func TestAHeartbeatDoesNotBreakAStrictRun(t *testing.T) {
+	db, engine := newFixture(t)
+
+	// Visit 3 walks the whole checkout in order. One heartbeat lands between
+	// the cart and the checkout page, where a strict run is at its most
+	// fragile.
+	writeHeartbeat(t, db, 31, 3, visitorC, at(30, 9, 0)+1, "/cart")
+
+	result := runFunnel(t, db, engine, buildFunnel(t, db, true))
+
+	if got := result.Steps[len(result.Steps)-1].Visitors; got != 1 {
+		t.Errorf("%d visitors finished the strict funnel with a heartbeat mid-run, want 1", got)
+	}
+}
+
+// TestABrokenStrictRunReportsTheFurthestAttempt is the other promise: a
+// visitor is credited with how far they ever got, not with wherever they
+// happened to stop.
+//
+// A visit that walks three steps, breaks, and then starts again still reports
+// the third step. Reporting the second attempt instead would make a funnel
+// look worse the more a visitor tried.
+func TestABrokenStrictRunReportsTheFurthestAttempt(t *testing.T) {
+	db, engine := newFixture(t)
+
+	// Visit 3's four in-order steps become a deep attempt, a break, and a
+	// shallow second attempt that never gets past the cart.
+	writeHeartbeat(t, db, 32, 3, visitorC, at(30, 9, 3)+1, "/pricing")
+	writePageview(t, db, 33, 3, visitorC, at(30, 9, 3)+2, "/cart")
+
+	result := runFunnel(t, db, engine, buildFunnel(t, db, true))
+
+	if got := result.Steps[len(result.Steps)-1].Visitors; got != 1 {
+		t.Errorf("%d visitors reached the last step, want 1 — the deeper first attempt is what counts", got)
+	}
+}
+
+// writeHeartbeat adds one engagement ping, which is a measurement rather than
+// something the visitor did.
+func writeHeartbeat(t *testing.T, db *sql.DB, id, session, user, timestamp int64, page string) {
+	t.Helper()
+
+	writeStepEvent(t, db, id, session, user, timestamp, ingest.EventEngagement, page)
+}
+
+// writePageview adds one ordinary pageview, which is something the visitor did
+// and so can break a strict run.
+func writePageview(t *testing.T, db *sql.DB, id, session, user, timestamp int64, page string) {
+	t.Helper()
+
+	writeStepEvent(t, db, id, session, user, timestamp, ingest.EventPageview, page)
+}
+
+// writeStepEvent inserts one event into the shared fixture without disturbing
+// the rows the other tests count. It is the bare-columns form: the package's
+// own writeEvent takes a fixture row and an account handle, and these tests
+// hold a database.
+func writeStepEvent(t *testing.T, db *sql.DB, id, session, user, timestamp int64, name, page string) {
+	t.Helper()
+
+	if _, err := db.ExecContext(context.Background(), `
+		INSERT INTO events (id, site_id, timestamp, name_id, user_id, session_id, pathname_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, siteID, timestamp,
+		internID(t, db, "dim_event_name", name), user, session,
+		internID(t, db, "dim_pathname", page)); err != nil {
+		t.Fatal(err)
+	}
+}
