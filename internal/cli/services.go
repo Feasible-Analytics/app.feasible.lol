@@ -45,6 +45,11 @@ type services struct {
 	Notifier    *reports.Notifier
 	Recorder    *health.Recorder
 
+	// Receipts ages out the dedupe table every accepted event writes to. It is
+	// here rather than beside the writer because it is a recurring job and this
+	// is where the process's recurring jobs are attached.
+	Receipts *ingest.ReceiptPruner
+
 	// Cron is the producer for the process's one queue. It does not claim or
 	// run anything: it enqueues the hourly and ten-minute ticks through the
 	// same client the import and export screens enqueue through, and the one
@@ -88,6 +93,12 @@ func buildServices(e *env, control *sql.DB, manager *accounts.Manager,
 		BaseURL: e.cfg.App.BaseURL,
 	}
 
+	s.Receipts = &ingest.ReceiptPruner{
+		Accounts: manager,
+		Owners:   ingest.SystemOwners(control),
+		Log:      e.log,
+	}
+
 	s.Cron = jobs.NewCron(jobs.NewClient(control), e.log)
 
 	// The ingest path hands every derived request to the health recorder. This
@@ -108,11 +119,17 @@ func buildServices(e *env, control *sql.DB, manager *accounts.Manager,
 // on the same queue. A second runner would be a second answer to "is anything
 // stuck", and the readiness probe can only report on one of them.
 func (s *services) Register(runner *jobs.Runner) {
-	if s.Notifier == nil || runner == nil {
+	if runner == nil {
 		return
 	}
 
-	s.Notifier.Register(runner, s.Cron)
+	if s.Notifier != nil {
+		s.Notifier.Register(runner, s.Cron)
+	}
+
+	if s.Receipts != nil {
+		s.Receipts.Register(runner, s.Cron)
+	}
 }
 
 // background is the loops this half of the process owns, folded into the hook

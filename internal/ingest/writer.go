@@ -24,9 +24,8 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
 )
 
-// Event receipts in recent_event_ids are permanent despite the table's name. A
-// browser can replay a locally retained event at any age, so expiring a UUID
-// would eventually turn a lost acknowledgement into a duplicated fact row.
+// Event receipts in recent_event_ids are kept for ReceiptRetention, which is
+// longer than a browser will hold a failed event for. See receipts.go.
 
 const (
 	// MaxRejectedHostnames is the durable cardinality cap per site and UTC day.
@@ -937,7 +936,7 @@ func (w *Writer) claimEvents(ctx context.Context, tx *sql.Tx, events []Event) ([
 	return fresh, duplicates, nil
 }
 
-// claimEventID inserts one permanent receipt in the fact transaction.
+// claimEventID inserts one receipt in the fact transaction.
 func claimEventID(ctx context.Context, tx *sql.Tx, id uuid.UUID, now int64) (bool, error) {
 	result, err := tx.ExecContext(ctx,
 		"INSERT OR IGNORE INTO recent_event_ids (event_uuid, received_at) VALUES (?, ?)",
@@ -956,7 +955,7 @@ func claimEventID(ctx context.Context, tx *sql.Tx, id uuid.UUID, now int64) (boo
 }
 
 // commitDurable writes facts and fold repairs through the transaction that
-// already owns the permanent UUID receipts.
+// already owns the UUID receipts.
 func (w *Writer) commitDurable(ctx context.Context, tx *sql.Tx, rows []eventRow, dirty []*Session, merges []Merge, ids *dimensionIDs) error {
 	var sessions map[int64]*Session
 	if len(merges) > 0 {

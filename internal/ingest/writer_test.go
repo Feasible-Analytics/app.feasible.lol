@@ -971,7 +971,7 @@ func TestDedupeReceiptSurvivesReplayPastTwentyFourHours(t *testing.T) {
 		t.Fatalf("late replay stored %d event rows, want 1", got)
 	}
 	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM recent_event_ids"); got != 1 {
-		t.Fatalf("permanent receipt table holds %d rows, want 1", got)
+		t.Fatalf("the receipt table holds %d rows, want 1", got)
 	}
 }
 

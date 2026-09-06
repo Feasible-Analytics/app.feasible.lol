@@ -1063,8 +1063,8 @@ func TestAccountV7ToCurrentKeepsPopulatedSessionOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 7 || result.To != 14 || fmt.Sprint(result.Applied) != "[8 9 10 11 12 13 14]" {
-		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 14 via [8 9 10 11 12 13 14]",
+	if result.From != 7 || result.To != 15 || fmt.Sprint(result.Applied) != "[8 9 10 11 12 13 14 15]" {
+		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 15 via [8 9 10 11 12 13 14 15]",
 			result.From, result.To, result.Applied)
 	}
 
@@ -1090,14 +1090,17 @@ func TestAccountV7ToCurrentKeepsPopulatedSessionOwnership(t *testing.T) {
 		}
 	}
 
+	// The prune index is dropped by 0009 and put back by 0015, once the tracker
+	// bounded how long a browser may replay a failed event for. Without it the
+	// prune is a full scan of the one table that grows for ever.
 	var pruningIndexes int
 	if err := db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM sqlite_master
 		WHERE type = 'index' AND name = 'recent_event_ids_received'`).Scan(&pruningIndexes); err != nil {
 		t.Fatal(err)
 	}
-	if pruningIndexes != 0 {
-		t.Fatal("account upgrade retained the obsolete timed-pruning receipt index")
+	if pruningIndexes != 1 {
+		t.Fatal("an upgraded account cannot prune its event receipts")
 	}
 
 	var sampledSessions int
@@ -1188,7 +1191,7 @@ func TestCoordinatedMigrationNumbers(t *testing.T) {
 		set  Set
 		want []int
 	}{
-		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14}},
+		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15}},
 		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
 	} {
 		t.Run(name, func(t *testing.T) {

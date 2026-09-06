@@ -15,6 +15,23 @@ import { excluded, ignoreReason, warn } from "./exclude.js";
 // place that event still exists is this browser.
 const OUTBOX_KEY = "feasible_outbox";
 
+// How long a browser may hold a failed event before it is given up on.
+//
+// The server keeps a receipt for every event it accepts so a replay is not
+// counted twice, and it can only stop keeping them for ever if the client stops
+// replaying for ever. Seven days here against thirty on the server leaves
+// margin for a wrong clock, a tab open across the boundary, and a browser still
+// running a cached older build.
+const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+// When entries written before this shipped are considered expired.
+//
+// A tracker cached in a browser stashed a bare body with no stamp. There is
+// nothing to date it by, so it is dated from the day the stamp was introduced
+// and ages out a week later like everything else. Pinned rather than computed:
+// a floating date would keep undatable entries alive for ever.
+const LEGACY_STAMPED_AT = Date.UTC(2026, 8, 6);
+
 // A storage failure cannot be made durable by JavaScript. A defined array is
 // both the in-page queue and the sentinel that keeps its warning one-time.
 let volatileOutbox;
@@ -63,27 +80,47 @@ function eventID() {
 
 	// This compact RFC 4122 formatter fixes the version and variant nibbles and
 	// draws every remaining nibble from Web Crypto. It is deliberately not a
-	// Math.random fallback: this value becomes a permanent database receipt.
+	// Math.random fallback: this value becomes a database receipt the server
+	// recognises a replay by.
 	return ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, (digit) =>
 		(digit ^ (win.crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (digit / 4)))).toString(16),
 	);
 }
 
-// readOutbox returns the stashed events. Every localStorage access in this file
-// is wrapped, because the API throws rather than returning null when storage is
-// unavailable and an unguarded read here would take the whole script down.
+// readOutbox returns the stashed events that are still worth sending. Every
+// localStorage access in this file is wrapped, because the API throws rather
+// than returning null when storage is unavailable and an unguarded read here
+// would take the whole script down.
+//
+// An entry is `{ b: body, t: stashed }`. A bare string is one written before
+// the stamp existed and is dated from LEGACY_STAMPED_AT.
 function readOutbox() {
+	let stored;
+
 	try {
-		return volatileOutbox || JSON.parse(localStorage[OUTBOX_KEY] || "[]");
+		stored = volatileOutbox || JSON.parse(localStorage[OUTBOX_KEY] || "[]");
 	} catch {
 		warn("memory-only");
 		return (volatileOutbox = []);
 	}
+
+	const cutoff = Date.now() - MAX_AGE_MS;
+
+	return stored
+		.map((item) => (typeof item == "string" ? { b: item, t: LEGACY_STAMPED_AT } : item))
+		.filter((item) => item && item.b && item.t > cutoff);
 }
 
-// writeOutbox replaces the complete stash. There is deliberately no event-count
-// eviction: the 101st failure is no less real than the first, and browser quota
-// failure is handled explicitly by the memory fallback below.
+// writeOutbox replaces the complete stash. There is still no event-count
+// eviction — the 101st failure is no less real than the first — and browser
+// quota failure is handled explicitly by the memory fallback below.
+//
+// Only the age is bounded. An event stashed more than MAX_AGE_MS ago is dropped
+// unsent, so a visitor who fails today and returns in eight months loses that
+// one pageview. That is under-counting, and it is the safe direction: a missing
+// pageview is a rounding error, a doubled one is a trust problem. Do not
+// "fix" this back — the server's receipt table can only be pruned because this
+// window exists.
 function writeOutbox(items) {
 	if (volatileOutbox) {
 		volatileOutbox = items;
@@ -108,10 +145,10 @@ export function drain() {
 	if (!items.length) return;
 
 	writeOutbox(
-		items.filter((body) => {
+		items.filter((item) => {
 			try {
-				if (!refusal(JSON.parse(body))) {
-					post(body, 0);
+				if (!refusal(JSON.parse(item.b))) {
+					post(item.b, 0);
 					return true;
 				}
 			} catch {}
@@ -141,7 +178,7 @@ export function drain() {
 export function post(body, callback) {
 	// Persistence happens before fetch so cancellation cannot destroy the only
 	// copy. A zero callback marks a replay that is already in the durable queue.
-	if (callback != 0) writeOutbox(readOutbox().concat(body));
+	if (callback != 0) writeOutbox(readOutbox().concat({ b: body, t: Date.now() }));
 
 	try {
 		fetch(endpoint, {
@@ -155,7 +192,7 @@ export function post(body, callback) {
 			// non-success response remains in the durable outbox for replay.
 			(res) => {
 				if (res.ok) {
-					writeOutbox(readOutbox().filter((item) => item != body));
+					writeOutbox(readOutbox().filter((item) => item.b != body));
 					callback?.({
 						status: res.status,
 						dropped: res.headers.get("x-feasible-dropped"),
@@ -184,7 +221,7 @@ export function send(event, callback) {
 		return;
 	}
 	// Creating the key before post means a lost 202, cancellation and later
-	// replay stay one event with one permanent server receipt.
+	// replay stay one event with one server receipt.
 	event.k = eventID();
 	event.v = VERSION;
 	event.w = innerWidth || undefined;

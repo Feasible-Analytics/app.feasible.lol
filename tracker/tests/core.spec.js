@@ -204,6 +204,82 @@ test("the callback exposes an inline drop reason", async ({ page }) => {
 	expect(result).toEqual({ status: 202, dropped: "shield_ip" });
 });
 
+// The server keeps a receipt for every event so a replay is not counted twice,
+// and it can only stop keeping them for ever if the browser stops replaying for
+// ever. These two tests are the client half of that bargain.
+test("an event stashed inside the window is still replayed", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+
+	// A failure from six days ago: inside the seven-day window, so it goes.
+	await page.evaluate(() => {
+		const body = JSON.stringify({ n: "pageview", u: "https://example.test/stale-but-live", d: "example.test", k: "aaaaaaaa-0000-4000-8000-000000000001", v: 1 });
+		localStorage.setItem("feasible_outbox", JSON.stringify([{ b: body, t: Date.now() - 6 * 24 * 60 * 60 * 1000 }]));
+	});
+
+	await page.goto("/spa.html");
+
+	await waitFor(
+		state,
+		(events) => events.some((e) => e.u && e.u.includes("stale-but-live")),
+		"an event stashed six days ago was replayed",
+	);
+});
+
+test("an event stashed outside the window is dropped unsent", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+
+	await page.evaluate(() => {
+		const aged = JSON.stringify({ n: "pageview", u: "https://example.test/too-old", d: "example.test", k: "aaaaaaaa-0000-4000-8000-000000000002", v: 1 });
+		localStorage.setItem("feasible_outbox", JSON.stringify([{ b: aged, t: Date.now() - 8 * 24 * 60 * 60 * 1000 }]));
+	});
+
+	await page.goto("/spa.html");
+	await settledCount(state, "pageview", 2);
+
+	expect(state.events.some((e) => e.u && e.u.includes("too-old"))).toBe(false);
+
+	// And gone from the stash rather than sitting there for ever.
+	expect(await page.evaluate(() => localStorage.getItem("feasible_outbox"))).toBe("[]");
+});
+
+// An entry written by a tracker cached before the stamp existed has nothing to
+// date it by, so it is dated from the day the stamp shipped and ages out a week
+// later like everything else.
+test("an unstamped entry replays now and expires a week after the stamp shipped", async ({ page }) => {
+	const bare = JSON.stringify({ n: "pageview", u: "https://example.test/no-stamp", d: "example.test", k: "aaaaaaaa-0000-4000-8000-000000000003", v: 1 });
+
+	// The day the stamp shipped: an unstamped entry is dated from here, so this
+	// half of the test would start failing a week later against a real clock.
+	await page.clock.install({ time: new Date("2026-09-06T12:00:00Z") });
+
+	const live = await collect(page);
+	await page.goto("/basic.html");
+	await settledCount(live, "pageview", 1);
+	await page.evaluate((body) => localStorage.setItem("feasible_outbox", JSON.stringify([body])), bare);
+	await page.goto("/spa.html");
+
+	await waitFor(live, (events) => events.some((e) => e.u && e.u.includes("no-stamp")), "an unstamped entry still replays");
+
+	// A month past the pinned date, the same entry is given up on.
+	await page.clock.install({ time: new Date("2026-10-06T00:00:00Z") });
+
+	const later = await collect(page);
+	await page.goto("/basic.html");
+	await settledCount(later, "pageview", 1);
+	await page.evaluate((body) => localStorage.setItem("feasible_outbox", JSON.stringify([body])), bare);
+	await page.goto("/spa.html");
+	await settledCount(later, "pageview", 2);
+
+	expect(later.events.some((e) => e.u && e.u.includes("no-stamp"))).toBe(false);
+	expect(await page.evaluate(() => localStorage.getItem("feasible_outbox"))).toBe("[]");
+});
+
 // No queue behind the endpoint can save an event whose HTTP request never
 // completed. The only place that event still exists is the browser it was sent
 // from, which is what the outbox is for.
