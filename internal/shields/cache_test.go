@@ -238,9 +238,9 @@ type countingOpener struct {
 	before func()
 }
 
-// Acquire counts the call and hands back a real lease, unless this id is one
+// AcquireForScan counts the call and hands back a real lease, unless this id is one
 // the test wants to fail.
-func (c *countingOpener) Acquire(ctx context.Context, id int64) (*accounts.Lease, error) {
+func (c *countingOpener) AcquireForScan(ctx context.Context, id int64) (*accounts.Lease, error) {
 	c.opens++
 
 	if c.before != nil {

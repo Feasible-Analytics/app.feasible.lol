@@ -118,13 +118,97 @@ type Manager struct {
 	// blocked caches durable tombstones observed or created by this process. The
 	// filesystem remains authoritative across managers and process restarts.
 	blocked map[int64]struct{}
+
+	// used is when each open handle was last taken for real work. A background
+	// walk deliberately does not update it; see AcquireForScan.
+	used map[int64]time.Time
+
+	// MaxOpen bounds the handles held at once. Zero means DefaultMaxOpen.
+	//
+	// Each one costs about a third of a megabyte, four goroutines and up to
+	// fifteen file descriptors, and nothing ever closed one before shutdown —
+	// so memory grew with the number of accounts a process had ever served and
+	// the first symptom was the OOM killer.
+	MaxOpen int
+
+	// IdleTimeout closes a handle nothing has touched for this long, so a quiet
+	// box gives its file descriptors back. Zero means DefaultIdleTimeout.
+	IdleTimeout time.Duration
+
+	// Now is the clock recency and idleness are measured against.
+	Now func() time.Time
+
+	stats HandleStats
+}
+
+// The bounds a manager uses when none are set.
+//
+// Five hundred handles is about 165 MB, and re-opening one costs roughly two
+// milliseconds on a normal account — so a miss is survivable and the cap can be
+// this tight. An hour idle is long enough that a site with any traffic at all
+// keeps its handle.
+const (
+	DefaultMaxOpen     = 500
+	DefaultIdleTimeout = time.Hour
+)
+
+// HandleStats is what the health surface reports.
+//
+// Evictions and idle closes are separate numbers on purpose. Rolled into one,
+// a box thrashing against its cap and a box quietly giving descriptors back
+// look identical.
+type HandleStats struct {
+	// Open is how many handles are held now, and Max is the cap.
+	Open int
+	Max  int
+
+	// Opens counts every handle this process has created, so a rate can be
+	// derived. Evictions counts handles closed because the cap was reached,
+	// IdleCloses those closed because nothing had touched them, and Overshoots
+	// the times the cap was passed because every handle was in use.
+	Opens      int64
+	Evictions  int64
+	IdleCloses int64
+	Overshoots int64
 }
 
 // NewManager builds a manager rooted at a data directory. Nothing is opened or
 // created here, so constructing one is free and a process that never touches an
 // account never touches the disk.
 func NewManager(dataDir string) *Manager {
-	return &Manager{dataDir: dataDir, open: map[int64]*Account{}, blocked: map[int64]struct{}{}}
+	return &Manager{
+		dataDir: dataDir,
+		open:    map[int64]*Account{},
+		blocked: map[int64]struct{}{},
+		used:    map[int64]time.Time{},
+	}
+}
+
+// maxOpen and idleTimeout read the configured bounds or their defaults.
+func (m *Manager) maxOpen() int {
+	if m.MaxOpen > 0 {
+		return m.MaxOpen
+	}
+
+	return DefaultMaxOpen
+}
+
+// idleTimeout is how long a handle may go untouched before it is closed.
+func (m *Manager) idleTimeout() time.Duration {
+	if m.IdleTimeout > 0 {
+		return m.IdleTimeout
+	}
+
+	return DefaultIdleTimeout
+}
+
+// now reads the manager's clock.
+func (m *Manager) now() time.Time {
+	if m.Now != nil {
+		return m.Now()
+	}
+
+	return time.Now()
 }
 
 // Dir returns the directory holding one account's database.
@@ -249,6 +333,15 @@ func (a *Account) beginUse() error {
 	return nil
 }
 
+// inUse reports whether an operation is holding this account, which is what
+// makes it ineligible for eviction.
+func (a *Account) inUse() bool {
+	a.useMu.Lock()
+	defer a.useMu.Unlock()
+
+	return a.activeUses > 0
+}
+
 // endUse releases one operation registration. The deletion watcher observes
 // the zero count on its next pass and then releases the lifetime SQLite fence.
 func (a *Account) endUse() {
@@ -340,17 +433,26 @@ func (m *Manager) Open(ctx context.Context, id int64) (*Account, error) {
 // openGuarded returns or creates a handle while the caller holds this account's shared
 // cross-process guard. Keeping the unguarded operation private prevents a new
 // writer path from bypassing the deletion tombstone.
-func (m *Manager) openGuarded(ctx context.Context, id int64) (*Account, error) {
+//
+// It registers the use before returning, under the same lock that evicts. A
+// caller that registered afterwards could have its handle closed out from under
+// it in between, and would see a deletion error for a live account.
+//
+// promote is false for a background walk, which must not rewrite recency: a job
+// that touches every account once an hour would otherwise leave the cache
+// holding whichever accounts it visited last, and ingest would re-open the real
+// working set one batch at a time.
+func (m *Manager) openGuarded(ctx context.Context, id int64, promote bool) (account *Account, borrowed bool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if _, blocked := m.blocked[id]; blocked {
-		return nil, fmt.Errorf("%w for account %d", ErrDeleted, id)
+		return nil, false, fmt.Errorf("%w for account %d", ErrDeleted, id)
 	}
 
 	lock, err := lockAccount(m.dataDir, id)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer unlockAccount(lock)
 
@@ -363,17 +465,25 @@ func (m *Manager) openGuarded(ctx context.Context, id int64) (*Account, error) {
 			_ = account.close()
 		}
 		m.blocked[id] = struct{}{}
-		return nil, fmt.Errorf("%w for account %d", ErrDeleted, id)
+		return nil, false, fmt.Errorf("%w for account %d", ErrDeleted, id)
 	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("account %d: inspect deletion marker: %w", id, err)
+		return nil, false, fmt.Errorf("account %d: inspect deletion marker: %w", id, err)
 	}
-	if account, ok := m.open[id]; ok {
-		return account, nil
+	if held, ok := m.open[id]; ok {
+		if err := held.beginUse(); err != nil {
+			return nil, false, fmt.Errorf("%w for account %d", err, id)
+		}
+
+		if promote {
+			m.used[id] = m.now()
+		}
+
+		return held, false, nil
 	}
 
 	lifetimeLock, err := lockAccountLifetime(m.dataDir, id, false)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	path := Path(m.dataDir, id)
@@ -381,7 +491,7 @@ func (m *Manager) openGuarded(ctx context.Context, id int64) (*Account, error) {
 	db, err := store.OpenDatabase(path)
 	if err != nil {
 		unlockAccount(lifetimeLock)
-		return nil, err
+		return nil, false, err
 	}
 
 	if err := ensureSchema(ctx, db, migrate.Account()); err != nil {
@@ -391,7 +501,7 @@ func (m *Manager) openGuarded(ctx context.Context, id int64) (*Account, error) {
 		if closeErr != nil {
 			openErr = errors.Join(openErr, fmt.Errorf("account %d: close database after schema failure: %w", id, closeErr))
 		}
-		return nil, openErr
+		return nil, false, openErr
 	}
 
 	cache := intern.New(db.Writer())
@@ -402,17 +512,176 @@ func (m *Manager) openGuarded(ctx context.Context, id int64) (*Account, error) {
 		if closeErr != nil {
 			openErr = errors.Join(openErr, fmt.Errorf("account %d: close database after cache failure: %w", id, closeErr))
 		}
-		return nil, openErr
+		return nil, false, openErr
 	}
 
-	account := &Account{
+	account = &Account{
 		ID: id, DB: db, Intern: cache, lifetimeLock: lifetimeLock,
 		stopWatch: make(chan struct{}), watchDone: make(chan struct{}),
 	}
+	if err := account.beginUse(); err != nil {
+		unlockAccount(lifetimeLock)
+
+		return nil, false, fmt.Errorf("%w for account %d", err, id)
+	}
+
 	m.open[id] = account
+	m.stats.Opens++
+
+	// A handle a scan opened is stamped as never used. It is put back when the
+	// scan releases it, and until then it is the first thing evicted, so an
+	// hourly walk never displaces an account real traffic is on.
+	if promote {
+		m.used[id] = m.now()
+	} else {
+		m.used[id] = time.Time{}
+		borrowed = true
+	}
+
 	go account.watchDeletion(DeletedMarker(m.dataDir, id))
 
-	return account, nil
+	// A borrowed handle is closed again the moment the scan releases it, so it
+	// does not need room made for it — and making room would mean evicting an
+	// account real traffic is on, which is the thing the scan rule exists to
+	// prevent. The cache is one over its cap for one step of the walk.
+	if !borrowed {
+		// After the new handle is in, so a cap of one still works and the
+		// handle just opened is the most recent and never the one chosen.
+		m.evictLocked()
+	}
+
+	return account, borrowed, nil
+}
+
+// evictLocked closes least-recently-used handles until the cap is met.
+//
+// A handle somebody is holding is never closed — the whole point of the use
+// count — and if every handle is in use the cap is passed rather than a request
+// being blocked behind an eviction. A temporary overshoot is cheaper than a
+// latency cliff on the write path, and the counter says when it happened.
+func (m *Manager) evictLocked() {
+	max := m.maxOpen()
+
+	// An account that refused to close is skipped for the rest of this pass.
+	// Without it, a handle that became busy between being chosen and being
+	// closed would be chosen again immediately, for ever, holding the lock the
+	// whole time.
+	refused := map[int64]bool{}
+
+	for len(m.open) > max {
+		var (
+			oldest   int64
+			oldestAt time.Time
+		)
+
+		for id, account := range m.open {
+			if refused[id] || account.inUse() {
+				continue
+			}
+
+			if oldest == 0 || m.used[id].Before(oldestAt) {
+				oldest, oldestAt = id, m.used[id]
+			}
+		}
+
+		if oldest == 0 {
+			m.stats.Overshoots++
+
+			return
+		}
+
+		if !m.closeLocked(oldest) {
+			refused[oldest] = true
+
+			continue
+		}
+
+		m.stats.Evictions++
+	}
+}
+
+// closeLocked drops one handle. It reports false when the account turned out to
+// be in use after all, which is the race the caller has to tolerate rather than
+// prevent.
+func (m *Manager) closeLocked(id int64) bool {
+	account, ok := m.open[id]
+	if !ok {
+		return false
+	}
+
+	if !account.closeForDeletion() {
+		return false
+	}
+
+	delete(m.open, id)
+	delete(m.used, id)
+
+	account.stopOnce.Do(func() { close(account.stopWatch) })
+
+	return true
+}
+
+// CloseIdle closes every handle nothing has touched for the idle timeout, and
+// says how many it closed.
+//
+// It is separate from eviction because the two mean different things: an
+// eviction is a box at its cap, and an idle close is a box giving back what it
+// no longer needs.
+func (m *Manager) CloseIdle() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cutoff := m.now().Add(-m.idleTimeout())
+	closed := 0
+
+	for id, at := range m.used {
+		if at.After(cutoff) {
+			continue
+		}
+
+		if m.closeLocked(id) {
+			closed++
+			m.stats.IdleCloses++
+		}
+	}
+
+	return closed
+}
+
+// IdleSweepInterval is how often the idle sweep runs. It is a fraction of the
+// idle timeout so a handle is closed within a few minutes of becoming idle
+// rather than up to an hour later.
+const IdleSweepInterval = 5 * time.Minute
+
+// CloseIdleUntil runs the idle sweep until the context is cancelled. It is a
+// loop rather than something the open path does, because a box that has gone
+// quiet has no open path left to do it on.
+func (m *Manager) CloseIdleUntil(ctx context.Context, closed func(int)) {
+	ticker := time.NewTicker(IdleSweepInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if n := m.CloseIdle(); n > 0 && closed != nil {
+				closed(n)
+			}
+		}
+	}
+}
+
+// Stats reports what the handle cache is doing.
+func (m *Manager) Stats() HandleStats {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	stats := m.stats
+	stats.Open = len(m.open)
+	stats.Max = m.maxOpen()
+
+	return stats
 }
 
 // WriteGuard holds a shared cross-process lock from the final tombstone check
@@ -424,6 +693,11 @@ type WriteGuard struct {
 	id      int64
 	file    *os.File
 	account *Account
+
+	// borrowed is set when a scan opened this handle rather than finding it.
+	// A walk over every account on the box must leave the cache holding what
+	// it held before, so the handle goes back on release.
+	borrowed bool
 }
 
 // Lease keeps the shared deletion fence for the complete lifetime of an
@@ -439,14 +713,30 @@ type Lease struct {
 // This is the production entry point for jobs and requests whose work extends
 // beyond opening the SQLite handle.
 func (m *Manager) Acquire(ctx context.Context, id int64) (*Lease, error) {
+	return m.acquire(ctx, id, true)
+}
+
+// AcquireForScan is Acquire for a job that walks every account in turn.
+//
+// It is a separate method rather than a flag on Acquire because a boolean gets
+// passed wrong eventually and this one is load-bearing: a walk that promoted
+// would leave the handle cache holding whichever accounts it visited last, and
+// the accounts actually taking traffic would be re-opened one batch at a time.
+func (m *Manager) AcquireForScan(ctx context.Context, id int64) (*Lease, error) {
+	return m.acquire(ctx, id, false)
+}
+
+// acquire takes the fence and the handle.
+func (m *Manager) acquire(ctx context.Context, id int64, promote bool) (*Lease, error) {
 	guard, err := m.BeginWrite(id)
 	if err != nil {
 		return nil, err
 	}
 
-	account, err := guard.Open(ctx)
+	account, err := guard.open(ctx, promote)
 	if err != nil {
 		_ = guard.Release()
+
 		return nil, err
 	}
 
@@ -499,16 +789,29 @@ func (m *Manager) BeginWrite(id int64) (*WriteGuard, error) {
 	return &WriteGuard{manager: m, id: id, file: file}, nil
 }
 
-// Open returns the account handle protected by this guard.
+// Open returns the account handle protected by this guard, as work the cache
+// counts as real use.
 func (g *WriteGuard) Open(ctx context.Context) (*Account, error) {
-	account, err := g.manager.openGuarded(ctx, g.id)
+	return g.open(ctx, true)
+}
+
+// OpenForScan is Open for a job that walks every account. The handle is not
+// promoted, so a walk cannot flush the accounts real traffic is using.
+func (g *WriteGuard) OpenForScan(ctx context.Context) (*Account, error) {
+	return g.open(ctx, false)
+}
+
+// open takes the handle and registers the use, which openGuarded does under the
+// lock that evicts.
+func (g *WriteGuard) open(ctx context.Context, promote bool) (*Account, error) {
+	account, borrowed, err := g.manager.openGuarded(ctx, g.id, promote)
 	if err != nil {
 		return nil, err
 	}
-	if err := account.beginUse(); err != nil {
-		return nil, fmt.Errorf("%w for account %d", err, g.id)
-	}
+
 	g.account = account
+	g.borrowed = borrowed
+
 	return account, nil
 }
 
@@ -521,11 +824,37 @@ func (g *WriteGuard) Release() error {
 
 	file := g.file
 	g.file = nil
+
 	if g.account != nil {
+		id := g.account.ID
+		borrowed := g.borrowed
+
 		g.account.endUse()
 		g.account = nil
+		g.borrowed = false
+
+		if borrowed {
+			g.manager.putBack(id)
+		}
 	}
+
 	return unlock(file)
+}
+
+// putBack closes a handle a scan opened, so a walk over every account leaves
+// the cache holding what it held before.
+//
+// Nothing happens if something else took the account in the meantime: the
+// recency stamp is what says whether it did, and real use rewrites it.
+func (m *Manager) putBack(id int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if at, ok := m.used[id]; !ok || !at.IsZero() {
+		return
+	}
+
+	m.closeLocked(id)
 }
 
 // ensureSchema initialises a new database and refuses an out-of-date one. The

@@ -162,7 +162,10 @@ func (w *Worker) Once(ctx context.Context) error {
 // serve, because the day is still filling up and a report drawn from a partial
 // bucket is simply wrong.
 func (w *Worker) buildSite(ctx context.Context, ref SiteRef) error {
-	lease, err := w.Accounts.Acquire(ctx, ref.AccountID)
+	// A scan, not real use. This walks every site on the box once an hour, so
+	// promoting each one would leave the handle cache holding whichever
+	// accounts the walk happened to visit last.
+	lease, err := w.Accounts.AcquireForScan(ctx, ref.AccountID)
 	if err != nil {
 		return err
 	}

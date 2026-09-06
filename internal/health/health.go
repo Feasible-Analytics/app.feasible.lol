@@ -63,9 +63,15 @@ const (
 // merely that something is.
 type Probe func(ctx context.Context) error
 
-// check is one registered dependency.
+// check is one registered dependency, or one observation about this process.
 type check struct {
 	name string
+
+	// observe reports a fact rather than a verdict. A probe can only say
+	// "working" or "broken", and some of what an operator needs is a number:
+	// how many account handles are open, how many were evicted. Set, it
+	// replaces the probe and the check can never fail.
+	observe func() string
 
 	// required decides whether a failure keeps traffic away. Not everything
 	// this process needs is something it cannot serve without, and treating
@@ -94,6 +100,13 @@ func (s *Set) Require(name string, probe Probe) {
 // stopping it. It is reported, and it never makes the process unready.
 func (s *Set) Optional(name string, probe Probe) {
 	s.add(check{name: name, required: false, probe: probe})
+}
+
+// Report registers an observation: something always reported and never a
+// reason to keep traffic away. It is how a counter reaches the health endpoint
+// without being dressed up as a dependency that can fail.
+func (s *Set) Report(name string, observe func() string) {
+	s.add(check{name: name, observe: observe})
 }
 
 // add records one check.
@@ -137,6 +150,13 @@ func (s *Set) Run(ctx context.Context) Report {
 
 	for _, c := range checks {
 		component := Component{Name: c.name, Status: StatusOK}
+
+		if c.observe != nil {
+			component.Detail = c.observe()
+			report.Components = append(report.Components, component)
+
+			continue
+		}
 
 		if err := c.probe(ctx); err != nil {
 			component.Detail = err.Error()
