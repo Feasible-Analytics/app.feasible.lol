@@ -20,6 +20,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
 // pendingTwoFactorCookie carries the half-finished sign-in between the password
@@ -202,7 +203,13 @@ func (h *Handler) startSession(w http.ResponseWriter, r *http.Request, user *Use
 	// first sign-in would just be a second email about an account somebody
 	// created ten seconds ago.
 	if !seen && user.Verified() && user.CreatedAt < h.Store.Now().Add(-time.Minute).Unix() {
-		if err := h.Mailer.SendNewLogin(r.Context(), user.Email, user.Name, label, user.TimeFormat, h.Store.Now()); err != nil {
+		// The dial is resolved from the request rather than left on "system".
+		// This mail is sent from inside the sign-in it is about, so the browser
+		// hint every screen already uses is in hand — unlike a report job,
+		// which has no request to read one from.
+		cycle := timefmt.Resolve(user.TimeFormat, r)
+
+		if err := h.Mailer.SendNewLogin(r.Context(), user.Email, user.Name, label, cycle, h.Store.Now()); err != nil {
 			h.Log.Warn("could not send the new-device email", "user", user.ID, "error", err)
 		}
 	}

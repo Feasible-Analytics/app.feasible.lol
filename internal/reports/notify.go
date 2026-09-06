@@ -328,13 +328,13 @@ func deliveryTargets(recipients []string, webhookURL string) []DestinationTarget
 // participation would be false.
 func (n *Notifier) deliverClaim(ctx context.Context, renderings *Renderings, claim DeliveryClaim,
 	dashboardURL, tag string) (int, error) {
-	clocks, err := n.clockFormats(ctx, claim.Destinations)
+	dials, err := n.emailClocks(ctx, claim.Destinations)
 	if err != nil {
 		return 0, err
 	}
 
 	for _, destination := range claim.Destinations {
-		rendered, renderErr := renderings.On(clocks[strings.ToLower(destination.Target)])
+		rendered, renderErr := renderings.On(dials.of(destination.Target))
 		if renderErr != nil {
 			return 0, renderErr
 		}
@@ -443,7 +443,7 @@ func (n *Notifier) mail(ctx context.Context, renderings *Renderings, recipients 
 		return 0, errors.New("reports: no mailer is configured")
 	}
 
-	clocks, err := n.clocksFor(ctx, recipients)
+	dials, err := n.clocksFor(ctx, recipients)
 	if err != nil {
 		return 0, err
 	}
@@ -451,7 +451,7 @@ func (n *Notifier) mail(ctx context.Context, renderings *Renderings, recipients 
 	delivered := 0
 
 	for _, recipient := range recipients {
-		rendered, err := renderings.On(clocks[strings.ToLower(recipient)])
+		rendered, err := renderings.On(dials.of(recipient))
 		if err != nil {
 			return delivered, err
 		}
@@ -466,9 +466,9 @@ func (n *Notifier) mail(ctx context.Context, renderings *Renderings, recipients 
 	return delivered, nil
 }
 
-// clockFormats resolves the dial for a claim's email destinations. A webhook
-// has no reader to look up and falls through to the fallback.
-func (n *Notifier) clockFormats(ctx context.Context, destinations []Destination) (map[string]string, error) {
+// emailClocks resolves the dial for a claim's email destinations. A webhook has
+// no reader to look up, so it is not asked about and takes the fallback.
+func (n *Notifier) emailClocks(ctx context.Context, destinations []Destination) (clocks, error) {
 	addresses := make([]string, 0, len(destinations))
 
 	for _, destination := range destinations {
@@ -480,11 +480,10 @@ func (n *Notifier) clockFormats(ctx context.Context, destinations []Destination)
 	return n.clocksFor(ctx, addresses)
 }
 
-// clocksFor reads every address's chosen dial in one query, and answers with a
-// map whose missing entries are the fallback.
-func (n *Notifier) clocksFor(ctx context.Context, addresses []string) (map[string]string, error) {
+// clocksFor reads every address's chosen dial in one query.
+func (n *Notifier) clocksFor(ctx context.Context, addresses []string) (clocks, error) {
 	if len(addresses) == 0 {
-		return map[string]string{}, nil
+		return clocks{}, nil
 	}
 
 	found, err := n.Store.ClockFormats(ctx, addresses)
@@ -492,18 +491,23 @@ func (n *Notifier) clocksFor(ctx context.Context, addresses []string) (map[strin
 		return nil, err
 	}
 
-	clocks := make(map[string]string, len(addresses))
+	return clocks(found), nil
+}
 
-	for _, address := range addresses {
-		key := strings.ToLower(address)
+// clocks is what each destination reads a time on, keyed by lower-cased
+// address. Anything not in it — an address belonging to no user, one whose
+// preference is still "system", a webhook — reads the fallback.
+type clocks map[string]string
 
-		clocks[key] = Fallback
-		if cycle, ok := found[key]; ok {
-			clocks[key] = cycle
-		}
+// of answers with the destination's dial, or the fallback. Every miss resolves
+// to the same string, so a report with one fallback recipient and a webhook
+// costs one rendering rather than two identical ones.
+func (c clocks) of(target string) string {
+	if cycle, ok := c[strings.ToLower(target)]; ok {
+		return cycle
 	}
 
-	return clocks, nil
+	return FallbackClock
 }
 
 // RunAlerts evaluates every enabled spike and drop rule.
@@ -798,15 +802,20 @@ func (n *Notifier) SendNow(ctx context.Context, siteID int64, kind string, recip
 		GeneratedAt:  n.now(),
 	})
 
+	// Built before anything is sent: a template that will not render must be an
+	// error instead of a failure reported over a report that already went out.
+	rendered, err := renderings.On(FallbackClock)
+	if err != nil {
+		return Rendered{}, err
+	}
+
 	if len(recipients) > 0 {
 		if _, err := n.mail(ctx, renderings, recipients, "report_preview"); err != nil {
-			return Rendered{}, err
+			return rendered, err
 		}
 	}
 
-	// The caller gets the fallback dial. It is what the preview screen shows,
-	// and a preview is one page rather than one page per reader.
-	return renderings.On(Fallback)
+	return rendered, nil
 }
 
 // SystemSiteLookup reads a site's identity out of system.db. It is a

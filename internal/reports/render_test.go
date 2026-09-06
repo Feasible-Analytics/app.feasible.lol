@@ -62,7 +62,7 @@ func bigReport() Report {
 // arrives. This silently broke weekly reports for an incumbent's self-hosters
 // entirely, for everyone, for as long as the feature existed.
 func TestARenderedReportHasNoLineOver998Octets(t *testing.T) {
-	rendered, err := RenderReport(bigReport(), Fallback)
+	rendered, err := RenderReport(bigReport(), FallbackClock)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestAnAlertAlsoStaysUnderTheLimit(t *testing.T) {
 		Observed:     412,
 		DashboardURL: "https://feasible.lol/dashboard/a-fairly-long-customer-domain.example",
 		TriggeredAt:  time.Date(2026, 8, 3, 9, 15, 0, 0, time.UTC),
-	}, Fallback)
+	}, FallbackClock)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestANilValueIsAlsoRefused(t *testing.T) {
 // that would have caught the incumbent's missing link, so it is written against
 // the shipped template rather than a fixture.
 func TestEveryReportVariableIsAssigned(t *testing.T) {
-	rendered, err := RenderReport(bigReport(), Fallback)
+	rendered, err := RenderReport(bigReport(), FallbackClock)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestAnEmptyReportStillRenders(t *testing.T) {
 		DashboardURL: "https://feasible.lol/dashboard/quiet.example",
 		Note:         "No visitors were recorded in this period.",
 		GeneratedAt:  time.Date(2026, 9, 1, 0, 5, 0, 0, time.UTC),
-	}, Fallback)
+	}, FallbackClock)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestAnEmptyReportStillRenders(t *testing.T) {
 // TestTheSubjectNamesTheSiteAndThePeriod checks what somebody sees in a list of
 // forty unread emails.
 func TestTheSubjectNamesTheSiteAndThePeriod(t *testing.T) {
-	rendered, err := RenderReport(bigReport(), Fallback)
+	rendered, err := RenderReport(bigReport(), FallbackClock)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestTheSubjectNamesTheSiteAndThePeriod(t *testing.T) {
 // TestSlackTextCarriesTheSameNumbers checks that the chat message is built from
 // the same rendering as the email, so the two cannot disagree.
 func TestSlackTextCarriesTheSameNumbers(t *testing.T) {
-	rendered, err := RenderReport(bigReport(), Fallback)
+	rendered, err := RenderReport(bigReport(), FallbackClock)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}

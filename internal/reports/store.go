@@ -1213,6 +1213,9 @@ func (s *Store) Deliveries(ctx context.Context, siteID int64, limit int) ([]Deli
 // ClockFormats resolves a batch of email addresses to the clock each person
 // chose, in one query.
 //
+// The batch is a report's recipients, which MaxRecipients caps at 25, so the
+// bound parameters stay well inside what SQLite accepts.
+//
 // A recipient need not be a user at all — a shared team alias, a Slack bridge,
 // somebody's personal address — which is why the column holds strings. An
 // address that matches nobody is simply absent from the result.

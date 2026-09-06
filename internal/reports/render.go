@@ -366,11 +366,20 @@ Open the dashboard: {{.DashboardURL}}
 Triggered {{.TriggeredAt}}. At most two alerts are sent per site per day.
 `
 
+// FallbackClock is the dial for a destination with no stored preference: an
+// address belonging to no user, one whose preference is still "system" — which
+// resolves from a browser cookie a background job does not have — and a webhook,
+// which has no reader at all.
+const FallbackClock = timefmt.Cycle24
+
 // Renderings builds one email per clock format, on demand and at most once each.
 //
 // A report is one set of numbers read by up to twenty-five people who do not
 // all read a clock the same way. There are only two dials, so a twenty-five
 // recipient report costs two renderings rather than twenty-five.
+//
+// One Renderings belongs to one delivery and is used from one goroutine. The
+// memo is not guarded, and both delivery loops are sequential.
 type Renderings struct {
 	build func(cycle string) (Rendered, error)
 	made  map[string]Rendered
@@ -406,8 +415,3 @@ func (r *Renderings) On(cycle string) (Rendered, error) {
 
 	return made, nil
 }
-
-// Fallback is the dial a destination with no stored preference gets: the
-// twenty-four hour clock, which is what every email used before anybody could
-// choose. A webhook has no reader to look up and takes it too.
-const Fallback = timefmt.Cycle24

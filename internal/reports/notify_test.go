@@ -913,23 +913,14 @@ func fixedRendering(subject, text string) *Renderings {
 	}}
 }
 
-// user inserts somebody who has picked a clock, so the mail path has an address
-// to resolve.
-func (f *storeFixture) user(t *testing.T, email, format string) {
-	t.Helper()
-
-	if _, err := f.db.Exec(`
-		INSERT INTO users (email, name, time_format, created_at, updated_at) VALUES (?, '', ?, ?, ?)
-	`, email, format, f.now.Unix(), f.now.Unix()); err != nil {
-		t.Fatalf("insert user: %v", err)
-	}
-}
-
 // TestEachRecipientGetsTheClockTheyChose is the whole point of the change: one
 // set of numbers, read by people who do not all read a clock the same way.
 func TestEachRecipientGetsTheClockTheyChose(t *testing.T) {
 	f := newStoreFixture(t)
-	f.user(t, "twelve@example.com", timefmt.Cycle12)
+	// The mixed-case lookup below is against the twelve-hour reader on purpose.
+	// A twenty-four hour one would read the same as the fallback, so a lookup
+	// that lost the address entirely would still pass.
+	f.user(t, "mixedcase@example.com", timefmt.Cycle12)
 	f.user(t, "twentyfour@example.com", timefmt.Cycle24)
 	f.user(t, "unset@example.com", timefmt.System)
 
@@ -952,8 +943,8 @@ func TestEachRecipientGetsTheClockTheyChose(t *testing.T) {
 	}
 
 	recipients := []string{
-		"twelve@example.com",
-		"TwentyFour@example.com",
+		"MixedCase@example.com",
+		"twentyfour@example.com",
 		"unset@example.com",
 		"alias@example.com",
 	}
@@ -973,12 +964,12 @@ func TestEachRecipientGetsTheClockTheyChose(t *testing.T) {
 	}
 
 	want := map[string]string{
-		"twelve@example.com": "3:04 PM UTC",
-		// Mixed case, against a row stored in lower case. The column is
-		// COLLATE NOCASE and this is what proves the lookup did not defeat it.
-		"TwentyFour@example.com": "15:04 UTC",
-		// No explicit dial, and no user at all: both take the fallback, which
-		// is what every email did before anybody could choose.
+		// Mixed case against a row stored in lower case: the column is
+		// COLLATE NOCASE, and a comparison that defeated it would send this
+		// reader the fallback instead of the dial they chose.
+		"MixedCase@example.com":  "3:04 PM UTC",
+		"twentyfour@example.com": "15:04 UTC",
+		// No explicit dial, and no user at all. Both take the fallback.
 		"unset@example.com": "15:04 UTC",
 		"alias@example.com": "15:04 UTC",
 	}
@@ -1005,7 +996,7 @@ func TestAWebhookTakesTheFallbackClock(t *testing.T) {
 	f := newStoreFixture(t)
 	f.user(t, "twelve@example.com", timefmt.Cycle12)
 
-	clocks, err := (&Notifier{Store: f.store}).clockFormats(context.Background(), []Destination{
+	dials, err := (&Notifier{Store: f.store}).emailClocks(context.Background(), []Destination{
 		{Channel: ChannelEmail, Target: "twelve@example.com"},
 		{Channel: ChannelSlack, Target: "https://hooks.example/abc"},
 	})
@@ -1013,11 +1004,88 @@ func TestAWebhookTakesTheFallbackClock(t *testing.T) {
 		t.Fatalf("clock formats: %v", err)
 	}
 
-	if clocks["twelve@example.com"] != timefmt.Cycle12 {
-		t.Errorf("the reader's dial = %q, want %q", clocks["twelve@example.com"], timefmt.Cycle12)
+	if got := dials.of("twelve@example.com"); got != timefmt.Cycle12 {
+		t.Errorf("the reader's dial = %q, want %q", got, timefmt.Cycle12)
 	}
 
-	if _, looked := clocks["https://hooks.example/abc"]; looked {
+	// Not looked up, and resolving to the same string as any other miss — so a
+	// report with a webhook and a fallback reader costs one rendering, not two
+	// byte-identical ones.
+	if got := dials.of("https://hooks.example/abc"); got != FallbackClock {
+		t.Errorf("a webhook resolved to %q, want the fallback %q", got, FallbackClock)
+	}
+
+	if _, looked := dials["https://hooks.example/abc"]; looked {
 		t.Error("a webhook was looked up as if it were a person")
+	}
+}
+
+// TestTheScheduledPathAlsoFollowsEachReadersClock covers the delivery every
+// report and every alert actually goes through. The preview path is a different
+// function, and a rebuild that honoured the reader there and not here would
+// leave every real email on one dial.
+func TestTheScheduledPathAlsoFollowsEachReadersClock(t *testing.T) {
+	f := newStoreFixture(t)
+	f.user(t, "twelve@example.com", timefmt.Cycle12)
+
+	ctx := context.Background()
+
+	claim, claimed, err := f.store.ClaimPeriod(ctx, f.siteA, KindWeekly, "2026-W35", []DestinationTarget{
+		{Channel: ChannelEmail, Target: "Twelve@example.com"},
+		{Channel: ChannelEmail, Target: "ops@example.com"},
+		{Channel: ChannelSlack, Target: "https://hooks.example/abc"},
+	})
+	if err != nil || !claimed {
+		t.Fatalf("claim = %v, %v", claimed, err)
+	}
+
+	sender := &captureTransport{}
+	poster := &capturePoster{}
+	notifier := &Notifier{Store: f.store, Mail: sender, Slack: poster}
+
+	dials := map[string]int{}
+	renderings := AlertRenderings(Alert{
+		Domain: "acme.example", Kind: KindSpike, Headline: "A spike", Detail: "Detail",
+		Threshold: 10, Observed: 99, DashboardURL: "https://feasible.lol/d",
+		TriggeredAt: time.Date(2026, 9, 4, 15, 4, 0, 0, time.UTC),
+	})
+	built := renderings.build
+	renderings.build = func(cycle string) (Rendered, error) {
+		dials[cycle]++
+
+		return built(cycle)
+	}
+
+	delivered, err := notifier.deliverClaim(ctx, renderings, claim, "https://feasible.lol/d", "alert_spike")
+	if err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
+
+	if delivered != 3 {
+		t.Fatalf("delivered %d of 3", delivered)
+	}
+
+	if len(dials) != 2 || dials[timefmt.Cycle12] != 1 || dials[FallbackClock] != 1 {
+		t.Errorf("built %v, want one rendering per dial and no more", dials)
+	}
+
+	want := map[string]string{
+		"Twelve@example.com": "3:04 PM UTC",
+		"ops@example.com":    "15:04 UTC",
+	}
+
+	for _, message := range sender.messages {
+		expected, ok := want[message.To]
+		if !ok {
+			t.Fatalf("unexpected recipient %q", message.To)
+		}
+
+		if !strings.Contains(message.Text, expected) {
+			t.Errorf("%s was sent %q, want it to contain %q", message.To, message.Text, expected)
+		}
+	}
+
+	if len(poster.posts) != 1 {
+		t.Errorf("posted %d times to Slack, want 1", len(poster.posts))
 	}
 }
