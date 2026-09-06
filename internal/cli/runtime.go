@@ -88,6 +88,10 @@ func buildIngest(ctx context.Context, e *env, dataDir string) (*ingest.Service, 
 
 	manager := accounts.NewManager(dataDir)
 	manager.MaxOpen = e.cfg.App.MaxOpenAccounts
+	manager.OnWatchError = func(err error) {
+		e.log.Error("the account deletion watcher could not read its directory — "+
+			"a deleted account may still be writable from this process", "error", err)
+	}
 
 	service, err := ingest.NewService(ctx, control, manager, ingest.Options{
 		DataDir:        dataDir,
@@ -140,6 +144,10 @@ func ingestHealth(checks *health.Set, control *sql.DB, service *ingest.Service, 
 			"evictions":   stats.Evictions,
 			"idle_closes": stats.IdleCloses,
 			"overshoots":  stats.Overshoots,
+
+			// Any at all and this process may be holding a handle to an
+			// account somebody else has deleted.
+			"watch_failures": stats.WatchFailures,
 		}
 	})
 }

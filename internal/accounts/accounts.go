@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
@@ -48,10 +49,11 @@ const DatabaseName = "analytics.db"
 // is looking at a data directory with a thousand accounts in it.
 const dirWidth = 6
 
-// deletionWatchInterval keeps long-lived cached handles responsive to a
-// cross-process tombstone without turning every open account into a hot stat
-// loop. Permanent deletion waits for the watcher, so this affects latency only.
-const deletionWatchInterval = 100 * time.Millisecond
+// deletionWatchInterval is how often one goroutine reads the tombstone
+// directory. Permanent deletion waits for that pass, so this is a latency bound
+// on deletion and on nothing else — and deletion is already allowed to take
+// seconds, because it fsyncs a marker and drains every open lease first.
+const deletionWatchInterval = time.Second
 
 // guardDirectory is outside the removable account directory. Its tombstones
 // must survive account deletion and process restart, and its lock files must be
@@ -80,11 +82,18 @@ type Account struct {
 	// Permanent deletion waits for an exclusive lock before it can report
 	// success, which fences handles cached by every cooperating process.
 	lifetimeLock *os.File
-	closeOnce    sync.Once
-	closeErr     error
-	useMu        sync.Mutex
-	activeUses   int
-	closing      bool
+
+	// rank orders handles for eviction and usedAt drives the idle sweep. They
+	// are atomics on the handle rather than maps on the manager, so promoting
+	// on the cached path needs only a read lock. A rank of zero is a handle a
+	// scan opened: never promoted, first evicted, and put back on release.
+	rank       atomic.Int64
+	usedAt     atomic.Int64
+	closeOnce  sync.Once
+	closeErr   error
+	useMu      sync.Mutex
+	activeUses int
+	closing    bool
 }
 
 // Writer is the single connection every write goes through. It is exposed as a
@@ -106,27 +115,22 @@ func (a *Account) Reader() *sql.DB {
 type Manager struct {
 	dataDir string
 
-	// mu guards the map and serialises opening. Holding it across the whole of
-	// Open is deliberate: opening involves creating a file and possibly
+	// mu guards the maps. Opening holds it for writing across the whole of the
+	// open, deliberately: opening involves creating a file and possibly
 	// migrating it, and two goroutines doing that to the same account at once
-	// is the one race worth paying a global lock to avoid.
-	mu   sync.Mutex
+	// is the one race worth paying a global lock to avoid. Handing back a
+	// handle that is already open takes it for reading only.
+	mu   sync.RWMutex
 	open map[int64]*Account
 
 	// blocked caches durable tombstones observed or created by this process. The
 	// filesystem remains authoritative across managers and process restarts.
 	blocked map[int64]struct{}
 
-	// used is when each open handle was last taken for real work, for the idle
-	// sweep. A background walk deliberately does not update it; see
-	// AcquireForScan.
-	used map[int64]time.Time
-
-	// rank orders the same handles for eviction. It is a counter rather than a
-	// timestamp because two opens inside one clock tick have an order and two
-	// equal timestamps do not, which would leave the choice to map iteration.
-	rank map[int64]int64
-	tick int64
+	// tick numbers promotions. Recency itself lives on each Account, so the
+	// cached path can promote under a read lock rather than serialising every
+	// account in the process behind one writer.
+	tick atomic.Int64
 
 	// MaxOpen bounds the handles held at once. Zero means DefaultMaxOpen.
 	MaxOpen int
@@ -138,15 +142,19 @@ type Manager struct {
 	// Now is the clock recency and idleness are measured against.
 	Now func() time.Time
 
+	// OnWatchError is told when the tombstone watcher cannot read its
+	// directory. Nil discards it, and the counter still records that it
+	// happened.
+	OnWatchError func(error)
+
 	stats HandleStats
 
-	// stopWatch ends the tombstone watcher, and watchOnce starts it on the
-	// first open rather than at construction: a manager that never opens an
-	// account never starts a goroutine.
-	watchOnce    sync.Once
-	stopWatch    chan struct{}
-	watchStop    sync.Once
-	watchStopped chan struct{}
+	// watching is the live tombstone watcher, or nil. It starts on the first
+	// open rather than at construction, because a manager that never opens an
+	// account never needs one — and it can start again after CloseAll, because
+	// a manager is allowed to be reused and a handle with no watcher is a
+	// deletion that hangs for ever.
+	watching *watcher
 }
 
 // The bounds a manager uses when none are set.
@@ -176,6 +184,11 @@ type HandleStats struct {
 	Evictions  int64
 	IdleCloses int64
 	Overshoots int64
+
+	// WatchFailures counts passes where the deletion watcher could not read its
+	// directory. Any at all means this process may still be holding a handle to
+	// an account somebody else has deleted.
+	WatchFailures int64
 }
 
 // NewManager builds a manager rooted at a data directory. Nothing is opened or
@@ -183,13 +196,9 @@ type HandleStats struct {
 // account never touches the disk.
 func NewManager(dataDir string) *Manager {
 	return &Manager{
-		dataDir:      dataDir,
-		open:         map[int64]*Account{},
-		blocked:      map[int64]struct{}{},
-		used:         map[int64]time.Time{},
-		rank:         map[int64]int64{},
-		stopWatch:    make(chan struct{}),
-		watchStopped: make(chan struct{}),
+		dataDir: dataDir,
+		open:    map[int64]*Account{},
+		blocked: map[int64]struct{}{},
 	}
 }
 
@@ -310,9 +319,8 @@ func lockAccountLifetime(dataDir string, id int64, exclusive bool) (*os.File, er
 	return file, nil
 }
 
-// close stops deletion monitoring, closes SQLite, and releases the lifetime
-// lease exactly once. Waiting for the watcher keeps shutdown from leaking a
-// goroutine that still references the account.
+// close marks the handle closing, closes SQLite and releases the lifetime lease
+// exactly once.
 func (a *Account) close() error {
 	a.useMu.Lock()
 	a.closing = true
@@ -322,9 +330,10 @@ func (a *Account) close() error {
 	return a.closeErr
 }
 
-// beginUse registers one operation before the account can be closed by its
-// deletion watcher. The caller still holds the cross-process shared guard, so
-// a successful registration spans exactly the same operation lifetime.
+// beginUse registers one operation before the account can be closed — by the
+// deletion watcher, by an eviction, or by a scan putting a borrowed handle
+// back. It is taken under the manager lock, so a handle cannot be closed
+// between being chosen and being registered.
 func (a *Account) beginUse() error {
 	a.useMu.Lock()
 	defer a.useMu.Unlock()
@@ -372,21 +381,6 @@ func (a *Account) markClosing() bool {
 
 	a.closing = true
 
-	return true
-}
-
-// closeForDeletion closes an account only after every operation that acquired
-// it has finished. It returns false while a lease is still active so the
-// watcher can retry without interrupting a write already acknowledged in RAM.
-func (a *Account) closeForDeletion() bool {
-	a.useMu.Lock()
-	if a.activeUses > 0 {
-		a.useMu.Unlock()
-		return false
-	}
-	a.closing = true
-	a.useMu.Unlock()
-	a.closeResources()
 	return true
 }
 
@@ -477,16 +471,16 @@ func (m *Manager) openGuarded(ctx context.Context, id int64, promote bool) (acco
 		}
 
 		if promote {
-			m.promoteLocked(id)
+			m.promote(held)
 
 			return held, false, nil, nil
 		}
 
 		// A second scan on a handle the first scan opened has to put it back
 		// too: the first one's release will refuse while this one holds it, and
-		// then nobody would close it. The zero stamp is what says no real
+		// then nobody would close it. A rank of zero is what says no real
 		// traffic has claimed it.
-		return held, m.used[id].IsZero(), nil, nil
+		return held, held.rank.Load() == 0, nil, nil
 	}
 
 	lifetimeLock, err := lockAccountLifetime(m.dataDir, id, false)
@@ -540,15 +534,12 @@ func (m *Manager) openGuarded(ctx context.Context, id int64, promote bool) (acco
 	m.stats.Opens++
 	m.startWatch()
 
-	// A handle a scan opened is stamped as never used and ranked below every
-	// other. It is put back when the scan releases it, and until then it is the
-	// first thing evicted, so an hourly walk never displaces an account real
-	// traffic is on.
+	// A handle a scan opened keeps rank zero: put back when the scan releases
+	// it, and until then the first thing evicted, so a walk never displaces an
+	// account real traffic is on.
 	if promote {
-		m.promoteLocked(id)
+		m.promote(account)
 	} else {
-		m.used[id] = time.Time{}
-		m.rank[id] = 0
 		borrowed = true
 	}
 
@@ -568,22 +559,23 @@ func (m *Manager) openGuarded(ctx context.Context, id int64, promote bool) (acco
 // watchTombstones closes any open handle whose account another process has
 // tombstoned, and refuses it from then on.
 //
-// One goroutine reads the tombstone directory once a tick, rather than one
-// goroutine per open handle stat-ing its own marker. At two thousand accounts
-// that is one readdir every hundred milliseconds instead of twenty thousand
-// stat calls a second, to notice something that happens a few times a year.
+// One goroutine reads the tombstone directory once a second, rather than one
+// goroutine and one timer per open handle stat-ing its own marker ten times a
+// second. At the default cap that is five hundred fewer goroutines and five
+// thousand fewer stat calls a second, to notice something that happens a few
+// times a year.
 //
 // Deletion waits for this. BeginDeletion takes the lifetime lock exclusively
 // and every open handle holds it shared, so a tombstone only becomes a deletion
 // once this loop has closed the handle — which makes the interval a latency
 // bound on deletion rather than a correctness one.
-func (m *Manager) watchTombstones() {
+func (m *Manager) watchTombstones(stop <-chan struct{}) {
 	ticker := time.NewTicker(deletionWatchInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-m.stopWatch:
+		case <-stop:
 			return
 		case <-ticker.C:
 			m.closeTombstoned()
@@ -598,7 +590,22 @@ func (m *Manager) watchTombstones() {
 // refused to new callers by then, because the block is recorded first.
 func (m *Manager) closeTombstoned() {
 	deleted, err := tombstonedIDs(m.dataDir)
-	if err != nil || len(deleted) == 0 {
+	if err != nil {
+		// One unreadable directory blinds every account in the process, where
+		// the per-handle stat it replaced blinded one. It is counted and
+		// reported rather than swallowed.
+		m.mu.Lock()
+		m.stats.WatchFailures++
+		m.mu.Unlock()
+
+		if m.OnWatchError != nil {
+			m.OnWatchError(err)
+		}
+
+		return
+	}
+
+	if len(deleted) == 0 {
 		return
 	}
 
@@ -640,12 +647,14 @@ func tombstonedIDs(dataDir string) (map[int64]struct{}, error) {
 	for _, entry := range entries {
 		name := entry.Name()
 
-		if !strings.HasPrefix(name, "account-") || !strings.HasSuffix(name, ".deleted") {
+		if !strings.HasPrefix(name, tombstonePrefix) || !strings.HasSuffix(name, tombstoneSuffix) {
 			continue
 		}
 
-		id, err := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(name, "account-"), ".deleted"), 10, 64)
-		if err != nil {
+		digits := name[len(tombstonePrefix) : len(name)-len(tombstoneSuffix)]
+
+		id, err := strconv.ParseInt(digits, 10, 64)
+		if err != nil || id < 1 {
 			continue
 		}
 
@@ -655,41 +664,55 @@ func tombstonedIDs(dataDir string) (map[int64]struct{}, error) {
 	return found, nil
 }
 
-// startWatch begins the tombstone watcher the first time a handle is opened.
-func (m *Manager) startWatch() {
-	m.watchOnce.Do(func() {
-		go func() {
-			defer close(m.watchStopped)
+// watcher is one run of the tombstone loop. It is a value rather than a pair of
+// fields on the manager so that stopping one and starting another is a single
+// swap and cannot leave a half-stopped watcher behind.
+type watcher struct {
+	stop chan struct{}
+	done chan struct{}
+}
 
-			m.watchTombstones()
-		}()
-	})
+// startWatch begins the tombstone watcher if none is running. The caller holds
+// the manager lock for writing.
+func (m *Manager) startWatch() {
+	if m.watching != nil {
+		return
+	}
+
+	running := &watcher{stop: make(chan struct{}), done: make(chan struct{})}
+	m.watching = running
+
+	go func() {
+		defer close(running.done)
+
+		m.watchTombstones(running.stop)
+	}()
 }
 
 // stopWatching ends the watcher and waits for it, so a closed manager leaves no
 // goroutine reading a directory a test is about to remove.
+//
+// It takes the watcher away first and waits without the lock, because the
+// watcher takes the same lock on every tick.
 func (m *Manager) stopWatching() {
-	started := false
+	m.mu.Lock()
+	running := m.watching
+	m.watching = nil
+	m.mu.Unlock()
 
-	m.watchOnce.Do(func() { started = true })
-
-	if started {
-		// Nothing was ever opened, so nothing was ever started.
-		close(m.watchStopped)
-
+	if running == nil {
 		return
 	}
 
-	m.watchStop.Do(func() { close(m.stopWatch) })
-
-	<-m.watchStopped
+	close(running.stop)
+	<-running.done
 }
 
-// promoteLocked marks one handle as the most recently used.
-func (m *Manager) promoteLocked(id int64) {
-	m.tick++
-	m.rank[id] = m.tick
-	m.used[id] = m.now()
+// promote marks one handle as the most recently used. It is safe under the read
+// lock: the values live on the handle and the counter is atomic.
+func (m *Manager) promote(account *Account) {
+	account.rank.Store(m.tick.Add(1))
+	account.usedAt.Store(m.now().UnixNano())
 }
 
 // chooseLocked picks the least-recently-used handles to close until the cap is
@@ -716,8 +739,8 @@ func (m *Manager) chooseLocked() []*Account {
 				continue
 			}
 
-			if !found || m.rank[id] < oldestAt {
-				oldest, oldestAt, found = id, m.rank[id], true
+			if rank := m.open[id].rank.Load(); !found || rank < oldestAt {
+				oldest, oldestAt, found = id, rank, true
 			}
 		}
 
@@ -759,13 +782,10 @@ func (m *Manager) takeLocked(id int64) *Account {
 	return account
 }
 
-// forgetLocked drops every trace of one account from the cache. Every path that
-// removes a handle goes through it, so no bookkeeping map outlives the entry it
-// describes.
+// forgetLocked drops one account from the cache. Recency lives on the handle, so
+// there is nothing else to prune.
 func (m *Manager) forgetLocked(id int64) {
 	delete(m.open, id)
-	delete(m.used, id)
-	delete(m.rank, id)
 }
 
 // closeAll finishes closing handles the cache has already let go of.
@@ -788,12 +808,12 @@ func closeAll(victims []*Account) {
 func (m *Manager) CloseIdle() int {
 	m.mu.Lock()
 
-	cutoff := m.now().Add(-m.idleTimeout())
+	cutoff := m.now().Add(-m.idleTimeout()).UnixNano()
 
 	var victims []*Account
 
-	for id, at := range m.used {
-		if at.After(cutoff) {
+	for id, account := range m.open {
+		if account.usedAt.Load() > cutoff {
 			continue
 		}
 
@@ -849,10 +869,13 @@ func (m *Manager) Stats() HandleStats {
 	return stats
 }
 
-// WriteGuard holds a shared cross-process lock from the final tombstone check
-// through the account transaction. A deletion takes the exclusive side before
-// removing files, so an already-open writer cannot continue into an unlinked
-// database inode.
+// WriteGuard is one operation's claim on an account.
+//
+// From the slow path it holds a shared cross-process lock taken after the final
+// tombstone check, so a deletion cannot start between the check and the write.
+// From the cached path it holds no lock file: the handle already holds the
+// account's lifetime lease, which is what a deletion has to take exclusively
+// before it removes anything.
 type WriteGuard struct {
 	manager *Manager
 	id      int64
@@ -947,8 +970,8 @@ func (m *Manager) acquireCached(id int64, promote bool) (*Lease, bool) {
 		return nil, false
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	if _, blocked := m.blocked[id]; blocked {
 		return nil, false
@@ -968,9 +991,9 @@ func (m *Manager) acquireCached(id int64, promote bool) (*Lease, bool) {
 	borrowed := false
 
 	if promote {
-		m.promoteLocked(id)
+		m.promote(account)
 	} else {
-		borrowed = m.used[id].IsZero()
+		borrowed = account.rank.Load() == 0
 	}
 
 	return &Lease{Account: account, guard: &WriteGuard{manager: m, id: id, account: account, borrowed: borrowed}}, true
@@ -1107,10 +1130,10 @@ func (m *Manager) putBack(id int64) {
 
 	var account *Account
 
-	// The zero stamp is what says nobody has promoted it since the scan opened
-	// it. Real use rewrites the stamp, and a second scan still holding it makes
+	// Rank zero is what says nobody has promoted it since the scan opened it.
+	// Real use rewrites the rank, and a second scan still holding it makes
 	// takeLocked refuse.
-	if at, ok := m.used[id]; ok && at.IsZero() {
+	if held, open := m.open[id]; open && held.rank.Load() == 0 {
 		account = m.takeLocked(id)
 	}
 
@@ -1317,8 +1340,17 @@ func (g *DeletionGuard) Release() error {
 // TombstonePath returns the durable deletion marker for an account. It is
 // exported for operational checks and tests, not as a path callers should edit.
 func TombstonePath(dataDir string, id int64) string {
-	return filepath.Join(dataDir, guardDirectory, fmt.Sprintf("account-%0*d.deleted", dirWidth, id))
+	return filepath.Join(dataDir, guardDirectory,
+		fmt.Sprintf("%s%0*d%s", tombstonePrefix, dirWidth, id, tombstoneSuffix))
 }
+
+// The marker's filename, written by TombstonePath and read back by the watcher.
+// One definition each, because a change only one of them followed would stop
+// the watcher noticing anything.
+const (
+	tombstonePrefix = "account-"
+	tombstoneSuffix = ".deleted"
+)
 
 // lockPath returns the advisory-lock file shared by all account managers.
 func lockPath(dataDir string, id int64) string {
@@ -1410,17 +1442,18 @@ func writeTombstone(dataDir string, id int64) error {
 // account is checkpointed on the way out rather than left for the next start-up
 // to recover.
 func (m *Manager) CloseAll() error {
-	m.stopWatching()
-
 	m.mu.Lock()
 	accounts := make([]*Account, 0, len(m.open))
 	for _, account := range m.open {
 		accounts = append(accounts, account)
 	}
 	m.open = map[int64]*Account{}
-	m.used = map[int64]time.Time{}
-	m.rank = map[int64]int64{}
 	m.mu.Unlock()
+
+	// After the map is cleared, so an open that raced this call reinstates the
+	// watcher rather than leaving a handle nothing watches — which is a
+	// deletion that waits for a close that never comes.
+	m.stopWatching()
 
 	// Every handle is closed even after one fails. Stopping at the first error
 	// would leave the rest of the accounts open in a process that is exiting.

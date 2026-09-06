@@ -1304,8 +1304,8 @@ func BenchmarkAcquireCached(b *testing.B) {
 }
 
 // BenchmarkAcquireCachedParallel is the same acquire from many goroutines,
-// because the cached path used to serialise every account behind one mutex and
-// that is exactly when a box is busy.
+// because a cached acquire promotes the handle, and doing that under a writer
+// would serialise every account in the process exactly when the box is busy.
 func BenchmarkAcquireCachedParallel(b *testing.B) {
 	manager := NewManager(b.TempDir())
 
@@ -1392,8 +1392,11 @@ func TestACachedHandleStopsWorkingAfterAnotherManagerDeletesIt(t *testing.T) {
 		if err != nil {
 			t.Fatalf("the other manager could not delete the account: %v", err)
 		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("the deletion hung, so the watcher never closed the cached handle")
+	// The stated bound, not an arbitrary one: the watcher runs every
+	// deletionWatchInterval, and an idle handle is closed on its first pass.
+	// Ten of them is slack for a loaded machine, not a different claim.
+	case <-time.After(10 * deletionWatchInterval):
+		t.Fatal("the deletion took longer than the stated bound, so the watcher is not the thing closing the handle")
 	}
 
 	if _, err := mine.Acquire(ctx, 1); !errors.Is(err, ErrDeleted) {
@@ -1402,36 +1405,171 @@ func TestACachedHandleStopsWorkingAfterAnotherManagerDeletesIt(t *testing.T) {
 }
 
 // TestTheWatcherIsOneGoroutineWhateverTheAccountCount is the other half of the
-// saving. One stat loop per open handle at 100 ms is twenty thousand stat calls
-// a second on a two-thousand-account shard.
+// saving. One stat loop and one timer per open handle is five hundred of each
+// at the default cap.
+//
+// It counts the watcher's own stacks rather than budgeting total goroutines,
+// because a budget with slack in it passes with the regression restored.
 func TestTheWatcherIsOneGoroutineWhateverTheAccountCount(t *testing.T) {
 	manager := NewManager(t.TempDir())
 	manager.MaxOpen = 100
 
 	ctx := context.Background()
 
-	before := runtime.NumGoroutine()
+	for _, count := range []int64{1, 40} {
+		for id := int64(1); id <= count; id++ {
+			lease, err := manager.Acquire(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	for id := int64(1); id <= 40; id++ {
-		lease, err := manager.Acquire(ctx, id)
-		if err != nil {
-			t.Fatal(err)
+			if err := lease.Release(); err != nil {
+				t.Fatal(err)
+			}
 		}
 
-		if err := lease.Release(); err != nil {
-			t.Fatal(err)
+		if watching := watchers(t); watching != 1 {
+			t.Errorf("%d handles are watched by %d goroutines, want one", count, watching)
 		}
-	}
-
-	// Four goroutines per handle belong to SQLite; what must not scale is the
-	// deletion watching, so the budget is generous and the shape is the point.
-	perHandle := (runtime.NumGoroutine() - before) / 40
-
-	if perHandle > 5 {
-		t.Errorf("%d goroutines per open handle, want the watcher not to be one of them", perHandle)
 	}
 
 	if err := manager.CloseAll(); err != nil {
 		t.Fatal(err)
+	}
+
+	if watching := watchers(t); watching != 0 {
+		t.Errorf("%d watcher goroutines survived shutdown", watching)
+	}
+}
+
+// watchers counts the goroutines running a deletion watch.
+func watchers(t *testing.T) int {
+	t.Helper()
+
+	// Generous: the buffer has to hold every stack in the process.
+	stacks := make([]byte, 1<<20)
+	stacks = stacks[:runtime.Stack(stacks, true)]
+
+	return strings.Count(string(stacks), "accounts.(*Manager).watchTombstones")
+}
+
+// TestAManagerReusedAfterCloseAllStillWatches is the hole a Once in the wrong
+// place leaves.
+//
+// Deletion blocks on the lifetime lock every open handle holds, and only the
+// watcher closes that handle. A manager that stopped watching and then opened
+// something again would hang the next deletion for ever, with no error and no
+// timeout.
+func TestAManagerReusedAfterCloseAllStillWatches(t *testing.T) {
+	dir := t.TempDir()
+
+	mine := NewManager(dir)
+	t.Cleanup(func() { _ = mine.CloseAll() })
+
+	ctx := context.Background()
+
+	// Opened, closed, and opened again — the sequence that used to consume the
+	// watcher for the life of the manager.
+	first, err := mine.Acquire(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := first.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mine.CloseAll(); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := mine.Acquire(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := again.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	theirs := NewManager(dir)
+	t.Cleanup(func() { _ = theirs.CloseAll() })
+
+	deleted := make(chan error, 1)
+	go func() { deleted <- theirs.Delete(1) }()
+
+	select {
+	case err := <-deleted:
+		if err != nil {
+			t.Fatalf("deleting an account a reused manager holds: %v", err)
+		}
+	case <-time.After(30 * deletionWatchInterval):
+		t.Fatal("the deletion hung, so the reused manager was not watching")
+	}
+}
+
+// TestALiveLeaseOnTheCachedPathStillFencesADeletion is the scenario the fast
+// path creates and the one the safety argument rests on.
+//
+// A cached acquire takes no guard lock and reads no tombstone. What stops a
+// deletion is the lifetime lock the open handle already holds, so a lease taken
+// that way has to hold a deletion off for exactly as long as it lives.
+func TestALiveLeaseOnTheCachedPathStillFencesADeletion(t *testing.T) {
+	dir := t.TempDir()
+
+	mine := NewManager(dir)
+	t.Cleanup(func() { _ = mine.CloseAll() })
+
+	theirs := NewManager(dir)
+	t.Cleanup(func() { _ = theirs.CloseAll() })
+
+	ctx := context.Background()
+
+	// Warm it, so the lease below comes from the cached path.
+	warm, err := mine.Acquire(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := warm.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	held, err := mine.Acquire(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deleted := make(chan error, 1)
+	go func() { deleted <- theirs.Delete(1) }()
+
+	// Long enough for several watcher passes: the deletion must not complete
+	// while the lease is alive.
+	select {
+	case err := <-deleted:
+		t.Fatalf("the account was deleted underneath a live cached lease: %v", err)
+	case <-time.After(3 * deletionWatchInterval):
+	}
+
+	// And the handle still works while it is held.
+	if _, err := held.Account.Writer().ExecContext(ctx, "SELECT 1"); err != nil {
+		t.Fatalf("the held handle was closed: %v", err)
+	}
+
+	if err := held.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-deleted:
+		if err != nil {
+			t.Fatalf("the deletion failed after the lease was released: %v", err)
+		}
+	case <-time.After(30 * deletionWatchInterval):
+		t.Fatal("the deletion never completed after the lease was released")
+	}
+
+	if _, err := mine.Acquire(ctx, 1); !errors.Is(err, ErrDeleted) {
+		t.Errorf("the account re-opened after deletion: %v", err)
 	}
 }
