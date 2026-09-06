@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/outbound"
 )
 
@@ -147,7 +148,9 @@ func SlackText(rendered Rendered, dashboardURL string) string {
 
 	// The text alternative is already a readable summary and is generated from
 	// the same data as the HTML, which is exactly what a chat message wants.
-	body := strings.TrimSpace(rendered.Text)
+	// Without its footer: a postal address answers "who sent me this" in an
+	// inbox, and a chat message already says who sent it.
+	body := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(rendered.Text), mail.PostalAddress))
 	if body != "" {
 		out.WriteString("```\n" + body + "\n```\n")
 	}

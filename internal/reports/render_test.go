@@ -299,6 +299,16 @@ func TestSlackTextCarriesTheSameNumbers(t *testing.T) {
 	if !strings.Contains(text, rendered.Subject) {
 		t.Fatal("the Slack message does not carry the subject")
 	}
+
+	// The email footer belongs in an inbox. A chat message already says who
+	// posted it, so the postal address is four lines of noise in a channel.
+	if strings.Contains(text, mail.PostalAddress) {
+		t.Errorf("the Slack message carries the postal address:\n%s", text)
+	}
+
+	if !strings.Contains(text, "You are receiving this because") {
+		t.Error("the Slack message lost the sentence explaining why it arrived")
+	}
 }
 
 // TestBothDialsRenderTheSameInstant covers midnight and noon, which are the two
