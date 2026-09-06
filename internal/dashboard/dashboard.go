@@ -24,9 +24,7 @@
 package dashboard
 
 import (
-	"crypto/sha256"
 	"embed"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -35,15 +33,16 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/assets"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
-// assets holds the compiled bundle. The build writes app.js, app.css and
+// assetFS holds the compiled bundle. The build writes app.js, app.css and
 // index.html here; nothing else in the directory is served.
 //
 //go:embed assets/index.html assets/app.js assets/app.css
-var assets embed.FS
+var assetFS embed.FS
 
 // The paths this package answers on.
 const (
@@ -71,12 +70,6 @@ const (
 	// with a 304 — so nothing is gained by letting it be stored, and a shared
 	// machine or a proxy holding one account's bootstrap is what it costs.
 	shellCacheControl = "no-store"
-	assetCacheControl = "public, max-age=31536000, immutable"
-
-	// A request for an asset without the digest is somebody's bookmark or a
-	// hand-typed URL. It gets a short life rather than an immutable one, so a
-	// deploy is not invisible to them for a year.
-	unversionedCacheControl = "public, max-age=60"
 )
 
 // DomainSource is the routing map the site picker is built from. It is an
@@ -105,21 +98,10 @@ type Handler struct {
 	shellHead []byte
 	shellTail []byte
 
-	// files is each asset's body, content type and digest, resolved once at
-	// construction. Hashing on every request would put a SHA-256 of a quarter
-	// of a megabyte in front of every page load.
-	files map[string]asset
-}
-
-// asset is one compiled file, ready to write.
-type asset struct {
-	body        []byte
-	contentType string
-
-	// digest is the short content hash the shell puts in the asset's query
-	// string. It is what makes the immutable cache lifetime safe: a new build
-	// is a new URL, so nothing can serve a stale bundle against a new shell.
-	digest string
+	// files is each compiled file, resolved once at construction. Hashing on
+	// every request would put a SHA-256 of a quarter of a megabyte in front of
+	// every page load.
+	files assets.Set
 }
 
 // New builds the handler, resolving the shell and the asset digests once.
@@ -130,28 +112,25 @@ type asset struct {
 // serves a blank dashboard is far harder to diagnose than one that refuses to
 // start with the reason.
 func New(sites DomainSource) *Handler {
-	h := &Handler{Sites: sites, files: map[string]asset{}}
+	h := &Handler{Sites: sites, files: assets.Set{}}
 
-	for name, contentType := range map[string]string{
-		"app.js":  "text/javascript; charset=utf-8",
-		"app.css": "text/css; charset=utf-8",
-	} {
-		body, err := assets.ReadFile("assets/" + name)
+	for _, name := range []string{"app.js", "app.css"} {
+		body, err := assetFS.ReadFile("assets/" + name)
 		if err != nil {
 			panic(fmt.Sprintf("dashboard: %s is missing — run `make assets` before building: %v", name, err))
 		}
 
-		h.files[name] = asset{body: body, contentType: contentType, digest: digestOf(body)}
+		h.files[name] = assets.File{Body: body, ContentType: contentTypeOf(name), Digest: assets.Digest(body)}
 	}
 
-	shell, err := assets.ReadFile("assets/index.html")
+	shell, err := assetFS.ReadFile("assets/index.html")
 	if err != nil {
 		panic(fmt.Sprintf("dashboard: index.html is missing — run `make assets` before building: %v", err))
 	}
 
 	rendered := string(shell)
-	for name, file := range h.files {
-		rendered = strings.ReplaceAll(rendered, placeholderFor(name), AssetPrefix+name+"?v="+file.digest)
+	for name := range h.files {
+		rendered = strings.ReplaceAll(rendered, placeholderFor(name), h.files.URL(AssetPrefix, name))
 	}
 
 	head, tail, found := strings.Cut(rendered, bootstrapPlaceholder)
@@ -173,13 +152,14 @@ func placeholderFor(name string) string {
 	return "__JS__"
 }
 
-// digestOf is the short content hash an asset is addressed by. Twelve base64
-// characters is 72 bits, which is far more than enough to tell two builds apart
-// and short enough to keep the URL readable in a network panel.
-func digestOf(body []byte) string {
-	sum := sha256.Sum256(body)
+// contentTypeOf names the two compiled files. The extensions are known, so this
+// is a table rather than a lookup that could answer with a guess.
+func contentTypeOf(name string) string {
+	if strings.HasSuffix(name, ".css") {
+		return "text/css; charset=utf-8"
+	}
 
-	return base64.RawURLEncoding.EncodeToString(sum[:])[:12]
+	return "text/javascript; charset=utf-8"
 }
 
 // ServeHTTP routes one request to the asset it named, or to the shell.
@@ -207,35 +187,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // serveAsset writes one compiled file.
 func (h *Handler) serveAsset(w http.ResponseWriter, r *http.Request, name string) {
-	file, ok := h.files[name]
-	if !ok {
-		http.NotFound(w, r)
-
-		return
-	}
-
-	cache := unversionedCacheControl
-	if r.URL.Query().Get("v") == file.digest {
-		cache = assetCacheControl
-	}
-
-	w.Header().Set("Content-Type", file.contentType)
-	w.Header().Set("Cache-Control", cache)
-	w.Header().Set("ETag", `"`+file.digest+`"`)
-
-	// A revalidation costs a round trip and nothing else, which matters on the
-	// unversioned path where the browser asks every minute.
-	if match := r.Header.Get("If-None-Match"); match == `"`+file.digest+`"` {
-		w.WriteHeader(http.StatusNotModified)
-
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-
-	if r.Method != http.MethodHead {
-		_, _ = w.Write(file.body)
-	}
+	h.files.Serve(w, r, name)
 }
 
 // Bootstrap is what the shell boots from. It is a type rather than an inline
@@ -468,7 +420,7 @@ func encodeBootstrap(boot Bootstrap) []byte {
 func AssetNames() []string {
 	var names []string
 
-	_ = fs.WalkDir(assets, "assets", func(p string, d fs.DirEntry, err error) error {
+	_ = fs.WalkDir(assetFS, "assets", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}

@@ -210,11 +210,11 @@ lists:
 ui-css: web-deps
 	@if [ -x web/node_modules/.bin/tailwindcss ]; then \
 		NODE_PATH="$(CURDIR)/web/node_modules" web/node_modules/.bin/tailwindcss \
-			-i internal/auth/tailwind.css -o internal/auth/assets/app.css --minify; \
+			-i internal/appui/tailwind.css -o internal/appui/assets/app.css --minify; \
 	elif command -v tailwindcss >/dev/null 2>&1; then \
-		tailwindcss -i internal/auth/tailwind.css -o internal/auth/assets/app.css --minify; \
+		tailwindcss -i internal/appui/tailwind.css -o internal/appui/assets/app.css --minify; \
 	else \
-		echo "tailwindcss is not installed — keeping the committed internal/auth/assets/app.css"; \
+		echo "tailwindcss is not installed — keeping the committed internal/appui/assets/app.css"; \
 	fi
 
 ## binary: compile the single binary from the committed embedded assets

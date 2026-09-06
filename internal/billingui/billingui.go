@@ -92,6 +92,11 @@ func templateFuncs() template.FuncMap {
 			return i18n.N(locale, id, count, args...)
 		},
 
+		// asset addresses one of the files every server-rendered screen loads,
+		// with the content digest on it. The chrome owns the tree, so all three
+		// surfaces that wear it load the same stylesheet.
+		"asset": appui.AssetURL,
+
 		// The shared chrome needs both: the layout sets dir on the html element,
 		// and the header builds every destination through the locale prefix.
 		"url": func(locale, target string) string {

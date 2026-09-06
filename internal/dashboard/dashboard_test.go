@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/assets"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
@@ -156,7 +157,7 @@ func TestShellReferencesHashedAssets(t *testing.T) {
 	body := get(t, h, "/dashboard/").Body.String()
 
 	for _, name := range []string{"app.js", "app.css"} {
-		want := AssetPrefix + name + "?v=" + h.files[name].digest
+		want := AssetPrefix + name + "?v=" + h.files[name].Digest
 
 		if !strings.Contains(body, want) {
 			t.Fatalf("the shell does not reference %s: %s", want, body)
@@ -197,21 +198,21 @@ func TestClientRoutesRenderTheShell(t *testing.T) {
 // unversioned request must not get the same promise.
 func TestVersionedAssetIsImmutable(t *testing.T) {
 	h := New(fakeSites{})
-	digest := h.files["app.js"].digest
+	digest := h.files["app.js"].Digest
 
 	versioned := get(t, h, AssetPrefix+"app.js?v="+digest)
-	if got := versioned.Header().Get("Cache-Control"); got != assetCacheControl {
-		t.Errorf("versioned asset answered Cache-Control %q, want %q", got, assetCacheControl)
+	if got := versioned.Header().Get("Cache-Control"); got != assets.Immutable {
+		t.Errorf("versioned asset answered Cache-Control %q, want %q", got, assets.Immutable)
 	}
 
 	bare := get(t, h, AssetPrefix+"app.js")
-	if got := bare.Header().Get("Cache-Control"); got != unversionedCacheControl {
-		t.Errorf("unversioned asset answered Cache-Control %q, want %q", got, unversionedCacheControl)
+	if got := bare.Header().Get("Cache-Control"); got != assets.Revalidate {
+		t.Errorf("unversioned asset answered Cache-Control %q, want %q", got, assets.Revalidate)
 	}
 
 	stale := get(t, h, AssetPrefix+"app.js?v=notthedigest")
-	if got := stale.Header().Get("Cache-Control"); got != unversionedCacheControl {
-		t.Errorf("a wrong digest answered Cache-Control %q, want %q", got, unversionedCacheControl)
+	if got := stale.Header().Get("Cache-Control"); got != assets.Revalidate {
+		t.Errorf("a wrong digest answered Cache-Control %q, want %q", got, assets.Revalidate)
 	}
 }
 
@@ -222,7 +223,7 @@ func TestAssetRevalidates(t *testing.T) {
 	h := New(fakeSites{})
 
 	request := httptest.NewRequest(http.MethodGet, AssetPrefix+"app.css", nil)
-	request.Header.Set("If-None-Match", `"`+h.files["app.css"].digest+`"`)
+	request.Header.Set("If-None-Match", `"`+h.files["app.css"].Digest+`"`)
 
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, request)

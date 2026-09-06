@@ -175,6 +175,11 @@ func mustParse(name string) *template.Template {
 // to read a language from. Every call site therefore passes $.Lang.
 func funcs() template.FuncMap {
 	return template.FuncMap{
+		// asset addresses one of the files every server-rendered screen loads,
+		// with the content digest on it. The chrome owns the tree, so all three
+		// surfaces that wear it load the same stylesheet.
+		"asset": appui.AssetURL,
+
 		"url": func(locale, target string) string {
 			return i18n.LocalURL(target, locale)
 		},
