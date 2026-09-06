@@ -764,14 +764,18 @@ func TestAPageFilterOnAVisitBreakdownIsEntryScopedAndSaysSo(t *testing.T) {
 	}
 }
 
-// TestAPageFilterOnAPageBreakdownIsNotRescoped is the other half: the split is
-// between the two fact tables, not between filtered and unfiltered, and a
-// warning on the queries that are exactly right would train people to ignore
-// the ones that are not.
-func TestAPageFilterOnAPageBreakdownIsNotRescoped(t *testing.T) {
+// TestOnlyTheSessionScopedMetricsAreWarnedAbout is the other half: the split is
+// between the two fact tables, not between filtered and unfiltered, and warning
+// about the figures that are exactly right would train people to ignore the
+// ones that are not.
+//
+// The query asks for both kinds at once, which is what the tiles do: pageviews
+// counts events matching the filter as written, bounce rate describes a whole
+// visit and is therefore re-scoped to entrances.
+func TestOnlyTheSessionScopedMetricsAreWarnedAbout(t *testing.T) {
 	engine := newEngine(t)
 
-	q := baseQuery("pageviews")
+	q := baseQuery("pageviews", "bounce_rate")
 	q.Dimensions = []string{"event:page"}
 	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:page", Values: []string{"/about"}}}
 
@@ -781,8 +785,17 @@ func TestAPageFilterOnAPageBreakdownIsNotRescoped(t *testing.T) {
 		t.Fatalf("got %+v, want one row for /about", result.Results)
 	}
 
-	if len(result.Meta.MetricWarnings) != 0 {
-		t.Errorf("an event-scoped breakdown was warned about: %+v", result.Meta.MetricWarnings)
+	if _, warned := result.Meta.MetricWarnings["pageviews"]; warned {
+		t.Errorf("an event-scoped figure was warned about: %+v", result.Meta.MetricWarnings["pageviews"])
+	}
+
+	warning, ok := result.Meta.MetricWarnings["bounce_rate"]
+	if !ok {
+		t.Fatal("the session-scoped figure beside it was not warned about")
+	}
+
+	if warning.Code != WarnEntryScoped {
+		t.Errorf("warning code = %q, want %q", warning.Code, WarnEntryScoped)
 	}
 }
 

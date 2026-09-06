@@ -17,7 +17,7 @@ import { useLoading } from "../lib/loading";
 import { canStep, step, today, yesterday } from "../lib/period";
 import { usePref, useTheme } from "../lib/prefs";
 import type { CardDef, Tab } from "../lib/reports";
-import { CARDS, findCard, findTab, noticesOf, tableTabs } from "../lib/reports";
+import { CARDS, findCard, findTab, tableTabs } from "../lib/reports";
 import type { DrawerState } from "../lib/url";
 import { dateRange, useUrlState } from "../lib/url";
 import { useStats } from "../lib/useStats";
@@ -66,24 +66,6 @@ export function App() {
 	if (boot.lock && boot.navigation) return <LockedDashboard boot={boot} />;
 
 	return <AnalyticsDashboard />;
-}
-
-/** SectionCaveats says what question the tiles and the graph answered, when it
- * was not quite the one that was asked.
- *
- * A flat-zero graph under a filter is the most misleading thing on the page,
- * and the engine already knows why — it reinterprets a page filter on a
- * visit-scoped report into an entry-page filter and says so in the response. */
-function SectionCaveats({ notes }: { notes: string[] }) {
-	if (notes.length === 0) return null;
-
-	return (
-		<div role="note" className="border-b border-line px-5 py-2">
-			{notes.map((note) => (
-				<p key={note} className="text-[11px] leading-relaxed text-muted">{note}</p>
-			))}
-		</div>
-	);
 }
 
 /** RebuildNotice explains a slow dashboard while a site's summary is rebuilt.
@@ -501,12 +483,6 @@ function AnalyticsDashboard() {
 							exactFallback={totals.exactFallback || graph.exactFallback}
 							onExact={setExact}
 						/>
-
-						{/* One line for the section, for the same reason. The
-						    tiles and the graph are two responses to the same
-						    question, so a filter the engine reinterpreted was
-						    reinterpreted for both. */}
-						<SectionCaveats notes={[...new Set([...noticesOf(totals.data?.meta), ...noticesOf(graph.data?.meta)])]} />
 
 						<TopStats stats={totals} selected={metric} onSelect={setMetric} comparing={comparing} />
 						<div className="p-4 sm:p-5">

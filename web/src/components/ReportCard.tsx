@@ -17,8 +17,9 @@ import { usePref } from "../lib/prefs";
 import type { CardDef, Tab } from "../lib/reports";
 import { PRIMARY, dimensionsOf, findTab, groupsOf, labelOf, noticesOf, subTabsOf } from "../lib/reports";
 import { useNearViewport, useStats } from "../lib/useStats";
-import { Bar, Caveats, Empty, Failure, Favicon, Flag, InfoDot, Spinner } from "./atoms";
+import { Bar, Empty, Failure, Favicon, Flag, InfoDot, Spinner } from "./atoms";
 import { SampledMark } from "./SampledBadge";
+import { tileLabelLower } from "./TopStats";
 import { WorldMap } from "./WorldMap";
 
 /** How many rows the card previews. The rest live in the details drawer: a card
@@ -123,7 +124,7 @@ export function ReportCard({
 
 	const stats = useStats(domain, body, near);
 	const rows = stats.data?.results ?? [];
-	const notices = noticesOf(stats.data?.meta);
+	const notices = noticesOf(stats.data?.meta, tileLabelLower);
 	const on = selected.get(active.dimension);
 	const peak = Math.max(1, ...rows.map((row) => row.metrics[0] ?? 0));
 	const groups = groupsOf(card);
@@ -307,10 +308,6 @@ export function ReportCard({
 					</a>
 				)}
 			</footer>
-
-			{/* Below the rows, not instead of them: the numbers on screen are
-			    real, and this says what question they answer. */}
-			{rows.length > 0 && <Caveats notes={notices} />}
 		</section>
 	);
 }

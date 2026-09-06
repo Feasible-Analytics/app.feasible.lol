@@ -155,7 +155,7 @@ export function Drawer({
 	const stats = useStats(domain, body);
 	const rows = stats.data?.results ?? [];
 	const totalRows = stats.data?.meta.total_rows ?? 0;
-	const notices = noticesOf(stats.data?.meta);
+	const notices = noticesOf(stats.data?.meta, (metric) => t(DRAWER_HEADINGS[metric] ?? metric));
 
 	const first = totalRows === 0 ? 0 : (state.page - 1) * PAGE + 1;
 	const last = Math.min(state.page * PAGE, totalRows);
@@ -293,6 +293,7 @@ export function Drawer({
 										? t("dashboard.drawer.empty_search", { noun: t(tab.nounId), search: state.search })
 										: t(tab.nounId)
 								}
+								because={notices}
 							/>
 						</div>
 					) : (
@@ -419,11 +420,11 @@ export function Drawer({
 					)}
 				</div>
 
-				{/* One sentence per distinct caveat rather than one per metric.
-				    A single reinterpreted filter warns against every metric it
-				    touched, and each sentence already names the figures it is
-				    about. */}
-				<Caveats notes={notices} />
+				{notices.length > 0 && (
+					<footer className="shrink-0 border-t border-line px-4 py-2">
+						<Caveats notes={notices} />
+					</footer>
+				)}
 			</div>
 		</div>
 	);

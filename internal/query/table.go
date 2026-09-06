@@ -281,20 +281,16 @@ func entryScopeRequired(q *Query, p *plan) bool {
 
 // entryScopeWarning is the sentence attached to every session-scoped metric in
 // a query that had to be entry-scoped. It names the change rather than hinting
-// at it, because a figure measured over entrances and one measured over visits
-// that touched a page are different numbers, and the reader cannot tell which
-// one they are looking at from the number alone.
-//
-// It is a whole sentence and reads on its own. A caveat that only parses after
-// a metric name can be shown in exactly one place, and everywhere else it gets
-// dropped — which is the fault it exists to prevent.
-const entryScopeWarning = "This is measured over the visits that started on the matching page, not every visit that reached it. " +
-	"A bounce rate, a visit duration and views per visit all describe a whole visit, so they are counted from where the visit began."
+// at it, because a bounce rate measured over entrances and one measured over
+// visits that touched a page are different numbers, and the reader cannot tell
+// which one they are looking at from the number alone.
+const entryScopeWarning = "computed over the visits that entered on the matching page, not every visit that touched it — " +
+	"a figure that describes a whole visit is counted from where the visit began"
 
 // sessionSemiJoinWarning is attached when an event-scoped filter with no entry
 // analogue had to select whole sessions.
-const sessionSemiJoinWarning = "This is measured over whole visits that contain a matching event. " +
-	"The figure describes a visit, so the filter picks out visits rather than narrowing the figure itself."
+const sessionSemiJoinWarning = "computed over whole visits that contain a matching event — " +
+	"this metric describes a visit, so the event filter selects visits rather than narrowing the metric"
 
 // checkConversionGoal refuses a conversion rate with nothing to convert.
 // Without a goal the numerator and the denominator are the same set and every

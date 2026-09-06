@@ -7,9 +7,17 @@
 //
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { before, test } from "node:test";
 
 import { PAGES, dimensionsOf, noticesOf } from "./reports";
+
+// The locale is read from the page once, so the stub is installed before any
+// test asks for a formatter.
+before(() => {
+	globalThis.document = {
+		getElementById: () => ({ textContent: JSON.stringify({ locale: "en", messages: {} }) }),
+	} as unknown as Document;
+});
 
 test("the Pages card keeps captured titles outside its grouping dimensions", () => {
 	const pages = PAGES.tabs[0];
@@ -33,19 +41,57 @@ test("the Pages heading and its first tab are one string", () => {
 	assert.equal(PAGES.titleId, PAGES.tabs[0]?.labelId);
 });
 
-test("one reinterpreted filter reads as one sentence, not one per metric", () => {
-	const sentence = "Your page filter was applied to the page each visit started on.";
+test("one reinterpreted filter reads as one paragraph naming every metric", () => {
+	const sentence = "computed over the visits that entered on the matching page";
 
+	assert.deepEqual(
+		noticesOf(
+			{
+				metric_warnings: {
+					bounce_rate: { code: "entry_scoped", warning: sentence },
+					visit_duration: { code: "entry_scoped", warning: sentence },
+					views_per_visit: { code: "entry_scoped", warning: sentence },
+				},
+			},
+			(metric) => metric.replaceAll("_", " "),
+		),
+		// Intl supplies the separators, which is why the serial comma is there
+		// in English and would not be in French.
+		[`bounce rate, visit duration, and views per visit: ${sentence}`],
+	);
+});
+
+test("a warning that is about the data rather than the question is left alone", () => {
+	// Sampling has its own badge and its own explainer, and the per-metric
+	// facts only read beside the metric they are about. Branching on the code
+	// is what the codes are for.
 	assert.deepEqual(
 		noticesOf({
 			metric_warnings: {
-				visitors: { code: "entry_scoped", warning: sentence },
-				visits: { code: "entry_scoped", warning: sentence },
-				bounce_rate: { code: "entry_scoped", warning: sentence },
+				visitors: { code: "sampled", warning: "read from 10% deterministic buckets" },
+				pageviews: { code: "partial_bucket", warning: "the last bucket is still filling" },
 			},
 		}),
-		[sentence],
+		[],
 	);
+});
+
+test("two different reinterpretations are two paragraphs", () => {
+	const notices = noticesOf(
+		{
+			metric_warnings: {
+				bounce_rate: { code: "entry_scoped", warning: "entered on the matching page" },
+				visit_duration: { code: "session_scoped", warning: "whole visits containing a matching event" },
+				visitors: { code: "sampled", warning: "read from part of the data" },
+			},
+		},
+		(metric) => metric,
+	);
+
+	assert.deepEqual(notices, [
+		"bounce_rate: entered on the matching page",
+		"visit_duration: whole visits containing a matching event",
+	]);
 });
 
 test("an answer with nothing to say about it produces no notices", () => {
