@@ -310,6 +310,34 @@
 					</table>
 				</div>
 			</div>
+			<!--
+				What the page reported about the browser, counted whether or not it
+				classified anybody. It is here because a bot filter that cannot be
+				checked against its own input is a number the customer has to take
+				on trust.
+			-->
+			<div>
+				<h2 class="text-sm font-semibold text-heading">{{ t $.Lang "settings.health.browser_signals_heading" }}</h2>
+				<div class="mt-2 overflow-x-auto">
+					<table class="w-full text-sm">
+						<tbody>
+							{{range .Panel.AutomationSignals}}
+								<tr>
+									<td class="border-t border-line py-2.5 pr-3 align-middle text-xs text-muted">
+										{{- if eq .Value "o" }}{{ t $.Lang "settings.health.browser_signal_no_window" }}
+										{{- else if eq .Value "s" }}{{ t $.Lang "settings.health.browser_signal_no_screen" }}
+										{{- else if eq .Value "unrecognised" }}{{ t $.Lang "settings.health.browser_signal_unrecognised" }}
+										{{- else }}{{ t $.Lang "settings.health.browser_signal_both" }}{{ end -}}
+									</td>
+									<td class="border-t border-line py-2.5 pr-0 text-right align-middle">{{.Count}}</td>
+								</tr>
+							{{else}}
+								<tr><td colspan="2" class="border-t border-line py-2.5 pr-3 align-middle text-sm text-muted">{{ t $.Lang "settings.health.nothing_recorded" }}</td></tr>
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</div>
 		</div>
 	</section>
 {{end}}

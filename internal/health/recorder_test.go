@@ -479,6 +479,72 @@ func TestAnUnexpectedHostnameIsRecorded(t *testing.T) {
 	}
 }
 
+// TestTheReportedAutomationSignalsReachThePanel is how an automation verdict
+// becomes checkable.
+//
+// The letters are recorded whether or not they classified. A panel that only
+// showed the ones that convicted could not answer "how often did we see this
+// and let it through", which is the question that catches a bad threshold.
+func TestTheReportedAutomationSignalsReachThePanel(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	for range 4 {
+		f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{AutomationSignals: "o"}})
+	}
+
+	f.observe(ingest.Observation{
+		Accepted:   true,
+		DropReason: ingest.ReasonAutomation,
+		Debug:      ingest.Debug{AutomationSignals: "os"},
+	})
+
+	// A browser that reported nothing takes no slot at all.
+	f.observe(ingest.Observation{Accepted: true})
+
+	if _, err := f.recorder.Flush(ctx); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	panel, err := f.store.Panel(ctx, f.domain)
+	if err != nil {
+		t.Fatalf("panel: %v", err)
+	}
+
+	seen := map[string]int64{}
+	for _, signal := range panel.AutomationSignals {
+		seen[signal.Value] = signal.Count
+	}
+
+	for value, want := range map[string]int64{"o": 4, "os": 1} {
+		if seen[value] != want {
+			t.Errorf("the panel saw %q %d times, want %d — all of them are %+v",
+				value, seen[value], want, panel.AutomationSignals)
+		}
+	}
+
+	if len(panel.AutomationSignals) != 2 {
+		t.Errorf("the panel holds %d signal values, want two", len(panel.AutomationSignals))
+	}
+}
+
+// TestASiteWithNoSignalsReportsAnEmptyListNotNull keeps the panel's shape the
+// same as its four siblings. A nil slice marshals as null, and a caller that
+// ranges over the others has to special-case this one.
+func TestASiteWithNoSignalsReportsAnEmptyListNotNull(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	panel, err := f.store.Panel(ctx, f.domain)
+	if err != nil {
+		t.Fatalf("panel: %v", err)
+	}
+
+	if panel.AutomationSignals == nil {
+		t.Error("a site that reported no browser signals has a nil list, not an empty one")
+	}
+}
+
 // TestAnAllowListChangesWhatCountsAsUnexpected checks the other branch: once a
 // customer sets an explicit list, "unexpected" means "not on it".
 func TestAnAllowListChangesWhatCountsAsUnexpected(t *testing.T) {

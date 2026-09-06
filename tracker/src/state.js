@@ -24,7 +24,7 @@ export const hatch = win.__feasible;
 // stores it as one, and it exists so that "which script is this site running"
 // is a support answer rather than a guess — old scripts sit in browser caches
 // for months and are the usual explanation for a payload that looks wrong.
-export const VERSION = 1;
+export const VERSION = 2;
 
 // page is what we currently believe the visitor is looking at. It is shared
 // mutable state rather than a parameter passed everywhere because engagement,

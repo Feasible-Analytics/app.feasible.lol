@@ -23,7 +23,7 @@ test("a pageview carries exactly the documented keys", async ({ page }) => {
 	expect(pageview.d).toBe("fixture.test");
 	expect(pageview.u).toContain("/basic.html");
 	expect(pageview.t).toBe("Basic — tracker fixture");
-	expect(pageview.v).toBe(1);
+	expect(pageview.v).toBe(2);
 
 	// The viewport width rides on every event. It is what the screen-size report
 	// is built from, and it is read per send rather than once: a window gets
@@ -41,10 +41,10 @@ test("a pageview carries exactly the documented keys", async ({ page }) => {
 	expect(Object.keys(pageview).sort()).toEqual(["d", "k", "n", "t", "u", "v", "w"]);
 });
 
-// The signals only fire on a browser claiming something impossible about
-// itself, so the only honest way to test them is to make a real browser make
-// one of those claims.
-test("a browser with no window at all is reported as automated", async ({ page }) => {
+// The signals are properties of a real window, so the only honest way to test
+// them is to make a real browser report one of them missing. Reporting is all
+// this asserts: whether a letter classifies anybody is the server's decision.
+test("a browser with no window at all reports the no-window signal", async ({ page }) => {
 	await page.addInitScript(() => {
 		Object.defineProperty(window, "outerWidth", { configurable: true, value: 0 });
 		Object.defineProperty(window, "outerHeight", { configurable: true, value: 0 });
@@ -56,6 +56,42 @@ test("a browser with no window at all is reported as automated", async ({ page }
 	await settledCount(state, "pageview", 1);
 
 	expect(named(state, "pageview")[0].a).toBe("o");
+});
+
+// A window's state is not fixed for the life of a document. Reading the signal
+// once and reusing it means a moment with no window follows the visitor through
+// every event they go on to generate, so the read has to happen per event.
+test("a window that gains a size stops reporting the no-window signal", async ({ page }) => {
+	await page.addInitScript(() => {
+		// Zero until the page says otherwise: a property that answers differently
+		// later in the document's life, which is the shape being tested.
+		window.__drawn = false;
+
+		for (const side of ["outerWidth", "outerHeight"]) {
+			const real = window[side];
+			Object.defineProperty(window, side, {
+				configurable: true,
+				get: () => (window.__drawn ? real : 0),
+			});
+		}
+	});
+
+	const state = await collect(page);
+
+	await page.goto("/spa.html");
+	await settledCount(state, "pageview", 1);
+
+	// The first pageview is sent while the window is still missing, and says so.
+	expect(named(state, "pageview")[0].a).toBe("o");
+
+	await page.evaluate(() => {
+		window.__drawn = true;
+	});
+
+	await page.click("#push");
+	await settledCount(state, "pageview", 2);
+
+	expect(named(state, "pageview")[1].a).toBeUndefined();
 });
 
 // Emulating a device rewrites the user agent and leaves the platform alone, and

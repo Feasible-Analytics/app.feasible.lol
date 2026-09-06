@@ -59,6 +59,11 @@ const (
 	KindUnknownHostname = "unknown_hostname"
 	KindTrackerVersion  = "tracker_version"
 	KindIPSource        = "ip_source"
+
+	// KindAutomationSignals records the letters the tracker reported about the
+	// browser, whether or not they classified it. It is what makes the
+	// automation verdict checkable against its own input.
+	KindAutomationSignals = "automation_signals"
 )
 
 // The health row kinds, matching the schema's CHECK constraint.
@@ -218,6 +223,12 @@ func (r *Recorder) Observe(o ingest.Observation) {
 
 	if o.TrackerVersion > 0 {
 		r.note(o.AccountID, o.SiteID, KindTrackerVersion, strconv.Itoa(o.TrackerVersion), at)
+	}
+
+	// The pipeline has already reduced this to a closed set, so it cannot be the
+	// thing that exhausts a site's shared observation budget.
+	if signals := o.Debug.AutomationSignals; signals != "" {
+		r.note(o.AccountID, o.SiteID, KindAutomationSignals, signals, at)
 	}
 
 	if hostname := o.Debug.Hostname; hostname != "" && r.unexpectedHostname(o.Debug.Domain, hostname) {
