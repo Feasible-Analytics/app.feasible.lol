@@ -60,12 +60,13 @@ answer. What it holds is a connection and a goroutine per event in flight.
 | 64 | 691 (661–768) | 199–227 ms | 5.0–9.0 s | 69–87 ms | 336–467 ms |
 | 256 | 486 (450–522) | 220–236 ms | 11.4–14.8 s | 74–75 ms | 288–383 ms |
 
-These are 15–25% above the first set at every size, taken the same day. Two
-things happened in between and neither was aimed at throughput: acquiring an
-already-open account handle went from ~70 µs to ~70 ns, and the fold-state prune
-that runs on every batch stopped scanning every session a site has had in two
-days. The first set was also taken on a busier machine, so read the direction
-rather than the percentage.
+These sit 13–30% above the first set of the same day. **Do not read that as an
+improvement anything here caused.** Repeat runs of this benchmark vary by a
+third either way, which is wider than the whole gap, and the first set was taken
+while the test suite was still running. Two unrelated pieces of work landed in
+between — the account-handle cache and the fold-state prune index — and neither
+can be separated from the noise by these numbers. The table is a fresh baseline,
+not a before-and-after.
 
 **What this says.**
 
@@ -78,9 +79,9 @@ rather than the percentage.
   each separately fsynced: about 250 events per commit at one account and about
   one at 256. That points at batching per account rather than at fewer files.
 - **Sixteen accounts cost about two thirds of the single-account rate**
-  (56/67/67% across the three passes). The 1→4 step is smaller and noisier —
-  30%, 36% and 48% — so where exactly the curve turns is not something these
-  numbers can say.
+  (56/67/67% across the three passes). The 1→4 step is the noisiest in the table
+  — the three passes put it at 30%, 36% and 48% — so where exactly the curve
+  turns is not something these numbers can say.
 - **Accept p99 goes from under half a second to seconds.** Under 490 ms to
   sixteen accounts; 5–9 s at 64 and 11–15 s at 256. That is a saturated shard,
   not 256 ordinary accounts, and it is not a visitor's page load either: the
@@ -250,6 +251,24 @@ The same dataset on disk, with every index and both roll-up grains built:
 A million pageviews is about 300 MB once it is indexed and summarised. Raw rows
 age out and roll-ups do not, so the long-run figure per year is lower than
 multiplying that by twelve suggests.
+
+### What the fold-state prune indexes cost
+
+Unlike the throughput figures, this one is deterministic — SQLite writes the
+same pages every time — so it is worth recording exactly.
+
+Measured 6 September 2026 on 20,000 rows in each fold-state table:
+
+| | Pages | Bytes per row |
+|---|---:|---:|
+| `ingest_session_state_expiry` | 62 | ~13 |
+| `ingest_orphan_engagements_expiry` | 140 | ~29 |
+
+Together they add 202 pages to the two tables' 697, so on a seed with small
+payloads the fold-state tables grow by 29%. A real payload is larger, so the
+share on a live database is smaller than that. Both tables are bounded by the
+48-hour retention the prune enforces, so this is a fraction of two small tables,
+not of the account database.
 
 ## The driver
 

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1407,10 +1408,14 @@ func TestACachedHandleStopsWorkingAfterAnotherManagerDeletesIt(t *testing.T) {
 // saving. One stat loop and one timer per open handle is five hundred of each
 // at the default cap.
 //
-// It reads the manager's own count rather than the process's goroutines: a
-// stack dump also holds every other manager a test has left alive, and under a
-// loaded suite that is a test that fails for the wrong reason.
+// It counts the goroutines actually parked in watchTombstones, as a delta
+// against the ones already running when it starts. A counter the manager keeps
+// for itself would say one however many it really spawned, which is the whole
+// class of bug worth catching here; the delta is what makes a real stack dump
+// usable when other tests have left managers alive.
 func TestTheWatcherIsOneGoroutineWhateverTheAccountCount(t *testing.T) {
+	before := watchersRunning(t)
+
 	manager := NewManager(t.TempDir())
 	manager.MaxOpen = 100
 
@@ -1428,7 +1433,7 @@ func TestTheWatcherIsOneGoroutineWhateverTheAccountCount(t *testing.T) {
 			}
 		}
 
-		if watching := manager.Stats().Watchers; watching != 1 {
+		if watching := waitForWatchers(t, before, 1); watching != 1 {
 			t.Errorf("%d handles are watched by %d goroutines, want one", count, watching)
 		}
 	}
@@ -1441,6 +1446,10 @@ func TestTheWatcherIsOneGoroutineWhateverTheAccountCount(t *testing.T) {
 		t.Error("a watcher survived shutdown")
 	}
 
+	if watching := waitForWatchers(t, before, 0); watching != 0 {
+		t.Errorf("%d watcher goroutines outlived the manager", watching)
+	}
+
 	// And a reused manager starts one more, not one per handle.
 	lease, err := manager.Acquire(ctx, 1)
 	if err != nil {
@@ -1451,8 +1460,14 @@ func TestTheWatcherIsOneGoroutineWhateverTheAccountCount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if watching := manager.Stats().Watchers; watching != 2 {
-		t.Errorf("a reused manager has run %d watchers, want two", watching)
+	if watching := waitForWatchers(t, before, 1); watching != 1 {
+		t.Errorf("a reused manager watches with %d goroutines, want one", watching)
+	}
+
+	// And the count the health numbers report agrees: two watchers over the
+	// manager's life, one at a time.
+	if started := manager.Stats().Watchers; started != 2 {
+		t.Errorf("a reused manager has run %d watchers, want two", started)
 	}
 
 	if err := manager.CloseAll(); err != nil {
@@ -1578,5 +1593,47 @@ func TestALiveLeaseOnTheCachedPathStillFencesADeletion(t *testing.T) {
 
 	if _, err := mine.Acquire(ctx, 1); !errors.Is(err, ErrDeleted) {
 		t.Errorf("the account re-opened after deletion: %v", err)
+	}
+}
+
+// waitForWatchers counts the watchers above the baseline, giving a newly
+// spawned one a moment to be scheduled. It returns whatever it last saw, so a
+// count that never arrives fails on the number rather than on a timeout.
+//
+// A goroutine exists from the go statement but does not appear on a CPU until
+// the scheduler runs it, so reading the count once turns a passing manager into
+// a failing test on a busy machine.
+func waitForWatchers(t *testing.T, baseline, want int) int {
+	t.Helper()
+
+	watching := watchersRunning(t) - baseline
+
+	for deadline := time.Now().Add(2 * time.Second); watching != want && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+
+		watching = watchersRunning(t) - baseline
+	}
+
+	return watching
+}
+
+// watchersRunning counts the goroutines parked in watchTombstones right now.
+//
+// The whole stack is dumped rather than a count kept in the manager, because
+// the property is about goroutines that exist, and only the runtime knows that.
+// The buffer grows until the dump fits: a truncated dump silently undercounts,
+// which reads as the test passing.
+func watchersRunning(t *testing.T) int {
+	t.Helper()
+
+	buf := make([]byte, 1<<20)
+
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			return strings.Count(string(buf[:n]), "accounts.(*Manager).watchTombstones(")
+		}
+
+		buf = make([]byte, 2*len(buf))
 	}
 }

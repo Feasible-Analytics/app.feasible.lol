@@ -149,10 +149,9 @@ type Manager struct {
 
 	stats HandleStats
 
-	// started counts the watchers this manager has ever run. A manager runs one
-	// at a time and starts another only after CloseAll, so it is also the
-	// answer to "did opening more handles start more watching".
-	started int
+	// started counts the watchers this manager has ever run: one at a time, and
+	// one more after each CloseAll.
+	started int64
 
 	// watching is the live tombstone watcher, or nil. It starts on the first
 	// open rather than at construction, because a manager that never opens an
@@ -193,7 +192,7 @@ type HandleStats struct {
 	// Watchers counts the deletion watchers this manager has run. It is one at
 	// a time, and one more after each CloseAll, so it never follows the number
 	// of accounts.
-	Watchers int
+	Watchers int64
 
 	// WatchFailures counts passes where the deletion watcher could not read its
 	// directory. Any at all means this process may still be holding a handle to
@@ -695,9 +694,8 @@ func (m *Manager) startWatch() {
 	m.watching = running
 	m.started++
 
-	// The method itself is the goroutine's body rather than a closure around
-	// it, so the watcher is identifiable in a stack dump from the moment it is
-	// created rather than from the moment it is first scheduled.
+	// watchTombstones is the goroutine's entry point, so a stack dump names it
+	// from the moment the goroutine exists.
 	go m.watchTombstones(running)
 }
 

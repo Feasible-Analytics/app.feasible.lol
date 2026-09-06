@@ -10,9 +10,12 @@ package ingest
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1295,4 +1298,290 @@ func TestSessionRowIsUpdatedInPlace(t *testing.T) {
 	if got := countRows(t, manager, 1, "SELECT is_bounce FROM sessions"); got != 0 {
 		t.Fatal("a three-page visit is still marked as a bounce")
 	}
+}
+
+// TestThePruneSeeksTheRowsItDeletes is what stops the cost of writing a batch
+// growing with the site's own traffic.
+//
+// It plans the statements the writer issues rather than a copy of them: a copy
+// passes while the real query scans every session the site has had, which is
+// exactly the regression a plan assertion exists to catch.
+//
+// The whole detail line is asserted, not just the index name. Both indexes
+// begin with site_id, so "uses the expiry index" is satisfied by a plan that
+// seeks the site and then reads all of it — and the time column appearing as a
+// bound is the difference.
+func TestThePruneSeeksTheRowsItDeletes(t *testing.T) {
+	db := planDatabase(t)
+	ctx := context.Background()
+
+	for name, want := range map[string]struct {
+		query string
+		plan  string
+	}{
+		"reading expired orphans": {
+			selectExpiredOrphans,
+			"SEARCH ingest_orphan_engagements USING INDEX ingest_orphan_engagements_expiry " +
+				"(site_id=? AND timestamp<?)",
+		},
+		"deleting expired orphans": {
+			deleteExpiredOrphans,
+			"SEARCH ingest_orphan_engagements USING INDEX ingest_orphan_engagements_expiry " +
+				"(site_id=? AND timestamp<?)",
+		},
+		"deleting expired session state": {
+			deleteExpiredSessionState,
+			"SEARCH ingest_session_state USING INDEX ingest_session_state_expiry " +
+				"(site_id=? AND last_seen_at<?)",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if plan := queryPlan(t, ctx, db, want.query); !strings.Contains(plan, want.plan) {
+				t.Errorf("plan is\n%s\nwant it to contain\n%s", plan, want.plan)
+			}
+		})
+	}
+}
+
+// TestTheVisitorReadsKeepTheirOwnIndex is the other half. The read path asks
+// about one visitor, and the indexes added for the prune must not have made
+// SQLite prefer one of them for that.
+func TestTheVisitorReadsKeepTheirOwnIndex(t *testing.T) {
+	db := planDatabase(t)
+	ctx := context.Background()
+
+	for name, want := range map[string]struct {
+		query string
+		plan  string
+	}{
+		"loading a visitor's session state": {
+			selectVisitorSessionState,
+			"SEARCH ingest_session_state USING INDEX ingest_session_state_visitor " +
+				"(site_id=? AND user_id=? AND last_seen_at>?)",
+		},
+		"adopting a visitor's parked pings": {
+			selectVisitorOrphans,
+			"SEARCH ingest_orphan_engagements USING INDEX ingest_orphan_engagements_visitor " +
+				"(site_id=? AND user_id=? AND timestamp>? AND timestamp<?)",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if plan := queryPlan(t, ctx, db, want.query); !strings.Contains(plan, want.plan) {
+				t.Errorf("plan is\n%s\nwant it to contain\n%s", plan, want.plan)
+			}
+		})
+	}
+}
+
+// TestThePruneDeletesOnlyWhatHasExpired runs the real prune over a site with a
+// long history and checks it took the old rows and left the rest.
+//
+// The plan tests above say the prune seeks; this says the seek is over the right
+// rows. An index that made the query fast by matching nothing would satisfy one
+// of them and not the other.
+func TestThePruneDeletesOnlyWhatHasExpired(t *testing.T) {
+	ctx := context.Background()
+
+	manager := accounts.NewManager(t.TempDir())
+	t.Cleanup(func() { checkClose(t, "fold state prune account manager", manager.CloseAll) })
+
+	account, err := manager.Open(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	db := account.Writer()
+
+	const (
+		expired = 200
+		live    = 5_000
+	)
+
+	now := fixtureStart.Unix()
+	stale := now - int64(foldStateRetention/time.Second) - 1
+
+	seedFoldState(t, ctx, db, expired, stale)
+	seedFoldState(t, ctx, db, live, now)
+
+	// Another site's rows, all of them expired. The prune is asked about site 1
+	// only, and a WHERE clause that lost its site_id would take these too.
+	seedOtherSite(t, ctx, db, 2, expired, stale)
+
+	writer := NewWriter(manager)
+	writer.Now = func() time.Time { return fixtureStart }
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := writer.pruneFoldState(ctx, tx, []Event{
+		writerEvent(1, EventPageview, now, "/now"),
+	}); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	for table, want := range map[string]int{
+		"ingest_session_state":      live,
+		"ingest_orphan_engagements": live,
+	} {
+		var left int
+		if err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM "+table+" WHERE site_id = 1").Scan(&left); err != nil {
+			t.Fatal(err)
+		}
+
+		if left != want {
+			t.Errorf("%s kept %d rows for the pruned site, want the %d live ones", table, left, want)
+		}
+	}
+
+	for table, want := range map[string]int{
+		"ingest_session_state":      expired,
+		"ingest_orphan_engagements": expired,
+	} {
+		var left int
+		if err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM "+table+" WHERE site_id = 2").Scan(&left); err != nil {
+			t.Fatal(err)
+		}
+
+		if left != want {
+			t.Errorf("%s kept %d rows for the untouched site, want all %d", table, left, want)
+		}
+	}
+}
+
+// planDatabase is one migrated account database, opened the way the writer
+// opens it so the plans are the plans production gets.
+func planDatabase(t *testing.T) *sql.DB {
+	t.Helper()
+
+	manager := accounts.NewManager(t.TempDir())
+	t.Cleanup(func() { checkClose(t, "query plan account manager", manager.CloseAll) })
+
+	account, err := manager.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return account.Writer()
+}
+
+// seedFoldState fills site 1 with session state and parked engagement, all
+// stamped at one time.
+func seedFoldState(t *testing.T, ctx context.Context, db *sql.DB, rows int, at int64) {
+	t.Helper()
+
+	seedOtherSite(t, ctx, db, 1, rows, at)
+}
+
+// seedOtherSite is the same for any site, so a test can prove the prune stays
+// inside the one it was asked about.
+func seedOtherSite(t *testing.T, ctx context.Context, db *sql.DB, siteID int64, rows int, at int64) {
+	t.Helper()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	// The visitor ids continue past whatever is already there, so two calls
+	// build one long history rather than colliding on the primary key.
+	var next int64
+	if err := tx.QueryRowContext(ctx,
+		"SELECT COALESCE(MAX(user_id), 0) + 1 FROM ingest_session_state").Scan(&next); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, err := tx.PrepareContext(ctx, `
+		INSERT INTO ingest_session_state (site_id, user_id, started_at, last_seen_at, payload)
+		VALUES (?, ?, ?, ?, ?)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = sessions.Close() }()
+
+	orphans, err := tx.PrepareContext(ctx, `
+		INSERT INTO ingest_orphan_engagements (event_uuid, site_id, user_id, timestamp, payload)
+		VALUES (randomblob(16), ?, ?, ?, ?)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = orphans.Close() }()
+
+	// The prune decodes every row it removes, so the payloads have to be the
+	// real encoding rather than a placeholder blob.
+	session, err := json.Marshal(Session{SiteID: siteID, StartedAt: at, LastSeenAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	orphan, err := json.Marshal(writerEvent(siteID, EventEngagement, at, "/parked"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := range rows {
+		user := next + int64(i)
+
+		if _, err := sessions.ExecContext(ctx, siteID, user, at, at, session); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := orphans.ExecContext(ctx, siteID, user, at, orphan); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// queryPlan asks SQLite how it would run one statement. The placeholders are
+// filled with zeroes: the plan depends on the shape of the query, not on the
+// values.
+func queryPlan(t *testing.T, ctx context.Context, db *sql.DB, query string) string {
+	t.Helper()
+
+	args := make([]any, strings.Count(query, "?"))
+	for i := range args {
+		args[i] = 0
+	}
+
+	rows, err := db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+query, args...)
+	if err != nil {
+		t.Fatalf("explain %q: %v", query, err)
+	}
+
+	defer func() { _ = rows.Close() }()
+
+	var plan strings.Builder
+
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatal(err)
+		}
+
+		fmt.Fprintln(&plan, detail)
+	}
+
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	return plan.String()
 }

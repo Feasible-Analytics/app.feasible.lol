@@ -278,39 +278,17 @@ func TestThePruneClearsABacklogOverSeveralBatches(t *testing.T) {
 // which is the cost this job was added to avoid.
 func TestThePruneReadsAnIndexRatherThanTheTable(t *testing.T) {
 	ctx := context.Background()
-	manager := accounts.NewManager(t.TempDir())
-	t.Cleanup(func() { checkClose(t, "query plan account manager", manager.CloseAll) })
 
-	account, err := manager.Open(ctx, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// The whole detail line, not just the index name: the index leads with
+	// received_at, so a plan that used it and then read all of it would still
+	// name it, and reading all of it is the scan this test exists to forbid.
+	const want = "SEARCH recent_event_ids USING COVERING INDEX recent_event_ids_received (received_at<?)"
 
-	rows, err := account.Reader().QueryContext(ctx, `
-		EXPLAIN QUERY PLAN
-		SELECT event_uuid FROM recent_event_ids WHERE received_at < ? LIMIT ?`, 0, PruneBatch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = rows.Close() }()
+	plan := queryPlan(t, ctx, planDatabase(t),
+		"SELECT event_uuid FROM recent_event_ids WHERE received_at < ? LIMIT ?")
 
-	plan := ""
-
-	for rows.Next() {
-		var id, parent, unused int
-		var detail string
-
-		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
-			t.Fatal(err)
-		}
-
-		plan += detail + "\n"
-	}
-
-	// The property is that it searches an index rather than scanning; the name
-	// is named too, because that index is what 0015 exists to add.
-	if !strings.Contains(plan, "USING COVERING INDEX") || !strings.Contains(plan, "recent_event_ids_received") {
-		t.Fatalf("the prune scans the whole table:\n%s", plan)
+	if !strings.Contains(plan, want) {
+		t.Fatalf("the prune scans the whole table:\n%s\nwant it to contain\n%s", plan, want)
 	}
 }
 

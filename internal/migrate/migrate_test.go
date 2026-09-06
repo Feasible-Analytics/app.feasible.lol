@@ -1185,9 +1185,9 @@ func TestPlausibleChannelParityMigration(t *testing.T) {
 // recording the last accepted authenticator step in 13, the account picture
 // bytes in 14, where each person came from in 15, the clock they read in 16 and
 // when each account last changed a rule in 17.
-// The account chain then adds Plausible's lossless imported-rollup fields in 13,
-// repairs the first Plausible channel backfill in 14, restores the event
-// receipts in 15 and indexes the session prune by time in 16.
+// The account chain then carries the lossless imported-rollup fields in 13, the
+// channel parity for those imports in 14, the event-receipt prune index in 15
+// and the session-prune-by-time indexes in 16.
 func TestCoordinatedMigrationNumbers(t *testing.T) {
 	for name, test := range map[string]struct {
 		set  Set
