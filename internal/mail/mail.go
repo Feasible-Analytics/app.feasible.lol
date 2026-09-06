@@ -284,13 +284,13 @@ func (m *Mailer) Send(ctx context.Context, msg Message) (Result, error) {
 // address. Both are in the same message on purpose: the link is one tap on a
 // phone, and the code is what someone types when they opened the email on a
 // different device from the one they registered on.
-func (m *Mailer) SendVerification(ctx context.Context, to, _, code, link string) error {
+func (m *Mailer) SendVerification(ctx context.Context, to, code, link string) error {
 	content := Content{
 		Subject: "Your feasible.lol verification code",
 		Heading: "Confirm your email address",
-		Body:    []string{"Confirm your email address to finish setting up feasible.lol."},
+		Body:    []string{"Enter this code to finish setting up feasible.lol:"},
 		Code:    code,
-		Primary: Button{Label: "Confirm your email address", URL: link},
+		Primary: Button{Label: "Open the confirmation link", URL: link},
 		Closing: "The code and the link both expire in 30 minutes. If you did not create an account, " +
 			"ignore this email and nothing happens.",
 	}
@@ -340,18 +340,14 @@ func (m *Mailer) SendInvitation(ctx context.Context, to, teamName, inviterName, 
 // a reset grants far more than proving an address does, so it is worth making
 // the recipient come back through a URL we minted rather than something they
 // can read out over the phone to whoever asked them for it.
-func (m *Mailer) SendPasswordReset(ctx context.Context, to, _, link string) error {
+func (m *Mailer) SendPasswordReset(ctx context.Context, to, link string) error {
 	content := Content{
 		Subject: "Reset your feasible.lol password",
 		Heading: "Reset your password",
 		Body: []string{
 			"Someone asked to reset the password on your feasible.lol account. Use this link to choose a new one:",
-
-			// The URL in the body as well as behind the button. A button hides
-			// where it goes and there is no hover on a phone, so the one email
-			// that hands over account control shows its destination.
-			link,
 		},
+		Link:    link,
 		Primary: Button{Label: "Choose a new password", URL: link},
 		Closing: "The link works once and expires in an hour. If you did not ask for this, you can ignore " +
 			"this email — your password has not changed.",
@@ -370,7 +366,7 @@ func (m *Mailer) SendPasswordReset(ctx context.Context, to, _, link string) erro
 // SendPasswordChanged tells someone their password moved. It is sent after the
 // change rather than before, because its only job is to be the alarm that goes
 // off when the person reading it did not do it.
-func (m *Mailer) SendPasswordChanged(ctx context.Context, to, _ string) error {
+func (m *Mailer) SendPasswordChanged(ctx context.Context, to string) error {
 	content := Content{
 		Subject: "Your feasible.lol password was changed",
 		Heading: "Your password was changed",
@@ -394,7 +390,7 @@ func (m *Mailer) SendPasswordChanged(ctx context.Context, to, _ string) error {
 // SendNewLogin reports a sign-in from a device we have not seen before. The
 // device label and time are the two things that let someone recognise their own
 // login at a glance and act on one that is not.
-func (m *Mailer) SendNewLogin(ctx context.Context, to, _, device, cycle string, when time.Time) error {
+func (m *Mailer) SendNewLogin(ctx context.Context, to, device, cycle string, when time.Time) error {
 	content := Content{
 		Subject: "New sign-in to your feasible.lol account",
 		Heading: "New sign-in to your account",
