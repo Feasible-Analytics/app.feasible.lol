@@ -11,6 +11,7 @@ package health
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -623,4 +624,205 @@ func TestGlobalObservationBudgetIsFairAcrossManySites(t *testing.T) {
 	if maximum-minimum > 1 {
 		t.Fatalf("global allocation is not fair: min=%d max=%d counts=%+v", minimum, maximum, counts)
 	}
+}
+
+// countingOpener wraps a real manager and counts how many times a flush reached
+// for an account database, and how many transactions it opened.
+type countingOpener struct {
+	inner  *accounts.Manager
+	opens  int
+	failOn map[int64]bool
+}
+
+// Acquire counts the call and hands back a real lease, unless the test wants
+// this account to be unreachable.
+func (c *countingOpener) Acquire(ctx context.Context, id int64) (*accounts.Lease, error) {
+	c.opens++
+
+	if c.failOn[id] {
+		return nil, errors.New("this account is busy")
+	}
+
+	return c.inner.Acquire(ctx, id)
+}
+
+// TestAFlushOpensEachAccountOnceWhateverItHolds is the acceptance criterion.
+//
+// The flush used to open the account once per counter key, once per observation
+// key and once per last-request row, and to write each row in its own
+// autocommit transaction — which under synchronous=FULL is one disk sync each.
+func TestAFlushOpensEachAccountOnceWhateverItHolds(t *testing.T) {
+	f := newFixture(t)
+
+	counting := &countingOpener{inner: f.accounts, failOn: map[int64]bool{}}
+	f.recorder.Accounts = counting
+
+	// Several counter keys, several observation values and a last request, all
+	// for the one account the fixture has.
+	for _, reason := range []string{ingest.ReasonHostnameNotAllowed, ingest.ReasonShieldIP, ingest.ReasonBot} {
+		f.observe(ingest.Observation{DropReason: reason})
+	}
+
+	for _, hostname := range []string{"a.example", "b.example", "c.example"} {
+		f.observe(ingest.Observation{Debug: ingest.Debug{Hostname: hostname}})
+	}
+
+	written, err := f.recorder.Flush(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if written == 0 {
+		t.Fatal("the flush wrote nothing, so this proves nothing")
+	}
+
+	if counting.opens != 1 {
+		t.Errorf("the flush opened the account %d times, want once for %d rows", counting.opens, written)
+	}
+}
+
+// TestAFlushGroupsByAccountNotBySite keeps two sites in one account from costing
+// two opens.
+func TestAFlushGroupsByAccountNotBySite(t *testing.T) {
+	f := newFixture(t)
+
+	second := f.addSite(t, "second.example")
+
+	counting := &countingOpener{inner: f.accounts, failOn: map[int64]bool{}}
+	f.recorder.Accounts = counting
+
+	f.observe(ingest.Observation{DropReason: ingest.ReasonBot})
+	f.observe(ingest.Observation{SiteID: second, AccountID: f.teamID, DropReason: ingest.ReasonBot})
+
+	if _, err := f.recorder.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if counting.opens != 1 {
+		t.Errorf("two sites in one account cost %d opens, want one", counting.opens)
+	}
+}
+
+// TestOneUnreachableAccountRequeuesItsWholeShare is the requeue guarantee at its
+// new granularity. The transaction rolled back, so none of the account's rows
+// landed and all of them have to come back.
+func TestOneUnreachableAccountRequeuesItsWholeShare(t *testing.T) {
+	f := newFixture(t)
+
+	counting := &countingOpener{inner: f.accounts, failOn: map[int64]bool{f.teamID: true}}
+	f.recorder.Accounts = counting
+
+	for _, reason := range []string{ingest.ReasonHostnameNotAllowed, ingest.ReasonShieldIP} {
+		f.observe(ingest.Observation{DropReason: reason})
+	}
+
+	f.observe(ingest.Observation{Debug: ingest.Debug{Hostname: "a.example"}})
+
+	written, err := f.recorder.Flush(context.Background())
+	if err == nil {
+		t.Fatal("an unreachable account was reported as a successful flush")
+	}
+
+	if written != 0 {
+		t.Errorf("%d rows were counted as written for an account that could not be opened", written)
+	}
+
+	// The next flush, with the account reachable, writes everything the failed
+	// one was holding.
+	counting.failOn = map[int64]bool{}
+
+	again, err := f.recorder.Flush(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if again < 3 {
+		t.Errorf("the retry wrote %d rows, want everything the failed flush was holding", again)
+	}
+}
+
+// TestARolledBackAccountLeavesNoHalfWrittenRows is what the transaction buys.
+func TestARolledBackAccountLeavesNoHalfWrittenRows(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	f.observe(ingest.Observation{DropReason: ingest.ReasonBot})
+
+	if _, err := f.recorder.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// A row that cannot be written: the observations table has a NOT NULL the
+	// encoder cannot satisfy if the value is dropped, so instead the account's
+	// table is renamed out from under the flush.
+	lease, err := f.accounts.Acquire(ctx, f.teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := lease.Account.Writer().ExecContext(ctx,
+		"ALTER TABLE ingest_observations RENAME TO ingest_observations_gone"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	f.observe(ingest.Observation{DropReason: ingest.ReasonShieldIP})
+	f.observe(ingest.Observation{Debug: ingest.Debug{Hostname: "a.example"}})
+
+	before := f.countRows(t, "ingest_health")
+
+	if _, err := f.recorder.Flush(ctx); err == nil {
+		t.Fatal("a broken table was reported as a successful flush")
+	}
+
+	if after := f.countRows(t, "ingest_health"); after != before {
+		t.Errorf("the counts table moved from %d rows to %d despite the flush failing", before, after)
+	}
+}
+
+// addSite puts a second site in the fixture's one account.
+func (f *fixture) addSite(t *testing.T, domain string) int64 {
+	t.Helper()
+
+	result, err := f.control.Exec(
+		`INSERT INTO sites (account_id, domain, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+		f.teamID, domain, f.now.Unix(), f.now.Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := f.sites.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	return id
+}
+
+// countRows counts one table in the fixture's account database.
+func (f *fixture) countRows(t *testing.T, table string) int {
+	t.Helper()
+
+	lease, err := f.accounts.Acquire(context.Background(), f.teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer lease.Release() //nolint:errcheck // the count is the point
+
+	var rows int
+
+	//nolint:gosec // the table name is a constant from this test
+	if err := lease.Account.Reader().QueryRow("SELECT COUNT(*) FROM " + table).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+
+	return rows
 }
