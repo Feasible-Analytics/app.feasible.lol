@@ -8,9 +8,11 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
 import type { Goal, JourneyAnchor } from "../api/types";
-import { anchorKey, behaviorCaveat, behaviorEnabled, filterAnchors, goalFilter, goalsPrompt } from "./GoalsCard";
+import { PanelFrame, anchorKey, behaviorCaveat, behaviorEnabled, filterAnchors, goalFilter, goalsFooter, goalsPrompt, hiddenGoalsNote } from "./GoalsCard";
 
 // The catalogue is read once from the page, so it is stubbed before any test
 // asks for a string rather than inside the one test that needs it.
@@ -22,6 +24,7 @@ globalThis.document = {
 				"dashboard.behavior.goals.caveat": "Unique conversions count each visitor once.",
 				"dashboard.behavior.funnels.caveat": "Steps are measured against the first step.",
 				"dashboard.behavior.partial": "Reporting starts {from}, when this configuration became measurable.",
+				"dashboard.goals.hidden": "Showing {shown} of {configured} goals. The rest had no conversions in this period.",
 			},
 		}),
 	}),
@@ -136,4 +139,99 @@ test("one converted goal is enough to render the table", () => {
 	// A single conversion among a wall of zeroes is exactly the case the tab
 	// hides rows for, so it must reach the table rather than an empty state.
 	assert.equal(goalsPrompt([goalRow(0, true), goalRow(0), goalRow(1)]), "rows");
+});
+
+// The footer strip a Goals card carries, and the frame that draws it. The note
+// is the only thing telling a reader that rows are missing, so both what is
+// decided and what is drawn are pinned.
+
+const HIDDEN = "Showing 1 of 9 goals. The rest had no conversions in this period.";
+
+/** footerMarkup draws PanelFrame the way GoalsPanel does, so the assertions
+ * below are about the strip and not about React. */
+function footerMarkup(strip: { note?: string; manageURL?: string }, label = "Manage goals"): string {
+	const markup = renderToStaticMarkup(
+		createElement(PanelFrame, {
+			note: strip.note,
+			footer: strip.manageURL ? createElement("a", { href: strip.manageURL, className: "shrink-0" }, `${label} \u2192`) : undefined,
+			children: createElement("table", null, "rows"),
+		}),
+	);
+
+	const at = markup.indexOf("<footer");
+
+	return at < 0 ? "" : markup.slice(at);
+}
+
+test("the hidden-goals note counts what the table is not showing", () => {
+	assert.equal(hiddenGoalsNote(1, 9), HIDDEN);
+});
+
+test("no note is written when every configured goal is on screen", () => {
+	assert.equal(hiddenGoalsNote(9, 9), undefined);
+});
+
+test("a reader who cannot manage goals is still told that rows are missing", () => {
+	const strip = goalsFooter("rows", 1, 9, undefined);
+
+	assert.equal(strip.note, HIDDEN);
+	assert.equal(strip.manageURL, undefined);
+	assert.match(footerMarkup(strip), /Showing 1 of 9 goals/,
+		"a public dashboard or a viewer has no settings link, and must not lose the note with it");
+});
+
+test("the empty states carry no footer at all", () => {
+	assert.deepEqual(goalsFooter("unconfigured", 0, 0, "/settings"), {});
+	assert.deepEqual(goalsFooter("none_converted", 0, 9, "/settings"), {});
+	assert.equal(footerMarkup(goalsFooter("none_converted", 0, 9, "/settings")), "");
+});
+
+test("the note sits in the footer, left of the link", () => {
+	const footer = footerMarkup(goalsFooter("rows", 1, 9, "/settings"));
+
+	assert.match(footer, /Showing 1 of 9 goals/);
+	assert.ok(footer.indexOf("Showing 1 of 9") < footer.indexOf("Manage goals"), "the note comes first");
+	assert.match(footer, /class="mr-auto[^"]*"[^>]*>Showing 1 of 9/,
+		"the note carries the auto margin — it is what pushes the link right, and what keeps a lone link left");
+});
+
+test("nothing but the footer link renders when no goal is hidden", () => {
+	const footer = footerMarkup(goalsFooter("rows", 9, 9, "/settings"));
+
+	assert.doesNotMatch(footer, /Showing/);
+	assert.doesNotMatch(footer, /mr-auto|justify-between/,
+		"a footer holding only a link must be laid out exactly as it was before the note existed");
+	assert.match(footer, /Manage goals/);
+});
+
+test("the properties and funnels footers are byte-identical to the goals one without a note", () => {
+	const properties = footerMarkup({ manageURL: "/settings" }, "Manage properties");
+	const goals = footerMarkup(goalsFooter("rows", 9, 9, "/settings"), "Manage properties");
+
+	assert.equal(properties, goals);
+	assert.equal(
+		properties,
+		'<footer class="flex min-h-[42px] shrink-0 items-center gap-4 border-t border-line px-4 py-1.5 sm:px-5">'
+			+ '<a href="/settings" class="shrink-0">Manage properties \u2192</a></footer></div>',
+	);
+});
+
+test("exactly one link to the settings page renders in the rows state", () => {
+	const markup = renderToStaticMarkup(
+		createElement(PanelFrame, {
+			note: goalsFooter("rows", 1, 9, "/settings").note,
+			footer: createElement("a", { href: "/settings" }, "Manage goals \u2192"),
+			children: createElement("table", null, "rows"),
+		}),
+	);
+
+	assert.equal(markup.split('href="/settings"').length - 1, 1);
+});
+
+test("the note wraps rather than truncating on a narrow card", () => {
+	const footer = footerMarkup(goalsFooter("rows", 1, 9, "/settings"));
+
+	assert.doesNotMatch(footer, /truncate|whitespace-nowrap|text-ellipsis/);
+	assert.match(footer, /min-h-\[42px\]/, "the strip keeps its reserved height and grows to fit");
+	assert.match(footer, /class="shrink-0"/, "the link does not get squeezed by a long note");
 });

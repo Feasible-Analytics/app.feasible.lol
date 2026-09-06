@@ -189,24 +189,17 @@ function GoalsPanel({
 	if (report.error) return <PanelFailure state={report} />;
 	if (!report.data) return <PanelLoading label={t("dashboard.goals.loading")} />;
 
+	const strip = goalsFooter(prompt, rows.length, configured.length, settingsURL);
+
 	return (
 		<PanelFrame
-			// The empty states carry their own call to action, so the footer link
-			// would be a second button to the same page a few inches below it.
-			footer={settingsURL && prompt === "rows" ? <a href={settingsURL} className="text-xs font-medium text-muted transition-colors hover:text-accent-ink">{t("dashboard.behavior.goals.manage")} →</a> : undefined}
+			footer={strip.manageURL && <a href={strip.manageURL} className="shrink-0 text-xs font-medium text-muted transition-colors hover:text-accent-ink">{t("dashboard.behavior.goals.manage")} →</a>}
+			note={strip.note}
 		>
 			{prompt !== "rows" ? (
 				<GoalsEmpty prompt={prompt} settingsURL={settingsURL} />
 			) : (
 				<div className="px-4 sm:px-5">
-					{/* Silently dropping rows is how a reader concludes a goal was
-					    lost, so the count of what is not on screen is on screen. */}
-					{rows.length < configured.length && (
-						<p className="pt-2 text-[11px] text-muted">
-							{t("dashboard.goals.hidden", { shown: String(rows.length), configured: String(configured.length) })}
-							{settingsURL && <> <a href={settingsURL} className="font-medium text-muted underline underline-offset-2 transition-colors hover:text-accent-ink">{t("dashboard.goals.see_all")}</a></>}
-						</p>
-					)}
 					<div className="grid h-8 grid-cols-[minmax(0,1fr)_60px_60px_60px] items-center gap-2 text-[11px] font-medium tracking-wide text-muted uppercase sm:grid-cols-[minmax(0,1fr)_90px_90px_80px]">
 						<span>{t("dashboard.column.goal")}</span><span className="text-right">{t("dashboard.column.uniques")}</span><span className="text-right">{t("dashboard.column.total")}</span><span className="text-right">{t("dashboard.column.conversion_rate")}</span>
 					</div>
@@ -464,9 +457,33 @@ function SelectorBar({ label, value, onChange, children }: { label: string; valu
 	return <div className="border-b border-line px-4 py-3 sm:px-5"><label className="block max-w-sm text-[11px] font-medium tracking-wide text-muted uppercase">{label}<select value={value} onChange={(event) => onChange(event.target.value)} className="mt-1 block h-control w-full border-2 border-line bg-card px-2.5 text-sm text-body">{children}</select></label></div>;
 }
 
-/** PanelFrame pins optional management navigation to the bottom. */
-function PanelFrame({ children, footer }: { children: React.ReactNode; footer?: React.ReactNode }) {
-	return <div className="flex h-full min-h-[350px] flex-col"><div className="min-h-0 flex-1">{children}</div>{footer && <footer className="flex min-h-[42px] shrink-0 items-center border-t border-line px-4 sm:px-5">{footer}</footer>}</div>;
+/** hiddenGoalsNote says how many goals the table is not showing. Silently
+ * dropping rows is how a reader concludes a goal was lost, so the count of what
+ * is not on screen is on screen. */
+export function hiddenGoalsNote(shown: number, configured: number): string | undefined {
+	if (shown >= configured) return undefined;
+
+	return t("dashboard.goals.hidden", { shown: String(shown), configured: String(configured) });
+}
+
+/** goalsFooter is what the Goals card puts in its footer strip.
+ *
+ * The note and the link are decided apart because a reader who cannot manage
+ * goals still has to be told that rows are missing. The empty states carry
+ * their own call to action, so a link there would be a second button to the
+ * same page a few inches below the first. */
+export function goalsFooter(prompt: GoalsPrompt, shown: number, configured: number, settingsURL?: string): { note?: string; manageURL?: string } {
+	if (prompt !== "rows") return {};
+
+	return { note: hiddenGoalsNote(shown, configured), manageURL: settingsURL };
+}
+
+/** PanelFrame pins optional management navigation to the bottom, and a note
+ * beside it in the strip that is reserved either way. The note carries the auto
+ * margin, so a footer holding only a link is laid out exactly as it is without
+ * one. */
+export function PanelFrame({ children, footer, note }: { children: React.ReactNode; footer?: React.ReactNode; note?: string }) {
+	return <div className="flex h-full min-h-[350px] flex-col"><div className="min-h-0 flex-1">{children}</div>{(footer || note) && <footer className="flex min-h-[42px] shrink-0 items-center gap-4 border-t border-line px-4 py-1.5 sm:px-5">{note && <p className="mr-auto text-[11px] text-muted">{note}</p>}{footer}</footer>}</div>;
 }
 
 /** BehaviorEmpty serves unconfigured and zero-result states without hiding tabs. */
