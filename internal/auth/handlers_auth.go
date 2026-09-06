@@ -202,7 +202,7 @@ func (h *Handler) startSession(w http.ResponseWriter, r *http.Request, user *Use
 	// first sign-in would just be a second email about an account somebody
 	// created ten seconds ago.
 	if !seen && user.Verified() && user.CreatedAt < h.Store.Now().Add(-time.Minute).Unix() {
-		if err := h.Mailer.SendNewLogin(r.Context(), user.Email, user.Name, label, h.Store.Now()); err != nil {
+		if err := h.Mailer.SendNewLogin(r.Context(), user.Email, user.Name, label, user.TimeFormat, h.Store.Now()); err != nil {
 			h.Log.Warn("could not send the new-device email", "user", user.ID, "error", err)
 		}
 	}

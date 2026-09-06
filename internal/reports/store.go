@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 	"github.com/google/uuid"
 )
 
@@ -1207,4 +1208,54 @@ func (s *Store) Deliveries(ctx context.Context, siteID int64, limit int) ([]Deli
 	}
 
 	return out, nil
+}
+
+// ClockFormats resolves a batch of email addresses to the clock each person
+// chose, in one query.
+//
+// A recipient need not be a user at all — a shared team alias, a Slack bridge,
+// somebody's personal address — which is why the column holds strings. An
+// address that matches nobody is simply absent from the result.
+//
+// "system" resolves from a browser cookie, and a job sending mail at six in the
+// morning has no browser and no request. It is treated here as no preference
+// rather than plumbing a stored copy of a browser hint into the queue; anybody
+// who minds can pick a dial explicitly, which is what the setting is for.
+func (s *Store) ClockFormats(ctx context.Context, addresses []string) (map[string]string, error) {
+	found := map[string]string{}
+
+	if len(addresses) == 0 {
+		return found, nil
+	}
+
+	placeholders := make([]string, len(addresses))
+	args := make([]any, len(addresses))
+
+	for i, address := range addresses {
+		placeholders[i] = "?"
+		args[i] = address
+	}
+
+	// The column is COLLATE NOCASE, so Spicer@Example.com matches a row stored
+	// as spicer@example.com — but only while the comparison is a plain one.
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT email, time_format FROM users WHERE email IN ("+strings.Join(placeholders, ",")+")", args...)
+	if err != nil {
+		return nil, fmt.Errorf("reports: read clock formats: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var email, format string
+
+		if err := rows.Scan(&email, &format); err != nil {
+			return nil, fmt.Errorf("reports: read clock formats: %w", err)
+		}
+
+		if cycle := timefmt.Normalise(format); cycle != timefmt.System {
+			found[strings.ToLower(email)] = cycle
+		}
+	}
+
+	return found, rows.Err()
 }

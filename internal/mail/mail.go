@@ -47,6 +47,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
 // templates holds the account messages' bodies — the ones with their own
@@ -469,12 +470,12 @@ func (m *Mailer) SendPasswordChanged(ctx context.Context, to, name string) error
 // SendNewLogin reports a sign-in from a device we have not seen before. The
 // device label and time are the two things that let someone recognise their own
 // login at a glance and act on one that is not.
-func (m *Mailer) SendNewLogin(ctx context.Context, to, name, device string, when time.Time) error {
+func (m *Mailer) SendNewLogin(ctx context.Context, to, name, device, cycle string, when time.Time) error {
 	html, text, err := m.render("new_login.html", data{
 		BaseURL: m.baseURL,
 		Name:    name,
 		Device:  device,
-		When:    when.UTC().Format("2 January 2006 at 15:04 MST"),
+		When:    timefmt.Clock(cycle, when.UTC(), "2 January 2006 at 15:04 MST"),
 	})
 	if err != nil {
 		return err

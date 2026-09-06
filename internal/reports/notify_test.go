@@ -20,6 +20,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
 // fakeSource answers with numbers a test sets, so the interesting behaviour —
@@ -183,7 +184,7 @@ func TestSlowFanoutRenewsItsLease(t *testing.T) {
 	notifier := &Notifier{Store: f.store, Mail: transport}
 	done := make(chan error, 1)
 	go func() {
-		_, err := notifier.deliverClaim(context.Background(), Rendered{Subject: "Report", Text: "body"}, claim, "", "report")
+		_, err := notifier.deliverClaim(context.Background(), fixedRendering("Report", "body"), claim, "", "report")
 		done <- err
 	}()
 	<-transport.started
@@ -214,7 +215,7 @@ func TestProviderAcceptanceBeforeAcknowledgementIsAtLeastOnce(t *testing.T) {
 
 	transport := &acceptedThenFailedTransport{}
 	notifier := &Notifier{Store: f.store, Mail: transport}
-	if _, err := notifier.deliverClaim(ctx, Rendered{Subject: "Report", Text: "body"}, claim, "", "report"); err == nil {
+	if _, err := notifier.deliverClaim(ctx, fixedRendering("Report", "body"), claim, "", "report"); err == nil {
 		t.Fatal("simulated post-acceptance crash reported success")
 	}
 	if err := f.store.ReleaseDelivery(ctx, claim); err != nil {
@@ -225,7 +226,7 @@ func TestProviderAcceptanceBeforeAcknowledgementIsAtLeastOnce(t *testing.T) {
 	if err != nil || !claimed {
 		t.Fatalf("retry claim = %v, %v", claimed, err)
 	}
-	if _, err := notifier.deliverClaim(ctx, Rendered{Subject: "Report", Text: "body"}, retry, "", "report"); err != nil {
+	if _, err := notifier.deliverClaim(ctx, fixedRendering("Report", "body"), retry, "", "report"); err != nil {
 		t.Fatal(err)
 	}
 	if len(transport.keys) != 2 || transport.keys[0] != transport.keys[1] {
@@ -901,5 +902,122 @@ func TestSendNowIgnoresTheScheduleAndTheLedger(t *testing.T) {
 
 	if !claimed {
 		t.Fatal("sending one now consumed the scheduled period")
+	}
+}
+
+// fixedRendering is one body for either dial, for the delivery tests, which are
+// about the ledger rather than about the clock.
+func fixedRendering(subject, text string) *Renderings {
+	return &Renderings{build: func(string) (Rendered, error) {
+		return Rendered{Subject: subject, Text: text}, nil
+	}}
+}
+
+// user inserts somebody who has picked a clock, so the mail path has an address
+// to resolve.
+func (f *storeFixture) user(t *testing.T, email, format string) {
+	t.Helper()
+
+	if _, err := f.db.Exec(`
+		INSERT INTO users (email, name, time_format, created_at, updated_at) VALUES (?, '', ?, ?, ?)
+	`, email, format, f.now.Unix(), f.now.Unix()); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+}
+
+// TestEachRecipientGetsTheClockTheyChose is the whole point of the change: one
+// set of numbers, read by people who do not all read a clock the same way.
+func TestEachRecipientGetsTheClockTheyChose(t *testing.T) {
+	f := newStoreFixture(t)
+	f.user(t, "twelve@example.com", timefmt.Cycle12)
+	f.user(t, "twentyfour@example.com", timefmt.Cycle24)
+	f.user(t, "unset@example.com", timefmt.System)
+
+	sender := &captureTransport{}
+	notifier := &Notifier{Store: f.store, Mail: sender}
+
+	renders := 0
+	renderings := ReportRenderings(Report{
+		Domain:       "acme.example",
+		Kind:         KindWeekly,
+		PeriodLabel:  "week 35",
+		DashboardURL: "https://feasible.lol/dashboard/acme.example",
+		GeneratedAt:  time.Date(2026, 9, 4, 15, 4, 0, 0, time.UTC),
+	})
+	built := renderings.build
+	renderings.build = func(cycle string) (Rendered, error) {
+		renders++
+
+		return built(cycle)
+	}
+
+	recipients := []string{
+		"twelve@example.com",
+		"TwentyFour@example.com",
+		"unset@example.com",
+		"alias@example.com",
+	}
+
+	delivered, err := notifier.mail(context.Background(), renderings, recipients, "report")
+	if err != nil {
+		t.Fatalf("mail: %v", err)
+	}
+
+	if delivered != len(recipients) {
+		t.Fatalf("delivered %d of %d", delivered, len(recipients))
+	}
+
+	// Two dials, so two renderings however many people are on the list.
+	if renders != 2 {
+		t.Errorf("built %d renderings for four recipients, want 2", renders)
+	}
+
+	want := map[string]string{
+		"twelve@example.com": "3:04 PM UTC",
+		// Mixed case, against a row stored in lower case. The column is
+		// COLLATE NOCASE and this is what proves the lookup did not defeat it.
+		"TwentyFour@example.com": "15:04 UTC",
+		// No explicit dial, and no user at all: both take the fallback, which
+		// is what every email did before anybody could choose.
+		"unset@example.com": "15:04 UTC",
+		"alias@example.com": "15:04 UTC",
+	}
+
+	for _, message := range sender.messages {
+		expected, ok := want[message.To]
+		if !ok {
+			t.Fatalf("unexpected recipient %q", message.To)
+		}
+
+		if !strings.Contains(message.Text, expected) {
+			t.Errorf("%s was sent %q, want it to contain %q", message.To, message.Text, expected)
+		}
+	}
+
+	if len(sender.messages) != len(want) {
+		t.Errorf("sent %d messages, want %d", len(sender.messages), len(want))
+	}
+}
+
+// TestAWebhookTakesTheFallbackClock covers the destination with nobody to look
+// up. A Slack post has no reader whose preference could be read.
+func TestAWebhookTakesTheFallbackClock(t *testing.T) {
+	f := newStoreFixture(t)
+	f.user(t, "twelve@example.com", timefmt.Cycle12)
+
+	clocks, err := (&Notifier{Store: f.store}).clockFormats(context.Background(), []Destination{
+		{Channel: ChannelEmail, Target: "twelve@example.com"},
+		{Channel: ChannelSlack, Target: "https://hooks.example/abc"},
+	})
+	if err != nil {
+		t.Fatalf("clock formats: %v", err)
+	}
+
+	if clocks["twelve@example.com"] != timefmt.Cycle12 {
+		t.Errorf("the reader's dial = %q, want %q", clocks["twelve@example.com"], timefmt.Cycle12)
+	}
+
+	if _, looked := clocks["https://hooks.example/abc"]; looked {
+		t.Error("a webhook was looked up as if it were a person")
 	}
 }

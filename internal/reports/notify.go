@@ -269,15 +269,15 @@ func (n *Notifier) sendDue(ctx context.Context, due Due) (bool, string, error) {
 // renderReport reads and renders one period without producing an external side
 // effect. Delivery is separate so each successful destination can be persisted
 // before the next one is attempted.
-func (n *Notifier) renderReport(ctx context.Context, due Due) (Rendered, string, error) {
+func (n *Notifier) renderReport(ctx context.Context, due Due) (*Renderings, string, error) {
 	site, err := n.Sites(ctx, due.SiteID)
 	if err != nil {
-		return Rendered{}, "", err
+		return nil, "", err
 	}
 
 	snapshot, err := n.Source.Period(ctx, site, due.From, due.To)
 	if err != nil {
-		return Rendered{}, "", err
+		return nil, "", err
 	}
 
 	report := Report{
@@ -299,12 +299,7 @@ func (n *Notifier) renderReport(ctx context.Context, due Due) (Rendered, string,
 		report.Note = "No visitors were recorded in this period. If that is unexpected, the ingestion health panel will say what happened to the events."
 	}
 
-	rendered, err := RenderReport(report)
-	if err != nil {
-		return Rendered{}, "", err
-	}
-
-	return rendered, report.DashboardURL, nil
+	return ReportRenderings(report), report.DashboardURL, nil
 }
 
 // deliveryTargets turns report settings into the durable destination snapshot
@@ -331,9 +326,19 @@ func deliveryTargets(recipients []string, webhookURL string) []DestinationTarget
 // it again. A mail provider that takes an idempotency key receives a stable one
 // and can collapse that replay; claiming exactly-once without provider
 // participation would be false.
-func (n *Notifier) deliverClaim(ctx context.Context, rendered Rendered, claim DeliveryClaim,
+func (n *Notifier) deliverClaim(ctx context.Context, renderings *Renderings, claim DeliveryClaim,
 	dashboardURL, tag string) (int, error) {
+	clocks, err := n.clockFormats(ctx, claim.Destinations)
+	if err != nil {
+		return 0, err
+	}
+
 	for _, destination := range claim.Destinations {
+		rendered, renderErr := renderings.On(clocks[strings.ToLower(destination.Target)])
+		if renderErr != nil {
+			return 0, renderErr
+		}
+
 		key := fmt.Sprintf("feasible-notification-%d-destination-%d", claim.ID, destination.ID)
 		err := n.withLeaseHeartbeat(ctx, claim, func(sendCtx context.Context) error {
 			switch destination.Channel {
@@ -433,14 +438,24 @@ func (n *Notifier) withLeaseHeartbeat(ctx context.Context, claim DeliveryClaim, 
 // list. That is what the shared mailer takes, and it is also the honest shape:
 // a relay that refuses one address should not cost the other four their report,
 // and a single failed send names the address it failed for.
-func (n *Notifier) mail(ctx context.Context, rendered Rendered, recipients []string, tag string) (int, error) {
+func (n *Notifier) mail(ctx context.Context, renderings *Renderings, recipients []string, tag string) (int, error) {
 	if len(recipients) > 0 && n.Mail == nil {
 		return 0, errors.New("reports: no mailer is configured")
+	}
+
+	clocks, err := n.clocksFor(ctx, recipients)
+	if err != nil {
+		return 0, err
 	}
 
 	delivered := 0
 
 	for _, recipient := range recipients {
+		rendered, err := renderings.On(clocks[strings.ToLower(recipient)])
+		if err != nil {
+			return delivered, err
+		}
+
 		if _, err := n.Mail.Send(ctx, rendered.Message(recipient, tag)); err != nil {
 			return delivered, err
 		}
@@ -449,6 +464,46 @@ func (n *Notifier) mail(ctx context.Context, rendered Rendered, recipients []str
 	}
 
 	return delivered, nil
+}
+
+// clockFormats resolves the dial for a claim's email destinations. A webhook
+// has no reader to look up and falls through to the fallback.
+func (n *Notifier) clockFormats(ctx context.Context, destinations []Destination) (map[string]string, error) {
+	addresses := make([]string, 0, len(destinations))
+
+	for _, destination := range destinations {
+		if destination.Channel == ChannelEmail {
+			addresses = append(addresses, destination.Target)
+		}
+	}
+
+	return n.clocksFor(ctx, addresses)
+}
+
+// clocksFor reads every address's chosen dial in one query, and answers with a
+// map whose missing entries are the fallback.
+func (n *Notifier) clocksFor(ctx context.Context, addresses []string) (map[string]string, error) {
+	if len(addresses) == 0 {
+		return map[string]string{}, nil
+	}
+
+	found, err := n.Store.ClockFormats(ctx, addresses)
+	if err != nil {
+		return nil, err
+	}
+
+	clocks := make(map[string]string, len(addresses))
+
+	for _, address := range addresses {
+		key := strings.ToLower(address)
+
+		clocks[key] = Fallback
+		if cycle, ok := found[key]; ok {
+			clocks[key] = cycle
+		}
+	}
+
+	return clocks, nil
 }
 
 // RunAlerts evaluates every enabled spike and drop rule.
@@ -491,13 +546,9 @@ func (n *Notifier) RunAlerts(ctx context.Context, job jobs.Job) (jobs.Outcome, e
 			continue
 		}
 
-		rendered, err := RenderAlert(alert)
-		if err != nil {
-			failures = append(failures, n.releaseClaim(ctx, claim,
-				fmt.Sprintf("site %d %s snapshot: %v", claim.SiteID, claim.Kind, err)))
-			continue
-		}
-		delivered, err := n.deliverClaim(ctx, rendered, claim, alert.DashboardURL, "alert_"+claim.Kind)
+		renderings := AlertRenderings(alert)
+
+		delivered, err := n.deliverClaim(ctx, renderings, claim, alert.DashboardURL, "alert_"+claim.Kind)
 		if err != nil {
 			failures = append(failures, n.releaseClaim(ctx, claim,
 				fmt.Sprintf("site %d %s snapshot: %v", claim.SiteID, claim.Kind, err)))
@@ -588,14 +639,9 @@ func (n *Notifier) RunAlerts(ctx context.Context, job jobs.Job) (jobs.Outcome, e
 			continue
 		}
 
-		rendered, err := RenderAlert(alert)
-		if err != nil {
-			failures = append(failures, n.releaseClaim(ctx, claim,
-				fmt.Sprintf("%s %s: %v", site.Domain, rule.Kind, err)))
-			continue
-		}
+		renderings := AlertRenderings(alert)
 
-		delivered, err := n.deliverClaim(ctx, rendered, claim, alert.DashboardURL, "alert_"+rule.Kind)
+		delivered, err := n.deliverClaim(ctx, renderings, claim, alert.DashboardURL, "alert_"+rule.Kind)
 		if err != nil {
 			failures = append(failures, n.releaseClaim(ctx, claim,
 				fmt.Sprintf("%s %s: %v", site.Domain, rule.Kind, err)))
@@ -740,7 +786,7 @@ func (n *Notifier) SendNow(ctx context.Context, siteID int64, kind string, recip
 		return Rendered{}, err
 	}
 
-	rendered, err := RenderReport(Report{
+	renderings := ReportRenderings(Report{
 		Domain:       site.Domain,
 		Kind:         kind,
 		PeriodLabel:  due.Label(),
@@ -751,17 +797,16 @@ func (n *Notifier) SendNow(ctx context.Context, siteID int64, kind string, recip
 		Countries:    snapshot.Countries,
 		GeneratedAt:  n.now(),
 	})
-	if err != nil {
-		return Rendered{}, err
-	}
 
 	if len(recipients) > 0 {
-		if _, err := n.mail(ctx, rendered, recipients, "report_preview"); err != nil {
-			return rendered, err
+		if _, err := n.mail(ctx, renderings, recipients, "report_preview"); err != nil {
+			return Rendered{}, err
 		}
 	}
 
-	return rendered, nil
+	// The caller gets the fallback dial. It is what the preview screen shows,
+	// and a preview is one page rather than one page per reader.
+	return renderings.On(Fallback)
 }
 
 // SystemSiteLookup reads a site's identity out of system.db. It is a
