@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
 // bigReport is a realistic report with the longest values a real site produces:
@@ -61,7 +62,7 @@ func bigReport() Report {
 // arrives. This silently broke weekly reports for an incumbent's self-hosters
 // entirely, for everyone, for as long as the feature existed.
 func TestARenderedReportHasNoLineOver998Octets(t *testing.T) {
-	rendered, err := RenderReport(bigReport())
+	rendered, err := RenderReport(bigReport(), FallbackClock)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestAnAlertAlsoStaysUnderTheLimit(t *testing.T) {
 		Observed:     412,
 		DashboardURL: "https://feasible.lol/dashboard/a-fairly-long-customer-domain.example",
 		TriggeredAt:  time.Date(2026, 8, 3, 9, 15, 0, 0, time.UTC),
-	})
+	}, FallbackClock)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -136,7 +137,7 @@ func TestANilValueIsAlsoRefused(t *testing.T) {
 // that would have caught the incumbent's missing link, so it is written against
 // the shipped template rather than a fixture.
 func TestEveryReportVariableIsAssigned(t *testing.T) {
-	rendered, err := RenderReport(bigReport())
+	rendered, err := RenderReport(bigReport(), FallbackClock)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -170,7 +171,7 @@ func TestAnEmptyReportStillRenders(t *testing.T) {
 		DashboardURL: "https://feasible.lol/dashboard/quiet.example",
 		Note:         "No visitors were recorded in this period.",
 		GeneratedAt:  time.Date(2026, 9, 1, 0, 5, 0, 0, time.UTC),
-	})
+	}, FallbackClock)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -189,7 +190,7 @@ func TestAnEmptyReportStillRenders(t *testing.T) {
 // TestTheSubjectNamesTheSiteAndThePeriod checks what somebody sees in a list of
 // forty unread emails.
 func TestTheSubjectNamesTheSiteAndThePeriod(t *testing.T) {
-	rendered, err := RenderReport(bigReport())
+	rendered, err := RenderReport(bigReport(), FallbackClock)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -204,7 +205,7 @@ func TestTheSubjectNamesTheSiteAndThePeriod(t *testing.T) {
 // TestSlackTextCarriesTheSameNumbers checks that the chat message is built from
 // the same rendering as the email, so the two cannot disagree.
 func TestSlackTextCarriesTheSameNumbers(t *testing.T) {
-	rendered, err := RenderReport(bigReport())
+	rendered, err := RenderReport(bigReport(), FallbackClock)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -217,5 +218,87 @@ func TestSlackTextCarriesTheSameNumbers(t *testing.T) {
 
 	if !strings.Contains(text, rendered.Subject) {
 		t.Fatal("the Slack message does not carry the subject")
+	}
+}
+
+// TestBothDialsRenderTheSameInstant covers midnight and noon, which are the two
+// readings a twelve-hour clock gets wrong when the conversion is hand-rolled.
+func TestBothDialsRenderTheSameInstant(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		at         time.Time
+		twelve     string
+		twentyFour string
+	}{
+		{"midnight", time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC), "12:00 AM UTC", "00:00 UTC"},
+		{"noon", time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC), "12:00 PM UTC", "12:00 UTC"},
+		{"afternoon", time.Date(2026, 9, 4, 15, 4, 0, 0, time.UTC), "3:04 PM UTC", "15:04 UTC"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report := bigReport()
+			report.GeneratedAt = tc.at
+
+			twelve, err := RenderReport(report, timefmt.Cycle12)
+			if err != nil {
+				t.Fatalf("render: %v", err)
+			}
+
+			twentyFour, err := RenderReport(report, timefmt.Cycle24)
+			if err != nil {
+				t.Fatalf("render: %v", err)
+			}
+
+			if !strings.Contains(twelve.Text, tc.twelve) {
+				t.Errorf("the twelve-hour report does not read %q", tc.twelve)
+			}
+
+			if !strings.Contains(twentyFour.Text, tc.twentyFour) {
+				t.Errorf("the twenty-four hour report does not read %q", tc.twentyFour)
+			}
+
+			// A subject that varied by dial would split one report into two
+			// differently-titled mails the moment a time reached it.
+			if twelve.Subject != twentyFour.Subject {
+				t.Errorf("subjects differ by dial: %q and %q", twelve.Subject, twentyFour.Subject)
+			}
+
+			alert := Alert{
+				Domain: "acme.example", Kind: KindSpike, Headline: "A spike", Detail: "Detail",
+				Threshold: 10, Observed: 99, DashboardURL: "https://feasible.lol/d", TriggeredAt: tc.at,
+			}
+
+			alertTwelve, err := RenderAlert(alert, timefmt.Cycle12)
+			if err != nil {
+				t.Fatalf("render alert: %v", err)
+			}
+
+			if !strings.Contains(alertTwelve.Text, tc.twelve) {
+				t.Errorf("the twelve-hour alert does not read %q", tc.twelve)
+			}
+		})
+	}
+}
+
+// TestARenderingIsBuiltOncePerDial pins the memo. Twenty-five recipients cost
+// two renderings, not twenty-five.
+func TestARenderingIsBuiltOncePerDial(t *testing.T) {
+	built := 0
+	renderings := &Renderings{build: func(cycle string) (Rendered, error) {
+		built++
+
+		return Rendered{Subject: cycle}, nil
+	}}
+
+	for range 10 {
+		if _, err := renderings.On(timefmt.Cycle12); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := renderings.On(timefmt.Cycle24); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if built != 2 {
+		t.Errorf("built %d renderings over twenty asks, want 2", built)
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
 // capture keeps messages in memory instead of sending them.
@@ -93,7 +94,7 @@ func TestEveryMessageRenders(t *testing.T) {
 		t.Fatalf("send password changed: %v", err)
 	}
 
-	if err := mailer.SendNewLogin(ctx, "a@example.com", "Sam", "Chrome on macOS", time.Now()); err != nil {
+	if err := mailer.SendNewLogin(ctx, "a@example.com", "Sam", "Chrome on macOS", timefmt.Cycle24, time.Now()); err != nil {
 		t.Fatalf("send new login: %v", err)
 	}
 
@@ -247,5 +248,34 @@ func TestTextFromHTMLUnescapesLinkQueries(t *testing.T) {
 
 	if text != "https://example.test/path?a=1&b=2" {
 		t.Fatalf("plain-text link is %q", text)
+	}
+}
+
+// TestTheNewLoginMailFollowsTheReadersClock covers the mail that is read in a
+// hurry. "Was that three in the afternoon or three in the morning" is the first
+// question somebody has about a sign-in they do not recognise.
+func TestTheNewLoginMailFollowsTheReadersClock(t *testing.T) {
+	ctx := context.Background()
+	at := time.Date(2026, 9, 4, 15, 4, 0, 0, time.UTC)
+
+	for cycle, want := range map[string]string{
+		timefmt.Cycle12: "3:04 PM UTC",
+		timefmt.Cycle24: "15:04 UTC",
+		timefmt.System:  "15:04 UTC",
+	} {
+		sender := &capture{}
+		mailer := NewWithTransport(sender, "feasible <no-reply@example.com>", "https://feasible.lol")
+
+		if err := mailer.SendNewLogin(ctx, "a@example.com", "Sam", "Chrome on macOS", cycle, at); err != nil {
+			t.Fatalf("send new login: %v", err)
+		}
+
+		if len(sender.messages) != 1 {
+			t.Fatalf("sent %d messages, want 1", len(sender.messages))
+		}
+
+		if !strings.Contains(sender.messages[0].Text, want) {
+			t.Errorf("the %q dial produced %q, want it to contain %q", cycle, sender.messages[0].Text, want)
+		}
 	}
 }

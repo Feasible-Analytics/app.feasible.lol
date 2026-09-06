@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
 // The two markers Go's template package leaves behind when a value did not
@@ -123,7 +124,7 @@ func (r Rendered) Message(to, tag string) mail.Message {
 // it, so wrapping at the point of generation means every consumer sees a body
 // that already obeys the 998-octet line limit rather than trusting one of them
 // to remember.
-func RenderReport(report Report) (Rendered, error) {
+func RenderReport(report Report, cycle string) (Rendered, error) {
 	subject := fmt.Sprintf("%s — %s report for %s", report.Domain, titleOf(report.Kind), report.PeriodLabel)
 
 	data := map[string]any{
@@ -136,7 +137,7 @@ func RenderReport(report Report) (Rendered, error) {
 		"TopSources":   report.TopSources,
 		"Countries":    report.Countries,
 		"Note":         report.Note,
-		"GeneratedAt":  report.GeneratedAt.UTC().Format("2 January 2006 15:04 MST"),
+		"GeneratedAt":  timefmt.Clock(cycle, report.GeneratedAt.UTC(), "2 January 2006 15:04 MST"),
 	}
 
 	html, err := renderStrict(reportHTML, data)
@@ -153,7 +154,7 @@ func RenderReport(report Report) (Rendered, error) {
 }
 
 // RenderAlert builds a spike or drop email.
-func RenderAlert(alert Alert) (Rendered, error) {
+func RenderAlert(alert Alert, cycle string) (Rendered, error) {
 	subject := fmt.Sprintf("%s — %s", alert.Domain, alert.Headline)
 
 	data := map[string]any{
@@ -164,7 +165,7 @@ func RenderAlert(alert Alert) (Rendered, error) {
 		"Threshold":    alert.Threshold,
 		"Observed":     alert.Observed,
 		"DashboardURL": alert.DashboardURL,
-		"TriggeredAt":  alert.TriggeredAt.UTC().Format("2 January 2006 15:04 MST"),
+		"TriggeredAt":  timefmt.Clock(cycle, alert.TriggeredAt.UTC(), "2 January 2006 15:04 MST"),
 	}
 
 	html, err := renderStrict(alertHTML, data)
@@ -364,3 +365,53 @@ Open the dashboard: {{.DashboardURL}}
 
 Triggered {{.TriggeredAt}}. At most two alerts are sent per site per day.
 `
+
+// FallbackClock is the dial for a destination with no stored preference: an
+// address belonging to no user, one whose preference is still "system" — which
+// resolves from a browser cookie a background job does not have — and a webhook,
+// which has no reader at all.
+const FallbackClock = timefmt.Cycle24
+
+// Renderings builds one email per clock format, on demand and at most once each.
+//
+// A report is one set of numbers read by up to twenty-five people who do not
+// all read a clock the same way. There are only two dials, so a twenty-five
+// recipient report costs two renderings rather than twenty-five.
+//
+// One Renderings belongs to one delivery and is used from one goroutine. The
+// memo is not guarded, and both delivery loops are sequential.
+type Renderings struct {
+	build func(cycle string) (Rendered, error)
+	made  map[string]Rendered
+}
+
+// ReportRenderings prepares a weekly or monthly report for either dial.
+func ReportRenderings(report Report) *Renderings {
+	return &Renderings{build: func(cycle string) (Rendered, error) { return RenderReport(report, cycle) }}
+}
+
+// AlertRenderings prepares a spike or drop alert for either dial.
+func AlertRenderings(alert Alert) *Renderings {
+	return &Renderings{build: func(cycle string) (Rendered, error) { return RenderAlert(alert, cycle) }}
+}
+
+// On returns the rendering for one dial, building it the first time it is asked
+// for.
+func (r *Renderings) On(cycle string) (Rendered, error) {
+	if r.made == nil {
+		r.made = map[string]Rendered{}
+	}
+
+	if made, ok := r.made[cycle]; ok {
+		return made, nil
+	}
+
+	made, err := r.build(cycle)
+	if err != nil {
+		return Rendered{}, err
+	}
+
+	r.made[cycle] = made
+
+	return made, nil
+}

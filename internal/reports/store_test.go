@@ -64,6 +64,18 @@ func newStoreFixture(t *testing.T) *storeFixture {
 	return f
 }
 
+// user inserts somebody who has picked a clock, so the mail path has an address
+// to resolve.
+func (f *storeFixture) user(t *testing.T, email, format string) {
+	t.Helper()
+
+	if _, err := f.db.Exec(`
+		INSERT INTO users (email, name, time_format, created_at, updated_at) VALUES (?, '', ?, ?, ?)
+	`, email, format, f.now.Unix(), f.now.Unix()); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+}
+
 // site inserts a site and returns its id.
 func (f *storeFixture) site(t *testing.T, domain, timezone string) int64 {
 	t.Helper()
