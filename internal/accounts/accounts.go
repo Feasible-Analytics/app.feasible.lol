@@ -149,6 +149,11 @@ type Manager struct {
 
 	stats HandleStats
 
+	// started counts the watchers this manager has ever run. A manager runs one
+	// at a time and starts another only after CloseAll, so it is also the
+	// answer to "did opening more handles start more watching".
+	started int
+
 	// watching is the live tombstone watcher, or nil. It starts on the first
 	// open rather than at construction, because a manager that never opens an
 	// account never needs one — and it can start again after CloseAll, because
@@ -184,6 +189,11 @@ type HandleStats struct {
 	Evictions  int64
 	IdleCloses int64
 	Overshoots int64
+
+	// Watchers counts the deletion watchers this manager has run. It is one at
+	// a time, and one more after each CloseAll, so it never follows the number
+	// of accounts.
+	Watchers int
 
 	// WatchFailures counts passes where the deletion watcher could not read its
 	// directory. Any at all means this process may still be holding a handle to
@@ -569,13 +579,15 @@ func (m *Manager) openGuarded(ctx context.Context, id int64, promote bool) (acco
 // and every open handle holds it shared, so a tombstone only becomes a deletion
 // once this loop has closed the handle — which makes the interval a latency
 // bound on deletion rather than a correctness one.
-func (m *Manager) watchTombstones(stop <-chan struct{}) {
+func (m *Manager) watchTombstones(running *watcher) {
+	defer close(running.done)
+
 	ticker := time.NewTicker(deletionWatchInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-stop:
+		case <-running.stop:
 			return
 		case <-ticker.C:
 			m.closeTombstoned()
@@ -681,12 +693,12 @@ func (m *Manager) startWatch() {
 
 	running := &watcher{stop: make(chan struct{}), done: make(chan struct{})}
 	m.watching = running
+	m.started++
 
-	go func() {
-		defer close(running.done)
-
-		m.watchTombstones(running.stop)
-	}()
+	// The method itself is the goroutine's body rather than a closure around
+	// it, so the watcher is identifiable in a stack dump from the moment it is
+	// created rather than from the moment it is first scheduled.
+	go m.watchTombstones(running)
 }
 
 // stopWatching ends the watcher and waits for it, so a closed manager leaves no
@@ -865,6 +877,7 @@ func (m *Manager) Stats() HandleStats {
 	stats := m.stats
 	stats.Open = len(m.open)
 	stats.Max = m.maxOpen()
+	stats.Watchers = m.started
 
 	return stats
 }

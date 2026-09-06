@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1408,8 +1407,9 @@ func TestACachedHandleStopsWorkingAfterAnotherManagerDeletesIt(t *testing.T) {
 // saving. One stat loop and one timer per open handle is five hundred of each
 // at the default cap.
 //
-// It counts the watcher's own stacks rather than budgeting total goroutines,
-// because a budget with slack in it passes with the regression restored.
+// It reads the manager's own count rather than the process's goroutines: a
+// stack dump also holds every other manager a test has left alive, and under a
+// loaded suite that is a test that fails for the wrong reason.
 func TestTheWatcherIsOneGoroutineWhateverTheAccountCount(t *testing.T) {
 	manager := NewManager(t.TempDir())
 	manager.MaxOpen = 100
@@ -1428,7 +1428,7 @@ func TestTheWatcherIsOneGoroutineWhateverTheAccountCount(t *testing.T) {
 			}
 		}
 
-		if watching := watchers(t); watching != 1 {
+		if watching := manager.Stats().Watchers; watching != 1 {
 			t.Errorf("%d handles are watched by %d goroutines, want one", count, watching)
 		}
 	}
@@ -1437,20 +1437,27 @@ func TestTheWatcherIsOneGoroutineWhateverTheAccountCount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if watching := watchers(t); watching != 0 {
-		t.Errorf("%d watcher goroutines survived shutdown", watching)
+	if manager.watching != nil {
+		t.Error("a watcher survived shutdown")
 	}
-}
 
-// watchers counts the goroutines running a deletion watch.
-func watchers(t *testing.T) int {
-	t.Helper()
+	// And a reused manager starts one more, not one per handle.
+	lease, err := manager.Acquire(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	// Generous: the buffer has to hold every stack in the process.
-	stacks := make([]byte, 1<<20)
-	stacks = stacks[:runtime.Stack(stacks, true)]
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
 
-	return strings.Count(string(stacks), "accounts.(*Manager).watchTombstones")
+	if watching := manager.Stats().Watchers; watching != 2 {
+		t.Errorf("a reused manager has run %d watchers, want two", watching)
+	}
+
+	if err := manager.CloseAll(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestAManagerReusedAfterCloseAllStillWatches is the hole a Once in the wrong
