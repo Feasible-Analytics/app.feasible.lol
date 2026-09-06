@@ -225,9 +225,8 @@ func (r *Recorder) Observe(o ingest.Observation) {
 		r.note(o.AccountID, o.SiteID, KindTrackerVersion, strconv.Itoa(o.TrackerVersion), at)
 	}
 
-	// The letters are a closed two-character set, so the value cardinality here
-	// is three at most and the per-site admission cap is never the binding
-	// constraint.
+	// The pipeline has already reduced this to a closed set, so it cannot be the
+	// thing that exhausts a site's shared observation budget.
 	if signals := o.Debug.AutomationSignals; signals != "" {
 		r.note(o.AccountID, o.SiteID, KindAutomationSignals, signals, at)
 	}

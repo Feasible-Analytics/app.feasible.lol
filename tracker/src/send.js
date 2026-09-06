@@ -217,10 +217,10 @@ export function send(event, callback) {
 	// replay stay one event with one server receipt.
 	event.k = eventID();
 	event.v = VERSION;
-	// Both are read per event, not once at load. A window gets resized and a
-	// phone gets rotated, and a document can exist before it has a window to be
-	// drawn in at all, so either value captured when the script ran describes a
-	// moment that has passed.
+	// Both are read per event, not once at load. A window gets resized, a phone
+	// gets rotated, and a document does not always report the same window state
+	// for its whole life, so either value captured when the script ran describes
+	// a moment that has passed.
 	event.w = innerWidth || undefined;
 	event.a = signals();
 

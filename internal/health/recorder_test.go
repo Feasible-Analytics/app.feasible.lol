@@ -528,6 +528,23 @@ func TestTheReportedAutomationSignalsReachThePanel(t *testing.T) {
 	}
 }
 
+// TestASiteWithNoSignalsReportsAnEmptyListNotNull keeps the panel's shape the
+// same as its four siblings. A nil slice marshals as null, and a caller that
+// ranges over the others has to special-case this one.
+func TestASiteWithNoSignalsReportsAnEmptyListNotNull(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	panel, err := f.store.Panel(ctx, f.domain)
+	if err != nil {
+		t.Fatalf("panel: %v", err)
+	}
+
+	if panel.AutomationSignals == nil {
+		t.Error("a site that reported no browser signals has a nil list, not an empty one")
+	}
+}
+
 // TestAnAllowListChangesWhatCountsAsUnexpected checks the other branch: once a
 // customer sets an explicit list, "unexpected" means "not on it".
 func TestAnAllowListChangesWhatCountsAsUnexpected(t *testing.T) {

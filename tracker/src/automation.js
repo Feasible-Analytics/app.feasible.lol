@@ -17,8 +17,8 @@ const NO_SCREEN = "s";
 * signals reports what looks wrong about this browser, or undefined when
 * nothing does.
 *
-* It is called per event rather than once. These are properties of the window a
-* document is drawn in, and a document can be created before it has one.
+* It is called per event rather than once. These are properties of a window,
+* and a document does not always have the same window state for its whole life.
 *
 * It reports rather than decides. The server classifies, which means the
 * threshold can change without reshipping a script that lives on other
@@ -33,17 +33,17 @@ const NO_SCREEN = "s";
 * the privacy-minded people most likely to be reading a site that chose us.
 * Detecting bots by fingerprinting real visitors is not a trade worth making.
 *
-* Everything below is instead a claim the browser makes about itself that
-* cannot be true.
+* Everything below is instead a claim about the browser that a headless one
+* makes and a real one usually does not. None of them is conclusive alone, and
+* the server is where they are weighed.
 */
 export function signals() {
 	let found = "";
 
 	try {
-		// A headless browser has no window and so no outer size. A real one can
-		// also report zero here — Chromium does, for a document that has not
-		// been drawn yet — so this is reported as corroboration and the server
-		// does not convict on it alone.
+		// A headless browser has no window and so no outer size. A real one
+		// reports zero here too, often enough that this is corroboration and
+		// never a verdict.
 		if (!win.outerWidth && !win.outerHeight) found += NO_WINDOW;
 
 		// A browser with no display to be on.

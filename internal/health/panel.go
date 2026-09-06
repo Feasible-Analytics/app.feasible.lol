@@ -223,19 +223,20 @@ func (s *Store) Panel(ctx context.Context, domain string) (Panel, error) {
 	from := now.Add(-Window).Unix()
 
 	panel := Panel{
-		Domain:           site.Domain,
-		SiteID:           site.ID,
-		AccountID:        site.AccountID,
-		From:             from,
-		To:               now.Unix(),
-		Drops:            []Count{},
-		Classifications:  []Count{},
-		Truncations:      []Count{},
-		Warnings:         []Warning{},
-		TrackerVersions:  []Seen{},
-		IPSources:        []Seen{},
-		UnknownHostnames: []Seen{},
-		AllowedHostnames: site.AllowedHostnames,
+		Domain:            site.Domain,
+		SiteID:            site.ID,
+		AccountID:         site.AccountID,
+		From:              from,
+		To:                now.Unix(),
+		Drops:             []Count{},
+		Classifications:   []Count{},
+		Truncations:       []Count{},
+		Warnings:          []Warning{},
+		TrackerVersions:   []Seen{},
+		IPSources:         []Seen{},
+		UnknownHostnames:  []Seen{},
+		AutomationSignals: []Seen{},
+		AllowedHostnames:  site.AllowedHostnames,
 	}
 
 	if err := s.readCounts(ctx, account.Reader(), &panel, from, panel.To); err != nil {

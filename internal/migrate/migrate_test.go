@@ -1026,6 +1026,12 @@ func TestAccountMigratesAFreshDatabase(t *testing.T) {
 	// later migration.
 	for _, index := range []string{
 		"events_main", "events_session", "events_page", "events_source", "events_country",
+		"ingest_session_state_expiry", "ingest_orphan_engagements_expiry",
+
+		// This one is on a table a later migration rebuilds to widen a CHECK
+		// constraint, and a rebuild that forgets to recreate its index leaves a
+		// schema that still works and is slower for ever.
+		"ingest_observations_recent",
 	} {
 		var count int
 
@@ -1175,6 +1181,81 @@ func TestPlausibleChannelParityMigration(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("migration did not return sources: %v", want)
+	}
+}
+
+// TestRebuildingTheObservationsTableKeepsWhatWasInIt guards the one shape of
+// migration that can lose a customer's data in silence.
+//
+// SQLite cannot alter a CHECK constraint, so 0017 copies the table into a new
+// one and swaps the names. Deleting the copy leaves a schema that is correct in
+// every way a schema test can see, an empty table, and no error anywhere.
+func TestRebuildingTheObservationsTableKeepsWhatWasInIt(t *testing.T) {
+	ctx := context.Background()
+	db := newDatabase(t)
+
+	if _, err := Run(ctx, db, UpTo(Account(), 16)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO ingest_observations
+			(id, site_id, observed_at, kind, value, count, first_seen_at, last_seen_at)
+		VALUES (77, 4, 1000, 'unknown_hostname', 'staging.other.example', 9, 1000, 1200);
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Run(ctx, db, Account()); err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		site, observedAt, count, first, last int64
+		kind, value                          string
+	)
+
+	if err := db.QueryRowContext(ctx, `
+		SELECT site_id, observed_at, kind, value, count, first_seen_at, last_seen_at
+		FROM ingest_observations WHERE id = 77`,
+	).Scan(&site, &observedAt, &kind, &value, &count, &first, &last); err != nil {
+		t.Fatalf("the rebuilt table lost the row it was carrying: %v", err)
+	}
+
+	if site != 4 || observedAt != 1000 || kind != "unknown_hostname" ||
+		value != "staging.other.example" || count != 9 || first != 1000 || last != 1200 {
+		t.Errorf("the row came back as %d/%d/%q/%q/%d/%d/%d",
+			site, observedAt, kind, value, count, first, last)
+	}
+
+	// The widened constraint is the point of the rebuild, and the old kinds
+	// still have to pass it.
+	for _, kind := range []string{"unknown_hostname", "tracker_version", "ip_source", "automation_signals"} {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO ingest_observations
+				(site_id, observed_at, kind, value, count, first_seen_at, last_seen_at)
+			VALUES (4, 2000, ?, 'x', 1, 2000, 2000)`, kind); err != nil {
+			t.Errorf("the rebuilt table refuses %q: %v", kind, err)
+		}
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO ingest_observations
+			(site_id, observed_at, kind, value, count, first_seen_at, last_seen_at)
+		VALUES (4, 3000, 'anything_at_all', 'x', 1, 3000, 3000)`); err == nil {
+		t.Error("the rebuilt table accepts a kind that is not in the closed set")
+	}
+
+	// A row written after the rebuild must not collide with one carried through
+	// it, which is what a lost id sequence would produce.
+	var next int64
+	if err := db.QueryRowContext(ctx,
+		"SELECT MAX(id) FROM ingest_observations").Scan(&next); err != nil {
+		t.Fatal(err)
+	}
+
+	if next <= 77 {
+		t.Errorf("the highest id after the rebuild is %d, so new rows are being written below the carried one", next)
 	}
 }
 

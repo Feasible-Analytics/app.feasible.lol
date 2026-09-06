@@ -169,9 +169,8 @@ type Debug struct {
 	Interactive    bool  `json:"interactive"`
 
 	// AutomationSignals is the letter string the tracker reported, kept whether
-	// or not it classified. Production showed the classifier convicting real
-	// visitors, and nothing stored said what had been reported, so the verdict
-	// could not be checked against its own input.
+	// or not it classified. It is what makes the verdict checkable against its
+	// own input, which a stored reason on its own is not.
 	AutomationSignals string `json:"automation_signals"`
 
 	BotReason  string     `json:"bot_reason"`
@@ -278,7 +277,7 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 	// moving it earlier costs nothing.
 	agent := p.Agents.Parse(rawUserAgent)
 
-	result.Debug.AutomationSignals = payload.Automated
+	result.Debug.AutomationSignals = reportedAutomation(payload.Automated)
 
 	botReason := p.classify(rawUserAgent, agent, client.Addr, source.Referrer, payload.Automated)
 	result.Debug.BotReason = botReason
@@ -549,38 +548,65 @@ func (p *Pipeline) classify(userAgent string, agent useragent.Result, addr netip
 // a template can classify real traffic with nothing anywhere saying so.
 const AutomationSignals = "os"
 
-// ConclusiveAutomationSignals are the letters that convict on their own.
-//
-// "o" — no outer window size — is not among them. Across a week of production
-// traffic two thirds of the sessions it flagged also contained events
-// classified as human, all of them Chromium desktop. A real browser can report
-// no outer size, so the letter is corroboration and never a verdict.
-const ConclusiveAutomationSignals = "s"
+// SignalsUnrecognised is what a report that is not a report is recorded as.
+const SignalsUnrecognised = "unrecognised"
 
-// automatedSignals reads the tracker's report of what looked wrong.
+// reportedAutomation bounds what a stranger can write into an account database.
 //
-// A verdict needs either a conclusive letter or two letters agreeing. Anything
-// unrecognised is ignored rather than trusted, and an unrecognised letter
-// invalidates the whole report: a mangled string is not evidence about a
-// visitor.
-func automatedSignals(reported string) bool {
+// The field is free text on a public endpoint and is kept as an observation
+// value, where nothing prunes it and it competes for the same per-site budget
+// as the hostname evidence a warning is built from. A well-formed report is at
+// most two letters from a closed set; everything else is counted under one
+// name, so junk arriving stays visible as a number without becoming rows.
+func reportedAutomation(reported string) string {
+	switch {
+	case reported == "":
+		return ""
+	case recognisedSignals(reported):
+		return reported
+	default:
+		return SignalsUnrecognised
+	}
+}
+
+// recognisedSignals reports whether every letter is one the tracker emits.
+func recognisedSignals(reported string) bool {
 	if reported == "" || len(reported) > len(AutomationSignals) {
 		return false
 	}
-
-	conclusive := false
 
 	for _, signal := range reported {
 		if !strings.ContainsRune(AutomationSignals, signal) {
 			return false
 		}
-
-		if strings.ContainsRune(ConclusiveAutomationSignals, signal) {
-			conclusive = true
-		}
 	}
 
-	return conclusive || len(reported) > 1
+	return true
+}
+
+// automatedSignals reads the tracker's report of what looked wrong.
+//
+// A verdict needs every signal in the set, not one of them. Each letter alone
+// has a state a real browser reaches: a window with no outer size belongs to a
+// document that has not been drawn yet, and this classifier convicted real
+// visitors on exactly that for as long as one letter was enough. Headless
+// traffic reports both, so nothing is given up by insisting on both.
+//
+// Anything unrecognised invalidates the whole report rather than being skipped.
+// This field arrives from the open internet on a public endpoint, and a mangled
+// string is not evidence about a visitor. The letters are counted distinctly for
+// the same reason: "oo" is one signal repeated, not two agreeing.
+func automatedSignals(reported string) bool {
+	if !recognisedSignals(reported) {
+		return false
+	}
+
+	seen := map[rune]struct{}{}
+	for _, signal := range reported {
+		seen[signal] = struct{}{}
+	}
+
+	return len(seen) == len(AutomationSignals)
 }
 
 // locate geolocates an address, bucketing datacentre traffic separately.

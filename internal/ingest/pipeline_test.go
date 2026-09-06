@@ -569,11 +569,13 @@ func TestDeriveNeedsNoGeoDatabase(t *testing.T) {
 // real traffic — which is the failure this product exists to not have.
 func TestAutomationSignalsAreAClosedSet(t *testing.T) {
 	reported := map[string]bool{
-		"s":  true,
 		"os": true,
 		"so": true,
 
-		"o": false, // a real browser reports this; see the test below
+		"o":  false, // a real browser reports this; see the test below
+		"s":  false, // one letter is never a verdict
+		"oo": false, // one letter twice is one letter, not two agreeing
+		"ss": false,
 
 		"":          false, // nothing reported
 		"p":         false, // a signal that was written and then withdrawn
@@ -593,16 +595,16 @@ func TestAutomationSignalsAreAClosedSet(t *testing.T) {
 	}
 }
 
-// TestNoOuterWindowSizeAloneIsNotAutomation is the whole point of the letter
-// being advisory.
+// TestOneSignalIsNotAVerdict is the threshold itself.
 //
-// Across a week of production traffic, two thirds of the sessions flagged on
-// this signal also contained events classified as human — the same visitor, the
-// same visit, both verdicts — and every one of them was Chromium desktop. A
-// real browser reports no outer size, so a conviction needs more than this.
-func TestNoOuterWindowSizeAloneIsNotAutomation(t *testing.T) {
-	if automatedSignals("o") {
-		t.Error("a browser reporting no outer window size on its own is classified as automated")
+// Each letter alone has a state an ordinary browser reaches, so convicting on
+// one turns a browser quirk into a visitor who was never there. Headless
+// traffic reports both, which is what makes insisting on both free.
+func TestOneSignalIsNotAVerdict(t *testing.T) {
+	for _, alone := range []string{"o", "s"} {
+		if automatedSignals(alone) {
+			t.Errorf("a browser reporting only %q is classified as automated", alone)
+		}
 	}
 
 	if !automatedSignals("os") {
@@ -610,13 +612,45 @@ func TestNoOuterWindowSizeAloneIsNotAutomation(t *testing.T) {
 	}
 }
 
+// TestAStrangersSignalStringCannotGrowTheDatabase is about the endpoint being
+// public.
+//
+// The field is free text that becomes an observation value, nothing prunes that
+// table, and the per-site admission budget it takes from is shared with the
+// hostname evidence a real warning is built from. Anything that is not a report
+// has to collapse to one name — and still be counted, because junk arriving is
+// something the customer is entitled to see.
+func TestAStrangersSignalStringCannotGrowTheDatabase(t *testing.T) {
+	for name, reported := range map[string]string{
+		"a long string":    strings.Repeat("o", 5_000),
+		"someone else's":   "headless",
+		"one bad letter":   "ox",
+		"a mangled report": "OS",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if kept := reportedAutomation(reported); kept != SignalsUnrecognised {
+				t.Errorf("reportedAutomation(%.20q) kept %d bytes as %.20q, want %q",
+					reported, len(kept), kept, SignalsUnrecognised)
+			}
+		})
+	}
+
+	// A real report survives untouched, and nothing reported stays nothing.
+	for reported, want := range map[string]string{"o": "o", "os": "os", "": ""} {
+		if kept := reportedAutomation(reported); kept != want {
+			t.Errorf("reportedAutomation(%q) = %q, want %q", reported, kept, want)
+		}
+	}
+}
+
 // TestTheReportedSignalsAreKeptWhateverTheVerdict is what makes the classifier
-// checkable. Without the letters on the derived event there is no way to ask
-// whether a verdict matched what was reported, which is how the wrong threshold
-// survived a week of convicting real visitors.
+// checkable. Without the letters on the derived event, "was this verdict right"
+// has no answer at all: the stored reason repeats the verdict rather than its
+// input.
 func TestTheReportedSignalsAreKeptWhateverTheVerdict(t *testing.T) {
 	for reported, want := range map[string]string{
 		"o":  "",               // reported, kept, and not convicted on
+		"s":  "",               // the same, for the other letter
 		"os": ReasonAutomation, // reported, kept, and convicted on
 	} {
 		t.Run(reported, func(t *testing.T) {

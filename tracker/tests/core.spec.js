@@ -41,10 +41,10 @@ test("a pageview carries exactly the documented keys", async ({ page }) => {
 	expect(Object.keys(pageview).sort()).toEqual(["d", "k", "n", "t", "u", "v", "w"]);
 });
 
-// The signals only fire on a browser claiming something impossible about
-// itself, so the only honest way to test them is to make a real browser make
-// one of those claims.
-test("a browser with no window at all is reported as automated", async ({ page }) => {
+// The signals are properties of a real window, so the only honest way to test
+// them is to make a real browser report one of them missing. Reporting is all
+// this asserts: whether a letter classifies anybody is the server's decision.
+test("a browser with no window at all reports the no-window signal", async ({ page }) => {
 	await page.addInitScript(() => {
 		Object.defineProperty(window, "outerWidth", { configurable: true, value: 0 });
 		Object.defineProperty(window, "outerHeight", { configurable: true, value: 0 });
@@ -58,14 +58,13 @@ test("a browser with no window at all is reported as automated", async ({ page }
 	expect(named(state, "pageview")[0].a).toBe("o");
 });
 
-// A document can be created before it has a window to be drawn in — Chromium
-// does this — and acquire one later. Production data showed that state costing
-// real visitors: the signal was captured while the window was missing and then
-// attached to every event the person went on to generate.
-test("a window that gains a size stops being reported as automated", async ({ page }) => {
+// A window's state is not fixed for the life of a document. Reading the signal
+// once and reusing it means a moment with no window follows the visitor through
+// every event they go on to generate, so the read has to happen per event.
+test("a window that gains a size stops reporting the no-window signal", async ({ page }) => {
 	await page.addInitScript(() => {
-		// Zero until the page says otherwise, which is the shape of the real
-		// thing: a property that answers differently later in the document's life.
+		// Zero until the page says otherwise: a property that answers differently
+		// later in the document's life, which is the shape being tested.
 		window.__drawn = false;
 
 		for (const side of ["outerWidth", "outerHeight"]) {
