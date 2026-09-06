@@ -39,7 +39,7 @@ func (m *UsageMailer) Notify(ctx context.Context, notice usage.Notice) (string, 
 		return "", err
 	}
 
-	msg, err := content.Message(notice.To, "usage_"+string(notice.Level))
+	msg, err := content.Message(notice.To, usageTag(notice.Level))
 	if err != nil {
 		return "", err
 	}

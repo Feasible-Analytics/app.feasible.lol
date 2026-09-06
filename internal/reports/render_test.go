@@ -266,7 +266,7 @@ func TestBothMessagesCarryThePostalAddress(t *testing.T) {
 			}
 		}
 
-		if !strings.Contains(rendered.Text, mail.PostalAddress) {
+		if !strings.Contains(rendered.Text, mail.PostalAddress()) {
 			t.Errorf("the %s text is missing the postal address", name)
 		}
 	}
@@ -324,7 +324,7 @@ func TestSlackTextCarriesTheSameNumbers(t *testing.T) {
 
 	// The email footer belongs in an inbox. A chat message already says who
 	// posted it, so the postal address is four lines of noise in a channel.
-	if strings.Contains(text, mail.PostalAddress) {
+	if strings.Contains(text, mail.PostalAddress()) {
 		t.Errorf("the Slack message carries the postal address:\n%s", text)
 	}
 

@@ -46,12 +46,35 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
-// PostalAddress is the legal entity behind the service, in the form that goes
-// in every footer. CAN-SPAM requires a valid physical postal address in
-// marketing email; transactional email is exempt, but it is included in every
-// message anyway because arguing about which category a dunning notice falls
-// into costs more than the four lines.
-const PostalAddress = "Cloudmanic Labs, LLC\n901 Brutscher Street, D112\nNewberg, OR 97132\nUnited States"
+// Company is who the email is from, in the form that goes in every footer.
+//
+// CAN-SPAM requires a valid physical postal address in marketing email;
+// transactional email is exempt, but it is on every message anyway because
+// arguing about which category a dunning notice falls into costs more than the
+// four lines.
+//
+// It is one definition, in one place. The HTML footer puts a line break between
+// the lines and the plain-text footer puts a newline, and both read this — an
+// address written twice is an address that moves once.
+var Company = Business{
+	Name: "Cloudmanic Labs, LLC",
+	AddressLines: []string{
+		"901 Brutscher Street, D112",
+		"Newberg, OR 97132",
+		"United States",
+	},
+}
+
+// Business is a name and a street address, in the order they are printed.
+type Business struct {
+	Name         string
+	AddressLines []string
+}
+
+// PostalAddress is the sender block as plain text, company first.
+func PostalAddress() string {
+	return strings.Join(append([]string{Company.Name}, Company.AddressLines...), "\n")
+}
 
 // The addresses the product writes from and points people at. Sales is the
 // destination for the volume ladder: the whole point of warning at 70% is to
@@ -280,22 +303,9 @@ func (m *Mailer) Send(ctx context.Context, msg Message) (Result, error) {
 	return result, nil
 }
 
-// SendVerification emails the code and the one-click link that prove an
-// address. Both are in the same message on purpose: the link is one tap on a
-// phone, and the code is what someone types when they opened the email on a
-// different device from the one they registered on.
-func (m *Mailer) SendVerification(ctx context.Context, to, code, link string) error {
-	content := Content{
-		Subject: "Your feasible.lol verification code",
-		Heading: "Confirm your email address",
-		Body:    []string{"Enter this code to finish setting up feasible.lol:"},
-		Code:    code,
-		Primary: Button{Label: "Open the confirmation link", URL: link},
-		Closing: "The code and the link both expire in 30 minutes. If you did not create an account, " +
-			"ignore this email and nothing happens.",
-	}
-
-	message, err := content.Message(to, "verify_email")
+// send renders one piece of copy and hands it to the transport.
+func (m *Mailer) send(ctx context.Context, to, tag string, content Content) error {
+	message, err := content.Message(to, tag)
 	if err != nil {
 		return err
 	}
@@ -305,16 +315,63 @@ func (m *Mailer) SendVerification(ctx context.Context, to, code, link string) er
 	return err
 }
 
+// SettingsConfirmationContent is the copy for the code that confirms a
+// security change on an account with no password. It is sent from
+// internal/auth, and lives here because every message's copy does.
+func SettingsConfirmationContent(code string) Content {
+	return Content{
+		Subject: "Your feasible.lol confirmation code",
+		Heading: "Confirm it is you",
+		Body: []string{
+			"Somebody signed in to your feasible.lol account asked to change a security setting. " +
+				"Enter this code to confirm it was you:",
+		},
+		Code: code,
+		Facts: []Fact{
+			{Label: "Expires in", Value: "ten minutes"},
+		},
+		Closing: "If you did not ask for it, sign out of every other device from the sessions screen. " +
+			"You are receiving this because your account signs in with Google and has no password to ask for.",
+	}
+}
+
+// SendVerification emails the code and the one-click link that prove an
+// address. Both are in the same message on purpose: the link is one tap on a
+// phone, and the code is what someone types when they opened the email on a
+// different device from the one they registered on.
+func (m *Mailer) SendVerification(ctx context.Context, to, code, link string) error {
+	return m.send(ctx, to, TagVerifyEmail, VerificationContent(code, link))
+}
+
+// VerificationContent is the copy. It is separate from the send so the message
+// can be rendered and inspected without a transport.
+func VerificationContent(code, link string) Content {
+	return Content{
+		Subject: "Your feasible.lol verification code",
+		Heading: "Confirm your email address",
+		Body:    []string{"Enter this code to finish setting up feasible.lol:"},
+		Code:    code,
+		Primary: Button{Label: "Open the confirmation link", URL: link},
+		Closing: "The code and the link both expire in 30 minutes. If you did not create an account, " +
+			"ignore this email and nothing happens.",
+	}
+}
+
 // SendInvitation delivers the bearer link that grants a team or guest role.
 // The link is handed directly to the transport and is never returned in a log
 // detail, so application logs cannot become a second invitation inbox.
 func (m *Mailer) SendInvitation(ctx context.Context, to, teamName, inviterName, role, link string, expires time.Time) error {
+	return m.send(ctx, to, TagTeamInvitation, InvitationContent(teamName, inviterName, role, link, expires))
+}
+
+// InvitationContent is the copy.
+func InvitationContent(teamName, inviterName, role, link string, expires time.Time) Content {
 	inviter := strings.TrimSpace(inviterName)
 	if inviter == "" {
 		inviter = "A team administrator"
 	}
 
-	content := Content{
+	return Content{
 		Subject: "You're invited to " + teamName + " on feasible.lol",
 		Heading: "Join " + teamName,
 		Body: []string{
@@ -325,15 +382,6 @@ func (m *Mailer) SendInvitation(ctx context.Context, to, teamName, inviterName, 
 		Primary: Button{Label: "Accept invitation", URL: link},
 		Closing: "If you were not expecting this invitation, you can ignore this email.",
 	}
-
-	message, err := content.Message(to, "team_invitation")
-	if err != nil {
-		return err
-	}
-
-	_, err = m.Send(ctx, message)
-
-	return err
 }
 
 // SendPasswordReset emails a single-use reset link. There is no code variant:
@@ -341,7 +389,12 @@ func (m *Mailer) SendInvitation(ctx context.Context, to, teamName, inviterName, 
 // the recipient come back through a URL we minted rather than something they
 // can read out over the phone to whoever asked them for it.
 func (m *Mailer) SendPasswordReset(ctx context.Context, to, link string) error {
-	content := Content{
+	return m.send(ctx, to, TagPasswordReset, PasswordResetContent(link))
+}
+
+// PasswordResetContent is the copy.
+func PasswordResetContent(link string) Content {
+	return Content{
 		Subject: "Reset your feasible.lol password",
 		Heading: "Reset your password",
 		Body: []string{
@@ -352,46 +405,38 @@ func (m *Mailer) SendPasswordReset(ctx context.Context, to, link string) error {
 		Closing: "The link works once and expires in an hour. If you did not ask for this, you can ignore " +
 			"this email — your password has not changed.",
 	}
-
-	message, err := content.Message(to, "password_reset")
-	if err != nil {
-		return err
-	}
-
-	_, err = m.Send(ctx, message)
-
-	return err
 }
 
 // SendPasswordChanged tells someone their password moved. It is sent after the
 // change rather than before, because its only job is to be the alarm that goes
 // off when the person reading it did not do it.
 func (m *Mailer) SendPasswordChanged(ctx context.Context, to string) error {
-	content := Content{
+	return m.send(ctx, to, TagPasswordChanged, PasswordChangedContent(m.baseURL))
+}
+
+// PasswordChangedContent is the copy.
+func PasswordChangedContent(baseURL string) Content {
+	return Content{
 		Subject: "Your feasible.lol password was changed",
 		Heading: "Your password was changed",
 		Body: []string{
 			"The password on your feasible.lol account was just changed, and every other signed-in browser was signed out.",
 			"If that was not you, reset your password immediately.",
 		},
-		Secondary: []Button{{Label: "Reset your password", URL: m.baseURL + "/forgot-password"}},
+		Secondary: []Button{{Label: "Reset your password", URL: baseURL + "/forgot-password"}},
 	}
-
-	message, err := content.Message(to, "password_changed")
-	if err != nil {
-		return err
-	}
-
-	_, err = m.Send(ctx, message)
-
-	return err
 }
 
 // SendNewLogin reports a sign-in from a device we have not seen before. The
 // device label and time are the two things that let someone recognise their own
 // login at a glance and act on one that is not.
 func (m *Mailer) SendNewLogin(ctx context.Context, to, device, cycle string, when time.Time) error {
-	content := Content{
+	return m.send(ctx, to, TagNewLogin, NewLoginContent(m.baseURL, device, cycle, when))
+}
+
+// NewLoginContent is the copy.
+func NewLoginContent(baseURL, device, cycle string, when time.Time) Content {
+	return Content{
 		Subject: "New sign-in to your feasible.lol account",
 		Heading: "New sign-in to your account",
 		Body:    []string{"Your feasible.lol account was signed in on a new device."},
@@ -399,16 +444,7 @@ func (m *Mailer) SendNewLogin(ctx context.Context, to, device, cycle string, whe
 			{Label: "Device", Value: device},
 			{Label: "Signed in", Value: timefmt.Clock(cycle, when.UTC(), "2 January 2006 at 15:04 MST")},
 		},
-		Secondary: []Button{{Label: "Review your sessions", URL: m.baseURL + "/settings/sessions"}},
+		Secondary: []Button{{Label: "Review your sessions", URL: baseURL + "/settings/sessions"}},
 		Closing:   "If that was not you, sign that session out and change your password.",
 	}
-
-	message, err := content.Message(to, "new_login")
-	if err != nil {
-		return err
-	}
-
-	_, err = m.Send(ctx, message)
-
-	return err
 }

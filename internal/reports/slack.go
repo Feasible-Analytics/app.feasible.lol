@@ -150,7 +150,7 @@ func SlackText(rendered Rendered, dashboardURL string) string {
 	// the same data as the HTML, which is exactly what a chat message wants.
 	// Without its footer: a postal address answers "who sent me this" in an
 	// inbox, and a chat message already says who sent it.
-	body := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(rendered.Text), mail.PostalAddress))
+	body := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(rendered.Text), mail.PostalAddress()))
 	if body != "" {
 		out.WriteString("```\n" + body + "\n```\n")
 	}
