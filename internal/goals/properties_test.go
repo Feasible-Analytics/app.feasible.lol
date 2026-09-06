@@ -241,12 +241,16 @@ func TestTruncatedPropertiesAreSurfaced(t *testing.T) {
 	}
 }
 
-// TestThePIINoticeExists checks that the sentence the settings screen has to
-// show lives beside the behaviour. Properties are customer-controlled free
-// text that lands verbatim in API responses, and the only defence that works
-// is telling people plainly.
-func TestThePIINoticeExists(t *testing.T) {
-	if PIINotice == "" {
+// TestThePIINoticeIsAskedForByID checks the properties screen still has a
+// sentence to show about personal data. Properties are customer-controlled free
+// text that lands verbatim in API responses, and the only defence that works is
+// telling people plainly.
+//
+// The id rather than the words: this package decides the behaviour and so owns
+// the requirement, and the catalogue owns the wording in every language. The
+// i18n coverage tests are what prove the id resolves to a string.
+func TestThePIINoticeIsAskedForByID(t *testing.T) {
+	if PIINoticeID == "" {
 		t.Error("the properties screen has no sentence to show about personal data")
 	}
 }

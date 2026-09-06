@@ -67,7 +67,7 @@ func (h *Handler) conversions(w http.ResponseWriter, r *http.Request, site sites
 		TitleID: "settings.conversions.title", Tab: "conversions", Domain: site.Domain,
 		Lang: i18n.Negotiate(r), Message: message, Error: failure,
 		Goals: list, Properties: properties, SeenProperties: unseenProperties(seen, properties), Funnels: funnels,
-		NoBackfillNotice: goals.NoBackfillNotice, PropertyPIINotice: goals.PIINotice,
+		NoBackfillNotice: tr(r, goals.NoBackfillNoticeID), PropertyPIINotice: tr(r, goals.PIINoticeID),
 		FunnelStepSlots: funnelStepSlots,
 	})
 }
@@ -113,7 +113,7 @@ func (h *Handler) createGoal(w http.ResponseWriter, r *http.Request, site sites.
 		return
 	}
 
-	h.conversionRedirect(w, r, site.Domain, "Goal created.", "")
+	h.conversionRedirect(w, r, site.Domain, tr(r, "settings.flash.goal_created"), "")
 }
 
 // updateGoal validates a full goal edit and preserves the definition's identity.
@@ -137,7 +137,7 @@ func (h *Handler) updateGoal(w http.ResponseWriter, r *http.Request, site sites.
 
 	existing, err := goals.Get(r.Context(), lease.Account.Reader(), id)
 	if err != nil || existing.SiteID != site.ID {
-		h.conversionRedirect(w, r, site.Domain, "", "That goal does not belong to this site.")
+		h.conversionRedirect(w, r, site.Domain, "", tr(r, "settings.flash.goal_not_this_site"))
 		return
 	}
 	if existing.IsAutomatic {
@@ -146,7 +146,7 @@ func (h *Handler) updateGoal(w http.ResponseWriter, r *http.Request, site sites.
 			return
 		}
 
-		h.conversionRedirect(w, r, site.Domain, "Automatic goal name updated.", "")
+		h.conversionRedirect(w, r, site.Domain, tr(r, "settings.flash.goal_name_updated"), "")
 		return
 	}
 
@@ -162,7 +162,7 @@ func (h *Handler) updateGoal(w http.ResponseWriter, r *http.Request, site sites.
 		return
 	}
 
-	h.conversionRedirect(w, r, site.Domain, "Goal updated.", "")
+	h.conversionRedirect(w, r, site.Domain, tr(r, "settings.flash.goal_updated"), "")
 }
 
 // deleteGoal removes one goal after proving it belongs to the requested site.
@@ -186,11 +186,11 @@ func (h *Handler) deleteGoal(w http.ResponseWriter, r *http.Request, site sites.
 
 	goal, err := goals.Get(r.Context(), lease.Account.Reader(), id)
 	if err != nil || goal.SiteID != site.ID {
-		h.conversionRedirect(w, r, site.Domain, "", "That goal does not belong to this site.")
+		h.conversionRedirect(w, r, site.Domain, "", tr(r, "settings.flash.goal_not_this_site"))
 		return
 	}
 	if goal.IsAutomatic {
-		h.conversionRedirect(w, r, site.Domain, "", "Automatic goals cannot be deleted because Feasible keeps them available for tracker-detected activity.")
+		h.conversionRedirect(w, r, site.Domain, "", tr(r, "settings.flash.goal_automatic_kept"))
 		return
 	}
 
@@ -199,7 +199,7 @@ func (h *Handler) deleteGoal(w http.ResponseWriter, r *http.Request, site sites.
 		return
 	}
 
-	h.conversionRedirect(w, r, site.Domain, "Goal removed.", "")
+	h.conversionRedirect(w, r, site.Domain, tr(r, "settings.flash.goal_removed"), "")
 }
 
 // goalFromForm turns repeated constraint fields and the selected goal type into a domain definition.
@@ -255,7 +255,7 @@ func (h *Handler) allowProperty(w http.ResponseWriter, r *http.Request, site sit
 		return
 	}
 
-	h.conversionRedirect(w, r, site.Domain, "Custom property enabled.", "")
+	h.conversionRedirect(w, r, site.Domain, tr(r, "settings.flash.property_enabled"), "")
 }
 
 // allowAllProperties enables every property received during the last thirty days.
@@ -313,7 +313,7 @@ func (h *Handler) deleteProperty(w http.ResponseWriter, r *http.Request, site si
 		return
 	}
 
-	h.conversionRedirect(w, r, site.Domain, "Custom property disabled. Its recorded data was kept.", "")
+	h.conversionRedirect(w, r, site.Domain, tr(r, "settings.flash.property_disabled"), "")
 }
 
 // saveFunnel creates a funnel or atomically updates the selected funnel.
@@ -341,7 +341,7 @@ func (h *Handler) saveFunnel(w http.ResponseWriter, r *http.Request, site sites.
 	for _, step := range funnel.Steps {
 		goal, err := goals.Get(r.Context(), lease.Account.Reader(), step.GoalID)
 		if err != nil || goal.SiteID != site.ID {
-			h.conversionRedirect(w, r, site.Domain, "", "Every funnel step must be a goal from this site.")
+			h.conversionRedirect(w, r, site.Domain, "", tr(r, "settings.flash.funnel_step_not_a_goal"))
 			return
 		}
 	}
@@ -349,7 +349,7 @@ func (h *Handler) saveFunnel(w http.ResponseWriter, r *http.Request, site sites.
 	if funnel.ID > 0 {
 		existing, err := goals.GetFunnel(r.Context(), lease.Account.Reader(), funnel.ID)
 		if err != nil || existing.SiteID != site.ID {
-			h.conversionRedirect(w, r, site.Domain, "", "That funnel does not belong to this site.")
+			h.conversionRedirect(w, r, site.Domain, "", tr(r, "settings.flash.funnel_not_this_site"))
 			return
 		}
 		if _, err := goals.UpdateFunnel(r.Context(), lease.Account.Writer(), funnel); err != nil {
@@ -361,7 +361,7 @@ func (h *Handler) saveFunnel(w http.ResponseWriter, r *http.Request, site sites.
 		return
 	}
 
-	h.conversionRedirect(w, r, site.Domain, "Funnel saved.", "")
+	h.conversionRedirect(w, r, site.Domain, tr(r, "settings.flash.funnel_saved"), "")
 }
 
 // deleteFunnel removes one funnel after proving it belongs to the requested site.
@@ -385,7 +385,7 @@ func (h *Handler) deleteFunnel(w http.ResponseWriter, r *http.Request, site site
 
 	funnel, err := goals.GetFunnel(r.Context(), lease.Account.Reader(), id)
 	if err != nil || funnel.SiteID != site.ID {
-		h.conversionRedirect(w, r, site.Domain, "", "That funnel does not belong to this site.")
+		h.conversionRedirect(w, r, site.Domain, "", tr(r, "settings.flash.funnel_not_this_site"))
 		return
 	}
 
@@ -394,7 +394,7 @@ func (h *Handler) deleteFunnel(w http.ResponseWriter, r *http.Request, site site
 		return
 	}
 
-	h.conversionRedirect(w, r, site.Domain, "Funnel removed.", "")
+	h.conversionRedirect(w, r, site.Domain, tr(r, "settings.flash.funnel_removed"), "")
 }
 
 // requireConversionPost keeps every conversion mutation on a CSRF-checked POST route.
