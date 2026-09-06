@@ -1183,7 +1183,8 @@ func TestPlausibleChannelParityMigration(t *testing.T) {
 // deployed 0007 settings migration, while the system chain preserves every
 // historical step before removing obsolete salt storage in migration 12,
 // recording the last accepted authenticator step in 13, the account picture
-// bytes in 14, where each person came from in 15 and the clock they read in 16.
+// bytes in 14, where each person came from in 15, the clock they read in 16 and
+// when each account last changed a rule in 17.
 // The account chain then adds Plausible's lossless imported-rollup fields in 13
 // and repairs the first Plausible channel backfill in 14.
 func TestCoordinatedMigrationNumbers(t *testing.T) {
@@ -1192,7 +1193,7 @@ func TestCoordinatedMigrationNumbers(t *testing.T) {
 		want []int
 	}{
 		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15}},
-		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
+		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := make([]int, 0, len(test.set.Migrations))

@@ -66,6 +66,11 @@ const MaxRulesPerKind = 30
 // than the "a few minutes" the incumbent's documentation promises.
 const RefreshInterval = 15 * time.Second
 
+// FullRefreshInterval is how often every account is re-read whatever its marker
+// says. It is the backstop against a rule saved by something that did not stamp
+// the marker — an older process mid-upgrade, or a direct database edit.
+const FullRefreshInterval = time.Hour
+
 // Rule is one stored rule.
 type Rule struct {
 	ID        int64

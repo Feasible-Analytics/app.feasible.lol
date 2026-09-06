@@ -11,6 +11,7 @@ package settings
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -37,6 +38,14 @@ import (
 
 // newHandler builds a handler over a temporary install holding one site.
 func newHandler(t *testing.T) (*Handler, *accounts.Manager) {
+	handler, manager, _ := newHandlerWithControl(t)
+
+	return handler, manager
+}
+
+// newHandlerWithControl also hands back system.db, for the tests that assert on
+// what the write path recorded there.
+func newHandlerWithControl(t *testing.T) (*Handler, *accounts.Manager, *sql.DB) {
 	t.Helper()
 
 	ctx := context.Background()
@@ -93,7 +102,7 @@ func newHandler(t *testing.T) (*Handler, *accounts.Manager) {
 		// The fixture is a hosted install, which is the deployment with a
 		// billing link to assert on.
 		Commerce: true,
-	}, manager
+	}, manager, control
 }
 
 // TestRejectedHostnameCanBeAllowedFromTheShieldsPage covers the one-click path
@@ -672,4 +681,84 @@ func TestStampHonoursTheReadersClock(t *testing.T) {
 	if got := stamp(0, timefmt.Cycle12); got != "—" {
 		t.Fatalf("an absent time stamped as %q, want a dash", got)
 	}
+}
+
+// TestSavingARuleStampsTheAccount is what keeps every other process on the box
+// applying the rule.
+//
+// This process pushes the new rules into its own snapshot immediately. The
+// marker is how a second app shard and the ingest tier find out, and a missed
+// stamp is the one failure that leaves them on the old rules for an hour with
+// nothing to show for it.
+func TestSavingARuleStampsTheAccount(t *testing.T) {
+	handler, _, control := newHandlerWithControl(t)
+
+	stamp := func() int64 {
+		t.Helper()
+
+		var at sql.NullInt64
+		if err := control.QueryRow(
+			"SELECT changed_at FROM account_rule_versions WHERE account_id = 1").Scan(&at); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return 0
+			}
+
+			t.Fatal(err)
+		}
+
+		return at.Int64
+	}
+
+	if stamp() != 0 {
+		t.Fatal("the account was stamped before anything was saved")
+	}
+
+	// A moving clock, so the second save's marker is genuinely later rather
+	// than equal, and a slice so the two run in a fixed order.
+	tick := time.Unix(1_800_000_000, 0)
+	handler.Now = func() time.Time {
+		tick = tick.Add(time.Second)
+
+		return tick
+	}
+
+	for _, save := range []struct {
+		name    string
+		request *http.Request
+	}{
+		{"a shield rule", postForm(t, "/settings/sites/example.com/shields/add",
+			url.Values{"kind": {"page"}, "value": {"/admin*"}, "note": {""}})},
+		{"a path rule", postForm(t, "/settings/sites/example.com/paths/trailing-slash", nil)},
+	} {
+		name, request := save.name, save.request
+
+		before := stamp()
+
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+
+		if recorder.Code != http.StatusSeeOther {
+			t.Fatalf("%s: the save answered %d", name, recorder.Code)
+		}
+
+		after := stamp()
+
+		if after == 0 {
+			t.Errorf("%s was saved without stamping the account", name)
+		}
+
+		if after <= before {
+			t.Errorf("%s: the marker did not move (%d then %d)", name, before, after)
+		}
+	}
+}
+
+// postForm builds a form POST the settings handler will accept.
+func postForm(t *testing.T, path string, values url.Values) *http.Request {
+	t.Helper()
+
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(values.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	return request
 }
