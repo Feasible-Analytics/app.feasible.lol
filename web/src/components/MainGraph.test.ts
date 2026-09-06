@@ -13,6 +13,7 @@ import type { Annotation } from "../api/types";
 import { metricAxisValue } from "../lib/format";
 import {
 	annotationTooltipReducer,
+	barRects,
 	barWidth,
 	bucketAt,
 	bucketX,
@@ -190,4 +191,58 @@ test("bars keep a gap at every range and never grow into a slab", () => {
 
 	// A three-day range: capped, rather than three slabs filling the card.
 	assert.equal(barWidth(PLOT, 3), 56);
+});
+
+test("a comparison splits the slot without changing a single-series chart", () => {
+	// One series is exactly what it was: the default argument is what keeps
+	// every existing caller and every existing width unchanged.
+	assert.equal(barWidth(PLOT, 10, 1), barWidth(PLOT, 10));
+
+	// Two series share the slot, so each bar is half as wide and the pair
+	// occupies what one bar used to.
+	assert.equal(barWidth(PLOT, 10, 2), barWidth(PLOT, 10) / 2);
+
+	// The worst case stays drawable rather than rounding away, because a bar
+	// that is not drawn is indistinguishable from a bucket with no data.
+	assert.ok(barWidth(PLOT, 365, 2) >= 1);
+
+	// The cap is per bar and the slot is what binds first, so a three-bucket
+	// range is two bars inside their slot rather than two slabs filling the
+	// card. That is why the cap did not need changing.
+	assert.ok(barWidth(PLOT, 3, 2) * 2 < PLOT / 3);
+	assert.ok(barWidth(PLOT, 3, 2) <= 56);
+});
+
+test("a compared bucket draws two bars, one either side of its centre", () => {
+	const rects = barRects(10, 4, true, 100, 12);
+
+	assert.deepEqual(rects, [
+		{ series: "current", value: 10, x: 88, width: 12 },
+		{ series: "earlier", value: 4, x: 100, width: 12 },
+	]);
+
+	// The pair is centred on the x the markers and the hover highlight use, so
+	// one bucket is still one slot.
+	assert.equal((rects[0]!.x + rects[1]!.x + rects[1]!.width) / 2, 100);
+});
+
+test("an uncompared bucket draws one bar, centred, exactly as before", () => {
+	assert.deepEqual(barRects(10, null, false, 100, 12), [
+		{ series: "current", value: 10, x: 94, width: 12 },
+	]);
+});
+
+test("a missing value leaves its half of the slot empty", () => {
+	// The current bar does not drift right into the space the earlier one would
+	// have taken: two buckets are only comparable by eye if a bar stays put.
+	assert.deepEqual(barRects(10, null, true, 100, 12), [
+		{ series: "current", value: 10, x: 88, width: 12 },
+	]);
+
+	assert.deepEqual(barRects(null, 4, true, 100, 12), [
+		{ series: "earlier", value: 4, x: 100, width: 12 },
+	]);
+
+	// Nothing at all draws nothing at all.
+	assert.deepEqual(barRects(null, null, true, 100, 12), []);
 });

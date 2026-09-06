@@ -169,11 +169,47 @@ export function bucketAt(chart: ChartType, offset: number, plotWidth: number, bu
 	return index === 0 ? 0 : index;
 }
 
-/** barWidth is how wide one bar is drawn, given the plot it has to share. */
-export function barWidth(plotWidth: number, buckets: number): number {
-	const slot = plotWidth / Math.max(1, buckets);
+/** barWidth is how wide one bar is drawn, given the plot it has to share and
+ *  how many series share each slot.
+ *
+ *  A comparison puts two bars in the slot a single period fills with one, so
+ *  each is half as wide. The cap is per bar rather than per slot: at twelve
+ *  buckets a pair still fits inside the slot long before either bar reaches it. */
+export function barWidth(plotWidth: number, buckets: number, series = 1): number {
+	const slot = plotWidth / Math.max(1, buckets) / Math.max(1, series);
 
 	return Math.max(1, Math.min(slot * BAR_FILL, BAR_MAX));
+}
+
+/** BarRect is one rectangle a bucket draws: which series it belongs to, where
+ *  it starts and how wide it is. The height is the caller's, because only it
+ *  knows the y scale. */
+export interface BarRect {
+	series: "current" | "earlier";
+	value: number;
+	x: number;
+	width: number;
+}
+
+/** barRects lays out one bucket's bars inside its slot.
+ *
+ *  With a comparison the current period takes the left of the slot's centre and
+ *  the earlier one the right. A missing value leaves its half empty rather than
+ *  letting the other bar drift into it, so a bar stays where the bar beside it
+ *  is — which is what makes two buckets comparable by eye. Without one, the
+ *  single bar is centred on the slot, as it has always been. */
+export function barRects(value: number | null, earlier: number | null, comparing: boolean, centre: number, bar: number): BarRect[] {
+	const rects: BarRect[] = [];
+
+	if (value !== null) {
+		rects.push({ series: "current", value, x: comparing ? centre - bar : centre - bar / 2, width: bar });
+	}
+
+	if (comparing && earlier !== null) {
+		rects.push({ series: "earlier", value: earlier, x: centre, width: bar });
+	}
+
+	return rects;
 }
 
 interface Props {
@@ -317,7 +353,7 @@ export function MainGraph({ stats, metric, comparing, annotations = [], chart = 
 	// hover highlight covers, so the band a pointer lights up is exactly the band
 	// the tooltip is reading from.
 	const slot = plotWidth / Math.max(1, labels.length);
-	const bar = barWidth(plotWidth, labels.length);
+	const bar = barWidth(plotWidth, labels.length, comparing ? 2 : 1);
 
 	// Where the plot stops and the axis begins. The markers hang off it, so it
 	// is named once rather than added up at four call sites.
@@ -336,10 +372,9 @@ export function MainGraph({ stats, metric, comparing, annotations = [], chart = 
 	const marker = visibleAnnotationTooltip(markerState);
 	const openMarker = marker !== null ? markers[marker] : undefined;
 
-	// The comparison is a line under both shapes. Ghost bars beside the real ones
-	// would double the number of shapes on an axis that already carries a year of
-	// them, and the overlay's job is to be a reference the eye can follow rather
-	// than a second series competing for the same slots.
+	// Line mode's comparison. A second line on the same axis competes with the
+	// first for the same path, so the earlier period is a reference the eye
+	// follows rather than a series of its own. Bars pair instead — see below.
 	const comparisonLine = earlierRuns.map((run) => (
 		<path
 			key={`earlier-${run.from}`}
@@ -445,40 +480,51 @@ export function MainGraph({ stats, metric, comparing, annotations = [], chart = 
 				    series of equal standing, which is not the question anybody
 				    opened it to answer.
 
-				    Under a line it goes first, so the line crosses over it. Under
-				    bars it goes last: a hairline behind a solid bar is a hairline
-				    nobody can see. */}
+				    It goes first so the line crosses over it. Bars keep the same
+				    hierarchy in the colour instead: accent for the current
+				    period, neutral for the earlier one. */}
 				{chart === "line" && comparisonLine}
 
 				{chart === "bar" &&
 					points.map((value, index) => {
-						if (value === null) return null;
-
-						const height = Math.max(value > 0 ? BAR_MIN : 0, axis - y(value));
+						// A slot holds the current period and, when there is
+						// one, the earlier period beside it. The pair is centred
+						// on the same x the markers and the hover highlight use,
+						// so one bucket stays one slot.
+						const rects = barRects(value, comparing ? (previous[index] ?? null) : null, comparing, x(index), bar);
+						if (rects.length === 0) return null;
 
 						// The in-progress bucket is drawn hollow for the reason
 						// the line dashes it: a day that is three hours old,
 						// shown at full weight beside finished ones, reads as
-						// traffic falling off a cliff this morning.
+						// traffic falling off a cliff this morning. An earlier
+						// period has no bucket still filling up.
 						const pending = present === index;
 
 						return (
-							<rect
-								key={labels[index]}
-								x={x(index) - bar / 2}
-								y={axis - height}
-								width={bar}
-								height={height}
-								fill="var(--fs-accent)"
-								fillOpacity={pending ? 0.3 : 1}
-								stroke={pending ? "var(--fs-accent)" : "none"}
-								strokeWidth={pending ? 1.5 : 0}
-								strokeDasharray={pending ? "4 4" : undefined}
-							/>
+							<g key={labels[index]}>
+								{rects.map((rect) => {
+									const height = Math.max(rect.value > 0 ? BAR_MIN : 0, axis - y(rect.value));
+									const hollow = pending && rect.series === "current";
+
+									return (
+										<rect
+											key={rect.series}
+											x={rect.x}
+											y={axis - height}
+											width={rect.width}
+											height={height}
+											fill={rect.series === "current" ? "var(--fs-accent)" : "var(--fs-faint)"}
+											fillOpacity={hollow ? 0.3 : 1}
+											stroke={hollow ? "var(--fs-accent)" : "none"}
+											strokeWidth={hollow ? 1.5 : 0}
+											strokeDasharray={hollow ? "4 4" : undefined}
+										/>
+									);
+								})}
+							</g>
 						);
 					})}
-
-				{chart === "bar" && comparisonLine}
 
 				{chart === "line" &&
 					runs.map((run) => {
@@ -742,9 +788,17 @@ export function MainGraph({ stats, metric, comparing, annotations = [], chart = 
 			    period" is ambiguous the moment the range is a custom one. */}
 			{comparing && comparisonBounds && (
 				<p className="pointer-events-none absolute top-0 right-1 flex items-center gap-1.5 text-[11px] text-muted">
-					<svg width="16" height="2" aria-hidden="true" className="shrink-0">
-						<line x1="0" y1="1" x2="16" y2="1" stroke="var(--fs-faint)" strokeWidth="2" strokeDasharray="3 3" />
-					</svg>
+					{/* The swatch is the mark it stands for: a dashed rule
+					    under a line chart, a filled block under bars. */}
+					{chart === "bar" ? (
+						<svg width="10" height="10" aria-hidden="true" className="shrink-0">
+							<rect width="10" height="10" fill="var(--fs-faint)" />
+						</svg>
+					) : (
+						<svg width="16" height="2" aria-hidden="true" className="shrink-0">
+							<line x1="0" y1="1" x2="16" y2="1" stroke="var(--fs-faint)" strokeWidth="2" strokeDasharray="3 3" />
+						</svg>
+					)}
 					{rangeLabel(comparisonBounds)}
 				</p>
 			)}
