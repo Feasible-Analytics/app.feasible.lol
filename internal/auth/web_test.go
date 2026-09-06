@@ -2074,7 +2074,7 @@ func TestTheSettingsScreenSaysWhenReportsAreBeingRebuilt(t *testing.T) {
 		t.Error("the notice shows no progress, so a reader cannot tell whether it is moving")
 	}
 
-	if !strings.Contains(body, "correct") {
+	if !strings.Contains(body, "Every number stays correct while it runs") {
 		t.Error("the notice does not say the numbers are still right, which is the first thing to say")
 	}
 }

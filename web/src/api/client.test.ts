@@ -193,10 +193,17 @@ test("nothing the server puts in the bootstrap is dropped on the way in", () => 
 	assert.deepEqual(readBootstrap(), sent);
 });
 
-test("a bootstrap missing its required fields still yields a usable one", () => {
+test("a bootstrap whose required fields are wrong still yields a usable one", () => {
 	globalThis.document = {
-		getElementById: () => ({ textContent: JSON.stringify({ hour_cycle: "nonsense", messages: [] }) }),
+		getElementById: () => ({ textContent: JSON.stringify({ sites: "not-a-list", hour_cycle: "nonsense", messages: [] }) }),
 	} as unknown as Document;
 
-	assert.deepEqual(readBootstrap(), { sites: [], locale: "", hour_cycle: "24", messages: {} });
+	const boot = readBootstrap();
+
+	// Field by field, because the four coerced ones are the point here and a
+	// whole-object compare would also be satisfied by them arriving untouched.
+	assert.deepEqual(boot.sites, []);
+	assert.equal(boot.locale, "");
+	assert.equal(boot.hour_cycle, "24", "an unrecognised dial falls back to 24 rather than through to the page");
+	assert.deepEqual(boot.messages, {}, "an array is not a catalogue");
 });

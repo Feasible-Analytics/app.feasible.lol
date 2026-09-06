@@ -159,6 +159,7 @@ func buildAll(t *testing.T, account *accounts.Account, now time.Time) {
 
 	builder := rollup.New(account.Writer())
 	builder.Now = func() time.Time { return now }
+	builder.Sleep = rollup.NoRest
 
 	today := query.RollupBucketStart(now.In(losAngeles), query.GrainDay, losAngeles)
 	from := today.AddDate(0, 0, -30)
@@ -178,21 +179,16 @@ func buildAll(t *testing.T, account *accounts.Account, now time.Time) {
 	}
 }
 
-// buildFrom rebuilds one grain over an explicit window, so a test can drive a
-// rebuild the way the worker resuming after a restart would.
-func buildFrom(t *testing.T, account *accounts.Account, now, from time.Time, grain query.Grain, fromBeginning bool) *rollup.Builder {
+// buildWindow rebuilds one grain over an explicit window, so a test can cut a
+// rebuild at a boundary of its own choosing — which is what an interruption is.
+func buildWindow(t *testing.T, account *accounts.Account, now, from, to time.Time, grain query.Grain, fromBeginning bool) *rollup.Builder {
 	t.Helper()
 
 	builder := rollup.New(account.Writer())
 	builder.Now = func() time.Time { return now }
-	builder.Sleep = func(context.Context, time.Duration) error { return nil }
+	builder.Sleep = rollup.NoRest
 
 	today := query.RollupBucketStart(now.In(losAngeles), query.GrainDay, losAngeles)
-
-	to := today
-	if grain == query.GrainDay {
-		to = today.AddDate(0, 0, 1)
-	}
 
 	if err := builder.Rebuild(context.Background(), rollup.Request{
 		Site: testSite, Grain: grain, From: from, To: to, CoverThrough: today,
@@ -507,6 +503,7 @@ func TestSeededDatabaseAnswersIdenticallyFromEitherSource(t *testing.T) {
 
 	builder := rollup.New(account.Writer())
 	builder.Now = func() time.Time { return now }
+	builder.Sleep = rollup.NoRest
 
 	location := site.Location()
 	today := query.RollupBucketStart(now.In(location), query.GrainDay, location)
@@ -674,6 +671,7 @@ func TestImportedHistoryAgreesFromEitherSource(t *testing.T) {
 
 	builder := rollup.New(account.Writer())
 	builder.Now = func() time.Time { return now }
+	builder.Sleep = rollup.NoRest
 
 	for _, grain := range []query.Grain{query.GrainDay, query.GrainHour} {
 		to := today
@@ -1084,12 +1082,9 @@ func timeReport(t *testing.T, engine *query.Engine, q query.Query) (time.Duratio
 }
 
 // TestAnInterruptedRebuildBanksWhatItBuilt is the whole point of banking
-// coverage per chunk.
-//
-// A site with years of history does not finish a rebuild between two restarts.
-// With coverage written only at the end, every interruption threw the work away
-// and the next run began at the first event again — so it never converged and
-// burned a core indefinitely.
+// coverage per chunk: a site with years of history does not finish a rebuild
+// between two restarts, so an interruption has to leave something behind or the
+// next run has the same amount of work to do.
 func TestAnInterruptedRebuildBanksWhatItBuilt(t *testing.T) {
 	account := openAccount(t)
 	ctx := context.Background()
@@ -1145,7 +1140,7 @@ func TestAnInterruptedRebuildBanksWhatItBuilt(t *testing.T) {
 	}
 
 	// Resume where it stopped, the way the worker's next pass does.
-	buildFrom(t, account, fixtureNow, localFromRollup(partial), query.GrainDay, false)
+	buildWindow(t, account, fixtureNow, localFromRollup(partial), today.AddDate(0, 0, 1), query.GrainDay, false)
 
 	resumed, _, err := builder.Coverage(ctx, testSite.ID, query.GrainDay)
 	if err != nil {
@@ -1166,7 +1161,9 @@ func TestAnInterruptedRebuildBanksWhatItBuilt(t *testing.T) {
 //
 // The carried distinct counts are what let a visitor count re-aggregate across
 // buckets, and they are the part most likely to go subtly wrong when a range
-// grows a chunk at a time rather than arriving whole.
+// grows a chunk at a time. The stop is placed on purpose between the 28th and
+// the 29th, which is where the fixture's visitors span two days — a boundary
+// somewhere harmless would prove nothing.
 func TestResumingARebuildKeepsEveryNumberRight(t *testing.T) {
 	account := openAccount(t)
 
@@ -1174,14 +1171,23 @@ func TestResumingARebuildKeepsEveryNumberRight(t *testing.T) {
 	writeFixture(t, account, sessions, events)
 
 	today := query.RollupBucketStart(fixtureNow.In(losAngeles), query.GrainDay, losAngeles)
+	cut := local(29, 0)
 
-	// Build it a week at a time, oldest first, which is what a rebuild that
-	// keeps being interrupted and resumed adds up to.
-	for day := 30; day > 0; day -= 7 {
-		buildFrom(t, account, fixtureNow, today.AddDate(0, 0, -day), query.GrainDay, day == 30)
+	// Stop, then resume from exactly where the bank reached.
+	buildWindow(t, account, fixtureNow, today.AddDate(0, 0, -30), cut, query.GrainDay, true)
+
+	partial, found, err := rollup.New(account.Writer()).Coverage(context.Background(), testSite.ID, query.GrainDay)
+	if err != nil || !found {
+		t.Fatalf("the first half banked nothing: %v", err)
 	}
 
-	buildFrom(t, account, fixtureNow, today.AddDate(0, 0, -30), query.GrainHour, true)
+	if partial.Through != query.RollupLocalUnix(cut, losAngeles) {
+		t.Fatalf("banked through %d, want the cut at %d — the stop is not where the test thinks it is",
+			partial.Through, query.RollupLocalUnix(cut, losAngeles))
+	}
+
+	buildWindow(t, account, fixtureNow, cut, today.AddDate(0, 0, 1), query.GrainDay, false)
+	buildWindow(t, account, fixtureNow, today.AddDate(0, 0, -30), today, query.GrainHour, true)
 
 	raw, rolled := engines(account, fixtureNow)
 
@@ -1192,7 +1198,13 @@ func TestResumingARebuildKeepsEveryNumberRight(t *testing.T) {
 		Timezone:  testSite.Timezone,
 	}
 
-	compare(t, "rebuilt one week at a time", q.Metrics, answer(t, raw, q), answer(t, rolled, q))
+	fromRollup := answer(t, rolled, q)
+
+	if len(fromRollup.Meta.Sources) != 2 {
+		t.Fatalf("meta.sources = %v — the resumed summary was not read at all", fromRollup.Meta.Sources)
+	}
+
+	compare(t, "rebuilt in two halves across a carry boundary", q.Metrics, answer(t, raw, q), fromRollup)
 }
 
 // localFromRollup turns a stored local-seconds bucket back into the instant it
@@ -1204,12 +1216,9 @@ func localFromRollup(local int64) time.Time {
 }
 
 // TestARebuildRestsBetweenChunks pins the priority order. A rebuild holds the
-// account's write lock, and the ingest outbox delivering into the same account
-// cannot get in — which is how one site's timezone change stopped every site on
-// a two-core box from storing an event for an hour.
-//
-// Roll-up freshness is a cache. Storing an event is not. When the two want the
-// same lock the cache loses.
+// account's write lock and the ingest outbox delivering into the same account
+// wants it: roll-up freshness is a cache, storing an event is not, so the cache
+// gives way.
 func TestARebuildRestsBetweenChunks(t *testing.T) {
 	account := openAccount(t)
 
@@ -1228,8 +1237,6 @@ func TestARebuildRestsBetweenChunks(t *testing.T) {
 		return nil
 	}
 
-	// Thirty days at seven days a chunk is five chunks, so four rests: a build
-	// never pauses after its last chunk, because nothing is waiting on it then.
 	if err := builder.Rebuild(context.Background(), rollup.Request{
 		Site: testSite, Grain: query.GrainDay, From: today.AddDate(0, 0, -30), To: today.AddDate(0, 0, 1),
 		CoverThrough: today, FromBeginning: true,
@@ -1237,18 +1244,70 @@ func TestARebuildRestsBetweenChunks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(rests) != 4 {
-		t.Fatalf("the build rested %d times over five chunks, want 4", len(rests))
+	if len(rests) == 0 {
+		t.Fatal("a thirty-day rebuild never let go of the write lock")
 	}
 
 	for _, rest := range rests {
-		if rest <= 0 {
+		if rest < rollup.MinYield {
 			t.Errorf("a rest of %v gives a waiting writer nothing", rest)
 		}
 
 		if rest > rollup.MaxYield {
 			t.Errorf("a rest of %v is longer than the %v cap", rest, rollup.MaxYield)
 		}
+	}
+
+	// A build never pauses after its last chunk, because nothing is waiting on
+	// it then and the pause would be pure wall-clock cost.
+	rests = nil
+
+	if err := builder.Rebuild(context.Background(), rollup.Request{
+		Site: testSite, Grain: query.GrainDay, From: today, To: today.AddDate(0, 0, 1),
+		CoverThrough: today, FromBeginning: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(rests) != 0 {
+		t.Errorf("a one-chunk rebuild rested %d times, want none", len(rests))
+	}
+}
+
+// TestARebuildStopsWhenTheProcessDoes covers the real pause rather than an
+// injected one. A rest that slept through a cancelled context would hold a
+// shutdown open for as long as the last chunk took.
+func TestARebuildStopsWhenTheProcessDoes(t *testing.T) {
+	account := openAccount(t)
+
+	sessions, events := carryFixture()
+	writeFixture(t, account, sessions, events)
+
+	today := query.RollupBucketStart(fixtureNow.In(losAngeles), query.GrainDay, losAngeles)
+
+	// No Sleep injected: this is the timer the running server uses. The ratio
+	// makes the first rest hit the MaxYield cap, and the deadline expires part
+	// way into it — so a rest that ignored the context would take the full cap.
+	builder := rollup.New(account.Writer())
+	builder.Now = func() time.Time { return fixtureNow }
+	builder.Yield = 100_000
+
+	stop, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	began := time.Now()
+
+	err := builder.Rebuild(stop, rollup.Request{
+		Site: testSite, Grain: query.GrainDay, From: today.AddDate(0, 0, -30), To: today.AddDate(0, 0, 1),
+		CoverThrough: today, FromBeginning: true,
+	})
+
+	if err == nil {
+		t.Fatal("a cancelled rebuild reported success")
+	}
+
+	if took := time.Since(began); took >= rollup.MaxYield {
+		t.Errorf("the rebuild took %v to notice the cancellation, which is the whole rest", took)
 	}
 }
 
@@ -1273,6 +1332,19 @@ func TestProgressReportsWhatIsLeftToBuild(t *testing.T) {
 	}
 
 	sessions, events := carryFixture()
+
+	// One visit three weeks back, so the site has enough history for progress
+	// through it to mean something. A site with a day or two of history is
+	// never worth a progress bar and is covered below.
+	sessions = append(sessions, sessionRow{
+		id: 900, user: 9001, startedAt: local(10, 9), lastSeen: local(10, 9), bounce: 1, pageviews: 1,
+		entryPage: "/home", exitPage: "/home", source: "Google", country: "US",
+	})
+	events = append(events, eventRow{
+		session: 900, user: 9001, at: local(10, 9), name: ingest.EventPageview,
+		page: "/home", source: "Google", country: "US",
+	})
+
 	writeFixture(t, account, sessions, events)
 
 	// Events but nothing built: everything is left to do.
@@ -1308,5 +1380,49 @@ func TestProgressReportsWhatIsLeftToBuild(t *testing.T) {
 
 	if !changed.Building || changed.Percent != 0 {
 		t.Errorf("progress after a timezone change = %+v, want building at 0%%", changed)
+	}
+}
+
+// TestProgressGivesTheWorkerADayOfGrace covers the state every healthy site is
+// in for up to an hour every night.
+//
+// The worker seals through the start of today and runs hourly, so a minute
+// after local midnight every summary is a day behind. Without the grace, every
+// customer would open a dashboard to a progress bar every morning.
+func TestProgressGivesTheWorkerADayOfGrace(t *testing.T) {
+	account := openAccount(t)
+	ctx := context.Background()
+
+	sessions, events := carryFixture()
+	writeFixture(t, account, sessions, events)
+	buildAll(t, account, fixtureNow)
+
+	// Half an hour into the next local day, before the worker's next pass.
+	tomorrow := query.RollupBucketStart(fixtureNow.In(losAngeles), query.GrainDay, losAngeles).
+		AddDate(0, 0, 1).Add(30 * time.Minute)
+
+	builder := rollup.New(account.Writer())
+	builder.Now = func() time.Time { return tomorrow }
+
+	progress, err := builder.Progress(ctx, testSite)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if progress.Building {
+		t.Errorf("progress just after midnight = %+v, want nothing in progress", progress)
+	}
+
+	// Two days behind is a real backlog and is reported.
+	stale := tomorrow.AddDate(0, 0, 2)
+	builder.Now = func() time.Time { return stale }
+
+	behind, err := builder.Progress(ctx, testSite)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !behind.Building {
+		t.Error("a summary three days behind reported nothing to build")
 	}
 }

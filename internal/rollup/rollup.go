@@ -43,6 +43,24 @@ const (
 	hourChunk = 3
 )
 
+// chunkTarget is how long one chunk's transaction should take, and minChunk is
+// how far the size may shrink to hit it.
+//
+// A writer waiting on the account gives up after the 5s busy_timeout in
+// internal/store, so a chunk that runs longer than that turns an ingest
+// delivery into a "database is locked". The target leaves most of that window
+// spare, and the size halves until it fits — which needs no measurement of any
+// particular site, because a site whose days are expensive measures itself.
+const (
+	chunkTarget = 2 * time.Second
+	minChunk    = 1
+)
+
+// secondsPerDay is the distance between two stored day buckets. The bucket is a
+// wall-clock reading held as if it were UTC, so consecutive local days are
+// exactly this far apart whatever the timezone does.
+const secondsPerDay = 24 * 60 * 60
+
 // Site is the little a build needs to know about a site: which rows are its,
 // and which local day its buckets are cut on.
 type Site struct {
@@ -94,26 +112,23 @@ type Builder struct {
 	Now func() time.Time
 
 	// Yield is how long a build rests between chunks, as a multiple of how long
-	// the chunk itself took. One means a rebuild spends at most half its
-	// wall-clock time holding the write lock.
-	//
-	// Roll-up freshness is a cache and storing an event is not, so when the two
-	// want the same lock the cache has to lose. A rebuild that takes all night
-	// costs nobody anything; an hour in which no event is stored for any site
-	// on the machine costs everybody. Zero means DefaultYield.
+	// the chunk itself took. Roll-up freshness is a cache and storing an event
+	// is not, so when the two want the same lock the cache gives way. Zero
+	// means DefaultYield.
 	Yield float64
 
-	// Sleep is how the rest is taken. It is injectable so a test can drive a
-	// many-chunk rebuild without waiting for it, and it takes the context so a
-	// shutdown does not have to wait out a pause.
+	// Sleep is how the rest is taken. It takes the context so a shutdown does
+	// not have to wait out a pause, and it is injectable so a build that is not
+	// competing with anything — a seed, a test — can decline to rest.
 	Sleep func(ctx context.Context, d time.Duration) error
 }
 
-// DefaultYield is the resting multiple a build uses when none is set, and
-// MaxYield caps one rest so a single slow chunk cannot stall a rebuild for
-// minutes.
+// The bounds on one rest. MinYield keeps the pause real even after a chunk that
+// took no measurable time, and MaxYield stops a single slow chunk from stalling
+// a rebuild for minutes.
 const (
 	DefaultYield = 1.0
+	MinYield     = time.Millisecond
 	MaxYield     = 5 * time.Second
 )
 
@@ -121,6 +136,10 @@ const (
 func New(db *sql.DB) *Builder {
 	return &Builder{DB: db, Now: func() time.Time { return time.Now().UTC() }}
 }
+
+// NoRest is a Sleep for a build that is not competing with live ingestion — a
+// seed, or a test. Resting there buys nobody a lock and only costs wall clock.
+func NoRest(context.Context, time.Duration) error { return nil }
 
 // rest pauses in proportion to the work just done, so a rebuild that is cheap
 // barely pauses and one that is expensive gives most of the lock away.
@@ -130,10 +149,7 @@ func (b *Builder) rest(ctx context.Context, took time.Duration) error {
 		ratio = DefaultYield
 	}
 
-	pause := min(time.Duration(float64(took)*ratio), MaxYield)
-	if pause <= 0 {
-		return ctx.Err()
-	}
+	pause := max(min(time.Duration(float64(took)*ratio), MaxYield), MinYield)
 
 	if b.Sleep != nil {
 		return b.Sleep(ctx, pause)
@@ -214,38 +230,68 @@ func (b *Builder) Rebuild(ctx context.Context, request Request) error {
 		return err
 	}
 
-	for start := from; start.Before(to); {
-		end := b.chunkEnd(start, grain, to, location)
+	size := defaultChunk(grain)
 
-		// A stopwatch rather than b.now(), which is a fixed clock in a test and
-		// answers "which day is it", not "how long did that take".
+	for start := from; start.Before(to); {
+		end := b.chunkEnd(start, grain, size, to, location)
+
+		// A wall clock, not b.now(): the builder's clock is fixed in a test and
+		// answers which day it is, not how long something took.
 		began := time.Now()
 
 		if err := b.buildChunk(ctx, site, grain, names, start, end); err != nil {
 			return fmt.Errorf("rollup: build %s %s..%s: %w", grain, start.Format(time.RFC3339), end.Format(time.RFC3339), err)
 		}
 
-		// Banked here rather than after the loop. A rebuild of a site with
-		// years of history does not fit between two restarts, and coverage
-		// written only at the end means every interruption throws the whole
-		// thing away and the next run starts from the first event again — which
-		// never converges and burns a core for ever. Days inside the banked
-		// range read the summary; days outside fall back to raw, which is
-		// slower and correct.
+		took := time.Since(began)
+
+		// Every committed chunk widens the window a reader may trust. Days
+		// inside it read the summary; days outside fall back to raw, which is
+		// slower and correct — so an interrupted rebuild resumes where it
+		// stopped instead of starting over.
 		if err := b.bankCoverage(ctx, request, from, end, location); err != nil {
 			return err
 		}
 
+		size = nextChunkSize(grain, size, took)
 		start = end
 
 		if start.Before(to) {
-			if err := b.rest(ctx, time.Since(began)); err != nil {
+			if err := b.rest(ctx, took); err != nil {
 				return err
 			}
 		}
 	}
 
 	return nil
+}
+
+// defaultChunk is how many buckets a rebuild starts out doing at a time.
+func defaultChunk(grain query.Grain) int {
+	if grain == query.GrainHour {
+		return hourChunk * 24
+	}
+
+	return dayChunk
+}
+
+// nextChunkSize halves the chunk while its transaction runs longer than a
+// waiting writer will tolerate, and grows it back towards the default when it
+// does not. The default is a ceiling, never a floor.
+//
+// A site whose days are cheap keeps the large chunk and finishes quickly; a
+// site whose days are expensive finds its own size, which is what bounds the
+// blocking interval without anybody having measured that site.
+func nextChunkSize(grain query.Grain, size int, took time.Duration) int {
+	if took > chunkTarget {
+		return max(size/2, minChunk)
+	}
+
+	if took < chunkTarget/4 {
+		return min(size*2, defaultChunk(grain))
+	}
+
+	return size
 }
 
 // bankCoverage widens the trusted window to everything built so far.
@@ -270,12 +316,7 @@ func (b *Builder) bankCoverage(ctx context.Context, request Request, from, built
 }
 
 // chunkEnd is the end of the piece of work that starts at a given bucket.
-func (b *Builder) chunkEnd(start time.Time, grain query.Grain, to time.Time, location *time.Location) time.Time {
-	size := dayChunk
-	if grain == query.GrainHour {
-		size = hourChunk * 24
-	}
-
+func (b *Builder) chunkEnd(start time.Time, grain query.Grain, size int, to time.Time, location *time.Location) time.Time {
 	end := start
 	for i := 0; i < size; i++ {
 		if !end.Before(to) {
@@ -962,7 +1003,7 @@ func (b *Builder) Progress(ctx context.Context, site Site) (Progress, error) {
 	target := query.RollupLocalUnix(today, location)
 	from := query.RollupLocalUnix(start, location)
 
-	if target <= from {
+	if target-from <= secondsPerDay {
 		return Progress{}, nil
 	}
 
@@ -977,7 +1018,11 @@ func (b *Builder) Progress(ctx context.Context, site Site) (Progress, error) {
 		return Progress{Building: true}, nil
 	}
 
-	if coverage.Through >= target {
+	// A day's grace. The worker seals through the start of today on each pass
+	// and runs hourly, so between local midnight and the next tick every
+	// healthy site is one day behind — and without this, every one of them
+	// would claim to be rebuilding for up to an hour every night.
+	if coverage.Through >= target-secondsPerDay {
 		return Progress{}, nil
 	}
 

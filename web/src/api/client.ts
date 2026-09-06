@@ -70,10 +70,9 @@ export function readBootstrap(): Bootstrap {
 		const parsed = JSON.parse(node.textContent) as Partial<Bootstrap>;
 		const messages = parsed.messages;
 
-		// Spread first, then coerce the four the dashboard cannot run without.
-		// Listing the pass-through fields instead means every field the server
-		// learns to send has to be added here too, and one that is forgotten is
-		// dropped in silence — the page renders, just without the thing.
+		// Spread, then coerce the four the dashboard cannot run without. Every
+		// other field the server sends arrives on its own, so one nobody
+		// remembered to name here is not silently dropped.
 		return {
 			...parsed,
 			sites: Array.isArray(parsed.sites) ? parsed.sites : [],

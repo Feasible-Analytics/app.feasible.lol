@@ -279,16 +279,15 @@ type Bootstrap struct {
 
 	// Rebuild is present while the site being looked at is having its reports
 	// rebuilt, which a timezone change causes. It is a snapshot taken when the
-	// page was served: the reader sees it appear on their next load and go away
-	// on the one after it finishes. That is honest for something that runs for
-	// minutes to hours, and it costs no polling.
+	// page was served, so it appears on the reader's next load and goes away on
+	// the one after the rebuild finishes — close enough for something that runs
+	// for minutes to hours, and it costs no polling.
 	Rebuild *Rebuild `json:"rebuild,omitempty"`
 }
 
 // Rebuild is how far a site's summary has got. Every number the dashboard shows
 // is correct while one runs; the reports are simply read the slow way until the
-// summary catches up, and a reader who is not told that concludes the product
-// is broken.
+// summary catches up.
 type Rebuild struct {
 	Percent int `json:"percent"`
 }
