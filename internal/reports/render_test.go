@@ -105,17 +105,22 @@ func TestAnAlertAlsoStaysUnderTheLimit(t *testing.T) {
 	}
 }
 
-// TestAnUndefinedVariableFailsLoudly is the second acceptance criterion.
-//
-// An incumbent's spike alert referenced a dashboard-link variable that nothing
-// ever assigned. Their template language rendered it as nothing, and the emails
-// shipped for months with a missing link and no error anywhere. A variable that
-// was never assigned has to be a hard failure, every time.
+// TestAnUndefinedVariableFailsLoudly is the second acceptance criterion. A
+// value nothing assigned has to be a hard failure, every time, rather than an
+// empty string in a message somebody receives.
 func TestAnUndefinedVariableFailsLoudly(t *testing.T) {
-	_, err := render(mail.Content{Heading: "hello"}, map[string]string{"DashboardURL": ""})
+	_, err := render(mail.Content{Heading: "hello"}, []Assigned{
+		{"Domain", "quiet.example"},
+		{"DashboardURL", "   "},
+	})
 
 	if !errors.Is(err, ErrUndefinedVariable) {
 		t.Fatalf("an unassigned value rendered without error: %v", err)
+	}
+
+	// The error names the value, since the point of the check is to say which.
+	if !strings.Contains(err.Error(), "DashboardURL") {
+		t.Errorf("the error does not name the missing value: %v", err)
 	}
 }
 
@@ -135,17 +140,38 @@ func TestAnAlertWithNoDashboardLinkIsRefused(t *testing.T) {
 	}
 }
 
-// TestAMarkerInTheRenderedBodyIsRefused checks what the field-by-field check
-// cannot catch: a value that reached the output from inside a slice, where
-// there is no named field to test.
-func TestAMarkerInTheRenderedBodyIsRefused(t *testing.T) {
-	_, err := render(mail.Content{
-		Heading: "hello",
-		Tables:  []mail.Table{{Title: "Top pages", Rows: []mail.Row{{Label: missingValue, Value: "1"}}}},
-	}, nil)
+// TestALinkTheLayoutRefusedToTrustIsRefused is the failure the incumbent
+// shipped: html/template blanks a URL it cannot prove is safe, and what reaches
+// the reader is a button that looks fine and goes nowhere.
+func TestALinkTheLayoutRefusedToTrustIsRefused(t *testing.T) {
+	report := bigReport()
+	report.DashboardURL = "javascript:alert(1)"
+
+	_, err := RenderReport(report, FallbackClock)
 
 	if !errors.Is(err, ErrUndefinedVariable) {
-		t.Fatalf("a body containing %s rendered without error: %v", missingValue, err)
+		t.Fatalf("a blanked dashboard link rendered without error: %v", err)
+	}
+}
+
+// TestAVisitorCannotStopAReportRendering is the other side of that check.
+//
+// Page paths and referrers are written by visitors. A guard that scans the
+// rendered body for a marker string hands one of them a way to stop a site's
+// reports for good by viewing a crafted URL once.
+func TestAVisitorCannotStopAReportRendering(t *testing.T) {
+	for _, hostile := range []string{"/search?q=<no value>", "/" + blankedValue, "/<script>"} {
+		report := bigReport()
+		report.TopPages[0].Label = hostile
+
+		rendered, err := RenderReport(report, FallbackClock)
+		if err != nil {
+			t.Fatalf("a page path of %q stopped the report rendering: %v", hostile, err)
+		}
+
+		if !strings.Contains(rendered.Text, hostile) {
+			t.Errorf("the text alternative lost the page path %q", hostile)
+		}
 	}
 }
 
@@ -158,12 +184,8 @@ func TestEveryReportVariableIsAssigned(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 
-	for _, body := range []string{rendered.HTML, rendered.Text} {
-		for _, marker := range []string{missingValue, blankedValue} {
-			if strings.Contains(body, marker) {
-				t.Fatalf("the rendered body contains %s", marker)
-			}
-		}
+	if strings.Contains(rendered.HTML, blankedValue) {
+		t.Fatalf("the rendered HTML contains %s", blankedValue)
 	}
 
 	// The dashboard link is the one variable whose absence is invisible in a
@@ -212,8 +234,8 @@ func TestAnEmptyReportStillRenders(t *testing.T) {
 }
 
 // TestBothMessagesCarryThePostalAddress is what CAN-SPAM needs and what tells a
-// reader who sent the thing. The report is the message a customer sees every
-// week for years, and it had no sender identity on it at all.
+// reader who sent the thing. The report arrives every week for years, so it is
+// the message where an unidentified sender is noticed.
 func TestBothMessagesCarryThePostalAddress(t *testing.T) {
 	report, err := RenderReport(bigReport(), FallbackClock)
 	if err != nil {
@@ -390,5 +412,80 @@ func TestARenderingIsBuiltOncePerDial(t *testing.T) {
 
 	if built != 2 {
 		t.Errorf("built %d renderings over twenty asks, want 2", built)
+	}
+}
+
+// TestTheReportHTMLShowsTheNumbers is the assertion the report exists for.
+//
+// Every other test here reads the text alternative, which most people never
+// see. A layout that dropped the metric row or the top-N rows would leave the
+// text part correct and the email empty.
+func TestTheReportHTMLShowsTheNumbers(t *testing.T) {
+	rendered, err := RenderReport(bigReport(), FallbackClock)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	for name, want := range map[string]string{
+		// Closed with the paragraph tag, because both strings also appear in
+		// the subject line and in the sentence explaining why the email came.
+		"the kicker":     ">Weekly report</p>",
+		"the period":     ">27 July – 2 August 2026</p>",
+		"a figure label": "Unique visitors",
+		"a figure value": "128,442",
+		// html/template writes a plus in text as &#43;, which a mail client
+		// renders back as "+18%".
+		"a change":           "&#43;18%",
+		"a growth colour":    "#15803d",
+		"a decline colour":   "#b91c1c",
+		"a top page":         "/blog/2026/08/a-reasonably-long-article-slug-that-people-really-do-write-0",
+		"a top page count":   "12,004",
+		"a top source":       "news.ycombinator.com/item?id=1234567890",
+		"a country":          "United Kingdom 0",
+		"the dashboard link": "https://feasible.lol/dashboard/",
+	} {
+		if !strings.Contains(rendered.HTML, want) {
+			t.Errorf("the report HTML is missing %s (%q)", name, want)
+		}
+	}
+
+	// Every top-N row, not just the first: a range that stops early is the
+	// failure a spot check misses.
+	for _, list := range [][]Entry{bigReport().TopPages, bigReport().TopSources, bigReport().Countries} {
+		for _, entry := range list {
+			if !strings.Contains(rendered.HTML, entry.Label) {
+				t.Errorf("the report HTML is missing the row %q", entry.Label)
+			}
+		}
+	}
+}
+
+// TestTheAlertHTMLShowsWhatFired covers the other message's own blocks.
+func TestTheAlertHTMLShowsWhatFired(t *testing.T) {
+	rendered, err := RenderAlert(Alert{
+		Domain:       "quiet.example",
+		Kind:         KindSpike,
+		Headline:     "412 visitors are on the site right now",
+		Detail:       "Something is sending you traffic.",
+		Threshold:    10,
+		Observed:     412,
+		DashboardURL: "https://feasible.lol/dashboard/quiet.example",
+		TriggeredAt:  time.Date(2026, 8, 3, 9, 15, 0, 0, time.UTC),
+	}, FallbackClock)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	for name, want := range map[string]string{
+		"the kicker":     ">Spike alert</p>",
+		"the alarm tone": "#b91c1c",
+		"the headline":   "412 visitors are on the site right now",
+		"the detail":     "Something is sending you traffic.",
+		"the observed":   ">412<",
+		"the threshold":  ">10<",
+	} {
+		if !strings.Contains(rendered.HTML, want) {
+			t.Errorf("the alert HTML is missing %s (%q)", name, want)
+		}
 	}
 }

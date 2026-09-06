@@ -1,6 +1,6 @@
 //
 // render.go
-// Report and alert bodies, from templates that refuse to render a missing variable.
+// Report and alert bodies, which refuse to render with a value nothing assigned.
 //
 // Created: 2026-08-31
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -10,6 +10,7 @@ package reports
 
 import (
 	"fmt"
+	"html/template"
 	"strconv"
 	"strings"
 	"time"
@@ -18,54 +19,27 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
-// The two markers Go's template package leaves behind when a value did not
-// survive rendering.
+// blankedValue is what html/template writes in place of a URL it cannot prove
+// is safe. It is the shape the failure below actually takes: not visibly
+// missing text, but a dead href that looks like a working button.
+const blankedValue = "ZgotmplZ"
+
+// ErrUndefinedVariable is what a message with a value nothing ever assigned
+// produces.
 //
-// "<no value>" is what a nil writes in ordinary content. "ZgotmplZ" is what
-// html/template substitutes when a value reaches a URL attribute and it cannot
-// prove the value is safe — which is exactly what a nil dashboard link produces,
-// and which renders as a dead href rather than as visibly missing text.
-//
-// Both are checked because missingkey cannot catch either: the key is present,
-// it just holds nothing. A report that reaches a customer with a dead link
-// where the dashboard should be is worse than one that did not arrive.
-const (
-	missingValue = "<no value>"
-	blankedValue = "ZgotmplZ"
+// This is a named error rather than a generic failure because of the specific
+// bug it prevents: an incumbent's spike alert referenced a dashboard link that
+// nothing ever set, their template language rendered it as nothing, and the
+// emails shipped for months with a missing link and no error anywhere. A value
+// that was never assigned has to be a hard failure, every time.
+var ErrUndefinedVariable = fmt.Errorf("reports: a message carried a value that was never assigned")
+
+// Figure and Entry are the layout's own types, so a number is formatted once
+// and rendered as it was formatted.
+type (
+	Figure = mail.Figure
+	Entry  = mail.Row
 )
-
-// ErrUndefinedVariable is what a template referencing something that was never
-// assigned produces.
-//
-// This is a named error rather than a generic template failure because of the
-// specific bug it prevents: an incumbent's spike alert referenced a dashboard
-// link variable that nothing ever set, their template language rendered it as
-// nothing, and the emails shipped for months with a missing link and no error
-// anywhere. A template variable that is not assigned has to be a hard failure,
-// every time, or that bug is only a matter of when.
-var ErrUndefinedVariable = fmt.Errorf("reports: a template referenced a variable that was never assigned")
-
-// Figure is one number on a report, already formatted.
-type Figure struct {
-	Label string
-	Value string
-
-	// Change is the comparison against the previous period, pre-rendered as
-	// "+18%" or "−4%", and empty when there is nothing to compare against. It
-	// is empty rather than "0%" because "no previous period" and "no change"
-	// are different facts and a reader cannot tell them apart from a zero.
-	Change string
-
-	// Direction is "up", "down" or "flat", so the template can colour the
-	// figure without parsing the string above.
-	Direction string
-}
-
-// Entry is one row of a top-N list.
-type Entry struct {
-	Label string
-	Value string
-}
 
 // Report is everything a scheduled report says. Building it as a struct and
 // converting it in one place means there is exactly one list of the names a
@@ -133,23 +107,23 @@ func RenderReport(report Report, cycle string) (Rendered, error) {
 		Heading:    report.Domain,
 		Subheading: report.PeriodLabel,
 		Note:       report.Note,
-		Figures:    figuresOf(report.Figures),
+		Figures:    report.Figures,
 		Tables: []mail.Table{
-			{Title: "Top pages", Rows: rowsOf(report.TopPages), Empty: "No pages were viewed in this period."},
-			{Title: "Top sources", Rows: rowsOf(report.TopSources), Empty: "No referrers were recorded in this period."},
-			{Title: "Top countries", Rows: rowsOf(report.Countries), Empty: "No locations were recorded in this period."},
+			{Title: "Top pages", Rows: report.TopPages, Empty: "No pages were viewed in this period."},
+			{Title: "Top sources", Rows: report.TopSources, Empty: "No referrers were recorded in this period."},
+			{Title: "Top countries", Rows: report.Countries, Empty: "No locations were recorded in this period."},
 		},
 		Primary: mail.Button{Label: "Open the dashboard", URL: report.DashboardURL},
 		Closing: fmt.Sprintf("Generated %s. You are receiving this because somebody added your address "+
 			"to this site's %s report.", generated, kind),
 	}
 
-	return render(content, map[string]string{
-		"Domain":       report.Domain,
-		"Kind":         kind,
-		"PeriodLabel":  report.PeriodLabel,
-		"DashboardURL": report.DashboardURL,
-		"GeneratedAt":  generated,
+	return render(content, []Assigned{
+		{"Domain", report.Domain},
+		{"Kind", kind},
+		{"PeriodLabel", report.PeriodLabel},
+		{"DashboardURL", report.DashboardURL},
+		{"GeneratedAt", generated},
 	})
 }
 
@@ -165,8 +139,6 @@ func RenderAlert(alert Alert, cycle string) (Rendered, error) {
 		Heading:    alert.Domain,
 		Body:       []string{alert.Headline, alert.Detail},
 
-		// The same block the report uses for its metrics. An observed count
-		// against the threshold that fired is two figures, not a new shape.
 		Figures: []mail.Figure{
 			{Label: "Observed", Value: strconv.Itoa(alert.Observed)},
 			{Label: "Threshold", Value: strconv.Itoa(alert.Threshold)},
@@ -176,65 +148,37 @@ func RenderAlert(alert Alert, cycle string) (Rendered, error) {
 			"will not repeat every hour.", triggered),
 	}
 
-	return render(content, map[string]string{
-		"Domain":       alert.Domain,
-		"Kind":         kind,
-		"Headline":     alert.Headline,
-		"Detail":       alert.Detail,
-		"DashboardURL": alert.DashboardURL,
-		"TriggeredAt":  triggered,
+	return render(content, []Assigned{
+		{"Domain", alert.Domain},
+		{"Kind", kind},
+		{"Headline", alert.Headline},
+		{"Detail", alert.Detail},
+		{"DashboardURL", alert.DashboardURL},
+		{"TriggeredAt", triggered},
 	})
 }
 
-// figuresOf converts this package's figures to the layout's.
+// render turns content into both bodies with every silent failure turned into
+// a loud one.
 //
-// The two structs are the same shape and stay separate on purpose: internal/mail
-// must not import internal/reports, and a report is built long before anybody
-// decides how it is laid out.
-func figuresOf(figures []Figure) []mail.Figure {
-	converted := make([]mail.Figure, 0, len(figures))
-
-	for _, figure := range figures {
-		converted = append(converted, mail.Figure{
-			Label:     figure.Label,
-			Value:     figure.Value,
-			Change:    figure.Change,
-			Direction: figure.Direction,
-		})
-	}
-
-	return converted
-}
-
-// rowsOf converts a top-N list to layout rows.
-func rowsOf(entries []Entry) []mail.Row {
-	rows := make([]mail.Row, 0, len(entries))
-
-	for _, entry := range entries {
-		rows = append(rows, mail.Row{Label: entry.Label, Value: entry.Value})
-	}
-
-	return rows
-}
-
-// render turns content into both bodies with every silent failure turned into a
-// loud one.
+// The required list names the values whose absence is invisible in a mail
+// client. Each is checked before rendering, because afterwards a value nothing
+// assigned is indistinguishable from one that is legitimately empty. Every link
+// is then looked for in the rendered HTML, which is what catches a URL
+// html/template refused to trust and blanked into a dead href.
 //
-// The required map is the list of values whose absence is invisible in a mail
-// client — a dashboard link that renders as a dead href being the one that
-// matters. Each is checked before rendering, because afterwards an unassigned
-// value is indistinguishable from one that is legitimately empty. The scan for
-// the two markers afterwards catches what a nil produces from inside a slice,
-// where there is no field to check.
+// Nothing scans the bodies for a marker. A page path is written by a visitor,
+// so a scan for a literal like "<no value>" is a string one crafted page view
+// could use to stop a site's reports rendering for good.
 //
 // The HTML is wrapped here rather than only when it is encoded. The log
 // transport writes this string straight to disk and the Slack fallback reads
 // it, so wrapping at the point of generation means every consumer sees a body
 // that already obeys the 998-octet line limit.
-func render(content mail.Content, required map[string]string) (Rendered, error) {
-	for name, value := range required {
-		if strings.TrimSpace(value) == "" {
-			return Rendered{}, fmt.Errorf("%w: %s was assigned nothing", ErrUndefinedVariable, name)
+func render(content mail.Content, required []Assigned) (Rendered, error) {
+	for _, value := range required {
+		if strings.TrimSpace(value.Value) == "" {
+			return Rendered{}, fmt.Errorf("%w: %s was assigned nothing", ErrUndefinedVariable, value.Name)
 		}
 	}
 
@@ -243,13 +187,14 @@ func render(content mail.Content, required map[string]string) (Rendered, error) 
 		return Rendered{}, fmt.Errorf("%w: %s", ErrUndefinedVariable, err)
 	}
 
-	text := content.Text()
+	for _, button := range append([]mail.Button{content.Primary}, content.Secondary...) {
+		if button.URL == "" {
+			continue
+		}
 
-	for _, body := range []string{html, text} {
-		for _, marker := range []string{missingValue, blankedValue} {
-			if strings.Contains(body, marker) {
-				return Rendered{}, fmt.Errorf("%w: the rendered body contains %s", ErrUndefinedVariable, marker)
-			}
+		if !strings.Contains(html, `href="`+template.HTMLEscapeString(button.URL)+`"`) {
+			return Rendered{}, fmt.Errorf("%w: %q did not survive into the %s button, which now points at %s",
+				ErrUndefinedVariable, button.URL, button.Label, blankedValue)
 		}
 	}
 
@@ -259,7 +204,14 @@ func render(content mail.Content, required map[string]string) (Rendered, error) 
 		return Rendered{}, fmt.Errorf("reports: the rendered body has a %d-octet line, over the SMTP limit", longest)
 	}
 
-	return Rendered{Subject: content.Subject, HTML: wrapped, Text: text}, nil
+	return Rendered{Subject: content.Subject, HTML: wrapped, Text: content.Text()}, nil
+}
+
+// Assigned is one named value the guard above refuses to render without. It is
+// a slice rather than a map so two blanks always name the same one.
+type Assigned struct {
+	Name  string
+	Value string
 }
 
 // titleOf capitalises a kind for a subject line, without pulling in a
