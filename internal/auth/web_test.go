@@ -29,6 +29,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 	"github.com/pquerna/otp/totp"
 )
 
@@ -2316,4 +2317,102 @@ func TestTheVerificationGateAdvertisesNothing(t *testing.T) {
 			t.Errorf("the verification gate carries %q", unwanted)
 		}
 	}
+}
+
+// TestTheClockSelectShowsTheDialYouAreOn covers the whole point of offering two
+// options rather than three.
+//
+// "Follow my device" names an outcome nobody can picture — most people could
+// not say what their own operating system is set to. So the form offers the two
+// dials, pre-selects the one this reader is actually on, and saving pins it.
+// Until then the stored value is unpinned and follows the browser.
+func TestTheClockSelectShowsTheDialYouAreOn(t *testing.T) {
+	app := newTestApp(t)
+	c := registerAndVerify(t, app)
+
+	// A fresh account is unpinned, so the form follows the browser. This one
+	// says twelve.
+	c.http.Jar.SetCookies(mustParseURL(t, c.server.URL),
+		[]*http.Cookie{{Name: timefmt.CookieName, Value: timefmt.Cycle12}})
+
+	// Scoped to the clock control, because the theme select beside it has a
+	// "system" option of its own and always will.
+	clock := clockSelect(c.body("/settings"))
+
+	if strings.Contains(clock, `value="system"`) {
+		t.Fatalf("the clock select still offers a follow-my-device option:\n%s", clock)
+	}
+
+	if !strings.Contains(clock, `<option value="12" selected>`) {
+		t.Fatalf("the form did not pre-select the dial this browser is on:\n%s", clock)
+	}
+
+	// Saving the form pins the dial, so it stops following the browser.
+	response := c.post("/settings/profile", url.Values{
+		"name":        {"Person"},
+		"theme":       {"system"},
+		"time_format": {"24"},
+	})
+	closeResponseBody(t, response)
+
+	// The browser still says twelve, and is now ignored.
+	after := clockSelect(c.body("/settings"))
+	if !strings.Contains(after, `<option value="24" selected>`) {
+		t.Fatalf("a saved dial did not stick against a disagreeing browser:\n%s", after)
+	}
+}
+
+// TestSavingTheProfilePinsTheDialTheReaderSaw covers the form posting a value
+// we never sent. It has to pin what they were looking at rather than silently
+// leaving the account unpinned, or a save would appear to do nothing.
+func TestSavingTheProfilePinsTheDialTheReaderSaw(t *testing.T) {
+	app := newTestApp(t)
+	c := registerAndVerify(t, app)
+
+	c.http.Jar.SetCookies(mustParseURL(t, c.server.URL),
+		[]*http.Cookie{{Name: timefmt.CookieName, Value: timefmt.Cycle12}})
+
+	response := c.post("/settings/profile", url.Values{
+		"name":        {"Person"},
+		"theme":       {"system"},
+		"time_format": {"h12"},
+	})
+	closeResponseBody(t, response)
+
+	user, err := app.store.UserByEmail(context.Background(), "person@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if user.TimeFormat != timefmt.Cycle12 {
+		t.Fatalf("a junk post stored %q, want the dial the reader was looking at", user.TimeFormat)
+	}
+}
+
+// clockSelect trims a settings page down to the time-format control, so a
+// failure prints the three lines that matter instead of the whole screen.
+func clockSelect(page string) string {
+	start := strings.Index(page, `name="time_format"`)
+	if start < 0 {
+		return "the time_format select is not on the page at all"
+	}
+
+	end := strings.Index(page[start:], "</select>")
+	if end < 0 {
+		return page[start:]
+	}
+
+	return page[start : start+end]
+}
+
+// mustParseURL parses a test server's own address or fails the test.
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return parsed
 }

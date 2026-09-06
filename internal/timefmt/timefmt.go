@@ -22,9 +22,13 @@ import (
 	"time"
 )
 
-// The three values a stored preference can hold. System is the default a new
-// account is created with, and the only one that has to be resolved before it
-// can be used.
+// The three values a stored preference can hold.
+//
+// System means "nobody has pinned a dial yet" and is what a new account starts
+// on. It is never offered on the settings form: nobody can predict what their
+// own device is set to, so a "follow my device" row names an outcome the reader
+// cannot picture. The form shows the two dials with the one they are on already
+// selected, and saving writes that dial explicitly.
 const (
 	System  = "system"
 	Cycle12 = "12"
@@ -89,8 +93,8 @@ func FromCookie(r *http.Request) string {
 
 // Normalise reduces a posted or stored value to one this package understands,
 // so an unrecognised string can never reach the database. Anything that is not
-// an explicit dial becomes "system", which is the safe answer because it defers
-// to something the reader actually chose.
+// an explicit dial becomes "system" — the unpinned state, which defers to the
+// device rather than picking a dial on somebody's behalf.
 func Normalise(value string) string {
 	switch strings.TrimSpace(value) {
 	case Cycle12:
