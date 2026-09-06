@@ -8,10 +8,12 @@
 
 // Package appui holds the chrome every signed-in server-rendered screen wears.
 //
-// Those screens are split across two packages for reasons that are about
+// Those screens are split across several packages for reasons that are about
 // handlers, not about what a reader sees: to them it is one product. So the top
 // header, the settings section list and the card styles live here, in a package
-// both can import, rather than being written twice and drifting.
+// all of them import, rather than being written more than once and drifting.
+// The stylesheet those classes are compiled into lives in internal/assets,
+// which is a leaf and can therefore also be imported by the dashboard.
 package appui
 
 import (

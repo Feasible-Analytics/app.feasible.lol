@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/assets"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/billing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
@@ -258,8 +259,10 @@ func TestBillingWearsTheApplicationChrome(t *testing.T) {
 
 	for _, want := range []string{
 		`name="viewport" content="width=device-width, initial-scale=1"`,
-		// The application's compiled stylesheet, not one of this package's own.
-		`href="/app/assets/app.css"`,
+		// The application's compiled stylesheet, not one of this package's own,
+		// and addressed by its content digest so a deploy cannot be served
+		// against a cached one.
+		`href="` + assets.URL("app.css") + `"`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the billing screen is missing %q", want)

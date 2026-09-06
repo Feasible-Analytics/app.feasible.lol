@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/assets"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/avatar"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/destructive"
@@ -529,7 +530,7 @@ func (h *Handler) routes() *http.ServeMux {
 
 	// The static assets. They are served from the binary, so a release has
 	// nothing to copy alongside it and no CDN to be blocked by.
-	mux.Handle("GET /app/assets/", http.StripPrefix("/app/assets/", assetHandler()))
+	mux.Handle("GET "+assets.UIPrefix, http.StripPrefix(assets.UIPrefix, assets.Handler()))
 
 	// Signed out.
 	mux.HandleFunc("GET /{$}", h.handleRoot)

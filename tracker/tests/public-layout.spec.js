@@ -16,7 +16,7 @@ import { expect, test } from "@playwright/test";
 
 // The application's compiled stylesheet, the same file the binary serves at
 // /app/assets/app.css. It is the CSS that decides whether these screens fit.
-const css = readFileSync(new URL("../../internal/auth/assets/app.css", import.meta.url), "utf8");
+const css = readFileSync(new URL("../../internal/assets/ui/app.css", import.meta.url), "utf8");
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const fixtureDir = mkdtempSync(join(tmpdir(), "feasible-billing-pages-"));

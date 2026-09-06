@@ -10,9 +10,7 @@ package auth
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"embed"
-	"encoding/hex"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -24,21 +22,19 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/appui"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/assets"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/avatar"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
 
-// templateFS and assetFS hold the interface. Both are embedded because a
+// templateFS holds the interface. It is embedded because a
 // release is one binary: an assets directory that has to be copied next to it
 // is a directory that will be missing on somebody's server.
 //
 //go:embed templates
 var templateFS embed.FS
-
-//go:embed assets
-var assetFS embed.FS
 
 // views is every page, pre-parsed. Each page gets its own template set
 // containing the layout, every partial and that one page, because two pages
@@ -344,6 +340,11 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, p 
 // purpose: logic in a template is logic no test covers.
 func templateFuncs() template.FuncMap {
 	return template.FuncMap{
+		// asset addresses one of the files every server-rendered screen loads.
+		// The digest is never typed by hand: a URL that says immutable and does
+		// not change with the bytes is a page served against the wrong CSS.
+		"asset": assets.URL,
+
 		// url carries the current language through an internal link or form.
 		"url": func(locale, target string) string {
 			return i18n.LocalURL(target, locale)
@@ -574,63 +575,6 @@ func sparklinePath(series []int64) template.HTMLAttr {
 	}
 
 	return template.HTMLAttr(b.String())
-}
-
-// assetHandler serves the embedded CSS and JavaScript.
-//
-// The URLs carry no fingerprint, so a cache lifetime is a promise the content
-// will not change — and a deploy breaks it. A browser holding yesterday's
-// stylesheet against today's markup does not render an old page; it renders a
-// broken one, and a reload does not always clear it. So the answer carries an
-// ETag over the bytes and asks to be revalidated every time: one conditional
-// request, almost always answered 304, and a new build picked up at once.
-func assetHandler() http.Handler {
-	sub, err := fs.Sub(assetFS, "assets")
-	if err != nil {
-		panic(fmt.Sprintf("auth: embedded assets are missing: %v", err))
-	}
-
-	tags := assetETags(sub)
-	files := http.FileServer(http.FS(sub))
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The tag is set before delegating because net/http checks
-		// If-None-Match against whatever is already on the response.
-		if tag, ok := tags[strings.TrimPrefix(path.Clean(r.URL.Path), "/")]; ok {
-			w.Header().Set("ETag", tag)
-		}
-
-		w.Header().Set("Cache-Control", "public, no-cache")
-		files.ServeHTTP(w, r)
-	})
-}
-
-// assetETags hashes every embedded asset once, at start-up. The files cannot
-// change while the process runs, so hashing them per request would be work
-// repeated for an answer that is already known.
-func assetETags(assets fs.FS) map[string]string {
-	tags := map[string]string{}
-
-	err := fs.WalkDir(assets, ".", func(name string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() {
-			return err
-		}
-
-		body, err := fs.ReadFile(assets, name)
-		if err != nil {
-			return err
-		}
-
-		sum := sha256.Sum256(body)
-		tags[name] = `"` + hex.EncodeToString(sum[:16]) + `"`
-
-		return nil
-	})
-	if err != nil {
-		panic(fmt.Sprintf("auth: embedded assets could not be read: %v", err))
-	}
-
-	return tags
 }
 
 // chartWidth and chartHeight are the drawing box for a site card's chart. Like
