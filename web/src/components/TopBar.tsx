@@ -686,7 +686,9 @@ function CurrentVisitors({
 	live: boolean;
 	onOpen: () => void;
 }) {
-	const stats = useStats(domain, currentVisitorsRequest(filters));
+	// Quiet: this reads on a timer rather than because anybody asked, so it must
+	// never move the page-level loading bar.
+	const stats = useStats(domain, currentVisitorsRequest(filters), true, { quiet: true });
 
 	useInterval(stats.reload, 30_000);
 

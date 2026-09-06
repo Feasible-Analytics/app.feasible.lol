@@ -84,9 +84,12 @@ export function Realtime({ domain, filters }: Props) {
 		exact: true,
 	};
 
-	const current = useStats(domain, domain ? currentBody : null);
-	const totals = useStats(domain, domain ? windowBody : null);
-	const graph = useStats(domain, domain ? graphBody : null);
+	// All three are quiet: the live view refreshes itself every few seconds, and
+	// a page-level loading bar that reappears on that cadence for as long as the
+	// screen is open says the page is busy when nobody has touched it.
+	const current = useStats(domain, domain ? currentBody : null, true, { quiet: true });
+	const totals = useStats(domain, domain ? windowBody : null, true, { quiet: true });
+	const graph = useStats(domain, domain ? graphBody : null, true, { quiet: true });
 
 	useInterval(() => {
 		current.reload();

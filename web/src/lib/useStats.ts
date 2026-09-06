@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { QueryError, query } from "../api/client";
 import type { StatsRequest, StatsResponse } from "../api/types";
 import { t } from "./i18n";
+import { beginRequest } from "./loading";
 
 /** RemoteState is what every hook here hands back: the last answer, whether a
  *  newer one is on its way, and the failure if there was one. */
@@ -23,6 +24,14 @@ export interface RemoteState<T> {
 	/** Bumping this re-runs the request without changing the question, which is
 	 *  what the current-visitors poll and the error state's Retry both need. */
 	reload: () => void;
+}
+
+/** RemoteOptions is how a caller opts out of the page-level loading bar. */
+export interface RemoteOptions {
+	/** A quiet request never moves the page-level bar. It is for work nobody
+	 *  asked for — the thirty-second polls — where a bar appearing on a timer
+	 *  says the page is busy when the reader has done nothing at all. */
+	quiet?: boolean;
 }
 
 export interface Stats extends RemoteState<StatsResponse> {
@@ -43,8 +52,16 @@ export interface Stats extends RemoteState<StatsResponse> {
  * card collapsing to a spinner every time the date range moves. `enabled` is
  * what makes a below-the-fold card lazy: it stays false until the card is near
  * the viewport, so the initial paint costs four requests rather than eight.
+ *
+ * Every request the dashboard makes goes through here, so this is also where
+ * the page-level loading bar is counted in and out.
  */
-export function useRemote<T>(key: string, enabled: boolean, load: (signal: AbortSignal) => Promise<T>): RemoteState<T> {
+export function useRemote<T>(
+	key: string,
+	enabled: boolean,
+	load: (signal: AbortSignal) => Promise<T>,
+	options: RemoteOptions = {},
+): RemoteState<T> {
 	const [data, setData] = useState<T | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -52,15 +69,24 @@ export function useRemote<T>(key: string, enabled: boolean, load: (signal: Abort
 	const [nonce, setNonce] = useState(0);
 
 	// The loader is read through a ref so a fresh closure on every render does
-	// not count as a new question.
+	// not count as a new question. Quiet rides along for the same reason: it
+	// describes the caller, not the question, so changing it must not re-ask.
 	const loader = useRef(load);
 	loader.current = load;
+
+	const quiet = useRef(options.quiet === true);
+	quiet.current = options.quiet === true;
 
 	useEffect(() => {
 		if (!enabled) return;
 
 		const controller = new AbortController();
 		let live = true;
+
+		// Released from both paths — the promise settling and the effect being
+		// torn down — because neither one alone covers an abort. Whichever
+		// arrives first counts and the release ignores the second.
+		const release = beginRequest(quiet.current);
 
 		setLoading(true);
 		setError(null);
@@ -82,11 +108,13 @@ export function useRemote<T>(key: string, enabled: boolean, load: (signal: Abort
 				setError(err instanceof Error ? err.message : t("dashboard.error.query_failed"));
 				setErrorCode(err instanceof QueryError ? err.code : "");
 				setLoading(false);
-			});
+			})
+			.finally(release);
 
 		return () => {
 			live = false;
 			controller.abort();
+			release();
 		};
 	}, [key, enabled, nonce]);
 
@@ -101,11 +129,14 @@ export function useRemote<T>(key: string, enabled: boolean, load: (signal: Abort
  * breakdown takes seconds today, and a single combined request would mean the
  * entire page waited for the slowest card on it.
  */
-export function useStats(domain: string, body: StatsRequest | null, enabled = true): Stats {
+export function useStats(domain: string, body: StatsRequest | null, enabled = true, options: RemoteOptions = {}): Stats {
 	const key = body ? JSON.stringify(body) : "";
 
-	const remote = useRemote<StatsResponse>(`${domain}|${key}`, enabled && domain !== "" && key !== "", (signal) =>
-		query(domain, JSON.parse(key) as StatsRequest, signal),
+	const remote = useRemote<StatsResponse>(
+		`${domain}|${key}`,
+		enabled && domain !== "" && key !== "",
+		(signal) => query(domain, JSON.parse(key) as StatsRequest, signal),
+		options,
 	);
 
 	return { ...remote, exactFallback: remote.errorCode === "sampling_requires_exact" };

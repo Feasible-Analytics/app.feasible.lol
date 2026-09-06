@@ -198,6 +198,7 @@
   "dashboard.group.devices": "Devices",
   "dashboard.group.systems": "Systems",
   "dashboard.infodot.label": "Why this number looks wrong",
+  "dashboard.loading.page": "Updating the dashboard. The numbers on screen are from the previous report.",
   "dashboard.locked.billing": "Open billing",
   "dashboard.locked.export": "Export data",
   "dashboard.locked.title": "Your dashboard is locked",
