@@ -8,9 +8,11 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
 import type { Goal, JourneyAnchor } from "../api/types";
-import { anchorKey, behaviorCaveat, behaviorEnabled, filterAnchors, goalFilter, goalsPrompt } from "./GoalsCard";
+import { PanelFrame, anchorKey, behaviorCaveat, behaviorEnabled, filterAnchors, goalFilter, goalsPrompt, hiddenGoalsNote } from "./GoalsCard";
 
 // The catalogue is read once from the page, so it is stubbed before any test
 // asks for a string rather than inside the one test that needs it.
@@ -22,6 +24,7 @@ globalThis.document = {
 				"dashboard.behavior.goals.caveat": "Unique conversions count each visitor once.",
 				"dashboard.behavior.funnels.caveat": "Steps are measured against the first step.",
 				"dashboard.behavior.partial": "Reporting starts {from}, when this configuration became measurable.",
+				"dashboard.goals.hidden": "Showing {shown} of {configured} goals. The rest had no conversions in this period.",
 			},
 		}),
 	}),
@@ -136,4 +139,87 @@ test("one converted goal is enough to render the table", () => {
 	// A single conversion among a wall of zeroes is exactly the case the tab
 	// hides rows for, so it must reach the table rather than an empty state.
 	assert.equal(goalsPrompt([goalRow(0, true), goalRow(0), goalRow(1)]), "rows");
+});
+
+test("the hidden-goals note counts what the table is not showing", () => {
+	assert.equal(
+		hiddenGoalsNote(1, 9),
+		"Showing 1 of 9 goals. The rest had no conversions in this period.",
+	);
+});
+
+test("no note is written when every configured goal is on screen", () => {
+	assert.equal(hiddenGoalsNote(9, 9), undefined);
+});
+
+test("the note sits in the footer beside the link, not above the table", () => {
+	const markup = renderToStaticMarkup(
+		createElement(PanelFrame, {
+			note: hiddenGoalsNote(1, 9),
+			footer: createElement("a", { href: "/settings" }, "Manage goals \u2192"),
+			children: createElement("table", null, "rows"),
+		}),
+	);
+
+	const footer = markup.slice(markup.indexOf("<footer"));
+
+	assert.match(footer, /Showing 1 of 9 goals/, "the note belongs in the footer");
+	assert.doesNotMatch(markup.slice(0, markup.indexOf("<footer")), /Showing 1 of 9 goals/,
+		"nothing may push the table down with the note");
+	assert.ok(footer.indexOf("Showing 1 of 9") < footer.indexOf("Manage goals"),
+		"the note is left of the link");
+});
+
+test("exactly one link to the settings page renders beside the note", () => {
+	const markup = renderToStaticMarkup(
+		createElement(PanelFrame, {
+			note: hiddenGoalsNote(1, 9),
+			footer: createElement("a", { href: "/settings" }, "Manage goals \u2192"),
+			children: createElement("table", null, "rows"),
+		}),
+	);
+
+	assert.equal(markup.split('href="/settings"').length - 1, 1);
+});
+
+test("a footer with nothing hidden holds only the link", () => {
+	const markup = renderToStaticMarkup(
+		createElement(PanelFrame, {
+			note: hiddenGoalsNote(9, 9),
+			footer: createElement("a", { href: "/settings" }, "Manage goals \u2192"),
+			children: createElement("table", null, "rows"),
+		}),
+	);
+
+	const footer = markup.slice(markup.indexOf("<footer"));
+
+	assert.doesNotMatch(footer, /Showing/);
+	assert.match(footer, /Manage goals/);
+});
+
+test("the note wraps rather than truncating on a narrow card", () => {
+	const markup = renderToStaticMarkup(
+		createElement(PanelFrame, {
+			note: hiddenGoalsNote(1, 9),
+			footer: createElement("a", { href: "/settings" }, "Manage goals \u2192"),
+			children: createElement("table", null, "rows"),
+		}),
+	);
+
+	const footer = markup.slice(markup.indexOf("<footer"));
+
+	assert.doesNotMatch(footer, /truncate|whitespace-nowrap|text-ellipsis/);
+	assert.match(footer, /min-h-\[42px\]/, "the strip keeps its reserved height");
+});
+
+test("panels with nothing to note render the footer they always did", () => {
+	const markup = renderToStaticMarkup(
+		createElement(PanelFrame, {
+			footer: createElement("a", { href: "/settings" }, "Manage properties \u2192"),
+			children: createElement("div", null, "values"),
+		}),
+	);
+
+	assert.match(markup, /<footer[^>]*>.*Manage properties/s);
+	assert.doesNotMatch(markup, /Showing/);
 });
