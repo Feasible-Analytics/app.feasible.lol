@@ -189,12 +189,12 @@ function GoalsPanel({
 	if (report.error) return <PanelFailure state={report} />;
 	if (!report.data) return <PanelLoading label={t("dashboard.goals.loading")} />;
 
+	const strip = goalsFooter(prompt, rows.length, configured.length, settingsURL);
+
 	return (
 		<PanelFrame
-			// The empty states carry their own call to action, so the footer link
-			// would be a second button to the same page a few inches below it.
-			footer={settingsURL && prompt === "rows" ? <a href={settingsURL} className="text-xs font-medium text-muted transition-colors hover:text-accent-ink">{t("dashboard.behavior.goals.manage")} →</a> : undefined}
-			note={prompt === "rows" ? hiddenGoalsNote(rows.length, configured.length) : undefined}
+			footer={strip.manageURL && <a href={strip.manageURL} className="shrink-0 text-xs font-medium text-muted transition-colors hover:text-accent-ink">{t("dashboard.behavior.goals.manage")} →</a>}
+			note={strip.note}
 		>
 			{prompt !== "rows" ? (
 				<GoalsEmpty prompt={prompt} settingsURL={settingsURL} />
@@ -466,11 +466,24 @@ export function hiddenGoalsNote(shown: number, configured: number): string | und
 	return t("dashboard.goals.hidden", { shown: String(shown), configured: String(configured) });
 }
 
-/** PanelFrame pins optional management navigation to the bottom, with room for
- * a note beside it — the strip is reserved whether or not it holds anything, so
- * context about what is not on screen costs no height there. */
-export function PanelFrame({ children, footer, note }: { children: React.ReactNode; footer?: React.ReactNode; note?: React.ReactNode }) {
-	return <div className="flex h-full min-h-[350px] flex-col"><div className="min-h-0 flex-1">{children}</div>{footer && <footer className="flex min-h-[42px] shrink-0 items-center justify-between gap-4 border-t border-line px-4 py-1.5 sm:px-5">{note ? <p className="text-[11px] text-muted">{note}</p> : <span />}{footer}</footer>}</div>;
+/** goalsFooter is what the Goals card puts in its footer strip.
+ *
+ * The note and the link are decided apart because a reader who cannot manage
+ * goals still has to be told that rows are missing. The empty states carry
+ * their own call to action, so a link there would be a second button to the
+ * same page a few inches below the first. */
+export function goalsFooter(prompt: GoalsPrompt, shown: number, configured: number, settingsURL?: string): { note?: string; manageURL?: string } {
+	if (prompt !== "rows") return {};
+
+	return { note: hiddenGoalsNote(shown, configured), manageURL: settingsURL };
+}
+
+/** PanelFrame pins optional management navigation to the bottom, and a note
+ * beside it in the strip that is reserved either way. The note carries the auto
+ * margin, so a footer holding only a link is laid out exactly as it is without
+ * one. */
+export function PanelFrame({ children, footer, note }: { children: React.ReactNode; footer?: React.ReactNode; note?: string }) {
+	return <div className="flex h-full min-h-[350px] flex-col"><div className="min-h-0 flex-1">{children}</div>{(footer || note) && <footer className="flex min-h-[42px] shrink-0 items-center gap-4 border-t border-line px-4 py-1.5 sm:px-5">{note && <p className="mr-auto text-[11px] text-muted">{note}</p>}{footer}</footer>}</div>;
 }
 
 /** BehaviorEmpty serves unconfigured and zero-result states without hiding tabs. */
