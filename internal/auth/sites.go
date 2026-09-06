@@ -270,20 +270,37 @@ func (s *Store) ListSites(ctx context.Context, accountID int64, order string) (o
 	return out, nil
 }
 
-// UpdateSiteGeneral changes the display name, the timezone and the public flag.
+// UpdateSiteGeneral changes the display name and the timezone.
+//
 // The domain is deliberately not here: changing it has a routing consequence
 // and a dual-write window, and bundling it with "rename this site" is how
-// somebody changes a domain by accident.
-func (s *Store) UpdateSiteGeneral(ctx context.Context, accountID, siteID int64, displayName, timezone string, isPublic bool) error {
+// somebody changes a domain by accident. Publishing is not here either — it is
+// owned by sharing.SetPublicForOwner, which re-checks the owner inside its
+// transaction so a request racing a site transfer cannot publish the new
+// owner's numbers.
+func (s *Store) UpdateSiteGeneral(ctx context.Context, accountID, siteID int64, displayName, timezone string) error {
 	if _, err := time.LoadLocation(timezone); err != nil {
 		return fmt.Errorf("auth: %q is not a timezone name", timezone)
 	}
 
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE sites SET display_name = ?, timezone = ?, is_public = ?, updated_at = ?
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE sites SET display_name = ?, timezone = ?, updated_at = ?
 		WHERE id = ? AND COALESCE(owner_team_id, account_id) = ?
-	`, strings.TrimSpace(displayName), timezone, isPublic, s.now().Unix(), siteID, accountID); err != nil {
+	`, strings.TrimSpace(displayName), timezone, s.now().Unix(), siteID, accountID)
+	if err != nil {
 		return fmt.Errorf("auth: update site: %w", err)
+	}
+
+	// The owner clause can match nothing — a site transferred out from under an
+	// open settings tab is the way that happens. Reporting a save that wrote no
+	// row is worse than an error, because the reader believes the new name took.
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("auth: update site: %w", err)
+	}
+
+	if changed == 0 {
+		return ErrNotFound
 	}
 
 	return nil

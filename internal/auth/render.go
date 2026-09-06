@@ -349,6 +349,14 @@ func templateFuncs() template.FuncMap {
 			return i18n.LocalURL(target, locale)
 		},
 
+		// site_path addresses one of the per-site screens owned by the settings
+		// package. It defers to appui so a link from a page rendered here and
+		// the same link in the settings navigation cannot spell the path two
+		// different ways.
+		"site_path": func(domain, action string) string {
+			return appui.SitePath(domain, action)
+		},
+
 		// t renders one catalogue string.
 		//
 		// The locale is the first argument rather than something the function

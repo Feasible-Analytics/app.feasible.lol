@@ -10,6 +10,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -377,5 +378,71 @@ func TestCommonTimezonesAreRealZones(t *testing.T) {
 		if _, err := time.LoadLocation(zone); err != nil {
 			t.Errorf("%q is not a loadable timezone: %v", zone, err)
 		}
+	}
+}
+
+// TestUpdateSiteGeneralLeavesPublishingAlone pins the split of ownership: the
+// General screen renames a site and moves its day boundary, and publishing is
+// Visibility's to write. Renaming a published site must not quietly take it
+// off the open internet.
+func TestUpdateSiteGeneralLeavesPublishingAlone(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	_, team, err := s.CreateUser(ctx, "a@example.com", "", "hash", "")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	site, err := s.CreateSite(ctx, team.ID, "example.com", "", "Etc/UTC")
+	if err != nil {
+		t.Fatalf("create site: %v", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, `UPDATE sites SET is_public = 1 WHERE id = ?`, site.ID); err != nil {
+		t.Fatalf("publish site: %v", err)
+	}
+
+	if err := s.UpdateSiteGeneral(ctx, team.ID, site.ID, "Renamed", "America/Los_Angeles"); err != nil {
+		t.Fatalf("update general: %v", err)
+	}
+
+	saved, err := s.SiteByID(ctx, team.ID, site.ID)
+	if err != nil {
+		t.Fatalf("read site: %v", err)
+	}
+
+	if saved.DisplayName != "Renamed" {
+		t.Errorf("want the new display name, got %q", saved.DisplayName)
+	}
+
+	if saved.Timezone != "America/Los_Angeles" {
+		t.Errorf("want the new timezone, got %q", saved.Timezone)
+	}
+
+	if !saved.IsPublic {
+		t.Error("saving General must not un-publish a site — Visibility owns that flag")
+	}
+}
+
+// TestUpdateSiteGeneralReportsAWriteThatMatchedNothing covers the owner clause
+// missing, which is what a site transferred out from under an open settings tab
+// looks like. Returning nil there would flash "Saved" over a row nobody wrote.
+func TestUpdateSiteGeneralReportsAWriteThatMatchedNothing(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	_, team, err := s.CreateUser(ctx, "a@example.com", "", "hash", "")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	site, err := s.CreateSite(ctx, team.ID, "example.com", "", "Etc/UTC")
+	if err != nil {
+		t.Fatalf("create site: %v", err)
+	}
+
+	if err := s.UpdateSiteGeneral(ctx, team.ID+1, site.ID, "Renamed", "Etc/UTC"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound when the owner clause matches nothing, got %v", err)
 	}
 }

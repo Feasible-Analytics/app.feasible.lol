@@ -588,7 +588,7 @@ func transferErrorMessage(err error) string {
 	}
 }
 
-// doSiteGeneral saves the display name, timezone, folder and public flag.
+// doSiteGeneral saves the display name, timezone and folder.
 func (h *Handler) doSiteGeneral(w http.ResponseWriter, r *http.Request) {
 	if !h.CheckFormToken(w, r) {
 		return
@@ -605,7 +605,7 @@ func (h *Handler) doSiteGeneral(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err := h.Store.UpdateSiteGeneral(r.Context(), team.ID, site.ID,
-		r.PostFormValue("display_name"), timezone, r.PostFormValue("is_public") == "1")
+		r.PostFormValue("display_name"), timezone)
 	if err != nil {
 		p := h.newPage(r, tr(r, "auth.title.site_settings", "site", site.Label()), "sites")
 		p.Settings = h.settingsShell(r, p, site, team.ID)
@@ -613,7 +613,12 @@ func (h *Handler) doSiteGeneral(w http.ResponseWriter, r *http.Request) {
 		p.Data["Timezones"] = CommonTimezones()
 		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
 		p.Data["DualWriteHours"] = int(DualWriteWindow.Hours())
-		p.Error = strings.TrimPrefix(err.Error(), "auth: ")
+
+		if errors.Is(err, ErrNotFound) {
+			p.Error = i18n.T(p.Lang, "auth.error.site_moved")
+		} else {
+			p.Error = strings.TrimPrefix(err.Error(), "auth: ")
+		}
 
 		h.render(w, r, "site_settings", p, http.StatusBadRequest)
 

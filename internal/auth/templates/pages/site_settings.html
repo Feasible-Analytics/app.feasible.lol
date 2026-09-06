@@ -61,13 +61,17 @@
     </select>
   </div>
 
-  <div class="flex items-center justify-between gap-4 border-t border-line px-6 py-4">
-    <span class="flex items-center gap-1.5 text-sm font-medium text-body">
-      <label for="is_public">{{ t $.Lang "auth.site_settings.public" }}</label>
-      <span class="cursor-help text-muted" title="{{ t $.Lang "auth.site_settings.public_help" }}" aria-label="{{ t $.Lang "auth.site_settings.public_help" }}">ⓘ</span>
+  <!-- Publishing is owned by Visibility, which shows the resulting address and
+       the consequence of turning it on. This row reads the flag and points at
+       that screen, so somebody who looks for the setting here still finds it. -->
+  <div class="flex flex-col gap-2 border-t border-line px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+    <span class="text-sm font-medium text-body">{{ t $.Lang "auth.site_settings.public" }}</span>
+    <span class="text-sm text-muted sm:text-right">
+      {{ if $site.IsPublic }}{{ t $.Lang "auth.site_settings.public_on" }}{{ else }}{{ t $.Lang "auth.site_settings.public_off" }}{{ end }}
+      &mdash;
+      <a href="{{ url $.Lang (site_path $site.Domain "sharing") }}"
+         class="font-medium text-accent-ink hover:text-accent-ink">{{ t $.Lang "auth.site_settings.public_manage" }} &rarr;</a>
     </span>
-    <input id="is_public" type="checkbox" name="is_public" value="1" {{ if $site.IsPublic }}checked{{ end }}
-           class="size-4 border-field text-accent-ink focus:ring-accent">
   </div>
 
   <!-- Save sits in the card, beside what it changes. One save at the foot of

@@ -1938,6 +1938,90 @@ func TestSiteSettingsChangeDomainAndDelete(t *testing.T) {
 	}
 }
 
+// TestGeneralSettingsPointAtVisibilityAndCannotPublish checks the one boundary
+// that matters after the checkbox came off this screen: a hand-rolled or stale
+// POST carrying is_public must not put a site's traffic on the open internet,
+// and somebody who looks for the setting here must still be sent to it.
+func TestGeneralSettingsPointAtVisibilityAndCannotPublish(t *testing.T) {
+	app := newTestApp(t)
+	c := registerAndVerify(t, app)
+
+	resp := c.post("/sites/new", url.Values{
+		"domain":   {"visible.example.com"},
+		"timezone": {"Etc/UTC"},
+	})
+	closeResponseBody(t, resp)
+
+	site, err := app.store.SiteByDomain(context.Background(), "visible.example.com")
+	if err != nil {
+		t.Fatalf("read site: %v", err)
+	}
+
+	path := "/sites/" + itoa(site.ID) + "/settings"
+	body := c.body(path)
+
+	if strings.Contains(body, `name="is_public"`) {
+		t.Error("the General screen must not carry a publishing control — Visibility owns it")
+	}
+
+	// The settings navigation already links to Visibility on this page, so the
+	// pointer row is only proved by the text that belongs to it and to nothing
+	// else on the screen.
+	row := generalRow(t, body, "Public dashboard")
+
+	if !strings.Contains(row, "Private") {
+		t.Errorf("the pointer row must say the dashboard is private, got %q", row)
+	}
+
+	if !strings.Contains(row, "/settings/sites/visible.example.com/sharing") {
+		t.Errorf("the pointer row must link to Visibility, got %q", row)
+	}
+
+	if !strings.Contains(row, "Manage on Visibility") {
+		t.Errorf("the pointer row must name where the setting lives, got %q", row)
+	}
+
+	resp = c.post(path, url.Values{
+		"display_name": {"Renamed"},
+		"timezone":     {"Etc/UTC"},
+		"is_public":    {"1"},
+	})
+	closeResponseBody(t, resp)
+
+	saved, err := app.store.SiteByID(context.Background(), site.AccountID, site.ID)
+	if err != nil {
+		t.Fatalf("read site: %v", err)
+	}
+
+	if saved.DisplayName != "Renamed" {
+		t.Errorf("the display name should still save, got %q", saved.DisplayName)
+	}
+
+	if saved.IsPublic {
+		t.Error("a posted is_public must be ignored, or a stale form can publish a site")
+	}
+}
+
+// generalRow returns the markup of the General card row carrying the given
+// label, so an assertion about one row cannot be satisfied by identical text
+// somewhere else on a long settings page.
+func generalRow(t *testing.T, body, label string) string {
+	t.Helper()
+
+	at := strings.Index(body, label)
+	if at < 0 {
+		t.Fatalf("no row labelled %q on the page", label)
+	}
+
+	rest := body[at:]
+	end := strings.Index(rest, "</div>")
+	if end < 0 {
+		t.Fatalf("row %q is not closed", label)
+	}
+
+	return rest[:end]
+}
+
 // TestOnboardingStatusFlips checks the poll the waiting screen runs: it says
 // waiting until traffic exists, and reports it once it does.
 func TestOnboardingStatusFlips(t *testing.T) {
