@@ -283,11 +283,24 @@ func (s *Store) UpdateSiteGeneral(ctx context.Context, accountID, siteID int64, 
 		return fmt.Errorf("auth: %q is not a timezone name", timezone)
 	}
 
-	if _, err := s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 		UPDATE sites SET display_name = ?, timezone = ?, updated_at = ?
 		WHERE id = ? AND COALESCE(owner_team_id, account_id) = ?
-	`, strings.TrimSpace(displayName), timezone, s.now().Unix(), siteID, accountID); err != nil {
+	`, strings.TrimSpace(displayName), timezone, s.now().Unix(), siteID, accountID)
+	if err != nil {
 		return fmt.Errorf("auth: update site: %w", err)
+	}
+
+	// The owner clause can match nothing — a site transferred out from under an
+	// open settings tab is the way that happens. Reporting a save that wrote no
+	// row is worse than an error, because the reader believes the new name took.
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("auth: update site: %w", err)
+	}
+
+	if changed == 0 {
+		return ErrNotFound
 	}
 
 	return nil

@@ -613,7 +613,12 @@ func (h *Handler) doSiteGeneral(w http.ResponseWriter, r *http.Request) {
 		p.Data["Timezones"] = CommonTimezones()
 		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
 		p.Data["DualWriteHours"] = int(DualWriteWindow.Hours())
-		p.Error = strings.TrimPrefix(err.Error(), "auth: ")
+
+		if errors.Is(err, ErrNotFound) {
+			p.Error = i18n.T(p.Lang, "auth.error.site_moved")
+		} else {
+			p.Error = strings.TrimPrefix(err.Error(), "auth: ")
+		}
 
 		h.render(w, r, "site_settings", p, http.StatusBadRequest)
 

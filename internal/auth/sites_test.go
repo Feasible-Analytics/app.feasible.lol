@@ -10,6 +10,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -382,8 +383,8 @@ func TestCommonTimezonesAreRealZones(t *testing.T) {
 
 // TestUpdateSiteGeneralLeavesPublishingAlone pins the split of ownership: the
 // General screen renames a site and moves its day boundary, and publishing is
-// Visibility's to write. A stale form posting is_public must not be able to put
-// a site's traffic on the open internet.
+// Visibility's to write. Renaming a published site must not quietly take it
+// off the open internet.
 func TestUpdateSiteGeneralLeavesPublishingAlone(t *testing.T) {
 	s, _ := newTestStore(t)
 	ctx := context.Background()
@@ -424,10 +425,10 @@ func TestUpdateSiteGeneralLeavesPublishingAlone(t *testing.T) {
 	}
 }
 
-// TestUpdateSiteGeneralRejectsANonZone checks the timezone guard, because a
-// name SQLite will happily store but Go cannot load re-buckets every chart into
-// an error on the next read.
-func TestUpdateSiteGeneralRejectsANonZone(t *testing.T) {
+// TestUpdateSiteGeneralReportsAWriteThatMatchedNothing covers the owner clause
+// missing, which is what a site transferred out from under an open settings tab
+// looks like. Returning nil there would flash "Saved" over a row nobody wrote.
+func TestUpdateSiteGeneralReportsAWriteThatMatchedNothing(t *testing.T) {
 	s, _ := newTestStore(t)
 	ctx := context.Background()
 
@@ -441,7 +442,7 @@ func TestUpdateSiteGeneralRejectsANonZone(t *testing.T) {
 		t.Fatalf("create site: %v", err)
 	}
 
-	if err := s.UpdateSiteGeneral(ctx, team.ID, site.ID, "Renamed", "Mars/Olympus_Mons"); err == nil {
-		t.Fatal("want an error for a name that is not a timezone")
+	if err := s.UpdateSiteGeneral(ctx, team.ID+1, site.ID, "Renamed", "Etc/UTC"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound when the owner clause matches nothing, got %v", err)
 	}
 }

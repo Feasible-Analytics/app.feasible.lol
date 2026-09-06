@@ -66,10 +66,10 @@
        that screen, so somebody who looks for the setting here still finds it. -->
   <div class="flex flex-col gap-2 border-t border-line px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
     <span class="text-sm font-medium text-body">{{ t $.Lang "auth.site_settings.public" }}</span>
-    <span class="text-sm text-muted sm:w-72">
+    <span class="text-sm text-muted sm:text-right">
       {{ if $site.IsPublic }}{{ t $.Lang "auth.site_settings.public_on" }}{{ else }}{{ t $.Lang "auth.site_settings.public_off" }}{{ end }}
       &mdash;
-      <a href="{{ url $.Lang (printf "/settings/sites/%s/sharing" $site.Domain) }}"
+      <a href="{{ url $.Lang (site_path $site.Domain "sharing") }}"
          class="font-medium text-accent-ink hover:text-accent-ink">{{ t $.Lang "auth.site_settings.public_manage" }} &rarr;</a>
     </span>
   </div>
