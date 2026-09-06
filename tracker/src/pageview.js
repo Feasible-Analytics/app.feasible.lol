@@ -6,7 +6,7 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-import { doc, loc, page } from "./state.js";
+import { doc, loc, page, stamp } from "./state.js";
 import { send, drain, refusal } from "./send.js";
 import { warn } from "./exclude.js";
 import * as engagement from "./engagement.js";
@@ -118,7 +118,8 @@ export function pageview(opts) {
 	const referrer = "r" in options ? options.r : doc.referrer;
 	if (referrer) event.r = referrer;
 
-	if (options.p) event.p = options.p;
+	const props = stamp(options.p);
+	if (props) event.p = props;
 
 	send(event, options.callback);
 }

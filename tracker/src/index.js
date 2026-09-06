@@ -6,7 +6,7 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-import { win } from "./state.js";
+import { win, globals } from "./state.js";
 import { resolve } from "./config.js";
 import { configure } from "./send.js";
 import { ignoreReason, warn } from "./exclude.js";
@@ -26,7 +26,10 @@ function api(name, options) {
 		return;
 	}
 
-	if (name === "pageview") pageview.pageview(options);
+	// init sets the properties every later event carries. It cannot reach a
+	// pageview already sent, and a site that needs the first one uses __fsp.
+	if (name === "init") globals.p = options?.p;
+	else if (name === "pageview") pageview.pageview(options);
 	else clicks.custom(name, options);
 }
 
@@ -64,6 +67,8 @@ if (reason) {
 	warn("not tracking — " + reason);
 } else {
 	configure(cfg.a, cfg);
+
+	globals.p = cfg.p;
 
 	// Engagement and the click handlers are wired before the first pageview so
 	// that an interaction on a page that is still deferred — prerendered, or

@@ -283,3 +283,92 @@ test("manual x bfcache: a restore re-fires only once a pageview was tracked", as
 	expect(pageviews).toHaveLength(2);
 	expect(pageviews[1].r).toContain("/manual.html");
 });
+
+// declareProperties sets the global before any of the page's own scripts run,
+// which is the only way to reproduce a site that declares them in an inline
+// script above the snippet.
+async function declareProperties(page, props) {
+	await page.addInitScript((values) => {
+		window.__fsp = values;
+	}, props);
+}
+
+// The snippet's queue is drained after the first pageview on purpose, so a site
+// that only used feasible('init') would miss it — and the first pageview is the
+// one that becomes the visit's entry properties. This is the assertion that
+// ordering makes easy to get wrong.
+test("a property declared before the snippet is on the first pageview", async ({ page }) => {
+	await declareProperties(page, { plan: "pro" });
+
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	const [first] = await settledCount(state, "pageview", 1);
+
+	expect(first.p).toEqual({ plan: "pro" });
+});
+
+// Declaring a property must not turn one visit into two. Double counting is the
+// failure the manual-mode workaround has and this feature exists to avoid.
+test("declaring properties still sends exactly one pageview", async ({ page }) => {
+	await declareProperties(page, { plan: "pro" });
+
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+	await page.waitForTimeout(300);
+
+	expect(named(state, "pageview")).toHaveLength(1);
+});
+
+test("declared properties reach an SPA route change", async ({ page }) => {
+	await declareProperties(page, { plan: "pro" });
+
+	const state = await collect(page);
+
+	await page.goto("/spa.html");
+	await settledCount(state, "pageview", 1);
+
+	await page.click("#push");
+	const pageviews = await settledCount(state, "pageview", 2);
+
+	expect(pageviews[1].p).toEqual({ plan: "pro" });
+});
+
+test("declared properties reach a bfcache restore", async ({ page }) => {
+	await declareProperties(page, { plan: "pro" });
+
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+
+	await restore(page);
+	const pageviews = await settledCount(state, "pageview", 2);
+
+	expect(pageviews[1].p).toEqual({ plan: "pro" });
+});
+
+// The runtime call is for a value that arrives after load — an SPA that learns
+// the plan from a fetch. It stamps what comes next and cannot reach what has
+// already gone, which is the whole reason the pre-snippet global also exists.
+test("a runtime init stamps the next pageview and does not resend the last", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/spa.html");
+	const [first] = await settledCount(state, "pageview", 1);
+
+	expect(first.p).toBeUndefined();
+
+	await page.evaluate(() => window.feasible("init", { p: { plan: "pro" } }));
+	await page.click("#push");
+
+	const pageviews = await settledCount(state, "pageview", 2);
+
+	expect(pageviews).toHaveLength(2);
+	expect(pageviews[1].p).toEqual({ plan: "pro" });
+
+	// The one already sent stays as it was sent.
+	expect(pageviews[0].p).toBeUndefined();
+});

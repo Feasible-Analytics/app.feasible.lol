@@ -6,7 +6,7 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-import { doc, loc, page } from "./state.js";
+import { doc, loc, page, stamp } from "./state.js";
 import { send, KEEPALIVE } from "./send.js";
 
 // The class prefix that tags an element for tracking.
@@ -102,7 +102,8 @@ export function custom(name, options) {
 		d: page.d,
 	};
 
-	if (opts.props) event.p = opts.props;
+	const props = stamp(opts.props);
+	if (props) event.p = props;
 	if (opts.revenue) event.$ = opts.revenue;
 	if (opts.interactive === false) event.i = false;
 
