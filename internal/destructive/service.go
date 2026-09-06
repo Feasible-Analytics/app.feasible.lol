@@ -280,10 +280,16 @@ var controlResetDisposition = map[string]resetDisposition{
 // account selected by its claim. Reset uses the explicit classification above;
 // full deletion still discovers and removes every site-scoped row.
 func (s *Service) eraseSite(ctx context.Context, operation claim) error {
-	account, err := s.Accounts.Open(ctx, operation.AccountID)
+	lease, err := s.Accounts.Acquire(ctx, operation.AccountID)
 	if err != nil {
 		return fmt.Errorf("destructive: open analytics: %w", err)
 	}
+
+	// Held until the last read: the handle behind it can be closed by the
+	// cache the moment nothing is using it.
+	defer lease.Release() //nolint:errcheck // the operation result is more useful than an unlock error
+
+	account := lease.Account
 
 	tx, err := account.Writer().BeginTx(ctx, nil)
 	if err != nil {

@@ -67,11 +67,11 @@ type Probe func(ctx context.Context) error
 type check struct {
 	name string
 
-	// observe reports a fact rather than a verdict. A probe can only say
-	// "working" or "broken", and some of what an operator needs is a number:
+	// observe reports numbers rather than a verdict. A probe can only say
+	// "working" or "broken", and some of what an operator needs is a count:
 	// how many account handles are open, how many were evicted. Set, it
 	// replaces the probe and the check can never fail.
-	observe func() string
+	observe func() map[string]int64
 
 	// required decides whether a failure keeps traffic away. Not everything
 	// this process needs is something it cannot serve without, and treating
@@ -102,10 +102,10 @@ func (s *Set) Optional(name string, probe Probe) {
 	s.add(check{name: name, required: false, probe: probe})
 }
 
-// Report registers an observation: something always reported and never a
-// reason to keep traffic away. It is how a counter reaches the health endpoint
-// without being dressed up as a dependency that can fail.
-func (s *Set) Report(name string, observe func() string) {
+// Report registers an observation: numbers always reported and never a reason
+// to keep traffic away. It is how a counter reaches the health endpoint without
+// being dressed up as a dependency that can fail.
+func (s *Set) Report(name string, observe func() map[string]int64) {
 	s.add(check{name: name, observe: observe})
 }
 
@@ -125,6 +125,11 @@ type Component struct {
 	// Detail carries the error when there was one. It is our own message about
 	// our own dependency, never anything a request supplied.
 	Detail string `json:"detail,omitempty"`
+
+	// Numbers is what an observation reports. It is a map of counts rather than
+	// a sentence because an operator graphs these, and a graph cannot read
+	// prose.
+	Numbers map[string]int64 `json:"numbers,omitempty"`
 }
 
 // Report is the whole answer, and the body of the readiness probe.
@@ -152,7 +157,7 @@ func (s *Set) Run(ctx context.Context) Report {
 		component := Component{Name: c.name, Status: StatusOK}
 
 		if c.observe != nil {
-			component.Detail = c.observe()
+			component.Numbers = c.observe()
 			report.Components = append(report.Components, component)
 
 			continue

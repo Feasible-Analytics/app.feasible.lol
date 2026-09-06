@@ -251,6 +251,7 @@ func buildRollupWorker(ctx context.Context, e *env, dataDir string) (*rollup.Wor
 	}
 
 	manager := accounts.NewManager(dataDir)
+	manager.MaxOpen = e.cfg.App.MaxOpenAccounts
 
 	worker := &rollup.Worker{
 		Accounts: manager,

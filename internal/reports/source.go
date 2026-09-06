@@ -110,17 +110,21 @@ func (q *QuerySource) now() time.Time {
 }
 
 // engine opens the site's account database and builds an engine over it.
-func (q *QuerySource) engine(ctx context.Context, site SiteRef) (*query.Engine, error) {
-	account, err := q.Accounts.Open(ctx, site.AccountID)
+//
+// The lease comes back with it and has to be held until the last query has run.
+// The engine holds the account's *sql.DB, and releasing early would let the
+// handle be closed underneath a query that has not been issued yet.
+func (q *QuerySource) engine(ctx context.Context, site SiteRef) (*query.Engine, *accounts.Lease, error) {
+	lease, err := q.Accounts.Acquire(ctx, site.AccountID)
 	if err != nil {
-		return nil, fmt.Errorf("reports: open account %d: %w", site.AccountID, err)
+		return nil, nil, fmt.Errorf("reports: open account %d: %w", site.AccountID, err)
 	}
 
-	engine := query.New(account.Reader())
+	engine := query.New(lease.Account.Reader())
 	engine.Now = q.now
 	engine.SampleThreshold = q.SampleThreshold
 
-	return engine, nil
+	return engine, lease, nil
 }
 
 // Period builds the whole snapshot for a closed window.
@@ -130,10 +134,12 @@ func (q *QuerySource) engine(ctx context.Context, site SiteRef) (*query.Engine, 
 // metric is how a multi-metric report ends up with page two of pages beside
 // page one of sources.
 func (q *QuerySource) Period(ctx context.Context, site SiteRef, from, to time.Time) (Snapshot, error) {
-	engine, err := q.engine(ctx, site)
+	engine, lease, err := q.engine(ctx, site)
 	if err != nil {
 		return Snapshot{}, err
 	}
+
+	defer lease.Release() //nolint:errcheck // the report is more useful than an unlock error
 
 	location := site.Location()
 
@@ -227,10 +233,12 @@ func (q *QuerySource) top(ctx context.Context, engine *query.Engine, site SiteRe
 // thirty-minute window, which is the session timeout — so "current" means the
 // same thing here as it does on the live pill on the dashboard.
 func (q *QuerySource) CurrentVisitors(ctx context.Context, site SiteRef) (int, error) {
-	engine, err := q.engine(ctx, site)
+	engine, lease, err := q.engine(ctx, site)
 	if err != nil {
 		return 0, err
 	}
+
+	defer lease.Release() //nolint:errcheck // the count is more useful than an unlock error
 
 	result, err := engine.Run(ctx, query.Query{
 		SiteIDs:   []int64{site.SiteID},
@@ -248,10 +256,12 @@ func (q *QuerySource) CurrentVisitors(ctx context.Context, site SiteRef) (int, e
 
 // VisitorsInLastHours counts unique visitors over a rolling window.
 func (q *QuerySource) VisitorsInLastHours(ctx context.Context, site SiteRef, hours int) (int, error) {
-	engine, err := q.engine(ctx, site)
+	engine, lease, err := q.engine(ctx, site)
 	if err != nil {
 		return 0, err
 	}
+
+	defer lease.Release() //nolint:errcheck // the count is more useful than an unlock error
 
 	location := site.Location()
 	now := q.now().In(location)

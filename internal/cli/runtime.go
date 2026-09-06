@@ -130,11 +130,17 @@ func ingestHealth(checks *health.Set, control *sql.DB, service *ingest.Service, 
 	// holds, and the two close counters are reported separately because rolled
 	// into one a box thrashing against its cap and a box quietly giving
 	// descriptors back look identical.
-	checks.Report("account_handles", func() string {
+	checks.Report("account_handles", func() map[string]int64 {
 		stats := manager.Stats()
 
-		return fmt.Sprintf("open=%d max=%d opens=%d evictions=%d idle_closes=%d overshoots=%d",
-			stats.Open, stats.Max, stats.Opens, stats.Evictions, stats.IdleCloses, stats.Overshoots)
+		return map[string]int64{
+			"open":        int64(stats.Open),
+			"max":         int64(stats.Max),
+			"opens":       stats.Opens,
+			"evictions":   stats.Evictions,
+			"idle_closes": stats.IdleCloses,
+			"overshoots":  stats.Overshoots,
+		}
 	})
 }
 

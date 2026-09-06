@@ -370,21 +370,10 @@ func (r *Recorder) Flush(ctx context.Context) (int, error) {
 	var firstErr error
 
 	for key, count := range counts {
-		account, err := r.Accounts.Open(ctx, key.accountID)
-		if err != nil {
+		if err := r.writeCount(ctx, key, count); err != nil {
 			firstErr = keepFirst(firstErr, err)
 			r.requeueCount(key, count)
-			continue
-		}
 
-		_, err = account.Writer().ExecContext(ctx, `
-			INSERT INTO ingest_health (site_id, observed_at, kind, reason, count)
-			VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT (site_id, observed_at, kind, reason) DO UPDATE SET count = count + excluded.count
-		`, key.siteID, key.observedAt, key.kind, key.reason, count)
-		if err != nil {
-			firstErr = keepFirst(firstErr, fmt.Errorf("health: write counts: %w", err))
-			r.requeueCount(key, count)
 			continue
 		}
 
@@ -392,73 +381,19 @@ func (r *Recorder) Flush(ctx context.Context) (int, error) {
 	}
 
 	for key, seen := range observed {
-		account, err := r.Accounts.Open(ctx, key.accountID)
+		wrote, err := r.writeObservations(ctx, key, seen)
+		written += wrote
+
 		if err != nil {
 			firstErr = keepFirst(firstErr, err)
-			r.requeueObservation(key, seen)
-			continue
-		}
-
-		for observedAt, count := range seen.buckets {
-			_, err = account.Writer().ExecContext(ctx, `
-				INSERT INTO ingest_observations
-					(site_id, observed_at, kind, value, count, first_seen_at, last_seen_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT (site_id, observed_at, kind, value) DO UPDATE SET
-					count = count + excluded.count,
-					last_seen_at = MAX(last_seen_at, excluded.last_seen_at)
-			`, key.siteID, observedAt, key.kind, key.value, count, observedAt, observedAt)
-			if err != nil {
-				firstErr = keepFirst(firstErr, fmt.Errorf("health: write observations: %w", err))
-				r.requeueObservation(key, &observation{buckets: map[int64]int64{observedAt: count}})
-				continue
-			}
-
-			written++
 		}
 	}
 
 	for siteID, request := range last {
-		account, err := r.Accounts.Open(ctx, request.accountID)
-		if err != nil {
+		if err := r.writeLast(ctx, siteID, request); err != nil {
 			firstErr = keepFirst(firstErr, err)
 			r.requeueLast(siteID, request)
-			continue
 		}
-
-		encoded, err := json.Marshal(request.debug)
-		if err != nil {
-			firstErr = keepFirst(firstErr, fmt.Errorf("health: encode debug: %w", err))
-			r.requeueLast(siteID, request)
-			continue
-		}
-
-		_, err = account.Writer().ExecContext(ctx, `
-			INSERT INTO ingest_last_request
-				(site_id, received_at, client_ip, client_ip_source, trusted_proxy,
-				 hostname, pathname, user_agent, tracker_version, drop_reason, debug)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT (site_id) DO UPDATE SET
-				received_at = excluded.received_at,
-				client_ip = excluded.client_ip,
-				client_ip_source = excluded.client_ip_source,
-				trusted_proxy = excluded.trusted_proxy,
-				hostname = excluded.hostname,
-				pathname = excluded.pathname,
-				user_agent = excluded.user_agent,
-				tracker_version = excluded.tracker_version,
-				drop_reason = excluded.drop_reason,
-				debug = excluded.debug
-		`, siteID, request.at, request.debug.ClientIP, request.debug.ClientIPSource,
-			boolToInt(request.debug.TrustedProxy), request.debug.Hostname, request.debug.Pathname,
-			request.userAgent, request.version, request.debug.DropReason, string(encoded))
-		if err != nil {
-			firstErr = keepFirst(firstErr, fmt.Errorf("health: write last request: %w", err))
-			r.requeueLast(siteID, request)
-			continue
-		}
-
-		written++
 	}
 
 	return written, firstErr
@@ -554,4 +489,105 @@ func boolToInt(value bool) int {
 	}
 
 	return 0
+}
+
+// writeCount writes one bucket of dropped-event counts.
+//
+// One account per call, with the lease released before the next: a flush walks
+// hundreds of accounts, and holding every lease to the end of the loop would
+// pin every handle the cache is meant to be bounding.
+func (r *Recorder) writeCount(ctx context.Context, key countKey, count int64) error {
+	lease, err := r.Accounts.Acquire(ctx, key.accountID)
+	if err != nil {
+		return err
+	}
+
+	defer lease.Release() //nolint:errcheck // the write result is more useful than an unlock error
+
+	if _, err := lease.Account.Writer().ExecContext(ctx, `
+		INSERT INTO ingest_health (site_id, observed_at, kind, reason, count)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (site_id, observed_at, kind, reason) DO UPDATE SET count = count + excluded.count
+	`, key.siteID, key.observedAt, key.kind, key.reason, count); err != nil {
+		return fmt.Errorf("health: write counts: %w", err)
+	}
+
+	return nil
+}
+
+// writeObservations writes one key's buckets and says how many landed. A bucket
+// that fails is requeued on its own, so one bad row does not cost the rest.
+func (r *Recorder) writeObservations(ctx context.Context, key observationKey, seen *observation) (int, error) {
+	lease, err := r.Accounts.Acquire(ctx, key.accountID)
+	if err != nil {
+		r.requeueObservation(key, seen)
+
+		return 0, err
+	}
+
+	defer lease.Release() //nolint:errcheck // the write result is more useful than an unlock error
+
+	written := 0
+
+	var firstErr error
+
+	for observedAt, count := range seen.buckets {
+		if _, err := lease.Account.Writer().ExecContext(ctx, `
+			INSERT INTO ingest_observations
+				(site_id, observed_at, kind, value, count, first_seen_at, last_seen_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (site_id, observed_at, kind, value) DO UPDATE SET
+				count = count + excluded.count,
+				last_seen_at = MAX(last_seen_at, excluded.last_seen_at)
+		`, key.siteID, observedAt, key.kind, key.value, count, observedAt, observedAt); err != nil {
+			firstErr = keepFirst(firstErr, fmt.Errorf("health: write observations: %w", err))
+			r.requeueObservation(key, &observation{buckets: map[int64]int64{observedAt: count}})
+
+			continue
+		}
+
+		written++
+	}
+
+	return written, firstErr
+}
+
+// writeLast records the most recent request one site sent, which is what the
+// diagnostics panel shows when somebody asks why an event was dropped.
+func (r *Recorder) writeLast(ctx context.Context, siteID int64, request *lastRequest) error {
+	lease, err := r.Accounts.Acquire(ctx, request.accountID)
+	if err != nil {
+		return err
+	}
+
+	defer lease.Release() //nolint:errcheck // the write result is more useful than an unlock error
+
+	encoded, err := json.Marshal(request.debug)
+	if err != nil {
+		return fmt.Errorf("health: encode debug: %w", err)
+	}
+
+	if _, err := lease.Account.Writer().ExecContext(ctx, `
+		INSERT INTO ingest_last_request
+			(site_id, received_at, client_ip, client_ip_source, trusted_proxy,
+			 hostname, pathname, user_agent, tracker_version, drop_reason, debug)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (site_id) DO UPDATE SET
+			received_at = excluded.received_at,
+			client_ip = excluded.client_ip,
+			client_ip_source = excluded.client_ip_source,
+			trusted_proxy = excluded.trusted_proxy,
+			hostname = excluded.hostname,
+			pathname = excluded.pathname,
+			user_agent = excluded.user_agent,
+			tracker_version = excluded.tracker_version,
+			drop_reason = excluded.drop_reason,
+			debug = excluded.debug
+	`, siteID, request.at, request.debug.ClientIP, request.debug.ClientIPSource,
+		boolToInt(request.debug.TrustedProxy), request.debug.Hostname, request.debug.Pathname,
+		request.userAgent, request.version, request.debug.DropReason, string(encoded)); err != nil {
+		return fmt.Errorf("health: write last request: %w", err)
+	}
+
+	return nil
 }

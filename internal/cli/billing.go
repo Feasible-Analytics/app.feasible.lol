@@ -80,6 +80,7 @@ func runBilling(e *env, args []string) int {
 	defer control.Close()
 
 	manager := accounts.NewManager(e.cfg.App.DataDir)
+	manager.MaxOpen = e.cfg.App.MaxOpenAccounts
 	defer manager.CloseAll() //nolint:errcheck // the process is exiting either way
 
 	// `billing sweep` sends the lifecycle emails, so the same mailer the server

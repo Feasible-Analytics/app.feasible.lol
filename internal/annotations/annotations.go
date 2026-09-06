@@ -119,10 +119,16 @@ func (s *Store) now() time.Time {
 // comparison is a string comparison — which is correct for ISO dates and needs
 // no timezone reasoning at all.
 func (s *Store) List(ctx context.Context, accountID, siteID int64, from, to string) ([]Annotation, error) {
-	account, err := s.Accounts.Open(ctx, accountID)
+	lease, err := s.Accounts.Acquire(ctx, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("annotations: open account %d: %w", accountID, err)
 	}
+
+	// Held until the last read: the handle behind it can be closed by the
+	// cache the moment nothing is using it.
+	defer lease.Release() //nolint:errcheck // the result is more useful than an unlock error
+
+	account := lease.Account
 
 	// An open-ended range is the common case for a dashboard that has not
 	// resolved its dates yet, and answering it with everything is far better
@@ -172,10 +178,16 @@ func (s *Store) Create(ctx context.Context, accountID int64, annotation Annotati
 		return Annotation{}, err
 	}
 
-	account, err := s.Accounts.Open(ctx, accountID)
+	lease, err := s.Accounts.Acquire(ctx, accountID)
 	if err != nil {
 		return Annotation{}, fmt.Errorf("annotations: open account %d: %w", accountID, err)
 	}
+
+	// Held until the last read: the handle behind it can be closed by the
+	// cache the moment nothing is using it.
+	defer lease.Release() //nolint:errcheck // the result is more useful than an unlock error
+
+	account := lease.Account
 
 	annotation.Body = strings.TrimSpace(annotation.Body)
 	annotation.CreatedAt = s.now().Unix()
@@ -203,10 +215,16 @@ func (s *Store) Update(ctx context.Context, accountID int64, annotation Annotati
 		return err
 	}
 
-	account, err := s.Accounts.Open(ctx, accountID)
+	lease, err := s.Accounts.Acquire(ctx, accountID)
 	if err != nil {
 		return fmt.Errorf("annotations: open account %d: %w", accountID, err)
 	}
+
+	// Held until the last read: the handle behind it can be closed by the
+	// cache the moment nothing is using it.
+	defer lease.Release() //nolint:errcheck // the result is more useful than an unlock error
+
+	account := lease.Account
 
 	result, err := account.Writer().ExecContext(ctx, `
 		UPDATE annotations SET shown_on = ?, body = ?, updated_at = ?
@@ -228,10 +246,16 @@ func (s *Store) Update(ctx context.Context, accountID int64, annotation Annotati
 // from one site can never delete a row belonging to another site in the same
 // account database.
 func (s *Store) Delete(ctx context.Context, accountID, siteID, id int64) error {
-	account, err := s.Accounts.Open(ctx, accountID)
+	lease, err := s.Accounts.Acquire(ctx, accountID)
 	if err != nil {
 		return fmt.Errorf("annotations: open account %d: %w", accountID, err)
 	}
+
+	// Held until the last read: the handle behind it can be closed by the
+	// cache the moment nothing is using it.
+	defer lease.Release() //nolint:errcheck // the result is more useful than an unlock error
+
+	account := lease.Account
 
 	result, err := account.Writer().ExecContext(ctx, `
 		DELETE FROM annotations WHERE id = ? AND site_id = ?
@@ -267,10 +291,16 @@ func scanOne(row *sql.Row) (Annotation, error) {
 
 // Get reads one annotation.
 func (s *Store) Get(ctx context.Context, accountID, siteID, id int64) (Annotation, error) {
-	account, err := s.Accounts.Open(ctx, accountID)
+	lease, err := s.Accounts.Acquire(ctx, accountID)
 	if err != nil {
 		return Annotation{}, fmt.Errorf("annotations: open account %d: %w", accountID, err)
 	}
+
+	// Held until the last read: the handle behind it can be closed by the
+	// cache the moment nothing is using it.
+	defer lease.Release() //nolint:errcheck // the result is more useful than an unlock error
+
+	account := lease.Account
 
 	return scanOne(account.Reader().QueryRowContext(ctx, `
 		SELECT id, site_id, shown_on, body, author_user_id, author_name, created_at, updated_at

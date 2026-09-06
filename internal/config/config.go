@@ -160,10 +160,8 @@ type App struct {
 	// ordered FEASIBLE_INGEST_SHARDS list.
 	ShardID int
 
-	// MaxOpenAccounts bounds the account databases one process holds open.
-	// Each costs about a third of a megabyte and up to fifteen file
-	// descriptors, and re-opening a normal one takes about two milliseconds,
-	// so the cap can be tight. Zero uses the built-in default.
+	// MaxOpenAccounts bounds the account databases one process holds open. See
+	// accounts.DefaultMaxOpen for what one costs.
 	MaxOpenAccounts int
 
 	// MailFrom is the envelope sender on every message the product sends. A
