@@ -955,7 +955,7 @@ func claimEventID(ctx context.Context, tx *sql.Tx, id uuid.UUID, now int64) (boo
 }
 
 // commitDurable writes facts and fold repairs through the transaction that
-// already owns the permanent UUID receipts.
+// already owns the UUID receipts.
 func (w *Writer) commitDurable(ctx context.Context, tx *sql.Tx, rows []eventRow, dirty []*Session, merges []Merge, ids *dimensionIDs) error {
 	var sessions map[int64]*Session
 	if len(merges) > 0 {

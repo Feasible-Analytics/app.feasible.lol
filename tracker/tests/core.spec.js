@@ -254,6 +254,10 @@ test("an event stashed outside the window is dropped unsent", async ({ page }) =
 test("an unstamped entry replays now and expires a week after the stamp shipped", async ({ page }) => {
 	const bare = JSON.stringify({ n: "pageview", u: "https://example.test/no-stamp", d: "example.test", k: "aaaaaaaa-0000-4000-8000-000000000003", v: 1 });
 
+	// The day the stamp shipped: an unstamped entry is dated from here, so this
+	// half of the test would start failing a week later against a real clock.
+	await page.clock.install({ time: new Date("2026-09-06T12:00:00Z") });
+
 	const live = await collect(page);
 	await page.goto("/basic.html");
 	await settledCount(live, "pageview", 1);

@@ -10,22 +10,31 @@ package ingest
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
-	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 )
 
-// The queue and kind this job runs under.
+// The queue and kind this job runs under, and how often it ticks.
 const (
 	QueueMaintenance   = "maintenance"
 	KindPruneReceipts  = "ingest.prune_receipts"
 	PruneReceiptsEvery = time.Hour
 )
+
+// PruneNotBefore is when the first receipt may be removed.
+//
+// A tracker cached before the stamp existed stashed a bare body, and there is
+// nothing to date it by — so it is dated from the day the stamp shipped and
+// stays replayable for a week after that, however old it really is. Its receipt
+// may already be older than the retention window, and pruning it before the
+// entry expires is the one path to a doubled pageview. Nothing is removed until
+// no undatable entry can arrive.
+var PruneNotBefore = time.Date(2026, 9, 13, 0, 0, 0, 0, time.UTC)
 
 // ReceiptRetention is how long a receipt has to be recognisable for.
 //
@@ -51,8 +60,8 @@ type ReceiptPruner struct {
 	Accounts *accounts.Manager
 	Log      *logger.Logger
 
-	// Owners lists the accounts to sweep. It is a function rather than a table
-	// read so this package does not have to know where the list came from.
+	// Owners lists the accounts to sweep, one database each. It is a function
+	// so a test can name two accounts without a control database.
 	Owners func(ctx context.Context) ([]int64, error)
 
 	// Now is the clock the cutoff is measured from.
@@ -68,23 +77,35 @@ func (p *ReceiptPruner) now() time.Time {
 	return p.Now().UTC()
 }
 
-// OwnersOf lists every distinct account that has a site on this shard. The
-// receipts live in the account database, so that is the unit swept.
-func OwnersOf(cache interface{ All() []sites.Site }) func(context.Context) ([]int64, error) {
-	return func(context.Context) ([]int64, error) {
-		seen := map[int64]bool{}
+// SystemOwners lists every account with a site, read from system.db.
+//
+// The routing snapshot would be the obvious source and is the wrong one: a
+// refresh that failed, or a boot before the first one, leaves it empty — and an
+// empty list is a prune that removes nothing and reports success, for ever.
+// A failed query is an error the job reports; an empty table is an install with
+// no accounts.
+func SystemOwners(control *sql.DB) func(context.Context) ([]int64, error) {
+	return func(ctx context.Context) ([]int64, error) {
+		rows, err := control.QueryContext(ctx,
+			"SELECT DISTINCT account_id FROM sites ORDER BY account_id")
+		if err != nil {
+			return nil, fmt.Errorf("ingest: read accounts to prune: %w", err)
+		}
+		defer func() { _ = rows.Close() }()
+
 		owners := []int64{}
 
-		for _, site := range cache.All() {
-			if !seen[site.AccountID] {
-				seen[site.AccountID] = true
-				owners = append(owners, site.AccountID)
+		for rows.Next() {
+			var owner int64
+
+			if err := rows.Scan(&owner); err != nil {
+				return nil, fmt.Errorf("ingest: read accounts to prune: %w", err)
 			}
+
+			owners = append(owners, owner)
 		}
 
-		sort.Slice(owners, func(i, j int) bool { return owners[i] < owners[j] })
-
-		return owners, nil
+		return owners, rows.Err()
 	}
 }
 
@@ -104,12 +125,19 @@ func (p *ReceiptPruner) Run(ctx context.Context, _ jobs.Job) (jobs.Outcome, erro
 		return jobs.Outcome{}, fmt.Errorf("ingest: the receipt pruner needs an account manager and an account list")
 	}
 
+	now := p.now()
+
+	if now.Before(PruneNotBefore) {
+		return jobs.Nothing("no receipt is removed until " + PruneNotBefore.Format("2 January 2006") +
+			", by when an entry stashed before the tracker stamped one has expired"), nil
+	}
+
 	owners, err := p.Owners(ctx)
 	if err != nil {
 		return jobs.Outcome{}, err
 	}
 
-	cutoff := p.now().Add(-ReceiptRetention).Unix()
+	cutoff := now.Add(-ReceiptRetention).Unix()
 
 	removed, failed := 0, 0
 

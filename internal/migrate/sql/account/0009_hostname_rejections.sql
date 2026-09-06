@@ -1,6 +1,6 @@
 --
 -- 0009_hostname_rejections.sql
--- Rejected hostnames, permanent event receipts, and shared session identities.
+-- Rejected hostnames, the event-receipt index, and shared session identities.
 --
 -- Created: 2026-08-31
 -- Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -26,5 +26,6 @@ CREATE TABLE session_id_allocator (
 INSERT INTO session_id_allocator (singleton, next_id)
 SELECT 1, COALESCE(MAX(id), 0) + 1 FROM sessions;
 
--- Event receipts are permanent, so the pruning index is obsolete.
+-- The pruning index, dropped here and restored by 0015 once the tracker
+-- bounded how long a browser may replay a failed event for.
 DROP INDEX recent_event_ids_received;

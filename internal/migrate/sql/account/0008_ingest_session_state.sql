@@ -23,7 +23,7 @@ CREATE INDEX ingest_session_state_visitor
     ON ingest_session_state(site_id, user_id, last_seen_at);
 
 -- Engagement can arrive before its pageview. Persisting the complete derived
--- event and its permanent receipt in one transaction lets any later writer
+-- event and its receipt in one transaction lets any later writer
 -- for the same visitor adopt it without process memory or redelivery.
 CREATE TABLE ingest_orphan_engagements (
     event_uuid BLOB PRIMARY KEY,

@@ -95,7 +95,7 @@ func buildServices(e *env, control *sql.DB, manager *accounts.Manager,
 
 	s.Receipts = &ingest.ReceiptPruner{
 		Accounts: manager,
-		Owners:   ingest.OwnersOf(service.Sites),
+		Owners:   ingest.SystemOwners(control),
 		Log:      e.log,
 	}
 

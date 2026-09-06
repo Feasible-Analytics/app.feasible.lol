@@ -80,7 +80,8 @@ function eventID() {
 
 	// This compact RFC 4122 formatter fixes the version and variant nibbles and
 	// draws every remaining nibble from Web Crypto. It is deliberately not a
-	// Math.random fallback: this value becomes a permanent database receipt.
+	// Math.random fallback: this value becomes a database receipt the server
+	// recognises a replay by.
 	return ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, (digit) =>
 		(digit ^ (win.crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (digit / 4)))).toString(16),
 	);
@@ -220,7 +221,7 @@ export function send(event, callback) {
 		return;
 	}
 	// Creating the key before post means a lost 202, cancellation and later
-	// replay stay one event with one permanent server receipt.
+	// replay stay one event with one server receipt.
 	event.k = eventID();
 	event.v = VERSION;
 	event.w = innerWidth || undefined;
