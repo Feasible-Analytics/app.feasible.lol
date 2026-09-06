@@ -24,12 +24,13 @@ import {
 	findTab,
 	groupsOf,
 	labelOf,
+	noticesOf,
 	subTabsOf,
 	tableTabs,
 } from "../lib/reports";
 import type { DrawerState } from "../lib/url";
 import { useStats } from "../lib/useStats";
-import { ChangeChip, Empty, Failure, Favicon, Flag, Spinner } from "./atoms";
+import { Caveats, ChangeChip, Empty, Failure, Favicon, Flag, Spinner } from "./atoms";
 import { SampledBadge } from "./SampledBadge";
 
 /**
@@ -154,7 +155,7 @@ export function Drawer({
 	const stats = useStats(domain, body);
 	const rows = stats.data?.results ?? [];
 	const totalRows = stats.data?.meta.total_rows ?? 0;
-	const warnings = stats.data?.meta.metric_warnings ?? {};
+	const notices = noticesOf(stats.data?.meta, (metric) => t(DRAWER_HEADINGS[metric] ?? metric));
 
 	const first = totalRows === 0 ? 0 : (state.page - 1) * PAGE + 1;
 	const last = Math.min(state.page * PAGE, totalRows);
@@ -292,6 +293,7 @@ export function Drawer({
 										? t("dashboard.drawer.empty_search", { noun: t(tab.nounId), search: state.search })
 										: t(tab.nounId)
 								}
+								because={notices}
 							/>
 						</div>
 					) : (
@@ -418,14 +420,9 @@ export function Drawer({
 					)}
 				</div>
 
-				{Object.keys(warnings).length > 0 && (
+				{notices.length > 0 && (
 					<footer className="shrink-0 border-t border-line px-4 py-2">
-						{Object.entries(warnings).map(([metric, warning]) => (
-							<p key={metric} className="text-[11px] leading-relaxed text-muted">
-								<span className="font-medium text-body">{t(DRAWER_HEADINGS[metric] ?? metric)}:</span>{" "}
-								{warning.warning}
-							</p>
-						))}
+						<Caveats notes={notices} />
 					</footer>
 				)}
 			</div>

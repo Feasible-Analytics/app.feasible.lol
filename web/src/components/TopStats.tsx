@@ -9,8 +9,8 @@
 import type { Metric, StatsResponse } from "../api/types";
 import { metricTitle, metricValue } from "../lib/format";
 import { formatterLocale, t } from "../lib/i18n";
-import { INVERTED } from "../lib/reports";
-import { ChangeChip, Failure } from "./atoms";
+import { INVERTED, noticesOf } from "../lib/reports";
+import { Caveats, ChangeChip, Failure } from "./atoms";
 
 /** The six metrics, in the order they appear. Order is part of the contract
  *  with the response: the engine returns metrics positionally, so this list is
@@ -83,8 +83,10 @@ export function TopStats({ stats, selected, onSelect, comparing }: Props) {
 	// range does not empty the tiles and reflow the page underneath the pointer.
 	const row = stats.data?.results[0];
 	const first = !row && stats.loading;
+	const notices = noticesOf(stats.data?.meta, tileLabelLower);
 
 	return (
+		<>
 		<div className="relative grid grid-cols-2 border-b border-line sm:grid-cols-3 lg:grid-cols-6">
 			{/* The first load renders the same six tiles with the value withheld
 			    rather than a spinner in a differently-sized box. The labels are
@@ -155,6 +157,13 @@ export function TopStats({ stats, selected, onSelect, comparing }: Props) {
 				<span aria-hidden="true" className="spinner-grace absolute inset-x-0 bottom-0 h-0.5 bg-accent/40" />
 			)}
 		</div>
+
+		{notices.length > 0 && (
+			<div className="border-b border-line px-5 py-2">
+				<Caveats notes={notices} />
+			</div>
+		)}
+		</>
 	);
 }
 

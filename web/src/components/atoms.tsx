@@ -177,11 +177,38 @@ export function InfoDot({ text }: { text: string | string[] }) {
  * the site, and dressing it up as a failure sends people looking for a broken
  * tracker that is working fine.
  */
-export function Empty({ what }: { what: string }) {
+export function Empty({ what, because = [] }: { what: string; because?: string[] }) {
 	return (
 		<div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
 			<p className="text-sm text-body">{t("dashboard.empty.no_data", { what })}</p>
-			<p className="text-xs text-muted">{t("dashboard.empty.hint")}</p>
+			{because.length > 0 ? (
+				// The hint is good advice when there really was nothing in the
+				// period, and wrong when something else already explains the
+				// emptiness — widening the range would not help.
+				because.map((sentence) => (
+					<p key={sentence} className="max-w-md text-xs leading-relaxed text-muted">{sentence}</p>
+				))
+			) : (
+				<p className="text-xs text-muted">{t("dashboard.empty.hint")}</p>
+			)}
+		</div>
+	);
+}
+
+/**
+ * Caveats prints what the engine said about the question it answered.
+ *
+ * It is paragraphs and nothing else: the card, the drawer and the tile strip
+ * each pad and border their own frame around it.
+ */
+export function Caveats({ notes }: { notes: string[] }) {
+	if (notes.length === 0) return null;
+
+	return (
+		<div role="note">
+			{notes.map((note) => (
+				<p key={note} className="text-[11px] leading-relaxed text-muted">{note}</p>
+			))}
 		</div>
 	);
 }

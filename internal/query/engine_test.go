@@ -731,6 +731,74 @@ func TestBounceRateUnderAPageBreakdownIsScopedToEntrances(t *testing.T) {
 	}
 }
 
+// TestAPageFilterOnAVisitBreakdownIsEntryScopedAndSaysSo is the pair that makes
+// four empty cards explicable.
+//
+// Nobody entered on /about — it was reached from /home — so a visit-scoped
+// breakdown under a page filter is genuinely empty. Empty is the right answer;
+// empty with no explanation is the one that reads as broken tracking.
+func TestAPageFilterOnAVisitBreakdownIsEntryScopedAndSaysSo(t *testing.T) {
+	engine := newEngine(t)
+
+	q := baseQuery("visitors")
+	q.Dimensions = []string{"visit:source"}
+	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:page", Values: []string{"/about"}}}
+
+	result := run(t, engine, q)
+
+	if len(result.Results) != 0 {
+		t.Fatalf("got %d rows, want none — no visit entered on /about: %+v", len(result.Results), result.Results)
+	}
+
+	warning, ok := result.Meta.MetricWarnings["visitors"]
+	if !ok {
+		t.Fatal("an empty answer produced by a re-scoped filter must say so in meta.metric_warnings")
+	}
+
+	if warning.Code != WarnEntryScoped {
+		t.Errorf("warning code = %q, want %q", warning.Code, WarnEntryScoped)
+	}
+
+	if warning.Warning == "" {
+		t.Error("the warning carries no sentence, so the dashboard has nothing to show")
+	}
+}
+
+// TestOnlyTheSessionScopedMetricsAreWarnedAbout is the other half: the split is
+// between the two fact tables, not between filtered and unfiltered, and warning
+// about the figures that are exactly right would train people to ignore the
+// ones that are not.
+//
+// The query asks for both kinds at once, which is what the tiles do: pageviews
+// counts events matching the filter as written, bounce rate describes a whole
+// visit and is therefore re-scoped to entrances.
+func TestOnlyTheSessionScopedMetricsAreWarnedAbout(t *testing.T) {
+	engine := newEngine(t)
+
+	q := baseQuery("pageviews", "bounce_rate")
+	q.Dimensions = []string{"event:page"}
+	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:page", Values: []string{"/about"}}}
+
+	result := run(t, engine, q)
+
+	if len(result.Results) != 1 || result.Results[0].Dimensions[0] != "/about" {
+		t.Fatalf("got %+v, want one row for /about", result.Results)
+	}
+
+	if _, warned := result.Meta.MetricWarnings["pageviews"]; warned {
+		t.Errorf("an event-scoped figure was warned about: %+v", result.Meta.MetricWarnings["pageviews"])
+	}
+
+	warning, ok := result.Meta.MetricWarnings["bounce_rate"]
+	if !ok {
+		t.Fatal("the session-scoped figure beside it was not warned about")
+	}
+
+	if warning.Code != WarnEntryScoped {
+		t.Errorf("warning code = %q, want %q", warning.Code, WarnEntryScoped)
+	}
+}
+
 // TestSessionMetricUnderAnEventDimensionWithNoAnalogueIsRefused checks the
 // other half of the guard rail: where there is no correctly-scoped answer, the
 // query is refused rather than answered with a plausible wrong number.

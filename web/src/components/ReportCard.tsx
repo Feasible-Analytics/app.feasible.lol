@@ -15,10 +15,11 @@ import { t } from "../lib/i18n";
 import { flagFor } from "../lib/labels";
 import { usePref } from "../lib/prefs";
 import type { CardDef, Tab } from "../lib/reports";
-import { PRIMARY, dimensionsOf, findTab, groupsOf, labelOf, subTabsOf } from "../lib/reports";
+import { PRIMARY, dimensionsOf, findTab, groupsOf, labelOf, noticesOf, subTabsOf } from "../lib/reports";
 import { useNearViewport, useStats } from "../lib/useStats";
 import { Bar, Empty, Failure, Favicon, Flag, InfoDot, Spinner } from "./atoms";
 import { SampledMark } from "./SampledBadge";
+import { tileLabelLower } from "./TopStats";
 import { WorldMap } from "./WorldMap";
 
 /** How many rows the card previews. The rest live in the details drawer: a card
@@ -123,6 +124,7 @@ export function ReportCard({
 
 	const stats = useStats(domain, body, near);
 	const rows = stats.data?.results ?? [];
+	const notices = noticesOf(stats.data?.meta, tileLabelLower);
 	const on = selected.get(active.dimension);
 	const peak = Math.max(1, ...rows.map((row) => row.metrics[0] ?? 0));
 	const groups = groupsOf(card);
@@ -137,9 +139,12 @@ export function ReportCard({
 				<h2 className="flex shrink-0 items-center gap-1.5 text-sm font-semibold text-body">
 					{t(card.titleId)}
 					<SampledMark sampling={stats.data?.meta.sampling} />
-					{(active.caveatId || card.caveatId) && (
+					{(active.caveatId || card.caveatId || notices.length > 0) && (
 						<InfoDot
-							text={[active.caveatId, card.caveatId].filter(Boolean).map((id) => t(id as string))}
+							text={[
+								...[active.caveatId, card.caveatId].filter(Boolean).map((id) => t(id as string)),
+								...notices,
+							]}
 						/>
 					)}
 				</h2>
@@ -182,7 +187,7 @@ export function ReportCard({
 				) : !stats.data ? (
 					<Spinner label={t("dashboard.card.loading", { title: t(card.titleId) })} />
 				) : rows.length === 0 ? (
-					<Empty what={t(active.nounId)} />
+					<Empty what={t(active.nounId)} because={notices} />
 				) : active.map ? (
 					<WorldMap rows={rows} onFilter={onFilter} selected={on ?? EMPTY_SELECTION} />
 				) : (

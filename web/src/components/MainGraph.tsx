@@ -12,8 +12,8 @@ import type { Annotation, Metric, StatsResponse } from "../api/types";
 import { changePercent, comparisonSeries, previousBucketLabel } from "../lib/compare";
 import { bucketLong, bucketShort, metricAxisValue, metricTitle, metricValue, rangeLabel } from "../lib/format";
 import { n, t } from "../lib/i18n";
-import { INVERTED } from "../lib/reports";
-import { ChangeChip, Failure, Spinner } from "./atoms";
+import { INVERTED, noticesOf } from "../lib/reports";
+import { Caveats, ChangeChip, Failure, Spinner } from "./atoms";
 import { SampledMark } from "./SampledBadge";
 import { tileLabel, tileLabelLower } from "./TopStats";
 
@@ -353,7 +353,10 @@ export function MainGraph({ stats, metric, comparing, annotations = [], chart = 
 		/>
 	));
 
+	const notices = noticesOf(data.meta, tileLabelLower);
+
 	return (
+		<>
 		<div ref={wrap} className="relative px-1" style={{ height: HEIGHT }}>
 			{stats.loading && (
 				<span aria-hidden="true" className="spinner-grace absolute inset-x-0 top-0 z-10 h-0.5 bg-accent/40" />
@@ -746,6 +749,16 @@ export function MainGraph({ stats, metric, comparing, annotations = [], chart = 
 				</p>
 			)}
 		</div>
+
+		{/* Under the chart rather than over it. A flat-zero line under a filter
+		    is the most misleading thing on the page, and the sentence naming
+		    the metric it is about is what makes the zero make sense. */}
+		{notices.length > 0 && (
+			<div className="px-1 pt-2">
+				<Caveats notes={notices} />
+			</div>
+		)}
+		</>
 	);
 }
 

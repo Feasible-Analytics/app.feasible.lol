@@ -285,7 +285,7 @@ func entryScopeRequired(q *Query, p *plan) bool {
 // visits that touched a page are different numbers, and the reader cannot tell
 // which one they are looking at from the number alone.
 const entryScopeWarning = "computed over the visits that entered on the matching page, not every visit that touched it — " +
-	"a bounce rate, visit duration or views per visit describes a whole visit, so it is scoped to entrances"
+	"a figure that describes a whole visit is counted from where the visit began"
 
 // sessionSemiJoinWarning is attached when an event-scoped filter with no entry
 // analogue had to select whole sessions.

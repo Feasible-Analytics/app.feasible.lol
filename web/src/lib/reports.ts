@@ -6,8 +6,8 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-import type { Filter, Metric } from "../api/types";
-import { t } from "./i18n";
+import type { Filter, Meta, Metric } from "../api/types";
+import { formatterLocale, t } from "./i18n";
 import { valueLabel } from "./labels";
 
 /**
@@ -387,4 +387,39 @@ export function labelOf(tab: Tab, value: string): string {
 	if (value) return valueLabel(tab.dimension, value);
 
 	return t(tab.emptyLabelId ?? "dashboard.value.none");
+}
+
+/** RESCOPED are the warnings that say the question was answered differently
+ * from the way it was asked.
+ *
+ * The other codes describe the data rather than the question, and each already
+ * has somewhere better to be: sampling has its own badge and its own explainer,
+ * and the per-metric facts only read correctly beside the metric they are about,
+ * which is the drawer's job. Branching on the code rather than on the presence
+ * of any warning is what the codes are for. */
+const RESCOPED: ReadonlySet<string> = new Set(["entry_scoped", "session_scoped"]);
+
+/** noticesOf turns the engine's per-metric warnings into the paragraphs a
+ * reader sees.
+ *
+ * One reinterpreted filter warns against every metric it touched, so the
+ * sentences are grouped: three metrics carrying the same caveat is one
+ * paragraph naming all three, not the same thirty words three times. The
+ * engine's sentence is written to follow a metric name, so the name is what it
+ * follows here too. */
+export function noticesOf(meta?: Pick<Meta, "metric_warnings">, label: (metric: string) => string = (m) => m): string[] {
+	const grouped = new Map<string, string[]>();
+
+	for (const [metric, warning] of Object.entries(meta?.metric_warnings ?? {})) {
+		if (!RESCOPED.has(warning.code) || !warning.warning) continue;
+
+		grouped.set(warning.warning, [...(grouped.get(warning.warning) ?? []), metric]);
+	}
+
+	// Intl rather than a joined string: the separator and the final conjunction
+	// are not the same in every language, and a hand-rolled join gets French
+	// and Japanese wrong in different ways.
+	const list = new Intl.ListFormat(formatterLocale(), { style: "long", type: "conjunction" });
+
+	return [...grouped].map(([sentence, metrics]) => `${list.format(metrics.map(label))}: ${sentence}`);
 }
