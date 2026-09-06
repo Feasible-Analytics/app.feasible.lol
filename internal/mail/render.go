@@ -243,6 +243,12 @@ type Content struct {
 	Closing   string
 }
 
+// Company hands the layout the sender's name and address, since a template can
+// only reach what its data holds.
+func (c Content) Company() Business {
+	return Company
+}
+
 // Colours hands the layout the palette, since a template can only reach what
 // its data holds.
 func (c Content) Colours() Palette {
@@ -383,7 +389,7 @@ func (c Content) Text() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(PostalAddress)
+	b.WriteString(PostalAddress())
 	b.WriteString("\n")
 
 	return b.String()

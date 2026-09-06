@@ -123,10 +123,11 @@
 </p>
 {{ end }}
 <p style="margin:{{ if .Closing }}0{{ else }}18px 0 0 0{{ end }}; font-size:12px; line-height:1.6; color:{{ $c.Faint }};">
-Cloudmanic Labs, LLC<br>
-901 Brutscher Street, D112<br>
-Newberg, OR 97132<br>
-United States
+{{- $from := .Company }}
+{{ $from.Name }}
+{{- range $from.AddressLines }}<br>
+{{ . }}
+{{- end }}
 </p>
 </td>
 </tr>

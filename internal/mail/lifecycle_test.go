@@ -74,19 +74,6 @@ func TestEveryTemplateRendersInBothVoices(t *testing.T) {
 				t.Errorf("%s/%s has no upgrade link in the text part", trigger, entry.Template)
 			}
 
-			// CAN-SPAM requires a physical postal address in marketing email.
-			// Transactional mail is exempt and carries it anyway, because
-			// arguing about which category a dunning notice falls into costs
-			// more than four lines.
-			for _, line := range []string{"Cloudmanic Labs, LLC", "901 Brutscher Street, D112", "Newberg, OR 97132"} {
-				if !strings.Contains(msg.HTML, line) {
-					t.Errorf("%s/%s is missing %q from the footer", trigger, entry.Template, line)
-				}
-				if !strings.Contains(msg.Text, line) {
-					t.Errorf("%s/%s is missing %q from the text footer", trigger, entry.Template, line)
-				}
-			}
-
 			wrapped := Wrap(msg.HTML, MaxLineLength)
 			if longest := LongestLine(wrapped); longest > MaxLineLength {
 				t.Errorf("%s/%s has a %d byte line", trigger, entry.Template, longest)

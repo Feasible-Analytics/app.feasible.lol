@@ -254,7 +254,7 @@ func (n *Notifier) sendDue(ctx context.Context, due Due) (bool, string, error) {
 		return false, "", err
 	}
 
-	if _, err := n.deliverClaim(ctx, rendered, claim, dashboardURL, "report_"+due.Kind); err != nil {
+	if _, err := n.deliverClaim(ctx, rendered, claim, dashboardURL, reportTag(due.Kind)); err != nil {
 		if releaseErr := n.Store.ReleaseDelivery(ctx, claim); releaseErr != nil && n.Log != nil {
 			n.Log.Error("a claimed report period could not be released",
 				"domain", due.Domain, "period", due.PeriodKey, "error", releaseErr)
@@ -552,7 +552,7 @@ func (n *Notifier) RunAlerts(ctx context.Context, job jobs.Job) (jobs.Outcome, e
 
 		renderings := AlertRenderings(alert)
 
-		delivered, err := n.deliverClaim(ctx, renderings, claim, alert.DashboardURL, "alert_"+claim.Kind)
+		delivered, err := n.deliverClaim(ctx, renderings, claim, alert.DashboardURL, alertTag(claim.Kind))
 		if err != nil {
 			failures = append(failures, n.releaseClaim(ctx, claim,
 				fmt.Sprintf("site %d %s snapshot: %v", claim.SiteID, claim.Kind, err)))
@@ -645,7 +645,7 @@ func (n *Notifier) RunAlerts(ctx context.Context, job jobs.Job) (jobs.Outcome, e
 
 		renderings := AlertRenderings(alert)
 
-		delivered, err := n.deliverClaim(ctx, renderings, claim, alert.DashboardURL, "alert_"+rule.Kind)
+		delivered, err := n.deliverClaim(ctx, renderings, claim, alert.DashboardURL, alertTag(rule.Kind))
 		if err != nil {
 			failures = append(failures, n.releaseClaim(ctx, claim,
 				fmt.Sprintf("%s %s: %v", site.Domain, rule.Kind, err)))
@@ -810,7 +810,7 @@ func (n *Notifier) SendNow(ctx context.Context, siteID int64, kind string, recip
 	}
 
 	if len(recipients) > 0 {
-		if _, err := n.mail(ctx, renderings, recipients, "report_preview"); err != nil {
+		if _, err := n.mail(ctx, renderings, recipients, mail.TagReportPreview); err != nil {
 			return rendered, err
 		}
 	}
@@ -838,4 +838,26 @@ func SystemSiteLookup(db *sql.DB) SiteLookup {
 
 		return site, nil
 	}
+}
+
+// reportTag and alertTag name the message for delivery reporting.
+//
+// The names live in internal/mail beside the other twenty-two, because the
+// guard that proves every message carries a postal address has to know the
+// whole set, and it cannot import this package.
+func reportTag(kind string) string {
+	if kind == KindMonthly {
+		return mail.TagReportMonthly
+	}
+
+	return mail.TagReportWeekly
+}
+
+// alertTag names a spike or a drop.
+func alertTag(kind string) string {
+	if kind == KindDrop {
+		return mail.TagAlertDrop
+	}
+
+	return mail.TagAlertSpike
 }

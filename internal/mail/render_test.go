@@ -118,8 +118,8 @@ func TestAMessageUsingOnlyTheOldBlocksIsUnchanged(t *testing.T) {
 	}
 
 	if got != string(want) {
-		t.Errorf("the layout changed for a message using none of the new blocks:\n--- want ---\n%s\n--- got ---\n%s",
-			want, got)
+		t.Errorf("the layout changed for a message using none of the new blocks. If the office moved, "+
+			"regenerate testdata/plain_message.html.\n--- want ---\n%s\n--- got ---\n%s", want, got)
 	}
 }
 
@@ -185,5 +185,36 @@ func TestAPaddingCellCarriesNoLabel(t *testing.T) {
 	// Five labels rendered, not six.
 	if got := strings.Count(html, "font-size:12px; color:"); got != 5 {
 		t.Errorf("%d figure labels rendered, want 5:\n%s", got, html)
+	}
+}
+
+// TestTheFooterSeparatorsSuitTheirBody keeps one definition rendering correctly
+// in two places: a line break between the address lines in the HTML, a newline
+// between them in the text.
+func TestTheFooterSeparatorsSuitTheirBody(t *testing.T) {
+	html, err := plainMessage().HTML()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	text := plainMessage().Text()
+
+	previous := Company.Name
+
+	for _, line := range Company.AddressLines {
+		if !strings.Contains(html, previous+"<br>\n"+line) {
+			t.Errorf("the HTML footer does not break between %q and %q:\n%s", previous, line, html)
+		}
+
+		if !strings.Contains(text, previous+"\n"+line) {
+			t.Errorf("the text footer does not break between %q and %q:\n%s", previous, line, text)
+		}
+
+		previous = line
+	}
+
+	// And no <br> leaks into the plain-text part.
+	if strings.Contains(text, "<br>") {
+		t.Errorf("the text footer carries markup:\n%s", text)
 	}
 }

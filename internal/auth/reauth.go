@@ -157,24 +157,9 @@ func (h *Handler) doSendConfirmation(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, withQuery(next, "confirm", "sent"), http.StatusFound)
 }
 
-// sendConfirmationCode writes and sends the email. The code is the largest
-// thing on the page: it is what the reader is here to copy.
+// sendConfirmationCode sends the code that confirms a security change.
 func (h *Handler) sendConfirmationCode(r *http.Request, user *User, code string) error {
-	content := mail.Content{
-		Subject: "Your feasible.lol confirmation code",
-		Heading: "Confirm it is you",
-		Body: []string{
-			"Somebody signed in to your feasible.lol account asked to change a security setting. Enter this code to confirm it was you:",
-		},
-		Code: code,
-		Facts: []mail.Fact{
-			{Label: "Expires in", Value: "ten minutes"},
-		},
-		Closing: "If you did not ask for it, sign out of every other device from the sessions screen. " +
-			"You are receiving this because your account signs in with Google and has no password to ask for.",
-	}
-
-	message, err := content.Message(user.Email, "settings_confirmation")
+	message, err := mail.SettingsConfirmationContent(code).Message(user.Email, mail.TagSettingsConfirmation)
 	if err != nil {
 		return err
 	}
