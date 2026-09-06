@@ -37,6 +37,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/outbound"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/pathclean"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/reports"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/rollup"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/settings"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
@@ -136,7 +137,15 @@ func runServe(e *env, args []string) int {
 	// The signed-in application. It is built before the listener binds so that a
 	// broken template or an unreadable key is a start-up failure with a message,
 	// rather than a 500 on somebody's sign-in page.
-	app, err := buildApp(e, control, manager, service, site, secret, mailer, com.Gate, com.Purger)
+	// One unsubscriber for both ends: the report job mints the link and this
+	// handler reads it, so they have to hold the same key.
+	unsubscribe, err := buildUnsubscriber(e, control)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return ExitError
+	}
+
+	app, err := buildApp(e, control, manager, service, site, secret, mailer, com.Gate, com.Purger, unsubscribe)
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError
@@ -190,6 +199,7 @@ func runServe(e *env, args []string) int {
 	// the authenticated dashboard render the same shell rather than two copies
 	// of it that drift.
 	extra := buildServices(e, control, manager, service, mailer)
+	extra.Notifier.Unsubscribe = unsubscribe
 
 	checks := &health.Set{}
 	ingestHealth(checks, control, service, e.cfg.App.DataDir)
@@ -305,13 +315,35 @@ func (d *dataStack) background() func(context.Context, func(func())) {
 	}
 }
 
+// buildUnsubscriber builds the one thing that mints and reads unsubscribe
+// links. It needs the application key, so a self-hosted install with an
+// unreadable one fails at start-up rather than sending links nothing can read.
+func buildUnsubscriber(e *env, control *sql.DB) (*reports.Unsubscriber, error) {
+	key, err := auth.LoadKey(e.cfg.App.DataDir, e.cfg.App.SecretKey)
+	if err != nil {
+		return nil, err
+	}
+
+	sealer, err := auth.NewSealer(key)
+	if err != nil {
+		return nil, err
+	}
+
+	return &reports.Unsubscriber{
+		Store:   reports.NewStore(control),
+		Sealer:  sealer,
+		BaseURL: e.cfg.App.BaseURL,
+		Log:     e.log,
+	}, nil
+}
+
 // buildApp assembles the server-rendered application.
 //
 // Every dependency is resolved here rather than inside the package, so that a
 // missing key or an unparseable template stops the process with a message that
 // names the file — and so a test can build the same handler over a temporary
 // database.
-func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *ingest.Service, site *siteRules, secret []byte, mailer *mail.Mailer, gate *access.Gate, purger auth.PermanentAccountDeleter) (*auth.Handler, error) {
+func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *ingest.Service, site *siteRules, secret []byte, mailer *mail.Mailer, gate *access.Gate, purger auth.PermanentAccountDeleter, unsubscribe auth.Unsubscriber) (*auth.Handler, error) {
 	if err := provisionExistingSites(context.Background(), control, manager, time.Now().UTC()); err != nil {
 		return nil, err
 	}
@@ -337,6 +369,7 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 		Destructive: &destructive.Service{DB: control, Accounts: manager},
 		Keyer:       tracker.NewKeyer(secret, service.Sites),
 		Trusted:     site.trusted,
+		Unsubscribe: unsubscribe,
 		SiteCache:   service.Sites,
 		ProvisionSite: func(ctx context.Context, accountID, siteID int64, now time.Time) error {
 			lease, err := manager.Acquire(ctx, accountID)

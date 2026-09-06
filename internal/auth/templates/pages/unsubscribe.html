@@ -1,0 +1,36 @@
+<!--
+  unsubscribe.html
+  Getting off a report or an alert somebody else signed you up for.
+
+  Created: 2026-09-06
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+-->
+{{ define "content" }}
+<div class="border-2 border-line bg-card p-8">
+  {{ if .Data.Done }}
+    <h1 class="text-xl font-semibold text-heading">{{ t $.Lang "auth.unsubscribe.done_title" }}</h1>
+    <p class="mt-2 text-sm text-muted">{{ t $.Lang "auth.unsubscribe.done" }}</p>
+    <p class="mt-4 text-sm text-muted">{{ t $.Lang "auth.unsubscribe.owner" }}</p>
+  {{ else if .Data.Known }}
+    <h1 class="text-xl font-semibold text-heading">{{ t $.Lang "auth.unsubscribe.title" }}</h1>
+    <p class="mt-2 text-sm text-muted">
+      {{ t $.Lang "auth.unsubscribe.subtitle" "list" .Data.List "site" .Data.Site }}
+    </p>
+
+    <!--
+      No CSRF token, deliberately. The same path answers a one-click POST from
+      the reader's mail provider, which has no session with us and no form to
+      have put one in. The token in the path is the authorisation, and the only
+      thing this can do is take one address off one list.
+    -->
+    <form method="post" action="{{ $.BaseURL }}/unsubscribe/{{ .Data.Token }}" class="mt-6">
+      <button type="submit" class="w-full btn btn-primary">
+        {{ t $.Lang "auth.unsubscribe.submit" }}
+      </button>
+    </form>
+  {{ else }}
+    <h1 class="text-xl font-semibold text-heading">{{ t $.Lang "auth.unsubscribe.unknown_title" }}</h1>
+    <p class="mt-2 text-sm text-muted">{{ t $.Lang "auth.unsubscribe.unknown" }}</p>
+  {{ end }}
+</div>
+{{ end }}

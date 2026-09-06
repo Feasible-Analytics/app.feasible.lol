@@ -219,3 +219,38 @@ func TestEveryMessageHasAPreheader(t *testing.T) {
 		}
 	}
 }
+
+// TestOnlyTheReportAndTheAlertOfferAnUnsubscribe is the split this feature
+// turns on, and the one somebody will ask about again.
+//
+// The report and the alert go to addresses somebody else typed in, on a
+// schedule, so they need a way out. The other twenty-two are transactional
+// messages to an account holder about their own account: an unsubscribe link on
+// "we delete your data tomorrow" is a way to miss the warning.
+func TestOnlyTheReportAndTheAlertOfferAnUnsubscribe(t *testing.T) {
+	messages, err := Messages()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recurring := map[string]bool{
+		mail.TagReportWeekly:  true,
+		mail.TagReportMonthly: true,
+		mail.TagReportPreview: true,
+		mail.TagAlertSpike:    true,
+		mail.TagAlertDrop:     true,
+	}
+
+	for tag, message := range messages {
+		carries := message.Unsubscribe != "" ||
+			strings.Contains(message.HTML, "Stop receiving this email") ||
+			strings.Contains(message.Text, "Stop receiving this email")
+
+		// The sample mints no token, so even the five recurring ones render
+		// without a link here. What this pins is that none of the other
+		// nineteen could ever grow one.
+		if carries && !recurring[tag] {
+			t.Errorf("%s offers an unsubscribe, and it is not a recurring email", tag)
+		}
+	}
+}

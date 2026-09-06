@@ -480,3 +480,63 @@ func TestStartTLSIsNotSilentlySkipped(t *testing.T) {
 	default:
 	}
 }
+
+// TestTheUnsubscribeHeadersAppearWhenTheFieldIsSet is what Gmail and Yahoo's
+// bulk-sender rules look for, and what puts the one-click control in the client
+// rather than only in the footer.
+func TestTheUnsubscribeHeadersAppearWhenTheFieldIsSet(t *testing.T) {
+	raw := RenderMIME("feasible.lol <hello@feasible.lol>", Message{
+		To:          "anna@example.com",
+		Subject:     "Weekly report",
+		HTML:        "<p>hi</p>",
+		Text:        "hi",
+		Tag:         TagReportWeekly,
+		Unsubscribe: "https://app.feasible.lol/unsubscribe/abc",
+	})
+
+	for _, want := range []string{
+		"List-Unsubscribe: <https://app.feasible.lol/unsubscribe/abc>\r\n",
+		"List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n",
+	} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("the message is missing %q:\n%s", want, raw)
+		}
+	}
+}
+
+// TestATransactionalMessageCarriesNoUnsubscribeHeader is the other half. A
+// password reset with a List-Unsubscribe is a way to opt out of being able to
+// get back into your account.
+func TestATransactionalMessageCarriesNoUnsubscribeHeader(t *testing.T) {
+	raw := RenderMIME("feasible.lol <hello@feasible.lol>", Message{
+		To:      "anna@example.com",
+		Subject: "Reset your password",
+		HTML:    "<p>hi</p>",
+		Text:    "hi",
+		Tag:     TagPasswordReset,
+	})
+
+	if strings.Contains(raw, "List-Unsubscribe") {
+		t.Errorf("a transactional message carries an unsubscribe header:\n%s", raw)
+	}
+}
+
+// TestAnUnsubscribeURLCannotInjectAHeader keeps a line break in a URL from
+// ending the header and starting one of its own.
+func TestAnUnsubscribeURLCannotInjectAHeader(t *testing.T) {
+	raw := RenderMIME("feasible.lol <hello@feasible.lol>", Message{
+		To:          "anna@example.com",
+		Subject:     "Weekly report",
+		Tag:         TagReportWeekly,
+		Unsubscribe: "https://app.feasible.lol/u/a\r\nBcc: somebody@example.com",
+	})
+
+	// A header is a line, so what matters is that no line starts with one. The
+	// flattened text is still inside the angle brackets, where it is a bad URL
+	// and not a Bcc.
+	for _, line := range strings.Split(raw, "\r\n") {
+		if strings.HasPrefix(line, "Bcc:") {
+			t.Errorf("a header was injected through the unsubscribe URL:\n%s", raw)
+		}
+	}
+}

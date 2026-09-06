@@ -90,6 +90,11 @@ type Notifier struct {
 	// caught when the notifier is built rather than in somebody's inbox.
 	BaseURL string
 
+	// Unsubscribe mints the per-recipient link on the report and the alert.
+	// It is optional: a self-hoster with no application key still gets their
+	// reports, without a link.
+	Unsubscribe *Unsubscriber
+
 	// Now is the clock both jobs run against.
 	Now func() time.Time
 }
@@ -254,7 +259,7 @@ func (n *Notifier) sendDue(ctx context.Context, due Due) (bool, string, error) {
 		return false, "", err
 	}
 
-	if _, err := n.deliverClaim(ctx, rendered, claim, dashboardURL, reportTag(due.Kind)); err != nil {
+	if _, err := n.deliverClaim(ctx, rendered, claim, dashboardURL, reportTag(due.Kind), ListReport); err != nil {
 		if releaseErr := n.Store.ReleaseDelivery(ctx, claim); releaseErr != nil && n.Log != nil {
 			n.Log.Error("a claimed report period could not be released",
 				"domain", due.Domain, "period", due.PeriodKey, "error", releaseErr)
@@ -327,14 +332,26 @@ func deliveryTargets(recipients []string, webhookURL string) []DestinationTarget
 // and can collapse that replay; claiming exactly-once without provider
 // participation would be false.
 func (n *Notifier) deliverClaim(ctx context.Context, renderings *Renderings, claim DeliveryClaim,
-	dashboardURL, tag string) (int, error) {
+	dashboardURL, tag, list string) (int, error) {
 	dials, err := n.emailClocks(ctx, claim.Destinations)
 	if err != nil {
 		return 0, err
 	}
 
 	for _, destination := range claim.Destinations {
-		rendered, renderErr := renderings.On(dials.of(destination.Target))
+		// A webhook has no recipient, so it gets no link and shares the one
+		// rendering every other channel-less destination gets.
+		unsubscribe := ""
+		if destination.Channel == ChannelEmail {
+			unsubscribe = n.Unsubscribe.Link(Unsubscribed{
+				List:    list,
+				SiteID:  claim.SiteID,
+				Kind:    claim.Kind,
+				Address: destination.Target,
+			})
+		}
+
+		rendered, renderErr := renderings.For(dials.of(destination.Target), unsubscribe)
 		if renderErr != nil {
 			return 0, renderErr
 		}
@@ -552,7 +569,7 @@ func (n *Notifier) RunAlerts(ctx context.Context, job jobs.Job) (jobs.Outcome, e
 
 		renderings := AlertRenderings(alert)
 
-		delivered, err := n.deliverClaim(ctx, renderings, claim, alert.DashboardURL, alertTag(claim.Kind))
+		delivered, err := n.deliverClaim(ctx, renderings, claim, alert.DashboardURL, alertTag(claim.Kind), ListAlert)
 		if err != nil {
 			failures = append(failures, n.releaseClaim(ctx, claim,
 				fmt.Sprintf("site %d %s snapshot: %v", claim.SiteID, claim.Kind, err)))
@@ -645,7 +662,7 @@ func (n *Notifier) RunAlerts(ctx context.Context, job jobs.Job) (jobs.Outcome, e
 
 		renderings := AlertRenderings(alert)
 
-		delivered, err := n.deliverClaim(ctx, renderings, claim, alert.DashboardURL, alertTag(rule.Kind))
+		delivered, err := n.deliverClaim(ctx, renderings, claim, alert.DashboardURL, alertTag(rule.Kind), ListAlert)
 		if err != nil {
 			failures = append(failures, n.releaseClaim(ctx, claim,
 				fmt.Sprintf("%s %s: %v", site.Domain, rule.Kind, err)))

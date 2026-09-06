@@ -255,6 +255,7 @@ func (h *Handler) HeaderFor(r *http.Request) appui.Header {
 // team and a sign-out button is describing a thing that is gone. An error is an
 // error.
 var standalone = map[string]bool{
+	"unsubscribe":   true,
 	"verify":        true,
 	"verify_failed": true,
 	"deleted":       true,

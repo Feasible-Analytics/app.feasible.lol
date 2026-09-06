@@ -72,6 +72,12 @@ type Handler struct {
 	Limiter     *Limiter
 	Keyer       *tracker.Keyer
 
+	// Unsubscribe removes an address from a recurring email. Nil renders the
+	// page as "this address is not subscribed", which is what a self-hoster
+	// with no application key gets and is a true statement about a link that
+	// cannot be read.
+	Unsubscribe Unsubscriber
+
 	// Trusted is the proxy allow-list every rate limit resolves a client
 	// address through. Behind our own reverse proxy every connection arrives
 	// from the proxy, so without it ten bad passwords from anybody lock sign-in
@@ -167,6 +173,7 @@ type Options struct {
 	Destructive         *destructive.Service
 	Keyer               *tracker.Keyer
 	Trusted             *clientip.TrustedProxies
+	Unsubscribe         Unsubscriber
 	SiteCache           *sites.Cache
 	ProvisionSite       func(context.Context, int64, int64, time.Time) error
 	Access              func(accountID int64) bool
@@ -219,6 +226,7 @@ func NewHandler(opts Options) (*Handler, error) {
 		Limiter:             NewLimiter(),
 		Keyer:               opts.Keyer,
 		Trusted:             opts.Trusted,
+		Unsubscribe:         opts.Unsubscribe,
 		SiteCache:           opts.SiteCache,
 		ProvisionSite:       opts.ProvisionSite,
 		Access:              opts.Access,
@@ -544,6 +552,8 @@ func (h *Handler) routes() *http.ServeMux {
 	mux.HandleFunc("GET /reset-password", h.optional(h.showReset))
 	mux.HandleFunc("POST /reset-password", h.optional(h.doReset))
 	mux.HandleFunc("GET /invitations/{token}", h.optional(h.beginInvitation))
+	mux.HandleFunc("GET /unsubscribe/{token}", h.optional(h.showUnsubscribe))
+	mux.HandleFunc("POST /unsubscribe/{token}", h.optional(h.doUnsubscribe))
 
 	// Half-signed-in: the address is not proven, or the second factor is not
 	// answered yet. These deliberately do not go through requireUser.

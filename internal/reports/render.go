@@ -58,6 +58,11 @@ type Report struct {
 	// the period is worth saying — a site with no traffic at all, for instance.
 	Note string
 
+	// Unsubscribe is where this recipient stops receiving this report. It is
+	// set per recipient at delivery, so it is empty on a Slack post and on a
+	// preview.
+	Unsubscribe string
+
 	GeneratedAt time.Time
 }
 
@@ -71,6 +76,10 @@ type Alert struct {
 	Observed     int
 	DashboardURL string
 	TriggeredAt  time.Time
+
+	// Unsubscribe is where this recipient stops receiving alerts from this
+	// rule. Set per recipient at delivery.
+	Unsubscribe string
 }
 
 // Rendered is a subject and both bodies, ready to hand to a transport.
@@ -78,6 +87,11 @@ type Rendered struct {
 	Subject string
 	HTML    string
 	Text    string
+
+	// Unsubscribe is this recipient's link. It reaches the transport as the
+	// List-Unsubscribe header, so a mail client can offer the control itself
+	// rather than only showing the footer link.
+	Unsubscribe string
 }
 
 // Message turns a rendering into one addressed mail message.
@@ -87,7 +101,14 @@ type Rendered struct {
 // declined this" check live. A list here would mean a second send path with
 // neither.
 func (r Rendered) Message(to, tag string) mail.Message {
-	return mail.Message{To: to, Subject: r.Subject, HTML: r.HTML, Text: r.Text, Tag: tag}
+	return mail.Message{
+		To:          to,
+		Subject:     r.Subject,
+		HTML:        r.HTML,
+		Text:        r.Text,
+		Tag:         tag,
+		Unsubscribe: r.Unsubscribe,
+	}
 }
 
 // RenderReport builds the weekly or monthly email.
@@ -114,7 +135,8 @@ func RenderReport(report Report, cycle string) (Rendered, error) {
 			{Title: "Top sources", Rows: report.TopSources, Empty: "No referrers were recorded in this period."},
 			{Title: "Top countries", Rows: report.Countries, Empty: "No locations were recorded in this period."},
 		},
-		Primary: mail.Button{Label: "Open the dashboard", URL: report.DashboardURL},
+		Primary:     mail.Button{Label: "Open the dashboard", URL: report.DashboardURL},
+		Unsubscribe: report.Unsubscribe,
 		Closing: fmt.Sprintf("Generated %s. You are receiving this because somebody added your address "+
 			"to this site's %s report.", generated, kind),
 	}
@@ -148,7 +170,8 @@ func RenderAlert(alert Alert, cycle string) (Rendered, error) {
 			{Label: "Observed", Value: strconv.Itoa(alert.Observed)},
 			{Label: "Threshold", Value: strconv.Itoa(alert.Threshold)},
 		},
-		Primary: mail.Button{Label: "Open the dashboard", URL: alert.DashboardURL},
+		Primary:     mail.Button{Label: "Open the dashboard", URL: alert.DashboardURL},
+		Unsubscribe: alert.Unsubscribe,
 		Closing: fmt.Sprintf("Triggered %s. At most two alerts are sent per site per day, so this "+
 			"will not repeat every hour.", triggered),
 	}
@@ -234,7 +257,12 @@ func render(content mail.Content, required []Assigned) (Rendered, error) {
 		return Rendered{}, fmt.Errorf("reports: the rendered body has a %d-octet line, over the SMTP limit", longest)
 	}
 
-	return Rendered{Subject: content.Subject, HTML: wrapped, Text: content.Text()}, nil
+	return Rendered{
+		Subject:     content.Subject,
+		HTML:        wrapped,
+		Text:        content.Text(),
+		Unsubscribe: content.Unsubscribe,
+	}, nil
 }
 
 // Assigned is one named value the guard above refuses to render without. It is
@@ -269,37 +297,57 @@ const FallbackClock = timefmt.Cycle24
 // One Renderings belongs to one delivery and is used from one goroutine. The
 // memo is not guarded, and both delivery loops are sequential.
 type Renderings struct {
-	build func(cycle string) (Rendered, error)
+	build func(cycle, unsubscribe string) (Rendered, error)
 	made  map[string]Rendered
 }
 
 // ReportRenderings prepares a weekly or monthly report for either dial.
 func ReportRenderings(report Report) *Renderings {
-	return &Renderings{build: func(cycle string) (Rendered, error) { return RenderReport(report, cycle) }}
+	return &Renderings{build: func(cycle, unsubscribe string) (Rendered, error) {
+		report.Unsubscribe = unsubscribe
+
+		return RenderReport(report, cycle)
+	}}
 }
 
 // AlertRenderings prepares a spike or drop alert for either dial.
 func AlertRenderings(alert Alert) *Renderings {
-	return &Renderings{build: func(cycle string) (Rendered, error) { return RenderAlert(alert, cycle) }}
+	return &Renderings{build: func(cycle, unsubscribe string) (Rendered, error) {
+		alert.Unsubscribe = unsubscribe
+
+		return RenderAlert(alert, cycle)
+	}}
 }
 
-// On returns the rendering for one dial, building it the first time it is asked
-// for.
+// On returns the rendering for one dial with no unsubscribe link — the Slack
+// fallback, and a preview.
 func (r *Renderings) On(cycle string) (Rendered, error) {
+	return r.For(cycle, "")
+}
+
+// For returns the rendering for one dial and one recipient's unsubscribe link,
+// building it the first time it is asked for.
+//
+// The memo is keyed on both, so twenty-five recipients on the same dial cost
+// twenty-five renderings rather than one — which is the price of a link that
+// only removes the person holding it, and is small beside twenty-five sends.
+func (r *Renderings) For(cycle, unsubscribe string) (Rendered, error) {
 	if r.made == nil {
 		r.made = map[string]Rendered{}
 	}
 
-	if made, ok := r.made[cycle]; ok {
+	key := cycle + "\x00" + unsubscribe
+
+	if made, ok := r.made[key]; ok {
 		return made, nil
 	}
 
-	made, err := r.build(cycle)
+	made, err := r.build(cycle, unsubscribe)
 	if err != nil {
 		return Rendered{}, err
 	}
 
-	r.made[cycle] = made
+	r.made[key] = made
 
 	return made, nil
 }

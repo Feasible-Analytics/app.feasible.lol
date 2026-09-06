@@ -294,8 +294,12 @@ type Content struct {
 	// screen, and a facts row is a small right-aligned value.
 	Code string
 
-	Figures   []Figure
-	Tables    []Table
+	Figures []Figure
+	Tables  []Table
+	// Unsubscribe is where this recipient stops receiving this message. Only
+	// the report and the alert set it; see Message.Unsubscribe for why.
+	Unsubscribe string
+
 	Facts     []Fact
 	Primary   Button
 	Secondary []Button
@@ -501,6 +505,12 @@ func (c Content) Text() string {
 		b.WriteString("\n")
 	}
 
+	if c.Unsubscribe != "" {
+		b.WriteString("\nStop receiving this email: ")
+		b.WriteString(c.Unsubscribe)
+		b.WriteString("\n")
+	}
+
 	b.WriteString("\n")
 	b.WriteString(PostalAddress())
 	b.WriteString("\n")
@@ -515,7 +525,14 @@ func (c Content) Message(to, tag string) (Message, error) {
 		return Message{}, err
 	}
 
-	return Message{To: to, Subject: c.Subject, HTML: html, Text: c.Text(), Tag: tag}, nil
+	return Message{
+		To:          to,
+		Subject:     c.Subject,
+		HTML:        html,
+		Text:        c.Text(),
+		Tag:         tag,
+		Unsubscribe: c.Unsubscribe,
+	}, nil
 }
 
 // day formats a date for a customer. A zero time renders as an em dash rather
