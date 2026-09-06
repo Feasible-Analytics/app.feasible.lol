@@ -30,6 +30,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"golang.org/x/image/draw"
 
@@ -238,20 +239,35 @@ type State struct {
 	// Source names the provider a stored picture came from.
 	Source string
 
-	// Asked reports that a provider has already answered, whether or not it had
-	// anything. It is what stops an address with no Gravatar costing an
-	// outbound request on every sign-in for ever.
+	// Asked reports that a provider has answered at some point, whether or not
+	// it had anything. It says a row exists, and nothing about whether the
+	// answer is still worth trusting.
 	Asked bool
+
+	// AskedRecently is the one the lookup branches on: a stored picture, or a
+	// miss recorded within MissRetry. It is what stops an address with no
+	// Gravatar costing an outbound request on every sign-in, without stopping
+	// one that appears later from ever being found.
+	AskedRecently bool
 }
+
+// MissRetry is how long a remembered miss is trusted for.
+//
+// A week: long enough that a mailbox with no Gravatar is asked about roughly
+// weekly rather than on every sign-in, short enough that somebody who sets one
+// up sees it within a week.
+const MissRetry = 7 * 24 * time.Hour
 
 // State reads one person's picture status. A person with no row is not an
 // error: having no picture is the common case, not a failure.
 func (s *Store) State(ctx context.Context, userID int64) (State, error) {
 	var state State
 
+	var fetchedAt int64
+
 	err := s.db.QueryRowContext(ctx, `
-		SELECT etag, source FROM user_avatars WHERE user_id = ?
-	`, userID).Scan(&state.ETag, &state.Source)
+		SELECT etag, source, fetched_at FROM user_avatars WHERE user_id = ?
+	`, userID).Scan(&state.ETag, &state.Source, &fetchedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return State{}, nil
 	}
@@ -260,6 +276,9 @@ func (s *Store) State(ctx context.Context, userID int64) (State, error) {
 	}
 
 	state.Asked = true
+
+	// A stored picture never goes stale here; only a miss does.
+	state.AskedRecently = state.ETag != "" || s.now()-fetchedAt < int64(MissRetry.Seconds())
 
 	return state, nil
 }
