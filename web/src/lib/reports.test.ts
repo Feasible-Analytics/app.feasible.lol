@@ -11,7 +11,7 @@ import { test } from "node:test";
 
 import { PAGES, dimensionsOf } from "./reports";
 
-test("Top Pages keeps captured titles outside its grouping dimensions", () => {
+test("the Pages card keeps captured titles outside its grouping dimensions", () => {
 	const pages = PAGES.tabs[0];
 	assert.ok(pages);
 
@@ -25,4 +25,10 @@ test("reports without a companion keep their existing dimension order", () => {
 	assert.ok(entries);
 
 	assert.deepEqual(dimensionsOf(entries, "visit:country"), ["visit:entry_page", "visit:country"]);
+});
+
+test("the Pages heading and its first tab are one string", () => {
+	// Splitting them is a reasonable thing to want, and should be a decision
+	// rather than two labels quietly disagreeing.
+	assert.equal(PAGES.titleId, PAGES.tabs[0]?.labelId);
 });
