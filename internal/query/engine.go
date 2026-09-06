@@ -305,7 +305,7 @@ func (e *Engine) resolveRange(ctx context.Context, q *Query, location *time.Loca
 	var earliest time.Time
 
 	if q.DateRange.NeedsEarliest() {
-		found, err := e.earliestEvent(ctx, q.SiteIDs)
+		found, err := e.earliestEvent(ctx, q.SiteIDs, !q.Include.ExcludeImports)
 		if err != nil {
 			return Resolved{}, err
 		}
@@ -529,11 +529,30 @@ func (e *Engine) propertyScopes(ctx context.Context, sites []int64) (map[string]
 // earliestEvent finds the site's first event, which is what "all time" starts
 // from. A site with no events at all answers with the zero time, and the range
 // resolver turns that into today rather than into 1970.
-func (e *Engine) earliestEvent(ctx context.Context, sites []int64) (time.Time, error) {
+//
+// Imported history counts, because a site that has just migrated several years
+// in from another product has those years as its earliest data and "all time"
+// is the first range it will click. It counts only when the query is actually
+// reading imports: a range stretched back over days the same query then
+// excludes is a long empty stretch the reader cannot explain.
+func (e *Engine) earliestEvent(ctx context.Context, sites []int64, imports bool) (time.Time, error) {
 	condition := inInt64("site_id", sites)
 
+	statement := "SELECT MIN(timestamp) FROM events WHERE " + condition.SQL
+	args := condition.Args
+
+	if imports {
+		statement = `
+			SELECT MIN(timestamp) FROM (
+				SELECT MIN(timestamp) AS timestamp FROM events WHERE ` + condition.SQL + `
+				UNION ALL
+				SELECT MIN(timestamp) AS timestamp FROM imported_rollups WHERE ` + condition.SQL + `
+			)`
+		args = append(append([]any{}, condition.Args...), condition.Args...)
+	}
+
 	var earliest sql.NullInt64
-	if err := e.db.QueryRowContext(ctx, "SELECT MIN(timestamp) FROM events WHERE "+condition.SQL, condition.Args...).Scan(&earliest); err != nil {
+	if err := e.db.QueryRowContext(ctx, statement, args...).Scan(&earliest); err != nil {
 		return time.Time{}, fmt.Errorf("query: read first event: %w", err)
 	}
 

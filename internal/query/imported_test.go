@@ -395,3 +395,58 @@ func TestAGoalFilterIsAnImportGapNotAnError(t *testing.T) {
 		t.Fatalf("gap volume = %v, want the 100 imported pageviews outside the answer", result.Meta.ImportGaps[0].Pageviews)
 	}
 }
+
+// TestAllTimeReachesBackOverImportedHistory is the range a customer clicks
+// first after migrating years in from another product. Resolving it from the
+// events table alone starts it at their first natively collected hit and hides
+// everything they just moved.
+func TestAllTimeReachesBackOverImportedHistory(t *testing.T) {
+	engine, account := newEngineWithAccount(t)
+
+	migrated := time.Date(2022, 3, 14, 0, 0, 0, 0, time.UTC)
+
+	seedImport(t, account, 1, []string{"visit:source"}, []importedRow{
+		{timestamp: migrated.Unix(), dimensions: map[string]string{"visit:source": "Google"},
+			visitors: 40, visits: 50, pageviews: 100, events: 100},
+	})
+
+	all := Query{
+		SiteIDs:   []int64{1},
+		Metrics:   []string{"pageviews"},
+		DateRange: DateRange{Preset: RangeAll},
+		Timezone:  "UTC",
+	}
+
+	result := run(t, engine, all)
+
+	start, err := time.Parse(time.RFC3339, result.Query.DateRange[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !start.Equal(migrated) {
+		t.Fatalf("all time started at %s, want the first imported day %s", start, migrated)
+	}
+
+	// The range is only worth anything if the query behind it actually reads
+	// the imported rows, so assert the total rather than just the bounds.
+	if got := result.Results[0].Metrics[0]; got != 107 {
+		t.Fatalf("all-time pageviews = %v, want 107 (100 imported + 7 native)", got)
+	}
+
+	// Excluding imports has to pull the start forward again. A range stretched
+	// over 2022 by rows the same query then leaves out is four empty years the
+	// reader cannot account for.
+	all.Include.ExcludeImports = true
+
+	native := run(t, engine, all)
+
+	nativeStart, err := time.Parse(time.RFC3339, native.Query.DateRange[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if nativeStart.Before(fixtureNow.AddDate(0, 0, -7)) {
+		t.Fatalf("all time without imports started at %s, want the first native event", nativeStart)
+	}
+}
