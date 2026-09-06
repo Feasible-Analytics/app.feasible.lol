@@ -12,14 +12,14 @@ import (
 	"context"
 	"net/http"
 	"strings"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 )
 
 // Unsubscriber removes one address from one recurring email.
 //
 // It is an interface because the subscriptions live in internal/reports and
-// this package renders every signed-out page. The alternative — a second page
-// shell in that package — is how a product ends up with two sign-in pages that
-// do not look alike.
+// every signed-out page is rendered here, in the one shell they all wear.
 type Unsubscriber interface {
 	// Describe names the site and what is being stopped, and reports false for
 	// a token that is unreadable or names a subscription that is gone.
@@ -28,6 +28,19 @@ type Unsubscriber interface {
 	// Remove takes the address off the list. A token it cannot read removes
 	// nothing and is not an error: somebody clicking twice should see success.
 	Remove(ctx context.Context, token string) error
+}
+
+// listNames maps what the unsubscriber reports onto the string that names it in
+// the reader's own language.
+//
+// The ids are written out rather than built from the identifier, because a
+// message id assembled at run time is one no completeness check can see and no
+// translator is ever asked for.
+var listNames = map[string]string{
+	"report_weekly":  "auth.unsubscribe.list.report_weekly",
+	"report_monthly": "auth.unsubscribe.list.report_monthly",
+	"alert_spike":    "auth.unsubscribe.list.alert_spike",
+	"alert_drop":     "auth.unsubscribe.list.alert_drop",
 }
 
 // showUnsubscribe asks before it acts.
@@ -51,9 +64,16 @@ func (h *Handler) showUnsubscribe(w http.ResponseWriter, r *http.Request) {
 
 	site, list, ok := h.Unsubscribe.Describe(r.Context(), token)
 
+	name, named := listNames[list]
+	if !named {
+		// A list this build does not know how to name is a token from a newer
+		// one. Saying so is better than naming it in a language nobody reads.
+		ok = false
+	}
+
 	p.Data["Known"] = ok
 	p.Data["Site"] = site
-	p.Data["List"] = list
+	p.Data["List"] = i18n.T(p.Lang, name)
 
 	h.render(w, r, "unsubscribe", p, http.StatusOK)
 }

@@ -950,7 +950,7 @@ func TestEachRecipientGetsTheClockTheyChose(t *testing.T) {
 		"alias@example.com",
 	}
 
-	delivered, err := notifier.mail(context.Background(), renderings, recipients, "report")
+	delivered, err := notifier.mail(context.Background(), renderings, recipients, "report_weekly", Unsubscribed{List: ListReport})
 	if err != nil {
 		t.Fatalf("mail: %v", err)
 	}
@@ -1198,5 +1198,49 @@ func TestWithNoUnsubscriberTheReportStillGoesOut(t *testing.T) {
 
 	if got := f.mail.messages[0].Unsubscribe; got != "" {
 		t.Errorf("an unwired install minted %q", got)
+	}
+}
+
+// TestTheTestReportOffersTheSameWayOut keeps the button on the settings screen
+// from sending the identical report to the identical strangers with no link on
+// it. A test send is often where a recipient first sees a report they never
+// asked for.
+func TestTheTestReportOffersTheSameWayOut(t *testing.T) {
+	f := newNotifier(t)
+	ctx := context.Background()
+
+	sealer, err := auth.NewSealer(make([]byte, auth.KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.notifier.Unsubscribe = &Unsubscriber{Store: f.store, Sealer: sealer, BaseURL: "https://feasible.lol"}
+
+	if _, err := f.notifier.SendNow(ctx, f.siteA, KindWeekly, []string{"anna@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if f.mail.count() != 1 {
+		t.Fatalf("%d emails were sent", f.mail.count())
+	}
+
+	message := f.mail.messages[0]
+
+	if message.Unsubscribe == "" {
+		t.Fatal("the test report carries no unsubscribe link")
+	}
+
+	who, ok := f.notifier.Unsubscribe.read(
+		strings.TrimPrefix(message.Unsubscribe, "https://feasible.lol"+UnsubscribePath))
+	if !ok {
+		t.Fatal("the link does not open")
+	}
+
+	if who.SiteID != f.siteA || who.Kind != KindWeekly || who.Address != "anna@example.com" {
+		t.Errorf("the link is for %+v", who)
+	}
+
+	if !strings.Contains(message.HTML, message.Unsubscribe) {
+		t.Error("the test report has the header but no footer link")
 	}
 }

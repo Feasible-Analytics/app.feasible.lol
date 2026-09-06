@@ -11,8 +11,10 @@ package reports
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	netmail "net/mail"
 	"net/url"
 	"strconv"
 	"strings"
@@ -64,10 +66,10 @@ type Unsubscribed struct {
 
 // Unsubscriber mints and redeems the links.
 //
-// The token is sealed rather than stored: a row per recipient per subscription
-// would have to be created when a list changes and cleaned up when it shrinks,
-// and an unsubscribe link that stopped working because its row was tidied away
-// is the spam complaint this exists to prevent.
+// The token carries the claim, sealed with the application key, so nothing is
+// stored and nothing has to be tidied up when a recipient list changes. A link
+// works for as long as the key does, which is what an unsubscribe clicked
+// months after it arrived needs.
 type Unsubscriber struct {
 	Store   *Store
 	Sealer  Sealer
@@ -79,7 +81,9 @@ type Unsubscriber struct {
 // unsubscriber is not configured — a self-hoster with no application key still
 // gets their reports.
 func (u *Unsubscriber) Link(who Unsubscribed) string {
-	if u == nil || u.Sealer == nil || who.Address == "" {
+	// No base URL means no absolute link, and a relative one in an email or a
+	// List-Unsubscribe header points nowhere.
+	if u == nil || u.Sealer == nil || who.Address == "" || strings.TrimSpace(u.BaseURL) == "" {
 		return ""
 	}
 
@@ -115,7 +119,9 @@ func (u *Unsubscriber) Describe(ctx context.Context, token string) (site string,
 		return "", "", false
 	}
 
-	return domain, who.Kind + " " + who.List, domain != ""
+	// An identifier, not a phrase: the page names the list in the reader's own
+	// language, and a string assembled here could never be translated.
+	return domain, who.List + "_" + who.Kind, domain != ""
 }
 
 // Remove takes one address off one list and reports whether it was on it.
@@ -136,9 +142,9 @@ func (u *Unsubscriber) Remove(ctx context.Context, token string) error {
 		return err
 	}
 
+	// The owner still believes the report goes out to everybody they typed in,
+	// so the removal has to be somewhere it can be found.
 	if u.Log != nil && removed {
-		// The owner still believes the report goes out, so the removal has to
-		// be somewhere they or we can find it.
 		u.Log.Info("a recipient unsubscribed", "list", who.List, "kind", who.Kind,
 			"site", who.SiteID, "address", who.Address)
 	}
@@ -195,6 +201,7 @@ func (s *Store) domainFor(ctx context.Context, who Unsubscribed) (string, error)
 
 	var domain string
 
+	//nolint:gosec // the table name is chosen from two constants above, not from input
 	err := s.db.QueryRowContext(ctx,
 		"SELECT s.domain FROM "+table+" r JOIN sites s ON s.id = r.site_id WHERE r.site_id = ? AND r.kind = ?",
 		who.SiteID, who.Kind).Scan(&domain)
@@ -233,11 +240,18 @@ func (s *Store) RemoveRecipient(ctx context.Context, who Unsubscribed) (bool, er
 	var raw string
 
 	//nolint:gosec // the table name is chosen from two constants above, not from input
-	if err := tx.QueryRowContext(ctx,
-		"SELECT recipients FROM "+table+" WHERE site_id = ? AND kind = ?", who.SiteID, who.Kind).
-		Scan(&raw); err != nil {
-		// A row that is gone is a person who is already off the list.
+	err = tx.QueryRowContext(ctx,
+		"SELECT recipients FROM "+table+" WHERE site_id = ? AND kind = ?", who.SiteID, who.Kind).Scan(&raw)
+
+	// A row that is gone is a person who is already off the list. Anything else
+	// is a failure, and reporting it as a successful unsubscribe would send the
+	// next report to somebody who believes they left.
+	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
+	}
+
+	if err != nil {
+		return false, fmt.Errorf("reports: unsubscribe: %w", err)
 	}
 
 	kept, removed := without(decodeRecipients(raw), who.Address)
@@ -245,7 +259,10 @@ func (s *Store) RemoveRecipient(ctx context.Context, who Unsubscribed) (bool, er
 		return false, nil
 	}
 
-	encoded, err := encodeRecipients(kept)
+	// Marshalled rather than re-validated. Every address here was validated
+	// when it was stored, and refusing to remove one person because a different
+	// address in the list is old would be a 500 on a working link.
+	encoded, err := json.Marshal(kept)
 	if err != nil {
 		return false, fmt.Errorf("reports: unsubscribe: %w", err)
 	}
@@ -253,7 +270,7 @@ func (s *Store) RemoveRecipient(ctx context.Context, who Unsubscribed) (bool, er
 	//nolint:gosec // the table name is chosen from two constants above, not from input
 	if _, err := tx.ExecContext(ctx,
 		"UPDATE "+table+" SET recipients = ?, updated_at = ? WHERE site_id = ? AND kind = ?",
-		encoded, s.now().Unix(), who.SiteID, who.Kind); err != nil {
+		string(encoded), s.now().Unix(), who.SiteID, who.Kind); err != nil {
 		return false, fmt.Errorf("reports: unsubscribe: %w", err)
 	}
 
@@ -264,14 +281,19 @@ func (s *Store) RemoveRecipient(ctx context.Context, who Unsubscribed) (bool, er
 	return true, nil
 }
 
-// without drops one address from a list, comparing the way addresses are
-// compared everywhere else here: case-insensitively.
+// without drops one address from a list.
+//
+// The comparison is on the mailbox rather than the whole string, so a link
+// minted while the list said `Anna <anna@example.com>` still works after the
+// owner rewrites it to `anna@example.com`. These links are clicked months
+// later, and one that silently removes nobody is the complaint this exists to
+// prevent.
 func without(recipients []string, address string) (kept []string, removed bool) {
-	want := strings.ToLower(strings.TrimSpace(address))
+	want := mailbox(address)
 	kept = make([]string, 0, len(recipients))
 
 	for _, recipient := range recipients {
-		if strings.ToLower(strings.TrimSpace(recipient)) == want {
+		if mailbox(recipient) == want {
 			removed = true
 
 			continue
@@ -281,4 +303,16 @@ func without(recipients []string, address string) (kept []string, removed bool) 
 	}
 
 	return kept, removed
+}
+
+// mailbox is the comparable form of an address: the part inside the angle
+// brackets, lower-cased. Anything unparseable compares as itself.
+func mailbox(address string) string {
+	address = strings.TrimSpace(address)
+
+	if parsed, err := netmail.ParseAddress(address); err == nil {
+		return strings.ToLower(parsed.Address)
+	}
+
+	return strings.ToLower(address)
 }

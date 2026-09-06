@@ -10,6 +10,7 @@ package auth
 
 import (
 	"encoding/hex"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,4 +141,102 @@ func TestSignedValueVerifies(t *testing.T) {
 	if value, ok := sealer.VerifySignedValue(dotted); !ok || value != "a.b.c" {
 		t.Errorf("a value containing dots should round-trip, got %q ok=%v", value, ok)
 	}
+}
+
+// TestASealedTokenSurvivesAURL is what an unsubscribe link needs: the sealed
+// bytes go in a path segment and come back unchanged.
+func TestASealedTokenSurvivesAURL(t *testing.T) {
+	sealer, err := NewSealer(make([]byte, KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A claim with the separator the caller uses, and a plus and a slash, which
+	// are what the standard base64 alphabet would have produced.
+	plaintext := "report\x00427\x00weekly\x00anna+reports@example.com"
+
+	for range 20 {
+		token, err := sealer.SealToken(plaintext)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if strings.ContainsAny(token, "+/=") {
+			t.Fatalf("the token needs escaping in a URL: %q", token)
+		}
+
+		if url.PathEscape(token) != token {
+			t.Fatalf("the token is changed by path escaping: %q", token)
+		}
+
+		got, err := sealer.OpenToken(token)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if got != plaintext {
+			t.Fatalf("the token opened to %q", got)
+		}
+	}
+}
+
+// TestATamperedTokenDoesNotOpen is the authentication half of AEAD.
+func TestATamperedTokenDoesNotOpen(t *testing.T) {
+	sealer, err := NewSealer(make([]byte, KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	token, err := sealer.SealToken("report\x001\x00weekly\x00anna@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, forged := range map[string]string{
+		"empty":     "",
+		"nonsense":  "not-a-token",
+		"truncated": token[:len(token)-4],
+		"flipped":   flip(token),
+	} {
+		if _, err := sealer.OpenToken(forged); err == nil {
+			t.Errorf("%s token opened", name)
+		}
+	}
+}
+
+// TestAnotherKeyCannotReadTheToken keeps a token from one installation working
+// against another.
+func TestAnotherKeyCannotReadTheToken(t *testing.T) {
+	mine, err := NewSealer(make([]byte, KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	other := make([]byte, KeySize)
+	other[0] = 1
+
+	theirs, err := NewSealer(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	token, err := mine.SealToken("report\x001\x00weekly\x00anna@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := theirs.OpenToken(token); err == nil {
+		t.Error("a token minted with one key opened with another")
+	}
+}
+
+// flip changes one character of a token to a different one from the same
+// alphabet, so the result is still decodable and still wrong.
+func flip(token string) string {
+	replacement := byte('A')
+	if token[0] == 'A' {
+		replacement = 'B'
+	}
+
+	return string(replacement) + token[1:]
 }

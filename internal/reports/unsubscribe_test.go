@@ -227,3 +227,122 @@ func TestNoSealerMintsNoLink(t *testing.T) {
 		t.Errorf("an unconfigured unsubscriber minted %q", link)
 	}
 }
+
+// TestAClaimIsRefusedUnlessItIsExactlyWhatWeWrote is defence in depth around
+// the one value that chooses a table name.
+func TestAClaimIsRefusedUnlessItIsExactlyWhatWeWrote(t *testing.T) {
+	for name, plaintext := range map[string]string{
+		"empty":           "",
+		"three parts":     "report\x001\x00anna@example.com",
+		"five parts":      "report\x001\x00weekly\x00anna@example.com\x00extra",
+		"an unknown list": "digest\x001\x00weekly\x00anna@example.com",
+		"a table name":    "alert_rules\x001\x00weekly\x00anna@example.com",
+		"no site":         "report\x00\x00weekly\x00anna@example.com",
+		"a site of zero":  "report\x000\x00weekly\x00anna@example.com",
+		"a negative site": "report\x00-1\x00weekly\x00anna@example.com",
+		"no kind":         "report\x001\x00\x00anna@example.com",
+		"no address":      "report\x001\x00weekly\x00",
+		"not a number":    "report\x00one\x00weekly\x00anna@example.com",
+		"a different sep": "report|1|weekly|anna@example.com",
+	} {
+		if _, ok := parseClaim(plaintext); ok {
+			t.Errorf("%s was accepted: %q", name, plaintext)
+		}
+	}
+
+	for name, plaintext := range map[string]string{
+		"a report": "report\x0042\x00weekly\x00anna@example.com",
+		"an alert": "alert\x0042\x00spike\x00anna@example.com",
+	} {
+		if _, ok := parseClaim(plaintext); !ok {
+			t.Errorf("%s was refused: %q", name, plaintext)
+		}
+	}
+}
+
+// TestAnAlertRecipientCanLeaveToo covers the other table end to end, since the
+// list chooses which one every query runs against.
+func TestAnAlertRecipientCanLeaveToo(t *testing.T) {
+	u, f := unsubscriber(t)
+	ctx := context.Background()
+
+	if err := u.Store.SaveAlertRule(ctx, AlertRule{
+		SiteID:      f.siteA,
+		Kind:        KindSpike,
+		Threshold:   10,
+		WindowHours: 1,
+		Recipients:  []string{"anna@example.com", "ben@example.com"},
+		Enabled:     true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	token := u.token(t, Unsubscribed{List: ListAlert, SiteID: f.siteA, Kind: KindSpike, Address: "anna@example.com"})
+
+	site, list, ok := u.Describe(ctx, token)
+	if !ok || site != "acme.example" || list != "alert_spike" {
+		t.Fatalf("describe = %q/%q/%v", site, list, ok)
+	}
+
+	if err := u.Remove(ctx, token); err != nil {
+		t.Fatal(err)
+	}
+
+	rules, err := u.Store.AlertRulesFor(ctx, f.siteA)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(rules) != 1 || len(rules[0].Recipients) != 1 || rules[0].Recipients[0] != "ben@example.com" {
+		t.Fatalf("the rule's recipients are %+v", rules)
+	}
+}
+
+// TestALinkMintedBeforeTheListWasTidiedStillWorks is why the address is matched
+// on its mailbox: these links are clicked months later, and an owner who
+// rewrites "Anna <anna@…>" to "anna@…" must not silently break them.
+func TestALinkMintedBeforeTheListWasTidiedStillWorks(t *testing.T) {
+	u, f := unsubscriber(t)
+	ctx := context.Background()
+
+	f.save(t, KindWeekly, "Anna <anna@example.com>", "ben@example.com")
+
+	token := u.token(t, Unsubscribed{
+		List: ListReport, SiteID: f.siteA, Kind: KindWeekly, Address: "Anna <anna@example.com>",
+	})
+
+	f.save(t, KindWeekly, "anna@example.com", "ben@example.com")
+
+	if err := u.Remove(ctx, token); err != nil {
+		t.Fatal(err)
+	}
+
+	subscription, err := u.Store.SubscriptionFor(ctx, f.siteA, KindWeekly)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(subscription.Recipients) != 1 || subscription.Recipients[0] != "ben@example.com" {
+		t.Errorf("the recipients are %q", subscription.Recipients)
+	}
+}
+
+// TestADatabaseFailureIsNotReportedAsSuccess is the never-fail-silently rule on
+// the one path where failing silently sends the next report to somebody who
+// believes they left.
+func TestADatabaseFailureIsNotReportedAsSuccess(t *testing.T) {
+	u, f := unsubscriber(t)
+	ctx := context.Background()
+
+	f.save(t, KindWeekly, "anna@example.com")
+
+	token := u.token(t, Unsubscribed{List: ListReport, SiteID: f.siteA, Kind: KindWeekly, Address: "anna@example.com"})
+
+	if _, err := f.db.Exec("ALTER TABLE report_subscriptions RENAME COLUMN recipients TO gone"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := u.Remove(ctx, token); err == nil {
+		t.Error("a broken database was reported as a successful unsubscribe")
+	}
+}

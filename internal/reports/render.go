@@ -304,18 +304,23 @@ type Renderings struct {
 // ReportRenderings prepares a weekly or monthly report for either dial.
 func ReportRenderings(report Report) *Renderings {
 	return &Renderings{build: func(cycle, unsubscribe string) (Rendered, error) {
-		report.Unsubscribe = unsubscribe
+		// A copy, so the captured report is the same one on every call. The
+		// loops are sequential today and this is what keeps that from being
+		// load-bearing.
+		one := report
+		one.Unsubscribe = unsubscribe
 
-		return RenderReport(report, cycle)
+		return RenderReport(one, cycle)
 	}}
 }
 
 // AlertRenderings prepares a spike or drop alert for either dial.
 func AlertRenderings(alert Alert) *Renderings {
 	return &Renderings{build: func(cycle, unsubscribe string) (Rendered, error) {
-		alert.Unsubscribe = unsubscribe
+		one := alert
+		one.Unsubscribe = unsubscribe
 
-		return RenderAlert(alert, cycle)
+		return RenderAlert(one, cycle)
 	}}
 }
 

@@ -130,11 +130,8 @@ func (s *Sealer) Open(sealed string) (string, error) {
 	return string(plaintext), nil
 }
 
-// SealToken is Seal in a form that survives a URL path.
-//
-// It is a separate method rather than a caller re-encoding, because the only
-// difference is the alphabet and two encodings of the same bytes in two places
-// is how one of them ends up unable to read the other.
+// SealToken is Seal in the URL-safe alphabet, for the sealed values that travel
+// in a path segment rather than in a cookie.
 func (s *Sealer) SealToken(plaintext string) (string, error) {
 	sealed, err := s.Seal(plaintext)
 	if err != nil {

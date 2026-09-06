@@ -1059,12 +1059,20 @@ func RequestUser(r *http.Request) *User {
 	return userFrom(r)
 }
 
-// requestLogPath removes bearer invitation material before a request path is
-// written to an application log. The acceptance route contains no secret and
-// remains distinguishable from the initial token-bearing route.
+// requestLogPath removes bearer material before a request path is written to an
+// application log.
+//
+// Two routes carry a secret in the path. An invitation token grants a role; an
+// unsubscribe token names a recipient and takes them off a list. The invitation
+// acceptance route contains no secret and stays distinguishable from the
+// token-bearing one.
 func requestLogPath(r *http.Request) string {
 	if strings.HasPrefix(r.URL.Path, "/invitations/") && r.URL.Path != "/invitations/accept" {
 		return "/invitations/[redacted]"
+	}
+
+	if strings.HasPrefix(r.URL.Path, "/unsubscribe/") {
+		return "/unsubscribe/[redacted]"
 	}
 
 	return r.URL.Path

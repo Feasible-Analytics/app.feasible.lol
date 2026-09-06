@@ -43,7 +43,7 @@ func (f *fakeUnsubscriber) Remove(_ context.Context, token string) error {
 func TestTheUnsubscribePageAsksBeforeItActs(t *testing.T) {
 	app := newTestApp(t)
 	h := app.Handler
-	fake := &fakeUnsubscriber{site: "harbor.my", list: "weekly report", known: true}
+	fake := &fakeUnsubscriber{site: "harbor.my", list: "report_weekly", known: true}
 	h.Unsubscribe = fake
 
 	recorder := httptest.NewRecorder()
@@ -89,7 +89,7 @@ func TestAnUnknownTokenSaysSoRatherThanFailing(t *testing.T) {
 func TestThePostRemovesTheAddress(t *testing.T) {
 	app := newTestApp(t)
 	h := app.Handler
-	fake := &fakeUnsubscriber{site: "harbor.my", list: "weekly report", known: true}
+	fake := &fakeUnsubscriber{site: "harbor.my", list: "report_weekly", known: true}
 	h.Unsubscribe = fake
 
 	recorder := httptest.NewRecorder()
@@ -152,5 +152,47 @@ func TestNoUnsubscriberStillRendersAPage(t *testing.T) {
 		if recorder.Code != http.StatusOK {
 			t.Errorf("%s: code = %d", method, recorder.Code)
 		}
+	}
+}
+
+// TestAListThisBuildCannotNameSaysSo keeps a token from a newer build from
+// rendering a blank sentence with a hole where the list should be.
+func TestAListThisBuildCannotNameSaysSo(t *testing.T) {
+	app := newTestApp(t)
+	h := app.Handler
+	h.Unsubscribe = &fakeUnsubscriber{site: "harbor.my", list: "digest_daily", known: true}
+
+	recorder := httptest.NewRecorder()
+	h.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/unsubscribe/abc123", nil))
+
+	body := recorder.Body.String()
+
+	// No raw identifier, and no untranslated message id either.
+	if strings.Contains(body, "digest_daily") || strings.Contains(body, "auth.unsub"+"scribe.list") {
+		t.Errorf("the page showed a raw identifier:\n%s", body)
+	}
+
+	if !strings.Contains(body, "not subscribed") {
+		t.Errorf("the page did not fall back:\n%s", body)
+	}
+}
+
+// TestEveryListTheProductSendsHasAName is what stops a new report kind
+// rendering as an empty phrase.
+func TestEveryListTheProductSendsHasAName(t *testing.T) {
+	for _, list := range []string{"report_weekly", "report_monthly", "alert_spike", "alert_drop"} {
+		if listNames[list] == "" {
+			t.Errorf("%s has no translated name", list)
+		}
+	}
+}
+
+// TestTheTokenIsNotWrittenToTheLog keeps a link that removes somebody from a
+// list out of a file an operator greps.
+func TestTheTokenIsNotWrittenToTheLog(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/unsubscribe/8Kq2vN4pWzR7xLmT", nil)
+
+	if got := requestLogPath(request); strings.Contains(got, "8Kq2vN4pWzR7xLmT") {
+		t.Errorf("the log path is %q", got)
 	}
 }

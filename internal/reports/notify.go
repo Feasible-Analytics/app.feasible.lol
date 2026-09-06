@@ -455,7 +455,8 @@ func (n *Notifier) withLeaseHeartbeat(ctx context.Context, claim DeliveryClaim, 
 // list. That is what the shared mailer takes, and it is also the honest shape:
 // a relay that refuses one address should not cost the other four their report,
 // and a single failed send names the address it failed for.
-func (n *Notifier) mail(ctx context.Context, renderings *Renderings, recipients []string, tag string) (int, error) {
+func (n *Notifier) mail(ctx context.Context, renderings *Renderings, recipients []string,
+	tag string, from Unsubscribed) (int, error) {
 	if len(recipients) > 0 && n.Mail == nil {
 		return 0, errors.New("reports: no mailer is configured")
 	}
@@ -468,7 +469,12 @@ func (n *Notifier) mail(ctx context.Context, renderings *Renderings, recipients 
 	delivered := 0
 
 	for _, recipient := range recipients {
-		rendered, err := renderings.On(dials.of(recipient))
+		// The same report, to the same addresses somebody else typed in, so it
+		// carries the same way out. A test send is where a recipient most often
+		// first sees a report they did not ask for.
+		from.Address = recipient
+
+		rendered, err := renderings.For(dials.of(recipient), n.Unsubscribe.Link(from))
 		if err != nil {
 			return delivered, err
 		}
@@ -827,7 +833,9 @@ func (n *Notifier) SendNow(ctx context.Context, siteID int64, kind string, recip
 	}
 
 	if len(recipients) > 0 {
-		if _, err := n.mail(ctx, renderings, recipients, mail.TagReportPreview); err != nil {
+		from := Unsubscribed{List: ListReport, SiteID: siteID, Kind: kind}
+
+		if _, err := n.mail(ctx, renderings, recipients, mail.TagReportPreview, from); err != nil {
 			return rendered, err
 		}
 	}
