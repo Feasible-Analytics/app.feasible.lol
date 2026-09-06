@@ -177,11 +177,41 @@ export function InfoDot({ text }: { text: string | string[] }) {
  * the site, and dressing it up as a failure sends people looking for a broken
  * tracker that is working fine.
  */
-export function Empty({ what }: { what: string }) {
+export function Empty({ what, because = [] }: { what: string; because?: string[] }) {
 	return (
 		<div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
 			<p className="text-sm text-body">{t("dashboard.empty.no_data", { what })}</p>
-			<p className="text-xs text-muted">{t("dashboard.empty.hint")}</p>
+			{because.length > 0 ? (
+				// A hint is good advice when there really was nothing in the
+				// period, and actively misleading when the engine has already
+				// said why the answer is empty. Widening the range will not
+				// help, and following the advice teaches people to distrust the
+				// numbers when it does not.
+				because.map((sentence) => (
+					<p key={sentence} className="max-w-md text-xs leading-relaxed text-muted">{sentence}</p>
+				))
+			) : (
+				<p className="text-xs text-muted">{t("dashboard.empty.hint")}</p>
+			)}
+		</div>
+	);
+}
+
+/**
+ * Caveats prints what the engine said about an answer it did return.
+ *
+ * The engine reinterprets some questions — a page filter on a visit-scoped
+ * report becomes an entry-page filter — and says so in the response. A caveat
+ * that is computed, shipped over the wire and then dropped is a silent failure.
+ */
+export function Caveats({ notes }: { notes: string[] }) {
+	if (notes.length === 0) return null;
+
+	return (
+		<div role="note" className="border-t border-line px-5 py-2">
+			{notes.map((note) => (
+				<p key={note} className="text-[11px] leading-relaxed text-muted">{note}</p>
+			))}
 		</div>
 	);
 }

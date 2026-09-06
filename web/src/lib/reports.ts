@@ -6,7 +6,7 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-import type { Filter, Metric } from "../api/types";
+import type { Filter, Meta, Metric } from "../api/types";
 import { t } from "./i18n";
 import { valueLabel } from "./labels";
 
@@ -387,4 +387,19 @@ export function labelOf(tab: Tab, value: string): string {
 	if (value) return valueLabel(tab.dimension, value);
 
 	return t(tab.emptyLabelId ?? "dashboard.value.none");
+}
+
+/** noticesOf returns the distinct sentences the engine attached to an answer.
+ *
+ * The response keys them by metric, and one reinterpreted filter produces the
+ * same sentence against every metric it touched — so a card that printed them
+ * per metric would print the same line four times. */
+export function noticesOf(meta?: Pick<Meta, "metric_warnings">): string[] {
+	const seen = new Set<string>();
+
+	for (const warning of Object.values(meta?.metric_warnings ?? {})) {
+		if (warning.warning) seen.add(warning.warning);
+	}
+
+	return [...seen];
 }

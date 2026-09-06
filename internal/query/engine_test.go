@@ -731,6 +731,61 @@ func TestBounceRateUnderAPageBreakdownIsScopedToEntrances(t *testing.T) {
 	}
 }
 
+// TestAPageFilterOnAVisitBreakdownIsEntryScopedAndSaysSo is the pair that makes
+// four empty cards explicable.
+//
+// Nobody entered on /about — it was reached from /home — so a visit-scoped
+// breakdown under a page filter is genuinely empty. Empty is the right answer;
+// empty with no explanation is the one that reads as broken tracking.
+func TestAPageFilterOnAVisitBreakdownIsEntryScopedAndSaysSo(t *testing.T) {
+	engine := newEngine(t)
+
+	q := baseQuery("visitors")
+	q.Dimensions = []string{"visit:source"}
+	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:page", Values: []string{"/about"}}}
+
+	result := run(t, engine, q)
+
+	if len(result.Results) != 0 {
+		t.Fatalf("got %d rows, want none — no visit entered on /about: %+v", len(result.Results), result.Results)
+	}
+
+	warning, ok := result.Meta.MetricWarnings["visitors"]
+	if !ok {
+		t.Fatal("an empty answer produced by a re-scoped filter must say so in meta.metric_warnings")
+	}
+
+	if warning.Code != WarnEntryScoped {
+		t.Errorf("warning code = %q, want %q", warning.Code, WarnEntryScoped)
+	}
+
+	if warning.Warning == "" {
+		t.Error("the warning carries no sentence, so the dashboard has nothing to show")
+	}
+}
+
+// TestAPageFilterOnAPageBreakdownIsNotRescoped is the other half: the split is
+// between the two fact tables, not between filtered and unfiltered, and a
+// warning on the queries that are exactly right would train people to ignore
+// the ones that are not.
+func TestAPageFilterOnAPageBreakdownIsNotRescoped(t *testing.T) {
+	engine := newEngine(t)
+
+	q := baseQuery("pageviews")
+	q.Dimensions = []string{"event:page"}
+	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:page", Values: []string{"/about"}}}
+
+	result := run(t, engine, q)
+
+	if len(result.Results) != 1 || result.Results[0].Dimensions[0] != "/about" {
+		t.Fatalf("got %+v, want one row for /about", result.Results)
+	}
+
+	if len(result.Meta.MetricWarnings) != 0 {
+		t.Errorf("an event-scoped breakdown was warned about: %+v", result.Meta.MetricWarnings)
+	}
+}
+
 // TestSessionMetricUnderAnEventDimensionWithNoAnalogueIsRefused checks the
 // other half of the guard rail: where there is no correctly-scoped answer, the
 // query is refused rather than answered with a plausible wrong number.
