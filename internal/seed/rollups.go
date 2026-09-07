@@ -46,7 +46,7 @@ func buildRollups(ctx context.Context, run *accountRun, from, now time.Time) err
 
 		start := query.RollupBucketStart(from.In(location), query.GrainDay, location)
 
-		for _, grain := range []query.Grain{query.GrainDay, query.GrainHour} {
+		for _, grain := range query.RollupGrains() {
 			oldest := start
 
 			// Hourly buckets age out, so a seed that generated more history
@@ -65,6 +65,13 @@ func buildRollups(ctx context.Context, run *accountRun, from, now time.Time) err
 				to = today.AddDate(0, 0, 1)
 			}
 
+			// A wide bucket is whole only once every day under it is, so the
+			// one today falls in is left out.
+			if grain.Derived() {
+				to = query.RollupBucketStart(today, grain, location)
+				oldest = firstWholeBucketAfter(start, grain, location)
+			}
+
 			if err := builder.Rebuild(ctx, rollup.Request{
 				Site: target, Grain: grain, From: oldest, To: to, CoverThrough: today,
 				FromBeginning: !oldest.After(start),
@@ -75,4 +82,15 @@ func buildRollups(ctx context.Context, run *accountRun, from, now time.Time) err
 	}
 
 	return nil
+}
+
+// firstWholeBucketAfter is the first bucket of a grain beginning at or after an
+// instant, so a bucket is never summed out of a range that starts inside it.
+func firstWholeBucketAfter(at time.Time, grain query.Grain, location *time.Location) time.Time {
+	start := query.RollupBucketStart(at, grain, location)
+	if start.Equal(at) {
+		return start
+	}
+
+	return query.RollupNextBucket(start, grain, location)
 }
