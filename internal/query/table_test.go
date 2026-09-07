@@ -164,3 +164,43 @@ func TestCompositesAreAnchoredOnEvents(t *testing.T) {
 		t.Errorf("a composite metric must be counted from the events table, got %v", decided.Primary.name())
 	}
 }
+
+// TestNoFilterIsEntryScoped covers event:page, event:hostname and anything that
+// grows an entry column later.
+//
+// A filter selects the visits that contain a matching event. Reading it as
+// entrances answers a narrower question and, on a page nobody links to
+// directly, answers nothing — and the two are indistinguishable from a result
+// alone whenever the entry page happens to match.
+func TestNoFilterIsEntryScoped(t *testing.T) {
+	entryDimensions := []string{}
+
+	for _, name := range DimensionNames() {
+		resolved, err := resolveDimension(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if resolved.eventOnly() && resolved.EntryColumn != "" {
+			entryDimensions = append(entryDimensions, name)
+		}
+	}
+
+	if len(entryDimensions) == 0 {
+		t.Fatal("no dimension has an entry column, so this test proves nothing")
+	}
+
+	for _, name := range entryDimensions {
+		t.Run(name, func(t *testing.T) {
+			decided := planFor(t, Query{
+				SiteIDs: []int64{1},
+				Metrics: []string{"bounce_rate"},
+				Filters: []Filter{{Operator: OpIs, Dimension: name, Values: []string{"/anything"}}},
+			})
+
+			if decided.SessionsEntryScoped {
+				t.Errorf("a %s filter is counted from where visits began, not from the visits that reached it", name)
+			}
+		})
+	}
+}

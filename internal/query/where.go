@@ -382,16 +382,18 @@ func (b *whereBuilder) column(d dimension) (string, func(expr) expr, error) {
 		return b.ctx.pathColumn(b.alias, d.SessionColumn, d), identity, nil
 	}
 
-	// An event-scoped dimension being asked at session grain. A page has an
-	// entry analogue and is scoped to entrances; anything else selects whole
-	// visits that contain a matching event, which is a different question and
-	// is reported as one.
-	if d.EntryColumn != "" {
-		b.entryScoped = true
-
-		return b.ctx.pathColumn(b.alias, d.EntryColumn, d), identity, nil
-	}
-
+	// An event-scoped dimension filtered at session grain selects the visits
+	// that contain a matching event.
+	//
+	// A page has an entry column and could be read as entrances instead, which
+	// is a narrower question: "of the visits that began here" rather than "of
+	// the visits that reached here". On a page nobody links to directly the
+	// narrower reading is empty, and it is not the one somebody filtering by
+	// /login and opening Top Sources is asking.
+	//
+	// A page *breakdown* at session grain is still entrances, because grouping
+	// session metrics by page has a genuine meaning as entry pages and does not
+	// produce the empty answer this avoids.
 	if d.EntryEventColumn != "" {
 		b.entryScoped = true
 

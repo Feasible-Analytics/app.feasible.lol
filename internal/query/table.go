@@ -261,21 +261,12 @@ func entryScopeRequired(q *Query, p *plan) bool {
 		}
 	}
 
-	for _, filter := range q.Filters {
-		if filter.Operator == OpHasDone {
-			continue
-		}
-
-		resolved, err := resolveDimension(filter.Dimension)
-		if err != nil {
-			continue
-		}
-
-		if resolved.eventOnly() && (resolved.EntryColumn != "" || resolved.EntryEventColumn != "") {
-			return true
-		}
-	}
-
+	// A filter is not entry-scoped. It selects the visits that contain a
+	// matching event, which is the question it reads as, so there is nothing
+	// about it to warn a reader over.
+	//
+	// Only a dimension re-scopes, and only the entry-event kind: grouping
+	// session metrics by page means entry pages, and that is worth saying.
 	return false
 }
 

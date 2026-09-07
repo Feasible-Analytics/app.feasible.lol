@@ -731,13 +731,15 @@ func TestBounceRateUnderAPageBreakdownIsScopedToEntrances(t *testing.T) {
 	}
 }
 
-// TestAPageFilterOnAVisitBreakdownIsEntryScopedAndSaysSo is the pair that makes
-// four empty cards explicable.
+// TestAPageFilterFindsTheVisitsThatReachedThePage is the question somebody
+// filtering by a page and opening Top Sources is asking.
 //
-// Nobody entered on /about — it was reached from /home — so a visit-scoped
-// breakdown under a page filter is genuinely empty. Empty is the right answer;
-// empty with no explanation is the one that reads as broken tracking.
-func TestAPageFilterOnAVisitBreakdownIsEntryScopedAndSaysSo(t *testing.T) {
+// Nobody entered on /about — it was reached from /home — so reading the filter
+// as entrances answers "of the visits that began here", which is empty on any
+// page nobody links to directly. Reading it as "the visits that reached here"
+// answers the question and uses the path every other event dimension already
+// takes.
+func TestAPageFilterFindsTheVisitsThatReachedThePage(t *testing.T) {
 	engine := newEngine(t)
 
 	q := baseQuery("visitors")
@@ -746,21 +748,53 @@ func TestAPageFilterOnAVisitBreakdownIsEntryScopedAndSaysSo(t *testing.T) {
 
 	result := run(t, engine, q)
 
-	if len(result.Results) != 0 {
-		t.Fatalf("got %d rows, want none — no visit entered on /about: %+v", len(result.Results), result.Results)
+	if len(result.Results) == 0 {
+		t.Fatal("a visit reached /about, so its source is an answer rather than nothing")
 	}
 
+	// The reader is still told what a visit-level figure under an event filter
+	// means — it is the whole visit, not the part of it that matched — but that
+	// is the sentence every other event dimension already carries, not the one
+	// about entrances.
 	warning, ok := result.Meta.MetricWarnings["visitors"]
+
+	if ok && warning.Code == WarnEntryScoped {
+		t.Errorf("the answer still claims to be counted from where visits began: %s", warning.Warning)
+	}
+
 	if !ok {
-		t.Fatal("an empty answer produced by a re-scoped filter must say so in meta.metric_warnings")
+		t.Error("a visit-level figure under an event filter says nothing about what it covers")
+	}
+}
+
+// TestAVisitIsCountedOnceHoweverOftenItReachedThePage is the classic bug in the
+// shape this filter now compiles to.
+//
+// A semi-join that became a join would return one row per matching event, so a
+// visit that viewed the page twice would count as two.
+func TestAVisitIsCountedOnceHoweverOftenItReachedThePage(t *testing.T) {
+	engine := newEngine(t)
+
+	q := baseQuery("visitors", "visits")
+	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:page", Values: []string{"/home"}}}
+
+	withFilter := run(t, engine, q)
+
+	unfiltered := baseQuery("visitors", "visits")
+	everyone := run(t, engine, unfiltered)
+
+	if len(withFilter.Results) != 1 || len(everyone.Results) != 1 {
+		t.Fatalf("expected one row each, got %d and %d", len(withFilter.Results), len(everyone.Results))
 	}
 
-	if warning.Code != WarnEntryScoped {
-		t.Errorf("warning code = %q, want %q", warning.Code, WarnEntryScoped)
-	}
+	for i, metric := range q.Metrics {
+		filtered := withFilter.Results[0].Metrics[i]
+		total := everyone.Results[0].Metrics[i]
 
-	if warning.Warning == "" {
-		t.Error("the warning carries no sentence, so the dashboard has nothing to show")
+		if filtered > total {
+			t.Errorf("%s under a page filter is %v, more than the %v without one — a visit is being counted twice",
+				metric, filtered, total)
+		}
 	}
 }
 
