@@ -102,6 +102,29 @@ func splitAtToday(r Resolved) (complete Resolved, partial Resolved, split bool) 
 	return complete, partial, true
 }
 
+// splitAtBucket moves a split earlier, to the last whole bucket, and hands
+// everything after it to the raw half.
+//
+// A range that does not reach the boundary has no complete part at all, and one
+// that ends exactly on it has no partial part — neither is a split.
+func splitAtBucket(full, complete Resolved, boundary time.Time) (Resolved, Resolved, bool) {
+	if !boundary.After(full.Start) {
+		return Resolved{Start: full.Start, End: full.Start}, Resolved{}, false
+	}
+
+	if !complete.End.After(boundary) {
+		return complete, Resolved{}, false
+	}
+
+	moved := complete
+	moved.End = boundary
+
+	rest := full
+	rest.Start = boundary
+
+	return moved, rest, true
+}
+
 // Splittable reports whether a query's metrics can be answered from more than
 // one raw segment and added together. Counting rows adds up across two time
 // slices; counting distinct visitors does not, because the same person can
@@ -139,15 +162,38 @@ const (
 	// GrainHour is one local hour per row, kept for about a fortnight because
 	// nothing offers an hourly interval over a longer range.
 	GrainHour Grain = 1
+
+	// GrainWeek is one local week per row, starting Monday, and GrainMonth one
+	// local calendar month. Both are kept for as long as the account has data:
+	// they are cheapest exactly where the range is widest, which is the opposite
+	// of the hourly rows.
+	//
+	// Neither is a fixed number of seconds, so a bucket is stepped through the
+	// calendar rather than by addition.
+	GrainWeek  Grain = 2
+	GrainMonth Grain = 3
 )
+
+// Derived reports whether a grain is summed out of the daily rows rather than
+// read from the raw facts.
+//
+// A week is exactly seven daily buckets and a month a whole number of them, so
+// re-reading every event to build one would be the daily pass again for no new
+// information.
+func (g Grain) Derived() bool { return g == GrainWeek || g == GrainMonth }
 
 // String renders a grain for a log line, a command's output or a test failure.
 func (g Grain) String() string {
-	if g == GrainHour {
+	switch g {
+	case GrainHour:
 		return "hour"
+	case GrainWeek:
+		return "week"
+	case GrainMonth:
+		return "month"
+	default:
+		return "day"
 	}
-
-	return "day"
 }
 
 // RollupDim is one thing the summary tables are keyed by. It is a registry
@@ -396,21 +442,31 @@ func RollupBucketStart(at time.Time, grain Grain, loc *time.Location) time.Time 
 
 	at = at.In(loc)
 
-	if grain == GrainHour {
+	switch grain {
+	case GrainHour:
 		return time.Date(at.Year(), at.Month(), at.Day(), at.Hour(), 0, 0, 0, loc)
+	case GrainWeek:
+		return startOfWeek(at, loc)
+	case GrainMonth:
+		return startOfMonth(at, loc)
+	default:
+		return time.Date(at.Year(), at.Month(), at.Day(), 0, 0, 0, 0, loc)
 	}
-
-	return time.Date(at.Year(), at.Month(), at.Day(), 0, 0, 0, 0, loc)
 }
 
 // RollupNextBucket steps one bucket forward, through the calendar for days so a
 // daylight saving change does not shift every later bucket by an hour.
 func RollupNextBucket(at time.Time, grain Grain, loc *time.Location) time.Time {
-	if grain == GrainHour {
+	switch grain {
+	case GrainHour:
 		return at.Add(time.Hour)
+	case GrainWeek:
+		return startOfDay(at.AddDate(0, 0, 7), loc)
+	case GrainMonth:
+		return startOfMonth(at.AddDate(0, 1, 0), loc)
+	default:
+		return startOfDay(at.AddDate(0, 0, 1), loc)
 	}
-
-	return startOfDay(at.AddDate(0, 0, 1), loc)
 }
 
 // RollupCoverage is what one site's summary actually holds, as the router needs
@@ -492,6 +548,14 @@ func (r *RollupRouter) Route(ctx context.Context, q *Query, resolved Resolved) (
 	}
 
 	complete, partial, split := splitAtToday(resolved)
+
+	// A derived bucket is only whole once every day under it is, so the summary
+	// stops at the last bucket boundary rather than at midnight. The days after
+	// it — including today — are read raw, which is what the daily grain already
+	// does for today alone.
+	if read.grain.Derived() {
+		complete, partial, split = splitAtBucket(resolved, complete, RollupBucketStart(complete.End, read.grain, resolved.Location))
+	}
 
 	// A range that is entirely in the future, or entirely today, has no
 	// complete day in it at all.
@@ -655,6 +719,22 @@ func readDimensions(read *rollupRead, q *Query, blueprint *plan, resolved Resolv
 
 		read.grain = GrainHour
 		read.perBucket = true
+
+	case IntervalWeek, IntervalMonth:
+		// A week or a month is summed out of the daily rows, so it is read the
+		// same way a day is — one row per bucket rather than one per day added
+		// together.
+		read.grain = GrainWeek
+		if resolved.Interval == IntervalMonth {
+			read.grain = GrainMonth
+		}
+
+		read.perBucket = read.timeIndex >= 0
+
+		// A bucket cannot be split, so a range has to begin on one.
+		if !resolved.Start.Equal(RollupBucketStart(resolved.Start, read.grain, resolved.Location)) {
+			return false
+		}
 
 	default:
 		read.grain = GrainDay

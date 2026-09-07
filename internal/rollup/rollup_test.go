@@ -19,6 +19,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -164,10 +165,16 @@ func buildAll(t *testing.T, account *accounts.Account, now time.Time) {
 	today := query.RollupBucketStart(now.In(losAngeles), query.GrainDay, losAngeles)
 	from := today.AddDate(0, 0, -30)
 
-	for _, grain := range []query.Grain{query.GrainDay, query.GrainHour} {
+	for _, grain := range []query.Grain{query.GrainDay, query.GrainHour, query.GrainWeek, query.GrainMonth} {
 		to := today
 		if grain == query.GrainDay {
 			to = today.AddDate(0, 0, 1)
+		}
+
+		// A derived bucket is whole only once every day under it is written, so
+		// the one today falls in is left for a later pass.
+		if grain.Derived() {
+			to = query.RollupBucketStart(today, grain, losAngeles)
 		}
 
 		if err := builder.Rebuild(context.Background(), rollup.Request{
@@ -508,10 +515,14 @@ func TestSeededDatabaseAnswersIdenticallyFromEitherSource(t *testing.T) {
 	location := site.Location()
 	today := query.RollupBucketStart(now.In(location), query.GrainDay, location)
 
-	for _, grain := range []query.Grain{query.GrainDay, query.GrainHour} {
+	for _, grain := range []query.Grain{query.GrainDay, query.GrainHour, query.GrainWeek, query.GrainMonth} {
 		to := today
 		if grain == query.GrainDay {
 			to = today.AddDate(0, 0, 1)
+		}
+
+		if grain.Derived() {
+			to = query.RollupBucketStart(today, grain, location)
 		}
 
 		if err := builder.Rebuild(context.Background(), rollup.Request{
@@ -1425,4 +1436,233 @@ func TestProgressGivesTheWorkerADayOfGrace(t *testing.T) {
 	if !behind.Building {
 		t.Error("a summary three days behind reported nothing to build")
 	}
+}
+
+// TestAWideRangeAgreesWithTheDaysUnderIt is the identity the derived grains
+// rest on, and the reason they can be summed out of the daily rows at all.
+//
+// The fingerprint salt rotates on the UTC day while buckets are cut on the
+// site's local day, so a visitor id can appear in at most two adjacent daily
+// buckets and never three. That bounds inclusion-exclusion to its pairwise
+// term, which is exactly what the carried column already records — so a week is
+// the sum of its days minus the carry of every day but the first.
+//
+// If that is ever untrue, every wide range silently over- or under-counts its
+// visitors with nothing to notice it. This is the test that notices.
+func TestAWideRangeAgreesWithTheDaysUnderIt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("generating a realistic dataset takes a few seconds")
+	}
+
+	account, site, now := seedDatabase(t)
+
+	builder := rollup.New(account.Writer())
+	builder.Now = func() time.Time { return now }
+	builder.Sleep = rollup.NoRest
+
+	location := site.Location()
+	today := query.RollupBucketStart(now.In(location), query.GrainDay, location)
+
+	for _, grain := range []query.Grain{query.GrainDay, query.GrainWeek, query.GrainMonth} {
+		to := today.AddDate(0, 0, 1)
+		if grain.Derived() {
+			to = query.RollupBucketStart(today, grain, location)
+		}
+
+		if err := builder.Rebuild(context.Background(), rollup.Request{
+			Site: site, Grain: grain, From: today.AddDate(0, 0, -700), To: to, CoverThrough: today,
+			FromBeginning: true,
+		}); err != nil {
+			t.Fatalf("rebuild %s: %v", grain, err)
+		}
+	}
+
+	raw := query.New(account.Reader())
+	raw.Router = query.RawRouter{}
+	raw.Now = func() time.Time { return now }
+
+	rolled := query.New(account.Reader())
+	rolled.Now = func() time.Time { return now }
+
+	metrics := []string{"visitors", "visits", "pageviews", "bounce_rate", "visit_duration"}
+
+	// One range wide enough to be drawn in weeks and one wide enough for months,
+	// both ending on a bucket edge so the summary is readable at all.
+	// The range has to begin on a bucket the summary holds, or the reader
+	// rightly falls back to raw and the comparison is raw against raw.
+	for name, want := range map[string]struct {
+		span  int
+		grain query.Grain
+	}{
+		"a range drawn in weeks":  {120, query.GrainWeek},
+		"a range drawn in months": {500, query.GrainMonth},
+	} {
+		t.Run(name, func(t *testing.T) {
+			start := query.RollupBucketStart(today.AddDate(0, 0, -want.span), want.grain, location)
+
+			q := query.Query{
+				SiteIDs: []int64{site.ID},
+				Metrics: metrics,
+				DateRange: query.DateRange{
+					Preset: query.RangeCustom, Start: start, End: today.AddDate(0, 0, -1), DateOnly: true,
+				},
+				Timezone: site.Timezone,
+			}
+
+			fromRollup := answer(t, rolled, q)
+
+			// Without this the comparison is raw against raw, which agrees
+			// perfectly and proves nothing about the derived rows.
+			if !slices.Contains(fromRollup.Meta.Sources, "rollup") {
+				t.Fatalf("the query read %v rather than the summary, so nothing under test ran",
+					fromRollup.Meta.Sources)
+			}
+
+			compare(t, name, metrics, answer(t, raw, q), fromRollup)
+		})
+	}
+}
+
+// TestADerivedBucketCarriesWhatItsFirstDayDid pins the second half of the
+// identity, which no comparison of totals can see.
+//
+// A week's own carried count has to be the carry of its first day: it is what
+// the week after it will subtract. Get it wrong and two weeks added together
+// are wrong while each one alone looks right.
+//
+// The fixture puts one visitor on both sides of a Monday, which is the only
+// shape that makes the answer anything other than zero.
+func TestADerivedBucketCarriesWhatItsFirstDayDid(t *testing.T) {
+	account := openAccount(t)
+
+	// 23 August 2026 is a Sunday and the 24th the Monday after it, so visitor
+	// 2101 spans the week boundary and the week starting on the 24th carries
+	// exactly one.
+	sessions := []sessionRow{
+		{id: 1, user: 2101, startedAt: local(23, 20), lastSeen: local(23, 20), bounce: 1, pageviews: 1,
+			entryPage: "/home", exitPage: "/home", source: "Google", country: "US"},
+		{id: 2, user: 2101, startedAt: local(24, 9), lastSeen: local(24, 9), bounce: 1, pageviews: 1,
+			entryPage: "/home", exitPage: "/home", source: "Google", country: "US"},
+		{id: 3, user: 2102, startedAt: local(24, 10), lastSeen: local(24, 10), bounce: 1, pageviews: 1,
+			entryPage: "/home", exitPage: "/home", source: "Google", country: "US"},
+
+		// And one across the turn of the month, so a month bucket has a carry of
+		// its own rather than the zero every bucket would have anyway.
+		{id: 4, user: 2103, startedAt: local(0, 20), lastSeen: local(0, 20), bounce: 1, pageviews: 1,
+			entryPage: "/home", exitPage: "/home", source: "Google", country: "US"},
+		{id: 5, user: 2103, startedAt: local(1, 9), lastSeen: local(1, 9), bounce: 1, pageviews: 1,
+			entryPage: "/home", exitPage: "/home", source: "Google", country: "US"},
+	}
+
+	events := []eventRow{
+		{session: 1, user: 2101, at: local(23, 20), name: ingest.EventPageview, page: "/home", source: "Google", country: "US"},
+		{session: 2, user: 2101, at: local(24, 9), name: ingest.EventPageview, page: "/home", source: "Google", country: "US"},
+		{session: 3, user: 2102, at: local(24, 10), name: ingest.EventPageview, page: "/home", source: "Google", country: "US"},
+		{session: 4, user: 2103, at: local(0, 20), name: ingest.EventPageview, page: "/home", source: "Google", country: "US"},
+		{session: 5, user: 2103, at: local(1, 9), name: ingest.EventPageview, page: "/home", source: "Google", country: "US"},
+	}
+
+	writeFixture(t, account, sessions, events)
+	buildAll(t, account, fixtureNow)
+
+	location := losAngeles
+	today := query.RollupBucketStart(fixtureNow.In(location), query.GrainDay, location)
+
+	// The fixture's days are inside the current week and month, which a pass
+	// deliberately leaves unbuilt. This test is about the arithmetic rather than
+	// about when it runs, so it builds those buckets on purpose.
+	builder := rollup.New(account.Writer())
+	builder.Now = func() time.Time { return fixtureNow }
+	builder.Sleep = rollup.NoRest
+
+	for _, grain := range []query.Grain{query.GrainWeek, query.GrainMonth} {
+		to := query.RollupNextBucket(query.RollupBucketStart(today, grain, location), grain, location)
+
+		if err := builder.Rebuild(context.Background(), rollup.Request{
+			Site: testSite, Grain: grain, From: today.AddDate(0, 0, -40), To: to,
+			CoverThrough: today, FromBeginning: true,
+		}); err != nil {
+			t.Fatalf("rebuild %s: %v", grain, err)
+		}
+	}
+
+	// The week beginning Monday the 24th, whose first day carries one visitor
+	// from the Sunday before it.
+	monday := query.RollupBucketStart(local(24, 0), query.GrainWeek, location)
+
+	if got := firstDayCarry(t, account, query.RollupLocalUnix(monday, location)); got != 1 {
+		t.Fatalf("the Monday carries %d, so the fixture is not what this test thinks it is", got)
+	}
+
+	for _, grain := range []query.Grain{query.GrainWeek, query.GrainMonth} {
+		t.Run(grain.String(), func(t *testing.T) {
+			rows, err := account.Reader().QueryContext(context.Background(), `
+				SELECT bucket, visitors_carried
+				FROM rollup_visitors
+				WHERE site_id = ? AND grain = ? AND dimension = 0
+				ORDER BY bucket`, testSite.ID, int64(grain))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			defer rows.Close()
+
+			checked, carrying := 0, 0
+
+			for rows.Next() {
+				var bucket, carried int64
+				if err := rows.Scan(&bucket, &carried); err != nil {
+					t.Fatal(err)
+				}
+
+				first := firstDayCarry(t, account, bucket)
+
+				if carried != first {
+					t.Errorf("the bucket at %d carries %d, want its first day's %d", bucket, carried, first)
+				}
+
+				if first > 0 {
+					carrying++
+				}
+
+				checked++
+			}
+
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+
+			if checked == 0 {
+				t.Fatalf("no %s buckets were built, so this test proves nothing", grain)
+			}
+
+			// Without one, every bucket carries zero and the assertion above
+			// holds however the carry is computed.
+			if carrying == 0 {
+				t.Errorf("no %s bucket begins on a day that carried anybody, so this proves nothing", grain)
+			}
+		})
+	}
+}
+
+// firstDayCarry reads the carry of the daily bucket a wide one begins on.
+func firstDayCarry(t *testing.T, account *accounts.Account, bucket int64) int64 {
+	t.Helper()
+
+	var carried int64
+
+	err := account.Reader().QueryRowContext(context.Background(), `
+		SELECT visitors_carried FROM rollup_visitors
+		WHERE site_id = ? AND grain = ? AND bucket = ? AND dimension = 0`,
+		testSite.ID, int64(query.GrainDay), bucket).Scan(&carried)
+
+	if err == sql.ErrNoRows {
+		return 0
+	}
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return carried
 }

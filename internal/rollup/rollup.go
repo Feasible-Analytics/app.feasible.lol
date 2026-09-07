@@ -41,6 +41,12 @@ const HourlyRetention = 14 * 24 * time.Hour
 const (
 	dayChunk  = 7
 	hourChunk = 3
+
+	// The derived grains read daily rows rather than events, so a chunk of them
+	// is far cheaper — but a month still covers thirty of those rows, so the
+	// counts are kept close in days rather than in buckets.
+	weekChunk  = 8
+	monthChunk = 2
 )
 
 // chunkTarget is how long one chunk's transaction should take, and minChunk is
@@ -230,6 +236,14 @@ func (b *Builder) Rebuild(ctx context.Context, request Request) error {
 		return err
 	}
 
+	// The derived grains read daily rows, so a range they cover has to be whole
+	// days: a week built from a partial one would be missing however much of it
+	// the daily pass has not reached.
+	if grain.Derived() {
+		from = query.RollupBucketStart(from, query.GrainDay, location)
+		to = query.RollupBucketStart(to, query.GrainDay, location)
+	}
+
 	size := defaultChunk(grain)
 
 	for start := from; start.Before(to); {
@@ -239,7 +253,16 @@ func (b *Builder) Rebuild(ctx context.Context, request Request) error {
 		// answers which day it is, not how long something took.
 		began := time.Now()
 
-		if err := b.buildChunk(ctx, site, grain, names, start, end); err != nil {
+		build := b.buildChunk
+		if grain.Derived() {
+			// A wide bucket is the sum of the daily rows under it, so it reads
+			// those rather than every event again.
+			build = func(ctx context.Context, site Site, grain query.Grain, _ eventNames, from, to time.Time) error {
+				return b.deriveChunk(ctx, site, grain, from, to)
+			}
+		}
+
+		if err := build(ctx, site, grain, names, start, end); err != nil {
 			return fmt.Errorf("rollup: build %s %s..%s: %w", grain, start.Format(time.RFC3339), end.Format(time.RFC3339), err)
 		}
 
@@ -268,11 +291,16 @@ func (b *Builder) Rebuild(ctx context.Context, request Request) error {
 
 // defaultChunk is how many buckets a rebuild starts out doing at a time.
 func defaultChunk(grain query.Grain) int {
-	if grain == query.GrainHour {
+	switch grain {
+	case query.GrainHour:
 		return hourChunk * 24
+	case query.GrainWeek:
+		return weekChunk
+	case query.GrainMonth:
+		return monthChunk
+	default:
+		return dayChunk
 	}
-
-	return dayChunk
 }
 
 // nextChunkSize halves the chunk while its transaction runs longer than a
@@ -371,6 +399,158 @@ func (b *Builder) eventNames(ctx context.Context) (eventNames, error) {
 type eventNames struct {
 	pageview   int64
 	engagement int64
+}
+
+// deriveColumns are the additive facts a wider bucket is the sum of. The three
+// distinct counts are not among them: adding two days' visitors double-counts
+// anybody who came on both, which is what the carried columns exist to correct.
+var deriveColumns = []string{
+	"pageviews", "events",
+	"visits", "bounces", "visit_duration", "session_pageviews",
+}
+
+// derivePairs are the distinct counts and the carried column each is corrected
+// by. Both halves are written together or the correction stops matching the
+// count it applies to.
+var derivePairs = [][2]string{
+	{"event_visitors", "event_visitors_carried"},
+	{"event_visits", "event_visits_carried"},
+	{"visitors", "visitors_carried"},
+}
+
+// deriveChunk builds a range of wide buckets by summing the daily rows under
+// them, in one transaction.
+//
+// The identity that makes this exact rather than approximate: the fingerprint
+// salt rotates on the UTC day while buckets are cut on the site's local day, so
+// one visitor id can appear in at most two adjacent daily buckets and never
+// three. A day's carried count is therefore how many of its visitors were also
+// in the day before, and over a run of days
+//
+//	period distinct = SUM(daily distinct) - SUM(daily carried, after the first day)
+//	period carried  = the first day's carried
+//
+// which is inclusion-exclusion with every term past the pairwise one known to
+// be zero.
+func (b *Builder) deriveChunk(ctx context.Context, site Site, grain query.Grain, from, to time.Time) (err error) {
+	conn, err := b.DB.Conn(ctx)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("rollup: close derive connection: %w", closeErr))
+		}
+	}()
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	defer tx.Rollback() //nolint:errcheck // a rollback after a successful commit is a no-op
+
+	location := site.Location()
+	fromBucket := query.RollupLocalUnix(from, location)
+	toBucket := query.RollupLocalUnix(to, location)
+
+	// Which wide bucket a day belongs to is calendar arithmetic, not division: a
+	// month is not a fixed number of days and a week can cross a daylight saving
+	// change. It is computed in Go and handed to SQLite, so there is one
+	// definition of where a day lands.
+	if err := writeBucketMap(ctx, tx, grain, from, to, location); err != nil {
+		return err
+	}
+
+	for _, table := range query.RollupTables() {
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM "+table+" WHERE site_id = ? AND grain = ? AND bucket >= ? AND bucket < ?",
+			site.ID, int64(grain), fromBucket, toBucket,
+		); err != nil {
+			return fmt.Errorf("rollup: clear %s: %w", table, err)
+		}
+
+		if err := deriveTable(ctx, tx, table, site.ID, grain); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+// writeBucketMap records which wide bucket every daily bucket in the range
+// belongs to, and whether it is the first day of that bucket.
+func writeBucketMap(ctx context.Context, tx *sql.Tx, grain query.Grain, from, to time.Time, location *time.Location) error {
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TEMP TABLE IF NOT EXISTS rollup_derive_map (
+			day INTEGER PRIMARY KEY, wide INTEGER NOT NULL, first INTEGER NOT NULL
+		)`); err != nil {
+		return fmt.Errorf("rollup: derive map: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM rollup_derive_map"); err != nil {
+		return fmt.Errorf("rollup: derive map: %w", err)
+	}
+
+	insert, err := tx.PrepareContext(ctx, "INSERT INTO rollup_derive_map (day, wide, first) VALUES (?, ?, ?)")
+	if err != nil {
+		return fmt.Errorf("rollup: derive map: %w", err)
+	}
+
+	defer insert.Close() //nolint:errcheck // the statement dies with the transaction
+
+	for day := from; day.Before(to); day = query.RollupNextBucket(day, query.GrainDay, location) {
+		wide := query.RollupBucketStart(day, grain, location)
+
+		first := 0
+		if day.Equal(wide) {
+			first = 1
+		}
+
+		if _, err := insert.ExecContext(ctx,
+			query.RollupLocalUnix(day, location), query.RollupLocalUnix(wide, location), first,
+		); err != nil {
+			return fmt.Errorf("rollup: derive map: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// deriveTable sums one summary table's daily rows into its wide ones.
+func deriveTable(ctx context.Context, tx *sql.Tx, table string, siteID int64, grain query.Grain) error {
+	columns := []string{"site_id", "grain", "bucket", "dimension", "value_id"}
+	values := []string{"?", "?", "m.wide", "d.dimension", "d.value_id"}
+
+	for _, column := range deriveColumns {
+		columns = append(columns, column)
+		values = append(values, "SUM(d."+column+")")
+	}
+
+	for _, pair := range derivePairs {
+		count, carried := pair[0], pair[1]
+
+		columns = append(columns, count, carried)
+
+		// Every day's carry is subtracted except the first's, which belongs to
+		// the bucket before this one rather than inside it.
+		values = append(values,
+			"SUM(d."+count+") - SUM(CASE WHEN m.first = 1 THEN 0 ELSE d."+carried+" END)",
+			"SUM(CASE WHEN m.first = 1 THEN d."+carried+" ELSE 0 END)")
+	}
+
+	statement := "INSERT INTO " + table + " (" + strings.Join(columns, ", ") + ") " +
+		"SELECT " + strings.Join(values, ", ") + " " +
+		"FROM " + table + " d JOIN rollup_derive_map m ON m.day = d.bucket " +
+		"WHERE d.site_id = ? AND d.grain = ? " +
+		"GROUP BY m.wide, d.dimension, d.value_id"
+
+	if _, err := tx.ExecContext(ctx, statement, siteID, int64(grain), siteID, int64(query.GrainDay)); err != nil {
+		return fmt.Errorf("rollup: derive %s: %w", table, err)
+	}
+
+	return nil
 }
 
 // buildChunk rewrites one slice of buckets inside a single transaction. The
