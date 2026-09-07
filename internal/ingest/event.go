@@ -111,6 +111,121 @@ type Event struct {
 	// there is something to write.
 	Props   map[string]string
 	Revenue *Revenue
+
+	// Diagnostics is the health panel's view of the request. It travels with
+	// the event because the account database lives on the app shard, and with
+	// the http transport the process that saw the request is not that shard.
+	Diagnostics *Diagnostics `json:"diagnostics,omitempty"`
+}
+
+// Diagnostics carries what the health panel needs and a derived event does not
+// already hold.
+//
+// The panel's view duplicates most of an event's fields, and this rides on the
+// busiest write in the system, so everything derivable from the event is rebuilt
+// on arrival rather than sent twice.
+type Diagnostics struct {
+	ClientIPSource    string     `json:"client_ip_source,omitempty"`
+	TrustedProxy      bool       `json:"trusted_proxy,omitempty"`
+	SiteDomain        string     `json:"site_domain,omitempty"`
+	RootDomain        string     `json:"root_domain,omitempty"`
+	SaltDay           int64      `json:"salt_day,omitempty"`
+	Subdivision2      string     `json:"subdivision2,omitempty"`
+	AutomationSignals string     `json:"automation_signals,omitempty"`
+	DropReason        string     `json:"drop_reason,omitempty"`
+	UserAgent         string     `json:"user_agent,omitempty"`
+	TrackerVersion    int        `json:"tracker_version,omitempty"`
+	Truncation        Truncation `json:"truncation,omitzero"`
+}
+
+// CarryDiagnostics attaches the panel's view of this request to the event.
+//
+// It copies named fields rather than the whole Debug so that the address cannot
+// travel: this is written to the ingester's outbox, and the outbox is a disk.
+func (e *Event) CarryDiagnostics(debug Debug, userAgent string, version int, truncation Truncation) {
+	e.Diagnostics = &Diagnostics{
+		ClientIPSource:    debug.ClientIPSource,
+		TrustedProxy:      debug.TrustedProxy,
+		SiteDomain:        debug.SiteDomain,
+		RootDomain:        debug.RootDomain,
+		SaltDay:           debug.SaltDay,
+		Subdivision2:      debug.Subdivision2,
+		AutomationSignals: debug.AutomationSignals,
+		DropReason:        debug.DropReason,
+		UserAgent:         userAgent,
+		TrackerVersion:    version,
+		Truncation:        truncation,
+	}
+}
+
+// PendingObservation rebuilds the request view for a shard that never saw the
+// request. It is Pending because the writer has not decided this event's fate
+// yet and emits the counting observation itself once it has.
+func (e *Event) PendingObservation() (Observation, bool) {
+	if e.Diagnostics == nil {
+		return Observation{}, false
+	}
+
+	d := e.Diagnostics
+
+	return Observation{
+		SiteID:     e.SiteID,
+		AccountID:  e.AccountID,
+		ReceivedAt: e.Timestamp,
+		Debug: Debug{
+			ClientIPSource: d.ClientIPSource,
+			TrustedProxy:   d.TrustedProxy,
+			Domain:         e.Domain,
+			SiteDomain:     d.SiteDomain,
+			SiteID:         e.SiteID,
+			AccountID:      e.AccountID,
+			Shard:          e.Shard,
+			EventName:      e.Name,
+			Timestamp:      e.Timestamp,
+			UserID:         e.UserID,
+			PreviousUserID: e.PreviousUserID,
+			RootDomain:     d.RootDomain,
+			SaltDay:        d.SaltDay,
+			Hostname:       e.Hostname,
+			Pathname:       e.Pathname,
+			PageTitle:      e.PageTitle,
+			Referrer:       e.Referrer,
+			Source:         e.Source,
+			Channel:        e.Channel,
+			UTMSource:      e.UTMSource,
+			UTMMedium:      e.UTMMedium,
+			UTMCampaign:    e.UTMCampaign,
+			UTMContent:     e.UTMContent,
+			UTMTerm:        e.UTMTerm,
+			ClickIDParam:   e.ClickIDParam,
+			Country:        e.Country,
+			Region:         e.Region,
+			Subdivision2:   d.Subdivision2,
+			City:           e.City,
+
+			DeviceType:     e.DeviceType,
+			ScreenSize:     e.ScreenSize,
+			Browser:        e.Browser,
+			BrowserVersion: e.BrowserVersion,
+			OS:             e.OS,
+			OSVersion:      e.OSVersion,
+			Language:       e.Language,
+
+			ScrollDepth:    e.ScrollDepth,
+			EngagementTime: e.EngagementTime,
+			Interactive:    e.Interactive,
+
+			AutomationSignals: d.AutomationSignals,
+			BotReason:         e.BotReason,
+			DropReason:        d.DropReason,
+			Truncation:        d.Truncation,
+		},
+		DropReason:     d.DropReason,
+		Pending:        true,
+		UserAgent:      d.UserAgent,
+		TrackerVersion: d.TrackerVersion,
+		Truncation:     d.Truncation,
+	}, true
 }
 
 // IsPageview reports whether this event counts towards the pageview metrics.

@@ -78,6 +78,73 @@ func TestInternalShardPublishesRouting(t *testing.T) {
 
 // TestInternalShardAcknowledgesOnlyOwnedEvents verifies that stale routing
 // cannot make one app shard write another shard's account.
+// TestTheShardRecordsTheRequestItNeverSaw is the whole point of carrying
+// diagnostics.
+//
+// With the http transport the process that received the request has no account
+// database, so unless the view travels with the event the customer's health
+// panel can name no hostname, no header and no script version — only counts.
+func TestTheShardRecordsTheRequestItNeverSaw(t *testing.T) {
+	cache := sites.NewEmpty()
+	cache.Replace([]sites.Site{{ID: 1, AccountID: 10, Domain: "owned.example"}}, time.Now())
+
+	var seen []Observation
+	shard := &InternalShard{
+		ID: 1, Sites: cache, Writer: &testBatchWriter{},
+		Observer: ObserverFunc(func(o Observation) { seen = append(seen, o) }),
+	}
+
+	event := Event{
+		UUID: uuid.New(), SiteID: 1, AccountID: 10, Domain: "owned.example",
+		Hostname: "docs.owned.example", Pathname: "/guide", Timestamp: 1_780_000_000,
+	}
+	event.CarryDiagnostics(Debug{
+		ClientIP:       "203.0.113.9",
+		ClientIPSource: "X-Forwarded-For",
+		SiteDomain:     "owned.example",
+	}, "Mozilla/5.0", 4, Truncation{PropsDropped: 2})
+
+	body, err := json.Marshal(IngestBatch{Events: []Event{event}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	shard.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodPost, InternalIngestPath, bytes.NewReader(body)))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("the shard answered %d", response.Code)
+	}
+
+	if len(seen) != 1 {
+		t.Fatalf("the shard recorded %d observations, want one for the event it was handed", len(seen))
+	}
+
+	got := seen[0]
+
+	// Pending, or the writer's own outcome would count the same event twice.
+	if !got.Pending {
+		t.Error("the request view counted the event; the writer decides its fate and counts it")
+	}
+
+	if got.Debug.ClientIPSource != "X-Forwarded-For" || got.TrackerVersion != 4 || got.UserAgent != "Mozilla/5.0" {
+		t.Errorf("the panel cannot name the header, agent or script version: %+v", got)
+	}
+
+	if got.Debug.Hostname != "docs.owned.example" || got.Debug.Pathname != "/guide" {
+		t.Errorf("the request view was not rebuilt from the event: %+v", got.Debug)
+	}
+
+	if got.Truncation.PropsDropped != 2 {
+		t.Errorf("dropped properties are invisible: %+v", got.Truncation)
+	}
+
+	// The address never reaches disk, and the outbox this crossed is a disk.
+	if got.Debug.ClientIP != "" {
+		t.Errorf("the visitor's address travelled with the event: %q", got.Debug.ClientIP)
+	}
+}
+
 func TestInternalShardAcknowledgesOnlyOwnedEvents(t *testing.T) {
 	cache := sites.NewEmpty()
 	cache.Replace([]sites.Site{{ID: 1, AccountID: 10, Domain: "owned.example"}}, time.Now())

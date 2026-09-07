@@ -57,6 +57,21 @@ type IngestResponse struct {
 	Error     string      `json:"error,omitempty"`
 }
 
+// observe records the request view for every event this shard owns. The writer
+// emits the counting observation once it has decided each event's fate, so
+// these carry the details and count nothing.
+func (s *InternalShard) observe(events []Event) {
+	if s.Observer == nil {
+		return
+	}
+
+	for i := range events {
+		if observation, ok := events[i].PendingObservation(); ok {
+			s.Observer.Observe(observation)
+		}
+	}
+}
+
 // RoutingShields exposes only the IP rules that must cross into the ingest
 // tier, avoiding any dependency on account-side policy implementation.
 type RoutingShields interface {
@@ -75,6 +90,12 @@ type InternalShard struct {
 	Sites   *sites.Cache
 	Shields RoutingShields
 	Writer  BatchWriter
+
+	// Observer receives the request view that travelled with each event. It is
+	// the only route by which a customer on the http transport learns which
+	// header, hostname and script version produced their traffic: the process
+	// that saw the request has no account database to write it to.
+	Observer Observer
 }
 
 // Handler builds the private routes. Authentication and private-interface
@@ -149,6 +170,8 @@ func (s *InternalShard) handleIngest(w http.ResponseWriter, r *http.Request) {
 		response.NotMine = append(response.NotMine, domain)
 	}
 	sort.Strings(response.NotMine)
+
+	s.observe(accepted)
 
 	if len(accepted) > 0 {
 		if s.Writer == nil {
