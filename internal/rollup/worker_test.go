@@ -331,3 +331,150 @@ func TestTheWorkerResumesAPartialBank(t *testing.T) {
 		t.Errorf("the resumed pass reached %d, no further than the banked %d", after.Through, banked.Through)
 	}
 }
+
+// TestASteadyPassDoesNotRebuildTheWholeHourlyWindow is the regression the
+// backward walk nearly introduced.
+//
+// Prune moves the hourly covered_from to the hour a fortnight begins, which is
+// always later in the day than the day a backward walk compares against — so a
+// rule written for the derived grains would extend the hourly rebuild to the
+// whole retention window on every pass, for every site older than a fortnight.
+//
+// The chunks a pass takes are what it costs: a rework of a couple of days is
+// one, and a fortnight is five.
+func TestASteadyPassDoesNotRebuildTheWholeHourlyWindow(t *testing.T) {
+	dir := t.TempDir()
+
+	manager := accounts.NewManager(dir)
+	account, err := manager.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		sessions []sessionRow
+		events   []eventRow
+	)
+
+	for day := 1; day <= 28; day++ {
+		sessions = append(sessions, sessionRow{
+			id: int64(day), user: int64(7000 + day), startedAt: local(day, 10), lastSeen: local(day, 10),
+			bounce: 1, pageviews: 1, entryPage: "/home", exitPage: "/home", source: "Google", country: "US",
+		})
+		events = append(events, eventRow{
+			session: int64(day), user: int64(7000 + day), at: local(day, 10),
+			name: ingest.EventPageview, page: "/home", source: "Google", country: "US",
+		})
+	}
+
+	writeFixture(t, account, sessions, events)
+
+	if err := manager.CloseAll(); err != nil {
+		t.Fatal(err)
+	}
+
+	worker := workerOver(t, dir, 1, fixtureNow)
+
+	// The first pass backfills and prunes, so the second is the steady state.
+	if err := worker.Once(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	rests := 0
+	worker.Rest = func(context.Context, time.Duration) error {
+		rests++
+
+		return nil
+	}
+
+	if err := worker.Once(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// One rest is one chunk more than the minimum, across all four grains. A
+	// fortnight of hourly buckets alone is four on top of that.
+	if rests > 2 {
+		t.Errorf("a steady pass rested %d times, so it is rebuilding far more than a rework", rests)
+	}
+}
+
+// TestADerivedGrainNeverCoversMoreThanTheDailyRowsDo is the other half of the
+// bounded backfill, and the one that would have been silently wrong.
+//
+// A month bucket begins up to thirty days before the day the bound lands on. A
+// pass that started there would sum a whole month out of the fortnight of daily
+// rows that exist, and then bank coverage claiming it — a wrong visitor count
+// inside a window a reader is told to trust.
+func TestADerivedGrainNeverCoversMoreThanTheDailyRowsDo(t *testing.T) {
+	dir := t.TempDir()
+
+	manager := accounts.NewManager(dir)
+	account, err := manager.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Longer than one pass will backfill, so the bound is what stops it rather
+	// than the site's first event.
+	var (
+		sessions []sessionRow
+		events   []eventRow
+	)
+
+	for day := range 200 {
+		at := local(1, 10).AddDate(0, 0, -day)
+
+		sessions = append(sessions, sessionRow{
+			id: int64(day + 1), user: int64(9000 + day), startedAt: at, lastSeen: at,
+			bounce: 1, pageviews: 1, entryPage: "/home", exitPage: "/home", source: "Google", country: "US",
+		})
+		events = append(events, eventRow{
+			session: int64(day + 1), user: int64(9000 + day), at: at,
+			name: ingest.EventPageview, page: "/home", source: "Google", country: "US",
+		})
+	}
+
+	writeFixture(t, account, sessions, events)
+
+	if err := manager.CloseAll(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Five days on from the fixture's own clock, so the day the backfill bound
+	// lands on is neither a Monday nor the first of a month. On fixtureNow
+	// itself all three grains snap to the same instant and the bug is invisible.
+	worker := workerOver(t, dir, 1, fixtureNow.AddDate(0, 0, 5))
+
+	if err := worker.Once(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := worker.Accounts.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	daily := coverageFrom(t, reopened, query.GrainDay)
+
+	for _, grain := range []query.Grain{query.GrainWeek, query.GrainMonth} {
+		if from := coverageFrom(t, reopened, grain); from < daily {
+			t.Errorf("the %s summary claims to cover from %d while the daily rows only reach %d",
+				grain, from, daily)
+		}
+	}
+}
+
+// coverageFrom reads where one grain's covered window begins, as stored.
+func coverageFrom(t *testing.T, account *accounts.Account, grain query.Grain) int64 {
+	t.Helper()
+
+	var from int64
+
+	if err := account.Reader().QueryRowContext(context.Background(),
+		"SELECT covered_from FROM rollup_state WHERE site_id = ? AND grain = ?",
+		testSite.ID, int64(grain)).Scan(&from); err != nil {
+		t.Fatalf("read %s coverage: %v", grain, err)
+	}
+
+	return from
+}

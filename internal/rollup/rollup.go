@@ -236,14 +236,6 @@ func (b *Builder) Rebuild(ctx context.Context, request Request) error {
 		return err
 	}
 
-	// The derived grains read daily rows, so a range they cover has to be whole
-	// days: a week built from a partial one would be missing however much of it
-	// the daily pass has not reached.
-	if grain.Derived() {
-		from = query.RollupBucketStart(from, query.GrainDay, location)
-		to = query.RollupBucketStart(to, query.GrainDay, location)
-	}
-
 	size := defaultChunk(grain)
 
 	for start := from; start.Before(to); {
@@ -253,17 +245,17 @@ func (b *Builder) Rebuild(ctx context.Context, request Request) error {
 		// answers which day it is, not how long something took.
 		began := time.Now()
 
-		build := b.buildChunk
+		// A wide bucket is the sum of the daily rows under it, so it reads those
+		// rather than every event again.
+		var buildErr error
 		if grain.Derived() {
-			// A wide bucket is the sum of the daily rows under it, so it reads
-			// those rather than every event again.
-			build = func(ctx context.Context, site Site, grain query.Grain, _ eventNames, from, to time.Time) error {
-				return b.deriveChunk(ctx, site, grain, from, to)
-			}
+			buildErr = b.deriveChunk(ctx, site, grain, start, end)
+		} else {
+			buildErr = b.buildChunk(ctx, site, grain, names, start, end)
 		}
 
-		if err := build(ctx, site, grain, names, start, end); err != nil {
-			return fmt.Errorf("rollup: build %s %s..%s: %w", grain, start.Format(time.RFC3339), end.Format(time.RFC3339), err)
+		if buildErr != nil {
+			return fmt.Errorf("rollup: build %s %s..%s: %w", grain, start.Format(time.RFC3339), end.Format(time.RFC3339), buildErr)
 		}
 
 		took := time.Since(began)
@@ -400,6 +392,14 @@ type eventNames struct {
 	pageview   int64
 	engagement int64
 }
+
+// DeriveColumns and DerivePairs are exported so a test can hold them against
+// the schema. A fact column the derivation never sums reads as zero at week and
+// month grain, on every report, with nothing to say why.
+func DeriveColumns() []string { return append([]string(nil), deriveColumns...) }
+
+// DerivePairs is the distinct counts and their corrections, for the same guard.
+func DerivePairs() [][2]string { return append([][2]string(nil), derivePairs...) }
 
 // deriveColumns are the additive facts a wider bucket is the sum of. The three
 // distinct counts are not among them: adding two days' visitors double-counts

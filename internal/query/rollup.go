@@ -112,7 +112,10 @@ func splitAtBucket(full, complete Resolved, boundary time.Time) (Resolved, Resol
 		return Resolved{Start: full.Start, End: full.Start}, Resolved{}, false
 	}
 
-	if !complete.End.After(boundary) {
+	// Against the range's own end, not the complete half's. On the day a bucket
+	// begins those two are equal, and asking the complete half would answer
+	// "nothing is left over" while today is still outside the summary.
+	if !full.End.After(boundary) {
 		return complete, Resolved{}, false
 	}
 
@@ -173,6 +176,16 @@ const (
 	GrainWeek  Grain = 2
 	GrainMonth Grain = 3
 )
+
+// RollupGrains is every grain the summary tables hold, in build order: the
+// derived ones are summed out of the daily rows, so day comes first.
+//
+// It is a list rather than a literal at each call site because a worker, a
+// rebuild command and a status command that disagree about which grains exist
+// is a grain that is built and never cleared, or cleared and never shown.
+func RollupGrains() []Grain {
+	return []Grain{GrainDay, GrainHour, GrainWeek, GrainMonth}
+}
 
 // Derived reports whether a grain is summed out of the daily rows rather than
 // read from the raw facts.
@@ -424,8 +437,11 @@ func RollupBucketExpr(column string, grain Grain, loc *time.Location, from, to t
 }
 
 // RollupPreviousBucketSQL renders the bucket immediately before another, which
-// is what the carry-over counts are defined against. Both grains are a constant
-// number of wall-clock seconds wide, so this is subtraction.
+// is what the carry-over counts are defined against.
+//
+// Only the day and hour grains reach here: they are a constant number of
+// wall-clock seconds wide, so this is subtraction. A week or a month is not,
+// and neither is built from raw events.
 func RollupPreviousBucketSQL(column string, grain Grain) string {
 	if grain == GrainHour {
 		return "(" + column + " - 3600)"

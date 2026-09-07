@@ -191,14 +191,32 @@ func (w *Worker) buildSite(ctx context.Context, ref SiteRef) error {
 
 	// Day first, because the derived grains are summed out of its rows and a
 	// week built from days this pass has not written yet would be short.
-	for _, grain := range []query.Grain{query.GrainDay, query.GrainHour, query.GrainWeek, query.GrainMonth} {
+	// dailyFrom is how far back the daily pass reached, which is the floor for
+	// every grain summed out of its rows.
+	var dailyFrom time.Time
+
+	for _, grain := range query.RollupGrains() {
 		from, ok, err := w.windowStart(ctx, builder, ref.Site, grain, earliest, today, location)
 		if err != nil {
 			return err
 		}
 
+		if grain == query.GrainDay {
+			dailyFrom = from
+		}
+
 		if !ok {
 			continue
+		}
+
+		// A derived grain reads daily rows, so it starts at the first bucket
+		// that begins at or after where the daily pass reached. Its own bucket
+		// start is earlier — a month begins up to thirty days before the day a
+		// backfill bound lands on — and building from there would sum a whole
+		// month out of the fortnight of daily rows that exist, then bank
+		// coverage claiming all of it.
+		if grain.Derived() {
+			from = firstWholeBucket(laterOf(from, dailyFrom), grain, location)
 		}
 
 		// Daily buckets run one day past today so that today's row exists and
@@ -255,15 +273,14 @@ func (w *Worker) windowStart(ctx context.Context, builder *Builder, site Site, g
 
 	if !found || coverage.Timezone != site.Zone() {
 		// A grain with nothing built covers a bounded distance rather than the
-		// whole history at once.
+		// whole history at once, and later passes reach further back until
+		// coverage meets the first event.
 		//
-		// On the tick after a new grain ships, every site on the box has a
-		// missing coverage row at the same moment. A worker that answered "build
-		// everything" to all of them would pin a core for as long as the longest
-		// history takes and starve the ingest handoff while it did — which has
-		// happened here before, and cost every site's events rather than only
-		// the one being built. Later passes reach further back, a bound at a
-		// time, until coverage meets the first event.
+		// When a new grain ships, every site on the box has a missing coverage
+		// row at the same moment. Building every history at once pins a core for
+		// as long as the longest of them takes and starves the ingest handoff
+		// while it does, which costs every site's events and not only the one
+		// being built.
 		return laterOf(oldest, backfillLimit(today, grain, location)), true, nil
 	}
 
@@ -284,10 +301,18 @@ func (w *Worker) windowStart(ctx context.Context, builder *Builder, site Site, g
 	// Coverage that has not reached the site's first event yet is extended one
 	// bound further back on every pass. Without this the first pass's limit
 	// would be permanent, and the history before it would never be built.
-	if covered := localToInstant(coverage.From, location, grain); covered.After(oldest) {
-		reach := laterOf(oldest, query.RollupBucketStart(covered.Add(-backfillPerPass), grain, location))
-		if reach.Before(start) {
-			start = reach
+	//
+	// The hourly grain is not backfilled this way. Its window is bounded by
+	// retention rather than by the first event, and Prune moves covered_from
+	// forward to the hour the fortnight begins — which is always later in the
+	// day than the day this compares against, so it would rebuild the whole
+	// retention window on every pass for ever.
+	if grain != query.GrainHour {
+		if covered := localToInstant(coverage.From, location, grain); covered.After(oldest) {
+			reach := laterOf(oldest, query.RollupBucketStart(covered.Add(-backfillPerPass), grain, location))
+			if reach.Before(start) {
+				start = reach
+			}
 		}
 	}
 
@@ -307,6 +332,17 @@ const backfillPerPass = 90 * 24 * time.Hour
 // backfillLimit is how far back a pass with no coverage at all starts.
 func backfillLimit(today time.Time, grain query.Grain, location *time.Location) time.Time {
 	return query.RollupBucketStart(today.Add(-backfillPerPass), grain, location)
+}
+
+// firstWholeBucket is the first bucket of a grain that begins at or after an
+// instant, so a bucket is never built from a range that starts inside it.
+func firstWholeBucket(at time.Time, grain query.Grain, location *time.Location) time.Time {
+	start := query.RollupBucketStart(at, grain, location)
+	if start.Equal(at) {
+		return start
+	}
+
+	return query.RollupNextBucket(start, grain, location)
 }
 
 // laterOf is the more recent of two instants.

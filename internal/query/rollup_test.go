@@ -434,3 +434,102 @@ func TestACoverageReadFailureFailsTheQuery(t *testing.T) {
 		t.Fatalf("an unreadable coverage table must fail the query as ours, got %v", err)
 	}
 }
+
+// TestAWideGrainStopsAtTheLastWholeBucket is what keeps a partial week out of
+// the summary half of an answer.
+//
+// A week is only whole once every day under it is built, so the summary stops
+// at the last Monday and the days after it — today included — are read raw.
+// Without the split the reader would take a bucket that is still filling and
+// report it as a finished one.
+func TestAWideGrainStopsAtTheLastWholeBucket(t *testing.T) {
+	// A Wednesday, so the last whole week ended two days ago and there is a
+	// remainder to hand to raw.
+	now := time.Date(2026, 9, 9, 15, 0, 0, 0, time.UTC)
+
+	resolved := weeklyRange(t, now)
+
+	segments := route(t, coveringRouter("UTC"), &Query{
+		SiteIDs: []int64{1}, Metrics: []string{"visitors"}, SampleRate: 1,
+		Dimensions: []string{"time"}, Timezone: "UTC",
+	}, resolved)
+
+	if len(segments) != 2 {
+		t.Fatalf("the router produced %s, want a summary half and a raw remainder", rollupExplain(segments))
+	}
+
+	if segments[0].Source != SourceRollup || segments[0].Grain != GrainWeek {
+		t.Fatalf("the first segment is %s, want the weekly summary", rollupExplain(segments[:1]))
+	}
+
+	// The summary stops on a Monday, not at midnight this morning.
+	if weekday := segments[0].Range.End.Weekday(); weekday != time.Monday {
+		t.Errorf("the summary runs to a %s, want it to stop on the Monday a week begins", weekday)
+	}
+
+	if segments[1].Source != SourceRaw {
+		t.Fatalf("the second segment is %s, want the raw remainder", rollupExplain(segments[1:]))
+	}
+
+	// No gap and no overlap between them, or the days in between are counted
+	// twice or not at all.
+	if !segments[1].Range.Start.Equal(segments[0].Range.End) {
+		t.Errorf("the raw half starts at %s and the summary ended at %s",
+			segments[1].Range.Start, segments[0].Range.End)
+	}
+
+	// And the pair still covers the whole range that was asked for.
+	if !segments[1].Range.End.Equal(resolved.End) {
+		t.Errorf("the segments end at %s, want the range's own %s", segments[1].Range.End, resolved.End)
+	}
+}
+
+// TestAWideGrainKeepsTodayOnTheDayABucketBegins is the boundary the split gets
+// wrong if it asks the wrong half where the range ends.
+//
+// On a Monday the last whole week ends this morning, so there is no summary
+// remainder — but there is still today, and a reader that concluded "nothing is
+// left over" would drop it and report a Monday with no traffic.
+func TestAWideGrainKeepsTodayOnTheDayABucketBegins(t *testing.T) {
+	now := time.Date(2026, 9, 7, 15, 0, 0, 0, time.UTC)
+
+	if now.Weekday() != time.Monday {
+		t.Fatalf("the fixture date is a %s, so this test is not about what it says", now.Weekday())
+	}
+
+	resolved := weeklyRange(t, now)
+
+	segments := route(t, coveringRouter("UTC"), &Query{
+		SiteIDs: []int64{1}, Metrics: []string{"visitors"}, SampleRate: 1,
+		Dimensions: []string{"time"}, Timezone: "UTC",
+	}, resolved)
+
+	last := segments[len(segments)-1]
+
+	if !last.Range.End.Equal(resolved.End) {
+		t.Errorf("the router answered %s, which stops before the range's own end %s — today is missing",
+			rollupExplain(segments), resolved.End)
+	}
+}
+
+// weeklyRange is a range wide enough to be drawn in weeks and beginning on a
+// Monday, which is what the reader needs before it will read weekly buckets at
+// all.
+func weeklyRange(t *testing.T, now time.Time) Resolved {
+	t.Helper()
+
+	start := startOfWeek(now.AddDate(0, 0, -200), time.UTC)
+
+	resolved, err := DateRange{
+		Preset: RangeCustom, Start: start, End: now, DateOnly: true,
+	}.Resolve(now, time.UTC, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resolved.Interval != IntervalWeek {
+		t.Fatalf("the range is drawn in %s, so this test is not about weekly buckets", resolved.Interval)
+	}
+
+	return resolved
+}

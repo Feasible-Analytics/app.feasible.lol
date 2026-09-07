@@ -26,9 +26,9 @@
 --    a query in a different timezone cannot read these rows and falls back to
 --    raw.
 --
--- 3. Both grains live in one table behind a `grain` discriminator, keyed so
---    that the two never mix in a scan. Hourly rows are pruned after a fortnight
---    and daily rows are kept forever.
+-- 3. Every grain lives in one table behind a `grain` discriminator, keyed so
+--    that they never mix in a scan. Hourly rows are pruned after a fortnight;
+--    every other grain is kept for as long as the account has data.
 --
 -- 4. The `_carried` columns are what make a distinct count re-aggregate. A
 --    visitor id lives for one UTC day and a visit for as long as somebody keeps
@@ -50,7 +50,7 @@
 -- the product touches the smallest table.
 CREATE TABLE rollup_visitors (
     site_id                INTEGER NOT NULL,
-    grain                  INTEGER NOT NULL, -- 0 = day, 1 = hour
+    grain                  INTEGER NOT NULL, -- 0 day, 1 hour, 2 week, 3 month
     bucket                 INTEGER NOT NULL, -- local seconds at the start of the period
     dimension              INTEGER NOT NULL,
     value_id               INTEGER NOT NULL,

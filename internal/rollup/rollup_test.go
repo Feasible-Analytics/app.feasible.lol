@@ -165,7 +165,7 @@ func buildAll(t *testing.T, account *accounts.Account, now time.Time) {
 	today := query.RollupBucketStart(now.In(losAngeles), query.GrainDay, losAngeles)
 	from := today.AddDate(0, 0, -30)
 
-	for _, grain := range []query.Grain{query.GrainDay, query.GrainHour, query.GrainWeek, query.GrainMonth} {
+	for _, grain := range query.RollupGrains() {
 		to := today
 		if grain == query.GrainDay {
 			to = today.AddDate(0, 0, 1)
@@ -515,7 +515,7 @@ func TestSeededDatabaseAnswersIdenticallyFromEitherSource(t *testing.T) {
 	location := site.Location()
 	today := query.RollupBucketStart(now.In(location), query.GrainDay, location)
 
-	for _, grain := range []query.Grain{query.GrainDay, query.GrainHour, query.GrainWeek, query.GrainMonth} {
+	for _, grain := range query.RollupGrains() {
 		to := today
 		if grain == query.GrainDay {
 			to = today.AddDate(0, 0, 1)
@@ -1665,4 +1665,73 @@ func firstDayCarry(t *testing.T, account *accounts.Account, bucket int64) int64 
 	}
 
 	return carried
+}
+
+// TestTheDerivationSumsEveryFactColumn is the guard against a summary table
+// growing a column the wide grains never carry.
+//
+// Such a column reads as zero at week and month grain, on every report, with
+// nothing anywhere to say why — and no comparison against the raw rows catches
+// it unless that report happens to be in the list.
+func TestTheDerivationSumsEveryFactColumn(t *testing.T) {
+	account := openAccount(t)
+
+	// The keying columns are what a bucket is identified by rather than facts
+	// about it, so they are not summed.
+	keys := map[string]bool{
+		"site_id": true, "grain": true, "bucket": true, "dimension": true, "value_id": true,
+	}
+
+	derived := map[string]bool{}
+	for _, column := range rollup.DeriveColumns() {
+		derived[column] = true
+	}
+
+	for _, pair := range rollup.DerivePairs() {
+		derived[pair[0]] = true
+		derived[pair[1]] = true
+	}
+
+	for _, table := range query.RollupTables() {
+		rows, err := account.Reader().QueryContext(context.Background(), "SELECT name FROM pragma_table_info(?)", table)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for rows.Next() {
+			var column string
+			if err := rows.Scan(&column); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+
+			if keys[column] || derived[column] {
+				continue
+			}
+
+			t.Errorf("%s.%s is in the schema and in no derivation list, so it is zero at week and month grain",
+				table, column)
+		}
+
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+
+		rows.Close()
+	}
+
+	// And nothing in the lists that the schema does not have, which would fail
+	// at run time rather than here.
+	for column := range derived {
+		var count int
+		if err := account.Reader().QueryRowContext(context.Background(),
+			"SELECT COUNT(*) FROM pragma_table_info('rollup_visitors') WHERE name = ?", column).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+
+		if count == 0 {
+			t.Errorf("the derivation sums %q, which no summary table has", column)
+		}
+	}
 }

@@ -154,7 +154,7 @@ func runRollupRebuild(e *env, args []string) int {
 
 		builder := rollup.New(account.Writer())
 
-		for _, grain := range []query.Grain{query.GrainDay, query.GrainHour} {
+		for _, grain := range query.RollupGrains() {
 			if err := builder.Reset(ctx, ref.Site.ID, grain); err != nil {
 				_ = lease.Release()
 				fmt.Fprintf(e.stderr, "%v\n", err)
@@ -215,7 +215,7 @@ func runRollupStatus(e *env, args []string) int {
 
 		builder := rollup.New(account.Writer())
 
-		for _, grain := range []query.Grain{query.GrainDay, query.GrainHour} {
+		for _, grain := range query.RollupGrains() {
 			coverage, found, err := builder.Coverage(ctx, ref.Site.ID, grain)
 			if err != nil {
 				_ = lease.Release()
