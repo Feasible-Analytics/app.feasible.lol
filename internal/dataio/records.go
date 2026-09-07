@@ -214,7 +214,7 @@ func StartImport(ctx context.Context, db *sql.DB, id int64, total int, now time.
 	// A worker can be retried after committing some batches. Clearing its own
 	// rows makes the retry an exact replay instead of quietly doubling every
 	// file that completed before the interruption.
-	if _, err := tx.ExecContext(ctx, "DELETE FROM imported_rollups WHERE import_id = ?", id); err != nil {
+	if err := clearImportedRows(ctx, tx, id); err != nil {
 		return fmt.Errorf("dataio: restart import %d: %w", id, err)
 	}
 
@@ -268,6 +268,27 @@ func CompleteImport(ctx context.Context, db *sql.DB, id int64, dimensions []stri
 	return nil
 }
 
+// clearImportedRows removes everything an import contributed to a report: its
+// daily rows, the wide summaries built from them, and the record that it has
+// any.
+//
+// The summaries have to go with the daily rows or a failed import's history
+// keeps appearing in exactly the reports wide enough to read them, and a retried
+// one is counted from a run that no longer exists.
+func clearImportedRows(ctx context.Context, tx *sql.Tx, id int64) error {
+	for _, statement := range []string{
+		"DELETE FROM imported_rollups WHERE import_id = ?",
+		"DELETE FROM imported_wide WHERE import_id = ?",
+		"UPDATE imports SET wide_grains = 0 WHERE id = ?",
+	} {
+		if _, err := tx.ExecContext(ctx, statement, id); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // FailImport records why an import stopped. The message is shown to the
 // customer verbatim, so callers write it for them: which file, which row, and
 // what was wrong with it.
@@ -281,7 +302,7 @@ func FailImport(ctx context.Context, db *sql.DB, id int64, reason string, now ti
 	// An invalid archive may fail after earlier CSVs committed their batches.
 	// Failed imports must never leak partial history into reports, so status and
 	// row cleanup are one transaction.
-	if _, err := tx.ExecContext(ctx, "DELETE FROM imported_rollups WHERE import_id = ?", id); err != nil {
+	if err := clearImportedRows(ctx, tx, id); err != nil {
 		return fmt.Errorf("dataio: fail import %d: %w", id, err)
 	}
 

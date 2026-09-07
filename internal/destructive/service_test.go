@@ -298,6 +298,7 @@ func seedEverySiteScopedRow(t *testing.T, f *destructiveFixture) []string {
 		{`INSERT INTO funnel_steps (funnel_id, position, goal_id) VALUES (104, 1, 103)`, nil},
 		{`INSERT INTO imports (id, site_id, source, label, upload_path, created_at) VALUES (105, ?, 'csv', 'history', ?, 1)`, []any{f.siteID, upload}},
 		{`INSERT INTO imported_rollups (import_id, site_id, timestamp) VALUES (105, ?, 1)`, []any{f.siteID}},
+		{`INSERT INTO imported_wide (import_id, site_id, grain, timestamp) VALUES (105, ?, 2, 1)`, []any{f.siteID}},
 		{`INSERT INTO search_console_daily (site_id, timestamp, query) VALUES (?, 1, 'query')`, []any{f.siteID}},
 		{`INSERT INTO exports (site_id, token_hash, path, created_at, expires_at) VALUES (?, 'export-token', ?, 1, 2)`, []any{f.siteID, export}},
 		{`INSERT INTO shield_rules (site_id, kind, value, created_at) VALUES (?, 'page', '/private', 1)`, []any{f.siteID}},

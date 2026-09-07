@@ -27,6 +27,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/dataio"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
@@ -1734,4 +1735,79 @@ func TestTheDerivationSumsEveryFactColumn(t *testing.T) {
 			t.Errorf("the derivation sums %q, which no summary table has", column)
 		}
 	}
+}
+
+// TestSummarisingAnImportChangesNoAnswer is the whole claim of the imported
+// summaries in one assertion.
+//
+// A week or a month of imported history is a plain sum of its days — the source
+// gave us daily totals and nobody who appeared on two of them can be un-counted
+// — so summarising changes only how many rows are read to reach a number, never
+// the number. Every report is run before and after and the two are compared.
+func TestSummarisingAnImportChangesNoAnswer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("generating a realistic dataset takes a few seconds")
+	}
+
+	account, site, now := seedDatabase(t)
+
+	location := site.Location()
+	today := query.RollupBucketStart(now.In(location), query.GrainDay, location)
+
+	seedImportedHistory(t, account, site, today)
+
+	engine := query.New(account.Reader())
+	engine.Now = func() time.Time { return now }
+
+	metrics := []string{"visitors", "visits", "pageviews", "bounce_rate", "visit_duration"}
+
+	reports := []query.Query{}
+
+	for _, dateRange := range []query.DateRange{
+		{Preset: query.RangeLast28Days},
+		{Preset: query.RangeLast12Months},
+		{Preset: query.RangeAll},
+	} {
+		for _, dimension := range [][]string{nil, {"time"}, {"time:month"}, {"visit:source"}} {
+			reports = append(reports, query.Query{
+				SiteIDs: []int64{site.ID}, Metrics: metrics, Dimensions: dimension,
+				DateRange: dateRange, Timezone: site.Timezone,
+				Pagination: query.Pagination{Limit: query.MaxLimit},
+			})
+		}
+	}
+
+	before := make([]*query.Result, len(reports))
+	for i, q := range reports {
+		before[i] = answer(t, engine, q)
+	}
+
+	if err := dataio.SummariseImport(context.Background(), account.Writer(), 1, site.ID, location); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without this the comparison is the daily table against itself.
+	if rows := countWideRows(t, account); rows == 0 {
+		t.Fatal("summarising wrote no wide rows, so nothing under test ran")
+	}
+
+	for i, q := range reports {
+		after := answer(t, engine, q)
+
+		compare(t, fmt.Sprintf("%s %v", q.DateRange.Preset, q.Dimensions), metrics, before[i], after)
+	}
+}
+
+// countWideRows says how many summary rows an import produced.
+func countWideRows(t *testing.T, account *accounts.Account) int64 {
+	t.Helper()
+
+	var rows int64
+
+	if err := account.Reader().QueryRowContext(context.Background(),
+		"SELECT COUNT(*) FROM imported_wide").Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+
+	return rows
 }

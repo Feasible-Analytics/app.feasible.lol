@@ -11,6 +11,7 @@ package dataio
 import (
 	"archive/zip"
 	"context"
+	"database/sql"
 	"encoding/csv"
 	"io"
 	"os"
@@ -1205,4 +1206,246 @@ func TestArchiveBudgetIsSharedAcrossEntries(t *testing.T) {
 	if _, err := io.Copy(io.Discard, second); err == nil {
 		t.Fatal("a second entry inflated past the archive's shared budget")
 	}
+}
+
+// TestTheSummaryCarriesEveryImportedColumn is the guard against the two tables
+// drifting apart.
+//
+// A column in neither list is dropped from every summary with nothing to say
+// so, and imported_rollups has gained columns before — five of them in one
+// migration.
+func TestTheSummaryCarriesEveryImportedColumn(t *testing.T) {
+	manager := accounts.NewManager(t.TempDir())
+	t.Cleanup(func() { _ = manager.CloseAll() })
+
+	account, err := manager.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	db := account.Reader()
+
+	// What identifies a row rather than describing it. site_id and import_id
+	// are written from the import being summarised, and id and grain and
+	// timestamp are the summary's own.
+	skip := map[string]bool{
+		"id": true, "import_id": true, "site_id": true, "grain": true, "timestamp": true,
+	}
+
+	carried := map[string]bool{}
+	for _, column := range append(append([]string(nil), wideKeys...), wideMetrics...) {
+		carried[column] = true
+	}
+
+	for _, table := range []string{"imported_rollups", "imported_wide"} {
+		for _, column := range tableColumns(t, db, table) {
+			if skip[column] || carried[column] {
+				continue
+			}
+
+			t.Errorf("%s.%s is in the schema and in neither summary list, so it is lost at week and month grain",
+				table, column)
+		}
+	}
+
+	// And nothing in the lists that the summary table does not hold, which would
+	// fail at run time rather than here.
+	wide := map[string]bool{}
+	for _, column := range tableColumns(t, db, "imported_wide") {
+		wide[column] = true
+	}
+
+	for column := range carried {
+		if !wide[column] {
+			t.Errorf("the summary carries %q, which imported_wide does not have", column)
+		}
+	}
+}
+
+// tableColumns lists a table's columns as the schema holds them.
+func tableColumns(t *testing.T, db *sql.DB, table string) []string {
+	t.Helper()
+
+	rows, err := db.QueryContext(context.Background(), "SELECT name FROM pragma_table_info(?)", table)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer rows.Close()
+
+	var columns []string
+
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+
+		columns = append(columns, name)
+	}
+
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(columns) == 0 {
+		t.Fatalf("%s has no columns, so this test proves nothing", table)
+	}
+
+	return columns
+}
+
+// TestAFailedImportLeavesNoSummaryBehind is the invariant FailImport exists for,
+// extended to the rows it did not know about.
+//
+// An import can fail after its summaries were written. Left behind, that
+// history reappears in exactly the reports wide enough to read a summary and in
+// none of the others — the customer sees two different totals for one range.
+func TestAFailedImportLeavesNoSummaryBehind(t *testing.T) {
+	ctx := context.Background()
+	db := summaryFixture(t)
+
+	if err := SummariseImport(ctx, db, 1, 1, time.UTC); err != nil {
+		t.Fatal(err)
+	}
+
+	if rows := countRows(t, db, "SELECT COUNT(*) FROM imported_wide"); rows == 0 {
+		t.Fatal("the fixture summarised nothing, so this test proves nothing")
+	}
+
+	if err := FailImport(ctx, db, 1, "an invalid archive", fixtureNow); err != nil {
+		t.Fatal(err)
+	}
+
+	if rows := countRows(t, db, "SELECT COUNT(*) FROM imported_wide"); rows != 0 {
+		t.Errorf("%d summary rows survived a failed import", rows)
+	}
+
+	if bits := countRows(t, db, "SELECT wide_grains FROM imports WHERE id = 1"); bits != 0 {
+		t.Errorf("a failed import still claims to be summarised (%d)", bits)
+	}
+}
+
+// TestARetriedImportStartsWithNoSummary is the same for the other direction.
+//
+// A retry replays every row. Its old summaries describe a run that no longer
+// exists, and until the retry finishes they are the only complete numbers in
+// the database — which is exactly when a wide report would read them.
+func TestARetriedImportStartsWithNoSummary(t *testing.T) {
+	ctx := context.Background()
+	db := summaryFixture(t)
+
+	if err := SummariseImport(ctx, db, 1, 1, time.UTC); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := StartImport(ctx, db, 1, 1, fixtureNow); err != nil {
+		t.Fatal(err)
+	}
+
+	if rows := countRows(t, db, "SELECT COUNT(*) FROM imported_wide"); rows != 0 {
+		t.Errorf("%d summary rows survived a retry", rows)
+	}
+
+	if bits := countRows(t, db, "SELECT wide_grains FROM imports WHERE id = 1"); bits != 0 {
+		t.Errorf("a restarted import still claims to be summarised (%d)", bits)
+	}
+}
+
+// TestASummaryIsTiedToTheZoneItWasCutIn is the finding most likely to change a
+// number somebody is looking at.
+//
+// A week is a week in one timezone and a different seven days in another, so a
+// summary cut in Tokyo and read as UTC reports one month's traffic as the next
+// one's. The summary has to name its zone, and a site that changed zone has to
+// be re-cut rather than corrected.
+func TestASummaryIsTiedToTheZoneItWasCutIn(t *testing.T) {
+	ctx := context.Background()
+	db := summaryFixture(t)
+
+	tokyo, err := time.LoadLocation("Asia/Tokyo")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SummariseImport(ctx, db, 1, 1, tokyo); err != nil {
+		t.Fatal(err)
+	}
+
+	var zone string
+	if err := db.QueryRowContext(ctx, "SELECT wide_timezone FROM imports WHERE id = 1").Scan(&zone); err != nil {
+		t.Fatal(err)
+	}
+
+	if zone != "Asia/Tokyo" {
+		t.Errorf("the summary records its zone as %q, want Asia/Tokyo", zone)
+	}
+
+	// The site moves to UTC. The summary is not corrected in place — every
+	// bucket is cut on the wrong days — so the backfill has to rebuild it.
+	rebuilt, err := SummariseSite(ctx, db, 1, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if rebuilt != 1 {
+		t.Errorf("the site rebuilt %d summaries after its zone changed, want 1", rebuilt)
+	}
+
+	// And now it is settled, so a second pass does nothing.
+	again, err := SummariseSite(ctx, db, 1, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if again != 0 {
+		t.Errorf("a settled site rebuilt %d summaries, want none", again)
+	}
+}
+
+// summaryFixture is one completed import with a fortnight of daily rows.
+func summaryFixture(t *testing.T) *sql.DB {
+	t.Helper()
+
+	ctx := context.Background()
+
+	manager := accounts.NewManager(t.TempDir())
+	t.Cleanup(func() { _ = manager.CloseAll() })
+
+	account, err := manager.Open(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	db := account.Writer()
+
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO imports (id, site_id, source, label, status, created_at) "+
+			"VALUES (1, 1, 'csv', 'fixture', 'completed', 0)"); err != nil {
+		t.Fatal(err)
+	}
+
+	day := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+
+	for i := range 14 {
+		if _, err := db.ExecContext(ctx,
+			"INSERT INTO imported_rollups (import_id, site_id, timestamp, visitors, visits, pageviews) "+
+				"VALUES (1, 1, ?, 10, 12, 30)", day.AddDate(0, 0, i).Unix()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	return db
+}
+
+// countRows reads one number out of the account database.
+func countRows(t *testing.T, db *sql.DB, statement string) int64 {
+	t.Helper()
+
+	var count int64
+	if err := db.QueryRowContext(context.Background(), statement).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+
+	return count
 }

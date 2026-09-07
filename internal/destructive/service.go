@@ -235,6 +235,7 @@ var accountResetDisposition = map[string]resetDisposition{
 	"rollup_custom_events":      eraseOnReset,
 	"rollup_state":              eraseOnReset,
 	"imported_rollups":          eraseOnReset,
+	"imported_wide":             eraseOnReset,
 	"search_console_daily":      eraseOnReset,
 	"exports":                   eraseOnReset,
 	"path_clean_map":            eraseOnReset,

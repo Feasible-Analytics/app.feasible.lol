@@ -25,8 +25,102 @@ import (
 // for a site bringing in sixty million of them.
 const ImportedTable = "imported_rollups"
 
+// ImportedWideTable holds the same rows summed into weeks and months. It exists
+// because a wide report over a large archive otherwise adds up millions of
+// daily rows to reach a number that eighty of them already hold.
+//
+// It is a table of its own rather than a grain column on ImportedTable: several
+// readers outside this package scan that table without a grain predicate, and a
+// coarse row one of them picked up would silently double a customer's history.
+const ImportedWideTable = "imported_wide"
+
 // importedAlias is the table's alias in every statement built here.
 const importedAlias = "ir"
+
+// importedSource is which table answers one query and at what width.
+type importedSource struct {
+	table string
+	grain Grain
+}
+
+// importedSourceFor picks the narrowest table that can answer a range exactly.
+//
+// A wide row cannot be split, so the range has to begin and end on a bucket the
+// summary holds. Anything else reads the daily rows, which is slower and right
+// — a half-finished summary has to be slow rather than wrong.
+func (x *executor) importedSource(ctx context.Context, r Resolved) (importedSource, error) {
+	wide := importedSourceFor(r)
+	if wide.table == ImportedTable {
+		return wide, nil
+	}
+
+	// Every import the site has must be summarised in the zone being asked
+	// about, not just some of them. Reading the wide table while one import has
+	// no rows in it would drop that import's history from the answer entirely,
+	// and reading a summary cut in another zone reports one month's traffic as
+	// the next one's. Both are worse than being slow.
+	sites := inInt64("site_id", x.query.SiteIDs)
+
+	args := append([]any{}, sites.Args...)
+	args = append(args, wide.grain.GrainBit(), r.Location.String())
+
+	var unusable int64
+
+	err := x.engine.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM imports WHERE "+sites.SQL+
+			" AND ((wide_grains & ?) = 0 OR wide_timezone <> ?)", args...).Scan(&unusable)
+	if err != nil {
+		return importedSource{}, fmt.Errorf("query: read imported summary coverage: %w", err)
+	}
+
+	if unusable > 0 {
+		return importedSource{table: ImportedTable, grain: GrainDay}, nil
+	}
+
+	return wide, nil
+}
+
+// ImportedSourceTable is which table a range would be answered from, ignoring
+// whether the summaries exist. It is exported so a test can assert that a
+// report reached the summary rather than only that rows were written.
+func ImportedSourceTable(r Resolved) string { return importedSourceFor(r).table }
+
+// importedSourceFor picks the narrowest table that can answer a range exactly,
+// ignoring whether the summaries have been built.
+func importedSourceFor(r Resolved) importedSource {
+	daily := importedSource{table: ImportedTable, grain: GrainDay}
+
+	var grain Grain
+
+	switch r.Interval {
+	case IntervalWeek:
+		grain = GrainWeek
+	case IntervalMonth:
+		grain = GrainMonth
+	default:
+		return daily
+	}
+
+	if !r.Start.Equal(RollupBucketStart(r.Start, grain, r.Location)) {
+		return daily
+	}
+
+	if !r.End.Equal(RollupBucketStart(r.End, grain, r.Location)) {
+		return daily
+	}
+
+	return importedSource{table: ImportedWideTable, grain: grain}
+}
+
+// wideCondition restricts a read to one grain, and is empty for the daily
+// table, which has no grain column.
+func (s importedSource) wideCondition() []expr {
+	if s.table == ImportedTable {
+		return nil
+	}
+
+	return []expr{{SQL: importedAlias + ".grain = ?", Args: []any{int64(s.grain)}}}
+}
 
 // importedDimension is one dimension an imported row can carry: the column that
 // holds it, and the bit that records whether this particular row has it.
@@ -264,7 +358,12 @@ func (x *executor) importedPass(ctx context.Context, r Resolved, groups *groupSe
 		x.addGap(gap)
 	}
 
-	candidates, err := x.importCandidates(ctx, r)
+	source, err := x.importedSource(ctx, r)
+	if err != nil {
+		return err
+	}
+
+	candidates, err := x.importCandidates(ctx, r, source)
 	if err != nil {
 		return err
 	}
@@ -316,6 +415,8 @@ func (x *executor) importedPass(ctx context.Context, r Resolved, groups *groupSe
 		selectionCondition(selected),
 	}
 
+	conditions = append(conditions, source.wideCondition()...)
+
 	// A property coverage bit identifies the marginal shape, while the key
 	// identifies the concrete event:props:<key> dimension inside that shape.
 	// Constraining breakdowns here prevents equal values from two different
@@ -349,7 +450,7 @@ func (x *executor) importedPass(ctx context.Context, r Resolved, groups *groupSe
 	}
 
 	st := statement{
-		table: tableEvents, alias: importedAlias, nameOverride: ImportedTable,
+		table: tableEvents, alias: importedAlias, nameOverride: source.table,
 		dims: dims, columns: columns, conditions: conditions,
 	}
 
@@ -365,10 +466,17 @@ func (x *executor) importedPass(ctx context.Context, r Resolved, groups *groupSe
 // importCandidates lists every (import, shape) pair with data in range, and how
 // much traffic each holds. One grouped read answers both halves of the job:
 // which shape to read, and how much is being left out when none of them fits.
-func (x *executor) importCandidates(ctx context.Context, r Resolved) ([]importCandidate, error) {
+func (x *executor) importCandidates(ctx context.Context, r Resolved, source importedSource) ([]importCandidate, error) {
 	sites := inInt64(importedAlias+".site_id", x.query.SiteIDs)
 
 	args := append([]any{}, sites.Args...)
+
+	grainCondition := ""
+	if source.table != ImportedTable {
+		grainCondition = " AND " + importedAlias + ".grain = ?"
+		args = append(args, int64(source.grain))
+	}
+
 	args = append(args, r.Start.Unix(), r.End.Unix())
 	propertyCondition := ""
 	if key, ok := x.importedPropertyKey(); ok {
@@ -378,8 +486,8 @@ func (x *executor) importCandidates(ctx context.Context, r Resolved) ([]importCa
 
 	rows, err := x.engine.db.QueryContext(ctx,
 		"SELECT "+importedAlias+".import_id, "+importedAlias+".covered, COALESCE(SUM("+importedAlias+".pageviews), 0)"+
-			" FROM "+ImportedTable+" "+importedAlias+
-			" WHERE "+sites.SQL+" AND "+importedAlias+".timestamp >= ? AND "+importedAlias+".timestamp < ?"+
+			" FROM "+source.table+" "+importedAlias+
+			" WHERE "+sites.SQL+grainCondition+" AND "+importedAlias+".timestamp >= ? AND "+importedAlias+".timestamp < ?"+
 			propertyCondition+
 			" GROUP BY "+importedAlias+".import_id, "+importedAlias+".covered", args...)
 	if err != nil {

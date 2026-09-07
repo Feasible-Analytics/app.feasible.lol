@@ -177,6 +177,10 @@ const (
 	GrainMonth Grain = 3
 )
 
+// GrainBit is a grain as one flag in a mask, which is how a summary records
+// which widths it has been built at.
+func (g Grain) GrainBit() int64 { return 1 << uint(g) }
+
 // RollupGrains is every grain the summary tables hold, in build order: the
 // derived ones are summed out of the daily rows, so day comes first.
 //
