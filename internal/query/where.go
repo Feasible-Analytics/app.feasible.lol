@@ -61,7 +61,8 @@ type whereBuilder struct {
 
 	// entryScoped and semiJoined record how an event-scoped filter had to be
 	// expressed at session grain. They are read back by the engine and turned
-	// into a metric warning, because both change what the number means.
+	// into a metric warning, because both change what the number means. A
+	// breakdown is reported separately, by plan.SessionsEntryScoped.
 	entryScoped bool
 	semiJoined  bool
 }
@@ -382,24 +383,17 @@ func (b *whereBuilder) column(d dimension) (string, func(expr) expr, error) {
 		return b.ctx.pathColumn(b.alias, d.SessionColumn, d), identity, nil
 	}
 
-	// An event-scoped dimension filtered at session grain selects the visits
-	// that contain a matching event.
-	//
-	// A page has an entry column and could be read as entrances instead, which
-	// is a narrower question: "of the visits that began here" rather than "of
-	// the visits that reached here". On a page nobody links to directly the
-	// narrower reading is empty, and it is not the one somebody filtering by
-	// /login and opening Top Sources is asking.
-	//
-	// A page *breakdown* at session grain is still entrances, because grouping
-	// session metrics by page has a genuine meaning as entry pages and does not
-	// produce the empty answer this avoids.
+	// A title is carried by the event rather than the session, so a session-grain
+	// filter on one reads the title of the entry event.
 	if d.EntryEventColumn != "" {
 		b.entryScoped = true
 
 		return sessionEntryEventColumn(b.alias, d.EntryEventColumn, dimEntry, b.ctx.sessionFacts), identity, nil
 	}
 
+	// Every other event-scoped dimension selects the visits that contain a
+	// matching event, page and hostname included. Sampling refuses this shape,
+	// because the subquery reads a visit's whole event history.
 	b.semiJoined = true
 
 	return b.ctx.pathColumn("e2", d.EventColumn, d), b.throughEvents, nil

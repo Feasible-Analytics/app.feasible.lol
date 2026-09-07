@@ -12,6 +12,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 // filterCase is one filter and the numbers it should produce against the
@@ -275,6 +276,80 @@ func TestNegatedFilterAtVisitGrainMeansNoMatchingEvent(t *testing.T) {
 
 	// Three of the four visits contain no signup at all.
 	closeTo(t, "visits without a signup", result.Results[0].Metrics[0], 3)
+}
+
+// TestAPageFilterAtVisitGrainCompilesToASemiJoin asserts on the SQL rather than
+// the numbers, because the two readings of a page filter give the same result
+// whenever the entry page happens to match. Only the statement says which
+// question was asked.
+func TestAPageFilterAtVisitGrainCompilesToASemiJoin(t *testing.T) {
+	for _, dimension := range []string{"event:page", "event:hostname"} {
+		t.Run(dimension, func(t *testing.T) {
+			engine := newEngine(t)
+			ctx := context.Background()
+
+			q := baseQuery("visits")
+			q.Filters = []Filter{{Operator: OpIs, Dimension: dimension, Values: []string{"/about"}}}
+			q.Normalise()
+
+			resolved, err := engine.resolveRange(ctx, &q, time.UTC)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			compile, err := engine.compileContext(ctx, &q)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			scopes, err := engine.propertyScopes(ctx, q.SiteIDs)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			builder := newWhereBuilder(tableSessions, compile, scopes, q.SiteIDs, resolved)
+
+			conditions, err := builder.compile(q.Filters)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			sql := and(conditions).SQL
+
+			if !strings.Contains(sql, "EXISTS") || !strings.Contains(sql, "FROM events") {
+				t.Errorf("filter did not compile to a semi-join over events:\n%s", sql)
+			}
+
+			if strings.Contains(sql, "entry_") {
+				t.Errorf("filter still reads an entry column, so it selects visits that began on the value:\n%s", sql)
+			}
+
+			if !builder.semiJoined {
+				t.Error("the builder did not record a semi-join, so the reader is told the wrong thing")
+			}
+
+			if builder.entryScoped {
+				t.Error("the builder still claims the answer is scoped to entrances")
+			}
+		})
+	}
+}
+
+// TestANegatedPageFilterMeansNoEventOnThatPage checks where the NOT lands now
+// that a page filter selects visits that reached the page.
+//
+// "Visits with no view of /pricing" and "visits with a view of something that
+// is not /pricing" are different sets, and the second is nearly every visit.
+func TestANegatedPageFilterMeansNoEventOnThatPage(t *testing.T) {
+	engine := newEngine(t)
+
+	q := baseQuery("visits")
+	q.Filters = []Filter{{Operator: OpIsNot, Dimension: "event:page", Values: []string{"/pricing"}}}
+
+	// Visits 3 and 4 never saw /pricing. Visit 1 reached it and visit 2 entered
+	// on it, so both are excluded — under the entrance reading visit 1 would
+	// have been counted, because it began on /home.
+	closeTo(t, "visits that never reached /pricing", run(t, engine, q).Results[0].Metrics[0], 2)
 }
 
 // TestUnknownDimensionIsACallerError checks that a typo comes back as something

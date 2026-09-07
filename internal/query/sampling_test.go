@@ -1006,6 +1006,38 @@ func TestSampledVisitSelectorsKeepTheirMeaningAndTheirBound(t *testing.T) {
 	}
 }
 
+// TestSamplingRefusesAPageFilterAtVisitGrain guards the bound, not the number.
+//
+// A page filter at session grain reads a visit's whole event history, which is
+// the unbounded shape sampling exists to refuse. A page title still reads the
+// entry event alone, so it stays samplable.
+func TestSamplingRefusesAPageFilterAtVisitGrain(t *testing.T) {
+	engine := newEngine(t)
+
+	for _, dimension := range []string{"event:page", "event:hostname", "event:name"} {
+		t.Run("refuses "+dimension, func(t *testing.T) {
+			q := baseQuery("visits")
+			q.Filters = []Filter{{Operator: OpIs, Dimension: dimension, Values: []string{"/pricing"}}}
+			q.SampleRate = 0.5
+
+			_, err := engine.Run(context.Background(), q)
+			if err == nil || !strings.Contains(err.Error(), "complete session event membership") {
+				t.Fatalf("sampled %s filter error = %v, want a refusal", dimension, err)
+			}
+		})
+	}
+
+	t.Run("allows event:page_title", func(t *testing.T) {
+		q := baseQuery("visits")
+		q.Filters = []Filter{{Operator: OpIs, Dimension: "event:page_title", Values: []string{"Pricing"}}}
+		q.SampleRate = 0.5
+
+		if _, err := engine.Run(context.Background(), q); err != nil {
+			t.Fatalf("a title filter still reads the entry event alone: %v", err)
+		}
+	})
+}
+
 // explainPlan returns SQLite's readable plan for one query.
 func explainPlan(t *testing.T, account *accounts.Account, query string, args []any) string {
 	t.Helper()

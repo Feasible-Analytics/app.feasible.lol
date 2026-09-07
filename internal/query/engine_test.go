@@ -731,14 +731,12 @@ func TestBounceRateUnderAPageBreakdownIsScopedToEntrances(t *testing.T) {
 	}
 }
 
-// TestAPageFilterFindsTheVisitsThatReachedThePage is the question somebody
-// filtering by a page and opening Top Sources is asking.
+// TestAPageFilterFindsTheVisitsThatReachedThePage is the test that encodes what
+// a page filter means at visit grain.
 //
-// Nobody entered on /about — it was reached from /home — so reading the filter
-// as entrances answers "of the visits that began here", which is empty on any
-// page nobody links to directly. Reading it as "the visits that reached here"
-// answers the question and uses the path every other event dimension already
-// takes.
+// Nobody entered on /about — it was reached from /home — so the two readings of
+// the filter give different answers on this fixture, and only one of them is
+// non-empty.
 func TestAPageFilterFindsTheVisitsThatReachedThePage(t *testing.T) {
 	engine := newEngine(t)
 
@@ -768,33 +766,106 @@ func TestAPageFilterFindsTheVisitsThatReachedThePage(t *testing.T) {
 }
 
 // TestAVisitIsCountedOnceHoweverOftenItReachedThePage is the classic bug in the
-// shape this filter now compiles to.
+// shape this filter compiles to: a semi-join that became a join returns one row
+// per matching event.
 //
-// A semi-join that became a join would return one row per matching event, so a
-// visit that viewed the page twice would count as two.
+// /pricing is the fixture page that makes it visible — visit 1 has three events
+// on it and visit 2 has two, so a join reports five visits where there are two.
 func TestAVisitIsCountedOnceHoweverOftenItReachedThePage(t *testing.T) {
 	engine := newEngine(t)
 
 	q := baseQuery("visitors", "visits")
-	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:page", Values: []string{"/home"}}}
+	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:page", Values: []string{"/pricing"}}}
 
-	withFilter := run(t, engine, q)
+	result := run(t, engine, q)
 
-	unfiltered := baseQuery("visitors", "visits")
-	everyone := run(t, engine, unfiltered)
-
-	if len(withFilter.Results) != 1 || len(everyone.Results) != 1 {
-		t.Fatalf("expected one row each, got %d and %d", len(withFilter.Results), len(everyone.Results))
+	if len(result.Results) != 1 {
+		t.Fatalf("got %d rows, want one", len(result.Results))
 	}
 
-	for i, metric := range q.Metrics {
-		filtered := withFilter.Results[0].Metrics[i]
-		total := everyone.Results[0].Metrics[i]
+	closeTo(t, "visitors that reached /pricing", result.Results[0].Metrics[0], 2)
+	closeTo(t, "visits that reached /pricing", result.Results[0].Metrics[1], 2)
+}
 
-		if filtered > total {
-			t.Errorf("%s under a page filter is %v, more than the %v without one — a visit is being counted twice",
-				metric, filtered, total)
+// TestAPageFilterUnderAPageBreakdownListsEntryPages pins the one shape where
+// the filter and the breakdown visibly disagree.
+//
+// The filter selects the visits that reached /pricing; the breakdown groups
+// them by where they entered. So a page list filtered to /pricing contains a
+// /home row, and the entry-scoped warning is what explains it.
+func TestAPageFilterUnderAPageBreakdownListsEntryPages(t *testing.T) {
+	engine := newEngine(t)
+
+	// bounce_rate is what forces the answer onto the sessions table, and with it
+	// the entry-scoped breakdown.
+	q := baseQuery("bounce_rate", "visits")
+	q.Dimensions = []string{"event:page"}
+	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:page", Values: []string{"/pricing"}}}
+
+	result := run(t, engine, q)
+
+	pages := map[string]float64{}
+	for _, row := range result.Results {
+		pages[row.Dimensions[0]] = row.Metrics[1]
+	}
+
+	// Visit 1 entered on /home and reached /pricing; visit 2 entered on it.
+	if len(pages) != 2 || pages["/home"] != 1 || pages["/pricing"] != 1 {
+		t.Fatalf("page rows = %v, want one visit each under /home and /pricing", pages)
+	}
+
+	warning, ok := result.Meta.MetricWarnings["bounce_rate"]
+	if !ok || warning.Code != WarnEntryScoped {
+		t.Errorf("a page list holding a page that was filtered out must say it is grouped by entrances, got %+v", warning)
+	}
+}
+
+// TestAHostnameFilterFindsTheVisitsThatReachedTheHostname is the same test for
+// the other dimension with an entry analogue.
+//
+// Visit 3 began with no hostname recorded and then sent two events from the
+// documentation host, so entrances find nothing and "reached" finds it once.
+func TestAHostnameFilterFindsTheVisitsThatReachedTheHostname(t *testing.T) {
+	engine, account := newEngineWithAccount(t)
+	ctx := context.Background()
+
+	hostname, err := account.Intern.ID(ctx, intern.Hostname, "docs.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pathname, err := account.Intern.ID(ctx, intern.Pathname, "/about")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	name, err := account.Intern.ID(ctx, intern.EventName, ingest.EventPageview)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := range 2 {
+		if _, err := account.Writer().ExecContext(ctx, `
+			INSERT INTO events (id, site_id, timestamp, name_id, user_id, session_id, pathname_id, hostname_id)
+			VALUES (?, 1, ?, ?, ?, 3, ?, ?)`,
+			200+i, at(30, 9, 3+i), name, visitorA, pathname, hostname); err != nil {
+			t.Fatal(err)
 		}
+	}
+
+	q := baseQuery("visits")
+	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:hostname", Values: []string{"docs.example.com"}}}
+
+	result := run(t, engine, q)
+
+	if len(result.Results) != 1 {
+		t.Fatalf("got %d rows, want one — a visit reached the hostname", len(result.Results))
+	}
+
+	closeTo(t, "visits that reached docs.example.com", result.Results[0].Metrics[0], 1)
+
+	if warning, ok := result.Meta.MetricWarnings["visits"]; ok && warning.Code == WarnEntryScoped {
+		t.Errorf("the answer still claims to be counted from where visits began: %s", warning.Warning)
 	}
 }
 
@@ -805,7 +876,7 @@ func TestAVisitIsCountedOnceHoweverOftenItReachedThePage(t *testing.T) {
 //
 // The query asks for both kinds at once, which is what the tiles do: pageviews
 // counts events matching the filter as written, bounce rate describes a whole
-// visit and is therefore re-scoped to entrances.
+// visit and is re-scoped to entrances by the page breakdown.
 func TestOnlyTheSessionScopedMetricsAreWarnedAbout(t *testing.T) {
 	engine := newEngine(t)
 

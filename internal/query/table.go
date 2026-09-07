@@ -72,11 +72,11 @@ type plan struct {
 	// and joined back on the group key.
 	Specials []string
 
-	// SessionsEntryScoped records that the session-grain half of this query was
-	// narrowed to the visits that *entered* on the matching page rather than
-	// the visits that merely touched it. It is the only honest way to put a
-	// bounce rate beside a page, and it changes what the number means, so it is
-	// reported to the caller rather than assumed.
+	// SessionsEntryScoped records that a page breakdown narrowed the
+	// session-grain half of this query to the visits that entered on each page.
+	// It is the only honest way to put a bounce rate beside a page, and it
+	// changes what the number means, so it is reported to the caller rather
+	// than assumed. A filter is reported separately, by whereBuilder.
 	SessionsEntryScoped bool
 
 	// Dimensions are the resolved group-by dimensions, in request order.
@@ -212,7 +212,7 @@ func decideScoped(q *Query, scopes map[string]string) (*plan, error) {
 		}
 	}
 
-	p.SessionsEntryScoped = needsSessions && entryScopeRequired(q, p)
+	p.SessionsEntryScoped = needsSessions && entryScopeRequired(p)
 
 	return p, nil
 }
@@ -250,23 +250,17 @@ func checkDimensionScopes(p *plan, needsSessions bool) error {
 	return nil
 }
 
-// entryScopeRequired reports whether the session half of this query had to be
-// narrowed to entry pages. It is true whenever an event-scoped page constraint
-// — a breakdown or a filter — has to be expressed at session grain, which is
-// exactly when the incumbent silently answers a different question.
-func entryScopeRequired(q *Query, p *plan) bool {
+// entryScopeRequired reports whether a breakdown narrowed the session half of
+// this query to entry pages. Filters are not its business: a filter selects the
+// visits that contain a matching event, and whereBuilder raises the warning for
+// the one filter kind that still reads an entry column.
+func entryScopeRequired(p *plan) bool {
 	for _, resolved := range p.Dimensions {
 		if resolved.eventOnly() && (resolved.EntryColumn != "" || resolved.EntryEventColumn != "") {
 			return true
 		}
 	}
 
-	// A filter is not entry-scoped. It selects the visits that contain a
-	// matching event, which is the question it reads as, so there is nothing
-	// about it to warn a reader over.
-	//
-	// Only a dimension re-scopes, and only the entry-event kind: grouping
-	// session metrics by page means entry pages, and that is worth saying.
 	return false
 }
 
