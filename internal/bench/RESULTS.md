@@ -22,6 +22,16 @@ vary by a third either way, and the ranges below say by how much.
 account-handle work. The read and storage sections below are older and are dated
 where they are described.
 
+**The batched fold read is not in these numbers.** A re-measurement was attempted
+and thrown away: the machine was carrying a load average of 662 at the time, and
+it produced 1,514 events/s at one account against the 4,739 recorded here, with
+three repeats of the four-account case landing on 1,448, 513 and 1,369. That is a
+measurement of the machine. **This table still needs re-taking on a quiet one.**
+
+**The 256-account case does not currently complete.** It answers 503 partway
+through — `event 2521 answered 503: event could not be persisted` — on `main` as
+well as on any branch, so the row below is the last figure from when it did run.
+
 **Driver:** `modernc.org/sqlite` (pure Go), with whatever pragmas
 `internal/store/store.go` sets. At the time of measurement: WAL,
 `synchronous=FULL`, `secure_delete(1)`, `busy_timeout` 5s, `foreign_keys(1)`,

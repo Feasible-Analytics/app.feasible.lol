@@ -11,18 +11,24 @@ package ingest
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	sqlite "modernc.org/sqlite"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
 // TestWriterDropsAStaleRouteAfterCrossProcessDeletion proves an already-open
@@ -1344,8 +1350,12 @@ func TestThePruneSeeksTheRowsItDeletes(t *testing.T) {
 }
 
 // TestTheVisitorReadsKeepTheirOwnIndex is the other half. The read path asks
-// about one visitor, and the indexes added for the prune must not have made
-// SQLite prefer one of them for that.
+// about a chunk of visitors, and the indexes added for the prune must not have
+// made SQLite prefer one of them for that.
+//
+// The statements are rendered with one visitor in the list, which is the shape
+// the planner is being asked about; a longer list changes how many times the
+// index is seeked, not which index.
 func TestTheVisitorReadsKeepTheirOwnIndex(t *testing.T) {
 	db := planDatabase(t)
 	ctx := context.Background()
@@ -1354,13 +1364,13 @@ func TestTheVisitorReadsKeepTheirOwnIndex(t *testing.T) {
 		query string
 		plan  string
 	}{
-		"loading a visitor's session state": {
-			selectVisitorSessionState,
+		"loading a chunk's session state": {
+			fmt.Sprintf(selectVisitorSessionState, placeholders(1)),
 			"SEARCH ingest_session_state USING INDEX ingest_session_state_visitor " +
 				"(site_id=? AND user_id=? AND last_seen_at>?)",
 		},
-		"adopting a visitor's parked pings": {
-			selectVisitorOrphans,
+		"adopting a chunk's parked pings": {
+			fmt.Sprintf(selectVisitorOrphans, placeholders(1)),
 			"SEARCH ingest_orphan_engagements USING INDEX ingest_orphan_engagements_visitor " +
 				"(site_id=? AND user_id=? AND timestamp>? AND timestamp<?)",
 		},
@@ -1656,4 +1666,326 @@ func queryPlan(t *testing.T, ctx context.Context, db *sql.DB, query string) stri
 	}
 
 	return plan.String()
+}
+
+// countingDriver wraps the real driver and counts the queries a connection is
+// asked to run, which is the only way to assert "this does not grow with the
+// visitor count" rather than to assume it.
+type countingDriver struct {
+	inner driver.Driver
+	count *atomic.Int64
+}
+
+// Open hands back a connection that reports every query through the counter.
+func (d countingDriver) Open(name string) (driver.Conn, error) {
+	conn, err := d.inner.Open(name)
+	if err != nil {
+		return nil, err
+	}
+
+	return countingConn{Conn: conn, count: d.count}, nil
+}
+
+// countingConn is one such connection. It embeds the real one so that every
+// interface the pool checks for — transactions, prepared statements, context
+// support — is answered by the driver rather than reimplemented here.
+type countingConn struct {
+	driver.Conn
+	count *atomic.Int64
+}
+
+// QueryContext counts one read and passes it on.
+func (c countingConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	c.count.Add(1)
+
+	return c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
+}
+
+// ExecContext passes a write through uncounted: this test is about reads.
+func (c countingConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	return c.Conn.(driver.ExecerContext).ExecContext(ctx, query, args)
+}
+
+// BeginTx keeps the transaction the pool asks for rather than the legacy Begin.
+func (c countingConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	return c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
+}
+
+// countedDatabase is a migrated account database whose reads are counted.
+func countedDatabase(t *testing.T) (*sql.DB, *atomic.Int64) {
+	t.Helper()
+
+	count := &atomic.Int64{}
+	name := fmt.Sprintf("counting-%s", t.Name())
+
+	sql.Register(name, countingDriver{inner: &sqlite.Driver{}, count: count})
+
+	db, err := sql.Open(name, store.DSN(filepath.Join(t.TempDir(), "account.db"), store.TxLockImmediate))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := migrate.Run(context.Background(), db, migrate.Account()); err != nil {
+		t.Fatal(err)
+	}
+
+	return db, count
+}
+
+// TestTheFoldIsReadPerChunkNotPerVisitor is the cost property. The round trips
+// a batch makes to load its fold state must follow the chunk count, which is
+// bounded, rather than the visitor count, which is what grows when a customer's
+// traffic grows.
+func TestTheFoldIsReadPerChunkNotPerVisitor(t *testing.T) {
+	ctx := context.Background()
+	db, count := countedDatabase(t)
+
+	// Three reads per chunk: the serialized state, the sessions with no state
+	// row, and the parked engagement.
+	const perChunk = 3
+
+	for _, visitors := range []int{1, foldChunk, foldChunk * 3} {
+		ranges := map[sessionKey]durableFoldRange{}
+		for i := range visitors {
+			ranges[sessionKey{siteID: 1, userID: int64(i) + 1}] = durableFoldRange{first: 1000, last: 2000}
+		}
+
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		count.Store(0)
+
+		if err := loadDurableFold(ctx, tx, newDurableSessionCache(), 1, ranges); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+
+		if err := tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+
+		chunks := (visitors + foldChunk - 1) / foldChunk
+
+		if got := count.Load(); got != int64(chunks*perChunk) {
+			t.Errorf("%d visitors cost %d reads, want %d — %d chunk(s) of %d",
+				visitors, got, chunks*perChunk, chunks, perChunk)
+		}
+	}
+}
+
+// TestAFoldChunkBoundaryLosesNobody is the other half: a batch with more
+// visitors than one chunk holds must see every one of them.
+//
+// Reading in chunks is where a visitor goes missing silently — the fold simply
+// starts them a new session, and the customer sees one visit become two with
+// nothing anywhere saying why.
+func TestAFoldChunkBoundaryLosesNobody(t *testing.T) {
+	ctx := context.Background()
+	db := planDatabase(t)
+
+	const visitors = foldChunk*2 + 1
+
+	seedVisitorSessions(t, ctx, db, visitors)
+
+	ranges := map[sessionKey]durableFoldRange{}
+	for i := range visitors {
+		ranges[sessionKey{siteID: 1, userID: int64(i) + 1}] = durableFoldRange{first: 1000, last: 1000}
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	cache := newDurableSessionCache()
+	if err := loadDurableFold(ctx, tx, cache, 1, ranges); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := len(cache.bucket.sessions); got != visitors {
+		t.Errorf("%d visitors came back, want all %d", got, visitors)
+	}
+
+	for key := range ranges {
+		if len(cache.bucket.sessions[key]) != 1 {
+			t.Errorf("visitor %d has %d sessions, want one", key.userID, len(cache.bucket.sessions[key]))
+		}
+	}
+}
+
+// seedVisitorSessions gives each of the first n visitors one stored session.
+func seedVisitorSessions(t *testing.T, ctx context.Context, db *sql.DB, visitors int) {
+	t.Helper()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	insert, err := tx.PrepareContext(ctx, `
+		INSERT INTO ingest_session_state (site_id, user_id, started_at, last_seen_at, payload)
+		VALUES (1, ?, 1000, 1000, ?)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = insert.Close() }()
+
+	for i := range visitors {
+		user := int64(i) + 1
+
+		payload, err := json.Marshal(Session{ID: user, SiteID: 1, UserID: user, StartedAt: 1000, LastSeenAt: 1000})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := insert.ExecContext(ctx, user, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAChunkDoesNotHandAVisitorSomebodyElsesWindow is the risk this change
+// introduces and the reason the Go filter exists.
+//
+// One statement now covers a chunk of visitors, so it has to be bounded by the
+// widest window any of them needs. A visitor whose own window is far from that
+// edge would otherwise be handed a session they never had — folded into a visit
+// that never happened, with nothing anywhere saying so.
+func TestAChunkDoesNotHandAVisitorSomebodyElsesWindow(t *testing.T) {
+	ctx := context.Background()
+	db := planDatabase(t)
+
+	const (
+		early = 1_000_000
+		late  = 2_000_000
+	)
+
+	// Visitor 1 has an old visit of their own that the chunk's window reaches
+	// only because visitor 2 is in the same chunk. Nothing in the statement can
+	// exclude it; only the per-visitor check can.
+	writeStoredSession(t, ctx, db, 1, early)
+	writeStoredSession(t, ctx, db, 1, late)
+	writeStoredSession(t, ctx, db, 2, late)
+
+	writeParkedPing(t, ctx, db, 1, early)
+	writeParkedPing(t, ctx, db, 1, late)
+	writeParkedPing(t, ctx, db, 2, late)
+
+	// And the same again for a session written before the state table existed,
+	// which is hydrated by its own read.
+	writeLegacySession(t, ctx, db, 1, early)
+	writeLegacySession(t, ctx, db, 1, late)
+
+	ranges := map[sessionKey]durableFoldRange{
+		{siteID: 1, userID: 1}: {first: early, last: early},
+		{siteID: 1, userID: 2}: {first: late, last: late},
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	cache := newDurableSessionCache()
+	if err := loadDurableFold(ctx, tx, cache, 1, ranges); err != nil {
+		t.Fatal(err)
+	}
+
+	for key, want := range map[sessionKey]int64{
+		{siteID: 1, userID: 1}: early,
+		{siteID: 1, userID: 2}: late,
+	} {
+		sessions := cache.bucket.sessions[key]
+
+		// Visitor 1 has a legacy row of their own in the same window as their
+		// state row, so both reads contribute one.
+		wantSessions := 1
+		if key.userID == 1 {
+			wantSessions = 2
+		}
+
+		if len(sessions) != wantSessions {
+			t.Fatalf("visitor %d got %d sessions, want %d — only their own",
+				key.userID, len(sessions), wantSessions)
+		}
+
+		for _, session := range sessions {
+			if session.StartedAt != want {
+				t.Errorf("visitor %d got a session at %d, want theirs at %d",
+					key.userID, session.StartedAt, want)
+			}
+		}
+
+		orphans := cache.bucket.orphans[key]
+		if len(orphans) != 1 {
+			t.Fatalf("visitor %d got %d parked pings, want only their own", key.userID, len(orphans))
+		}
+
+		if orphans[0].Timestamp != want {
+			t.Errorf("visitor %d got the ping at %d, want theirs at %d",
+				key.userID, orphans[0].Timestamp, want)
+		}
+	}
+}
+
+// writeStoredSession gives one visitor one session at one moment.
+func writeStoredSession(t *testing.T, ctx context.Context, db *sql.DB, userID, at int64) {
+	t.Helper()
+
+	payload, err := json.Marshal(Session{ID: at + userID, SiteID: 1, UserID: userID, StartedAt: at, LastSeenAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO ingest_session_state (site_id, user_id, started_at, last_seen_at, payload)
+		VALUES (1, ?, ?, ?, ?)`, userID, at, at, payload); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeParkedPing gives one visitor one engagement ping waiting for a pageview.
+func writeParkedPing(t *testing.T, ctx context.Context, db *sql.DB, userID, at int64) {
+	t.Helper()
+
+	event := writerEvent(1, EventEngagement, at, "/parked")
+	event.UserID = userID
+
+	payload, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO ingest_orphan_engagements (event_uuid, site_id, user_id, timestamp, payload)
+		VALUES (randomblob(16), 1, ?, ?, ?)`, userID, at, payload); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeLegacySession gives one visitor a session row with no companion state,
+// which is what a visit written before that table existed looks like.
+func writeLegacySession(t *testing.T, ctx context.Context, db *sql.DB, userID, at int64) {
+	t.Helper()
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO sessions (id, site_id, user_id, started_at, last_seen_at, pageviews, events)
+		VALUES (?, 1, ?, ?, ?, 1, 1)`, at*10+userID, userID, at, at); err != nil {
+		t.Fatal(err)
+	}
 }
