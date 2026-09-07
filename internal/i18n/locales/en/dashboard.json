@@ -344,7 +344,7 @@
   "dashboard.topbar.previous_period": "Previous period",
   "dashboard.topbar.settings": "Open display settings",
   "dashboard.topbar.shortcut_key": "Shortcut key {key}",
-  "dashboard.topbar.site": "Site",
+  "dashboard.topbar.site": "Site: {domain}",
   "dashboard.topbar.site_none": "No site matches that.",
   "dashboard.topbar.site_search": "Search sites",
   "dashboard.topbar.to": "To",

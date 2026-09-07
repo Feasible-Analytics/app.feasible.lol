@@ -128,11 +128,20 @@ export function SitePicker({
 				id="site-picker"
 				aria-expanded={open}
 				aria-haspopup="menu"
-				aria-label={t("dashboard.topbar.site")}
+				// An aria-label replaces the button's own text, so the domain
+				// inside it is announced only because the label carries it too.
+				aria-label={t("dashboard.topbar.site", { domain: current })}
 				onClick={() => setOpen((was) => !was)}
-				className="flex h-control max-w-52 items-center gap-1.5 border-2 border-line bg-card px-2.5 text-sm font-medium text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover"
+				// 208px on a phone, where 288 is the whole content width, and 288
+				// from `sm` up — which is the width of the menu it opens, so the
+				// button is never wider than its own list.
+				className="flex h-control max-w-52 items-center gap-1.5 border-2 border-line bg-card px-2.5 text-sm font-medium text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover sm:max-w-72"
 			>
-				<span className="truncate">{current}</span>
+				{/* A hostname can be 253 characters, so no cap removes truncation.
+				    The title is how the rest of one is read. */}
+				<span className="truncate" title={current}>
+					{current}
+				</span>
 				<Chevron className="shrink-0" />
 			</button>
 
@@ -197,7 +206,9 @@ export function SitePicker({
  index === active ? "bg-hover" : ""
 								} ${site === current ? "font-medium text-accent-ink" : "text-body"}`}
 							>
-								<span className="flex-1 truncate">{site}</span>
+								<span className="flex-1 truncate" title={site}>
+									{site}
+								</span>
 								{site === current && <span aria-hidden="true">✓</span>}
 							</button>
 						))}
