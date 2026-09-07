@@ -116,6 +116,12 @@ func ImportCSV(ctx context.Context, db *sql.DB, cache *intern.Cache, record *Imp
 		names = append(names, name)
 	}
 
+	// Before the import is marked complete, so a reader never sees a finished
+	// import whose wide summaries are still being written.
+	if err := SummariseImport(ctx, db, record.ID, record.SiteID, location); err != nil {
+		return err
+	}
+
 	return CompleteImport(ctx, db, record.ID, names, earliest, latest, rowsWritten, now())
 }
 

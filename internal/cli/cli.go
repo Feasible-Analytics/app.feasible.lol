@@ -200,6 +200,8 @@ func Run(opts Options) int {
 		return runAPIKeys(e, args[1:])
 	case "rollup":
 		return runRollup(e, args[1:])
+	case "imports":
+		return runImports(e, args[1:])
 	case "billing":
 		return runBilling(e, args[1:])
 	case "comp":
