@@ -160,6 +160,55 @@ test("a custom event carries its properties", async ({ page }) => {
 	expect(event.d).toBe("fixture.test");
 });
 
+
+// Module scripts and deferred classic scripts run in document order, so a
+// framework entry point placed above the snippet executes before the bundle.
+// That is the ordering a customer often cannot control — a tag manager or a CMS
+// template decides it — and without the stub the call is an uncaught
+// ReferenceError in their page and an event we never hear about.
+test("a module above the snippet has its event delivered", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/module-first.html");
+	await settledCount(state, "Mounted Early", 1);
+
+	const [early] = named(state, "Mounted Early");
+
+	expect(early.p).toEqual({ from: "module" });
+
+	// Still after the pageview it belongs to. That ordering is the reason the
+	// queue is drained last and it must not change.
+	expect(state.events.findIndex((e) => e.n === "pageview")).toBeLessThan(
+		state.events.findIndex((e) => e.n === "Mounted Early"),
+	);
+});
+
+// Nobody has to re-paste anything, so the old one-line snippet keeps working
+// exactly as it did. The only thing it does not get is the safety net.
+test("a page with the old one-line snippet still tracks", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/no-stub.html");
+	await settledCount(state, "pageview", 1);
+
+	await page.click("#later");
+	await settledCount(state, "Fired Later", 1);
+
+	expect(named(state, "pageview")).toHaveLength(1);
+	expect(named(state, "Fired Later")).toHaveLength(1);
+});
+
+// Pasting the snippet twice is what happens when somebody adds it to a layout a
+// plugin already covers. The guard is what keeps the first stub's queue.
+test("the snippet pasted twice keeps the events queued between the copies", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/queue-twice.html");
+	await settledCount(state, "Between The Stubs", 1);
+
+	expect(named(state, "Between The Stubs")).toHaveLength(1);
+});
+
 // Revenue goes out under `$`, which is the key the server reads.
 test("revenue is sent under the dollar key", async ({ page }) => {
 	const state = await collect(page);
@@ -473,3 +522,4 @@ test("a property on the call overrides a declared one of the same name", async (
 
 	expect(named(state, "Custom Event")[0].p).toEqual({ where: "basic", plan: "pro" });
 });
+

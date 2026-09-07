@@ -66,6 +66,32 @@ const VitalsSizeBudget = 6 * 1024
 // build, so `go test ./...` catches an over-budget committed artifact even on a
 // machine that is not rebuilding JavaScript.
 
+// queueStubBody is the script the browser runs before the bundle exists.
+//
+// The bundle is deferred, so a call made while the page is parsing would be a
+// ReferenceError in somebody else's page. This takes those calls and the bundle
+// replays them. The assignment is guarded so a second copy keeps the queue it
+// has and a tool that owns this name is left alone.
+const queueStubBody = `window.feasible=window.feasible||function(){` +
+	`(window.feasible.q=window.feasible.q||[]).push(arguments)}`
+
+// QueueStub is the inline tag the snippet opens with.
+const QueueStub = "<script>" + queueStubBody + ";</script>"
+
+// QueueStubHash is the CSP source expression that permits the stub by content.
+//
+// A site with a strict policy has no other way to allow one inline script
+// without allowing all of them, and telling somebody "add unsafe-inline" is
+// asking them to weaken the whole page for us.
+var QueueStubHash = stubHash()
+
+// stubHash renders the stub's SHA-256 the way a policy has to spell it.
+func stubHash() string {
+	sum := sha256.Sum256([]byte(queueStubBody + ";"))
+
+	return "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
+}
+
 // Paths the handler answers.
 const (
 	// PathPrefix is what a mux routes to this handler.

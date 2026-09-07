@@ -1,0 +1,30 @@
+<!--
+  queue-twice.html
+  The snippet pasted twice, which is what happens when somebody adds it to a
+  layout that a plugin already covers.
+
+  Created: 2026-09-06
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  The second stub must keep the queue the first one filled. An unguarded
+  assignment throws away every event fired between the two.
+-->
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Queue twice — tracker fixture</title>
+		<script>
+			window.__feasible = Object.assign({ track: 1 }, window.__feasible);
+		</script>
+		<script>window.feasible=window.feasible||function(){(window.feasible.q=window.feasible.q||[]).push(arguments)};</script>
+		<script>
+			window.feasible("Between The Stubs");
+		</script>
+		<script>window.feasible=window.feasible||function(){(window.feasible.q=window.feasible.q||[]).push(arguments)};</script>
+		<script defer data-domain="fixture.test" data-capture-on-localhost="1" src="/js/script.js"></script>
+	</head>
+	<body>
+		<h1>Queue twice fixture</h1>
+	</body>
+</html>

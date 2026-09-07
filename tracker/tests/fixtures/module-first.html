@@ -1,0 +1,32 @@
+<!--
+  module-first.html
+  A framework entry point above the snippet, which is the ordering a customer
+  cannot always control.
+
+  Created: 2026-09-06
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  Module scripts and deferred classic scripts run in document order, so this
+  module executes before the bundle. Without the stub its call is an uncaught
+  ReferenceError in the customer's page and the event is gone.
+-->
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Module first — tracker fixture</title>
+		<script>
+			// Merged rather than assigned, so a test can inject its own switches
+			// through addInitScript and still have this page's default apply.
+			window.__feasible = Object.assign({ track: 1 }, window.__feasible);
+		</script>
+		<script>window.feasible=window.feasible||function(){(window.feasible.q=window.feasible.q||[]).push(arguments)};</script>
+		<script type="module">
+			window.feasible("Mounted Early", { props: { from: "module" } });
+		</script>
+		<script defer data-domain="fixture.test" data-capture-on-localhost="1" src="/js/script.js"></script>
+	</head>
+	<body>
+		<h1>Module first fixture</h1>
+	</body>
+</html>

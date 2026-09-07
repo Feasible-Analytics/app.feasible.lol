@@ -24,6 +24,8 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/webhooks"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
 )
 
 // The roles the API accepts, checked here rather than left to the database's
@@ -520,7 +522,10 @@ func trackerSnippet(baseURL, domain string, config *TrackerConfig) string {
 		attributes = append(attributes, `data-file-types="`+html.EscapeString(config.FileTypes)+`"`)
 	}
 
-	return `<script ` + strings.Join(attributes, " ") + ` src="` +
+	// The same two lines the dashboard hands out. An API that returned a
+	// different snippet from the screen beside it would read as a bug in one of
+	// them, and the one without the stub loses events fired before load.
+	return tracker.QueueStub + "\n" + `<script ` + strings.Join(attributes, " ") + ` src="` +
 		html.EscapeString(strings.TrimRight(baseURL, "/")) + `/js/script.js"></script>`
 }
 
