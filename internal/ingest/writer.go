@@ -9,6 +9,7 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -97,12 +98,28 @@ type Writer struct {
 	// leaves it nil.
 	Failpoint func(stage string) error
 
+	// Concurrency is how many accounts in one batch are written at once. Zero
+	// takes DefaultConcurrency.
+	//
+	// It is bounded rather than one goroutine per account because a batch can
+	// span hundreds of accounts, and each one in flight is an open database, a
+	// transaction and a handful of file descriptors.
+	Concurrency int
+
 	// mu guards the per-account state below. Writes to one account are
 	// serialised anyway — SQLite allows one writer — so a per-account lock
 	// costs nothing and makes the read-then-fold sequence atomic.
 	mu    sync.Mutex
 	locks map[int64]*accountLock
 }
+
+// DefaultConcurrency is how many accounts a batch writes at once when nothing
+// says otherwise.
+//
+// The wait it overlaps is a disk sync rather than work, so the useful number is
+// not the core count: with synchronous=FULL every account's commit waits for
+// the platter, and those waits belong to different files with different locks.
+const DefaultConcurrency = 4
 
 // accountLock serialises one account's writes inside a process. SQLite provides
 // the corresponding arbitration between independent serving processes.
@@ -211,24 +228,68 @@ func (w *Writer) Write(ctx context.Context, batch []Event) ([]uuid.UUID, error) 
 		byAccount[batch[i].AccountID] = append(byAccount[batch[i].AccountID], batch[i])
 	}
 
-	var (
-		committed []uuid.UUID
-		firstErr  error
-	)
-
-	for accountID, events := range byAccount {
-		ids, err := w.writeAccountDurable(ctx, accountID, events)
-		committed = append(committed, ids...)
-
-		// One account failing must not stop the others. Their events are
-		// unrelated and are already in memory; abandoning them would turn one
-		// full disk into data loss across every customer on the box.
-		if err != nil && firstErr == nil {
-			firstErr = err
-		}
+	// Different accounts are different files with different locks, so their
+	// commits can overlap. Written one at a time, a batch turns independent disk
+	// waits into sequential ones, which is the one wall a bigger box does not
+	// move: the loop is serial, so extra cores do nothing.
+	//
+	// Writes to one account stay serialised — that is lockFor's job and SQLite's
+	// — and are unaffected by this.
+	work := make(chan int64, len(byAccount))
+	for accountID := range byAccount {
+		work <- accountID
 	}
 
+	close(work)
+
+	var (
+		mu        sync.Mutex
+		committed []uuid.UUID
+		firstErr  error
+		wg        sync.WaitGroup
+	)
+
+	for range min(w.concurrency(), len(byAccount)) {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for accountID := range work {
+				ids, err := w.writeAccountDurable(ctx, accountID, byAccount[accountID])
+
+				mu.Lock()
+				committed = append(committed, ids...)
+
+				// One account failing must not stop the others. Their events are
+				// unrelated and are already in memory; abandoning them would turn
+				// one full disk into data loss across every customer on the box.
+				if err != nil && firstErr == nil {
+					firstErr = err
+				}
+
+				mu.Unlock()
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// The order accounts commit in is not the order they are named, and a caller
+	// comparing two runs of the same batch would otherwise see a different list
+	// each time.
+	slices.SortFunc(committed, func(a, b uuid.UUID) int { return bytes.Compare(a[:], b[:]) })
+
 	return committed, firstErr
+}
+
+// concurrency is how many accounts this writer applies at once.
+func (w *Writer) concurrency() int {
+	if w.Concurrency > 0 {
+		return w.Concurrency
+	}
+
+	return DefaultConcurrency
 }
 
 // writeAccountDurable applies one account batch with SQLite as the authority

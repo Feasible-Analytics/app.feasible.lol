@@ -22,7 +22,13 @@ vary by a third either way, and the ranges below say by how much.
 account-handle work. The read and storage sections below are older and are dated
 where they are described.
 
-**The batched fold read is not in these numbers, and is therefore unmeasured.** A
+**Neither the batched fold read nor concurrent account writing is in these
+numbers, and both are therefore unmeasured.** Concurrent writing exists to move
+exactly the figures in this table, and its pool size is meant to be chosen from
+them, so it currently ships on the default the issue proposed rather than on a
+measurement.
+
+**The batched fold read is not in these numbers either.** A
 re-measurement was attempted and thrown away: the machine was carrying a load
 average of 662, and it produced 1,514 events/s at one account against the 4,739
 recorded here, with three repeats of the four-account case landing on 1,448, 513
