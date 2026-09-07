@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -296,10 +297,8 @@ func (w *Writer) writeAccountDurable(ctx context.Context, accountID int64, event
 	}
 
 	fold := newDurableSessionCache()
-	for key, span := range durableFoldRanges(fresh) {
-		if err := loadDurableFoldKey(ctx, tx, fold, accountID, key, span.first, span.last); err != nil {
-			return committed, err
-		}
+	if err := loadDurableFold(ctx, tx, fold, accountID, durableFoldRanges(fresh)); err != nil {
+		return committed, err
 	}
 
 	rows := make([]eventRow, 0, len(fresh))
@@ -420,57 +419,185 @@ func durableFoldRanges(events []Event) map[sessionKey]durableFoldRange {
 	return ranges
 }
 
-// loadDurableFoldKey restores serialized fold state and durable orphan events
-// into a transaction-local cache.
-func loadDurableFoldKey(ctx context.Context, tx *sql.Tx, cache *SessionCache, accountID int64, key sessionKey, first, last int64) error {
-	rows, err := tx.QueryContext(ctx, selectVisitorSessionState,
-		key.siteID, key.userID, last+sessionTimeoutSeconds, first-sessionTimeoutSeconds)
+// foldChunk is how many visitors one fold-state read asks about.
+//
+// It is fixed rather than derived from the batch size, because the batch is not
+// bounded by the nominal one — a backed-up buffer delivers far more — and a
+// bind list that follows the batch is a bind list that eventually meets
+// SQLite's parameter limit.
+const foldChunk = 200
+
+// loadDurableFold restores every visitor's serialized fold state and parked
+// engagement into a transaction-local cache.
+//
+// It reads a chunk of visitors at a time rather than one, because the number of
+// round trips otherwise grows with the batch's unique visitors — which is the
+// number that grows when a customer's traffic does. It is still one set of
+// reads per site in the batch, which is what the fold's own keys are scoped to.
+func loadDurableFold(ctx context.Context, tx *sql.Tx, cache *SessionCache, accountID int64, ranges map[sessionKey]durableFoldRange) error {
+	for siteID, visitors := range foldSites(ranges) {
+		for chunk := range slices.Chunk(visitors, foldChunk) {
+			span := chunkSpan(ranges, siteID, chunk)
+
+			if err := loadChunkSessions(ctx, tx, cache, accountID, ranges, siteID, chunk, span); err != nil {
+				return err
+			}
+
+			if err := loadLegacyFoldChunk(ctx, tx, cache, accountID, ranges, siteID, chunk, span); err != nil {
+				return err
+			}
+
+			if err := loadChunkOrphans(ctx, tx, cache, ranges, siteID, chunk, span); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// foldSites groups the batch's visitors by the site they belong to, sorted, so
+// a chunk's user ids land next to each other in the index the read walks.
+func foldSites(ranges map[sessionKey]durableFoldRange) map[int64][]int64 {
+	sites := map[int64][]int64{}
+	for key := range ranges {
+		sites[key.siteID] = append(sites[key.siteID], key.userID)
+	}
+
+	for _, visitors := range sites {
+		slices.Sort(visitors)
+	}
+
+	return sites
+}
+
+// chunkSpan is the widest window any visitor in the chunk needs, which is what
+// the statement is bounded by before each row is held to its own visitor's.
+func chunkSpan(ranges map[sessionKey]durableFoldRange, siteID int64, chunk []int64) durableFoldRange {
+	span := durableFoldRange{first: maxInt64, last: minInt64}
+
+	for _, userID := range chunk {
+		own := ranges[sessionKey{siteID: siteID, userID: userID}]
+		span.first = min(span.first, own.first)
+		span.last = max(span.last, own.last)
+	}
+
+	return span
+}
+
+// placeholders renders one bind marker per value.
+func placeholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
+
+// chunkArgs is the site, the chunk's visitors, and the two window bounds, in
+// the order both statements name them.
+func chunkArgs(siteID int64, chunk []int64, first, last int64) []any {
+	args := make([]any, 0, len(chunk)+3)
+	args = append(args, siteID)
+
+	for _, userID := range chunk {
+		args = append(args, userID)
+	}
+
+	return append(args, first, last)
+}
+
+// overlaps reports whether a session lying between these two times belongs in
+// this visitor's window. A chunk is read against a window wide enough for every
+// visitor in it, so each row is held to its own here.
+func overlaps(own durableFoldRange, startedAt, lastSeenAt int64) bool {
+	return startedAt <= own.last+sessionTimeoutSeconds && lastSeenAt >= own.first-sessionTimeoutSeconds
+}
+
+// loadChunkSessions reads the serialized fold state for one chunk of visitors.
+func loadChunkSessions(ctx context.Context, tx *sql.Tx, cache *SessionCache, accountID int64,
+	ranges map[sessionKey]durableFoldRange, siteID int64, chunk []int64, span durableFoldRange,
+) error {
+	statement := fmt.Sprintf(selectVisitorSessionState, placeholders(len(chunk)))
+
+	rows, err := tx.QueryContext(ctx, statement,
+		chunkArgs(siteID, chunk, span.last+sessionTimeoutSeconds, span.first-sessionTimeoutSeconds)...)
 	if err != nil {
 		return fmt.Errorf("write batch: read durable sessions: %w", err)
 	}
 
+	defer func() { _ = rows.Close() }()
+
 	bucket := &cache.bucket
+
 	for rows.Next() {
-		var payload []byte
-		if err := rows.Scan(&payload); err != nil {
-			_ = rows.Close()
+		var (
+			key                   sessionKey
+			startedAt, lastSeenAt int64
+			payload               []byte
+		)
+
+		if err := rows.Scan(&key.siteID, &key.userID, &startedAt, &lastSeenAt, &payload); err != nil {
 			return fmt.Errorf("write batch: read durable session: %w", err)
+		}
+
+		if !overlaps(ranges[key], startedAt, lastSeenAt) {
+			continue
 		}
 
 		var session Session
 		if err := json.Unmarshal(payload, &session); err != nil {
-			_ = rows.Close()
 			return fmt.Errorf("write batch: decode durable session: %w", err)
 		}
+
 		session.AccountID = accountID
 		bucket.sessions[key] = append(bucket.sessions[key], &session)
 	}
-	if err := rows.Close(); err != nil {
+
+	if err := rows.Err(); err != nil {
 		return fmt.Errorf("write batch: read durable sessions: %w", err)
 	}
-	if err := loadLegacyFoldKey(ctx, tx, cache, accountID, key, first, last); err != nil {
-		return err
-	}
 
-	orphans, err := tx.QueryContext(ctx, selectVisitorOrphans,
-		key.siteID, key.userID, first-sessionTimeoutSeconds, last+sessionTimeoutSeconds)
+	return nil
+}
+
+// loadChunkOrphans reads the engagement pings parked for one chunk of visitors.
+func loadChunkOrphans(ctx context.Context, tx *sql.Tx, cache *SessionCache,
+	ranges map[sessionKey]durableFoldRange, siteID int64, chunk []int64, span durableFoldRange,
+) error {
+	statement := fmt.Sprintf(selectVisitorOrphans, placeholders(len(chunk)))
+
+	orphans, err := tx.QueryContext(ctx, statement,
+		chunkArgs(siteID, chunk, span.first-sessionTimeoutSeconds, span.last+sessionTimeoutSeconds)...)
 	if err != nil {
 		return fmt.Errorf("write batch: read durable orphans: %w", err)
 	}
+
 	defer func() { _ = orphans.Close() }()
 
+	bucket := &cache.bucket
+
 	for orphans.Next() {
-		var payload []byte
-		if err := orphans.Scan(&payload); err != nil {
+		var (
+			key       sessionKey
+			timestamp int64
+			payload   []byte
+		)
+
+		if err := orphans.Scan(&key.siteID, &key.userID, &timestamp, &payload); err != nil {
 			return fmt.Errorf("write batch: read durable orphan: %w", err)
 		}
+
+		own := ranges[key]
+		if timestamp < own.first-sessionTimeoutSeconds || timestamp > own.last+sessionTimeoutSeconds {
+			continue
+		}
+
 		event, err := decodeDurableEvent(payload)
 		if err != nil {
 			return err
 		}
+
 		copied := event
 		bucket.orphans[key] = append(bucket.orphans[key], &copied)
 	}
+
 	if err := orphans.Err(); err != nil {
 		return fmt.Errorf("write batch: read durable orphans: %w", err)
 	}
@@ -478,14 +605,17 @@ func loadDurableFoldKey(ctx context.Context, tx *sql.Tx, cache *SessionCache, ac
 	return nil
 }
 
-// loadLegacyFoldKey hydrates session rows that have no companion state row:
+// loadLegacyFoldChunk hydrates session rows that have no companion state row:
 // sessions written before the state table existed, or whose state was pruned
 // after the retention window. The hydration is approximate — the tie-break
 // keys are not recoverable from the row — and the next successful fold writes
 // complete durable state again.
-func loadLegacyFoldKey(ctx context.Context, tx *sql.Tx, cache *SessionCache, accountID int64, key sessionKey, first, last int64) error {
-	rows, err := tx.QueryContext(ctx, `
+func loadLegacyFoldChunk(ctx context.Context, tx *sql.Tx, cache *SessionCache, accountID int64,
+	ranges map[sessionKey]durableFoldRange, siteID int64, chunk []int64, span durableFoldRange,
+) error {
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
 		SELECT
+			s.site_id, s.user_id,
 			s.id, s.started_at, s.last_seen_at, s.pageviews, s.events, s.is_bounce,
 			COALESCE(entry_page.value, ''), COALESCE(exit_page.value, ''),
 			COALESCE(entry_host.value, ''), COALESCE(exit_host.value, ''), s.entry_props,
@@ -521,10 +651,10 @@ func loadLegacyFoldKey(ctx context.Context, tx *sql.Tx, cache *SessionCache, acc
 		LEFT JOIN dim_os os ON os.id = s.os_id
 		LEFT JOIN dim_os_version os_version ON os_version.id = s.os_version_id
 		LEFT JOIN dim_language language ON language.id = s.language_id
-		WHERE state.session_id IS NULL AND s.site_id = ? AND s.user_id = ?
+		WHERE state.session_id IS NULL AND s.site_id = ? AND s.user_id IN (%s)
 		  AND s.started_at <= ? AND s.last_seen_at >= ?
-		ORDER BY s.started_at`,
-		key.siteID, key.userID, last+sessionTimeoutSeconds, first-sessionTimeoutSeconds)
+		ORDER BY s.user_id, s.started_at`, placeholders(len(chunk))),
+		chunkArgs(siteID, chunk, span.last+sessionTimeoutSeconds, span.first-sessionTimeoutSeconds)...)
 	if err != nil {
 		return fmt.Errorf("write batch: read legacy sessions: %w", err)
 	}
@@ -534,12 +664,14 @@ func loadLegacyFoldKey(ctx context.Context, tx *sql.Tx, cache *SessionCache, acc
 
 	for rows.Next() {
 		var (
+			key                 sessionKey
 			session             Session
 			bounce              int
 			props               sql.NullString
 			firstPage, lastPage sql.NullInt64
 		)
 		if err := rows.Scan(
+			&key.siteID, &key.userID,
 			&session.ID, &session.StartedAt, &session.LastSeenAt,
 			&session.Pageviews, &session.Events, &bounce,
 			&session.EntryPage, &session.ExitPage, &session.EntryHostname, &session.ExitHostname, &props,
@@ -551,6 +683,10 @@ func loadLegacyFoldKey(ctx context.Context, tx *sql.Tx, cache *SessionCache, acc
 			&firstPage, &lastPage,
 		); err != nil {
 			return fmt.Errorf("write batch: read legacy session: %w", err)
+		}
+
+		if !overlaps(ranges[key], session.StartedAt, session.LastSeenAt) {
+			continue
 		}
 
 		session.AccountID = accountID
@@ -614,17 +750,24 @@ const (
 		DELETE FROM ingest_session_state
 		WHERE site_id = ? AND last_seen_at < ?`
 
+	// The two visitor reads cover a chunk of visitors, so they carry the columns
+	// that route a row back to the visitor it belongs to and the ones its window
+	// is applied to. The chunk's bounds are the widest any of its visitors
+	// needs; each row is then held to its own visitor's window in Go.
+	//
+	// Only the marker list is rendered into the text; every id is still a bound
+	// parameter.
 	selectVisitorSessionState = `
-		SELECT payload FROM ingest_session_state
-		WHERE site_id = ? AND user_id = ?
+		SELECT site_id, user_id, started_at, last_seen_at, payload FROM ingest_session_state
+		WHERE site_id = ? AND user_id IN (%s)
 		  AND started_at <= ? AND last_seen_at >= ?
-		ORDER BY started_at`
+		ORDER BY user_id, started_at`
 
 	selectVisitorOrphans = `
-		SELECT payload FROM ingest_orphan_engagements
-		WHERE site_id = ? AND user_id = ?
+		SELECT site_id, user_id, timestamp, payload FROM ingest_orphan_engagements
+		WHERE site_id = ? AND user_id IN (%s)
 		  AND timestamp BETWEEN ? AND ?
-		ORDER BY timestamp`
+		ORDER BY user_id, timestamp`
 )
 
 // pruneFoldState removes fold state past the retention window for the sites in

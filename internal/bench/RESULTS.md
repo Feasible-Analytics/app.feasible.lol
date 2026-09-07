@@ -22,6 +22,19 @@ vary by a third either way, and the ranges below say by how much.
 account-handle work. The read and storage sections below are older and are dated
 where they are described.
 
+**The batched fold read is not in these numbers, and is therefore unmeasured.** A
+re-measurement was attempted and thrown away: the machine was carrying a load
+average of 662, and it produced 1,514 events/s at one account against the 4,739
+recorded here, with three repeats of the four-account case landing on 1,448, 513
+and 1,369. That is a measurement of the machine. **This table needs re-taking on
+a quiet one — until it is, a regression that change caused would not show up
+here.**
+
+**The 256-account row is stale: that case no longer completes.** It answers 503
+partway through — `event 2521 answered 503: event could not be persisted` — and
+it did so on the commit the batched fold read branched from, so it is not that
+change. The row below is the last figure from when it ran.
+
 **Driver:** `modernc.org/sqlite` (pure Go), with whatever pragmas
 `internal/store/store.go` sets. At the time of measurement: WAL,
 `synchronous=FULL`, `secure_delete(1)`, `busy_timeout` 5s, `foreign_keys(1)`,
@@ -58,7 +71,7 @@ answer. What it holds is a connection and a goroutine per event in flight.
 | 4 | 3,018 (2,616–3,021) | 76–92 ms | 128–214 ms | 72–88 ms | 125–190 ms |
 | 16 | 1,661 (1,429–2,072) | 105–117 ms | 183–486 ms | 92–114 ms | 178–406 ms |
 | 64 | 691 (661–768) | 199–227 ms | 5.0–9.0 s | 69–87 ms | 336–467 ms |
-| 256 | 486 (450–522) | 220–236 ms | 11.4–14.8 s | 74–75 ms | 288–383 ms |
+| 256 (stale) | 486 (450–522) | 220–236 ms | 11.4–14.8 s | 74–75 ms | 288–383 ms |
 
 These sit 13–30% above the first set of the same day. **Do not read that as an
 improvement anything here caused.** Repeat runs of this benchmark vary by a
