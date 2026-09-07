@@ -89,7 +89,7 @@ func TestWriterWriteAndBeginDeletionShareOneAccountFence(t *testing.T) {
 		}
 	}()
 	var once sync.Once
-	writer.Failpoint = func(stage string) error {
+	writer.Failpoint = func(_ int64, stage string) error {
 		if stage == WriterStageBeforeCommit {
 			once.Do(func() { close(entered) })
 			<-resume
@@ -560,7 +560,7 @@ func TestHostnameRejectionClaimAndFactShareEveryKillBoundary(t *testing.T) {
 			writer, manager := newWriter(t)
 			writer.Shield = rejectHostnameShield{}
 			writer.Counters = NewCounters()
-			writer.Failpoint = func(current string) error {
+			writer.Failpoint = func(_ int64, current string) error {
 				if current == stage {
 					return errors.New("simulated process kill")
 				}
@@ -2140,7 +2140,10 @@ func TestTheAccountPoolHoldsExactlyItsBound(t *testing.T) {
 			// be: those arrivals land while the first ones are still inside.
 			full := make(chan struct{})
 
-			writer.Failpoint = func(stage string) error {
+			giveUp := make(chan struct{})
+			time.AfterFunc(20*time.Second, func() { close(giveUp) })
+
+			writer.Failpoint = func(_ int64, stage string) error {
 				if stage != WriterStageBeforeCommit {
 					return nil
 				}
@@ -2157,8 +2160,10 @@ func TestTheAccountPoolHoldsExactlyItsBound(t *testing.T) {
 
 				select {
 				case <-full:
-				case <-time.After(30 * time.Second):
-					t.Error("the pool never reached its bound, so it is not being used")
+				case <-giveUp:
+					// One deadline for the whole batch, not one per account: a
+					// serial regression would otherwise wait out eight of them
+					// and report as a test timeout rather than as itself.
 				}
 
 				time.Sleep(50 * time.Millisecond)
@@ -2216,12 +2221,12 @@ func TestConcurrentBatchesForOneAccountStillFoldSerially(t *testing.T) {
 	}
 }
 
-// TestASessionIdIsNeverHandedOutTwice is what stops two accounts, or two
+// TestASessionIDIsNeverHandedOutTwice is what stops two accounts, or two
 // batches, writing over each other's visits.
 //
 // The allocator is durable and per account, so this should already hold — but
 // "should" is the reason to assert it once the caller became concurrent.
-func TestASessionIdIsNeverHandedOutTwice(t *testing.T) {
+func TestASessionIDIsNeverHandedOutTwice(t *testing.T) {
 	ctx := context.Background()
 	writer, manager := newWriter(t)
 
@@ -2314,66 +2319,142 @@ func writeVisitorPageviews(t *testing.T, ctx context.Context, count int, togethe
 	}
 }
 
-// TestAnUnwritableAccountLeavesTheOthersCommitted is the contract the serial
-// loop had and the pool has to keep.
+// TestOneAccountFailingLeavesTheOthersCommitted is the contract the serial loop
+// had and the pool has to keep.
 //
 // The events belong to different customers and are already in memory.
 // Abandoning them because one account could not be written would turn one full
 // disk into data loss across every customer on the box.
-func TestAnUnwritableAccountLeavesTheOthersCommitted(t *testing.T) {
+func TestOneAccountFailingLeavesTheOthersCommitted(t *testing.T) {
+	for _, stage := range []string{WriterStageAfterClaim, WriterStageAfterRejection, WriterStageBeforeCommit} {
+		t.Run(stage, func(t *testing.T) {
+			ctx := context.Background()
+			writer, manager := newWriter(t)
+			writer.Concurrency = 4
+
+			const (
+				accounts = 6
+				doomed   = 3
+			)
+
+			writer.Failpoint = func(accountID int64, current string) error {
+				if accountID == doomed && current == stage {
+					return errors.New("simulated process kill")
+				}
+
+				return nil
+			}
+
+			batch := make([]Event, 0, accounts)
+			for account := int64(1); account <= accounts; account++ {
+				batch = append(batch, writerEvent(account, EventPageview, fixtureStart.Unix(), "/"))
+			}
+
+			committed, err := writer.Write(ctx, batch)
+			if err == nil {
+				t.Fatal("the failing account was reported as a clean batch")
+			}
+
+			if len(committed) != accounts-1 {
+				t.Errorf("%d uuids were named committed, want the %d that got through",
+					len(committed), accounts-1)
+			}
+
+			for account := int64(1); account <= accounts; account++ {
+				want := int64(1)
+				if account == doomed {
+					want = 0
+				}
+
+				if got := countRows(t, manager, account, "SELECT COUNT(*) FROM events"); got != want {
+					t.Errorf("account %d stored %d events, want %d", account, got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestEveryFailureInABatchIsReported is the other half of that contract. Four
+// accounts failing for four reasons is four things somebody has to know about,
+// and only the first of them used to survive.
+func TestEveryFailureInABatchIsReported(t *testing.T) {
 	ctx := context.Background()
-
-	const (
-		total  = 6
-		doomed = 3
-	)
-
-	// Two managers over one directory: one the writer uses, one that fences an
-	// account behind its back — which is a failure the transaction cannot avoid
-	// and the other five accounts never see.
-	dir := t.TempDir()
-
-	manager := accounts.NewManager(dir)
-	t.Cleanup(func() { checkClose(t, "account manager", manager.CloseAll) })
-
-	blocker := accounts.NewManager(dir)
-	t.Cleanup(func() { checkClose(t, "blocking account manager", blocker.CloseAll) })
-
-	writer := NewWriter(manager)
-	writer.Now = func() time.Time { return fixtureStart }
+	writer, _ := newWriter(t)
 	writer.Concurrency = 4
 
-	batch := make([]Event, 0, total)
-	for account := int64(1); account <= total; account++ {
+	writer.Failpoint = func(accountID int64, stage string) error {
+		if stage == WriterStageAfterClaim && accountID <= 3 {
+			return fmt.Errorf("account %d could not be written", accountID)
+		}
+
+		return nil
+	}
+
+	batch := make([]Event, 0, 5)
+	for account := int64(1); account <= 5; account++ {
 		batch = append(batch, writerEvent(account, EventPageview, fixtureStart.Unix(), "/"))
 	}
 
-	// The account has to exist before it can be fenced.
-	if _, err := writer.Write(ctx, batch[doomed-1:doomed]); err != nil {
-		t.Fatal(err)
+	_, err := writer.Write(ctx, batch)
+	if err == nil {
+		t.Fatal("three failing accounts were reported as a clean batch")
 	}
 
-	if err := blocker.Block(doomed); err != nil {
-		t.Fatal(err)
+	for account := int64(1); account <= 3; account++ {
+		if want := fmt.Sprintf("account %d could not be written", account); !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not mention %q: %v", want, err)
+		}
+	}
+}
+
+// TestAPanicInOneAccountStaysInThatAccount is the blast radius the pool must
+// not widen.
+//
+// The write used to run on the caller's goroutine, so a panic was recovered by
+// net/http and cost one connection. On a goroutine of its own it would take the
+// process instead — every customer's ingestion on a hosted shard, and the
+// dashboard as well in the single-process deployment.
+func TestAPanicInOneAccountStaysInThatAccount(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+	writer.Concurrency = 4
+
+	const doomed = 2
+
+	writer.Failpoint = func(accountID int64, stage string) error {
+		if accountID == doomed && stage == WriterStageAfterClaim {
+			panic("a malformed row")
+		}
+
+		return nil
+	}
+
+	batch := make([]Event, 0, 4)
+	for account := int64(1); account <= 4; account++ {
+		batch = append(batch, writerEvent(account, EventPageview, fixtureStart.Unix(), "/"))
 	}
 
 	committed, err := writer.Write(ctx, batch)
-	if err != nil {
-		t.Fatalf("a fenced account was reported as a whole-batch failure: %v", err)
+	if err == nil {
+		t.Fatal("a panicking account was reported as a clean batch")
 	}
 
-	if len(committed) != total {
-		t.Errorf("%d uuids were named committed, want all %d — a fenced account is an "+
-			"intentional drop, not a loss", len(committed), total)
+	if !strings.Contains(err.Error(), "a malformed row") {
+		t.Errorf("the error does not carry what panicked: %v", err)
 	}
 
-	for account := int64(1); account <= total; account++ {
+	if len(committed) != 3 {
+		t.Errorf("%d uuids were named committed, want the 3 accounts that did not panic", len(committed))
+	}
+
+	for account := int64(1); account <= 4; account++ {
+		want := int64(1)
 		if account == doomed {
-			continue
+			want = 0
 		}
 
-		if got := countRows(t, manager, account, "SELECT COUNT(*) FROM events"); got != 1 {
-			t.Errorf("account %d stored %d events while another account was unwritable", account, got)
+		if got := countRows(t, manager, account, "SELECT COUNT(*) FROM events"); got != want {
+			t.Errorf("account %d stored %d events, want %d", account, got, want)
 		}
 	}
 }

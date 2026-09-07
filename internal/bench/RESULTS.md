@@ -28,6 +28,8 @@ exactly the figures in this table, and its pool size is meant to be chosen from
 them, so it currently ships on the default the issue proposed rather than on a
 measurement.
 
+The pool size moves without a rebuild: `FEASIBLE_APP_WRITE_CONCURRENCY`.
+
 **The batched fold read is not in these numbers either.** A
 re-measurement was attempted and thrown away: the machine was carrying a load
 average of 662, and it produced 1,514 events/s at one account against the 4,739
