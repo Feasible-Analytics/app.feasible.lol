@@ -16,11 +16,13 @@ import (
 // It is the boundary type of the pipeline: everything above it deals in HTTP
 // and raw headers, while everything below it deals in rows.
 //
-// What is *not* in this struct is the point of it. There is no IP address and
-// no raw user agent — the address is used for geolocation and the fingerprint
-// and then discarded before anything is written. The IP address never reaches
-// disk, and the only way to keep that promise is for the durable boundary type
-// to have nowhere to put one.
+// What is *not* in this struct is the point of it. There is no IP address: it
+// is used for geolocation and the fingerprint and then discarded before
+// anything is written, and the only way to keep that promise is for the durable
+// boundary type to have nowhere to put one.
+//
+// Diagnostics is the one part of this that is not a row. It carries the user
+// agent, which the health panel shows a customer as the last request it saw.
 type Event struct {
 	// UUID is stamped when the event is derived and never changes. It is what
 	// makes a redelivery harmless: the account receipt exists or it does not.
@@ -125,6 +127,11 @@ type Event struct {
 // busiest write in the system, so everything derivable from the event is rebuilt
 // on arrival rather than sent twice.
 type Diagnostics struct {
+	// ClaimedDomain is the domain the tracker sent, which the event does not
+	// keep: it holds the registered one it resolved to. The panel shows both so
+	// a wrong data-domain is visible as a disagreement between them.
+	ClaimedDomain string `json:"claimed_domain,omitempty"`
+
 	ClientIPSource    string     `json:"client_ip_source,omitempty"`
 	TrustedProxy      bool       `json:"trusted_proxy,omitempty"`
 	SiteDomain        string     `json:"site_domain,omitempty"`
@@ -144,6 +151,7 @@ type Diagnostics struct {
 // travel: this is written to the ingester's outbox, and the outbox is a disk.
 func (e *Event) CarryDiagnostics(debug Debug, userAgent string, version int, truncation Truncation) {
 	e.Diagnostics = &Diagnostics{
+		ClaimedDomain:     debug.Domain,
 		ClientIPSource:    debug.ClientIPSource,
 		TrustedProxy:      debug.TrustedProxy,
 		SiteDomain:        debug.SiteDomain,
@@ -168,58 +176,30 @@ func (e *Event) PendingObservation() (Observation, bool) {
 
 	d := e.Diagnostics
 
+	// Everything derivable comes from the same filler the pipeline uses, so a
+	// field added to an event reaches both views or neither.
+	debug := Debug{
+		ClientIPSource: d.ClientIPSource,
+		TrustedProxy:   d.TrustedProxy,
+		Domain:         d.ClaimedDomain,
+		SiteDomain:     d.SiteDomain,
+		SiteID:         e.SiteID,
+		AccountID:      e.AccountID,
+		Shard:          e.Shard,
+		EventName:      e.Name,
+
+		AutomationSignals: d.AutomationSignals,
+		BotReason:         e.BotReason,
+		DropReason:        d.DropReason,
+		Truncation:        d.Truncation,
+	}
+	fillDebug(&debug, e, d.SaltDay, d.RootDomain, d.Subdivision2)
+
 	return Observation{
-		SiteID:     e.SiteID,
-		AccountID:  e.AccountID,
-		ReceivedAt: e.Timestamp,
-		Debug: Debug{
-			ClientIPSource: d.ClientIPSource,
-			TrustedProxy:   d.TrustedProxy,
-			Domain:         e.Domain,
-			SiteDomain:     d.SiteDomain,
-			SiteID:         e.SiteID,
-			AccountID:      e.AccountID,
-			Shard:          e.Shard,
-			EventName:      e.Name,
-			Timestamp:      e.Timestamp,
-			UserID:         e.UserID,
-			PreviousUserID: e.PreviousUserID,
-			RootDomain:     d.RootDomain,
-			SaltDay:        d.SaltDay,
-			Hostname:       e.Hostname,
-			Pathname:       e.Pathname,
-			PageTitle:      e.PageTitle,
-			Referrer:       e.Referrer,
-			Source:         e.Source,
-			Channel:        e.Channel,
-			UTMSource:      e.UTMSource,
-			UTMMedium:      e.UTMMedium,
-			UTMCampaign:    e.UTMCampaign,
-			UTMContent:     e.UTMContent,
-			UTMTerm:        e.UTMTerm,
-			ClickIDParam:   e.ClickIDParam,
-			Country:        e.Country,
-			Region:         e.Region,
-			Subdivision2:   d.Subdivision2,
-			City:           e.City,
-
-			DeviceType:     e.DeviceType,
-			ScreenSize:     e.ScreenSize,
-			Browser:        e.Browser,
-			BrowserVersion: e.BrowserVersion,
-			OS:             e.OS,
-			OSVersion:      e.OSVersion,
-			Language:       e.Language,
-
-			ScrollDepth:    e.ScrollDepth,
-			EngagementTime: e.EngagementTime,
-			Interactive:    e.Interactive,
-
-			AutomationSignals: d.AutomationSignals,
-			BotReason:         e.BotReason,
-			DropReason:        d.DropReason,
-			Truncation:        d.Truncation,
-		},
+		SiteID:         e.SiteID,
+		AccountID:      e.AccountID,
+		ReceivedAt:     e.Timestamp,
+		Debug:          debug,
 		DropReason:     d.DropReason,
 		Pending:        true,
 		UserAgent:      d.UserAgent,

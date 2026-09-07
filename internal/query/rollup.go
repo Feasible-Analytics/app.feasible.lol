@@ -623,22 +623,25 @@ func (r *RollupRouter) Route(ctx context.Context, q *Query, resolved Resolved) (
 // back to daily rows for the sake of a fortnight at the front.
 //
 // It narrows complete to begin on a bucket boundary and returns the days before
-// it. Only a per-bucket read may do this: elsewhere a visitor present on both
+// it. Only a per-bucket read reaches here: elsewhere a visitor present on both
 // sides of the join would be counted twice, and only the trailing seam has a
-// correction. The false return means the whole range sits inside one bucket,
-// where a summary has nothing to offer.
+// correction, so readDimensions refuses a ragged range before this runs.
+//
+// The false return means there is no whole bucket to read, and the whole range
+// stays raw.
 func splitLeadingBucket(complete *Resolved, read rollupRead, loc *time.Location) (Resolved, bool, bool) {
 	start := RollupBucketStart(complete.Start, read.grain, loc)
 	if !start.Before(complete.Start) {
 		return Resolved{}, false, true
 	}
 
-	if !read.perBucket {
-		return Resolved{}, false, false
-	}
-
 	boundary := RollupNextBucket(start, read.grain, loc)
-	if !boundary.Before(complete.End) {
+
+	// An hour bucket is found by wall clock and advanced by elapsed time, and
+	// across a daylight-saving fall-back those disagree: the boundary can land
+	// before the range even begins. Reading the summary from there would answer
+	// for traffic outside the range that was asked for.
+	if !boundary.After(complete.Start) || !boundary.Before(complete.End) {
 		return Resolved{}, false, false
 	}
 

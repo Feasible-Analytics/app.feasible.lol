@@ -57,15 +57,27 @@ type IngestResponse struct {
 	Error     string      `json:"error,omitempty"`
 }
 
-// observe records the request view for every event this shard owns. The writer
-// emits the counting observation once it has decided each event's fate, so
-// these carry the details and count nothing.
-func (s *InternalShard) observe(events []Event) {
-	if s.Observer == nil {
+// observe records the request view for the events that committed.
+//
+// It runs after the write, not before, because a Pending observation still
+// increments the truncation and per-value counters. A batch observed and then
+// refused would be observed again on the sender's retry, and the panel would
+// count properties dropped for events that were never stored.
+func (s *InternalShard) observe(events []Event, committed []uuid.UUID) {
+	if s.Observer == nil || len(committed) == 0 {
 		return
 	}
 
+	stored := make(map[uuid.UUID]struct{}, len(committed))
+	for _, id := range committed {
+		stored[id] = struct{}{}
+	}
+
 	for i := range events {
+		if _, ok := stored[events[i].UUID]; !ok {
+			continue
+		}
+
 		if observation, ok := events[i].PendingObservation(); ok {
 			s.Observer.Observe(observation)
 		}
@@ -171,8 +183,6 @@ func (s *InternalShard) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(response.NotMine)
 
-	s.observe(accepted)
-
 	if len(accepted) > 0 {
 		if s.Writer == nil {
 			response.Error = "account writer is unavailable"
@@ -183,6 +193,9 @@ func (s *InternalShard) handleIngest(w http.ResponseWriter, r *http.Request) {
 		}
 		committed, err := s.Writer.Write(r.Context(), accepted)
 		response.Committed = committed
+
+		s.observe(accepted, committed)
+
 		if err != nil {
 			response.Error = err.Error()
 			w.Header().Set("Content-Type", "application/json")

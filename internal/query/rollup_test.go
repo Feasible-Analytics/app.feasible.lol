@@ -586,6 +586,79 @@ func TestARaggedStartIsRefusedWhenTheSeamWouldNeedCorrecting(t *testing.T) {
 	}
 }
 
+// TestNoSegmentEverReachesOutsideTheRange walks the grains and the clock
+// changes, because the leading split is arithmetic on two different notions of
+// time and only one of them survives a daylight-saving transition.
+//
+// An hour bucket is found by wall clock and advanced by elapsed time. Across a
+// fall-back those disagree, and the boundary can land before the range begins —
+// which would put the leftmost point of an hourly graph outside the range that
+// was asked for.
+func TestNoSegmentEverReachesOutsideTheRange(t *testing.T) {
+	losAngeles, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, now := range map[string]time.Time{
+		// The hour after the clocks go back, which happens twice.
+		// Twenty-four hours after each clock change, so the range *starts*
+		// inside the hour that happened twice, or the one that never happened.
+		"an hourly range starting in a repeated hour": time.Date(2026, 11, 2, 1, 30, 0, 0, losAngeles),
+		"an hourly range starting in a skipped hour":  time.Date(2026, 3, 9, 2, 30, 0, 0, losAngeles),
+		"an ordinary hourly range":                    time.Date(2026, 9, 9, 15, 37, 12, 0, losAngeles),
+	} {
+		t.Run(name, func(t *testing.T) {
+			resolved, err := DateRange{Preset: RangeLast24Hours}.Resolve(now, losAngeles, time.Time{})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			segments := route(t, coveringRouter("America/Los_Angeles"), &Query{
+				SiteIDs: []int64{1}, Metrics: []string{"visitors"}, SampleRate: 1,
+				Dimensions: []string{"time"}, Timezone: "America/Los_Angeles",
+			}, resolved)
+
+			for i, segment := range segments {
+				if segment.Range.Start.Before(resolved.Start) {
+					t.Errorf("segment %d starts at %s, before the range's own start %s — it answers for traffic nobody asked about",
+						i, segment.Range.Start, resolved.Start)
+				}
+
+				if segment.Range.End.After(resolved.End) {
+					t.Errorf("segment %d ends at %s, past the range's own end %s", i, segment.Range.End, resolved.End)
+				}
+
+				if segment.Range.End.Before(segment.Range.Start) {
+					t.Errorf("segment %d runs backwards, from %s to %s — it matches nothing",
+						i, segment.Range.Start, segment.Range.End)
+				}
+			}
+
+			// Whatever the split, the segments still cover the range exactly.
+			if len(segments) == 0 {
+				t.Fatal("the router answered with no segments at all")
+			}
+
+			if !segments[0].Range.Start.Equal(resolved.Start) {
+				t.Errorf("the first segment starts at %s, want the range's own %s", segments[0].Range.Start, resolved.Start)
+			}
+
+			last := segments[len(segments)-1]
+			if !last.Range.End.Equal(resolved.End) {
+				t.Errorf("the last segment ends at %s, want the range's own %s", last.Range.End, resolved.End)
+			}
+
+			for i := 1; i < len(segments); i++ {
+				if !segments[i].Range.Start.Equal(segments[i-1].Range.End) {
+					t.Errorf("segment %d starts at %s and %d ended at %s",
+						i, segments[i].Range.Start, i-1, segments[i-1].Range.End)
+				}
+			}
+		})
+	}
+}
+
 // raggedWeeklyRange is wide enough to be drawn in weeks and deliberately does
 // not begin on a Monday.
 func raggedWeeklyRange(t *testing.T, now time.Time) Resolved {

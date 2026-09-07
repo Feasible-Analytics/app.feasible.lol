@@ -558,8 +558,14 @@ func (x *executor) execute(ctx context.Context, restrict map[int][]any) (*groupS
 	// the same visits, so anything present on both sides of the boundary has
 	// now been counted twice. This removes it.
 	if rollupBacked(segments) && len(segments) > 1 {
-		if err := x.seamPass(ctx, segments[len(segments)-1].Range, groups); err != nil {
-			return nil, err
+		// The seam is between the summary and the raw days after it. With a
+		// leading split the last segment is raw only when there are days after
+		// the summary at all, and correcting against a summary range would
+		// subtract visitors from the wrong window.
+		if last := segments[len(segments)-1]; last.Source == SourceRaw {
+			if err := x.seamPass(ctx, last.Range, groups); err != nil {
+				return nil, err
+			}
 		}
 	}
 
