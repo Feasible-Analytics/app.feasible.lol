@@ -372,3 +372,66 @@ test("a runtime init stamps the next pageview and does not resend the last", asy
 	// The one already sent stays as it was sent.
 	expect(pageviews[0].p).toBeUndefined();
 });
+
+// The same rule as on a custom event, asserted on a pageview too: the two merge
+// in different files and only one of them was covered.
+test("a property on a pageview call overrides a declared one", async ({ page }) => {
+	await declareProperties(page, { plan: "declared", tier: "free" });
+
+	const state = await collect(page);
+
+	await page.goto("/manual.html");
+	await page.evaluate(() => window.feasible("pageview", { p: { plan: "named" } }));
+
+	const [sent] = await settledCount(state, "pageview", 1);
+
+	expect(sent.p).toEqual({ plan: "named", tier: "free" });
+});
+
+// These ride on every event for the life of the install, so a value the browser
+// will not send is not a dropped event — it is a site that goes dark and stays
+// dark, with the outbox filling up and nothing reaching us to be counted.
+test("an oversized declaration is trimmed rather than taking the site dark", async ({ page }) => {
+	await declareProperties(page, { plan: "x".repeat(50_000) });
+
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	const [first] = await settledCount(state, "pageview", 1);
+
+	expect(first.p.plan).toHaveLength(2000);
+});
+
+// A property backed by a getter that throws is a mistake in somebody else's
+// code. It must not stop us counting anybody.
+test("a declaration that throws while being read is ignored, not fatal", async ({ page }) => {
+	await page.addInitScript(() => {
+		window.__fsp = Object.defineProperty({}, "plan", {
+			enumerable: true,
+			get() {
+				throw new Error("no");
+			},
+		});
+	});
+
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	const [first] = await settledCount(state, "pageview", 1);
+
+	expect(first.p).toBeUndefined();
+	expect(first.n).toBe("pageview");
+});
+
+// Anything that is not a set of properties has to be refused outright. A string
+// spreads into one property per character, which is a dashboard full of noise.
+test("a declaration that is not an object is refused", async ({ page }) => {
+	await declareProperties(page, "pro");
+
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	const [first] = await settledCount(state, "pageview", 1);
+
+	expect(first.p).toBeUndefined();
+});

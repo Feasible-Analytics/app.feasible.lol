@@ -28,9 +28,38 @@ function api(name, options) {
 
 	// init sets the properties every later event carries. It cannot reach a
 	// pageview already sent, and a site that needs the first one uses __fsp.
-	if (name === "init") globals.p = options?.p;
+	// `props` is taken as well as `p` because that is how every other call
+	// here spells it.
+	if (name === "init") declare(options?.p || options?.props);
 	else if (name === "pageview") pageview.pageview(options);
 	else clicks.custom(name, options);
+}
+
+// declare stores the properties every event will carry, bounded and copied.
+//
+// Bounded because these ride on everything: one oversized value is a body the
+// browser refuses to send, on every event, for the life of the install — and
+// nothing then reaches the server to be counted. Copied so a later edit of the
+// site's own object cannot change what its earlier events said. Wrapped because
+// a property backed by a getter that throws would otherwise stop the tracker
+// dead. Anything rejected says so out loud.
+function declare(given) {
+	globals.p = undefined;
+
+	try {
+		if (given && typeof given === "object") {
+			const kept = {};
+
+			// The server's own caps, applied here as well. Past thirty, or past
+			// two thousand characters, is dropped rather than sent.
+			for (const key of Object.keys(given).slice(0, 30)) kept[key] = ("" + given[key]).slice(0, 2000);
+
+			globals.p = kept;
+			return;
+		}
+	} catch {}
+
+	if (given) warn("properties ignored");
 }
 
 // install replaces the queue stub the snippet defined and replays whatever was
@@ -68,7 +97,7 @@ if (reason) {
 } else {
 	configure(cfg.a, cfg);
 
-	globals.p = cfg.p;
+	declare(cfg.p);
 
 	// Engagement and the click handlers are wired before the first pageview so
 	// that an interaction on a page that is still deferred — prerendered, or

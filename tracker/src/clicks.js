@@ -80,7 +80,10 @@ function parseTag(el) {
 
 // custom sends one named event. It is the single path for everything that is
 // not a pageview: `feasible('Signup')`, an outbound click, a download, a tagged
-// element and a form submission all arrive here.
+// element and a form submission all arrive here — and so all of them carry
+// whatever properties a site declared globally, which is what lets a conversion
+// be split the same way as the traffic that led to it. Engagement is measured
+// rather than done and is not one of these, so it carries none.
 //
 // Exclusions are applied to all of them, which is not optional politeness. A
 // customer who excludes `/order/*` is doing it to keep order ids out of the
@@ -102,8 +105,7 @@ export function custom(name, options) {
 		d: page.d,
 	};
 
-	const props = stamp(opts.props);
-	if (props) event.p = props;
+	event.p = stamp(opts.props);
 	if (opts.revenue) event.$ = opts.revenue;
 	if (opts.interactive === false) event.i = false;
 
