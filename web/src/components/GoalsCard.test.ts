@@ -11,8 +11,8 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import type { Goal, JourneyAnchor } from "../api/types";
-import { PanelFrame, anchorKey, behaviorCaveat, behaviorEnabled, filterAnchors, goalFilter, goalsFooter, goalsPrompt, hiddenGoalsNote } from "./GoalsCard";
+import type { FunnelReport, FunnelReportStep, Goal, JourneyAnchor } from "../api/types";
+import { FunnelChart, PanelFrame, anchorKey, behaviorCaveat, behaviorEnabled, blockHeight, filterAnchors, goalFilter, goalsFooter, goalsPrompt, hiddenGoalsNote } from "./GoalsCard";
 
 // The catalogue is read once from the page, so it is stubbed before any test
 // asks for a string rather than inside the one test that needs it.
@@ -25,6 +25,19 @@ globalThis.document = {
 				"dashboard.behavior.funnels.caveat": "Steps are measured against the first step.",
 				"dashboard.behavior.partial": "Reporting starts {from}, when this configuration became measurable.",
 				"dashboard.goals.hidden": "Showing {shown} of {configured} goals. The rest had no conversions in this period.",
+				"dashboard.behavior.funnels.steps_one": "{count}-step funnel",
+				"dashboard.behavior.funnels.steps_other": "{count}-step funnel",
+				"dashboard.behavior.funnels.allows_between": "Other activity allowed between steps",
+				"dashboard.behavior.funnels.consecutive_only": "Consecutive steps only",
+				"dashboard.behavior.funnels.overall": "{rate} completed",
+				"dashboard.behavior.funnels.continued": "{rate} continued",
+				"dashboard.behavior.funnels.dropoff": "{count} dropped · {rate}",
+				"dashboard.behavior.funnels.dropped": "{rate} dropped",
+				"dashboard.behavior.funnels.nobody_here": "Nobody reached this step",
+				"dashboard.behavior.funnels.completed_here": "Completed",
+				"dashboard.behavior.funnels.visitors_one": "{count} visitor",
+				"dashboard.behavior.funnels.visitors_other": "{count} visitors",
+				"dashboard.behavior.funnels.not_to_scale": "Too small to draw.",
 			},
 		}),
 	}),
@@ -234,4 +247,154 @@ test("the note wraps rather than truncating on a narrow card", () => {
 	assert.doesNotMatch(footer, /truncate|whitespace-nowrap|text-ellipsis/);
 	assert.match(footer, /min-h-\[42px\]/, "the strip keeps its reserved height and grows to fit");
 	assert.match(footer, /class="shrink-0"/, "the link does not get squeezed by a long note");
+});
+
+/** funnelStep supplies every wire field so each test below changes only the one
+ * number it is about. */
+function funnelStep(position: number, visitors: number, overrides: Partial<FunnelReportStep> = {}): FunnelReportStep {
+	return {
+		position,
+		label: `Step ${position}`,
+		goal: configuredGoal({ id: position }),
+		visitors,
+		visits: visitors,
+		drop_off: 0,
+		drop_off_rate: 0,
+		conversion_rate: 0,
+		...overrides,
+	};
+}
+
+/** funnelMarkup draws the chart the way the panel does. */
+function funnelMarkup(steps: FunnelReportStep[], strict = false): string {
+	const report = {
+		funnel: { id: 1, site_id: 9, name: "Checkout", strict_order: strict, steps: [] },
+		steps,
+	} as unknown as FunnelReport;
+
+	return renderToStaticMarkup(createElement(FunnelChart, { report }));
+}
+
+/** columns returns the <li> markup of the wide layout, which is the first list
+ * the chart renders. */
+function columns(markup: string): string[] {
+	const grid = markup.slice(markup.indexOf("<ol"), markup.indexOf("</ol>"));
+
+	return grid.split("<li").slice(1);
+}
+
+test("a funnel renders one column per step, each carrying its own figures", () => {
+	const markup = funnelMarkup([
+		funnelStep(1, 314, { label: "Visit /", conversion_rate: 100 }),
+		funnelStep(2, 27, { label: "Opened Signup", conversion_rate: 8.6, drop_off: 287, drop_off_rate: 91.4 }),
+		funnelStep(3, 10, { label: "Newsletter Signup", conversion_rate: 3.2, drop_off: 17, drop_off_rate: 63 }),
+		funnelStep(4, 2, { label: "Purchased Course", conversion_rate: 0.6, drop_off: 8, drop_off_rate: 80 }),
+	]);
+
+	const cells = columns(markup);
+
+	assert.equal(cells.length, 4);
+
+	for (const [index, want] of [
+		["Visit /", "100%", "314 visitors"],
+		["Opened Signup", "8.6%", "27 visitors"],
+		["Newsletter Signup", "3.2%", "10 visitors"],
+		["Purchased Course", "0.6%", "2 visitors"],
+	].entries()) {
+		for (const text of want) {
+			assert.ok(cells[index].includes(text), `column ${index + 1} is missing ${text}: ${cells[index]}`);
+		}
+	}
+});
+
+test("a step too small to draw is held at a minimum height and marked", () => {
+	// Drawn to scale this is under two pixels of the chart, which reads as an
+	// empty box rather than as a number.
+	assert.deepEqual(blockHeight(1, 1000), { height: 4, toScale: false });
+
+	// Above the floor nothing is touched.
+	assert.deepEqual(blockHeight(500, 1000), { height: 50, toScale: true });
+
+	const markup = funnelMarkup([
+		funnelStep(1, 1000, { conversion_rate: 100 }),
+		funnelStep(2, 1, { conversion_rate: 0.1, drop_off: 999, drop_off_rate: 99.9 }),
+	]);
+
+	const [tall, tiny] = columns(markup);
+
+	assert.ok(tall.includes('data-scale="true"'), tall);
+	assert.ok(tiny.includes('data-scale="broken"'), tiny);
+	assert.ok(tiny.includes("Too small to draw."), "the floored block must say it is not to scale");
+});
+
+test("a step nobody reached is a column showing zero, not a gap", () => {
+	const markup = funnelMarkup([
+		funnelStep(1, 40, { conversion_rate: 100 }),
+		funnelStep(2, 0, { conversion_rate: 0, drop_off: 40, drop_off_rate: 100 }),
+	]);
+
+	const cells = columns(markup);
+
+	assert.equal(cells.length, 2);
+	assert.ok(cells[1].includes("0 visitors"), cells[1]);
+	assert.ok(cells[1].includes("0%"), cells[1]);
+
+	// "100% continued" out of nothing is arithmetic, not a fact about anybody.
+	assert.ok(!cells[1].includes("continued"), cells[1]);
+
+	// Nothing is not "too small to see" — a step nobody reached draws no block.
+	assert.deepEqual(blockHeight(0, 40), { height: 0, toScale: true });
+});
+
+test("eight steps render eight columns and no label is emptied", () => {
+	const steps = Array.from({ length: 8 }, (_, i) =>
+		funnelStep(i + 1, 100 - i * 10, { label: `Step number ${i + 1}`, conversion_rate: 100 - i * 10 }),
+	);
+
+	const cells = columns(funnelMarkup(steps));
+
+	assert.equal(cells.length, 8);
+
+	for (const [index, cell] of cells.entries()) {
+		assert.ok(cell.includes(`Step number ${index + 1}`), cell);
+	}
+});
+
+test("the last column says the funnel completed rather than a continue rate", () => {
+	const cells = columns(
+		funnelMarkup([
+			funnelStep(1, 100, { conversion_rate: 100 }),
+			funnelStep(2, 25, { conversion_rate: 25, drop_off: 75, drop_off_rate: 75 }),
+		]),
+	);
+
+	assert.ok(cells[0].includes("25% continued"), cells[0]);
+	assert.ok(cells[0].includes("75% dropped"), cells[0]);
+	assert.ok(!cells[1].includes("continued"), cells[1]);
+	assert.ok(cells[1].includes("Completed"), cells[1]);
+});
+
+test("the chart is an ordered list with one item per step", () => {
+	const markup = funnelMarkup([
+		funnelStep(1, 10, { conversion_rate: 100 }),
+		funnelStep(2, 5, { conversion_rate: 50, drop_off: 5, drop_off_rate: 50 }),
+	]);
+
+	// Two lists: the columns, and the rows a narrow screen gets instead. Only
+	// one is in the layout at a time, so neither is read twice.
+	assert.equal(markup.split("<ol").length - 1, 2);
+	assert.equal(markup.split("<li").length - 1, 4);
+	assert.ok(markup.includes("sm:hidden"), "the narrow-screen rows are missing");
+	assert.ok(markup.includes("hidden gap-2 sm:grid"), "the wide-screen columns are missing");
+});
+
+test("the funnel header names the step count and the matching mode", () => {
+	const steps = [funnelStep(1, 10, { conversion_rate: 100 }), funnelStep(2, 1, { conversion_rate: 10 })];
+
+	const loose = funnelMarkup(steps);
+	assert.ok(loose.includes("2-step funnel"), loose.slice(0, 400));
+	assert.ok(loose.includes("Other activity allowed between steps"), loose.slice(0, 400));
+	assert.ok(loose.includes("10% completed"), loose.slice(0, 400));
+
+	assert.ok(funnelMarkup(steps, true).includes("Consecutive steps only"));
 });

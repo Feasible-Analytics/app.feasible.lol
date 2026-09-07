@@ -23,6 +23,7 @@ import type {
 	Filter,
 	Funnel,
 	FunnelReport,
+	FunnelReportStep,
 	Goal,
 	GoalReport,
 	GoalReportRow,
@@ -34,7 +35,7 @@ import type {
 } from "../api/types";
 import type { FilterState } from "../lib/filters";
 import { compact, exact, metricAxisValue, metricTitle } from "../lib/format";
-import { t } from "../lib/i18n";
+import { n, t } from "../lib/i18n";
 import type { RemoteState } from "../lib/useStats";
 import { useNearViewport, useRemote } from "../lib/useStats";
 import type { BehaviorState, BehaviorTab } from "../lib/url";
@@ -354,25 +355,142 @@ function FunnelsPanel({ domain, request, enabled, settingsURL, selected, onSelec
 	);
 }
 
-/** FunnelChart uses horizontal bars because step labels and exact losses remain
- * readable on a phone; a connected chart would force them into tooltips. */
-function FunnelChart({ report }: { report: FunnelReport }) {
-	const first = Math.max(1, report.steps[0]?.visitors ?? 0);
+/** MIN_BLOCK is the share of the chart a step's block never drops below.
+ *
+ *  A funnel converting at 0.6% is a healthy funnel, and drawn to scale its last
+ *  column is under two pixels of a three-hundred-pixel chart — an empty box the
+ *  reader concludes is a bug. A floor alone would be a lie, so a floored block
+ *  is marked as out of scale and the true share is printed above every column. */
+const MIN_BLOCK = 4;
+
+/** blockHeight is a step's share of the chart, and whether that share had to be
+ *  raised to stay visible. */
+export function blockHeight(visitors: number, first: number): { height: number; toScale: boolean } {
+	const share = first > 0 ? (visitors / first) * 100 : 0;
+
+	// Nothing is not small — a step nobody reached draws no block at all, and
+	// the column carries its zero instead.
+	if (share === 0) return { height: 0, toScale: true };
+
+	return share < MIN_BLOCK ? { height: MIN_BLOCK, toScale: false } : { height: share, toScale: true };
+}
+
+/** FunnelChart draws one column per step, its height proportional to the step's
+ *  share of the first, because where the floor falls out is what a funnel chart
+ *  is for and reading it off four right-aligned numbers is not seeing it.
+ *
+ *  Below `sm` it falls back to rows. Eight columns on a phone is forty pixels
+ *  each, which is not a chart, and horizontal scrolling hides the very
+ *  comparison the chart exists to make. Only one of the two lists is in the
+ *  layout at a time, so assistive technology is never read both. */
+export function FunnelChart({ report }: { report: FunnelReport }) {
+	const steps = report.steps;
+	const first = Math.max(1, steps[0]?.visitors ?? 0);
+
+	const header = (
+		<div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-muted">
+			<span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+				<span>{n("dashboard.behavior.funnels.steps", steps.length)}</span>
+				<span aria-hidden="true">·</span>
+				<span>
+					{report.funnel.strict_order
+						? t("dashboard.behavior.funnels.consecutive_only")
+						: t("dashboard.behavior.funnels.allows_between")}
+				</span>
+			</span>
+			<span>
+				{t("dashboard.behavior.funnels.overall", {
+					rate: metricAxisValue("conversion_rate", steps.at(-1)?.conversion_rate ?? 0),
+				})}
+			</span>
+		</div>
+	);
+
+	if (steps.length === 0) {
+		return (
+			<div className="px-4 pb-3 sm:px-5">
+				{header}
+				<BehaviorEmpty title={t("dashboard.behavior.funnels.no_data")} body={t("dashboard.empty.hint")} />
+			</div>
+		);
+	}
 
 	return (
 		<div className="px-4 pb-3 sm:px-5">
-			<div className="mb-2 flex items-center justify-between text-xs text-muted"><span>{report.funnel.strict_order ? t("dashboard.behavior.funnels.consecutive_only") : t("dashboard.behavior.funnels.allows_between")}</span><span>{t("dashboard.behavior.funnels.overall", { rate: metricAxisValue("conversion_rate", report.steps.at(-1)?.conversion_rate ?? 0) })}</span></div>
-			{report.steps.length === 0 ? <BehaviorEmpty title={t("dashboard.behavior.funnels.no_data")} body={t("dashboard.empty.hint")} /> : (
-				<ol className="space-y-2">
-					{report.steps.map((step, index) => (
-						<li key={`${step.position}:${step.goal.id}`} className="relative overflow-hidden border-2 border-line bg-page/40 px-3 py-2.5">
-							<span aria-hidden="true" className="absolute inset-y-0 left-0 bg-accent/10 transition-[width] duration-200" style={{ width: `${Math.max(0.7, (step.visitors / first) * 100)}%` }} />
-							<div className="relative flex items-center gap-3"><span className="tnum flex size-6 shrink-0 items-center justify-center bg-card text-xs font-semibold text-muted">{index + 1}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-body">{step.label}</span>{index > 0 && <span className="block text-[11px] text-down">{t("dashboard.behavior.funnels.dropoff", { count: compact(step.drop_off), rate: metricAxisValue("conversion_rate", step.drop_off_rate) })}</span>}</span><span className="text-right"><span className="tnum block text-sm font-semibold text-body" title={exact(step.visitors)}><span className="sr-only">{exact(step.visitors)}</span><span aria-hidden="true">{compact(step.visitors)}</span></span><span className="tnum block text-[11px] text-muted">{metricAxisValue("conversion_rate", step.conversion_rate)}</span></span></div>
-						</li>
-					))}
-				</ol>
-			)}
+			{header}
+
+			<ol className="hidden gap-2 sm:grid" style={{ gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))` }}>
+				{steps.map((step, index) => (
+					<FunnelColumn key={`${step.position}:${step.goal.id}`} step={step} next={steps[index + 1]} first={first} />
+				))}
+			</ol>
+
+			<ol className="space-y-2 sm:hidden">
+				{steps.map((step, index) => (
+					<li key={`${step.position}:${step.goal.id}`} className="relative overflow-hidden border-2 border-line bg-page/40 px-3 py-2.5">
+						<span aria-hidden="true" className="absolute inset-y-0 left-0 bg-accent/10 transition-[width] duration-200" style={{ width: `${Math.max(0.7, (step.visitors / first) * 100)}%` }} />
+						<div className="relative flex items-center gap-3"><span className="tnum flex size-6 shrink-0 items-center justify-center bg-card text-xs font-semibold text-muted">{index + 1}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-body">{step.label}</span>{index > 0 && <span className="block text-[11px] text-down">{t("dashboard.behavior.funnels.dropoff", { count: compact(step.drop_off), rate: metricAxisValue("conversion_rate", step.drop_off_rate) })}</span>}</span><span className="text-right"><span className="tnum block text-sm font-semibold text-body" title={exact(step.visitors)}><span className="sr-only">{exact(step.visitors)}</span><span aria-hidden="true">{compact(step.visitors)}</span></span><span className="tnum block text-[11px] text-muted">{metricAxisValue("conversion_rate", step.conversion_rate)}</span></span></div>
+					</li>
+				))}
+			</ol>
 		</div>
+	);
+}
+
+/** FunnelColumn is one step: what it is, how many reached it, how tall that is,
+ *  and what happened between it and the next one. */
+function FunnelColumn({ step, next, first }: { step: FunnelReportStep; next?: FunnelReportStep; first: number }) {
+	const { height, toScale } = blockHeight(step.visitors, first);
+
+	return (
+		<li className="flex min-w-0 flex-col">
+			<span className="block truncate text-xs font-medium text-body" title={step.label}>
+				{step.label}
+			</span>
+			<span className="tnum block text-sm font-semibold text-body">
+				{metricAxisValue("conversion_rate", step.conversion_rate)}
+			</span>
+			<span className="tnum block text-[11px] text-muted" title={exact(step.visitors)}>
+				{n("dashboard.behavior.funnels.visitors", step.visitors, { count: compact(step.visitors) })}
+			</span>
+
+			{/* The block is decoration: every number it draws is written above it
+			    in text, so a reader who cannot see it loses nothing. */}
+			<div aria-hidden="true" className="mt-2 flex h-40 items-end">
+				<span
+					data-scale={toScale ? "true" : "broken"}
+					title={toScale ? undefined : t("dashboard.behavior.funnels.not_to_scale")}
+					className={`w-full bg-accent/70 transition-[height] duration-200 ${toScale ? "" : "border-t-2 border-dashed border-accent"}`}
+					style={{ height: `${height}%` }}
+				/>
+			</div>
+
+			{!toScale && <span className="sr-only">{t("dashboard.behavior.funnels.not_to_scale")}</span>}
+
+			{/* What happened between this step and the next. A step nobody
+			    reached has no rate to state: "100% continued" out of nothing is
+			    arithmetic rather than a fact about anybody. */}
+			<span className="mt-1 block text-[11px]">
+				{!next ? (
+					<span className="text-muted">{t("dashboard.behavior.funnels.completed_here")}</span>
+				) : step.visitors === 0 ? (
+					<span className="text-muted">{t("dashboard.behavior.funnels.nobody_here")}</span>
+				) : (
+					<>
+						<span className="text-body">
+							{t("dashboard.behavior.funnels.continued", {
+								rate: metricAxisValue("conversion_rate", 100 - next.drop_off_rate),
+							})}
+						</span>{" "}
+						<span className="text-down" title={exact(next.drop_off)}>
+							{t("dashboard.behavior.funnels.dropped", {
+								rate: metricAxisValue("conversion_rate", next.drop_off_rate),
+							})}
+						</span>
+					</>
+				)}
+			</span>
+		</li>
 	);
 }
 
