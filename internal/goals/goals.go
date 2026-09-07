@@ -810,9 +810,10 @@ var automaticGoals = []struct {
 // arrives, because a goal that does not exist until the traffic does would
 // start counting after the thing the customer was trying to measure.
 func EnsureAutomatic(ctx context.Context, db *sql.DB, siteID int64, now time.Time) ([]Goal, error) {
-	// Upgrade the old automatic form definition in place. Its report continues
-	// to match both wire names, but settings and newly installed trackers now
-	// consistently present Plausible's established Form: Submission name.
+	// A site created before the automatic form goal settled on its current wire
+	// name still carries the old one. The report matches both, so the stored
+	// definition is brought into line rather than duplicated: settings and the
+	// tracker must agree on the name they present.
 	var legacyID int64
 	err := db.QueryRowContext(ctx, `
 		SELECT id FROM goals WHERE site_id = ? AND event_name = ? AND is_automatic = 1`,
