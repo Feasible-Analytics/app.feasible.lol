@@ -6,7 +6,7 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-import { doc, loc, page } from "./state.js";
+import { doc, loc, page, stamp } from "./state.js";
 import { send, drain, refusal } from "./send.js";
 import { warn } from "./exclude.js";
 import * as engagement from "./engagement.js";
@@ -59,7 +59,8 @@ function onVisible() {
 // pageview sends one pageview, or holds it until somebody looks at the page.
 //
 // `opts` carries the overrides an SPA or a restore needs: `u` for a custom
-// location, `r` for a corrected referrer, `p` for props.
+// location, `r` for a corrected referrer, `p` for props. Whatever a site
+// declared globally rides along too, under anything named here.
 export function pageview(opts) {
 	const options = opts || {};
 
@@ -118,7 +119,9 @@ export function pageview(opts) {
 	const referrer = "r" in options ? options.r : doc.referrer;
 	if (referrer) event.r = referrer;
 
-	if (options.p) event.p = options.p;
+	// Absent rather than empty: JSON.stringify drops an undefined value, so
+	// nothing extra rides on an event with no properties.
+	event.p = stamp(options.p);
 
 	send(event, options.callback);
 }

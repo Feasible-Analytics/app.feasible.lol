@@ -26,6 +26,19 @@ export const hatch = win.__feasible;
 // for months and are the usual explanation for a payload that looks wrong.
 export const VERSION = 2;
 
+// globals are the properties a site wants on everything it sends, set from
+// __fsp before the bundle loads or by feasible('init') afterwards.
+//
+// It is a holder rather than a bare binding so that one import can both read
+// and replace it. Module memory only, never storage: a plan cached on disk
+// outlives the login it describes, and touching storage throws outright in
+// some third-party iframes.
+export const globals = { p: undefined };
+
+// stamp merges the globals under one call's own properties. Its own win,
+// because a property named on the call is the more specific statement.
+export const stamp = (own) => (globals.p ? { ...globals.p, ...own } : own);
+
 // page is what we currently believe the visitor is looking at. It is shared
 // mutable state rather than a parameter passed everywhere because engagement,
 // navigation and the click handlers all have to agree on which URL an event

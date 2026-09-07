@@ -86,6 +86,11 @@ export function resolve() {
 		// A bare data-vitals captures every page. A decimal value samples that
 		// fraction once per document; data-sample remains a compatibility alias.
 		v: el && el.hasAttribute("data-vitals") ? read(el, "vitals") || read(el, "sample") || "1" : 0,
+		// Read here because resolve runs before the first pageview is sent. The
+		// queue the snippet fills is drained after it, so a site that only had
+		// feasible('init') would miss the one pageview that becomes the visit's
+		// entry properties.
+		p: win.__fsp,
 		...baked,
 	};
 

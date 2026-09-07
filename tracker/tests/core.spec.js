@@ -433,3 +433,43 @@ test("storage failure is explicit and keeps the tracker running", async ({ page 
 	await page.click("#custom");
 	await settledCount(state, "Custom Event", 1);
 });
+
+// declareProperties sets the global before any of the page's own scripts run.
+async function declareProperties(page, props) {
+	await page.addInitScript((values) => {
+		window.__fsp = values;
+	}, props);
+}
+
+// A conversion that cannot be segmented by the same property as the traffic
+// that led to it is a strange half-feature, so the globals ride on custom
+// events too.
+test("a custom event carries the declared properties", async ({ page }) => {
+	await declareProperties(page, { plan: "pro" });
+
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+
+	await page.click("#custom");
+	await settledCount(state, "Custom Event", 1);
+
+	// The fixture's own property, and the declared one beside it.
+	expect(named(state, "Custom Event")[0].p).toEqual({ plan: "pro", where: "basic" });
+});
+
+// A property named on the call is the more specific statement, so it wins.
+test("a property on the call overrides a declared one of the same name", async ({ page }) => {
+	await declareProperties(page, { where: "declared", plan: "pro" });
+
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+
+	await page.click("#custom");
+	await settledCount(state, "Custom Event", 1);
+
+	expect(named(state, "Custom Event")[0].p).toEqual({ where: "basic", plan: "pro" });
+});

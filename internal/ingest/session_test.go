@@ -142,6 +142,32 @@ func TestEntryPageIgnoresNonPageviews(t *testing.T) {
 	}
 }
 
+// TestEntryPropsComeFromTheFirstEvent is what makes a property declared on
+// every pageview able to describe a whole visit rather than one hit.
+//
+// The tracker stamps its declared properties onto the first pageview precisely
+// so this rule picks them up; without it a session-scoped property would have
+// nothing to be scoped to.
+func TestEntryPropsComeFromTheFirstEvent(t *testing.T) {
+	first := event(EventPageview, 1000, "/")
+	first.Props = map[string]string{"plan": "pro"}
+
+	later := event(EventPageview, 1100, "/pricing")
+	later.Props = map[string]string{"plan": "starter"}
+
+	// Out of order on purpose: the entry is the earliest by timestamp, not the
+	// one that happened to arrive first.
+	session := applyAll(t, []Event{later, first})
+
+	if got := session.EntryProps["plan"]; got != "pro" {
+		t.Errorf("entry_props[plan] = %q, want the first event's %q", got, "pro")
+	}
+
+	if len(session.EntryProps) != 1 {
+		t.Errorf("entry_props = %v, want only the first event's", session.EntryProps)
+	}
+}
+
 // TestExitPageIsTheLatestPageview covers the fourth row: overwritten by every
 // pageview at or after the current end of the visit, and unmoved by one that
 // happened earlier.
