@@ -264,13 +264,18 @@ func entryScopeRequired(p *plan) bool {
 	return false
 }
 
-// entryScopeWarning is the sentence attached to every session-scoped metric in
-// a query that had to be entry-scoped. It names the change rather than hinting
-// at it, because a bounce rate measured over entrances and one measured over
-// visits that touched a page are different numbers, and the reader cannot tell
-// which one they are looking at from the number alone.
-const entryScopeWarning = "computed over the visits that entered on the matching page, not every visit that touched it — " +
-	"a figure that describes a whole visit is counted from where the visit began"
+// entryScopeWarning is the sentence attached to every session-scoped metric
+// under a page breakdown. It has to name the rows as well as the figure: a
+// filtered page list is grouped by where each visit began, so it can hold a
+// page the filter excluded, and the number alone cannot show that.
+const entryScopeWarning = "grouped by the page each visit entered on, not every page it touched — " +
+	"a visit that reached the filtered page later is counted under the page it began on"
+
+// entryFilterWarning is the sentence for the one filter that still reads an
+// entry column. A page title is carried by the event, so filtering on one at
+// visit grain asks about the entry event rather than the whole visit.
+const entryFilterWarning = "computed over the visits whose first page carried the matching title, " +
+	"not every visit that reached a page with it"
 
 // sessionSemiJoinWarning is attached when an event-scoped filter with no entry
 // analogue had to select whole sessions.

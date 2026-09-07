@@ -787,6 +787,36 @@ func TestAVisitIsCountedOnceHoweverOftenItReachedThePage(t *testing.T) {
 	closeTo(t, "visits that reached /pricing", result.Results[0].Metrics[1], 2)
 }
 
+// TestATitleFilterAtVisitGrainStaysOnTheEntryEvent is the one filter that did
+// not move to the semi-join, and the only one that still warns about entrances.
+//
+// Visit 1 entered on /home titled "Home" and reached /pricing titled "Pricing",
+// so a title filter for "Pricing" finds visit 2 alone — the visit that began
+// there.
+func TestATitleFilterAtVisitGrainStaysOnTheEntryEvent(t *testing.T) {
+	engine := newEngine(t)
+
+	q := baseQuery("visits")
+	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:page_title", Values: []string{"Pricing"}}}
+
+	result := run(t, engine, q)
+
+	if len(result.Results) != 1 {
+		t.Fatalf("got %d rows, want one", len(result.Results))
+	}
+
+	closeTo(t, "visits whose first page was titled Pricing", result.Results[0].Metrics[0], 1)
+
+	warning, ok := result.Meta.MetricWarnings["visits"]
+	if !ok || warning.Code != WarnEntryScoped {
+		t.Fatalf("a title filter counted from the entry event must say so, got %+v", warning)
+	}
+
+	if !strings.Contains(warning.Warning, "first page") {
+		t.Errorf("the sentence does not say the figure is about the visit's first page: %q", warning.Warning)
+	}
+}
+
 // TestAPageFilterUnderAPageBreakdownListsEntryPages pins the one shape where
 // the filter and the breakdown visibly disagree.
 //

@@ -777,6 +777,53 @@ func TestNumericMetricsCostTheirAggregateAndCoveragePasses(t *testing.T) {
 // executor paths: primary, coverage, composite, shared revenue, numeric
 // property, total-row and nested session bot work. Comparison omits only the
 // current-period-only coverage and pagination count statements.
+// TestAPageFilterIsCostedLikeEveryOtherEventFilter guards the estimate, not the
+// refusal.
+//
+// The automatic path costs a query before it validates it, so an under-costed
+// page filter stays under the budget and never reaches the refusal at all.
+// Costing it like event:name is what makes the two agree.
+func TestAPageFilterIsCostedLikeEveryOtherEventFilter(t *testing.T) {
+	cost := func(t *testing.T, filters []Filter) scanPasses {
+		t.Helper()
+
+		q := baseQuery("bounce_rate")
+		q.Filters = filters
+
+		blueprint, err := decide(&q)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return plannedScanPasses(&q, blueprint, false)
+	}
+
+	unfiltered := cost(t, nil)
+	byName := cost(t, []Filter{{Operator: OpIs, Dimension: "event:name", Values: []string{"Signup"}}})
+
+	if byName.Events <= unfiltered.Events {
+		t.Fatalf("an event filter costs %+v against %+v unfiltered, so this test proves nothing", byName, unfiltered)
+	}
+
+	for _, dimension := range []string{"event:page", "event:hostname"} {
+		t.Run(dimension, func(t *testing.T) {
+			got := cost(t, []Filter{{Operator: OpIs, Dimension: dimension, Values: []string{"/pricing"}}})
+
+			if got != byName {
+				t.Errorf("a %s filter costs %+v, want %+v — it reads a visit's whole event history just as event:name does",
+					dimension, got, byName)
+			}
+		})
+	}
+
+	// A title still reads the entry event alone, so it adds no event pass.
+	title := cost(t, []Filter{{Operator: OpIs, Dimension: "event:page_title", Values: []string{"Pricing"}}})
+
+	if title != unfiltered {
+		t.Errorf("a title filter costs %+v, want the unfiltered %+v", title, unfiltered)
+	}
+}
+
 func TestEveryRepeatedMetricPassIsCosted(t *testing.T) {
 	q := baseQuery(
 		"time_on_page",
