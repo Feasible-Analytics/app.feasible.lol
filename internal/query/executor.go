@@ -437,7 +437,7 @@ func (x *executor) conditionsFor(t table, r Resolved) ([]expr, error) {
 
 	if t == tableSessions {
 		if where.entryScoped {
-			x.warnSessionMetrics(WarnEntryScoped, entryScopeWarning)
+			x.warnSessionMetrics(WarnEntryScoped, entryFilterWarning)
 		}
 		if where.semiJoined {
 			x.warnSessionMetrics(WarnSessionScoped, sessionSemiJoinWarning)

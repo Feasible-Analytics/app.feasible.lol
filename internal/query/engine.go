@@ -224,7 +224,7 @@ func (e *Engine) run(ctx context.Context, q Query) (*Result, error) {
 
 	// A breakdown that forced the session half of the query onto entry pages
 	// says so on every session-scoped metric. The filter compiler raises the
-	// same warning for a filter; this is the dimension's half of it.
+	// same code with its own sentence for a page-title filter.
 	if blueprint.SessionsEntryScoped {
 		primary.warnSessionMetrics(WarnEntryScoped, entryScopeWarning)
 	}

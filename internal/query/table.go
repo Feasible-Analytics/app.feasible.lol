@@ -72,11 +72,11 @@ type plan struct {
 	// and joined back on the group key.
 	Specials []string
 
-	// SessionsEntryScoped records that the session-grain half of this query was
-	// narrowed to the visits that *entered* on the matching page rather than
-	// the visits that merely touched it. It is the only honest way to put a
-	// bounce rate beside a page, and it changes what the number means, so it is
-	// reported to the caller rather than assumed.
+	// SessionsEntryScoped records that a page breakdown narrowed the
+	// session-grain half of this query to the visits that entered on each page.
+	// It is the only honest way to put a bounce rate beside a page, and it
+	// changes what the number means, so it is reported to the caller rather
+	// than assumed. A filter is reported separately, by whereBuilder.
 	SessionsEntryScoped bool
 
 	// Dimensions are the resolved group-by dimensions, in request order.
@@ -212,7 +212,7 @@ func decideScoped(q *Query, scopes map[string]string) (*plan, error) {
 		}
 	}
 
-	p.SessionsEntryScoped = needsSessions && entryScopeRequired(q, p)
+	p.SessionsEntryScoped = needsSessions && entryScopeRequired(p)
 
 	return p, nil
 }
@@ -250,27 +250,12 @@ func checkDimensionScopes(p *plan, needsSessions bool) error {
 	return nil
 }
 
-// entryScopeRequired reports whether the session half of this query had to be
-// narrowed to entry pages. It is true whenever an event-scoped page constraint
-// — a breakdown or a filter — has to be expressed at session grain, which is
-// exactly when the incumbent silently answers a different question.
-func entryScopeRequired(q *Query, p *plan) bool {
+// entryScopeRequired reports whether a breakdown narrowed the session half of
+// this query to entry pages. Filters are not its business: a filter selects the
+// visits that contain a matching event, and whereBuilder raises the warning for
+// the one filter kind that still reads an entry column.
+func entryScopeRequired(p *plan) bool {
 	for _, resolved := range p.Dimensions {
-		if resolved.eventOnly() && (resolved.EntryColumn != "" || resolved.EntryEventColumn != "") {
-			return true
-		}
-	}
-
-	for _, filter := range q.Filters {
-		if filter.Operator == OpHasDone {
-			continue
-		}
-
-		resolved, err := resolveDimension(filter.Dimension)
-		if err != nil {
-			continue
-		}
-
 		if resolved.eventOnly() && (resolved.EntryColumn != "" || resolved.EntryEventColumn != "") {
 			return true
 		}
@@ -279,13 +264,18 @@ func entryScopeRequired(q *Query, p *plan) bool {
 	return false
 }
 
-// entryScopeWarning is the sentence attached to every session-scoped metric in
-// a query that had to be entry-scoped. It names the change rather than hinting
-// at it, because a bounce rate measured over entrances and one measured over
-// visits that touched a page are different numbers, and the reader cannot tell
-// which one they are looking at from the number alone.
-const entryScopeWarning = "computed over the visits that entered on the matching page, not every visit that touched it — " +
-	"a figure that describes a whole visit is counted from where the visit began"
+// entryScopeWarning is the sentence attached to every session-scoped metric
+// under a page breakdown. It has to name the rows as well as the figure: a
+// filtered page list is grouped by where each visit began, so it can hold a
+// page the filter excluded, and the number alone cannot show that.
+const entryScopeWarning = "grouped by the page each visit entered on, not every page it touched — " +
+	"a visit that reached the filtered page later is counted under the page it began on"
+
+// entryFilterWarning is the sentence for the one filter that still reads an
+// entry column. A page title is carried by the event, so filtering on one at
+// visit grain asks about the entry event rather than the whole visit.
+const entryFilterWarning = "computed over the visits whose first page carried the matching title, " +
+	"not every visit that reached a page with it"
 
 // sessionSemiJoinWarning is attached when an event-scoped filter with no entry
 // analogue had to select whole sessions.

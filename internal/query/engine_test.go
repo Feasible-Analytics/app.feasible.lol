@@ -731,13 +731,13 @@ func TestBounceRateUnderAPageBreakdownIsScopedToEntrances(t *testing.T) {
 	}
 }
 
-// TestAPageFilterOnAVisitBreakdownIsEntryScopedAndSaysSo is the pair that makes
-// four empty cards explicable.
+// TestAPageFilterFindsTheVisitsThatReachedThePage is the test that encodes what
+// a page filter means at visit grain.
 //
-// Nobody entered on /about — it was reached from /home — so a visit-scoped
-// breakdown under a page filter is genuinely empty. Empty is the right answer;
-// empty with no explanation is the one that reads as broken tracking.
-func TestAPageFilterOnAVisitBreakdownIsEntryScopedAndSaysSo(t *testing.T) {
+// Nobody entered on /about — it was reached from /home — so the two readings of
+// the filter give different answers on this fixture, and only one of them is
+// non-empty.
+func TestAPageFilterFindsTheVisitsThatReachedThePage(t *testing.T) {
 	engine := newEngine(t)
 
 	q := baseQuery("visitors")
@@ -746,21 +746,156 @@ func TestAPageFilterOnAVisitBreakdownIsEntryScopedAndSaysSo(t *testing.T) {
 
 	result := run(t, engine, q)
 
-	if len(result.Results) != 0 {
-		t.Fatalf("got %d rows, want none — no visit entered on /about: %+v", len(result.Results), result.Results)
+	if len(result.Results) == 0 {
+		t.Fatal("a visit reached /about, so its source is an answer rather than nothing")
 	}
 
+	// The reader is still told what a visit-level figure under an event filter
+	// means — it is the whole visit, not the part of it that matched — but that
+	// is the sentence every other event dimension already carries, not the one
+	// about entrances.
 	warning, ok := result.Meta.MetricWarnings["visitors"]
+
+	if ok && warning.Code == WarnEntryScoped {
+		t.Errorf("the answer still claims to be counted from where visits began: %s", warning.Warning)
+	}
+
 	if !ok {
-		t.Fatal("an empty answer produced by a re-scoped filter must say so in meta.metric_warnings")
+		t.Error("a visit-level figure under an event filter says nothing about what it covers")
+	}
+}
+
+// TestAVisitIsCountedOnceHoweverOftenItReachedThePage is the classic bug in the
+// shape this filter compiles to: a semi-join that became a join returns one row
+// per matching event.
+//
+// /pricing is the fixture page that makes it visible — visit 1 has three events
+// on it and visit 2 has two, so a join reports five visits where there are two.
+func TestAVisitIsCountedOnceHoweverOftenItReachedThePage(t *testing.T) {
+	engine := newEngine(t)
+
+	q := baseQuery("visitors", "visits")
+	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:page", Values: []string{"/pricing"}}}
+
+	result := run(t, engine, q)
+
+	if len(result.Results) != 1 {
+		t.Fatalf("got %d rows, want one", len(result.Results))
 	}
 
-	if warning.Code != WarnEntryScoped {
-		t.Errorf("warning code = %q, want %q", warning.Code, WarnEntryScoped)
+	closeTo(t, "visitors that reached /pricing", result.Results[0].Metrics[0], 2)
+	closeTo(t, "visits that reached /pricing", result.Results[0].Metrics[1], 2)
+}
+
+// TestATitleFilterAtVisitGrainStaysOnTheEntryEvent is the one filter that did
+// not move to the semi-join, and the only one that still warns about entrances.
+//
+// Visit 1 entered on /home titled "Home" and reached /pricing titled "Pricing",
+// so a title filter for "Pricing" finds visit 2 alone — the visit that began
+// there.
+func TestATitleFilterAtVisitGrainStaysOnTheEntryEvent(t *testing.T) {
+	engine := newEngine(t)
+
+	q := baseQuery("visits")
+	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:page_title", Values: []string{"Pricing"}}}
+
+	result := run(t, engine, q)
+
+	if len(result.Results) != 1 {
+		t.Fatalf("got %d rows, want one", len(result.Results))
 	}
 
-	if warning.Warning == "" {
-		t.Error("the warning carries no sentence, so the dashboard has nothing to show")
+	closeTo(t, "visits whose first page was titled Pricing", result.Results[0].Metrics[0], 1)
+
+	warning, ok := result.Meta.MetricWarnings["visits"]
+	if !ok || warning.Code != WarnEntryScoped {
+		t.Fatalf("a title filter counted from the entry event must say so, got %+v", warning)
+	}
+
+	if !strings.Contains(warning.Warning, "first page") {
+		t.Errorf("the sentence does not say the figure is about the visit's first page: %q", warning.Warning)
+	}
+}
+
+// TestAPageFilterUnderAPageBreakdownListsEntryPages pins the one shape where
+// the filter and the breakdown visibly disagree.
+//
+// The filter selects the visits that reached /pricing; the breakdown groups
+// them by where they entered. So a page list filtered to /pricing contains a
+// /home row, and the entry-scoped warning is what explains it.
+func TestAPageFilterUnderAPageBreakdownListsEntryPages(t *testing.T) {
+	engine := newEngine(t)
+
+	// bounce_rate is what forces the answer onto the sessions table, and with it
+	// the entry-scoped breakdown.
+	q := baseQuery("bounce_rate", "visits")
+	q.Dimensions = []string{"event:page"}
+	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:page", Values: []string{"/pricing"}}}
+
+	result := run(t, engine, q)
+
+	pages := map[string]float64{}
+	for _, row := range result.Results {
+		pages[row.Dimensions[0]] = row.Metrics[1]
+	}
+
+	// Visit 1 entered on /home and reached /pricing; visit 2 entered on it.
+	if len(pages) != 2 || pages["/home"] != 1 || pages["/pricing"] != 1 {
+		t.Fatalf("page rows = %v, want one visit each under /home and /pricing", pages)
+	}
+
+	warning, ok := result.Meta.MetricWarnings["bounce_rate"]
+	if !ok || warning.Code != WarnEntryScoped {
+		t.Errorf("a page list holding a page that was filtered out must say it is grouped by entrances, got %+v", warning)
+	}
+}
+
+// TestAHostnameFilterFindsTheVisitsThatReachedTheHostname is the same test for
+// the other dimension with an entry analogue.
+//
+// Visit 3 began with no hostname recorded and then sent two events from the
+// documentation host, so entrances find nothing and "reached" finds it once.
+func TestAHostnameFilterFindsTheVisitsThatReachedTheHostname(t *testing.T) {
+	engine, account := newEngineWithAccount(t)
+	ctx := context.Background()
+
+	hostname, err := account.Intern.ID(ctx, intern.Hostname, "docs.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pathname, err := account.Intern.ID(ctx, intern.Pathname, "/about")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	name, err := account.Intern.ID(ctx, intern.EventName, ingest.EventPageview)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := range 2 {
+		if _, err := account.Writer().ExecContext(ctx, `
+			INSERT INTO events (id, site_id, timestamp, name_id, user_id, session_id, pathname_id, hostname_id)
+			VALUES (?, 1, ?, ?, ?, 3, ?, ?)`,
+			200+i, at(30, 9, 3+i), name, visitorA, pathname, hostname); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	q := baseQuery("visits")
+	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:hostname", Values: []string{"docs.example.com"}}}
+
+	result := run(t, engine, q)
+
+	if len(result.Results) != 1 {
+		t.Fatalf("got %d rows, want one — a visit reached the hostname", len(result.Results))
+	}
+
+	closeTo(t, "visits that reached docs.example.com", result.Results[0].Metrics[0], 1)
+
+	if warning, ok := result.Meta.MetricWarnings["visits"]; ok && warning.Code == WarnEntryScoped {
+		t.Errorf("the answer still claims to be counted from where visits began: %s", warning.Warning)
 	}
 }
 
@@ -771,7 +906,7 @@ func TestAPageFilterOnAVisitBreakdownIsEntryScopedAndSaysSo(t *testing.T) {
 //
 // The query asks for both kinds at once, which is what the tiles do: pageviews
 // counts events matching the filter as written, bounce rate describes a whole
-// visit and is therefore re-scoped to entrances.
+// visit and is re-scoped to entrances by the page breakdown.
 func TestOnlyTheSessionScopedMetricsAreWarnedAbout(t *testing.T) {
 	engine := newEngine(t)
 

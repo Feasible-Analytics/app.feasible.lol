@@ -479,7 +479,7 @@ func validateBoundedSampling(q *Query, blueprint *plan) error {
 			}
 			return requiresExact("cannot sample session-grain work filtered by %q because it requires complete session event membership; set exact to true or remove that filter", filter.Dimension)
 		}
-		if dimension.eventOnly() && dimension.EntryColumn == "" && dimension.EntryEventColumn == "" {
+		if dimension.eventOnly() && dimension.EntryEventColumn == "" {
 			return requiresExact("cannot sample session-grain work filtered by %q because it requires complete session event membership; set exact to true or remove that filter", filter.Dimension)
 		}
 	}
@@ -748,7 +748,7 @@ func nestedScanPasses(q *Query, blueprint *plan, passes scanPasses) scanPasses {
 		if err != nil {
 			continue
 		}
-		if d.eventOnly() && d.EntryColumn == "" && d.EntryEventColumn == "" {
+		if d.eventOnly() && d.EntryEventColumn == "" {
 			passes.Events = saturatingAdd(passes.Events, sessionOuter)
 		}
 	}

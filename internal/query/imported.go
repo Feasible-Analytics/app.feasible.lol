@@ -158,7 +158,7 @@ var importedOrder = []string{
 	ImportedPropertyDimension,
 }
 
-// ImportedPropertyDimension is the coverage bit used by Plausible property
+// ImportedPropertyDimension is the coverage bit used by imported property
 // marginals. It is intentionally a family marker rather than a queryable
 // dimension: the concrete query name remains event:props:<key>, while the key
 // and value live in their own imported-rollup columns.
@@ -420,7 +420,7 @@ func (x *executor) importedPass(ctx context.Context, r Resolved, groups *groupSe
 	// A property coverage bit identifies the marginal shape, while the key
 	// identifies the concrete event:props:<key> dimension inside that shape.
 	// Constraining breakdowns here prevents equal values from two different
-	// Plausible properties being merged into one row.
+	// imported properties being merged into one row.
 	for _, dimension := range x.plan.Dimensions {
 		if dimension.isProp() {
 			conditions = append(conditions, expr{
@@ -518,7 +518,7 @@ func (x *executor) importCandidates(ctx context.Context, r Resolved, source impo
 
 // importedPropertyKey returns the one concrete custom-property key a query
 // asks imported marginals to answer. Multiple keys are deliberately reported
-// as an unanswerable gap elsewhere because Plausible exports them separately.
+// as an unanswerable gap elsewhere because the export stores them separately.
 func (x *executor) importedPropertyKey() (string, bool) {
 	keys := map[string]bool{}
 	for _, dimension := range x.plan.Dimensions {
@@ -747,7 +747,7 @@ func (x *executor) importedRequirements() ([]string, []ImportGap) {
 	if len(propertyKeys) > 1 {
 		gaps = append(gaps, ImportGap{
 			Dimension: "event:props",
-			Reason: "Plausible exports each custom property as a separate daily aggregate, so imported history cannot combine " +
+			Reason: "The import stores each custom property as a separate daily aggregate, so imported history cannot combine " +
 				"multiple property keys in one answer",
 		})
 	}

@@ -31,12 +31,13 @@ type dimension struct {
 	EventColumn   string
 	SessionColumn string
 
-	// EntryColumn is the sessions column that answers an event-scoped
-	// dimension at session grain. A page is an event-scoped thing, but "the
-	// session that entered on this page" is the correctly-scoped session-grain
-	// answer, and it is the only honest way to put a bounce rate next to a
-	// page. A dimension with no entry analogue simply does not compose with
-	// session-scoped metrics, and the planner says so rather than guessing.
+	// EntryColumn is the sessions column a breakdown groups by when an
+	// event-scoped dimension is grouped at session grain. A page is an
+	// event-scoped thing, but "the session that entered on this page" is the
+	// only honest way to put a bounce rate next to a page.
+	//
+	// Filters do not read it. A filter selects the visits that contain a
+	// matching event, whether or not the dimension has an entry analogue.
 	EntryColumn string
 
 	// EntryEventColumn is an event column whose value can be read at session

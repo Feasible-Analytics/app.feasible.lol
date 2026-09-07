@@ -164,3 +164,51 @@ func TestCompositesAreAnchoredOnEvents(t *testing.T) {
 		t.Errorf("a composite metric must be counted from the events table, got %v", decided.Primary.name())
 	}
 }
+
+// TestNoFilterIsEntryScoped walks every dimension with an entry column rather
+// than naming the two that have one today, so one added later is covered
+// without anyone remembering to.
+//
+// It checks the plan flag and the warning the caller actually receives, because
+// a breakdown and a filter set that warning from different places.
+func TestNoFilterIsEntryScoped(t *testing.T) {
+	entryDimensions := []string{}
+
+	for _, name := range DimensionNames() {
+		resolved, err := resolveDimension(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if resolved.eventOnly() && resolved.EntryColumn != "" {
+			entryDimensions = append(entryDimensions, name)
+		}
+	}
+
+	if len(entryDimensions) == 0 {
+		t.Fatal("no dimension has an entry column, so this test proves nothing")
+	}
+
+	for _, name := range entryDimensions {
+		t.Run(name, func(t *testing.T) {
+			decided := planFor(t, Query{
+				SiteIDs: []int64{1},
+				Metrics: []string{"bounce_rate"},
+				Filters: []Filter{{Operator: OpIs, Dimension: name, Values: []string{"/anything"}}},
+			})
+
+			if decided.SessionsEntryScoped {
+				t.Errorf("a %s filter is counted from where visits began, not from the visits that reached it", name)
+			}
+
+			q := baseQuery("bounce_rate")
+			q.Filters = []Filter{{Operator: OpIs, Dimension: name, Values: []string{"/anything"}}}
+
+			result := run(t, newEngine(t), q)
+
+			if warning, ok := result.Meta.MetricWarnings["bounce_rate"]; ok && warning.Code == WarnEntryScoped {
+				t.Errorf("a %s filter still tells the caller its answer is scoped to entrances: %s", name, warning.Warning)
+			}
+		})
+	}
+}
