@@ -255,6 +255,14 @@ func (s *Service) SetObserver(observer Observer) {
 	}
 }
 
+// Observer returns the observer both halves of ingestion were given, so a
+// component wired up after the service — the private shard, which records the
+// request view that arrived from another process — reads it from one place
+// rather than being handed a second one that could differ.
+func (s *Service) Observer() Observer {
+	return s.Handler.Observer
+}
+
 // Start launches the buffer, site, delivery, and source-address limiter loops. Live
 // session ownership is transactional account state, so there is no process-
 // local session sweep to coordinate across serving processes.

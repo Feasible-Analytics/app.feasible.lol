@@ -583,6 +583,11 @@ func (r *RollupRouter) Route(ctx context.Context, q *Query, resolved Resolved) (
 		return raw, nil
 	}
 
+	leading, hasLeading, ok := splitLeadingBucket(&complete, read, resolved.Location)
+	if !ok {
+		return raw, nil
+	}
+
 	coverage, ok, err := r.State.Coverage(ctx, q.SiteIDs[0], read.grain)
 	if err != nil {
 		return nil, err
@@ -598,12 +603,53 @@ func (r *RollupRouter) Route(ctx context.Context, q *Query, resolved Resolved) (
 		return raw, nil
 	}
 
-	segments := []Segment{{Range: complete, Source: SourceRollup, Grain: read.grain}}
+	segments := make([]Segment, 0, 3)
+	if hasLeading {
+		segments = append(segments, Segment{Range: leading, Source: SourceRaw})
+	}
+
+	// The trailing raw segment stays last: the seam correction reads it as the
+	// final segment.
+	segments = append(segments, Segment{Range: complete, Source: SourceRollup, Grain: read.grain})
 	if split {
 		segments = append(segments, Segment{Range: partial, Source: SourceRaw})
 	}
 
 	return segments, nil
+}
+
+// splitLeadingBucket moves a range's ragged start out of the summary half and
+// into a raw segment of its own, so a report over twelve months does not fall
+// back to daily rows for the sake of a fortnight at the front.
+//
+// It narrows complete to begin on a bucket boundary and returns the days before
+// it. Only a per-bucket read reaches here: elsewhere a visitor present on both
+// sides of the join would be counted twice, and only the trailing seam has a
+// correction, so readDimensions refuses a ragged range before this runs.
+//
+// The false return means there is no whole bucket to read, and the whole range
+// stays raw.
+func splitLeadingBucket(complete *Resolved, read rollupRead, loc *time.Location) (Resolved, bool, bool) {
+	start := RollupBucketStart(complete.Start, read.grain, loc)
+	if !start.Before(complete.Start) {
+		return Resolved{}, false, true
+	}
+
+	boundary := RollupNextBucket(start, read.grain, loc)
+
+	// An hour bucket is found by wall clock and advanced by elapsed time, and
+	// across a daylight-saving fall-back those disagree: the boundary can land
+	// before the range even begins. Reading the summary from there would answer
+	// for traffic outside the range that was asked for.
+	if !boundary.After(complete.Start) || !boundary.Before(complete.End) {
+		return Resolved{}, false, false
+	}
+
+	leading := *complete
+	leading.End = boundary
+	complete.Start = boundary
+
+	return leading, true, true
 }
 
 // rollupRead is everything the reader needs once a query has been accepted:
@@ -751,8 +797,7 @@ func readDimensions(read *rollupRead, q *Query, blueprint *plan, resolved Resolv
 
 		read.perBucket = read.timeIndex >= 0
 
-		// A bucket cannot be split, so a range has to begin on one.
-		if !resolved.Start.Equal(RollupBucketStart(resolved.Start, read.grain, resolved.Location)) {
+		if !read.perBucket && !resolved.Start.Equal(RollupBucketStart(resolved.Start, read.grain, resolved.Location)) {
 			return false
 		}
 
@@ -760,9 +805,7 @@ func readDimensions(read *rollupRead, q *Query, blueprint *plan, resolved Resolv
 		read.grain = GrainDay
 		read.perBucket = read.timeIndex >= 0 && resolved.Interval == IntervalDay
 
-		// Daily rows start at local midnight, so a range that starts anywhere
-		// else cannot be assembled from them without splitting a bucket.
-		if !resolved.Start.Equal(startOfDay(resolved.Start, resolved.Location)) {
+		if !read.perBucket && !resolved.Start.Equal(startOfDay(resolved.Start, resolved.Location)) {
 			return false
 		}
 	}

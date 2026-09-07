@@ -208,6 +208,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	event := result.Event
 
+	// The account database lives on the app shard. With the http transport that
+	// is a different process from this one, so the panel's view of the request
+	// travels with the event rather than being observed here and lost.
+	event.CarryDiagnostics(result.Debug, r.Header.Get("User-Agent"), payload.TrackerVersion(), result.Truncation)
+
 	if h.Durable {
 		if err := h.Buffer.AddAndWait(r.Context(), *event); err != nil {
 			if h.Log != nil {

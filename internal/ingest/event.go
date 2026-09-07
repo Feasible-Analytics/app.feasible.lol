@@ -16,11 +16,13 @@ import (
 // It is the boundary type of the pipeline: everything above it deals in HTTP
 // and raw headers, while everything below it deals in rows.
 //
-// What is *not* in this struct is the point of it. There is no IP address and
-// no raw user agent — the address is used for geolocation and the fingerprint
-// and then discarded before anything is written. The IP address never reaches
-// disk, and the only way to keep that promise is for the durable boundary type
-// to have nowhere to put one.
+// What is *not* in this struct is the point of it. There is no IP address: it
+// is used for geolocation and the fingerprint and then discarded before
+// anything is written, and the only way to keep that promise is for the durable
+// boundary type to have nowhere to put one.
+//
+// Diagnostics is the one part of this that is not a row. It carries the user
+// agent, which the health panel shows a customer as the last request it saw.
 type Event struct {
 	// UUID is stamped when the event is derived and never changes. It is what
 	// makes a redelivery harmless: the account receipt exists or it does not.
@@ -111,6 +113,99 @@ type Event struct {
 	// there is something to write.
 	Props   map[string]string
 	Revenue *Revenue
+
+	// Diagnostics is the health panel's view of the request. It travels with
+	// the event because the account database lives on the app shard, and with
+	// the http transport the process that saw the request is not that shard.
+	Diagnostics *Diagnostics `json:"diagnostics,omitempty"`
+}
+
+// Diagnostics carries what the health panel needs and a derived event does not
+// already hold.
+//
+// The panel's view duplicates most of an event's fields, and this rides on the
+// busiest write in the system, so everything derivable from the event is rebuilt
+// on arrival rather than sent twice.
+type Diagnostics struct {
+	// ClaimedDomain is the domain the tracker sent, which the event does not
+	// keep: it holds the registered one it resolved to. The panel shows both so
+	// a wrong data-domain is visible as a disagreement between them.
+	ClaimedDomain string `json:"claimed_domain,omitempty"`
+
+	ClientIPSource    string     `json:"client_ip_source,omitempty"`
+	TrustedProxy      bool       `json:"trusted_proxy,omitempty"`
+	SiteDomain        string     `json:"site_domain,omitempty"`
+	RootDomain        string     `json:"root_domain,omitempty"`
+	SaltDay           int64      `json:"salt_day,omitempty"`
+	Subdivision2      string     `json:"subdivision2,omitempty"`
+	AutomationSignals string     `json:"automation_signals,omitempty"`
+	DropReason        string     `json:"drop_reason,omitempty"`
+	UserAgent         string     `json:"user_agent,omitempty"`
+	TrackerVersion    int        `json:"tracker_version,omitempty"`
+	Truncation        Truncation `json:"truncation,omitzero"`
+}
+
+// CarryDiagnostics attaches the panel's view of this request to the event.
+//
+// It copies named fields rather than the whole Debug so that the address cannot
+// travel: this is written to the ingester's outbox, and the outbox is a disk.
+func (e *Event) CarryDiagnostics(debug Debug, userAgent string, version int, truncation Truncation) {
+	e.Diagnostics = &Diagnostics{
+		ClaimedDomain:     debug.Domain,
+		ClientIPSource:    debug.ClientIPSource,
+		TrustedProxy:      debug.TrustedProxy,
+		SiteDomain:        debug.SiteDomain,
+		RootDomain:        debug.RootDomain,
+		SaltDay:           debug.SaltDay,
+		Subdivision2:      debug.Subdivision2,
+		AutomationSignals: debug.AutomationSignals,
+		DropReason:        debug.DropReason,
+		UserAgent:         userAgent,
+		TrackerVersion:    version,
+		Truncation:        truncation,
+	}
+}
+
+// PendingObservation rebuilds the request view for a shard that never saw the
+// request. It is Pending because the writer has not decided this event's fate
+// yet and emits the counting observation itself once it has.
+func (e *Event) PendingObservation() (Observation, bool) {
+	if e.Diagnostics == nil {
+		return Observation{}, false
+	}
+
+	d := e.Diagnostics
+
+	// Everything derivable comes from the same filler the pipeline uses, so a
+	// field added to an event reaches both views or neither.
+	debug := Debug{
+		ClientIPSource: d.ClientIPSource,
+		TrustedProxy:   d.TrustedProxy,
+		Domain:         d.ClaimedDomain,
+		SiteDomain:     d.SiteDomain,
+		SiteID:         e.SiteID,
+		AccountID:      e.AccountID,
+		Shard:          e.Shard,
+		EventName:      e.Name,
+
+		AutomationSignals: d.AutomationSignals,
+		BotReason:         e.BotReason,
+		DropReason:        d.DropReason,
+		Truncation:        d.Truncation,
+	}
+	fillDebug(&debug, e, d.SaltDay, d.RootDomain, d.Subdivision2)
+
+	return Observation{
+		SiteID:         e.SiteID,
+		AccountID:      e.AccountID,
+		ReceivedAt:     e.Timestamp,
+		Debug:          debug,
+		DropReason:     d.DropReason,
+		Pending:        true,
+		UserAgent:      d.UserAgent,
+		TrackerVersion: d.TrackerVersion,
+		Truncation:     d.Truncation,
+	}, true
 }
 
 // IsPageview reports whether this event counts towards the pageview metrics.

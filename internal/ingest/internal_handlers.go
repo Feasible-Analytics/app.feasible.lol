@@ -57,6 +57,33 @@ type IngestResponse struct {
 	Error     string      `json:"error,omitempty"`
 }
 
+// observe records the request view for the events that committed.
+//
+// It runs after the write, not before, because a Pending observation still
+// increments the truncation and per-value counters. A batch observed and then
+// refused would be observed again on the sender's retry, and the panel would
+// count properties dropped for events that were never stored.
+func (s *InternalShard) observe(events []Event, committed []uuid.UUID) {
+	if s.Observer == nil || len(committed) == 0 {
+		return
+	}
+
+	stored := make(map[uuid.UUID]struct{}, len(committed))
+	for _, id := range committed {
+		stored[id] = struct{}{}
+	}
+
+	for i := range events {
+		if _, ok := stored[events[i].UUID]; !ok {
+			continue
+		}
+
+		if observation, ok := events[i].PendingObservation(); ok {
+			s.Observer.Observe(observation)
+		}
+	}
+}
+
 // RoutingShields exposes only the IP rules that must cross into the ingest
 // tier, avoiding any dependency on account-side policy implementation.
 type RoutingShields interface {
@@ -75,6 +102,12 @@ type InternalShard struct {
 	Sites   *sites.Cache
 	Shields RoutingShields
 	Writer  BatchWriter
+
+	// Observer receives the request view that travelled with each event. It is
+	// the only route by which a customer on the http transport learns which
+	// header, hostname and script version produced their traffic: the process
+	// that saw the request has no account database to write it to.
+	Observer Observer
 }
 
 // Handler builds the private routes. Authentication and private-interface
@@ -160,6 +193,9 @@ func (s *InternalShard) handleIngest(w http.ResponseWriter, r *http.Request) {
 		}
 		committed, err := s.Writer.Write(r.Context(), accepted)
 		response.Committed = committed
+
+		s.observe(accepted, committed)
+
 		if err != nil {
 			response.Error = err.Error()
 			w.Header().Set("Content-Type", "application/json")

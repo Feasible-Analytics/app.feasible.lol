@@ -830,13 +830,23 @@ func seedImportedHistory(t *testing.T, account *accounts.Account, site rollup.Si
 func seedDatabase(t *testing.T) (*accounts.Account, rollup.Site, time.Time) {
 	t.Helper()
 
+	return seedDatabaseOver(t, 9, 8_000)
+}
+
+// seedDatabaseOver is seedDatabase with the history it covers spelled out. A
+// comparison over a wide range needs events spread across that range: against
+// nine days of data every bucket beyond the ninth is empty on both sides, and
+// two empty buckets agree no matter what the reader did to get them.
+func seedDatabaseOver(t *testing.T, days int, pageviews int64) (*accounts.Account, rollup.Site, time.Time) {
+	t.Helper()
+
 	dir := t.TempDir()
 	now := time.Date(2026, 8, 30, 19, 30, 0, 0, time.UTC)
 
 	if _, err := seed.Run(context.Background(), seed.Options{
 		DataDir:          dir,
-		Pageviews:        8_000,
-		Days:             9,
+		Pageviews:        pageviews,
+		Days:             days,
 		Sites:            1,
 		Seed:             414243,
 		Now:              func() time.Time { return now },
@@ -1455,7 +1465,9 @@ func TestAWideRangeAgreesWithTheDaysUnderIt(t *testing.T) {
 		t.Skip("generating a realistic dataset takes a few seconds")
 	}
 
-	account, site, now := seedDatabase(t)
+	// Events spread over the whole span, or the buckets being compared are
+	// empty on both sides and agree for the wrong reason.
+	account, site, now := seedDatabaseOver(t, 520, 12_000)
 
 	builder := rollup.New(account.Writer())
 	builder.Now = func() time.Time { return now }
@@ -1488,9 +1500,7 @@ func TestAWideRangeAgreesWithTheDaysUnderIt(t *testing.T) {
 	metrics := []string{"visitors", "visits", "pageviews", "bounce_rate", "visit_duration"}
 
 	// One range wide enough to be drawn in weeks and one wide enough for months,
-	// both ending on a bucket edge so the summary is readable at all.
-	// The range has to begin on a bucket the summary holds, or the reader
-	// rightly falls back to raw and the comparison is raw against raw.
+	// both beginning on a bucket edge. The ragged case is its own test.
 	for name, want := range map[string]struct {
 		span  int
 		grain query.Grain
@@ -1516,6 +1526,86 @@ func TestAWideRangeAgreesWithTheDaysUnderIt(t *testing.T) {
 			// perfectly and proves nothing about the derived rows.
 			if !slices.Contains(fromRollup.Meta.Sources, "rollup") {
 				t.Fatalf("the query read %v rather than the summary, so nothing under test ran",
+					fromRollup.Meta.Sources)
+			}
+
+			compare(t, name, metrics, answer(t, raw, q), fromRollup)
+		})
+	}
+}
+
+// TestARaggedRangeAgreesWithTheDaysUnderIt is the same comparison over a range
+// that does not begin on a bucket edge, which is nearly every range a person
+// actually asks for.
+//
+// The days before the first whole bucket are read raw and the rest from the
+// summary, so this is the test that would catch the join between them being
+// counted twice or not at all.
+func TestARaggedRangeAgreesWithTheDaysUnderIt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("generating a realistic dataset takes a few seconds")
+	}
+
+	// Events spread over the whole span, or the buckets being compared are
+	// empty on both sides and agree for the wrong reason.
+	account, site, now := seedDatabaseOver(t, 520, 12_000)
+
+	builder := rollup.New(account.Writer())
+	builder.Now = func() time.Time { return now }
+	builder.Sleep = rollup.NoRest
+
+	location := site.Location()
+	today := query.RollupBucketStart(now.In(location), query.GrainDay, location)
+
+	for _, grain := range []query.Grain{query.GrainDay, query.GrainWeek, query.GrainMonth} {
+		to := today.AddDate(0, 0, 1)
+		if grain.Derived() {
+			to = query.RollupBucketStart(today, grain, location)
+		}
+
+		if err := builder.Rebuild(context.Background(), rollup.Request{
+			Site: site, Grain: grain, From: today.AddDate(0, 0, -700), To: to, CoverThrough: today,
+			FromBeginning: true,
+		}); err != nil {
+			t.Fatalf("rebuild %s: %v", grain, err)
+		}
+	}
+
+	raw := query.New(account.Reader())
+	raw.Router = query.RawRouter{}
+	raw.Now = func() time.Time { return now }
+
+	rolled := query.New(account.Reader())
+	rolled.Now = func() time.Time { return now }
+
+	metrics := []string{"visitors", "visits", "pageviews", "bounce_rate", "visit_duration"}
+
+	for name, want := range map[string]struct {
+		span  int
+		grain query.Grain
+	}{
+		"a range drawn in weeks":  {120, query.GrainWeek},
+		"a range drawn in months": {500, query.GrainMonth},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Three days past the bucket edge, so the range starts inside a
+			// bucket the summary cannot answer for.
+			start := query.RollupBucketStart(today.AddDate(0, 0, -want.span), want.grain, location).AddDate(0, 0, 3)
+
+			q := query.Query{
+				SiteIDs:    []int64{site.ID},
+				Metrics:    metrics,
+				Dimensions: []string{"time"},
+				DateRange: query.DateRange{
+					Preset: query.RangeCustom, Start: start, End: today.AddDate(0, 0, -1), DateOnly: true,
+				},
+				Timezone: site.Timezone,
+			}
+
+			fromRollup := answer(t, rolled, q)
+
+			if !slices.Contains(fromRollup.Meta.Sources, "rollup") {
+				t.Fatalf("the query read %v rather than the summary, so the ragged start is still falling back",
 					fromRollup.Meta.Sources)
 			}
 

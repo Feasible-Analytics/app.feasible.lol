@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -73,6 +74,128 @@ func TestInternalShardPublishesRouting(t *testing.T) {
 	shard.Handler().ServeHTTP(notModified, request)
 	if notModified.Code != http.StatusNotModified {
 		t.Fatalf("matching ETag answered %d, want 304", notModified.Code)
+	}
+}
+
+// TestTheShardRecordsTheRequestItNeverSaw is the whole point of carrying
+// diagnostics.
+//
+// With the http transport the process that received the request has no account
+// database, so unless the view travels with the event the customer's health
+// panel can name no hostname, no header and no script version — only counts.
+func TestTheShardRecordsTheRequestItNeverSaw(t *testing.T) {
+	cache := sites.NewEmpty()
+	cache.Replace([]sites.Site{{ID: 1, AccountID: 10, Domain: "owned.example"}}, time.Now())
+
+	var seen []Observation
+	shard := &InternalShard{
+		ID: 1, Sites: cache, Writer: &testBatchWriter{},
+		Observer: ObserverFunc(func(o Observation) { seen = append(seen, o) }),
+	}
+
+	event := Event{
+		UUID: uuid.New(), SiteID: 1, AccountID: 10, Domain: "owned.example",
+		Hostname: "docs.owned.example", Pathname: "/guide", Timestamp: 1_780_000_000,
+	}
+	event.CarryDiagnostics(Debug{
+		ClientIP:       "203.0.113.9",
+		ClientIPSource: "X-Forwarded-For",
+		Domain:         "typo.example",
+		SiteDomain:     "owned.example",
+	}, "Mozilla/5.0", 4, Truncation{PropsDropped: 2})
+
+	body, err := json.Marshal(IngestBatch{Events: []Event{event}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	shard.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodPost, InternalIngestPath, bytes.NewReader(body)))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("the shard answered %d", response.Code)
+	}
+
+	if len(seen) != 1 {
+		t.Fatalf("the shard recorded %d observations, want one for the event it was handed", len(seen))
+	}
+
+	got := seen[0]
+
+	// Pending, or the writer's own outcome would count the same event twice.
+	if !got.Pending {
+		t.Error("the request view counted the event; the writer decides its fate and counts it")
+	}
+
+	if got.Debug.ClientIPSource != "X-Forwarded-For" || got.TrackerVersion != 4 || got.UserAgent != "Mozilla/5.0" {
+		t.Errorf("the panel cannot name the header, agent or script version: %+v", got)
+	}
+
+	if got.Debug.Hostname != "docs.owned.example" || got.Debug.Pathname != "/guide" {
+		t.Errorf("the request view was not rebuilt from the event: %+v", got.Debug)
+	}
+
+	// A wrong data-domain is only visible as a disagreement between the domain
+	// the tracker claimed and the one it resolved to, so both have to survive.
+	if got.Debug.Domain != "typo.example" || got.Debug.SiteDomain != "owned.example" {
+		t.Errorf("the claimed and registered domains cannot disagree: %q and %q",
+			got.Debug.Domain, got.Debug.SiteDomain)
+	}
+
+	if got.Truncation.PropsDropped != 2 {
+		t.Errorf("dropped properties are invisible: %+v", got.Truncation)
+	}
+
+	// The address never reaches disk, and the outbox this crossed is a disk.
+	if got.Debug.ClientIP != "" {
+		t.Errorf("the visitor's address travelled with the event: %q", got.Debug.ClientIP)
+	}
+}
+
+// refusingBatchWriter is an app shard that cannot write, which is what a
+// storage outage looks like to the sender.
+type refusingBatchWriter struct{}
+
+// Write commits nothing and says so.
+func (refusingBatchWriter) Write(context.Context, []Event) ([]uuid.UUID, error) {
+	return nil, errors.New("account database is unavailable")
+}
+
+// TestARefusedBatchIsNotRecorded is why the request view is observed after the
+// write rather than before it.
+//
+// A Pending observation counts no events, but it still counts dropped
+// properties and every named value the panel tracks. The sender retries a
+// refused batch, so observing one before the write would climb those numbers
+// while nothing at all was being stored.
+func TestARefusedBatchIsNotRecorded(t *testing.T) {
+	cache := sites.NewEmpty()
+	cache.Replace([]sites.Site{{ID: 1, AccountID: 10, Domain: "owned.example"}}, time.Now())
+
+	var seen []Observation
+	shard := &InternalShard{
+		ID: 1, Sites: cache, Writer: refusingBatchWriter{},
+		Observer: ObserverFunc(func(o Observation) { seen = append(seen, o) }),
+	}
+
+	event := Event{UUID: uuid.New(), SiteID: 1, AccountID: 10, Domain: "owned.example"}
+	event.CarryDiagnostics(Debug{ClientIPSource: "X-Forwarded-For"}, "Mozilla/5.0", 4,
+		Truncation{PropsDropped: 2})
+
+	body, err := json.Marshal(IngestBatch{Events: []Event{event}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	shard.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodPost, InternalIngestPath, bytes.NewReader(body)))
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("the shard answered %d, want 503 so the sender retries", response.Code)
+	}
+
+	if len(seen) != 0 {
+		t.Fatalf("the shard recorded %d observations for a batch it never stored", len(seen))
 	}
 }
 

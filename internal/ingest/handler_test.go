@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/salts"
@@ -233,6 +235,86 @@ func TestBotIsClassifiedNotDeleted(t *testing.T) {
 
 	if stored != 1 {
 		t.Fatalf("stored %d classified rows, want 1 — the row must survive with its reason attached", stored)
+	}
+}
+
+// capturingTransport keeps the events a flush would have delivered.
+type capturingTransport struct{ events []Event }
+
+// Send records the batch and reports every event committed.
+func (c *capturingTransport) Send(_ context.Context, _ int, batch []Event) ([]uuid.UUID, error) {
+	c.events = append(c.events, batch...)
+
+	ids := make([]uuid.UUID, 0, len(batch))
+	for _, event := range batch {
+		ids = append(ids, event.UUID)
+	}
+
+	return ids, nil
+}
+
+// TestTheRequestViewTravelsWithTheEvent covers the half of the health panel
+// that the receiving process cannot record itself.
+//
+// With the http transport the account database is on another machine, so the
+// panel's view of a request has to ride on the event to reach it — without the
+// address, because the outbox it crosses is a disk.
+func TestTheRequestViewTravelsWithTheEvent(t *testing.T) {
+	h := newHandlerHarness(t)
+
+	capture := &capturingTransport{}
+	h.service.Handler.Buffer = NewBuffer(capture, 100, time.Hour)
+
+	if recorder := post(t, h, "text/plain", validBody, nil); recorder.Code != http.StatusAccepted {
+		t.Fatalf("status %d, want 202", recorder.Code)
+	}
+
+	if err := h.service.Handler.Buffer.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(capture.events) != 1 {
+		t.Fatalf("the buffer carried %d events, want one", len(capture.events))
+	}
+
+	event := capture.events[0]
+	if event.Diagnostics == nil {
+		t.Fatal("the event carries no request view, so a shard on another machine can report only counts")
+	}
+
+	if event.Diagnostics.ClientIPSource == "" {
+		t.Error("the panel cannot say which header the visitor's address was read from")
+	}
+
+	// The view survives the wire, because the wire is what it exists to cross.
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var arrived Event
+	if err := json.Unmarshal(encoded, &arrived); err != nil {
+		t.Fatal(err)
+	}
+
+	// The outbox is a disk and the address never reaches one, so it must not
+	// appear anywhere in what crosses the wire.
+	if address := visitors[0].ip; bytes.Contains(encoded, []byte(address)) {
+		t.Errorf("the visitor's address %q was written to the outbox: %s", address, encoded)
+	}
+
+	observation, ok := arrived.PendingObservation()
+	if !ok {
+		t.Fatal("the request view did not survive the wire")
+	}
+
+	if observation.Debug.ClientIP != "" {
+		t.Errorf("the address was rebuilt on arrival: %q", observation.Debug.ClientIP)
+	}
+
+	if observation.Debug.ClientIPSource != event.Diagnostics.ClientIPSource ||
+		observation.Debug.Pathname != event.Pathname {
+		t.Errorf("the view rebuilt on arrival does not match the one sent: %+v", observation.Debug)
 	}
 }
 
