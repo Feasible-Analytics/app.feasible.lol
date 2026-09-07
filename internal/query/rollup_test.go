@@ -512,6 +512,105 @@ func TestAWideGrainKeepsTodayOnTheDayABucketBegins(t *testing.T) {
 	}
 }
 
+// TestARaggedStartStillReadsTheSummary is why a twelve-month report was reading
+// daily rows.
+//
+// A range almost never begins exactly on a Monday or the first of a month, and
+// the reader used to refuse the whole range over it. The days before the first
+// whole bucket are now a raw segment of their own.
+func TestARaggedStartStillReadsTheSummary(t *testing.T) {
+	now := time.Date(2026, 9, 9, 15, 0, 0, 0, time.UTC)
+
+	resolved := raggedWeeklyRange(t, now)
+
+	segments := route(t, coveringRouter("UTC"), &Query{
+		SiteIDs: []int64{1}, Metrics: []string{"visitors"}, SampleRate: 1,
+		Dimensions: []string{"time"}, Timezone: "UTC",
+	}, resolved)
+
+	if len(segments) != 3 {
+		t.Fatalf("the router produced %s, want a raw head, the summary, and a raw remainder", rollupExplain(segments))
+	}
+
+	if segments[0].Source != SourceRaw || !segments[0].Range.Start.Equal(resolved.Start) {
+		t.Fatalf("the first segment is %s, want raw days from the range's own start", rollupExplain(segments[:1]))
+	}
+
+	if segments[1].Source != SourceRollup || segments[1].Grain != GrainWeek {
+		t.Fatalf("the second segment is %s, want the weekly summary", rollupExplain(segments[1:2]))
+	}
+
+	// The summary begins on the first Monday inside the range, not before it.
+	if weekday := segments[1].Range.Start.Weekday(); weekday != time.Monday {
+		t.Errorf("the summary starts on a %s, want the Monday a week begins", weekday)
+	}
+
+	if segments[1].Range.Start.Before(resolved.Start) {
+		t.Errorf("the summary starts at %s, before the range's own start %s — it is answering for days nobody asked about",
+			segments[1].Range.Start, resolved.Start)
+	}
+
+	// No gap and no overlap anywhere along the chain.
+	for i := 1; i < len(segments); i++ {
+		if !segments[i].Range.Start.Equal(segments[i-1].Range.End) {
+			t.Errorf("segment %d starts at %s and %d ended at %s",
+				i, segments[i].Range.Start, i-1, segments[i-1].Range.End)
+		}
+	}
+
+	if !segments[len(segments)-1].Range.End.Equal(resolved.End) {
+		t.Errorf("the segments end at %s, want the range's own %s",
+			segments[len(segments)-1].Range.End, resolved.End)
+	}
+}
+
+// TestARaggedStartIsRefusedWhenTheSeamWouldNeedCorrecting is the other half of
+// the same decision.
+//
+// Without a time grouping a visitor is counted once across the whole range, so
+// one present in both the raw head and the first summary bucket would be
+// counted twice. Only the trailing seam has a correction, so this stays raw.
+func TestARaggedStartIsRefusedWhenTheSeamWouldNeedCorrecting(t *testing.T) {
+	now := time.Date(2026, 9, 9, 15, 0, 0, 0, time.UTC)
+
+	segments := route(t, coveringRouter("UTC"), &Query{
+		SiteIDs: []int64{1}, Metrics: []string{"visitors"}, SampleRate: 1,
+		Timezone: "UTC",
+	}, raggedWeeklyRange(t, now))
+
+	for _, segment := range segments {
+		if segment.Source == SourceRollup {
+			t.Fatalf("the router produced %s — a total over a ragged start cannot be assembled from buckets",
+				rollupExplain(segments))
+		}
+	}
+}
+
+// raggedWeeklyRange is wide enough to be drawn in weeks and deliberately does
+// not begin on a Monday.
+func raggedWeeklyRange(t *testing.T, now time.Time) Resolved {
+	t.Helper()
+
+	start := startOfWeek(now.AddDate(0, 0, -200), time.UTC).AddDate(0, 0, 3)
+
+	if start.Weekday() == time.Monday {
+		t.Fatal("the fixture range begins on a Monday, so it is not ragged")
+	}
+
+	resolved, err := DateRange{
+		Preset: RangeCustom, Start: start, End: now, DateOnly: true,
+	}.Resolve(now, time.UTC, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resolved.Interval != IntervalWeek {
+		t.Fatalf("the range is drawn in %s, so this test is not about weekly buckets", resolved.Interval)
+	}
+
+	return resolved
+}
+
 // weeklyRange is a range wide enough to be drawn in weeks and beginning on a
 // Monday, which is what the reader needs before it will read weekly buckets at
 // all.
