@@ -5,9 +5,8 @@
 -- Created: 2026-09-06
 -- Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 --
--- Imported history arrives as one row per day per shape and has been read that
--- way ever since. A wide report adds every one of those rows up, and a large
--- archive is millions of them.
+-- Imported history is one row per day per shape. A wide report over a large
+-- archive adds up millions of them to reach a number that a few dozen hold.
 --
 -- The arithmetic is a plain SUM. Unlike the native roll-ups there is no
 -- carried-visitor correction to apply, because a daily total is all an import
@@ -16,8 +15,8 @@
 -- what reading the days does, so the answer does not change.
 --
 -- It is a table of its own rather than a `grain` column on imported_rollups.
--- Eight places read that table, several outside the query engine, and a coarse
--- row picked up by one that did not filter for it would silently double a
+-- Several readers outside the query engine scan that table with no grain
+-- predicate, and a coarse row one of them picked up would silently double a
 -- customer's history.
 
 CREATE TABLE imported_wide (
@@ -81,3 +80,8 @@ CREATE INDEX imported_wide_import ON imported_wide(import_id);
 -- finished summary from one that is still being built. A half-finished backfill
 -- has to be slow rather than wrong.
 ALTER TABLE imports ADD COLUMN wide_grains INTEGER NOT NULL DEFAULT 0;
+
+-- The timezone the buckets were cut in. A week is a week in one zone and a
+-- different seven days in another, so a summary read under a zone it was not
+-- cut in reports one month's traffic as the next one's.
+ALTER TABLE imports ADD COLUMN wide_timezone TEXT NOT NULL DEFAULT '';

@@ -47,16 +47,11 @@ var wideMetrics = []string{
 // wideGrains are the widths an import is summarised into.
 func wideGrains() []query.Grain { return []query.Grain{query.GrainWeek, query.GrainMonth} }
 
-// grainBit is the flag recorded on the import once a grain is built. It is a
-// mask rather than a boolean so a half-finished summary is readable as such.
-func grainBit(grain query.Grain) int64 { return 1 << uint(grain) }
-
 // SummariseImport writes an import's week and month rows and records that it
 // has them.
 //
 // It is a plain sum over rows already held, so it needs no source data and no
-// re-import: an archive that landed before this existed gains its summaries the
-// same way a new one does.
+// re-import.
 func SummariseImport(ctx context.Context, db *sql.DB, importID, siteID int64, location *time.Location) error {
 	if location == nil {
 		location = time.UTC
@@ -74,14 +69,45 @@ func SummariseImport(ctx context.Context, db *sql.DB, importID, siteID int64, lo
 			return err
 		}
 
-		built |= grainBit(grain)
+		built |= grain.GrainBit()
 	}
 
 	// Recorded last and in one write, so a reader either sees a finished
 	// summary or none: a partial one would answer a wide report with a bucket
 	// that is missing days.
+	//
+	// The zone goes with it. A week is a week in one timezone and a different
+	// seven days in another, so a summary read under a zone it was not cut in
+	// reports one month's traffic as the next one's.
 	if _, err := db.ExecContext(ctx,
-		"UPDATE imports SET wide_grains = ? WHERE id = ?", built, importID); err != nil {
+		"UPDATE imports SET wide_grains = ?, wide_timezone = ? WHERE id = ?",
+		built, location.String(), importID); err != nil {
+		return fmt.Errorf("dataio: record wide grains for import %d: %w", importID, err)
+	}
+
+	return nil
+}
+
+// MarkNothingToSummarise records an import as summarised without writing any
+// rows, for a source whose data does not live in imported_rollups at all.
+//
+// The mark is not bookkeeping: a reader treats an unmarked import as one whose
+// summaries are missing and falls back to the daily rows for the whole site, so
+// one Search Console connection would otherwise turn the summaries off for
+// every archive beside it.
+func MarkNothingToSummarise(ctx context.Context, db *sql.DB, importID int64, location *time.Location) error {
+	if location == nil {
+		location = time.UTC
+	}
+
+	var built int64
+	for _, grain := range wideGrains() {
+		built |= grain.GrainBit()
+	}
+
+	if _, err := db.ExecContext(ctx,
+		"UPDATE imports SET wide_grains = ?, wide_timezone = ? WHERE id = ?",
+		built, location.String(), importID); err != nil {
 		return fmt.Errorf("dataio: record wide grains for import %d: %w", importID, err)
 	}
 
@@ -211,20 +237,20 @@ func writeDayMap(ctx context.Context, tx *sql.Tx, grain query.Grain, days []int6
 	return nil
 }
 
-// SummariseSite builds the summaries for every one of a site's imports that has
-// none, and says how many it built.
+// SummariseSite builds the summaries for every one of a site's imports that
+// lacks them or holds them in another timezone, and says how many it built.
 //
-// It exists because an archive that landed before this feature did is read a
-// day at a time for ever otherwise, and a real customer's import cannot be
-// regenerated the way a demo account can.
+// A site's zone decides which days a week and a month hold, so a summary cut
+// under a different one has to be thrown away rather than corrected.
 func SummariseSite(ctx context.Context, db *sql.DB, siteID int64, location *time.Location) (int, error) {
 	var want int64
 	for _, grain := range wideGrains() {
-		want |= grainBit(grain)
+		want |= grain.GrainBit()
 	}
 
 	rows, err := db.QueryContext(ctx,
-		"SELECT id FROM imports WHERE site_id = ? AND (wide_grains & ?) <> ? ORDER BY id", siteID, want, want)
+		"SELECT id FROM imports WHERE site_id = ? AND ((wide_grains & ?) <> ? OR wide_timezone <> ?) ORDER BY id",
+		siteID, want, want, location.String())
 	if err != nil {
 		return 0, fmt.Errorf("dataio: read imports to summarise: %w", err)
 	}

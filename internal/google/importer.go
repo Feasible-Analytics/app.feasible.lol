@@ -114,6 +114,12 @@ func (a *App) GA4Import(ctx context.Context, db *sql.DB, cache *intern.Cache, re
 		names = append(names, name)
 	}
 
+	// Before the import is marked complete, so a reader never sees a finished
+	// import whose wide summaries are still being written.
+	if err := dataio.SummariseImport(ctx, db, record.ID, record.SiteID, location); err != nil {
+		return err
+	}
+
 	return dataio.CompleteImport(ctx, db, record.ID, names, from.Unix(), to.Unix(), rowsWritten, now())
 }
 
@@ -314,6 +320,14 @@ func (a *App) SearchConsoleImport(ctx context.Context, db *sql.DB, record *datai
 		if err := dataio.SetProgress(ctx, db, record.ID, index+1, rowsWritten, day); err != nil {
 			return err
 		}
+	}
+
+	// Search Console rows live in their own table and contribute nothing to a
+	// report over imported_rollups, so there is nothing to sum. It is still
+	// marked summarised: an import left unmarked reads as one whose summaries
+	// are missing, and turns them off for every other import on the site.
+	if err := dataio.MarkNothingToSummarise(ctx, db, record.ID, location); err != nil {
+		return err
 	}
 
 	return dataio.CompleteImport(ctx, db, record.ID, nil, from.Unix(), to.Unix(), rowsWritten, now())

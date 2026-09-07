@@ -54,32 +54,36 @@ func (x *executor) importedSource(ctx context.Context, r Resolved) (importedSour
 		return wide, nil
 	}
 
-	// Every import the site has must be summarised, not just some: reading the
-	// wide table while one import has no rows in it would drop that import's
-	// history from the answer entirely, which is worse than being slow.
+	// Every import the site has must be summarised in the zone being asked
+	// about, not just some of them. Reading the wide table while one import has
+	// no rows in it would drop that import's history from the answer entirely,
+	// and reading a summary cut in another zone reports one month's traffic as
+	// the next one's. Both are worse than being slow.
 	sites := inInt64("site_id", x.query.SiteIDs)
 
 	args := append([]any{}, sites.Args...)
-	args = append(args, grainBit(wide.grain))
+	args = append(args, wide.grain.GrainBit(), r.Location.String())
 
-	var unsummarised int64
+	var unusable int64
 
 	err := x.engine.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM imports WHERE "+sites.SQL+" AND (wide_grains & ?) = 0", args...).Scan(&unsummarised)
+		"SELECT COUNT(*) FROM imports WHERE "+sites.SQL+
+			" AND ((wide_grains & ?) = 0 OR wide_timezone <> ?)", args...).Scan(&unusable)
 	if err != nil {
 		return importedSource{}, fmt.Errorf("query: read imported summary coverage: %w", err)
 	}
 
-	if unsummarised > 0 {
+	if unusable > 0 {
 		return importedSource{table: ImportedTable, grain: GrainDay}, nil
 	}
 
 	return wide, nil
 }
 
-// grainBit is the flag an import records once it has been summarised at a
-// width. It mirrors the one the importer writes.
-func grainBit(grain Grain) int64 { return 1 << uint(grain) }
+// ImportedSourceTable is which table a range would be answered from, ignoring
+// whether the summaries exist. It is exported so a test can assert that a
+// report reached the summary rather than only that rows were written.
+func ImportedSourceTable(r Resolved) string { return importedSourceFor(r).table }
 
 // importedSourceFor picks the narrowest table that can answer a range exactly,
 // ignoring whether the summaries have been built.

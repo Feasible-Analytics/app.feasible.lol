@@ -23,15 +23,14 @@ Commands:
   summarise  Build the week and month summaries an import needs to read quickly.
 `
 
-const importsSummariseHelp = `feasible imports summarise — summarise archives that predate the feature.
+const importsSummariseHelp = `feasible imports summarise — build the week and month summaries.
 
-An import summarises itself as it completes. One that landed before that existed
-is read a day at a time, which on a large archive is millions of rows for every
-wide report. This builds the same summaries from rows already held, so it needs
-no source data and no re-import.
+An import summarises itself as it completes, and a site whose timezone changes
+re-cuts them on the next run of this. Anything with no summaries is read a day
+at a time, which on a large archive is millions of rows for every wide report.
 
-Running it twice costs nothing: an import that already has its summaries is
-skipped.
+It sums rows already held, so it needs no source data and no re-import. Running
+it twice costs nothing: an import whose summaries are current is skipped.
 
 Flags:
 `
@@ -53,7 +52,8 @@ func runImports(e *env, args []string) int {
 	}
 }
 
-// runImportsSummarise builds the wide rows for every import that has none.
+// runImportsSummarise builds the wide rows for every import that lacks them or
+// holds them in a timezone the site no longer uses.
 func runImportsSummarise(e *env, args []string) int {
 	fs := newFlagSet("imports summarise", e, importsSummariseHelp)
 	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding system.db and the account databases")
@@ -85,7 +85,9 @@ func runImportsSummarise(e *env, args []string) int {
 	summarised := 0
 
 	for _, ref := range sites {
-		lease, err := manager.Acquire(ctx, ref.AccountID)
+		// A walk over every account, so the handles it opens must not evict the
+		// ones taking traffic.
+		lease, err := manager.AcquireForScan(ctx, ref.AccountID)
 		if err != nil {
 			fmt.Fprintf(e.stderr, "%v\n", err)
 			return ExitError

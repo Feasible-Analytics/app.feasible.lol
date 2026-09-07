@@ -450,3 +450,67 @@ func TestAllTimeReachesBackOverImportedHistory(t *testing.T) {
 		t.Fatalf("all time without imports started at %s, want the first native event", nativeStart)
 	}
 }
+
+// TestAWideImportedRangeReadsTheSummary is what makes the summaries worth
+// writing. A range that begins and ends on a bucket the summary holds reads it;
+// anything else reads the days, which is slower and right.
+func TestAWideImportedRangeReadsTheSummary(t *testing.T) {
+	location := time.UTC
+	now := time.Date(2026, 9, 9, 12, 0, 0, 0, location)
+
+	for name, test := range map[string]struct {
+		start, end time.Time
+		want       string
+	}{
+		"whole months, wide enough to be drawn in months": {
+			time.Date(2024, 9, 1, 0, 0, 0, 0, location),
+			time.Date(2026, 9, 1, 0, 0, 0, 0, location),
+			ImportedWideTable,
+		},
+
+		// A twelve-month range is drawn in weeks, not months, so bounds on the
+		// first of a month do not line up with the buckets it would read. It
+		// falls back to the days, which is correct and is the reason the
+		// summaries do not yet pay off on the preset that motivated them.
+		"twelve months, which is drawn in weeks": {
+			time.Date(2025, 9, 1, 0, 0, 0, 0, location),
+			time.Date(2026, 9, 1, 0, 0, 0, 0, location),
+			ImportedTable,
+		},
+		"whole weeks": {
+			// Both Mondays, and far enough apart to be drawn in weeks.
+			time.Date(2026, 3, 2, 0, 0, 0, 0, location),
+			time.Date(2026, 8, 31, 0, 0, 0, 0, location),
+			ImportedWideTable,
+		},
+		"a range that starts mid-week": {
+			time.Date(2026, 3, 4, 0, 0, 0, 0, location),
+			time.Date(2026, 8, 31, 0, 0, 0, 0, location),
+			ImportedTable,
+		},
+		"a range that ends mid-month": {
+			time.Date(2025, 9, 1, 0, 0, 0, 0, location),
+			time.Date(2026, 9, 15, 0, 0, 0, 0, location),
+			ImportedTable,
+		},
+		"a fortnight, which is drawn in days": {
+			time.Date(2026, 8, 24, 0, 0, 0, 0, location),
+			time.Date(2026, 9, 7, 0, 0, 0, 0, location),
+			ImportedTable,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resolved, err := DateRange{
+				Preset: RangeCustom, Start: test.start, End: test.end.AddDate(0, 0, -1), DateOnly: true,
+			}.Resolve(now, location, time.Time{})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if got := ImportedSourceTable(resolved); got != test.want {
+				t.Errorf("a %s range (%s) reads %s, want %s",
+					resolved.Interval, resolved.Start.Format("2006-01-02"), got, test.want)
+			}
+		})
+	}
+}
