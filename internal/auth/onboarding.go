@@ -41,23 +41,6 @@ const FirstEventPollInterval = 3 * time.Second
 // what the waiting screen tells the user while remote snapshots refresh.
 const RoutingDelay = 15 * time.Second
 
-// QueueStub is the inline tag that goes above the script tag.
-//
-// The bundle is deferred, so it runs after the document has parsed. Anything
-// that calls us before then — an inline script in the body, a module entry
-// point placed above our tag, a tag manager emitting its own call first — would
-// be a ReferenceError in somebody else's page and an event we never hear about.
-// The stub takes those calls and the bundle replays them.
-//
-// The assignment is guarded so a second copy of the snippet keeps the queue it
-// already has, and so a tool that already owns this name is left alone.
-//
-// Only the default name is stubbed. A site using data-alias is editing the
-// snippet by hand and can stub the second name the same way; generating a
-// conditional second stub would put a setting nobody set into everybody's HTML.
-const QueueStub = `<script>window.feasible=window.feasible||function(){` +
-	`(window.feasible.q=window.feasible.q||[]).push(arguments)};</script>`
-
 // Snippet renders the script tag for one site.
 //
 // The per-site path is used rather than the shared one. Filter lists name files
@@ -71,7 +54,7 @@ func Snippet(baseURL string, keyer *tracker.Keyer, site *Site) string {
 		return SnippetLegacy(baseURL, site)
 	}
 
-	return fmt.Sprintf("%s\n"+`<script defer src="%s%s"></script>`, QueueStub, base, keyer.Path(site.Domain))
+	return fmt.Sprintf("%s\n"+`<script defer src="%s%s"></script>`, tracker.QueueStub, base, keyer.Path(site.Domain))
 }
 
 // SnippetLegacy renders the attribute-carrying variant.
@@ -82,7 +65,7 @@ func Snippet(baseURL string, keyer *tracker.Keyer, site *Site) string {
 // script tag is pasted into a field that may strip an opaque path.
 func SnippetLegacy(baseURL string, site *Site) string {
 	return fmt.Sprintf("%s\n"+`<script defer data-domain="%s" src="%s%s"></script>`,
-		QueueStub, site.Domain, strings.TrimRight(baseURL, "/"), tracker.PathLegacy)
+		tracker.QueueStub, site.Domain, strings.TrimRight(baseURL, "/"), tracker.PathLegacy)
 }
 
 // InstallPlatform is one set of paste-this-here instructions.
@@ -129,11 +112,11 @@ func InstallPlatforms() []InstallPlatform {
 			ID:   "nextjs",
 			Name: "Next.js",
 			Steps: []string{
-				"App router: add the tag to app/layout.tsx inside <head>.",
-				"Pages router: add it to pages/_document.tsx inside <Head>.",
+				"App router: add both tags to app/layout.tsx inside <head>.",
+				"Pages router: add them to pages/_document.tsx inside <Head>.",
 				"Redeploy and open the site.",
 			},
-			Note: "next/script with strategy=\"afterInteractive\" also works. What does not work is putting it in a client component that only renders on some routes — you will lose every page it does not render on.",
+			Note: "next/script with strategy=\"afterInteractive\" works for the second tag, but write the first as a plain inline script — a deferred first line is a first line that does nothing. What does not work at all is putting either in a client component that only renders on some routes, because you lose every page it does not render on.",
 		},
 		{
 			ID:   "nuxt",
@@ -153,7 +136,7 @@ func InstallPlatforms() []InstallPlatform {
 				"Paste the snippet inside <head>.",
 				"Rebuild and deploy.",
 			},
-			Note: "Astro strips <script> tags it decides to process. Keeping the src attribute and adding is:inline is the reliable form.",
+			Note: "Astro processes <script> tags it recognises, which moves them out of the head and changes when they run. Add is:inline to both tags — the first one needs it most, because a hoisted stub runs after the very calls it exists to catch.",
 		},
 		{
 			ID:   "shopify",
@@ -398,18 +381,44 @@ func VerifyInstallation(ctx context.Context, client *http.Client, baseURL string
 	result.Outcome = VerifyFound
 	result.Message = "The snippet is installed on " + target + " and nothing is blocking it."
 
+	// The bundle loads either way, so this is not a blocked install — but the
+	// first line is an inline script, and a page that refuses one loses every
+	// event fired before the bundle arrives. Saying "nothing is blocking it"
+	// there would be the wrong half of the truth.
+	if csp := result.CSPHeader; csp != "" && !cspAllowsInline(csp) {
+		result.Message = "The snippet is installed on " + target + " and collecting. " +
+			"The first line is an inline script and this site's Content-Security-Policy refuses those, " +
+			"so an event fired before the script finishes loading is still lost. " +
+			"Add " + tracker.QueueStubHash + " to your script-src to allow just that line."
+	}
+
 	return result
 }
 
-// cspAllows reports whether a Content-Security-Policy would let the browser
-// load a script from a host.
+// cspAllowsInline reports whether a policy would run the queueing stub.
 //
-// It reads only script-src, falling back to default-src, because those are the
-// two directives that decide whether a script tag loads. It is deliberately
-// forgiving: a policy we cannot parse is treated as permissive, since telling
-// somebody their CSP is blocking us when it is not sends them to edit a
-// security header for no reason.
-func cspAllows(policy, host string) bool {
+// It is forgiving in the same way as cspAllows and for the same reason, with
+// one addition: a policy carrying a nonce is treated as permissive, because
+// whether the customer put that nonce on our tag is not something the HTML can
+// answer — their template may add it at render time.
+func cspAllowsInline(policy string) bool {
+	sources, ok := scriptSources(policy)
+	if !ok {
+		return true
+	}
+
+	if strings.Contains(sources, strings.ToLower(tracker.QueueStubHash)) || strings.Contains(sources, "'nonce-") {
+		return true
+	}
+
+	// A hash or a nonce anywhere in the directive makes a browser ignore
+	// 'unsafe-inline' entirely, so it cannot be read on its own.
+	return strings.Contains(sources, "'unsafe-inline'") && !strings.Contains(sources, "'sha")
+}
+
+// scriptSources pulls the directive that decides whether a script runs, and
+// reports whether the policy names one at all.
+func scriptSources(policy string) (string, bool) {
 	directives := map[string]string{}
 
 	for _, part := range strings.Split(policy, ";") {
@@ -426,6 +435,20 @@ func cspAllows(policy, host string) bool {
 	if !ok {
 		sources, ok = directives["default-src"]
 	}
+
+	return sources, ok
+}
+
+// cspAllows reports whether a Content-Security-Policy would let the browser
+// load a script from a host.
+//
+// It reads only script-src, falling back to default-src, because those are the
+// two directives that decide whether a script tag loads. It is deliberately
+// forgiving: a policy we cannot parse is treated as permissive, since telling
+// somebody their CSP is blocking us when it is not sends them to edit a
+// security header for no reason.
+func cspAllows(policy, host string) bool {
+	sources, ok := scriptSources(policy)
 	if !ok {
 		return true
 	}

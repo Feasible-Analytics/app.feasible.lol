@@ -275,14 +275,11 @@ func TestInstallationCheckCannotReachAPrivateAddress(t *testing.T) {
 	}
 }
 
-// TestBothSnippetsCarryTheQueueStub is the assertion that closes the gap
-// between the two halves of this feature.
+// TestBothSnippetsCarryTheQueueStub ties the snippet to the bundle.
 //
 // The bundle replays a queue at install time, and the end-to-end suite proves
-// the replay works — against a fixture that writes the stub itself. Nothing
-// tied that fixture to what we actually hand a customer, so the bundle drained
-// a queue our snippet never created and a call made before the deferred script
-// ran was a ReferenceError in somebody else's page.
+// the replay works — against a fixture that writes the stub itself. Only a Go
+// assertion can say the page a customer pastes creates that queue at all.
 func TestBothSnippetsCarryTheQueueStub(t *testing.T) {
 	keyer := tracker.NewKeyer(make([]byte, tracker.SecretSize), nil)
 	site := &Site{Domain: "example.com"}
@@ -293,12 +290,12 @@ func TestBothSnippetsCarryTheQueueStub(t *testing.T) {
 		"the snippet with no keyer": Snippet("https://feasible.lol", nil, site),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if !strings.Contains(snippet, QueueStub) {
+			if !strings.Contains(snippet, tracker.QueueStub) {
 				t.Fatalf("no queueing stub:\n%s", snippet)
 			}
 
 			// Before, or it is a stub for calls that have already thrown.
-			if strings.Index(snippet, QueueStub) > strings.Index(snippet, "<script defer") {
+			if strings.Index(snippet, tracker.QueueStub) > strings.Index(snippet, "<script defer") {
 				t.Errorf("the stub is after the script tag:\n%s", snippet)
 			}
 
@@ -317,12 +314,12 @@ func TestBothSnippetsCarryTheQueueStub(t *testing.T) {
 // filled, and would stop a tool that keeps its configuration on its own global
 // dead with no error anywhere.
 func TestTheQueueStubDoesNotSeizeTheGlobal(t *testing.T) {
-	if !strings.Contains(QueueStub, "window.feasible=window.feasible||") {
-		t.Errorf("the stub assigns unconditionally: %s", QueueStub)
+	if !strings.Contains(tracker.QueueStub, "window.feasible=window.feasible||") {
+		t.Errorf("the stub assigns unconditionally: %s", tracker.QueueStub)
 	}
 
-	if !strings.Contains(QueueStub, "window.feasible.q=window.feasible.q||") {
-		t.Errorf("the stub replaces the queue rather than appending to it: %s", QueueStub)
+	if !strings.Contains(tracker.QueueStub, "window.feasible.q=window.feasible.q||") {
+		t.Errorf("the stub replaces the queue rather than appending to it: %s", tracker.QueueStub)
 	}
 }
 
@@ -339,27 +336,90 @@ func TestTheFixtureStubIsTheOneWeShip(t *testing.T) {
 
 	squash := func(s string) string { return strings.Join(strings.Fields(s), "") }
 
-	if !strings.Contains(squash(string(fixture)), squash(QueueStub)) {
+	if !strings.Contains(squash(string(fixture)), squash(tracker.QueueStub)) {
 		t.Error("the queue fixture writes a stub we do not ship, so the replay test proves nothing " +
 			"about what a customer's page does")
 	}
 }
 
-// TestVerifyIgnoresTheInlineStub checks the installation verifier still reports
-// a correct install once the snippet is two tags.
+// TestVerifyReadsTheScriptTagAndNotTheStub checks the verifier still answers
+// about the tag that loads us, now that the snippet is two tags.
 //
-// The check looks for a script tag with a src on it. The stub has no src, so it
-// should be passed over — but "should be" is the assumption this test exists to
-// remove.
-func TestVerifyIgnoresTheInlineStub(t *testing.T) {
+// A page with only the stub is not installed, and a page carrying both is. The
+// pair is what makes this an assertion rather than a hope: the "installed" case
+// alone passes whether or not the inline tag is being read as the script tag.
+func TestVerifyReadsTheScriptTagAndNotTheStub(t *testing.T) {
 	site := &Site{Domain: "example.com"}
-	page := "<html><head>" + SnippetLegacy("https://feasible.lol", site) + "</head><body></body></html>"
 
-	result := verifyAgainst(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, page)
-	}, site)
+	for name, test := range map[string]struct {
+		body string
+		want VerifyOutcome
+	}{
+		"the whole snippet": {SnippetLegacy("https://feasible.lol", site), VerifyFound},
+		"the stub alone":    {tracker.QueueStub, VerifyMissing},
+	} {
+		t.Run(name, func(t *testing.T) {
+			page := "<html><head>" + test.body + "</head><body></body></html>"
 
-	if result.Outcome != VerifyFound {
-		t.Fatalf("the verifier reported %q on a correctly installed page: %s", result.Outcome, result.Message)
+			result := verifyAgainst(t, func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.WriteString(w, page)
+			}, site)
+
+			if result.Outcome != test.want {
+				t.Errorf("the verifier reported %q, want %q: %s", result.Outcome, test.want, result.Message)
+			}
+		})
+	}
+}
+
+// TestAPolicyThatRefusesInlineScriptsIsReported is the failure this change
+// would otherwise introduce quietly.
+//
+// The bundle still loads under a strict policy, so the install is not blocked —
+// but the stub does not run, and every event fired before the bundle arrives is
+// lost with the verifier saying nothing is wrong. The site most careful about
+// its headers is the one that would never find out.
+func TestAPolicyThatRefusesInlineScriptsIsReported(t *testing.T) {
+	site := &Site{Domain: "example.com"}
+
+	for name, test := range map[string]struct {
+		policy string
+		warned bool
+	}{
+		"a strict policy":            {"script-src 'self' https://feasible.lol", true},
+		"a policy allowing inline":   {"script-src 'self' 'unsafe-inline' https://feasible.lol", false},
+		"a policy carrying our hash": {"script-src 'self' " + tracker.QueueStubHash + " https://feasible.lol", false},
+
+		// A browser ignores 'unsafe-inline' once any hash is present, so the
+		// policy that looks permissive is the one that is not.
+		"unsafe-inline beside another hash": {
+			"script-src 'self' 'unsafe-inline' 'sha256-abc=' https://feasible.lol", true},
+
+		// Whether the customer's template puts its nonce on our tag is not
+		// something the HTML can answer, so it is not something to warn about.
+		"a policy using a nonce": {"script-src 'self' 'nonce-r4nd0m' https://feasible.lol", false},
+
+		"no policy at all": {"", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			page := "<html><head>" + SnippetLegacy("https://feasible.lol", site) + "</head><body></body></html>"
+
+			result := verifyAgainst(t, func(w http.ResponseWriter, r *http.Request) {
+				if test.policy != "" {
+					w.Header().Set("Content-Security-Policy", test.policy)
+				}
+
+				_, _ = io.WriteString(w, page)
+			}, site)
+
+			if result.Outcome != VerifyFound {
+				t.Fatalf("the verifier reported %q: %s", result.Outcome, result.Message)
+			}
+
+			if warned := strings.Contains(result.Message, tracker.QueueStubHash); warned != test.warned {
+				t.Errorf("the message %q warns about inline scripts = %v, want %v",
+					result.Message, warned, test.warned)
+			}
+		})
 	}
 }
