@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -422,10 +421,10 @@ func durableFoldRanges(events []Event) map[sessionKey]durableFoldRange {
 
 // foldChunk is how many visitors one fold-state read asks about.
 //
-// It is a fixed number rather than the batch size because the batch is not
-// bounded by the nominal one: a backed-up buffer delivers far more, and the
-// dedupe lookup already hit SQLite's parameter limit that exact way. Two
-// hundred leaves the limit an order of magnitude of room.
+// It is fixed rather than derived from the batch size, because the batch is not
+// bounded by the nominal one — a backed-up buffer delivers far more — and a
+// bind list that follows the batch is a bind list that eventually meets
+// SQLite's parameter limit.
 const foldChunk = 200
 
 // loadDurableFold restores every visitor's serialized fold state and parked
@@ -433,7 +432,8 @@ const foldChunk = 200
 //
 // It reads a chunk of visitors at a time rather than one, because the number of
 // round trips otherwise grows with the batch's unique visitors — which is the
-// number that grows when a customer's traffic does.
+// number that grows when a customer's traffic does. It is still one set of
+// reads per site in the batch, which is what the fold's own keys are scoped to.
 func loadDurableFold(ctx context.Context, tx *sql.Tx, cache *SessionCache, accountID int64, ranges map[sessionKey]durableFoldRange) error {
 	for siteID, visitors := range foldSites(ranges) {
 		for chunk := range slices.Chunk(visitors, foldChunk) {
@@ -474,7 +474,7 @@ func foldSites(ranges map[sessionKey]durableFoldRange) map[int64][]int64 {
 // chunkSpan is the widest window any visitor in the chunk needs, which is what
 // the statement is bounded by before each row is held to its own visitor's.
 func chunkSpan(ranges map[sessionKey]durableFoldRange, siteID int64, chunk []int64) durableFoldRange {
-	span := durableFoldRange{first: math.MaxInt64, last: math.MinInt64}
+	span := durableFoldRange{first: maxInt64, last: minInt64}
 
 	for _, userID := range chunk {
 		own := ranges[sessionKey{siteID: siteID, userID: userID}]
@@ -504,9 +504,8 @@ func chunkArgs(siteID int64, chunk []int64, first, last int64) []any {
 }
 
 // overlaps reports whether a session lying between these two times belongs in
-// this visitor's window. It is the predicate the per-visitor statement carried,
-// applied here because the chunk is read against a window wide enough for all
-// of its visitors.
+// this visitor's window. A chunk is read against a window wide enough for every
+// visitor in it, so each row is held to its own here.
 func overlaps(own durableFoldRange, startedAt, lastSeenAt int64) bool {
 	return startedAt <= own.last+sessionTimeoutSeconds && lastSeenAt >= own.first-sessionTimeoutSeconds
 }
@@ -606,7 +605,7 @@ func loadChunkOrphans(ctx context.Context, tx *sql.Tx, cache *SessionCache,
 	return nil
 }
 
-// loadLegacyFoldKey hydrates session rows that have no companion state row:
+// loadLegacyFoldChunk hydrates session rows that have no companion state row:
 // sessions written before the state table existed, or whose state was pruned
 // after the retention window. The hydration is approximate — the tie-break
 // keys are not recoverable from the row — and the next successful fold writes
@@ -751,16 +750,13 @@ const (
 		DELETE FROM ingest_session_state
 		WHERE site_id = ? AND last_seen_at < ?`
 
-	// The two visitor reads are per chunk of visitors rather than per visitor,
-	// so they carry the columns that route a row back to the visitor it belongs
-	// to and the ones the per-visitor window is applied to. The chunk's own
-	// bounds are the widest any of its visitors needs; each row is then held to
-	// its own visitor's window in Go, which is the same predicate the statement
-	// used to carry.
+	// The two visitor reads cover a chunk of visitors, so they carry the columns
+	// that route a row back to the visitor it belongs to and the ones its window
+	// is applied to. The chunk's bounds are the widest any of its visitors
+	// needs; each row is then held to its own visitor's window in Go.
 	//
-	// The user_id list is interpolated because a bound parameter cannot stand
-	// for a list. Every value is an int64 the fingerprint produced, never
-	// anything a request supplied.
+	// Only the marker list is rendered into the text; every id is still a bound
+	// parameter.
 	selectVisitorSessionState = `
 		SELECT site_id, user_id, started_at, last_seen_at, payload FROM ingest_session_state
 		WHERE site_id = ? AND user_id IN (%s)

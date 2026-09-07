@@ -1711,12 +1711,18 @@ func (c countingConn) BeginTx(ctx context.Context, opts driver.TxOptions) (drive
 	return c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
 }
 
+// countedDatabases numbers the driver registrations this package makes.
+var countedDatabases atomic.Int64
+
 // countedDatabase is a migrated account database whose reads are counted.
 func countedDatabase(t *testing.T) (*sql.DB, *atomic.Int64) {
 	t.Helper()
 
 	count := &atomic.Int64{}
-	name := fmt.Sprintf("counting-%s", t.Name())
+
+	// A driver name can only be registered once in a process, and -count=2 runs
+	// the same test twice.
+	name := fmt.Sprintf("counting-%s-%d", t.Name(), countedDatabases.Add(1))
 
 	sql.Register(name, countingDriver{inner: &sqlite.Driver{}, count: count})
 
@@ -1777,13 +1783,14 @@ func TestTheFoldIsReadPerChunkNotPerVisitor(t *testing.T) {
 	}
 }
 
-// TestAFoldChunkBoundaryLosesNobody is the other half: a batch with more
-// visitors than one chunk holds must see every one of them.
+// TestEveryVisitorInABatchIsFound is the other half: a batch with more visitors
+// than one chunk holds must see every one of them.
 //
 // Reading in chunks is where a visitor goes missing silently — the fold simply
 // starts them a new session, and the customer sees one visit become two with
-// nothing anywhere saying why.
-func TestAFoldChunkBoundaryLosesNobody(t *testing.T) {
+// nothing anywhere saying why. The read count is asserted separately; this is
+// about the answer being complete.
+func TestEveryVisitorInABatchIsFound(t *testing.T) {
 	ctx := context.Background()
 	db := planDatabase(t)
 
@@ -1943,18 +1950,121 @@ func TestAChunkDoesNotHandAVisitorSomebodyElsesWindow(t *testing.T) {
 	}
 }
 
-// writeStoredSession gives one visitor one session at one moment.
+// TestTheFoldWindowIncludesItsOwnEdge pins the one comparison this change moved
+// out of SQL and into Go.
+//
+// A session starting exactly one session-timeout after the batch's last event
+// is inside the window, and one a second past that is not. Both copies of the
+// predicate — the chunk's bound and the per-row check — have to agree on that
+// forever, and a boundary nothing asserts is a boundary that drifts.
+func TestTheFoldWindowIncludesItsOwnEdge(t *testing.T) {
+	ctx := context.Background()
+	db := planDatabase(t)
+
+	const at = 1_000_000
+
+	writeStoredSession(t, ctx, db, 1, at+sessionTimeoutSeconds)
+	writeStoredSession(t, ctx, db, 2, at+sessionTimeoutSeconds+1)
+
+	ranges := map[sessionKey]durableFoldRange{
+		{siteID: 1, userID: 1}: {first: at, last: at},
+		{siteID: 1, userID: 2}: {first: at, last: at},
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	cache := newDurableSessionCache()
+	if err := loadDurableFold(ctx, tx, cache, 1, ranges); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := len(cache.bucket.sessions[sessionKey{siteID: 1, userID: 1}]); got != 1 {
+		t.Errorf("a session starting exactly on the edge came back %d times, want once", got)
+	}
+
+	if got := len(cache.bucket.sessions[sessionKey{siteID: 1, userID: 2}]); got != 0 {
+		t.Errorf("a session starting one second past the edge came back %d times, want none", got)
+	}
+}
+
+// TestTheFoldKeepsEachSitesVisitorsApart is about the grouping a chunked read
+// needs and a per-visitor one did not.
+//
+// One account holds many sites, and a visitor id is a hash that says nothing
+// about which. Group them wrongly and a site's visitors never find their own
+// fold state: every visit silently splits in two, and nothing anywhere says so.
+func TestTheFoldKeepsEachSitesVisitorsApart(t *testing.T) {
+	ctx := context.Background()
+	db := planDatabase(t)
+
+	const at = 1_000_000
+
+	// The same visitor id on two sites, which is what a hash collision across
+	// sites looks like, plus one visitor only the second site has.
+	writeStoredSessionOn(t, ctx, db, 1, 7, at)
+	writeStoredSessionOn(t, ctx, db, 2, 7, at)
+	writeStoredSessionOn(t, ctx, db, 2, 8, at)
+
+	ranges := map[sessionKey]durableFoldRange{
+		{siteID: 1, userID: 7}: {first: at, last: at},
+		{siteID: 2, userID: 7}: {first: at, last: at},
+		{siteID: 2, userID: 8}: {first: at, last: at},
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	cache := newDurableSessionCache()
+	if err := loadDurableFold(ctx, tx, cache, 1, ranges); err != nil {
+		t.Fatal(err)
+	}
+
+	for key := range ranges {
+		sessions := cache.bucket.sessions[key]
+
+		if len(sessions) != 1 {
+			t.Fatalf("site %d visitor %d got %d sessions, want their own one",
+				key.siteID, key.userID, len(sessions))
+		}
+
+		if sessions[0].SiteID != key.siteID {
+			t.Errorf("site %d visitor %d was handed site %d's session",
+				key.siteID, key.userID, sessions[0].SiteID)
+		}
+	}
+}
+
+// writeStoredSession gives one visitor on site 1 one session at one moment.
 func writeStoredSession(t *testing.T, ctx context.Context, db *sql.DB, userID, at int64) {
 	t.Helper()
 
-	payload, err := json.Marshal(Session{ID: at + userID, SiteID: 1, UserID: userID, StartedAt: at, LastSeenAt: at})
+	writeStoredSessionOn(t, ctx, db, 1, userID, at)
+}
+
+// writeStoredSessionOn is the same for any site, so a test can prove one site's
+// visitors are never handed another's.
+func writeStoredSessionOn(t *testing.T, ctx context.Context, db *sql.DB, siteID, userID, at int64) {
+	t.Helper()
+
+	payload, err := json.Marshal(Session{
+		ID: at*100 + siteID*10 + userID, SiteID: siteID, UserID: userID, StartedAt: at, LastSeenAt: at,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO ingest_session_state (site_id, user_id, started_at, last_seen_at, payload)
-		VALUES (1, ?, ?, ?, ?)`, userID, at, at, payload); err != nil {
+		VALUES (?, ?, ?, ?, ?)`, siteID, userID, at, at, payload); err != nil {
 		t.Fatal(err)
 	}
 }
