@@ -9,6 +9,7 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -93,19 +94,40 @@ type Writer struct {
 	// with identifiers in its URLs.
 	Paths PathCleaner
 
-	// Failpoint injects deterministic rollback boundaries in tests. Production
-	// leaves it nil.
-	Failpoint func(stage string) error
+	// Failpoint injects deterministic rollback boundaries in tests. It is given
+	// the account being written as well as the stage, so a test can fail one
+	// account of a batch and watch the rest commit. Production leaves it nil.
+	Failpoint func(accountID int64, stage string) error
 
-	// mu guards the per-account state below. Writes to one account are
-	// serialised anyway — SQLite allows one writer — so a per-account lock
-	// costs nothing and makes the read-then-fold sequence atomic.
+	// Concurrency is how many accounts in one batch are written at once. Zero
+	// takes DefaultConcurrency.
+	//
+	// It is bounded rather than one goroutine per account because a batch can
+	// span hundreds of accounts, and each one in flight is an open database, a
+	// transaction and a handful of file descriptors.
+	Concurrency int
+
+	// mu guards the per-account state below. One account's writes are already
+	// serialised by its single writer connection, so this lock is what makes
+	// the wait a Go one rather than a queue for that connection.
 	mu    sync.Mutex
 	locks map[int64]*accountLock
 }
 
-// accountLock serialises one account's writes inside a process. SQLite provides
-// the corresponding arbitration between independent serving processes.
+// DefaultConcurrency is how many accounts a batch writes at once when nothing
+// says otherwise.
+//
+// The wait it overlaps is a disk sync rather than work, so the useful number is
+// not the core count: with synchronous=FULL every account's commit waits for
+// the platter, and those waits belong to different files with different locks.
+//
+// Four is a starting point rather than a measured optimum — internal/bench
+// records why it has not been measured. Options.Concurrency moves it without a
+// rebuild.
+const DefaultConcurrency = 4
+
+// accountLock holds one account's writers in a queue of their own. SQLite
+// provides the arbitration between independent serving processes.
 type accountLock struct {
 	mu sync.Mutex
 }
@@ -131,11 +153,12 @@ func (w *Writer) clock() time.Time {
 
 // fail invokes a deterministic transaction boundary when a test configured
 // one.
-func (w *Writer) fail(stage string) error {
+func (w *Writer) fail(accountID int64, stage string) error {
 	if w.Failpoint == nil {
 		return nil
 	}
-	if err := w.Failpoint(stage); err != nil {
+
+	if err := w.Failpoint(accountID, stage); err != nil {
 		return fmt.Errorf("write batch: failpoint %s: %w", stage, err)
 	}
 
@@ -211,24 +234,84 @@ func (w *Writer) Write(ctx context.Context, batch []Event) ([]uuid.UUID, error) 
 		byAccount[batch[i].AccountID] = append(byAccount[batch[i].AccountID], batch[i])
 	}
 
-	var (
-		committed []uuid.UUID
-		firstErr  error
-	)
-
-	for accountID, events := range byAccount {
-		ids, err := w.writeAccountDurable(ctx, accountID, events)
-		committed = append(committed, ids...)
-
-		// One account failing must not stop the others. Their events are
-		// unrelated and are already in memory; abandoning them would turn one
-		// full disk into data loss across every customer on the box.
-		if err != nil && firstErr == nil {
-			firstErr = err
-		}
+	// Different accounts are different files with different locks, so their
+	// commits overlap. Each one waits for a disk sync, and those waits are what
+	// this pool exists to overlap.
+	//
+	// Writes to one account stay serialised, which is the account's own lock and
+	// SQLite's single writer connection.
+	work := make(chan int64, len(byAccount))
+	for accountID := range byAccount {
+		work <- accountID
 	}
 
-	return committed, firstErr
+	close(work)
+
+	var (
+		mu        sync.Mutex
+		committed []uuid.UUID
+		failures  []error
+		wg        sync.WaitGroup
+	)
+
+	for range min(w.concurrency(), len(byAccount)) {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for accountID := range work {
+				ids, err := w.writeAccount(ctx, accountID, byAccount[accountID])
+
+				mu.Lock()
+				committed = append(committed, ids...)
+
+				// One account failing must not stop the others. Their events are
+				// unrelated and are already in memory; abandoning them would turn
+				// one full disk into data loss across every customer on the box.
+				//
+				// Every failure is kept, not only the first: a batch where four
+				// accounts failed for four reasons is four things somebody has to
+				// know about.
+				failures = append(failures, err)
+				mu.Unlock()
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// The same batch returns the same list every time, whatever order the
+	// accounts finished in.
+	slices.SortFunc(committed, func(a, b uuid.UUID) int { return bytes.Compare(a[:], b[:]) })
+
+	return committed, errors.Join(failures...)
+}
+
+// writeAccount applies one account's events and turns a panic into that
+// account's error.
+//
+// A worker is arbitrary code over a customer's data, and it now runs on a
+// goroutine of its own rather than on the caller's. Without this, one malformed
+// row takes the whole process down — every customer's ingestion on a hosted
+// shard, and the dashboard as well in the single-process deployment.
+func (w *Writer) writeAccount(ctx context.Context, accountID int64, events []Event) (committed []uuid.UUID, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("write batch: account %d panicked: %v", accountID, recovered)
+		}
+	}()
+
+	return w.writeAccountDurable(ctx, accountID, events)
+}
+
+// concurrency is how many accounts this writer applies at once.
+func (w *Writer) concurrency() int {
+	if w.Concurrency > 0 {
+		return w.Concurrency
+	}
+
+	return DefaultConcurrency
 }
 
 // writeAccountDurable applies one account batch with SQLite as the authority
@@ -270,7 +353,7 @@ func (w *Writer) writeAccountDurable(ctx context.Context, accountID int64, event
 	if err != nil {
 		return nil, err
 	}
-	if err := w.fail(WriterStageAfterClaim); err != nil {
+	if err := w.fail(accountID, WriterStageAfterClaim); err != nil {
 		return nil, err
 	}
 
@@ -278,7 +361,7 @@ func (w *Writer) writeAccountDurable(ctx context.Context, accountID int64, event
 	if err := persistHostnameRejections(ctx, tx, shielded, w.clock()); err != nil {
 		return nil, err
 	}
-	if err := w.fail(WriterStageAfterRejection); err != nil {
+	if err := w.fail(accountID, WriterStageAfterRejection); err != nil {
 		return nil, err
 	}
 	w.cleanPaths(fresh)
@@ -347,7 +430,7 @@ func (w *Writer) writeAccountDurable(ctx context.Context, accountID int64, event
 	if err := persistDurableFoldState(ctx, tx, dirty, merges, adopted); err != nil {
 		return committed, err
 	}
-	if err := w.commitDurable(ctx, tx, rows, dirty, merges, ids); err != nil {
+	if err := w.commitDurable(ctx, accountID, tx, rows, dirty, merges, ids); err != nil {
 		return committed, err
 	}
 	cacheTx.Commit()
@@ -1119,7 +1202,7 @@ func claimEventID(ctx context.Context, tx *sql.Tx, id uuid.UUID, now int64) (boo
 
 // commitDurable writes facts and fold repairs through the transaction that
 // already owns the UUID receipts.
-func (w *Writer) commitDurable(ctx context.Context, tx *sql.Tx, rows []eventRow, dirty []*Session, merges []Merge, ids *dimensionIDs) error {
+func (w *Writer) commitDurable(ctx context.Context, accountID int64, tx *sql.Tx, rows []eventRow, dirty []*Session, merges []Merge, ids *dimensionIDs) error {
 	var sessions map[int64]*Session
 	if len(merges) > 0 {
 		sessions = sessionsByID(dirty)
@@ -1162,7 +1245,7 @@ func (w *Writer) commitDurable(ctx context.Context, tx *sql.Tx, rows []eventRow,
 		}
 	}
 
-	if err := w.fail(WriterStageBeforeCommit); err != nil {
+	if err := w.fail(accountID, WriterStageBeforeCommit); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

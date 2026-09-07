@@ -36,7 +36,11 @@ const (
 	// open. Each is about a third of a megabyte and up to fifteen file
 	// descriptors, and a normal one re-opens in about two milliseconds, so a
 	// miss is survivable and the cap can be this tight.
-	DefaultMaxOpenAccounts  = 500
+	DefaultMaxOpenAccounts = 500
+
+	// DefaultWriteConcurrency is ingest.DefaultConcurrency, repeated here so the
+	// configuration layer does not depend on the ingest package.
+	DefaultWriteConcurrency = 4
 	DefaultAppBaseURL       = "http://localhost:19300"
 	DefaultAppTransport     = TransportDirect
 	DefaultAppMailTransport = MailTransportLog
@@ -163,6 +167,12 @@ type App struct {
 	// MaxOpenAccounts bounds the account databases one process holds open. See
 	// accounts.DefaultMaxOpen for what one costs.
 	MaxOpenAccounts int
+
+	// WriteConcurrency bounds how many accounts in one batch are written at
+	// once. What it overlaps is a disk sync rather than work, so the useful
+	// number is not the core count, and the shipped default has not been
+	// measured — see internal/bench.
+	WriteConcurrency int
 
 	// MailFrom is the envelope sender on every message the product sends. A
 	// relay rejects a From it does not own, and that rejection is the most
@@ -621,6 +631,11 @@ func LoadFrom(l *Loader) (*Config, error) {
 		return nil, err
 	}
 
+	writeConcurrency, err := l.Int("FEASIBLE_APP_WRITE_CONCURRENCY", DefaultWriteConcurrency)
+	if err != nil {
+		return nil, err
+	}
+
 	if maxOpenAccounts < 1 {
 		return nil, fmt.Errorf("FEASIBLE_APP_MAX_OPEN_ACCOUNTS must be at least 1, not %d", maxOpenAccounts)
 	}
@@ -664,21 +679,22 @@ func LoadFrom(l *Loader) (*Config, error) {
 			IngestSalt:    l.String("FEASIBLE_INGEST_SALT", DefaultIngestSalt),
 		},
 		App: App{
-			Listen:          l.String("FEASIBLE_APP_LISTEN", DefaultAppListen),
-			DataDir:         l.String("FEASIBLE_APP_DATA_DIR", DefaultAppDataDir),
-			MaxOpenAccounts: maxOpenAccounts,
-			BaseURL:         strings.TrimRight(l.String("FEASIBLE_APP_BASE_URL", DefaultAppBaseURL), "/"),
-			Transport:       strings.ToLower(l.String("FEASIBLE_APP_TRANSPORT", DefaultAppTransport)),
-			MailTransport:   strings.ToLower(l.String("FEASIBLE_APP_MAIL_TRANSPORT", DefaultAppMailTransport)),
-			Hosted:          hosted,
-			ShardID:         shardID,
-			MailFrom:        l.String("FEASIBLE_APP_MAIL_FROM", DefaultAppMailFrom),
-			SalesEmail:      l.String("FEASIBLE_APP_SALES_EMAIL", DefaultAppSalesEmail),
-			SlackWebhookURL: strings.TrimSpace(l.String("FEASIBLE_SLACK_WEBHOOK_URL", "")),
-			OperatorEmail:   strings.TrimSpace(l.String("FEASIBLE_OPERATOR_EMAIL", "")),
-			SecretKey:       strings.TrimSpace(l.String("FEASIBLE_APP_SECRET_KEY", "")),
-			Worker:          worker,
-			Gravatar:        gravatar,
+			Listen:           l.String("FEASIBLE_APP_LISTEN", DefaultAppListen),
+			DataDir:          l.String("FEASIBLE_APP_DATA_DIR", DefaultAppDataDir),
+			MaxOpenAccounts:  maxOpenAccounts,
+			WriteConcurrency: writeConcurrency,
+			BaseURL:          strings.TrimRight(l.String("FEASIBLE_APP_BASE_URL", DefaultAppBaseURL), "/"),
+			Transport:        strings.ToLower(l.String("FEASIBLE_APP_TRANSPORT", DefaultAppTransport)),
+			MailTransport:    strings.ToLower(l.String("FEASIBLE_APP_MAIL_TRANSPORT", DefaultAppMailTransport)),
+			Hosted:           hosted,
+			ShardID:          shardID,
+			MailFrom:         l.String("FEASIBLE_APP_MAIL_FROM", DefaultAppMailFrom),
+			SalesEmail:       l.String("FEASIBLE_APP_SALES_EMAIL", DefaultAppSalesEmail),
+			SlackWebhookURL:  strings.TrimSpace(l.String("FEASIBLE_SLACK_WEBHOOK_URL", "")),
+			OperatorEmail:    strings.TrimSpace(l.String("FEASIBLE_OPERATOR_EMAIL", "")),
+			SecretKey:        strings.TrimSpace(l.String("FEASIBLE_APP_SECRET_KEY", "")),
+			Worker:           worker,
+			Gravatar:         gravatar,
 			SMTP: SMTP{
 				Host:     strings.TrimSpace(l.String("FEASIBLE_SMTP_HOST", "")),
 				Port:     smtpPort,

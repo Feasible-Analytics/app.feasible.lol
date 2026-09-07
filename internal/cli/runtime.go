@@ -97,6 +97,7 @@ func buildIngest(ctx context.Context, e *env, dataDir string) (*ingest.Service, 
 		DataDir:        dataDir,
 		TrustedProxies: e.cfg.Ingest.TrustedProxies,
 		IngestSalt:     e.cfg.Shared.IngestSalt,
+		Concurrency:    e.cfg.App.WriteConcurrency,
 		Log:            e.log,
 	})
 	if err != nil {

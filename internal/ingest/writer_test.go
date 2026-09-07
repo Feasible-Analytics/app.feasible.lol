@@ -89,7 +89,7 @@ func TestWriterWriteAndBeginDeletionShareOneAccountFence(t *testing.T) {
 		}
 	}()
 	var once sync.Once
-	writer.Failpoint = func(stage string) error {
+	writer.Failpoint = func(_ int64, stage string) error {
 		if stage == WriterStageBeforeCommit {
 			once.Do(func() { close(entered) })
 			<-resume
@@ -560,7 +560,7 @@ func TestHostnameRejectionClaimAndFactShareEveryKillBoundary(t *testing.T) {
 			writer, manager := newWriter(t)
 			writer.Shield = rejectHostnameShield{}
 			writer.Counters = NewCounters()
-			writer.Failpoint = func(current string) error {
+			writer.Failpoint = func(_ int64, current string) error {
 				if current == stage {
 					return errors.New("simulated process kill")
 				}
@@ -2097,5 +2097,364 @@ func writeLegacySession(t *testing.T, ctx context.Context, db *sql.DB, userID, a
 		INSERT INTO sessions (id, site_id, user_id, started_at, last_seen_at, pageviews, events)
 		VALUES (?, 1, ?, ?, ?, 1, 1)`, at*10+userID, userID, at, at); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestTheAccountPoolHoldsExactlyItsBound is the point of the pool, and its
+// limit, in one assertion.
+//
+// Different accounts are different files with different locks whose commits
+// each wait for a disk sync, so those waits should overlap. But a batch can
+// span hundreds of accounts, and each one in flight is an open database, a
+// transaction and a handful of descriptors — so the overlap has to stop
+// somewhere.
+func TestTheAccountPoolHoldsExactlyItsBound(t *testing.T) {
+	for _, bound := range []int{1, 2, 4} {
+		t.Run(fmt.Sprintf("%d at once", bound), func(t *testing.T) {
+			ctx := context.Background()
+			writer, _ := newWriter(t)
+			writer.Concurrency = bound
+
+			const accounts = 8
+
+			// Creating and migrating eight databases costs far more than the
+			// window below, so it happens first. Otherwise the test measures
+			// SQLite start-up rather than the pool.
+			for account := int64(1); account <= accounts; account++ {
+				warm := writerEvent(account, EventPageview, fixtureStart.Unix(), "/warm")
+				if _, err := writer.Write(ctx, []Event{warm}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var (
+				mu      sync.Mutex
+				inside  int
+				highest int
+				open    sync.Once
+			)
+
+			// Everyone waits until the pool is full, so the accounts a pool is
+			// willing to run at once are inside together and counted. The extra
+			// hold after the release catches a pool that is wider than it should
+			// be: those arrivals land while the first ones are still inside.
+			full := make(chan struct{})
+
+			giveUp := make(chan struct{})
+			time.AfterFunc(20*time.Second, func() { close(giveUp) })
+
+			writer.Failpoint = func(_ int64, stage string) error {
+				if stage != WriterStageBeforeCommit {
+					return nil
+				}
+
+				mu.Lock()
+				inside++
+				highest = max(highest, inside)
+				reached := inside
+				mu.Unlock()
+
+				if reached >= bound {
+					open.Do(func() { close(full) })
+				}
+
+				select {
+				case <-full:
+				case <-giveUp:
+					// One deadline for the whole batch, not one per account: a
+					// serial regression would otherwise wait out eight of them
+					// and report as a test timeout rather than as itself.
+				}
+
+				time.Sleep(50 * time.Millisecond)
+
+				mu.Lock()
+				inside--
+				mu.Unlock()
+
+				return nil
+			}
+
+			batch := make([]Event, 0, accounts)
+			for account := int64(1); account <= accounts; account++ {
+				batch = append(batch, writerEvent(account, EventPageview, fixtureStart.Unix(), "/measured"))
+			}
+
+			if _, err := writer.Write(ctx, batch); err != nil {
+				t.Fatal(err)
+			}
+
+			if highest != bound {
+				t.Errorf("%d accounts were in flight at once, want exactly %d", highest, bound)
+			}
+		})
+	}
+}
+
+// TestConcurrentBatchesForOneAccountStillFoldSerially is the invariant the pool
+// must not touch.
+//
+// Two batches for the same visitor, written at the same time, have to produce
+// the one visit they would have produced one after another. Session
+// accumulation is one of the two things this project says must be byte-exact:
+// get it wrong and every number drifts with no way back.
+func TestConcurrentBatchesForOneAccountStillFoldSerially(t *testing.T) {
+	ctx := context.Background()
+
+	const pageviews = 20
+
+	serial := writeVisitorPageviews(t, ctx, pageviews, false)
+	concurrent := writeVisitorPageviews(t, ctx, pageviews, true)
+
+	if concurrent.sessions != serial.sessions {
+		t.Errorf("concurrent writing produced %d sessions, want the %d serial writing does",
+			concurrent.sessions, serial.sessions)
+	}
+
+	if concurrent.pageviews != serial.pageviews {
+		t.Errorf("concurrent writing folded %d pageviews into the visit, want the %d serial writing does",
+			concurrent.pageviews, serial.pageviews)
+	}
+
+	if concurrent.pageviews != pageviews {
+		t.Errorf("the visit holds %d pageviews, want all %d", concurrent.pageviews, pageviews)
+	}
+}
+
+// TestASessionIDIsNeverHandedOutTwice is what stops two accounts, or two
+// batches, writing over each other's visits.
+//
+// The allocator is durable and per account, so this should already hold — but
+// "should" is the reason to assert it once the caller became concurrent.
+func TestASessionIDIsNeverHandedOutTwice(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+
+	const (
+		accounts = 4
+		visitors = 25
+	)
+
+	var wg sync.WaitGroup
+
+	for account := int64(1); account <= accounts; account++ {
+		for visitor := range visitors {
+			wg.Add(1)
+
+			go func() {
+				defer wg.Done()
+
+				// The uuid is derived from the path, so each visitor needs one
+				// of their own or the batch deduplicates itself.
+				event := writerEvent(account, EventPageview, fixtureStart.Unix(),
+					fmt.Sprintf("/visitor-%d", visitor))
+				event.UserID = testUser + int64(visitor)
+
+				if _, err := writer.Write(ctx, []Event{event}); err != nil {
+					t.Error(err)
+				}
+			}()
+		}
+	}
+
+	wg.Wait()
+
+	for account := int64(1); account <= accounts; account++ {
+		rows := countRows(t, manager, account, "SELECT COUNT(*) FROM sessions")
+		distinct := countRows(t, manager, account, "SELECT COUNT(DISTINCT id) FROM sessions")
+
+		if rows != distinct {
+			t.Errorf("account %d has %d sessions under %d ids, so an id was reused", account, rows, distinct)
+		}
+
+		if rows != visitors {
+			t.Errorf("account %d has %d sessions, want one per visitor (%d)", account, rows, visitors)
+		}
+	}
+}
+
+// visitShape is what one visitor's traffic folded into.
+type visitShape struct {
+	sessions  int64
+	pageviews int64
+}
+
+// writeVisitorPageviews sends one visitor's pageviews as single-event batches,
+// either one after another or all at once, and reports the visit they made.
+func writeVisitorPageviews(t *testing.T, ctx context.Context, count int, together bool) visitShape {
+	t.Helper()
+
+	writer, manager := newWriter(t)
+
+	send := func(i int) {
+		event := writerEvent(1, EventPageview, fixtureStart.Unix()+int64(i), fmt.Sprintf("/page-%d", i))
+
+		if _, err := writer.Write(ctx, []Event{event}); err != nil {
+			t.Error(err)
+		}
+	}
+
+	if together {
+		var wg sync.WaitGroup
+
+		for i := range count {
+			wg.Add(1)
+
+			go func() {
+				defer wg.Done()
+				send(i)
+			}()
+		}
+
+		wg.Wait()
+	} else {
+		for i := range count {
+			send(i)
+		}
+	}
+
+	return visitShape{
+		sessions:  countRows(t, manager, 1, "SELECT COUNT(*) FROM sessions"),
+		pageviews: countRows(t, manager, 1, "SELECT COALESCE(SUM(pageviews), 0) FROM sessions"),
+	}
+}
+
+// TestOneAccountFailingLeavesTheOthersCommitted is the contract the serial loop
+// had and the pool has to keep.
+//
+// The events belong to different customers and are already in memory.
+// Abandoning them because one account could not be written would turn one full
+// disk into data loss across every customer on the box.
+func TestOneAccountFailingLeavesTheOthersCommitted(t *testing.T) {
+	for _, stage := range []string{WriterStageAfterClaim, WriterStageAfterRejection, WriterStageBeforeCommit} {
+		t.Run(stage, func(t *testing.T) {
+			ctx := context.Background()
+			writer, manager := newWriter(t)
+			writer.Concurrency = 4
+
+			const (
+				accounts = 6
+				doomed   = 3
+			)
+
+			writer.Failpoint = func(accountID int64, current string) error {
+				if accountID == doomed && current == stage {
+					return errors.New("simulated process kill")
+				}
+
+				return nil
+			}
+
+			batch := make([]Event, 0, accounts)
+			for account := int64(1); account <= accounts; account++ {
+				batch = append(batch, writerEvent(account, EventPageview, fixtureStart.Unix(), "/"))
+			}
+
+			committed, err := writer.Write(ctx, batch)
+			if err == nil {
+				t.Fatal("the failing account was reported as a clean batch")
+			}
+
+			if len(committed) != accounts-1 {
+				t.Errorf("%d uuids were named committed, want the %d that got through",
+					len(committed), accounts-1)
+			}
+
+			for account := int64(1); account <= accounts; account++ {
+				want := int64(1)
+				if account == doomed {
+					want = 0
+				}
+
+				if got := countRows(t, manager, account, "SELECT COUNT(*) FROM events"); got != want {
+					t.Errorf("account %d stored %d events, want %d", account, got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestEveryFailureInABatchIsReported is the other half of that contract. Four
+// accounts failing for four reasons is four things somebody has to know about,
+// and only the first of them used to survive.
+func TestEveryFailureInABatchIsReported(t *testing.T) {
+	ctx := context.Background()
+	writer, _ := newWriter(t)
+	writer.Concurrency = 4
+
+	writer.Failpoint = func(accountID int64, stage string) error {
+		if stage == WriterStageAfterClaim && accountID <= 3 {
+			return fmt.Errorf("account %d could not be written", accountID)
+		}
+
+		return nil
+	}
+
+	batch := make([]Event, 0, 5)
+	for account := int64(1); account <= 5; account++ {
+		batch = append(batch, writerEvent(account, EventPageview, fixtureStart.Unix(), "/"))
+	}
+
+	_, err := writer.Write(ctx, batch)
+	if err == nil {
+		t.Fatal("three failing accounts were reported as a clean batch")
+	}
+
+	for account := int64(1); account <= 3; account++ {
+		if want := fmt.Sprintf("account %d could not be written", account); !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not mention %q: %v", want, err)
+		}
+	}
+}
+
+// TestAPanicInOneAccountStaysInThatAccount is the blast radius the pool must
+// not widen.
+//
+// The write used to run on the caller's goroutine, so a panic was recovered by
+// net/http and cost one connection. On a goroutine of its own it would take the
+// process instead — every customer's ingestion on a hosted shard, and the
+// dashboard as well in the single-process deployment.
+func TestAPanicInOneAccountStaysInThatAccount(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+	writer.Concurrency = 4
+
+	const doomed = 2
+
+	writer.Failpoint = func(accountID int64, stage string) error {
+		if accountID == doomed && stage == WriterStageAfterClaim {
+			panic("a malformed row")
+		}
+
+		return nil
+	}
+
+	batch := make([]Event, 0, 4)
+	for account := int64(1); account <= 4; account++ {
+		batch = append(batch, writerEvent(account, EventPageview, fixtureStart.Unix(), "/"))
+	}
+
+	committed, err := writer.Write(ctx, batch)
+	if err == nil {
+		t.Fatal("a panicking account was reported as a clean batch")
+	}
+
+	if !strings.Contains(err.Error(), "a malformed row") {
+		t.Errorf("the error does not carry what panicked: %v", err)
+	}
+
+	if len(committed) != 3 {
+		t.Errorf("%d uuids were named committed, want the 3 accounts that did not panic", len(committed))
+	}
+
+	for account := int64(1); account <= 4; account++ {
+		want := int64(1)
+		if account == doomed {
+			want = 0
+		}
+
+		if got := countRows(t, manager, account, "SELECT COUNT(*) FROM events"); got != want {
+			t.Errorf("account %d stored %d events, want %d", account, got, want)
+		}
 	}
 }

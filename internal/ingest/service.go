@@ -44,6 +44,11 @@ type Options struct {
 	BufferSize    int
 	FlushInterval time.Duration
 
+	// Concurrency is how many accounts in one batch are written at once. Zero
+	// takes ingest.DefaultConcurrency, which is a starting point rather than a
+	// measured optimum — this is here so it can be moved without a rebuild.
+	Concurrency int
+
 	// Usage counts the billable volume an account stores. It is optional
 	// because a self-hosted install has no billing, and ingestion must never
 	// depend on billing existing.
@@ -134,6 +139,7 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 	writer := NewWriter(manager)
 	writer.Now = now
 	writer.Usage = opts.Usage
+	writer.Concurrency = opts.Concurrency
 
 	service := &Service{
 		Sites:    siteCache,
