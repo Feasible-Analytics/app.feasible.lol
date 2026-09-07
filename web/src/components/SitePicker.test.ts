@@ -69,9 +69,8 @@ function pickerMarkup(current: string): string {
 }
 
 test("the button says which site is selected, to a screen reader as well", () => {
-	// An aria-label replaces the button's own text, so a label of just "Site"
-	// leaves the one control that names the current dashboard announcing
-	// nothing about which one it is.
+	// An aria-label replaces the button's own text, so the label is the only
+	// thing that can name the current site to a screen reader.
 	const markup = pickerMarkup("stopoverpayingforanalytics.com");
 
 	assert.match(markup, /aria-label="[^"]*stopoverpayingforanalytics\.com[^"]*"/);
