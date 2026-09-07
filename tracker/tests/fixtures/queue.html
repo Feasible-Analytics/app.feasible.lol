@@ -11,20 +11,20 @@
 	<head>
 		<meta charset="utf-8" />
 		<title>Queue — tracker fixture</title>
+		<!--
+			Byte for byte the stub our snippet ships, on one line and in its own
+			tag exactly as a customer pastes it. A Go test compares the two, so
+			this fixture proves what a real page does rather than what a
+			hand-written one could.
+		-->
+		<script>window.feasible=window.feasible||function(){(window.feasible.q=window.feasible.q||[]).push(arguments)};</script>
 		<script>
 			// Merged rather than assigned, so a test can inject its own switches
 			// through addInitScript and still have this page's default apply.
 			window.__feasible = Object.assign({ track: 1 }, window.__feasible);
 
-			// The stub a snippet defines. Without it an event fired by a
-			// framework that mounts before a deferred script runs is a
-			// ReferenceError, and every one of those calls is lost.
-			window.feasible =
-				window.feasible ||
-				function () {
-					(window.feasible.q = window.feasible.q || []).push(arguments);
-				};
-
+			// The second name is not in the shipped snippet: a site adding
+			// data-alias is editing the snippet already and stubs it itself.
 			window.legacy =
 				window.legacy ||
 				function () {

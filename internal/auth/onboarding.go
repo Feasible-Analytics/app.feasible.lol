@@ -41,6 +41,23 @@ const FirstEventPollInterval = 3 * time.Second
 // what the waiting screen tells the user while remote snapshots refresh.
 const RoutingDelay = 15 * time.Second
 
+// QueueStub is the inline tag that goes above the script tag.
+//
+// The bundle is deferred, so it runs after the document has parsed. Anything
+// that calls us before then — an inline script in the body, a module entry
+// point placed above our tag, a tag manager emitting its own call first — would
+// be a ReferenceError in somebody else's page and an event we never hear about.
+// The stub takes those calls and the bundle replays them.
+//
+// The assignment is guarded so a second copy of the snippet keeps the queue it
+// already has, and so a tool that already owns this name is left alone.
+//
+// Only the default name is stubbed. A site using data-alias is editing the
+// snippet by hand and can stub the second name the same way; generating a
+// conditional second stub would put a setting nobody set into everybody's HTML.
+const QueueStub = `<script>window.feasible=window.feasible||function(){` +
+	`(window.feasible.q=window.feasible.q||[]).push(arguments)};</script>`
+
 // Snippet renders the script tag for one site.
 //
 // The per-site path is used rather than the shared one. Filter lists name files
@@ -51,11 +68,10 @@ func Snippet(baseURL string, keyer *tracker.Keyer, site *Site) string {
 	base := strings.TrimRight(baseURL, "/")
 
 	if keyer == nil {
-		return fmt.Sprintf(`<script defer data-domain="%s" src="%s%s"></script>`,
-			site.Domain, base, tracker.PathLegacy)
+		return SnippetLegacy(baseURL, site)
 	}
 
-	return fmt.Sprintf(`<script defer src="%s%s"></script>`, base, keyer.Path(site.Domain))
+	return fmt.Sprintf("%s\n"+`<script defer src="%s%s"></script>`, QueueStub, base, keyer.Path(site.Domain))
 }
 
 // SnippetLegacy renders the attribute-carrying variant.
@@ -65,8 +81,8 @@ func Snippet(baseURL string, keyer *tracker.Keyer, site *Site) string {
 // hostname and nothing else. It is also what a tag manager needs, where the
 // script tag is pasted into a field that may strip an opaque path.
 func SnippetLegacy(baseURL string, site *Site) string {
-	return fmt.Sprintf(`<script defer data-domain="%s" src="%s%s"></script>`,
-		site.Domain, strings.TrimRight(baseURL, "/"), tracker.PathLegacy)
+	return fmt.Sprintf("%s\n"+`<script defer data-domain="%s" src="%s%s"></script>`,
+		QueueStub, site.Domain, strings.TrimRight(baseURL, "/"), tracker.PathLegacy)
 }
 
 // InstallPlatform is one set of paste-this-here instructions.
@@ -124,7 +140,7 @@ func InstallPlatforms() []InstallPlatform {
 			Name: "Nuxt",
 			Steps: []string{
 				"Open nuxt.config.ts.",
-				"Add the script under app.head.script, with defer: true and the src from the snippet.",
+				"Add both parts under app.head: the first line as an inline script, and the second under app.head.script with defer: true and the src from the snippet.",
 				"Redeploy and open the site.",
 			},
 			Note: "Nuxt renders the head on the server, so the tag is in the initial HTML — do not also add it with useHead on a page, or every pageview is counted twice.",

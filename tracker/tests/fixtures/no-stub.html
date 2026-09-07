@@ -1,0 +1,30 @@
+<!--
+  no-stub.html
+  The one-line snippet, exactly as it shipped before the stub existed.
+
+  Created: 2026-09-07
+  Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+
+  Nobody has to re-paste anything, so a page carrying only the old form has to
+  keep working: a pageview, and a custom event fired after load.
+-->
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>No stub — tracker fixture</title>
+		<script>
+			// Merged rather than assigned, so a test can inject its own switches
+			// through addInitScript and still have this page's default apply.
+			window.__feasible = Object.assign({ track: 1 }, window.__feasible);
+		</script>
+		<script defer data-domain="fixture.test" data-capture-on-localhost="1" src="/js/script.js"></script>
+	</head>
+	<body>
+		<h1>No stub fixture</h1>
+		<button id="later" type="button">fire after load</button>
+		<script>
+			document.getElementById("later").onclick = () => window.feasible("Fired Later");
+		</script>
+	</body>
+</html>

@@ -68,6 +68,8 @@ function declare(given) {
 // The stub exists so that `feasible('Signup')` in an inline script, or in a
 // framework that mounts before a deferred script runs, is not a ReferenceError
 // and is not silently lost. Draining it here is what makes those calls arrive.
+// The shipped snippet stubs the default name only; a site that adds an alias is
+// editing the snippet already and stubs the second name itself.
 //
 // Only `feasible` and an explicit `data-alias` are claimed. Taking a global we
 // were not given would break whatever already owns it — another analytics tool

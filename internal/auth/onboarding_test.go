@@ -13,6 +13,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -270,5 +272,94 @@ func TestInstallationCheckCannotReachAPrivateAddress(t *testing.T) {
 		if result.StatusCode != 0 {
 			t.Fatalf("%s answered with status %d, so the dial was not refused", domain, result.StatusCode)
 		}
+	}
+}
+
+// TestBothSnippetsCarryTheQueueStub is the assertion that closes the gap
+// between the two halves of this feature.
+//
+// The bundle replays a queue at install time, and the end-to-end suite proves
+// the replay works — against a fixture that writes the stub itself. Nothing
+// tied that fixture to what we actually hand a customer, so the bundle drained
+// a queue our snippet never created and a call made before the deferred script
+// ran was a ReferenceError in somebody else's page.
+func TestBothSnippetsCarryTheQueueStub(t *testing.T) {
+	keyer := tracker.NewKeyer(make([]byte, tracker.SecretSize), nil)
+	site := &Site{Domain: "example.com"}
+
+	for name, snippet := range map[string]string{
+		"the per-site snippet":      Snippet("https://feasible.lol", keyer, site),
+		"the legacy snippet":        SnippetLegacy("https://feasible.lol", site),
+		"the snippet with no keyer": Snippet("https://feasible.lol", nil, site),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !strings.Contains(snippet, QueueStub) {
+				t.Fatalf("no queueing stub:\n%s", snippet)
+			}
+
+			// Before, or it is a stub for calls that have already thrown.
+			if strings.Index(snippet, QueueStub) > strings.Index(snippet, "<script defer") {
+				t.Errorf("the stub is after the script tag:\n%s", snippet)
+			}
+
+			// The queue the bundle reads by name.
+			if !strings.Contains(snippet, "window.feasible.q") {
+				t.Errorf("the stub does not fill the queue the bundle drains:\n%s", snippet)
+			}
+		})
+	}
+}
+
+// TestTheQueueStubDoesNotSeizeTheGlobal is what makes the snippet safe to paste
+// twice, and safe on a page where another tool already owns this name.
+//
+// An unguarded assignment would throw away a queue the first copy had already
+// filled, and would stop a tool that keeps its configuration on its own global
+// dead with no error anywhere.
+func TestTheQueueStubDoesNotSeizeTheGlobal(t *testing.T) {
+	if !strings.Contains(QueueStub, "window.feasible=window.feasible||") {
+		t.Errorf("the stub assigns unconditionally: %s", QueueStub)
+	}
+
+	if !strings.Contains(QueueStub, "window.feasible.q=window.feasible.q||") {
+		t.Errorf("the stub replaces the queue rather than appending to it: %s", QueueStub)
+	}
+}
+
+// TestTheFixtureStubIsTheOneWeShip ties the end-to-end suite to the generator.
+//
+// The JavaScript tests prove the bundle drains a queue; this proves the queue
+// they build is the one a customer's page actually creates. Whitespace is
+// ignored because the fixture is formatted and the snippet is one line.
+func TestTheFixtureStubIsTheOneWeShip(t *testing.T) {
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "tracker", "tests", "fixtures", "queue.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	squash := func(s string) string { return strings.Join(strings.Fields(s), "") }
+
+	if !strings.Contains(squash(string(fixture)), squash(QueueStub)) {
+		t.Error("the queue fixture writes a stub we do not ship, so the replay test proves nothing " +
+			"about what a customer's page does")
+	}
+}
+
+// TestVerifyIgnoresTheInlineStub checks the installation verifier still reports
+// a correct install once the snippet is two tags.
+//
+// The check looks for a script tag with a src on it. The stub has no src, so it
+// should be passed over — but "should be" is the assumption this test exists to
+// remove.
+func TestVerifyIgnoresTheInlineStub(t *testing.T) {
+	site := &Site{Domain: "example.com"}
+	page := "<html><head>" + SnippetLegacy("https://feasible.lol", site) + "</head><body></body></html>"
+
+	result := verifyAgainst(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, page)
+	}, site)
+
+	if result.Outcome != VerifyFound {
+		t.Fatalf("the verifier reported %q on a correctly installed page: %s", result.Outcome, result.Message)
 	}
 }

@@ -473,3 +473,40 @@ test("a property on the call overrides a declared one of the same name", async (
 
 	expect(named(state, "Custom Event")[0].p).toEqual({ where: "basic", plan: "pro" });
 });
+
+// Module scripts and deferred classic scripts run in document order, so a
+// framework entry point placed above the snippet executes before the bundle.
+// That is the ordering a customer often cannot control — a tag manager or a CMS
+// template decides it — and without the stub the call is an uncaught
+// ReferenceError in their page and an event we never hear about.
+test("a module above the snippet has its event delivered", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/module-first.html");
+	await settledCount(state, "Mounted Early", 1);
+
+	const [early] = named(state, "Mounted Early");
+
+	expect(early.p).toEqual({ from: "module" });
+
+	// Still after the pageview it belongs to. That ordering is the reason the
+	// queue is drained last and it must not change.
+	expect(state.events.findIndex((e) => e.n === "pageview")).toBeLessThan(
+		state.events.findIndex((e) => e.n === "Mounted Early"),
+	);
+});
+
+// Nobody has to re-paste anything, so the old one-line snippet keeps working
+// exactly as it did. The only thing it does not get is the safety net.
+test("a page with the old one-line snippet still tracks", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/no-stub.html");
+	await settledCount(state, "pageview", 1);
+
+	await page.click("#later");
+	await settledCount(state, "Fired Later", 1);
+
+	expect(named(state, "pageview")).toHaveLength(1);
+	expect(named(state, "Fired Later")).toHaveLength(1);
+});
