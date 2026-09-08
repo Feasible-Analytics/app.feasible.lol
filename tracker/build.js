@@ -33,14 +33,15 @@ const BUNDLES = [
 		entry: join(here, "src", "index.js"),
 		out: join(here, "dist", "feasible.js"),
 		embedded: join(here, "..", "internal", "tracker", "assets", "feasible.js"),
-		// 3.5 KiB. The ceiling moves only when something is bought with it, and
+		// 3.75 KiB. The ceiling moves only when something is bought with it, and
 		// it is written as a multiple of 256 so raising it is always a visible
-		// decision rather than a number nudged to fit. This step bought the
-		// viewport width every screen-size report needs and the automation
-		// signals that catch a scraper the address list cannot see. Keep it
+		// decision rather than a number nudged to fit. It buys the viewport
+		// width every screen-size report needs, the automation signals that
+		// catch a scraper the address list cannot see, and telling a filter
+		// rewritten into the address apart from a real navigation. Keep it
 		// hard otherwise: a script that grows whenever it is convenient ends up
 		// costing a customer their Core Web Vitals score.
-		budget: 14 * 256,
+		budget: 15 * 256,
 		format: "iife",
 		external: ["./vitals.js"],
 	},

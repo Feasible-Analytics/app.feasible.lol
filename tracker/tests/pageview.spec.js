@@ -176,6 +176,28 @@ test("a query-string-only navigation is counted", async ({ page }) => {
 	expect(pageviews[1].u).toContain("?page=2");
 });
 
+// A page that stores a filter, a sort or a selected tab in the query string
+// rewrites the address on every change, and reaches replaceState to do it.
+test("a replaceState that only changes the query string is not a pageview", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/spa.html");
+	await settledCount(state, "pageview", 1);
+
+	await page.click("#replace-query");
+	await page.waitForTimeout(400);
+
+	expect(named(state, "pageview")).toHaveLength(1);
+
+	// The next real navigation still counts, and reports the page it came
+	// from rather than the address the filter left behind.
+	await page.click("#push");
+	const pageviews = await settledCount(state, "pageview", 2);
+
+	expect(pageviews[1].u).toContain("/spa.html/one");
+	expect(pageviews[1].r).not.toContain("filter=open");
+});
+
 // Routers routinely call pushState and then replaceState in the same tick.
 // Firing synchronously reports the intermediate URL and the previous page's
 // title; deduplicating on the resulting URL collapses the pair into the one
