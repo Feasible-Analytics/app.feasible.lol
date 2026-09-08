@@ -41,6 +41,14 @@ const (
 	TwoFactorAttempts = 5
 	TwoFactorWindow   = time.Minute
 
+	// SignupEmails and SignupEmailWindow bound how many verification emails the
+	// whole installation sends in one window, counted across every source and
+	// every address. It is the backstop under the human check: a script that
+	// paces itself under the per-source limit still cannot turn our sending
+	// domain into somebody's mailbomb, because the ceiling is not per source.
+	SignupEmails      = 20
+	SignupEmailWindow = time.Hour
+
 	// VerifyInstallAttempts and VerifyInstallWindow bound the installation
 	// check per site. Each check connects to wherever the domain points, and
 	// a loop of them from a signed-in account is a port scanner carrying our
@@ -134,7 +142,7 @@ func (l *Limiter) sweep(now time.Time) {
 
 	// The longest window any caller uses, so a bucket is only dropped once no
 	// limit could still be counting it.
-	const longest = 30 * time.Minute
+	const longest = SignupEmailWindow
 
 	for key, b := range l.buckets {
 		if now.Sub(b.openedAt) > longest {
@@ -154,6 +162,14 @@ func (l *Limiter) sweep(now time.Time) {
 // number in it.
 func ClientKey(r *http.Request, trusted *clientip.TrustedProxies, label string) string {
 	return label + "|" + clientip.Key(r, trusted)
+}
+
+// GlobalKey builds a rate-limit key scoped to neither a source nor a subject:
+// it counts one action across the whole installation. A limit an attacker can
+// escape by changing address is no limit against somebody who has a thousand
+// addresses.
+func GlobalKey(label string) string {
+	return label + "|*"
 }
 
 // SubjectKey builds a rate-limit key from what is being attacked rather than

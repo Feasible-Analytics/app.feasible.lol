@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
@@ -113,6 +114,33 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	source := clientip.ResolveClientIP(r, h.Trusted).String()
+
+	// The human check runs before the account is written, because the thing
+	// being defended is the email this handler is about to send to an address
+	// somebody else chose.
+	if err := h.Turnstile.Verify(r.Context(), r.PostFormValue(TokenField), source); err != nil {
+		if !errors.Is(err, ErrTurnstileRejected) {
+			h.Log.Error("the human check could not be reached", "ip", source, "error", err)
+		} else {
+			h.Log.Warn("registration refused by the human check", "ip", source, "email", email)
+		}
+
+		fail(i18n.T(p.Lang, "auth.error.human_check_failed"))
+
+		return
+	}
+
+	// The installation-wide ceiling is checked before the write so that a
+	// refusal never leaves somebody holding an account they cannot verify.
+	if !h.Limiter.Allow(GlobalKey("signup-email"), SignupEmails, SignupEmailWindow) {
+		h.Log.Warn("the installation-wide sign-up email ceiling was reached",
+			"ip", source, "email", email, "ceiling", SignupEmails, "window", SignupEmailWindow)
+		fail(i18n.T(p.Lang, "auth.error.too_many_registrations"))
+
+		return
+	}
+
 	hash, err := HashPassword(password)
 	if err != nil {
 		h.fail(w, r, err)
@@ -129,7 +157,7 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.Log.Info("account created", "user", user.ID, "team", team.ID)
+	h.Log.Info("account created", "user", user.ID, "team", team.ID, "ip", source)
 
 	referral := h.captureReferral(w, r, user.ID)
 	h.announceSignup(user, team.ID, SignupMethodPassword, referral)

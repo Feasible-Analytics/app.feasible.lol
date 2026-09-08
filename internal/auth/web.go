@@ -72,6 +72,11 @@ type Handler struct {
 	Limiter     *Limiter
 	Keyer       *tracker.Keyer
 
+	// Turnstile is the human check in front of public account creation. An
+	// unconfigured value passes everything, which is what a self-hosted install
+	// with no Cloudflare account runs.
+	Turnstile *Turnstile
+
 	// Unsubscribe removes an address from a recurring email. Nil renders the
 	// page as "this address is not subscribed", which is what a self-hoster
 	// with no application key gets and is a true statement about a link that
@@ -169,6 +174,7 @@ type Options struct {
 	Mailer              *mail.Mailer
 	Sealer              *Sealer
 	Google              *Google
+	Turnstile           *Turnstile
 	Deleter             *Deleter
 	Destructive         *destructive.Service
 	Keyer               *tracker.Keyer
@@ -221,6 +227,7 @@ func NewHandler(opts Options) (*Handler, error) {
 		Mailer:              opts.Mailer,
 		Sealer:              opts.Sealer,
 		Google:              opts.Google,
+		Turnstile:           opts.Turnstile,
 		Deleter:             opts.Deleter,
 		Destructive:         opts.Destructive,
 		Limiter:             NewLimiter(),

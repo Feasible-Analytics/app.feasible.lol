@@ -160,6 +160,17 @@ func runServe(e *env, args []string) int {
 		e.log.Info(reason)
 	}
 
+	// Public sign-up with no human check is how our sending domain gets used to
+	// mailbomb strangers, so an installation that takes registrations without
+	// one is warned rather than merely told.
+	if reason := app.Turnstile.DisabledReason(); reason != "" {
+		if e.cfg.App.Hosted {
+			e.log.Warn(reason)
+		} else {
+			e.log.Info(reason)
+		}
+	}
+
 	// The public API, the MCP server and the webhook worker are built here and
 	// in every build. There is no plan check and no build tag in front of any
 	// of them, which is the difference between this and the product it competes
@@ -366,6 +377,7 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 		Mailer:      mailer,
 		Sealer:      sealer,
 		Google:      auth.NewGoogle(e.cfg.App.Google.ClientID, e.cfg.App.Google.ClientSecret, e.cfg.App.BaseURL),
+		Turnstile:   auth.NewTurnstile(e.cfg.App.Turnstile.SiteKey, e.cfg.App.Turnstile.SecretKey),
 		Deleter:     auth.NewDeleter(purger, e.log),
 		Destructive: &destructive.Service{DB: control, Accounts: manager},
 		Keyer:       tracker.NewKeyer(secret, service.Sites),

@@ -131,6 +131,11 @@ type page struct {
 	// finish, so it is not shown.
 	GoogleEnabled bool
 
+	// TurnstileSiteKey draws the human check on the sign-up form. It is public
+	// by design — the widget puts it in the markup — and empty when the check
+	// is not configured, which is how the template decides to omit it.
+	TurnstileSiteKey string
+
 	// RegistrationEnabled controls public sign-up links and hosted-only trial
 	// copy. An invitation remains usable when this is false, but strangers are
 	// directed to the installation operator instead of an account form.
@@ -157,6 +162,7 @@ func (h *Handler) newPage(r *http.Request, title, nav string) *page {
 		User:                userFrom(r),
 		CSRF:                h.csrfToken(r),
 		GoogleEnabled:       h.Google.Configured(),
+		TurnstileSiteKey:    h.turnstileSiteKey(),
 		RegistrationEnabled: !h.DisableRegistration,
 		CommerceEnabled:     !h.DisableCommerce,
 		BaseURL:             h.BaseURL,

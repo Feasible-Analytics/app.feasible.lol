@@ -50,6 +50,11 @@
       <p class="mt-1 text-xs text-muted">{{ n $.Lang "auth.register.password_help" .Data.MinLength }}</p>
     </div>
 
+    {{ if .TurnstileSiteKey }}
+      <div class="cf-turnstile" data-sitekey="{{ .TurnstileSiteKey }}" data-theme="auto" data-appearance="interaction-only"></div>
+      <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+    {{ end }}
+
     <button type="submit"
             class="w-full btn btn-primary">
       {{ t $.Lang "auth.register.submit" }}
