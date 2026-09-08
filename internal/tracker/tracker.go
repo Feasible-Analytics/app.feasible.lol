@@ -52,9 +52,9 @@ var Script []byte
 var VitalsScript []byte
 
 // BaseSizeBudget is the largest the primary tracker may be over the wire. The
-// 3.5 KiB ceiling is kept in sync with tracker/build.js by the generated-asset
+// 3.75 KiB ceiling is kept in sync with tracker/build.js by the generated-asset
 // test, and moves only when something is bought with it.
-const BaseSizeBudget = 14 * 256
+const BaseSizeBudget = 15 * 256
 
 // VitalsSizeBudget is the separate ceiling for the maintained optional Web
 // Vitals module. Sites that do not enable capture never request these bytes.

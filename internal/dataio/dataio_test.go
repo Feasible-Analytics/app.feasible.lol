@@ -1271,7 +1271,7 @@ func tableColumns(t *testing.T, db *sql.DB, table string) []string {
 		t.Fatal(err)
 	}
 
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var columns []string
 

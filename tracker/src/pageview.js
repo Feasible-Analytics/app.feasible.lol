@@ -28,6 +28,11 @@ function url() {
 	return cfg.h ? loc.href : loc.href.split("#")[0];
 }
 
+// QUERY matches a query string wherever one can sit: after the path, and after
+// a hash route. Removing it leaves the part of an address that says which page
+// the visitor is on.
+const QUERY = /\?[^#]*/;
+
 // hidden reports whether the page is being prepared rather than looked at.
 //
 // Chrome's Speculation Rules API is on by default in Cloudflare and in
@@ -133,9 +138,14 @@ export function pageview(opts) {
 // render that follows; firing synchronously reports the intermediate URL and
 // the previous page's title. Deduplicating on the resulting URL collapses that
 // pair into the one pageview the visitor actually experienced.
-function navigated() {
+function navigated(hard) {
 	setTimeout(() => {
 		if (url() === page.k) return;
+
+		// A replaceState that keeps the route and rewrites only the query
+		// string is a page storing its own state in the address — a filter, a
+		// sort, a selected tab — not a visitor arriving somewhere new.
+		if (!hard && url().replace(QUERY, "") === page.k.replace(QUERY, "")) return;
 
 		// The page being left is measured before the new one is announced, or
 		// the reading time lands on the wrong URL.
@@ -145,22 +155,23 @@ function navigated() {
 	}, 0);
 }
 
-// patch wraps one History method so that a route change announces itself. The
-// original is called first and its return value preserved, because a router
-// that gets a different answer from pushState than the platform gives is a
-// router that breaks.
+// patch wraps one History method so that a route change announces itself.
+// `hard` marks the method as a navigation in its own right, which pushState is
+// and replaceState is not. The original is called first and its return value
+// preserved, because a router that gets a different answer from pushState than
+// the platform gives is a router that breaks.
 //
 // `replaceState` is patched as well as `pushState`. Several routers implement
 // redirects and canonicalisation entirely through replaceState, and a tracker
 // that only watches pushState records the URL the visitor was redirected away
 // from.
-function patch(name) {
+function patch(name, hard) {
 	const original = history[name];
 	if (typeof original !== "function") return;
 
 	history[name] = function () {
 		const result = original.apply(this, arguments);
-		navigated();
+		navigated(hard);
 		return result;
 	};
 }
@@ -197,8 +208,12 @@ export function start(config) {
 	// quietly lost three unrelated features.
 	if (cfg.m) return;
 
-	patch("pushState");
+	patch("pushState", 1);
 	patch("replaceState");
+
+	// `navigated` reads any truthy first argument as a hard navigation, and a
+	// listener is handed an Event, so going back and changing the hash count
+	// without a wrapper of their own.
 	addEventListener("popstate", navigated);
 	addEventListener("hashchange", navigated);
 
