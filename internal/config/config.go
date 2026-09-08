@@ -218,7 +218,10 @@ type App struct {
 	SMTP   SMTP
 	AWS    AWS
 	Google GoogleOAuth
-	Stripe Stripe
+
+	// Turnstile is the human check in front of public account creation.
+	Turnstile Turnstile
+	Stripe    Stripe
 }
 
 // AWS is one account's credentials plus a region per service.
@@ -258,6 +261,24 @@ type SMTP struct {
 	Username string
 	Password string
 	StartTLS bool
+}
+
+// Turnstile is the Cloudflare credential pair that puts a human check in front
+// of the sign-up form.
+//
+// Both values being empty is a supported state: a self-hosted install has no
+// Cloudflare account, and the form falls back to the rate limit alone rather
+// than refusing to serve.
+type Turnstile struct {
+	SiteKey   string
+	SecretKey string
+}
+
+// Configured reports whether the check can run. The site key draws the widget
+// and the secret key verifies what it produced, so one without the other is a
+// form that collects a token nobody checks.
+func (t Turnstile) Configured() bool {
+	return t.SiteKey != "" && t.SecretKey != ""
 }
 
 // GoogleOAuth is the one OAuth application every Google feature shares: signing
@@ -712,6 +733,10 @@ func LoadFrom(l *Loader) (*Config, error) {
 				ClientID:     strings.TrimSpace(l.String("FEASIBLE_GOOGLE_CLIENT_ID", "")),
 				ClientSecret: strings.TrimSpace(l.String("FEASIBLE_GOOGLE_CLIENT_SECRET", "")),
 			},
+			Turnstile: Turnstile{
+				SiteKey:   strings.TrimSpace(l.String("FEASIBLE_TURNSTILE_SITE_KEY", "")),
+				SecretKey: strings.TrimSpace(l.String("FEASIBLE_TURNSTILE_SECRET_KEY", "")),
+			},
 			Stripe: Stripe{
 				SecretKey:      strings.TrimSpace(l.String("FEASIBLE_STRIPE_SECRET_KEY", "")),
 				PublishableKey: strings.TrimSpace(l.String("FEASIBLE_STRIPE_PUBLISHABLE_KEY", "")),
@@ -922,6 +947,12 @@ func (c *Config) Validate() error {
 	// cannot finish, which is worse than no button at all.
 	if (c.App.Google.ClientID == "") != (c.App.Google.ClientSecret == "") {
 		return fmt.Errorf("FEASIBLE_GOOGLE_CLIENT_ID and FEASIBLE_GOOGLE_CLIENT_SECRET must be set together or not at all")
+	}
+
+	// A site key with no secret key draws a widget whose answer is never
+	// checked, which reads as protection and is none.
+	if (c.App.Turnstile.SiteKey == "") != (c.App.Turnstile.SecretKey == "") {
+		return fmt.Errorf("FEASIBLE_TURNSTILE_SITE_KEY and FEASIBLE_TURNSTILE_SECRET_KEY must be set together or not at all")
 	}
 
 	base, err := url.Parse(c.App.BaseURL)
