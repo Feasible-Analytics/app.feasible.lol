@@ -584,11 +584,9 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	// every route on the segment comes from the one table a test can walk. A
 	// pattern registered beside that table rather than in it is a pattern
 	// nothing checks for shadowing.
-	if site != nil || extra != nil {
-		settings.Mount(mux,
-			app.GuardSite(settings.DomainOf, site),
-			app.Protect(extra.screens(e, app)))
-	}
+	settings.Mount(mux,
+		app.GuardSite(settings.DomainOf, site),
+		app.Protect(extra.screens(e, app)))
 
 	// Every report in the product is this one endpoint with different metrics
 	// and dimensions. It reads the same in-memory site snapshot the ingest path
