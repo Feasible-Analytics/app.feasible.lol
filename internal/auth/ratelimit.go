@@ -43,10 +43,14 @@ const (
 
 	// SignupEmails and SignupEmailWindow bound how many verification emails the
 	// whole installation sends in one window, counted across every source and
-	// every address. It is the backstop under the human check: a script that
-	// paces itself under the per-source limit still cannot turn our sending
-	// domain into somebody's mailbomb, because the ceiling is not per source.
-	SignupEmails      = 20
+	// every address, so that a script with a thousand addresses to come from
+	// still cannot turn our sending domain into somebody's mailbomb.
+	//
+	// It is the backstop under the human check rather than the defence itself,
+	// which is why it sits far above any real hour. The day this fires on a
+	// person is a launch, and a launch that finds the door shut costs more than
+	// the mailbomb this bounds.
+	SignupEmails      = 200
 	SignupEmailWindow = time.Hour
 
 	// VerifyInstallAttempts and VerifyInstallWindow bound the installation

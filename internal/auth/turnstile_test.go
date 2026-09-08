@@ -334,6 +334,34 @@ func TestAnAcceptedSignUpStillCreatesTheAccount(t *testing.T) {
 	}
 }
 
+// The ceiling is the backstop, not the defence, so the last sign-up under it is
+// an ordinary one. A busy launch hour must not find the door shut.
+func TestASignUpJustUnderTheCeilingIsUnaffected(t *testing.T) {
+	app := newTestApp(t)
+	c := newClient(t, app)
+
+	for i := 0; i < SignupEmails-1; i++ {
+		if !app.Limiter.Allow(GlobalKey("signup-email"), SignupEmails, SignupEmailWindow) {
+			t.Fatalf("the ceiling closed early, at %d of %d", i, SignupEmails)
+		}
+	}
+
+	resp := c.post("/register", url.Values{
+		"email":    {"person@example.com"},
+		"password": {"a long enough password"},
+	})
+	closeResponseBody(t, resp)
+
+	if location := resp.Header.Get("Location"); location != "/verify-email" {
+		t.Fatalf("the last sign-up under the ceiling should go through, got %q (status %d)",
+			location, resp.StatusCode)
+	}
+
+	if len(app.sent.messages) != 1 {
+		t.Errorf("wanted one verification email, got %d", len(app.sent.messages))
+	}
+}
+
 // The ceiling is installation-wide, so it holds against somebody who has a
 // thousand addresses to come from.
 func TestTheInstallationWideCeilingRefusesFurtherSignUps(t *testing.T) {
