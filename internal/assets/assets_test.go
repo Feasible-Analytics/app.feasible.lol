@@ -34,7 +34,8 @@ func tree(css string) fstest.MapFS {
 // the same bytes have to give the same URL, and different bytes a different
 // one, or a deploy is either invisible or invalidates a cache for nothing.
 func TestTheDigestFollowsTheBytes(t *testing.T) {
-	if Digest([]byte("body")) != Digest([]byte("body")) {
+	first, again := Digest([]byte("body")), Digest([]byte("body"))
+	if first != again {
 		t.Error("the same bytes produced two digests, so an unchanged file would churn every cache")
 	}
 

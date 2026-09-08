@@ -177,6 +177,7 @@ func forEachMessageCall(t *testing.T, dir string, visit func(*token.FileSet, str
 
 	fset := token.NewFileSet()
 
+	//nolint:staticcheck // ParseDir is deprecated for ignoring build tags, and every file here is unconditional
 	packages, err := parser.ParseDir(fset, dir, nil, 0)
 	if err != nil {
 		t.Fatalf("parse %s: %v", dir, err)
@@ -207,6 +208,7 @@ func tagConstants(t *testing.T) map[string]string {
 
 	fset := token.NewFileSet()
 
+	//nolint:staticcheck // ParseDir is deprecated for ignoring build tags, and every file here is unconditional
 	packages, err := parser.ParseDir(fset, ".", nil, 0)
 	if err != nil {
 		t.Fatalf("parse the package: %v", err)

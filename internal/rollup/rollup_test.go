@@ -1696,7 +1696,7 @@ func TestADerivedBucketCarriesWhatItsFirstDayDid(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			defer rows.Close()
+			defer func() { _ = rows.Close() }()
 
 			checked, carrying := 0, 0
 
@@ -1792,7 +1792,7 @@ func TestTheDerivationSumsEveryFactColumn(t *testing.T) {
 		for rows.Next() {
 			var column string
 			if err := rows.Scan(&column); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				t.Fatal(err)
 			}
 
@@ -1805,11 +1805,11 @@ func TestTheDerivationSumsEveryFactColumn(t *testing.T) {
 		}
 
 		if err := rows.Err(); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			t.Fatal(err)
 		}
 
-		rows.Close()
+		_ = rows.Close()
 	}
 
 	// And nothing in the lists that the schema does not have, which would fail
