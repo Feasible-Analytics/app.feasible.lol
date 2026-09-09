@@ -1,6 +1,7 @@
 <!--
   forms.html
-  The two form shapes that break a tracker which calls form.submit().
+  The form shapes that break a tracker: two that trip form.submit(), and one
+  the page posts itself.
 
   Created: 2026-08-30
   Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -46,5 +47,22 @@
 			<input type="email" name="email" value="reader@example.com" />
 			<button type="submit">Join newsletter</button>
 		</form>
+
+		<!--
+			Posted by the page's own script, the way nearly every modern form is:
+			preventDefault, then fetch. The page never navigates.
+		-->
+		<form id="ajax" action="/basic.html" method="get">
+			<input type="email" name="email" value="ajax@example.com" />
+			<button type="submit">Subscribe</button>
+			<output id="ajax-status"></output>
+		</form>
+		<script>
+			document.getElementById("ajax").addEventListener("submit", (event) => {
+				event.preventDefault();
+				window.__ajaxSubmits = (window.__ajaxSubmits || 0) + 1;
+				document.getElementById("ajax-status").textContent = "sent " + window.__ajaxSubmits;
+			});
+		</script>
 	</body>
 </html>
