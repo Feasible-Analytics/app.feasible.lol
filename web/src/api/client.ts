@@ -19,6 +19,8 @@ import type {
 	JourneyReport,
 	Property,
 	PropertyReport,
+	SearchDimension,
+	SearchReport,
 	Shared,
 	StatsRequest,
 	StatsResponse,
@@ -285,6 +287,35 @@ export async function journeyReport(
 	report.previous_pages = Array.isArray(report.previous_pages) ? report.previous_pages : [];
 	report.next_events = Array.isArray(report.next_events) ? report.next_events : [];
 	report.previous_events = Array.isArray(report.previous_events) ? report.previous_events : [];
+
+	return report;
+}
+
+/** searchConsoleReport reads imported Search Console figures for one site.
+ *
+ * The dashboard's own filters are deliberately not sent. Search Console rows
+ * carry four dimensions of Google's choosing and none of ours, so a filter on
+ * browser or campaign has nothing here to match — and silently answering the
+ * unfiltered question under a filtered heading is worse than not offering it. */
+export async function searchConsoleReport(
+	domain: string,
+	request: { dateRange: DateRange; dimension: SearchDimension; search?: string; limit?: number },
+	signal?: AbortSignal,
+): Promise<SearchReport> {
+	const params = new URLSearchParams({
+		date_range: JSON.stringify(request.dateRange),
+		dimension: request.dimension,
+	});
+	if (request.search) params.set("search", request.search);
+	if (request.limit) params.set("limit", String(request.limit));
+
+	const response = await dashboardFetch(
+		`/api/sites/${encodeURIComponent(domain)}/search-console/report?${params.toString()}`,
+		{ signal },
+	);
+
+	const report = (await response.json()) as SearchReport;
+	report.rows = Array.isArray(report.rows) ? report.rows : [];
 
 	return report;
 }

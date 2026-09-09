@@ -240,6 +240,14 @@ func runServe(e *env, args []string) int {
 	data := buildData(e, control, manager, service, site)
 	extra.Register(data.runner)
 
+	// The search jobs are attached here rather than inside buildData because
+	// the recurring tick belongs to the cron the services half owns, and a
+	// worker registered without its tick is a backfill that runs once and then
+	// never tops itself up.
+	(&google.Workers{
+		Accounts: manager, Sites: service.Sites, App: data.settings.Google, Log: e.log,
+	}).Register(data.runner, extra.Cron)
+
 	privateShard := &ingest.InternalShard{
 		ID: e.cfg.App.ShardID, Sites: service.Sites, Shields: site.shields,
 		Writer: service.Writer, Observer: service.Observer(),
@@ -658,6 +666,20 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	mux.Handle(goals.FunnelReportPattern, com.Gate.Protect(goalReport))
 	mux.Handle(goals.JourneyPattern, com.Gate.Protect(goalReport))
 
+	// Search performance answers to a session and nothing else. A shared link
+	// can be pinned to a segment, and the stored search rows carry none of the
+	// dimensions a segment filters on — so a share scoped to one slice of a
+	// site would otherwise hand over the site's whole keyword list.
+	searchReport := &google.Handler{
+		Sites: service.Sites, Accounts: manager, Log: e.log, Available: site.Google != nil,
+		Authorize: func(r *http.Request, current sites.Site) error {
+			_, err := app.AuthoriseSiteRequest(r, current.ID, teams.PermViewDashboard)
+
+			return err
+		},
+	}
+	mux.Handle(google.ReportPattern, com.Gate.Protect(searchReport))
+
 	// The compiled React dashboard, served out of the binary. It reads the site
 	// snapshot only to render the site picker; every number on it comes from
 	// the stats endpoint above.
@@ -688,6 +710,7 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 			Navigation: &dashboard.Navigation{
 				Name: nav.Name, Email: nav.Email, SitesURL: nav.SitesURL,
 				SiteSettingsURL: nav.SiteSettingsURL, ConversionsURL: nav.ConversionsURL,
+				ImportsURL: nav.ImportsURL,
 				AccountURL: nav.AccountURL,
 				BillingURL: nav.BillingURL, ExportURL: nav.ExportURL,
 				LogoutURL: nav.LogoutURL, AvatarURL: nav.AvatarURL,

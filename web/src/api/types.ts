@@ -387,6 +387,7 @@ export interface Navigation {
 	sites_url: string;
 	site_settings_url?: string;
 	conversions_url?: string;
+	imports_url?: string;
 	account_url: string;
 	billing_url?: string;
 	export_url?: string;
@@ -416,4 +417,33 @@ export interface Annotation {
 	author_name: string;
 	created_at: number;
 	updated_at: number;
+}
+
+/** The four things Search Console groups its figures by. */
+export type SearchDimension = "query" | "page" | "country" | "device";
+
+/** One grouped row of search performance: the two figures Google measures and
+ *  the two derived from them. */
+export interface SearchRow {
+	value: string;
+	clicks: number;
+	impressions: number;
+	/** A fraction, not a percentage. */
+	ctr: number;
+	/** The impression-weighted average rank. */
+	position: number;
+}
+
+/** Search performance, plus which of four screens the card should draw. A site
+ *  with no connection and an install with no Google application are different
+ *  answers to the same request, and only one of them is worth a button. */
+export interface SearchReport {
+	status: "unavailable" | "not_connected" | "no_property" | "ready";
+	dimension: SearchDimension;
+	rows: SearchRow[];
+	totals: SearchRow;
+	property?: string;
+	/** The last day Google has published, as YYYY-MM-DD. It is what explains an
+	 *  empty tail on a range that reaches today. */
+	updated_through?: string;
 }

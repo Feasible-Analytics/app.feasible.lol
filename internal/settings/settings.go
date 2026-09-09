@@ -98,6 +98,7 @@ var actions = []string{
 	"exports/download/{token}",
 	"google/connect",
 	"google/disconnect",
+	"google/property",
 }
 
 // Patterns lists the routes the site configuration screens own, as ServeMux
@@ -391,6 +392,16 @@ type page struct {
 	GA4                   *google.Connection
 	SearchConsole         *google.Connection
 
+	// SearchProperties is the choice a freshly connected grant still has to
+	// make. It is only fetched when the connection has no property yet, so an
+	// already-configured site never pays for a call to Google to draw a screen
+	// it will not show.
+	SearchProperties []google.SearchProperty
+
+	// SearchPropertyError is why the list above is empty. A picker with no
+	// options and no reason is the worst of the three states this can be in.
+	SearchPropertyError string
+
 	Goals             []goals.Goal
 	Properties        []goals.Property
 	SeenProperties    []string
@@ -510,6 +521,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.googleConnect(w, r, site)
 	case "google/disconnect":
 		h.googleDisconnect(w, r, site)
+	case "google/property":
+		h.googleProperty(w, r, site)
 	default:
 		if token, found := strings.CutPrefix(action, "exports/download/"); found {
 			h.downloadExport(w, r, site, token)
@@ -1108,9 +1121,38 @@ func (h *Handler) imports(w http.ResponseWriter, r *http.Request, site sites.Sit
 		if connectionErr != nil {
 			h.logConnection(site.ID, google.ProviderSearchConsole, connectionErr)
 		}
+
+		h.loadSearchProperties(r, account, site, &data)
 	}
 
 	h.render(w, r, "imports", data)
+}
+
+// loadSearchProperties fills in the picker, and only when it is going to be
+// shown. Asking Google for the list on every render would put a network call
+// with a thirty-second timeout in front of a settings page that has nothing
+// left to configure.
+func (h *Handler) loadSearchProperties(r *http.Request, account *accounts.Account, site sites.Site, data *page) {
+	connection := data.SearchConsole
+	if connection == nil || connection.Property != "" || connection.NeedsReconnect() {
+		return
+	}
+
+	available, err := h.Google.ListSearchProperties(r.Context(), account.Writer(), connection, h.now())
+	if err != nil {
+		h.logConnection(site.ID, google.ProviderSearchConsole, err)
+		data.SearchPropertyError = err.Error()
+
+		return
+	}
+
+	if len(available) == 0 {
+		data.SearchPropertyError = tr(r, "auth.google.error_no_properties")
+
+		return
+	}
+
+	data.SearchProperties = available
 }
 
 // logConnection records a Google grant that could not be read, so a provider
@@ -1393,7 +1435,6 @@ func (h *Handler) googleConnect(w http.ResponseWriter, r *http.Request, site sit
 	}
 
 	provider := google.ProviderGA4
-	scope := google.ScopeAnalytics
 
 	// Only the two providers this package knows are offered. Passing the query
 	// value straight through would write a grant under a provider name nothing
@@ -1401,8 +1442,9 @@ func (h *Handler) googleConnect(w http.ResponseWriter, r *http.Request, site sit
 	// silently does nothing.
 	if r.URL.Query().Get("provider") == google.ProviderSearchConsole {
 		provider = google.ProviderSearchConsole
-		scope = google.ScopeSearchConsole
 	}
+
+	scope := google.ScopesFor(provider)
 
 	// The state carries the site and the provider because the callback URL is
 	// fixed — Google redirects to one registered URI — and guessing the site
@@ -1443,6 +1485,117 @@ func (h *Handler) googleDisconnect(w http.ResponseWriter, r *http.Request, site 
 	}
 
 	h.redirect(w, r, site.Domain, "imports", tr(r, "auth.imports.flash_disconnected"), "")
+}
+
+// googleProperty records which Search Console property a site reads, and starts
+// the backfill.
+//
+// It is a separate step from the authorisation because one Google account often
+// holds properties for a dozen sites, and guessing wrong imports somebody
+// else's search history into this site's dashboard.
+func (h *Handler) googleProperty(w http.ResponseWriter, r *http.Request, site sites.Site) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST to choose a property", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if h.Google == nil {
+		http.Error(w, "no Google application is configured on this install", http.StatusNotFound)
+		return
+	}
+
+	property := strings.TrimSpace(r.PostFormValue("property"))
+	if property == "" {
+		h.redirect(w, r, site.Domain, "imports", "", tr(r, "auth.google.error_choose_property"))
+		return
+	}
+
+	lease, err := h.Accounts.Acquire(r.Context(), site.AccountID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer lease.Release() //nolint:errcheck // the grant and the queued backfill share one deletion fence
+	account := lease.Account
+
+	connection, err := google.GetConnection(r.Context(), account.Reader(), site.ID, google.ProviderSearchConsole)
+	if err != nil {
+		h.redirect(w, r, site.Domain, "imports", "", err.Error())
+		return
+	}
+
+	if connection == nil {
+		h.redirect(w, r, site.Domain, "imports", "", tr(r, "auth.google.error_not_connected"))
+		return
+	}
+
+	// The chosen value has to be one Google actually offered. Without the
+	// check, a hand-posted form would write a property this grant cannot read,
+	// and the only symptom would be a backfill that imports nothing.
+	available, err := h.Google.ListSearchProperties(r.Context(), account.Writer(), connection, h.now())
+	if err != nil {
+		h.redirect(w, r, site.Domain, "imports", "", err.Error())
+		return
+	}
+
+	if !offersProperty(available, property) {
+		h.redirect(w, r, site.Domain, "imports", "", tr(r, "auth.google.error_unknown_property"))
+		return
+	}
+
+	connection.Property = property
+
+	if err := google.SaveConnection(r.Context(), account.Writer(), *connection, h.now()); err != nil {
+		h.redirect(w, r, site.Domain, "imports", "", err.Error())
+		return
+	}
+
+	if err := h.startSearchBackfill(r, account, site, property); err != nil {
+		h.redirect(w, r, site.Domain, "imports", "", err.Error())
+		return
+	}
+
+	h.redirect(w, r, site.Domain, "imports", tr(r, "auth.google.flash_property_saved", "property", property), "")
+}
+
+// offersProperty reports whether Google listed this property for the grant.
+func offersProperty(available []google.SearchProperty, property string) bool {
+	for _, candidate := range available {
+		if candidate.URL == property {
+			return true
+		}
+	}
+
+	return false
+}
+
+// startSearchBackfill queues the one-off import of everything Search Console
+// still holds. The import row exists first, so a queue failure still leaves the
+// customer something on screen that says what went wrong.
+func (h *Handler) startSearchBackfill(r *http.Request, account *accounts.Account, site sites.Site, property string) error {
+	from, to := google.BackfillWindow(h.now())
+
+	record, err := dataio.CreateImport(r.Context(), account.Writer(), site.ID,
+		dataio.SourceSearchConsole, property, h.now())
+	if err != nil {
+		return err
+	}
+
+	_, err = h.Jobs.EnqueueOwned(r.Context(), site.AccountID, jobs.QueueImports, jobs.KindSearchConsoleImport,
+		google.ImportArgs{
+			AccountID: site.AccountID, SiteID: site.ID, ImportID: record.ID,
+			From: from.Unix(), To: to.Unix(),
+		},
+		fmt.Sprintf("account-%d-search-import-%d", site.AccountID, record.ID))
+	if err != nil {
+		if failErr := dataio.FailImport(r.Context(), account.Writer(), record.ID, err.Error(), h.now()); failErr != nil && h.Log != nil {
+			h.Log.Error("search backfill failure could not be recorded", "import", record.ID, "error", failErr)
+		}
+
+		return err
+	}
+
+	return nil
 }
 
 // splitOAuthState reads back the three fields googleConnect wrote. A state
@@ -1526,6 +1679,7 @@ func (h *Handler) googleCallback(w http.ResponseWriter, r *http.Request) {
 		SiteID:       site.ID,
 		AccountID:    site.AccountID,
 		Provider:     provider,
+		GoogleEmail:  h.Google.AccountEmail(r.Context(), token.AccessToken),
 		RefreshToken: token.RefreshToken,
 		AccessToken:  token.AccessToken,
 		ExpiresAt:    token.ExpiresAt.Unix(),
@@ -1538,7 +1692,49 @@ func (h *Handler) googleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if provider == google.ProviderSearchConsole {
+		h.redirect(w, r, site.Domain, "imports", h.adoptSearchProperty(r, account, site, &connection), "")
+		return
+	}
+
 	h.redirect(w, r, site.Domain, "imports", tr(r, "auth.imports.flash_connected"), "")
+}
+
+// adoptSearchProperty chooses the obvious property and starts the backfill,
+// returning the sentence the screen shows.
+//
+// A Google account that holds exactly the property this site is named after
+// should not make somebody pick it out of a list to prove they meant it. Any
+// other answer — several candidates, none, or a Google call that failed —
+// leaves the property unset, and the imports screen then asks.
+func (h *Handler) adoptSearchProperty(r *http.Request, account *accounts.Account, site sites.Site, connection *google.Connection) string {
+	available, err := h.Google.ListSearchProperties(r.Context(), account.Writer(), connection, h.now())
+	if err != nil {
+		h.logConnection(site.ID, google.ProviderSearchConsole, err)
+
+		return tr(r, "auth.imports.flash_connected")
+	}
+
+	matched, ok := google.MatchSearchProperty(site.Domain, available)
+	if !ok {
+		return tr(r, "auth.google.flash_choose_property")
+	}
+
+	connection.Property = matched.URL
+
+	if err := google.SaveConnection(r.Context(), account.Writer(), *connection, h.now()); err != nil {
+		h.logConnection(site.ID, google.ProviderSearchConsole, err)
+
+		return tr(r, "auth.google.flash_choose_property")
+	}
+
+	if err := h.startSearchBackfill(r, account, site, matched.URL); err != nil {
+		h.logConnection(site.ID, google.ProviderSearchConsole, err)
+
+		return tr(r, "auth.google.flash_choose_property")
+	}
+
+	return tr(r, "auth.google.flash_property_saved", "property", matched.URL)
 }
 
 // headerFor asks the application for the bar.

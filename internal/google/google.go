@@ -68,7 +68,22 @@ const (
 const (
 	ScopeAnalytics     = "https://www.googleapis.com/auth/analytics.readonly"
 	ScopeSearchConsole = "https://www.googleapis.com/auth/webmasters.readonly"
+
+	// ScopeEmail names the Google account behind a grant. It is asked for
+	// alongside both providers so the settings screen can say which account a
+	// connection belongs to — the one question somebody with several Google
+	// logins always has to answer before they trust the numbers.
+	ScopeEmail = "https://www.googleapis.com/auth/userinfo.email"
 )
+
+// ScopesFor is the scope string one provider's authorisation asks for.
+func ScopesFor(provider string) string {
+	if provider == ProviderSearchConsole {
+		return ScopeSearchConsole + " " + ScopeEmail
+	}
+
+	return ScopeAnalytics + " " + ScopeEmail
+}
 
 // SearchConsoleDelay is how far behind Search Console runs. Google's own data
 // is a day to a day and a half old, so "today" and usually "yesterday" are
@@ -340,6 +355,46 @@ func GetConnection(ctx context.Context, db *sql.DB, siteID int64, provider strin
 	connection.ExpiresAt = expires.Int64
 
 	return &connection, nil
+}
+
+// ListConnections reads every grant in one account database for a provider.
+//
+// The nightly refresh needs the sites to visit and cannot get them from the
+// routing snapshot: the snapshot knows which sites exist, not which of them
+// somebody connected to Google. One query per account beats one per site,
+// because most accounts have no connection at all and the answer for those is
+// an empty result rather than a row read per site they own.
+func ListConnections(ctx context.Context, db *sql.DB, provider string) ([]Connection, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, site_id, account_id, provider, google_email, property,
+		       refresh_token, access_token, expires_at, scopes, status, failure
+		FROM google_connections WHERE provider = ? ORDER BY site_id`, provider)
+	if err != nil {
+		return nil, fmt.Errorf("google: list connections: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []Connection
+
+	for rows.Next() {
+		var connection Connection
+		var expires sql.NullInt64
+
+		if err := rows.Scan(&connection.ID, &connection.SiteID, &connection.AccountID, &connection.Provider,
+			&connection.GoogleEmail, &connection.Property, &connection.RefreshToken,
+			&connection.AccessToken, &expires, &connection.Scopes, &connection.Status, &connection.Failure); err != nil {
+			return nil, fmt.Errorf("google: list connections: %w", err)
+		}
+
+		connection.ExpiresAt = expires.Int64
+		out = append(out, connection)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("google: list connections: %w", err)
+	}
+
+	return out, nil
 }
 
 // DeleteConnection removes one site's grant.

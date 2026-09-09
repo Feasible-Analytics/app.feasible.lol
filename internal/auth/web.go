@@ -157,13 +157,18 @@ type DashboardNavigation struct {
 	SitesURL        string
 	SiteSettingsURL string
 	ConversionsURL  string
-	AccountURL      string
-	BillingURL      string
-	ExportURL       string
-	LogoutURL       string
-	AvatarURL       string
-	CSRF            string
-	TeamID          int64
+
+	// ImportsURL is the screen that connects Google and starts an import. The
+	// dashboard's search card links to it, because a reader looking at an
+	// unconnected card is one click from the only place that fixes it.
+	ImportsURL string
+	AccountURL string
+	BillingURL string
+	ExportURL  string
+	LogoutURL  string
+	AvatarURL  string
+	CSRF       string
+	TeamID     int64
 }
 
 // Options are the inputs to NewHandler.
@@ -826,6 +831,7 @@ func (h *Handler) NavigationForDashboard(w http.ResponseWriter, r *http.Request)
 	if teams.Can(role, teams.PermManageSiteSettings) {
 		navigation.SiteSettingsURL = "/sites/domain/" + site.Domain + "/settings"
 		navigation.ConversionsURL = "/settings/sites/" + site.Domain + "/conversions"
+		navigation.ImportsURL = "/settings/sites/" + site.Domain + "/imports"
 	}
 	if teams.Can(role, teams.PermManageBilling) {
 		navigation.ExportURL = "/billing/export?team=" + strconv.FormatInt(site.TeamID, 10)
