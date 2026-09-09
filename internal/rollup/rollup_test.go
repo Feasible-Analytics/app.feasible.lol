@@ -1881,6 +1881,18 @@ func TestSummarisingAnImportChangesNoAnswer(t *testing.T) {
 		t.Fatal("summarising wrote no wide rows, so nothing under test ran")
 	}
 
+	// And without this it is the daily table against itself for a different
+	// reason: every range here is ragged, so a reader that refused to split one
+	// would answer both halves of the comparison off the days and agree.
+	resolved, err := (query.DateRange{Preset: query.RangeLast12Months}).Resolve(now, location, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if tables := query.ImportedSegmentTables(resolved); !slices.Contains(tables, query.ImportedWideTable) {
+		t.Fatalf("a twelve-month range reads %v, so the summary is not in the comparison", tables)
+	}
+
 	for i, q := range reports {
 		after := answer(t, engine, q)
 

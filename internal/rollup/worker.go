@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/dataio"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
 )
@@ -180,6 +181,13 @@ func (w *Worker) buildSite(ctx context.Context, ref SiteRef) error {
 	now := w.now().In(location)
 	today := query.RollupBucketStart(now, query.GrainDay, location)
 
+	// Before the native grains, and before the early return below: a site that
+	// is nothing but imported history has no events to summarise and would
+	// otherwise never have its archive summarised at all.
+	if err := w.summariseImports(ctx, account.Writer(), ref.Site, location); err != nil {
+		return err
+	}
+
 	earliest, err := FirstEvent(ctx, account.Reader(), ref.Site.ID)
 	if err != nil {
 		return err
@@ -189,34 +197,36 @@ func (w *Worker) buildSite(ctx context.Context, ref SiteRef) error {
 		return nil
 	}
 
-	// Day first, because the derived grains are summed out of its rows and a
-	// week built from days this pass has not written yet would be short.
-	// dailyFrom is how far back the daily pass reached, which is the floor for
-	// every grain summed out of its rows.
-	var dailyFrom time.Time
+	// Day first, because the derived grains are summed out of its rows: daily
+	// describes how far back they may reach, and a week built from days this
+	// pass has not written yet would be short.
+	var daily dailyWindow
 
 	for _, grain := range query.RollupGrains() {
+		// A derived grain may not be built before the daily pass has banked a
+		// window for it to stand on. With no rows underneath it a week sums to
+		// zero and banks coverage saying so.
+		if grain.Derived() && !daily.found {
+			continue
+		}
+
 		from, ok, err := w.windowStart(ctx, builder, ref.Site, grain, earliest, today, location)
 		if err != nil {
 			return err
-		}
-
-		if grain == query.GrainDay {
-			dailyFrom = from
 		}
 
 		if !ok {
 			continue
 		}
 
-		// A derived grain reads daily rows, so it starts at the first bucket
-		// that begins at or after where the daily pass reached. Its own bucket
-		// start is earlier — a month begins up to thirty days before the day a
-		// backfill bound lands on — and building from there would sum a whole
-		// month out of the fortnight of daily rows that exist, then bank
-		// coverage claiming all of it.
+		// A derived grain is summed out of daily rows, so it may only start on a
+		// bucket those rows can fill completely. Its own bucket start is earlier
+		// — a month begins up to thirty days before the day a backfill bound
+		// lands on — and building from there would sum a whole month out of the
+		// fortnight of daily rows that exist, then bank coverage claiming all
+		// of it.
 		if grain.Derived() {
-			from = firstWholeBucket(laterOf(from, dailyFrom), grain, location)
+			from = daily.firstWholeBucket(laterOf(from, daily.oldest), grain, location)
 		}
 
 		// Daily buckets run one day past today so that today's row exists and
@@ -245,9 +255,88 @@ func (w *Worker) buildSite(ctx context.Context, ref SiteRef) error {
 		}); err != nil {
 			return err
 		}
+
+		if grain == query.GrainDay {
+			daily, err = w.dailyWindow(ctx, builder, ref.Site, earliest, location)
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	return builder.Prune(ctx, ref.Site)
+}
+
+// summariseImports builds the week and month rows for any of a site's imports
+// that lacks them.
+//
+// An import summarises itself as it completes, so this is normally one read
+// that finds nothing. It runs anyway because the two cases it catches are
+// invisible from a dashboard: an archive that landed before the summaries
+// existed, and one cut in a timezone the site has since changed. Either leaves
+// every wide report adding up a day at a time for ever, with nothing to say so.
+func (w *Worker) summariseImports(ctx context.Context, db *sql.DB, site Site, location *time.Location) error {
+	built, err := dataio.SummariseSite(ctx, db, site.ID, location)
+	if err != nil {
+		return err
+	}
+
+	if built > 0 && w.Log != nil {
+		w.Log.Info("summarised imported history", "site", site.Domain, "imports", built)
+	}
+
+	return nil
+}
+
+// dailyWindow is how far the daily rows reach, as a grain summed out of them
+// needs to see it.
+type dailyWindow struct {
+	// found is false when the daily grain has banked no window at all, which
+	// leaves nothing for a derived grain to be summed from.
+	found bool
+
+	// oldest is the first instant a daily row may exist for.
+	oldest time.Time
+
+	// whole says there is nothing before oldest: the daily build reached the
+	// site's first event, so a wide bucket that starts before it is still
+	// complete — the days it is missing are days that had no traffic.
+	whole bool
+}
+
+// firstWholeBucket is the earliest bucket of a grain that the daily rows can
+// fill completely, at or after an instant.
+func (d dailyWindow) firstWholeBucket(at time.Time, grain query.Grain, location *time.Location) time.Time {
+	if d.whole {
+		return query.RollupBucketStart(at, grain, location)
+	}
+
+	return firstWholeBucket(at, grain, location)
+}
+
+// dailyWindow reads what the daily pass has banked.
+//
+// It is the banked window rather than where this pass started rewriting: once
+// the daily grain has caught up with the site's history a pass rewrites only
+// the last couple of days, and a derived grain held to that would never build
+// anything at all.
+func (w *Worker) dailyWindow(ctx context.Context, builder *Builder, site Site, earliest time.Time, location *time.Location) (dailyWindow, error) {
+	coverage, found, err := builder.Coverage(ctx, site.ID, query.GrainDay)
+	if err != nil {
+		return dailyWindow{}, err
+	}
+
+	if !found || coverage.Timezone != site.Zone() {
+		return dailyWindow{}, nil
+	}
+
+	// A covered_from of zero is how the daily build records that it reached the
+	// site's first event and that everything before it is empty.
+	if coverage.From == 0 {
+		return dailyWindow{found: true, oldest: earliest.In(location), whole: true}, nil
+	}
+
+	return dailyWindow{found: true, oldest: localToInstant(coverage.From, location, query.GrainDay)}, nil
 }
 
 // windowStart works out how far back this run has to rebuild.
@@ -281,7 +370,7 @@ func (w *Worker) windowStart(ctx context.Context, builder *Builder, site Site, g
 		// as long as the longest of them takes and starves the ingest handoff
 		// while it does, which costs every site's events and not only the one
 		// being built.
-		return laterOf(oldest, backfillLimit(today, grain, location)), true, nil
+		return laterOf(oldest, backfillReach(today, grain, location)), true, nil
 	}
 
 	// The covered window has to stay contiguous, so a run starts no later than
@@ -309,7 +398,7 @@ func (w *Worker) windowStart(ctx context.Context, builder *Builder, site Site, g
 	// retention window on every pass for ever.
 	if grain != query.GrainHour {
 		if covered := localToInstant(coverage.From, location, grain); covered.After(oldest) {
-			reach := laterOf(oldest, query.RollupBucketStart(covered.Add(-backfillPerPass), grain, location))
+			reach := laterOf(oldest, backfillReach(covered, grain, location))
 			if reach.Before(start) {
 				start = reach
 			}
@@ -323,15 +412,25 @@ func (w *Worker) windowStart(ctx context.Context, builder *Builder, site Site, g
 	return start, true, nil
 }
 
-// backfillPerPass bounds how much history one pass adds to a grain that does
-// not yet reach the site's first event. Coverage walks back by this much per
-// tick, so the cost of a deploy is flat rather than proportional to the longest
-// history on the box.
+// backfillPerPass bounds how much history one pass adds to a grain that reads
+// raw events and does not yet reach the site's first event. Coverage walks back
+// by this much per tick, so the cost of a deploy is flat rather than
+// proportional to the longest history on the box.
 const backfillPerPass = 90 * 24 * time.Hour
 
-// backfillLimit is how far back a pass with no coverage at all starts.
-func backfillLimit(today time.Time, grain query.Grain, location *time.Location) time.Time {
-	return query.RollupBucketStart(today.Add(-backfillPerPass), grain, location)
+// backfillReach is how far back a pass may extend a grain's coverage from an
+// instant it already covers. The zero time means as far as there is history.
+//
+// A derived grain is not bounded. It sums the daily rows the same pass has
+// already guaranteed rather than reading events again, and each of its chunks
+// commits and hands the write lock back, so reaching the whole way at once
+// costs a background job its time rather than costing ingest its throughput.
+func backfillReach(from time.Time, grain query.Grain, location *time.Location) time.Time {
+	if grain.Derived() {
+		return time.Time{}
+	}
+
+	return query.RollupBucketStart(from.Add(-backfillPerPass), grain, location)
 }
 
 // firstWholeBucket is the first bucket of a grain that begins at or after an
