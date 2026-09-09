@@ -251,6 +251,46 @@ test("a double-dash tagged form keeps its event name and properties", async ({ p
 	expect(events[0].p).toEqual({ list: "weekly" });
 });
 
+// Most sites post their forms with fetch and call preventDefault. That is still
+// a submission, and it is the one that matters: it is how signups and logins
+// work on a modern site.
+test("a form the page posts itself is recorded", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.goto("/forms.html");
+	await settledCount(state, "pageview", 1);
+
+	await page.click("#ajax button");
+
+	await settledCount(state, "Form: Submission", 1);
+	expect(page.url()).toContain("/forms.html");
+	expect(await page.evaluate(() => window.__ajaxSubmits)).toBe(1);
+});
+
+// With no keepalive the tracker holds a navigating form and resubmits it. A
+// form the page already claimed never navigates, so it must not be held or
+// resubmitted — a resubmit would run the page's handler a second time and post
+// the signup twice.
+test("without keepalive a form the page posts itself is sent once and not resubmitted", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.addInitScript(() => {
+		window.__feasible = { nk: 1 };
+	});
+
+	await page.goto("/forms.html");
+	await settledCount(state, "pageview", 1);
+
+	await page.click("#ajax button");
+
+	await settledCount(state, "Form: Submission", 1);
+	await page.waitForTimeout(700);
+
+	expect(page.url()).toContain("/forms.html");
+	expect(await page.evaluate(() => window.__ajaxSubmits)).toBe(1);
+	expect(named(state, "Form: Submission")).toHaveLength(1);
+});
+
 // form.submit() drops the clicked button's name and value, which silently makes
 // "save" and "save and publish" indistinguishable on the server — and it is
 // shadowed entirely by the hidden field named "submit" on this fixture, so the

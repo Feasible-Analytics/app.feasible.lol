@@ -184,13 +184,17 @@ function submits(el) {
 
 // onSubmit records a form submission.
 //
+// A submission the page's own script has already claimed still counts. Most
+// sites today post their forms with fetch and call preventDefault, so skipping
+// those would drop nearly every signup and login form on a modern site. Only
+// the choice of path below depends on it: a claimed submission never navigates,
+// so there is nothing to hold up.
+//
 // The normal path sends and returns, letting the browser submit the form as it
 // always would. The fallback below runs only where `fetch` cannot keep a
 // request alive past the page, and it is the one place this tracker ever holds
 // a user action up.
 function onSubmit(event) {
-	if (event.defaultPrevented) return;
-
 	const form = event.target;
 
 	// Set when we resubmit a form ourselves. Without it, requestSubmit would
@@ -201,7 +205,7 @@ function onSubmit(event) {
 	const name = parsed ? parsed[0] : "Form: Submission";
 	const props = parsed ? parsed[1] : {};
 
-	if (KEEPALIVE) {
+	if (KEEPALIVE || event.defaultPrevented) {
 		custom(name, { props });
 		return;
 	}
