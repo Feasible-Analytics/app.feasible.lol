@@ -478,3 +478,172 @@ func coverageFrom(t *testing.T, account *accounts.Account, grain query.Grain) in
 
 	return from
 }
+
+// TestADerivedGrainBackfillsBehindAFullyCoveredDailyGrain is the shape a deploy
+// leaves behind. The daily grain has been running for weeks and covers the whole
+// history; week and month have never existed. The derived floor has to be how
+// far the daily rows actually reach, not how far this pass happens to rewrite
+// them, or the new grains have nothing to stand on and never build at all.
+func TestADerivedGrainBackfillsBehindAFullyCoveredDailyGrain(t *testing.T) {
+	dir := t.TempDir()
+
+	manager := accounts.NewManager(dir)
+	account, err := manager.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		sessions []sessionRow
+		events   []eventRow
+	)
+
+	for day := range 200 {
+		at := local(1, 10).AddDate(0, 0, -day)
+
+		sessions = append(sessions, sessionRow{
+			id: int64(day + 1), user: int64(9000 + day), startedAt: at, lastSeen: at,
+			bounce: 1, pageviews: 1, entryPage: "/home", exitPage: "/home", source: "Google", country: "US",
+		})
+		events = append(events, eventRow{
+			session: int64(day + 1), user: int64(9000 + day), at: at,
+			name: ingest.EventPageview, page: "/home", source: "Google", country: "US",
+		})
+	}
+
+	writeFixture(t, account, sessions, events)
+
+	if err := manager.CloseAll(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Enough passes to walk the daily grain back past the first event, which is
+	// what banks a covered_from of zero.
+	for day := range 4 {
+		worker := workerOver(t, dir, 1, fixtureNow.AddDate(0, 0, day))
+
+		if err := worker.Once(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reopenedManager := accounts.NewManager(dir)
+	reopened, err := reopenedManager.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if from := coverageFrom(t, reopened, query.GrainDay); from != 0 {
+		t.Fatalf("the daily grain covers from %d, want the whole history the rest of this test assumes", from)
+	}
+
+	// The two derived grains arrive with the deploy that adds them: the daily
+	// rows are already complete and theirs are missing.
+	builder := rollup.New(reopened.Writer())
+
+	for _, grain := range []query.Grain{query.GrainWeek, query.GrainMonth} {
+		if err := builder.Reset(context.Background(), testSite.ID, grain); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := reopenedManager.CloseAll(); err != nil {
+		t.Fatal(err)
+	}
+
+	worker := workerOver(t, dir, 1, fixtureNow.AddDate(0, 0, 4))
+
+	if err := worker.Once(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := worker.Accounts.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, grain := range []query.Grain{query.GrainWeek, query.GrainMonth} {
+		var built int
+
+		if err := after.Reader().QueryRowContext(context.Background(),
+			"SELECT COUNT(*) FROM rollup_visitors WHERE site_id = ? AND grain = ?",
+			testSite.ID, int64(grain)).Scan(&built); err != nil {
+			t.Fatal(err)
+		}
+
+		if built == 0 {
+			t.Errorf("the %s summary built nothing behind a fully covered daily grain, so every wide report stays raw", grain)
+		}
+
+		// Zero is how a build that reached the first event records that
+		// everything before it is empty. Anything else and an all-time report
+		// begins outside the covered window and falls back to raw.
+		if from := coverageFrom(t, after, grain); from != 0 {
+			t.Errorf("the %s summary covers from %d rather than the whole history, so an all-time report stays raw", grain, from)
+		}
+	}
+}
+
+// TestAPassSummarisesAnImportThatArrivedWithout is the archive a customer
+// brought with them before the summaries existed. Nothing else runs behind it,
+// so a pass that skipped it would leave every wide report on that site adding
+// up a day at a time for ever.
+//
+// The site holds no native events, which is the shape that would otherwise be
+// dropped: the grain loop returns early for a site with nothing to roll up.
+func TestAPassSummarisesAnImportThatArrivedWithout(t *testing.T) {
+	dir := t.TempDir()
+
+	manager := accounts.NewManager(dir)
+	account, err := manager.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writer := account.Writer()
+
+	if _, err := writer.ExecContext(context.Background(),
+		"INSERT INTO imports (id, site_id, source, label, status, created_at) "+
+			"VALUES (1, ?, 'csv', 'fixture', 'completed', 0)", testSite.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	day := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	for i := range 90 {
+		if _, err := writer.ExecContext(context.Background(),
+			"INSERT INTO imported_rollups (import_id, site_id, timestamp, visitors, visits, pageviews) "+
+				"VALUES (1, ?, ?, 10, 12, 30)", testSite.ID, day.AddDate(0, 0, i).Unix()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := manager.CloseAll(); err != nil {
+		t.Fatal(err)
+	}
+
+	worker := workerOver(t, dir, 1, fixtureNow)
+
+	if err := worker.Once(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := worker.Accounts.Open(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, grain := range []query.Grain{query.GrainWeek, query.GrainMonth} {
+		var built int
+
+		if err := after.Reader().QueryRowContext(context.Background(),
+			"SELECT COUNT(*) FROM imported_wide WHERE site_id = ? AND grain = ?",
+			testSite.ID, int64(grain)).Scan(&built); err != nil {
+			t.Fatal(err)
+		}
+
+		if built == 0 {
+			t.Errorf("the pass left the import with no %s rows, so its history is read a day at a time", grain)
+		}
+	}
+}

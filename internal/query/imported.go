@@ -37,32 +37,40 @@ const ImportedWideTable = "imported_wide"
 // importedAlias is the table's alias in every statement built here.
 const importedAlias = "ir"
 
-// importedSource is which table answers one query and at what width.
-type importedSource struct {
+// importedSegment is one contiguous slice of a range and the table that answers
+// it, at what width.
+//
+// A summary bucket cannot be cut in half, so a range that does not begin and
+// end on a bucket edge is read as up to three: the days before the first whole
+// bucket, the buckets themselves, and the days after the last one. Almost every
+// range a person actually asks for is ragged at one end or both — a report
+// running up to today ends mid-bucket by definition.
+type importedSegment struct {
 	table string
 	grain Grain
+	start time.Time
+	end   time.Time
 }
 
-// importedSourceFor picks the narrowest table that can answer a range exactly.
+// importedSegments splits a range into the reads that answer it.
 //
-// A wide row cannot be split, so the range has to begin and end on a bucket the
-// summary holds. Anything else reads the daily rows, which is slower and right
-// — a half-finished summary has to be slow rather than wrong.
-func (x *executor) importedSource(ctx context.Context, r Resolved) (importedSource, error) {
-	wide := importedSourceFor(r)
-	if wide.table == ImportedTable {
-		return wide, nil
+// The summaries are used only when every one of the site's imports has them in
+// the zone being asked about. Reading the wide table while one import has no
+// rows in it would drop that import's history from the answer entirely, and
+// reading a summary cut in another zone reports one month's traffic as the next
+// one's. Both are worse than being slow.
+func (x *executor) importedSegments(ctx context.Context, r Resolved) ([]importedSegment, error) {
+	segments := importedSegmentsFor(r)
+
+	grain, wide := wideGrainOf(segments)
+	if !wide {
+		return segments, nil
 	}
 
-	// Every import the site has must be summarised in the zone being asked
-	// about, not just some of them. Reading the wide table while one import has
-	// no rows in it would drop that import's history from the answer entirely,
-	// and reading a summary cut in another zone reports one month's traffic as
-	// the next one's. Both are worse than being slow.
 	sites := inInt64("site_id", x.query.SiteIDs)
 
 	args := append([]any{}, sites.Args...)
-	args = append(args, wide.grain.GrainBit(), r.Location.String())
+	args = append(args, grain.GrainBit(), r.Location.String())
 
 	var unusable int64
 
@@ -70,25 +78,58 @@ func (x *executor) importedSource(ctx context.Context, r Resolved) (importedSour
 		"SELECT COUNT(*) FROM imports WHERE "+sites.SQL+
 			" AND ((wide_grains & ?) = 0 OR wide_timezone <> ?)", args...).Scan(&unusable)
 	if err != nil {
-		return importedSource{}, fmt.Errorf("query: read imported summary coverage: %w", err)
+		return nil, fmt.Errorf("query: read imported summary coverage: %w", err)
 	}
 
 	if unusable > 0 {
-		return importedSource{table: ImportedTable, grain: GrainDay}, nil
+		return []importedSegment{dailySegment(r.Start, r.End)}, nil
 	}
 
-	return wide, nil
+	return segments, nil
 }
 
-// ImportedSourceTable is which table a range would be answered from, ignoring
-// whether the summaries exist. It is exported so a test can assert that a
-// report reached the summary rather than only that rows were written.
-func ImportedSourceTable(r Resolved) string { return importedSourceFor(r).table }
+// ImportedSegmentTables names the table behind each slice of a range, in order.
+// It is exported so a test can assert that a report reached the summary rather
+// than only that rows were written.
+func ImportedSegmentTables(r Resolved) []string {
+	segments := importedSegmentsFor(r)
 
-// importedSourceFor picks the narrowest table that can answer a range exactly,
-// ignoring whether the summaries have been built.
-func importedSourceFor(r Resolved) importedSource {
-	daily := importedSource{table: ImportedTable, grain: GrainDay}
+	tables := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		tables = append(tables, segment.table)
+	}
+
+	return tables
+}
+
+// dailySegment reads one slice out of the daily rows.
+func dailySegment(start, end time.Time) importedSegment {
+	return importedSegment{table: ImportedTable, grain: GrainDay, start: start, end: end}
+}
+
+// wideGrainOf returns the summary grain a split reads, and false when it reads
+// none. Only one segment is ever wide, so there is one grain to report.
+func wideGrainOf(segments []importedSegment) (Grain, bool) {
+	for _, segment := range segments {
+		if segment.table == ImportedWideTable {
+			return segment.grain, true
+		}
+	}
+
+	return GrainDay, false
+}
+
+// importedSegmentsFor splits a range at the bucket edges inside it, ignoring
+// whether the summaries have been built.
+//
+// The split is exact rather than approximate, and it is exact for a reason
+// particular to imported history: a wide row is the plain sum of the daily rows
+// under it, with no distinct-visitor correction, because a daily total is all
+// an import supplies. Adding a summary bucket to a loose day is therefore the
+// same arithmetic as adding two days, and the seam needs no correction the way
+// the native summaries' does.
+func importedSegmentsFor(r Resolved) []importedSegment {
+	whole := []importedSegment{dailySegment(r.Start, r.End)}
 
 	var grain Grain
 
@@ -98,23 +139,42 @@ func importedSourceFor(r Resolved) importedSource {
 	case IntervalMonth:
 		grain = GrainMonth
 	default:
-		return daily
+		return whole
 	}
 
-	if !r.Start.Equal(RollupBucketStart(r.Start, grain, r.Location)) {
-		return daily
+	// The first bucket edge at or after the range begins, and the last one at
+	// or before it ends.
+	first := RollupBucketStart(r.Start, grain, r.Location)
+	if first.Before(r.Start) {
+		first = RollupNextBucket(first, grain, r.Location)
 	}
 
-	if !r.End.Equal(RollupBucketStart(r.End, grain, r.Location)) {
-		return daily
+	last := RollupBucketStart(r.End, grain, r.Location)
+
+	// Not one whole bucket between them, so the summary answers nothing and the
+	// split would only be two reads where one will do.
+	if !last.After(first) {
+		return whole
 	}
 
-	return importedSource{table: ImportedWideTable, grain: grain}
+	segments := make([]importedSegment, 0, 3)
+
+	if first.After(r.Start) {
+		segments = append(segments, dailySegment(r.Start, first))
+	}
+
+	segments = append(segments, importedSegment{table: ImportedWideTable, grain: grain, start: first, end: last})
+
+	if r.End.After(last) {
+		segments = append(segments, dailySegment(last, r.End))
+	}
+
+	return segments
 }
 
 // wideCondition restricts a read to one grain, and is empty for the daily
 // table, which has no grain column.
-func (s importedSource) wideCondition() []expr {
+func (s importedSegment) wideCondition() []expr {
 	if s.table == ImportedTable {
 		return nil
 	}
@@ -358,12 +418,12 @@ func (x *executor) importedPass(ctx context.Context, r Resolved, groups *groupSe
 		x.addGap(gap)
 	}
 
-	source, err := x.importedSource(ctx, r)
+	segments, err := x.importedSegments(ctx, r)
 	if err != nil {
 		return err
 	}
 
-	candidates, err := x.importCandidates(ctx, r, source)
+	candidates, err := x.importCandidates(ctx, segments)
 	if err != nil {
 		return err
 	}
@@ -406,24 +466,15 @@ func (x *executor) importedPass(ctx context.Context, r Resolved, groups *groupSe
 		return err
 	}
 
-	conditions := []expr{
-		inInt64(importedAlias+".site_id", x.query.SiteIDs),
-		{
-			SQL:  importedAlias + ".timestamp >= ? AND " + importedAlias + ".timestamp < ?",
-			Args: []any{r.Start.Unix(), r.End.Unix()},
-		},
-		selectionCondition(selected),
-	}
-
-	conditions = append(conditions, source.wideCondition()...)
-
 	// A property coverage bit identifies the marginal shape, while the key
 	// identifies the concrete event:props:<key> dimension inside that shape.
 	// Constraining breakdowns here prevents equal values from two different
 	// imported properties being merged into one row.
+	var shared []expr
+
 	for _, dimension := range x.plan.Dimensions {
 		if dimension.isProp() {
-			conditions = append(conditions, expr{
+			shared = append(shared, expr{
 				SQL: importedAlias + ".property_key = ?", Args: []any{dimension.PropKey},
 			})
 		}
@@ -433,8 +484,8 @@ func (x *executor) importedPass(ctx context.Context, r Resolved, groups *groupSe
 	if err != nil {
 		return err
 	}
-	conditions = append(conditions, filters...)
-	conditions = append(conditions, x.restrictions(dims, restrict)...)
+	shared = append(shared, filters...)
+	shared = append(shared, x.restrictions(dims, restrict)...)
 
 	columns, targets := x.importedColumnsFor()
 	if len(columns) == 0 {
@@ -449,35 +500,95 @@ func (x *executor) importedPass(ctx context.Context, r Resolved, groups *groupSe
 		return nil
 	}
 
-	st := statement{
-		table: tableEvents, alias: importedAlias, nameOverride: source.table,
-		dims: dims, columns: columns, conditions: conditions,
-	}
+	// One read per slice, all merging into the same groups. Every imported
+	// metric is a total, so a group's number is the sum of its slices' — which
+	// is what makes reading a wide bucket beside a loose day sound.
+	for _, segment := range segments {
+		conditions := []expr{
+			inInt64(importedAlias+".site_id", x.query.SiteIDs),
+			{
+				SQL:  importedAlias + ".timestamp >= ? AND " + importedAlias + ".timestamp < ?",
+				Args: []any{segment.start.Unix(), segment.end.Unix()},
+			},
+			selectionCondition(selected),
+		}
 
-	sqlText, args := x.renderStatement(st)
+		conditions = append(conditions, segment.wideCondition()...)
+		conditions = append(conditions, shared...)
 
-	if _, err := x.readRows(ctx, sqlText, args, len(dims), len(columns), groups, targets, true); err != nil {
-		return err
+		st := statement{
+			table: tableEvents, alias: importedAlias, nameOverride: segment.table,
+			dims: dims, columns: columns, conditions: conditions,
+		}
+
+		sqlText, args := x.renderStatement(st)
+
+		if _, err := x.readRows(ctx, sqlText, args, len(dims), len(columns), groups, targets, true); err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
 // importCandidates lists every (import, shape) pair with data in range, and how
-// much traffic each holds. One grouped read answers both halves of the job:
-// which shape to read, and how much is being left out when none of them fits.
-func (x *executor) importCandidates(ctx context.Context, r Resolved, source importedSource) ([]importCandidate, error) {
+// much traffic each holds. One grouped read per slice answers both halves of
+// the job: which shape to read, and how much is being left out when none of
+// them fits.
+//
+// A shape spans the whole range even when the range is read in slices, so the
+// pairs are merged rather than returned per slice — an import whose only rows
+// in the leading days carry one shape must not be offered as a second candidate
+// beside the same shape from the summary.
+func (x *executor) importCandidates(ctx context.Context, segments []importedSegment) ([]importCandidate, error) {
+	type shape struct {
+		importID int64
+		covered  uint64
+	}
+
+	volumes := map[shape]float64{}
+	var order []shape
+
+	for _, segment := range segments {
+		found, err := x.segmentCandidates(ctx, segment)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, candidate := range found {
+			key := shape{importID: candidate.ImportID, covered: candidate.Covered}
+
+			if _, seen := volumes[key]; !seen {
+				order = append(order, key)
+			}
+
+			volumes[key] += candidate.Pageviews
+		}
+	}
+
+	candidates := make([]importCandidate, 0, len(order))
+	for _, key := range order {
+		candidates = append(candidates, importCandidate{
+			ImportID: key.importID, Covered: key.covered, Pageviews: volumes[key],
+		})
+	}
+
+	return candidates, nil
+}
+
+// segmentCandidates reads the (import, shape) pairs one slice of a range holds.
+func (x *executor) segmentCandidates(ctx context.Context, segment importedSegment) ([]importCandidate, error) {
 	sites := inInt64(importedAlias+".site_id", x.query.SiteIDs)
 
 	args := append([]any{}, sites.Args...)
 
 	grainCondition := ""
-	if source.table != ImportedTable {
+	if segment.table != ImportedTable {
 		grainCondition = " AND " + importedAlias + ".grain = ?"
-		args = append(args, int64(source.grain))
+		args = append(args, int64(segment.grain))
 	}
 
-	args = append(args, r.Start.Unix(), r.End.Unix())
+	args = append(args, segment.start.Unix(), segment.end.Unix())
 	propertyCondition := ""
 	if key, ok := x.importedPropertyKey(); ok {
 		propertyCondition = " AND " + importedAlias + ".property_key = ?"
@@ -486,7 +597,7 @@ func (x *executor) importCandidates(ctx context.Context, r Resolved, source impo
 
 	rows, err := x.engine.db.QueryContext(ctx,
 		"SELECT "+importedAlias+".import_id, "+importedAlias+".covered, COALESCE(SUM("+importedAlias+".pageviews), 0)"+
-			" FROM "+source.table+" "+importedAlias+
+			" FROM "+segment.table+" "+importedAlias+
 			" WHERE "+sites.SQL+grainCondition+" AND "+importedAlias+".timestamp >= ? AND "+importedAlias+".timestamp < ?"+
 			propertyCondition+
 			" GROUP BY "+importedAlias+".import_id, "+importedAlias+".covered", args...)

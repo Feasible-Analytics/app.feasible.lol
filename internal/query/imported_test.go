@@ -10,6 +10,7 @@ package query
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -452,51 +453,69 @@ func TestAllTimeReachesBackOverImportedHistory(t *testing.T) {
 }
 
 // TestAWideImportedRangeReadsTheSummary is what makes the summaries worth
-// writing. A range that begins and ends on a bucket the summary holds reads it;
-// anything else reads the days, which is slower and right.
+// writing. Whole buckets come out of the summary and the loose days at either
+// end out of the daily rows, so a range only stays entirely on the days when
+// there is not one whole bucket in it.
 func TestAWideImportedRangeReadsTheSummary(t *testing.T) {
 	location := time.UTC
 	now := time.Date(2026, 9, 9, 12, 0, 0, 0, location)
 
+	daily, wide := ImportedTable, ImportedWideTable
+
 	for name, test := range map[string]struct {
 		start, end time.Time
-		want       string
+		want       []string
 	}{
 		"whole months, wide enough to be drawn in months": {
 			time.Date(2024, 9, 1, 0, 0, 0, 0, location),
 			time.Date(2026, 9, 1, 0, 0, 0, 0, location),
-			ImportedWideTable,
+			[]string{wide},
 		},
 
-		// A twelve-month range is drawn in weeks, not months, so bounds on the
-		// first of a month do not line up with the buckets it would read. It
-		// falls back to the days, which is correct and is the reason the
-		// summaries do not yet pay off on the preset that motivated them.
+		// A twelve-month range is drawn in weeks, not months, so a bound on the
+		// first of a month lands inside a bucket unless it happens to be a
+		// Monday. The days that makes up are read raw and the whole weeks
+		// between them from the summary.
 		"twelve months, which is drawn in weeks": {
 			time.Date(2025, 9, 1, 0, 0, 0, 0, location),
 			time.Date(2026, 9, 1, 0, 0, 0, 0, location),
-			ImportedTable,
+			[]string{wide, daily},
+		},
+
+		// Both bounds inside a week, which is nearly every range a person picks.
+		"a range ragged at both ends": {
+			time.Date(2025, 9, 3, 0, 0, 0, 0, location),
+			time.Date(2026, 9, 3, 0, 0, 0, 0, location),
+			[]string{daily, wide, daily},
 		},
 		"whole weeks": {
 			// Both Mondays, and far enough apart to be drawn in weeks.
 			time.Date(2026, 3, 2, 0, 0, 0, 0, location),
 			time.Date(2026, 8, 31, 0, 0, 0, 0, location),
-			ImportedWideTable,
+			[]string{wide},
 		},
 		"a range that starts mid-week": {
 			time.Date(2026, 3, 4, 0, 0, 0, 0, location),
 			time.Date(2026, 8, 31, 0, 0, 0, 0, location),
-			ImportedTable,
+			[]string{daily, wide},
 		},
-		"a range that ends mid-month": {
+		"a range that ends mid-week": {
 			time.Date(2025, 9, 1, 0, 0, 0, 0, location),
 			time.Date(2026, 9, 15, 0, 0, 0, 0, location),
-			ImportedTable,
+			[]string{wide, daily},
 		},
 		"a fortnight, which is drawn in days": {
 			time.Date(2026, 8, 24, 0, 0, 0, 0, location),
 			time.Date(2026, 9, 7, 0, 0, 0, 0, location),
-			ImportedTable,
+			[]string{daily},
+		},
+
+		// Wide enough to be drawn in weeks, but with no Monday-to-Monday whole
+		// week inside it. Splitting would be two reads where one will do.
+		"a fortnight-long week range with no whole bucket in it": {
+			time.Date(2026, 3, 3, 0, 0, 0, 0, location),
+			time.Date(2026, 3, 9, 0, 0, 0, 0, location),
+			[]string{daily},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -507,8 +526,8 @@ func TestAWideImportedRangeReadsTheSummary(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if got := ImportedSourceTable(resolved); got != test.want {
-				t.Errorf("a %s range (%s) reads %s, want %s",
+			if got := ImportedSegmentTables(resolved); !slices.Equal(got, test.want) {
+				t.Errorf("a %s range (%s) reads %v, want %v",
 					resolved.Interval, resolved.Start.Format("2006-01-02"), got, test.want)
 			}
 		})
