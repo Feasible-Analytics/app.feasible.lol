@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
 // checkClose runs one test cleanup and reports a failure against the test that
@@ -40,6 +42,46 @@ func checkClose(t testing.TB, name string, close func() error) {
 func closeResponse(t testing.TB, response *http.Response) {
 	t.Helper()
 	checkClose(t, "response body", response.Body.Close)
+}
+
+// testCSRF is the one form token the fake gate accepts.
+const testCSRF = "test-csrf"
+
+// fakeSignin stands in for the app's session gate: it admits one fixed person
+// the way the real gate would after a sign-in, sends everybody else to the
+// login page, and checks the form token on a POST.
+type fakeSignin struct {
+	userID int64
+	email  string
+}
+
+// Protect is the gate.
+func (f *fakeSignin) Protect(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if f.userID == 0 {
+			http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
+			return
+		}
+
+		if r.Method == http.MethodPost && r.PostFormValue("csrf_token") != testCSRF {
+			http.Error(w, "the form token did not match", http.StatusForbidden)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// FormToken hands out the one token Protect accepts.
+func (f *fakeSignin) FormToken(http.ResponseWriter, *http.Request) string { return testCSRF }
+
+// SignedInUser names the admitted person.
+func (f *fakeSignin) SignedInUser(*http.Request) (int64, string, bool) {
+	if f.userID == 0 {
+		return 0, "", false
+	}
+
+	return f.userID, f.email, true
 }
 
 // httpFixture wraps the shared fixture with a mounted HTTP endpoint and the
@@ -62,7 +104,13 @@ func newHTTPFixture(t *testing.T) *httpFixture {
 	// The base URL is only known once the test server is listening, and the
 	// metadata documents are built from it, so the OAuth server is created here
 	// and its base filled in below.
-	oauth := &OAuth{DB: f.System, Keys: f.API.Keys, Now: func() time.Time { return testNow }}
+	oauth := &OAuth{
+		DB:     f.System,
+		Keys:   f.API.Keys,
+		Teams:  teams.NewStore(f.System),
+		Signin: &fakeSignin{userID: 1, email: "a@example.test"},
+		Now:    func() time.Time { return testNow },
+	}
 
 	mux.Handle(Path, &Handler{
 		Server:              f.Server,
@@ -449,7 +497,9 @@ func TestOAuthFlowEndToEnd(t *testing.T) {
 		"state":                 {"xyz"},
 		"code_challenge":        {challenge},
 		"code_challenge_method": {"S256"},
-		"api_key":               {h.Raw},
+		"csrf_token":            {testCSRF},
+		"team_id":               {strconv.FormatInt(teamID, 10)},
+		"decision":              {"allow"},
 	}
 
 	// The redirect is not followed: the callback is a loopback port nothing is
@@ -681,7 +731,17 @@ func TestRevokingTheKeyEndsTheConnection(t *testing.T) {
 		t.Fatalf("the token did not work before revocation: %d", status)
 	}
 
-	if err := h.API.Keys.Revoke(context.Background(), teamID, h.Key.ID); err != nil {
+	// Approval minted a key named after the client; that key is what shows in
+	// team settings and what somebody revokes to disconnect.
+	minted, err := h.OAuth.Authenticate(context.Background(), access)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if minted.ID == h.Key.ID || !strings.HasSuffix(minted.Name, " (MCP)") || minted.TeamID != teamID || minted.UserID != 1 {
+		t.Fatalf("the connection stands for key %+v, want a fresh key named after the client", minted)
+	}
+
+	if err := h.API.Keys.Revoke(context.Background(), teamID, minted.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -953,7 +1013,13 @@ func secondOAuthServer(t *testing.T, h *httpFixture) *httptest.Server {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	oauth := &OAuth{DB: db, Keys: apikeys.NewStore(db), Now: func() time.Time { return testNow }}
+	oauth := &OAuth{
+		DB:     db,
+		Keys:   apikeys.NewStore(db),
+		Teams:  teams.NewStore(db),
+		Signin: &fakeSignin{userID: 1, email: "a@example.test"},
+		Now:    func() time.Time { return testNow },
+	}
 	mux := http.NewServeMux()
 	oauth.Routes(mux)
 	server := httptest.NewServer(mux)
@@ -1055,7 +1121,9 @@ func (h *httpFixture) authorizeRegistered(t *testing.T, clientID, scope string) 
 		"redirect_uri":          {"http://127.0.0.1:33418/callback"},
 		"code_challenge":        {challenge},
 		"code_challenge_method": {"S256"},
-		"api_key":               {h.Raw},
+		"csrf_token":            {testCSRF},
+		"team_id":               {strconv.FormatInt(teamID, 10)},
+		"decision":              {"allow"},
 	}
 	if scope != "" {
 		form.Set("scope", scope)
@@ -1080,10 +1148,100 @@ func (h *httpFixture) authorizeRegistered(t *testing.T, clientID, scope string) 
 	return location.Query().Get("code"), verifier
 }
 
-// TestConsentRefusesABadKey checks that a mistyped key comes back to the form
-// rather than redirecting to the client with an error, which would make somebody
-// restart the whole flow over a typo.
-func TestConsentRefusesABadKey(t *testing.T) {
+// consentForm is a complete, valid approval form for one registered client.
+func consentForm(clientID string) url.Values {
+	sum := sha256.Sum256([]byte("a-verifier-long-enough-to-be-a-real-one-0123456789"))
+
+	return url.Values{
+		"response_type":         {"code"},
+		"client_id":             {clientID},
+		"redirect_uri":          {"http://127.0.0.1:33418/callback"},
+		"state":                 {"xyz"},
+		"code_challenge":        {base64.RawURLEncoding.EncodeToString(sum[:])},
+		"code_challenge_method": {"S256"},
+		"csrf_token":            {testCSRF},
+		"team_id":               {strconv.FormatInt(teamID, 10)},
+		"decision":              {"allow"},
+	}
+}
+
+// noRedirect is a client that hands back the 302 instead of following it.
+var noRedirect = &http.Client{
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
+
+// TestConsentSendsAStrangerToSignIn checks the whole point of putting the page
+// behind the session gate: somebody who is not signed in is sent to the login
+// page with this page as the way back, and nothing is asked of them here.
+func TestConsentSendsAStrangerToSignIn(t *testing.T) {
+	h := newHTTPFixture(t)
+	h.OAuth.Signin = &fakeSignin{}
+
+	registration := postJSON(t, h.Server.URL+PathRegister, map[string]any{
+		"client_name":   "Test",
+		"redirect_uris": []string{"http://127.0.0.1:33418/callback"},
+	})
+
+	query := consentForm(registration["client_id"].(string))
+	query.Del("csrf_token")
+	query.Del("team_id")
+	query.Del("decision")
+
+	response, err := noRedirect.Get(h.Server.URL + PathAuthorize + "?" + query.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeResponse(t, response)
+
+	location := response.Header.Get("Location")
+	if response.StatusCode != http.StatusFound || !strings.HasPrefix(location, "/login?next=") {
+		t.Fatalf("status = %d, location = %q; want a redirect to sign-in", response.StatusCode, location)
+	}
+
+	next, _ := url.QueryUnescape(strings.TrimPrefix(location, "/login?next="))
+	if !strings.HasPrefix(next, PathAuthorize+"?") || !strings.Contains(next, "code_challenge=") {
+		t.Fatalf("sign-in would not come back to the consent page: %q", next)
+	}
+}
+
+// TestConsentShowsAllowAndNothingToType checks that a signed-in person sees
+// who is asking, who they are, and a button — no key field, no password.
+func TestConsentShowsAllowAndNothingToType(t *testing.T) {
+	h := newHTTPFixture(t)
+
+	registration := postJSON(t, h.Server.URL+PathRegister, map[string]any{
+		"client_name":   "Claude",
+		"redirect_uris": []string{"http://127.0.0.1:33418/callback"},
+	})
+
+	query := consentForm(registration["client_id"].(string))
+	query.Del("csrf_token")
+	query.Del("team_id")
+	query.Del("decision")
+
+	response, err := http.Get(h.Server.URL + PathAuthorize + "?" + query.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeResponse(t, response)
+
+	raw, _ := io.ReadAll(response.Body)
+	body := string(raw)
+
+	for _, want := range []string{"Claude", "a@example.test", `name="team_id" value="` + strconv.FormatInt(teamID, 10) + `"`, "Allow access", `name="csrf_token" value="` + testCSRF + `"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the consent page is missing %q:\n%s", want, body)
+		}
+	}
+
+	if strings.Contains(body, "api_key") || strings.Contains(body, "<select") {
+		t.Errorf("a one-team person was asked to type or choose something:\n%s", body)
+	}
+}
+
+// TestConsentCancelTellsTheClient checks that Cancel reports access_denied to
+// the client rather than leaving it waiting, and mints nothing.
+func TestConsentCancelTellsTheClient(t *testing.T) {
 	h := newHTTPFixture(t)
 
 	registration := postJSON(t, h.Server.URL+PathRegister, map[string]any{
@@ -1091,34 +1249,83 @@ func TestConsentRefusesABadKey(t *testing.T) {
 		"redirect_uris": []string{"http://127.0.0.1:33418/callback"},
 	})
 
-	verifier := "a-verifier-long-enough-to-be-a-real-one-0123456789"
-	sum := sha256.Sum256([]byte(verifier))
+	form := consentForm(registration["client_id"].(string))
+	form.Set("decision", "deny")
 
-	client := &http.Client{
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-
-	response, err := client.PostForm(h.Server.URL+PathAuthorize, url.Values{
-		"response_type":         {"code"},
-		"client_id":             {registration["client_id"].(string)},
-		"redirect_uri":          {"http://127.0.0.1:33418/callback"},
-		"code_challenge":        {base64.RawURLEncoding.EncodeToString(sum[:])},
-		"code_challenge_method": {"S256"},
-		"api_key":               {"feas_not-a-real-key"},
-	})
+	response, err := noRedirect.PostForm(h.Server.URL+PathAuthorize, form)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closeResponse(t, response)
 
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want the form back", response.StatusCode)
+	location, _ := url.Parse(response.Header.Get("Location"))
+	if response.StatusCode != http.StatusFound || location.Query().Get("error") != "access_denied" || location.Query().Get("state") != "xyz" {
+		t.Fatalf("status = %d, location = %q; want access_denied with the state", response.StatusCode, location)
 	}
 
-	body, _ := io.ReadAll(response.Body)
+	var keys int
+	if err := h.System.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE name LIKE '%(MCP)'`).Scan(&keys); err != nil {
+		t.Fatal(err)
+	}
+	if keys != 0 {
+		t.Fatalf("cancel minted %d keys", keys)
+	}
+}
 
-	if !strings.Contains(string(body), "not valid") {
-		t.Errorf("the form does not say what went wrong: %s", body)
+// TestConsentRefusesATeamYouAreNotIn checks that a team id edited into the
+// form is checked against the membership, not trusted from the page.
+func TestConsentRefusesATeamYouAreNotIn(t *testing.T) {
+	h := newHTTPFixture(t)
+
+	registration := postJSON(t, h.Server.URL+PathRegister, map[string]any{
+		"client_name":   "Test",
+		"redirect_uris": []string{"http://127.0.0.1:33418/callback"},
+	})
+
+	form := consentForm(registration["client_id"].(string))
+	form.Set("team_id", "8")
+
+	response, err := noRedirect.PostForm(h.Server.URL+PathAuthorize, form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeResponse(t, response)
+
+	raw, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(raw), "cannot connect that team") {
+		t.Fatalf("status = %d; want the form back with a refusal:\n%s", response.StatusCode, raw)
+	}
+
+	var codes int
+	if err := h.System.QueryRow(`SELECT COUNT(*) FROM mcp_oauth_codes`).Scan(&codes); err != nil {
+		t.Fatal(err)
+	}
+	if codes != 0 {
+		t.Fatal("a code was issued for a team the person is not in")
+	}
+}
+
+// TestConsentRefusesAForgedForm checks the CSRF lock on the approval: pressing
+// Allow creates a credential, so a cross-site post must not be able to do it.
+func TestConsentRefusesAForgedForm(t *testing.T) {
+	h := newHTTPFixture(t)
+
+	registration := postJSON(t, h.Server.URL+PathRegister, map[string]any{
+		"client_name":   "Test",
+		"redirect_uris": []string{"http://127.0.0.1:33418/callback"},
+	})
+
+	form := consentForm(registration["client_id"].(string))
+	form.Del("csrf_token")
+
+	response, err := noRedirect.PostForm(h.Server.URL+PathAuthorize, form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeResponse(t, response)
+
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", response.StatusCode)
 	}
 }
 

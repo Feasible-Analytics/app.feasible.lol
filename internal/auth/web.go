@@ -894,6 +894,18 @@ func (h *Handler) FormToken(w http.ResponseWriter, r *http.Request) string {
 	return token
 }
 
+// SignedInUser names the person one of this handler's guards admitted. It is
+// the whole of what the MCP consent page needs to know about a session, so
+// that page can live in its own package without a second cookie parser.
+func (h *Handler) SignedInUser(r *http.Request) (userID int64, email string, ok bool) {
+	user := userFrom(r)
+	if user == nil {
+		return 0, "", false
+	}
+
+	return user.ID, user.Email, true
+}
+
 // AccessibleDomains lists only the sites the signed-in user may view. Team
 // memberships and per-site guest memberships are combined here so the
 // dashboard picker cannot disclose another team's domains from the global

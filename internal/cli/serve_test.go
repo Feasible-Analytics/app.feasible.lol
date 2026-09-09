@@ -204,7 +204,7 @@ func newStack(t *testing.T) *stack {
 		t.Fatal("the commerce fixture could not mint a CSRF token")
 	}
 
-	public := buildPublic(e, control, service.Sites, manager, com.Gate)
+	public := buildPublic(e, control, service.Sites, manager, com.Gate, app)
 
 	data := buildData(e, control, manager, service, site)
 

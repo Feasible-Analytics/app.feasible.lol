@@ -176,7 +176,7 @@ func runServe(e *env, args []string) int {
 	// of them, which is the difference between this and the product it competes
 	// with: their self-hosted build inherited a subscription check and showed
 	// people a paywall on their own instance.
-	public := buildPublic(e, control, service.Sites, manager, com.Gate)
+	public := buildPublic(e, control, service.Sites, manager, com.Gate, app)
 
 	// The worker's lifetime is tied to the process rather than to a request, so
 	// it gets a context of its own that shutdown cancels.

@@ -97,7 +97,7 @@ func runMCP(e *env, args []string) int {
 	// a self-hoster one query every fifteen seconds and refuses nothing.
 	gate := access.New(lifecycle.NewStore(control), volume.NewStore(control), cache, e.log)
 
-	public := buildPublic(e, control, cache, manager, gate)
+	public := buildPublic(e, control, cache, manager, gate, nil)
 
 	// The routing snapshot is refreshed in the background, because a session can
 	// stay open for hours and a site added in the dashboard should show up in
