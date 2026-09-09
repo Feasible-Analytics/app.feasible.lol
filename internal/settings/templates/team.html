@@ -171,6 +171,14 @@
 			{{ t $.Lang "settings.team.api_keys_hint_before" }}
 			<strong class="font-semibold text-heading">{{ t $.Lang "settings.team.api_keys_hint_scope" }}</strong>{{ t $.Lang "settings.team.api_keys_hint_after" }}
 		</p>
+		<div class="mt-4 border-2 border-line bg-subtle px-4 py-3 text-sm text-body">
+			<p class="font-semibold text-heading">{{ t $.Lang "settings.team.assistant_heading" }}</p>
+			<p class="mt-1 text-muted">
+				{{ t $.Lang "settings.team.assistant_body_before" }}
+				<code class="break-all bg-card px-1.5 py-0.5 font-mono text-xs text-body">{{.BaseURL}}/mcp</code>
+				{{ t $.Lang "settings.team.assistant_body_after" }}
+			</p>
+		</div>
 		{{if .NewKey}}
 			<div role="status" class="mt-4 border-2 border-up/30 bg-up/10 px-4 py-3 text-sm text-up-ink">
 				{{ t $.Lang "settings.team.new_key_notice" }}

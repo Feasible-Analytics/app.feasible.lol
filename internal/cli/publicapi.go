@@ -54,7 +54,10 @@ type publicStack struct {
 // self-hosted build inherited the check, and people running it on their own
 // hardware were shown a subscription prompt on their own instance. A plan check
 // in this function would be a bug.
-func buildPublic(e *env, control *sql.DB, cache *sites.Cache, manager *accounts.Manager, gate *access.Gate) *publicStack {
+//
+// signin is the app's session gate, which the OAuth consent page sits behind.
+// The stdio transport has no browser and passes nil.
+func buildPublic(e *env, control *sql.DB, cache *sites.Cache, manager *accounts.Manager, gate *access.Gate, signin mcp.Signin) *publicStack {
 	keys := apikeys.NewStore(control)
 	hooks := webhooks.NewStore(control)
 
@@ -94,7 +97,7 @@ func buildPublic(e *env, control *sql.DB, cache *sites.Cache, manager *accounts.
 
 	server := mcp.New(api, e.log)
 
-	oauth := &mcp.OAuth{DB: control, Keys: keys, BaseURL: e.cfg.App.BaseURL}
+	oauth := &mcp.OAuth{DB: control, Keys: keys, Teams: api.Teams, Signin: signin, BaseURL: e.cfg.App.BaseURL}
 
 	worker := webhooks.NewWorker(hooks, e.cfg.API.WebhookTimeout)
 	worker.Log = func(message string, args ...any) { e.log.Info(message, args...) }

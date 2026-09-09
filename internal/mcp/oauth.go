@@ -30,18 +30,19 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
 
 // A remote MCP client is a program somebody pasted a URL into. There is nobody
 // to fill in a developer portal, no client secret anybody could keep, and no
 // second chance to ask — so registration is dynamic, PKCE is mandatory on every
-// authorisation, and the only thing the person has to do is prove they hold a
-// key for the team they are connecting.
+// authorisation, and the only thing the person has to do is sign in and press
+// Allow.
 //
-// The authorisation step asks for an API key rather than a password. That is
-// deliberate while sign-in lives elsewhere in the product: a key is already the
-// credential this API is built around, it is revocable on its own, and it means
-// this package never touches a password.
+// Pressing Allow mints an API key for the team, named after the client, and
+// the tokens stand for that key. That keeps one credential model: the key is
+// listed with every other key in team settings, and revoking it there ends the
+// connection the same way it would end a script's.
 
 // Token lifetimes. An hour is short enough that a leaked access token is not
 // worth much and long enough that a working session is not interrupted; the
@@ -104,9 +105,17 @@ type OAuth struct {
 	// DB is system.db, where clients, codes and tokens live.
 	DB *sql.DB
 
-	// Keys authenticates the API key somebody proves themselves with at the
-	// authorisation step, and is what an issued token ultimately stands for.
+	// Keys reads the API key an issued token stands for.
 	Keys *apikeys.Store
+
+	// Teams mints the key an approval creates, and decides which teams the
+	// signed-in person may connect at all.
+	Teams *teams.Store
+
+	// Signin is the product's session gate. The consent page sits behind it so
+	// "who is approving this" has the same answer as every other signed-in
+	// screen. Nil leaves the authorisation endpoint refusing everyone.
+	Signin Signin
 
 	// BaseURL is the public address. Every URL in the metadata documents is
 	// built from it, so a wrong value here produces metadata that sends clients
@@ -124,6 +133,15 @@ type OAuth struct {
 	// a value rather than a pointer so an OAuth built as a literal is limited
 	// without anybody remembering to construct it.
 	perAddress throttle
+}
+
+// Signin is what the consent page needs from the product's own sign-in: the
+// gate that sends a stranger to the login page and checks a form token on the
+// way back, and the identity of whoever it admitted.
+type Signin interface {
+	Protect(http.Handler) http.Handler
+	FormToken(http.ResponseWriter, *http.Request) string
+	SignedInUser(*http.Request) (userID int64, email string, ok bool)
 }
 
 // now reads the clock.
@@ -146,9 +164,24 @@ func (o *OAuth) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+PathProtectedResourceMetadata+Path, o.protectedResourceMetadata)
 
 	mux.HandleFunc("POST "+PathRegister, o.throttled(o.register))
-	mux.HandleFunc("GET "+PathAuthorize, o.authorizeForm)
-	mux.HandleFunc("POST "+PathAuthorize, o.throttled(o.authorizeSubmit))
+	mux.Handle("GET "+PathAuthorize, o.signedIn(o.authorizeForm))
+	mux.Handle("POST "+PathAuthorize, o.signedIn(o.throttled(o.authorizeSubmit)))
 	mux.HandleFunc("POST "+PathToken, o.throttled(o.token))
+}
+
+// signedIn puts the session gate in front of the consent page. Without a
+// Signin there is no way to know who is approving, so the page is refused
+// outright rather than served to nobody in particular.
+func (o *OAuth) signedIn(next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if o.Signin == nil {
+			writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable",
+				"sign-in is not available on this server")
+			return
+		}
+
+		o.Signin.Protect(next).ServeHTTP(w, r)
+	})
 }
 
 // throttled puts the per-address bucket in front of a handler that answers
@@ -520,11 +553,7 @@ func (o *OAuth) redirectURIs(ctx context.Context, clientID string) ([]string, er
 
 // consentPage is what somebody sees when a client sends them here.
 //
-// It asks for an API key rather than a password. Sign-in belongs to the rest of
-// the product; a key is already this API's credential, is revocable on its own,
-// and means this page never handles a password — so a mistake here cannot cost
-// somebody their account.
-//
+// It sits behind sign-in, so the only decision left on it is Allow or Cancel.
 // It names where the access goes and what it covers, because registration is
 // open: anybody can register a client called anything and send this page's
 // link to somebody else. The name proves nothing; the destination is the one
@@ -534,24 +563,30 @@ var consentPage = template.Must(template.New("consent").Parse(`<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Connect to Feasible</title>
 <style>
-  body { font: 16px/1.5 system-ui, sans-serif; max-width: 34rem; margin: 4rem auto; padding: 0 1rem; }
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 34rem; margin: 4rem auto; padding: 0 1rem; color: #18181b; }
   label { display: block; margin: 1.5rem 0 .5rem; font-weight: 600; }
-  input[type=password] { width: 100%; padding: .6rem; font: inherit; box-sizing: border-box; }
-  button { margin-top: 1.5rem; padding: .6rem 1.2rem; font: inherit; cursor: pointer; }
+  select { width: 100%; padding: .6rem; font: inherit; box-sizing: border-box; }
+  button { padding: .6rem 1.2rem; font: inherit; cursor: pointer; border-radius: .3rem; border: 1px solid #d4d4d8; background: #fff; }
+  button.allow { background: #18181b; color: #fff; border-color: #18181b; }
+  .actions { display: flex; gap: .75rem; margin-top: 1.5rem; }
   .who { background: #f4f4f5; padding: 1rem; border-radius: .4rem; }
   .who ul { margin: .5rem 0 0; padding-left: 1.2rem; }
+  .muted { color: #52525b; font-size: .9rem; }
   .error { color: #b00020; font-weight: 600; }
 </style></head><body>
 <h1>Connect to Feasible</h1>
 <div class="who">
-  <p><strong>{{.ClientName}}</strong> is asking to connect to one of your teams.</p>
+  <p><strong>{{.ClientName}}</strong> is asking to connect to your Feasible account.</p>
   <p>If you allow it, access will be sent to <strong>{{.Destination}}</strong>. If that is not the
      application you meant to connect, stop here.</p>
   <p>It will be able to:</p>
   <ul>{{range .Permissions}}<li>{{.}}</li>{{end}}</ul>
 </div>
+<p class="muted">Signed in as {{.Email}}.</p>
 {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+{{if .Teams}}
 <form method="post" action="{{.Action}}">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
   <input type="hidden" name="client_id" value="{{.ClientID}}">
   <input type="hidden" name="redirect_uri" value="{{.RedirectURI}}">
   <input type="hidden" name="state" value="{{.State}}">
@@ -559,13 +594,24 @@ var consentPage = template.Must(template.New("consent").Parse(`<!doctype html>
   <input type="hidden" name="code_challenge" value="{{.CodeChallenge}}">
   <input type="hidden" name="code_challenge_method" value="{{.CodeChallengeMethod}}">
   <input type="hidden" name="response_type" value="code">
-  <label for="key">Your API key</label>
-  <input id="key" name="api_key" type="password" autocomplete="off" spellcheck="false"
-         placeholder="feas_…" required>
-  <p>Create one in your dashboard under API keys. The connection can do whatever that key can do,
-     and revoking the key ends it.</p>
-  <button type="submit">Allow access</button>
+  {{if eq (len .Teams) 1}}
+    {{range .Teams}}<input type="hidden" name="team_id" value="{{.ID}}">
+    <p>It will connect to the team <strong>{{.Name}}</strong>.</p>{{end}}
+  {{else}}
+    <label for="team">Connect to which team?</label>
+    <select id="team" name="team_id">{{range .Teams}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select>
+  {{end}}
+  <p class="muted">This creates an API key named after {{.ClientName}} in your team settings.
+     Revoke that key to disconnect.</p>
+  <div class="actions">
+    <button type="submit" name="decision" value="allow" class="allow">Allow access</button>
+    <button type="submit" name="decision" value="deny">Cancel</button>
+  </div>
 </form>
+{{else}}
+<p>Your role does not allow creating API keys, so you cannot connect an application. Ask a team
+   admin to connect it, or to change your role.</p>
+{{end}}
 </body></html>`))
 
 // consentData is what the page renders from.
@@ -579,6 +625,15 @@ type consentData struct {
 	// Permissions are the requested scopes in plain words.
 	Permissions []string
 
+	// Email is who is approving, so the page can be checked against the
+	// account somebody meant to connect.
+	Email string
+
+	// Teams are the ones the person may connect. One is shown as a sentence,
+	// several as a choice, none as a refusal.
+	Teams []consentTeam
+
+	CSRF                string
 	ClientID            string
 	RedirectURI         string
 	State               string
@@ -587,6 +642,33 @@ type consentData struct {
 	CodeChallengeMethod string
 	Action              string
 	Error               string
+}
+
+// consentTeam is one team the person may connect a client to.
+type consentTeam struct {
+	ID   int64
+	Name string
+}
+
+// connectableTeams lists the teams on which the person may create an API
+// key, which is the permission an approval exercises.
+func (o *OAuth) connectableTeams(ctx context.Context, userID int64) ([]consentTeam, error) {
+	ids, err := o.Teams.TeamIDs(ctx, userID, teams.PermCreateAPIKey)
+	if err != nil {
+		return nil, err
+	}
+
+	list := make([]consentTeam, 0, len(ids))
+	for _, id := range ids {
+		var name string
+		if err := o.DB.QueryRowContext(ctx, `SELECT name FROM teams WHERE id = ?`, id).Scan(&name); err != nil {
+			return nil, err
+		}
+
+		list = append(list, consentTeam{ID: id, Name: name})
+	}
+
+	return list, nil
 }
 
 // authorizeForm shows the consent page.
@@ -600,30 +682,50 @@ func (o *OAuth) authorizeForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	o.renderConsent(w, request, "")
+	o.renderConsent(w, r, request, "")
 }
 
-// renderConsent writes the page.
-func (o *OAuth) renderConsent(w http.ResponseWriter, request *authorizeRequest, message string) {
-	name := o.clientName(request.ClientID)
+// renderConsent writes the page for whoever the session gate admitted.
+func (o *OAuth) renderConsent(w http.ResponseWriter, r *http.Request, request *authorizeRequest, message string) {
+	userID, email, ok := o.Signin.SignedInUser(r)
+	if !ok {
+		writeOAuthError(w, http.StatusUnauthorized, "access_denied", "nobody is signed in")
+		return
+	}
+
+	connectable, err := o.connectableTeams(r.Context(), userID)
+	if err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "your teams could not be read")
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-	// The page is never cached: it carries a one-time authorisation context and
-	// is submitted with a credential.
+	// The page is never cached: it carries a one-time authorisation context.
 	w.Header().Set("Cache-Control", "no-store")
 
+	// The form posts back to the same query string it was opened with, so a
+	// session that lapses between showing the page and pressing Allow comes
+	// back from sign-in to this page rather than to a bare POST path.
+	action := o.BaseURL + PathAuthorize
+	if r.URL.RawQuery != "" {
+		action += "?" + r.URL.RawQuery
+	}
+
 	_ = consentPage.Execute(w, consentData{
-		ClientName:          name,
+		ClientName:          o.clientName(request.ClientID),
 		Destination:         redirectDestination(request.RedirectURI),
 		Permissions:         scopeSentences(request.Scope),
+		Email:               email,
+		Teams:               connectable,
+		CSRF:                o.Signin.FormToken(w, r),
 		ClientID:            request.ClientID,
 		RedirectURI:         request.RedirectURI,
 		State:               request.State,
 		Scope:               request.Scope,
 		CodeChallenge:       request.CodeChallenge,
 		CodeChallengeMethod: request.CodeChallengeMethod,
-		Action:              o.BaseURL + PathAuthorize,
+		Action:              action,
 		Error:               message,
 	})
 }
@@ -649,7 +751,7 @@ func redirectDestination(raw string) string {
 // than listing nothing.
 func scopeSentences(scope string) []string {
 	if strings.TrimSpace(scope) == "" {
-		return []string{"Do everything the API key you enter is allowed to do."}
+		return []string{"Do everything your account can do through the API."}
 	}
 
 	sentences := make([]string, 0, len(oauthScopes))
@@ -692,7 +794,9 @@ func (o *OAuth) clientName(clientID string) string {
 	return name
 }
 
-// authorizeSubmit checks the key and issues a code.
+// authorizeSubmit records the decision. Allow mints a key for the chosen team
+// and issues a code against it; Cancel tells the client so, rather than
+// leaving it waiting on a callback that never comes.
 func (o *OAuth) authorizeSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "the form could not be read")
@@ -705,18 +809,42 @@ func (o *OAuth) authorizeSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, err := o.Keys.Authenticate(r.Context(), r.PostFormValue("api_key"))
-	if err != nil {
-		// The form comes back rather than redirecting with an error: the person
-		// mistyped their key, and sending them back to the client to start
-		// again is a worse experience than one more attempt here.
-		o.renderConsent(w, request, "That key is not valid. Check it and try again.")
+	if r.PostFormValue("decision") == "deny" {
+		o.redirectBack(w, r, request, url.Values{"error": {"access_denied"}})
 		return
 	}
 
-	request.Scope, err = grantedScopes(key, request.Scope)
+	userID, _, ok := o.Signin.SignedInUser(r)
+	if !ok {
+		writeOAuthError(w, http.StatusUnauthorized, "access_denied", "nobody is signed in")
+		return
+	}
+
+	teamID, err := strconv.ParseInt(r.PostFormValue("team_id"), 10, 64)
+	if err != nil || teamID < 1 {
+		o.renderConsent(w, r, request, "Choose a team to connect.")
+		return
+	}
+
+	// CreateAPIKey checks the membership and the role, so a team id somebody
+	// edited into the form is refused here rather than trusted from the page.
+	_, created, err := o.Teams.CreateAPIKey(r.Context(), userID, teamID,
+		connectionKeyName(o.clientName(request.ClientID)), strings.Fields(request.Scope))
+	if errors.Is(err, teams.ErrForbidden) || errors.Is(err, teams.ErrNotFound) {
+		o.renderConsent(w, r, request, "You cannot connect that team.")
+		return
+	}
 	if err != nil {
-		o.renderConsent(w, request, err.Error())
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "the connection could not be created")
+		return
+	}
+
+	// A request that named no scope is a grant of everything the minted key
+	// can do, spelled out, because an empty grant on a stored token means the
+	// opposite: nothing.
+	request.Scope, err = grantedScopes(&apikeys.Key{Scopes: created.Scopes}, request.Scope)
+	if err != nil {
+		o.renderConsent(w, r, request, err.Error())
 		return
 	}
 
@@ -732,13 +860,19 @@ func (o *OAuth) authorizeSubmit(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO mcp_oauth_codes
 			(code_hash, client_id, team_id, api_key_id, redirect_uri, scope, code_challenge, code_challenge_method, created_at, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		hashToken(code), request.ClientID, key.TeamID, key.ID, request.RedirectURI, request.Scope,
+		hashToken(code), request.ClientID, created.TeamID, created.ID, request.RedirectURI, request.Scope,
 		request.CodeChallenge, request.CodeChallengeMethod,
 		now.Unix(), now.Add(authorizationCodeLifetime).Unix()); err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "the authorisation could not be recorded")
 		return
 	}
 
+	o.redirectBack(w, r, request, url.Values{"code": {code}})
+}
+
+// redirectBack sends the browser to the client's validated redirect URI with
+// the outcome and, when the client sent one, its state.
+func (o *OAuth) redirectBack(w http.ResponseWriter, r *http.Request, request *authorizeRequest, outcome url.Values) {
 	target, err := url.Parse(request.RedirectURI)
 	if err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "the redirect URI could not be built")
@@ -746,7 +880,9 @@ func (o *OAuth) authorizeSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := target.Query()
-	query.Set("code", code)
+	for name, values := range outcome {
+		query.Set(name, values[0])
+	}
 
 	if request.State != "" {
 		query.Set("state", request.State)
@@ -755,6 +891,13 @@ func (o *OAuth) authorizeSubmit(w http.ResponseWriter, r *http.Request) {
 	target.RawQuery = query.Encode()
 
 	http.Redirect(w, r, target.String(), http.StatusFound)
+}
+
+// connectionKeyName is what the minted key is called in team settings, so the
+// list there reads as which assistant is connected rather than as a row of
+// random names.
+func connectionKeyName(client string) string {
+	return client + " (MCP)"
 }
 
 // token exchanges a code or a refresh token for an access token.
