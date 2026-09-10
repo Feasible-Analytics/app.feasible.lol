@@ -216,7 +216,11 @@ func runServe(e *env, args []string) int {
 	ingestHealth(checks, control, service, e.cfg.App.DataDir, manager)
 	if e.cfg.App.Worker {
 		// A worker process is not ready when its durable scheduler has never run,
-		// has failed its latest pass, or has silently stopped ticking.
+		// has failed several passes in a row, or has silently stopped ticking. A
+		// single failed pass is deliberately tolerated: serving a dashboard does
+		// not depend on this minute's background work, and pulling the process
+		// out of the proxy pool over one lost pass is an outage in exchange for
+		// nothing.
 		checks.Require("recurring_scheduler", func(context.Context) error {
 			return extra.Cron.Health(time.Now().UTC())
 		})

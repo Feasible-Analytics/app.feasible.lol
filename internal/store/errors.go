@@ -27,3 +27,21 @@ func IsUniqueViolation(err error) bool {
 
 	return driverErr.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE
 }
+
+// IsBusy reports whether an error is SQLite refusing to wait any longer for a
+// lock another connection holds. It masks off the extended code so that every
+// SQLITE_BUSY_* variant is recognised, and treats SQLITE_LOCKED the same way
+// because both mean "try again", not "this will never work".
+func IsBusy(err error) bool {
+	var driverErr *sqlite.Error
+	if !errors.As(err, &driverErr) {
+		return false
+	}
+
+	switch driverErr.Code() & 0xff {
+	case sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED:
+		return true
+	}
+
+	return false
+}
