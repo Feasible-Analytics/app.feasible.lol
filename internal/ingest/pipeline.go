@@ -724,11 +724,11 @@ func parseEventURL(raw string) (parsed *url.URL, hostname, pathname string, para
 		pathname += "#" + parsed.EscapedFragment()
 	}
 
-	// A trailing slash on anything but the root splits one page into two rows
-	// on every report.
-	if len(pathname) > 1 {
-		pathname = strings.TrimSuffix(pathname, "/")
-	}
+	// The trailing slash is kept. `/about/` and `/about` are different URLs to
+	// a server, and one of them is usually the canonical one — so rewriting it
+	// here would report a page under an address the site does not serve, and
+	// would do it before the customer had any say. Merging the two is a path
+	// rule the site owner turns on, and that rule runs at the writer.
 
 	// The limit is on the path, excluding the domain and the query string,
 	// because the path is what grows without bound.

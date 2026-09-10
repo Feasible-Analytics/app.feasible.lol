@@ -1245,11 +1245,50 @@ func (w *Writer) commitDurable(ctx context.Context, accountID int64, tx *sql.Tx,
 		}
 	}
 
+	if err := markPagelessVisits(ctx, tx, dirty, ids); err != nil {
+		return err
+	}
+
 	if err := w.fail(accountID, WriterStageBeforeCommit); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("write batch: commit: %w", err)
+	}
+
+	return nil
+}
+
+// markPagelessVisits classifies the events of every visit that could not have
+// come from a browser. It runs after the inserts so that one statement covers
+// both what this batch wrote and what earlier batches already left on disk —
+// the deciding event is usually not the first, so the rows that prove it are
+// generally already stored.
+//
+// The events are classified rather than deleted, like every other bot verdict:
+// a wrong call has to be something the customer can toggle back into view, not
+// something we destroyed on their behalf. Rows already carrying a reason keep
+// it, because the first answer is the more specific one.
+func markPagelessVisits(ctx context.Context, tx *sql.Tx, dirty []*Session, ids *dimensionIDs) error {
+	for _, session := range dirty {
+		if !session.LooksAutomated() {
+			continue
+		}
+
+		// Zero is the id of the empty string, which is also what "not automated"
+		// is stored as, so an unresolved reason here would write the verdict as
+		// its own opposite and leave nothing to find.
+		reason := ids.of(intern.BotReason, ReasonPagelessVisit)
+		if reason == intern.EmptyID {
+			return fmt.Errorf("write batch: mark pageless visit: %q was not interned", ReasonPagelessVisit)
+		}
+
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE events SET bot_reason_id = ? WHERE session_id = ? AND bot_reason_id = 0",
+			reason, session.ID,
+		); err != nil {
+			return fmt.Errorf("write batch: mark pageless visit: %w", err)
+		}
 	}
 
 	return nil
