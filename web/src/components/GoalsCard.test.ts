@@ -13,7 +13,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import type { FunnelReport, FunnelReportStep, Goal, JourneyAnchor } from "../api/types";
-import { FunnelChart, PanelFrame, anchorKey, behaviorCaveat, behaviorEnabled, blockHeight, filterAnchors, goalFilter, goalsFooter, goalsPrompt, hiddenGoalsNote } from "./GoalsCard";
+import { PanelFrame } from "./atoms";
+import { FunnelChart, anchorKey, behaviorCaveat, behaviorEnabled, blockHeight, filterAnchors, goalFilter, goalsFooter, goalsPrompt, hiddenGoalsNote } from "./GoalsCard";
 
 // The catalogue is read once from the page, so it is stubbed before any test
 // asks for a string. It is the real English file rather than a hand-written

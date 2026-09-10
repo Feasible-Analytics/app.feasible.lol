@@ -36,10 +36,9 @@ import type {
 import type { FilterState } from "../lib/filters";
 import { compact, exact, metricAxisValue, metricTitle } from "../lib/format";
 import { n, t } from "../lib/i18n";
-import type { RemoteState } from "../lib/useStats";
 import { useNearViewport, useRemote } from "../lib/useStats";
 import type { BehaviorState, BehaviorTab } from "../lib/url";
-import { Bar, Failure, InfoDot, Spinner } from "./atoms";
+import { Bar, InfoDot, NumberCell, PanelEmpty, PanelFailure, PanelFrame, PanelLoading, SelectorBar } from "./atoms";
 
 type JourneyDirection = "forward" | "backward";
 
@@ -253,12 +252,12 @@ export function goalsPrompt(configured: Pick<GoalReportRow, "total_conversions" 
  * what happened in this period — and only the advice underneath differs. */
 function GoalsEmpty({ prompt, settingsURL }: { prompt: Exclude<GoalsPrompt, "rows">; settingsURL?: string }) {
 	if (prompt === "unconfigured") {
-		return <BehaviorEmpty title={t("dashboard.goals.empty")} body={t("dashboard.goals.empty_hint")} href={settingsURL} />;
+		return <PanelEmpty title={t("dashboard.goals.empty")} body={t("dashboard.goals.empty_hint")} href={settingsURL} />;
 	}
 
 	if (prompt === "automatic_only") {
 		return (
-			<BehaviorEmpty
+			<PanelEmpty
 				title={t("dashboard.goals.none_converted")}
 				body={t("dashboard.goals.automatic_only_hint")}
 				href={settingsURL}
@@ -268,7 +267,7 @@ function GoalsEmpty({ prompt, settingsURL }: { prompt: Exclude<GoalsPrompt, "row
 	}
 
 	return (
-		<BehaviorEmpty
+		<PanelEmpty
 			title={t("dashboard.goals.none_converted")}
 			body={t("dashboard.goals.none_converted_hint")}
 			href={settingsURL}
@@ -288,14 +287,14 @@ function PropertiesPanel({ domain, request, enabled, onFilter, settingsURL, sele
 
 	if (list.error) return <PanelFailure state={list} />;
 	if (!list.data) return <PanelLoading label={t("dashboard.behavior.properties.loading")} />;
-	if (list.data.length === 0) return <BehaviorEmpty title={t("dashboard.behavior.properties.empty")} body={t("dashboard.behavior.properties.empty_hint")} href={settingsURL} />;
+	if (list.data.length === 0) return <PanelEmpty title={t("dashboard.behavior.properties.empty")} body={t("dashboard.behavior.properties.empty_hint")} href={settingsURL} />;
 
 	return (
 		<PanelFrame footer={settingsURL ? <a href={settingsURL} className="text-xs font-medium text-muted transition-colors hover:text-accent-ink">{t("dashboard.behavior.properties.manage")} →</a> : undefined}>
 			<SelectorBar label={t("dashboard.behavior.properties.selector_label")} value={current} onChange={onSelected}>
 				{list.data.map((property) => <option key={property.id} value={property.name}>{property.name} · {propertyScopeLabel(property.scope)}</option>)}
 			</SelectorBar>
-			{report.error ? <PanelFailure state={report} compact /> : !report.data ? <PanelLoading label={t("dashboard.behavior.properties.loading_values")} compact /> : report.data.rows.length === 0 ? <BehaviorEmpty title={t("dashboard.behavior.properties.no_values")} body={t("dashboard.empty.hint")} /> : <PropertyRows report={report.data} name={current} onFilter={onFilter} />}
+			{report.error ? <PanelFailure state={report} compact /> : !report.data ? <PanelLoading label={t("dashboard.behavior.properties.loading_values")} compact /> : report.data.rows.length === 0 ? <PanelEmpty title={t("dashboard.behavior.properties.no_values")} body={t("dashboard.empty.hint")} /> : <PropertyRows report={report.data} name={current} onFilter={onFilter} />}
 		</PanelFrame>
 	);
 }
@@ -343,7 +342,7 @@ function FunnelsPanel({ domain, request, enabled, settingsURL, selected, onSelec
 
 	if (list.error) return <PanelFailure state={list} />;
 	if (!list.data) return <PanelLoading label={t("dashboard.behavior.funnels.loading")} />;
-	if (list.data.length === 0) return <BehaviorEmpty title={t("dashboard.behavior.funnels.empty")} body={t("dashboard.behavior.funnels.empty_hint")} href={settingsURL} />;
+	if (list.data.length === 0) return <PanelEmpty title={t("dashboard.behavior.funnels.empty")} body={t("dashboard.behavior.funnels.empty_hint")} href={settingsURL} />;
 
 	return (
 		<PanelFrame footer={settingsURL ? <a href={settingsURL} className="text-xs font-medium text-muted transition-colors hover:text-accent-ink">{t("dashboard.behavior.funnels.manage")} →</a> : undefined}>
@@ -393,7 +392,7 @@ export function FunnelChart({ report }: { report: FunnelReport }) {
 	if (steps.length === 0) {
 		return (
 			<div className="px-4 pb-3 sm:px-5">
-				<BehaviorEmpty title={t("dashboard.behavior.funnels.no_data")} body={t("dashboard.empty.hint")} />
+				<PanelEmpty title={t("dashboard.behavior.funnels.no_data")} body={t("dashboard.empty.hint")} />
 			</div>
 		);
 	}
@@ -553,7 +552,7 @@ function ExplorePanel({ domain, request, enabled, behavior, onBehaviorChange }: 
 
 	if (options.error) return <PanelFailure state={options} />;
 	if (!options.data || !goals.data) return <PanelLoading label={t("dashboard.behavior.explore.loading")} />;
-	if (allOptions.length === 0) return <BehaviorEmpty title={t("dashboard.behavior.explore.empty")} body={t("dashboard.behavior.explore.empty_hint")} />;
+	if (allOptions.length === 0) return <PanelEmpty title={t("dashboard.behavior.explore.empty")} body={t("dashboard.behavior.explore.empty_hint")} />;
 
 	/** chooseAnchor resets the path when the reader starts from the selector. */
 	const chooseAnchor = (key: string) => {
@@ -591,7 +590,7 @@ function ExplorePanel({ domain, request, enabled, behavior, onBehaviorChange }: 
 
 			{trail.length > 0 && <nav aria-label={t("dashboard.behavior.explore.trail")} className="scroll-thin flex items-center gap-1 overflow-x-auto border-b border-line px-4 py-2 text-xs sm:px-5">{trail.map((item, index) => <span key={`${anchorKey(item)}:${index}`} className="flex shrink-0 items-center gap-1"><button type="button" onClick={() => rewind(index)} className="max-w-40 truncate px-1.5 py-1 text-muted hover:bg-hover hover:text-body">{anchorLabel(item)}</button><span aria-hidden="true" className="text-muted">›</span></span>)}<span className="shrink-0 font-medium text-body">{anchor && anchorLabel(anchor)}</span></nav>}
 
-			{report.error ? <PanelFailure state={report} compact /> : !report.data ? <PanelLoading label={t("dashboard.behavior.explore.loading_steps")} compact /> : report.data.steps.length === 0 ? <BehaviorEmpty title={t("dashboard.behavior.explore.no_steps")} body={t("dashboard.empty.hint")} /> : <JourneyRows report={report.data} onContinue={continueTo} />}
+			{report.error ? <PanelFailure state={report} compact /> : !report.data ? <PanelLoading label={t("dashboard.behavior.explore.loading_steps")} compact /> : report.data.steps.length === 0 ? <PanelEmpty title={t("dashboard.behavior.explore.no_steps")} body={t("dashboard.empty.hint")} /> : <JourneyRows report={report.data} onContinue={continueTo} />}
 		</PanelFrame>
 	);
 }
@@ -614,11 +613,6 @@ function JourneyRows({ report, onContinue }: { report: JourneyReport; onContinue
 	);
 }
 
-/** SelectorBar gives Properties and Funnels identical control treatment. */
-function SelectorBar({ label, value, onChange, children }: { label: string; value: string; onChange: (value: string) => void; children: React.ReactNode }) {
-	return <div className="border-b border-line px-4 py-3 sm:px-5"><label className="block max-w-sm text-[11px] font-medium tracking-wide text-muted uppercase">{label}<select value={value} onChange={(event) => onChange(event.target.value)} className="mt-1 block h-control w-full border-2 border-line bg-card px-2.5 text-sm text-body">{children}</select></label></div>;
-}
-
 /** hiddenGoalsNote says how many goals the table is not showing. Silently
  * dropping rows is how a reader concludes a goal was lost, so the count of what
  * is not on screen is on screen. */
@@ -638,34 +632,6 @@ export function goalsFooter(prompt: GoalsPrompt, shown: number, configured: numb
 	if (prompt !== "rows") return {};
 
 	return { note: hiddenGoalsNote(shown, configured), manageURL: settingsURL };
-}
-
-/** PanelFrame pins optional management navigation to the bottom, and a note
- * beside it in the strip that is reserved either way. The note carries the auto
- * margin, so a footer holding only a link is laid out exactly as it is without
- * one. */
-export function PanelFrame({ children, footer, note }: { children: React.ReactNode; footer?: React.ReactNode; note?: string }) {
-	return <div className="flex h-full min-h-[350px] flex-col"><div className="min-h-0 flex-1">{children}</div>{(footer || note) && <footer className="flex min-h-[42px] shrink-0 items-center gap-4 border-t border-line px-4 py-1.5 sm:px-5">{note && <p className="mr-auto text-[11px] text-muted">{note}</p>}{footer}</footer>}</div>;
-}
-
-/** BehaviorEmpty serves unconfigured and zero-result states without hiding tabs. */
-function BehaviorEmpty({ title, body, href, action }: { title: string; body: string; href?: string; action?: string }) {
-	return <div className="flex min-h-[300px] flex-col items-center justify-center gap-1.5 px-6 text-center"><p className="text-sm font-medium text-body">{title}</p><p className="max-w-md text-xs leading-relaxed text-muted">{body}</p>{href && <a href={href} className="mt-2 border-2 border-line px-3 py-1.5 text-xs font-medium text-body transition-colors hover:bg-hover">{action ?? t("dashboard.behavior.configure")}</a>}</div>;
-}
-
-/** PanelLoading preserves the tabs while one selected report is loading. */
-function PanelLoading({ label, compact: compactPanel = false }: { label: string; compact?: boolean }) {
-	return <div className={compactPanel ? "h-56" : "h-[350px]"}><Spinner label={label} /></div>;
-}
-
-/** PanelFailure keeps the retry local to the tab whose request failed. */
-function PanelFailure<T>({ state, compact: compactPanel = false }: { state: RemoteState<T>; compact?: boolean }) {
-	return <div className={compactPanel ? "h-56" : "h-[350px]"}><Failure message={state.error ?? t("dashboard.error.query_failed")} onRetry={state.reload} /></div>;
-}
-
-/** NumberCell renders an abbreviated count with its exact value on hover. */
-function NumberCell({ value }: { value: number }) {
-	return <span className="tnum pointer-events-none relative text-right text-sm text-body" title={exact(value)}><span className="sr-only">{exact(value)}</span><span aria-hidden="true">{compact(value)}</span></span>;
 }
 
 /** goalFilter uses the goal definition itself as the filter dimension. Rebuilding

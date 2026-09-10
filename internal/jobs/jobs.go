@@ -45,7 +45,13 @@ const (
 	KindCSVImport           = "csv_import"
 	KindGA4Import           = "ga4_import"
 	KindSearchConsoleImport = "search_console_import"
-	KindSiteExport          = "site_export"
+
+	// KindSearchConsoleSync is the nightly top-up. It is a different kind from
+	// the import above because the two do different things to the customer's
+	// screen: one is a backfill they started and watch finish, the other is
+	// maintenance that must leave no trace.
+	KindSearchConsoleSync = "search_console_sync"
+	KindSiteExport        = "site_export"
 )
 
 // States a row can be in. They mirror the CHECK constraint in the control

@@ -249,6 +249,7 @@ type Navigation struct {
 	SitesURL        string `json:"sites_url"`
 	SiteSettingsURL string `json:"site_settings_url,omitempty"`
 	ConversionsURL  string `json:"conversions_url,omitempty"`
+	ImportsURL      string `json:"imports_url,omitempty"`
 	AccountURL      string `json:"account_url"`
 	BillingURL      string `json:"billing_url,omitempty"`
 	ExportURL       string `json:"export_url,omitempty"`

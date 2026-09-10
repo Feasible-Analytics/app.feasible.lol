@@ -762,3 +762,139 @@ func postForm(t *testing.T, path string, values url.Values) *http.Request {
 
 	return request
 }
+
+// stubSearchProperties points the Google package at a local server answering
+// with one owned property.
+func stubSearchProperties(t *testing.T, body string) {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Errorf("write sites response: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	original := google.SearchAPI
+	google.SearchAPI = server.URL
+	t.Cleanup(func() { google.SearchAPI = original })
+}
+
+// connectSearchConsole stores a grant whose access token is still valid, so the
+// tests below never reach the token endpoint.
+func connectSearchConsole(t *testing.T, handler *Handler, manager *accounts.Manager, property string) {
+	t.Helper()
+
+	ctx := context.Background()
+	now := handler.now()
+
+	account, err := manager.Open(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	connection := google.Connection{
+		SiteID: 1, AccountID: 1, Provider: google.ProviderSearchConsole, Property: property,
+		RefreshToken: "refresh", AccessToken: "valid",
+		ExpiresAt: now.Add(time.Hour).Unix(), Status: google.StatusConnected,
+	}
+
+	if err := google.SaveConnection(ctx, account.Writer(), connection, now); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestThePropertyPickerAppearsOnlyWhenItIsNeeded covers both halves of the
+// setup. A grant with nothing chosen has to ask, and a configured one must not
+// pay for a call to Google on every render of a screen with nothing left to do.
+func TestThePropertyPickerAppearsOnlyWhenItIsNeeded(t *testing.T) {
+	handler, manager := newHandler(t)
+	handler.Google, _ = google.NewApp("id", "secret", "https://example.com")
+
+	stubSearchProperties(t, `{"siteEntry":[{"siteUrl":"sc-domain:example.com","permissionLevel":"siteOwner"}]}`)
+	connectSearchConsole(t, handler, manager, "")
+
+	body := get(t, handler, "/settings/sites/example.com/imports").Body.String()
+
+	if !strings.Contains(body, "sc-domain:example.com") {
+		t.Fatal("a connection with no property chosen offers no picker")
+	}
+
+	connectSearchConsole(t, handler, manager, "sc-domain:example.com")
+
+	body = get(t, handler, "/settings/sites/example.com/imports").Body.String()
+
+	if strings.Contains(body, `name="property"`) {
+		t.Fatal("the picker is still shown after a property was chosen")
+	}
+}
+
+// TestAPropertyGoogleDidNotOfferIsRefused is the check between a hand-posted
+// form and a connection that authorises cleanly and then imports nothing.
+func TestAPropertyGoogleDidNotOfferIsRefused(t *testing.T) {
+	ctx := context.Background()
+	handler, manager := newHandler(t)
+	handler.Google, _ = google.NewApp("id", "secret", "https://example.com")
+
+	stubSearchProperties(t, `{"siteEntry":[{"siteUrl":"sc-domain:example.com","permissionLevel":"siteOwner"}]}`)
+	connectSearchConsole(t, handler, manager, "")
+
+	request := postForm(t, "/settings/sites/example.com/google/property",
+		url.Values{"property": {"sc-domain:someone-else.test"}})
+
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+
+	account, err := manager.Open(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stored, err := google.GetConnection(ctx, account.Reader(), 1, google.ProviderSearchConsole)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if stored.Property != "" {
+		t.Fatalf("property = %q, want a property Google never offered refused", stored.Property)
+	}
+}
+
+// TestChoosingAPropertyStartsTheBackfill is the whole point of the picker: the
+// choice is saved and the history starts arriving without a second button.
+func TestChoosingAPropertyStartsTheBackfill(t *testing.T) {
+	ctx := context.Background()
+	handler, manager := newHandler(t)
+	handler.Google, _ = google.NewApp("id", "secret", "https://example.com")
+
+	stubSearchProperties(t, `{"siteEntry":[{"siteUrl":"sc-domain:example.com","permissionLevel":"siteOwner"}]}`)
+	connectSearchConsole(t, handler, manager, "")
+
+	request := postForm(t, "/settings/sites/example.com/google/property",
+		url.Values{"property": {"sc-domain:example.com"}})
+
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+
+	account, err := manager.Open(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stored, err := google.GetConnection(ctx, account.Reader(), 1, google.ProviderSearchConsole)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if stored.Property != "sc-domain:example.com" {
+		t.Fatalf("property = %q, want the chosen one saved", stored.Property)
+	}
+
+	records, err := dataio.ListImports(ctx, account.Reader(), 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(records) != 1 || records[0].Source != dataio.SourceSearchConsole {
+		t.Fatalf("imports = %v, want one search backfill queued", records)
+	}
+}

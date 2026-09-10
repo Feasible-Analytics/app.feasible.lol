@@ -297,6 +297,10 @@ func (a *App) runReport(ctx context.Context, db *sql.DB, connection *Connection,
 func (a *App) SearchConsoleImport(ctx context.Context, db *sql.DB, record *dataio.Import,
 	connection *Connection, from, to time.Time, location *time.Location, now func() time.Time) error {
 
+	if strings.TrimSpace(connection.Property) == "" {
+		return errors.New("google: this site has no Search Console property chosen yet — pick one on the imports screen")
+	}
+
 	days := daysBetween(from, to)
 
 	if err := dataio.StartImport(ctx, db, record.ID, len(days), now()); err != nil {
@@ -331,6 +335,35 @@ func (a *App) SearchConsoleImport(ctx context.Context, db *sql.DB, record *datai
 	}
 
 	return dataio.CompleteImport(ctx, db, record.ID, nil, from.Unix(), to.Unix(), rowsWritten, now())
+}
+
+// SearchConsoleRefresh re-reads a short recent window without creating an
+// import the customer has to look at.
+//
+// It is separate from SearchConsoleImport because the two are different
+// promises. A backfill is a one-off the customer started and watches finish, so
+// it earns a row on the imports screen. The nightly top-up is maintenance: a
+// row a night would bury the customer's own imports under a year of noise
+// within a year, and none of those rows would ever be read.
+func (a *App) SearchConsoleRefresh(ctx context.Context, db *sql.DB, connection *Connection,
+	from, to time.Time, location *time.Location, now time.Time) (int64, error) {
+
+	if strings.TrimSpace(connection.Property) == "" {
+		return 0, errors.New("google: this site has no Search Console property chosen yet — pick one on the imports screen")
+	}
+
+	var written int64
+
+	for _, day := range daysBetween(from, to) {
+		rows, err := a.importSearchDay(ctx, db, connection.SiteID, connection, day, location, now)
+		if err != nil {
+			return written, err
+		}
+
+		written += rows
+	}
+
+	return written, nil
 }
 
 // searchResponse is the Search Analytics response shape.

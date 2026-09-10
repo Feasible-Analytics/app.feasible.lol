@@ -28,6 +28,7 @@ import type { ChartType } from "./MainGraph";
 import { CHART_TYPES, MARKER_ATTRIBUTE, MainGraph } from "./MainGraph";
 import { Realtime } from "./Realtime";
 import { ReportCard } from "./ReportCard";
+import { SearchConsoleCard } from "./SearchConsoleCard";
 import type { ShortcutActions } from "./Shortcuts";
 import { ShortcutsModal, useShortcuts } from "./Shortcuts";
 import { TopBar } from "./TopBar";
@@ -516,6 +517,7 @@ function AnalyticsDashboard() {
 						behavior={state.behavior}
 						onBehaviorChange={(behavior) => navigate({ ...state, behavior, drawer: null })}
 					/>
+					<SearchConsoleCard domain={state.domain} range={range} />
 				</div>
 			</main>
 

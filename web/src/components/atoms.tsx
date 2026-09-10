@@ -6,10 +6,13 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
+import type { ReactNode } from "react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { compact, exact } from "../lib/format";
 import { t } from "../lib/i18n";
+import type { RemoteState } from "../lib/useStats";
 
 /**
  * Spinner is the only loading affordance in the product.
@@ -291,4 +294,39 @@ export function Bar({ share }: { share: number }) {
 			style={{ width: `${Math.max(0.6, Math.min(100, share * 100))}%` }}
 		/>
 	);
+}
+
+/** SelectorBar is the one control treatment a panel uses to choose what it is
+ * reporting on, so a funnel picker and a keyword-dimension picker sit at the
+ * same height and read as the same kind of choice. */
+export function SelectorBar({ label, value, onChange, children }: { label: string; value: string; onChange: (value: string) => void; children: ReactNode }) {
+	return <div className="border-b border-line px-4 py-3 sm:px-5"><label className="block max-w-sm text-[11px] font-medium tracking-wide text-muted uppercase">{label}<select value={value} onChange={(event) => onChange(event.target.value)} className="mt-1 block h-control w-full border-2 border-line bg-card px-2.5 text-sm text-body">{children}</select></label></div>;
+}
+
+/** PanelFrame pins optional management navigation to the bottom, and a note
+ * beside it in the strip that is reserved either way. The note carries the auto
+ * margin, so a footer holding only a link is laid out exactly as it is without
+ * one. */
+export function PanelFrame({ children, footer, note }: { children: ReactNode; footer?: ReactNode; note?: string }) {
+	return <div className="flex h-full min-h-[350px] flex-col"><div className="min-h-0 flex-1">{children}</div>{(footer || note) && <footer className="flex min-h-[42px] shrink-0 items-center gap-4 border-t border-line px-4 py-1.5 sm:px-5">{note && <p className="mr-auto text-[11px] text-muted">{note}</p>}{footer}</footer>}</div>;
+}
+
+/** PanelEmpty serves unconfigured and zero-result states without hiding tabs. */
+export function PanelEmpty({ title, body, href, action }: { title: string; body: string; href?: string; action?: string }) {
+	return <div className="flex min-h-[300px] flex-col items-center justify-center gap-1.5 px-6 text-center"><p className="text-sm font-medium text-body">{title}</p><p className="max-w-md text-xs leading-relaxed text-muted">{body}</p>{href && <a href={href} className="mt-2 border-2 border-line px-3 py-1.5 text-xs font-medium text-body transition-colors hover:bg-hover">{action ?? t("dashboard.behavior.configure")}</a>}</div>;
+}
+
+/** PanelLoading preserves the tabs while one selected report is loading. */
+export function PanelLoading({ label, compact: compactPanel = false }: { label: string; compact?: boolean }) {
+	return <div className={compactPanel ? "h-56" : "h-[350px]"}><Spinner label={label} /></div>;
+}
+
+/** PanelFailure keeps the retry local to the tab whose request failed. */
+export function PanelFailure<T>({ state, compact: compactPanel = false }: { state: RemoteState<T>; compact?: boolean }) {
+	return <div className={compactPanel ? "h-56" : "h-[350px]"}><Failure message={state.error ?? t("dashboard.error.query_failed")} onRetry={state.reload} /></div>;
+}
+
+/** NumberCell renders an abbreviated count with its exact value on hover. */
+export function NumberCell({ value }: { value: number }) {
+	return <span className="tnum pointer-events-none relative text-right text-sm text-body" title={exact(value)}><span className="sr-only">{exact(value)}</span><span aria-hidden="true">{compact(value)}</span></span>;
 }
