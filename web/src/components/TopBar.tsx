@@ -16,6 +16,8 @@ import { COMPARE_LABELS } from "../lib/compare";
 import { useDismiss } from "../lib/dom";
 import { calendarDate } from "../lib/format";
 import { n, t } from "../lib/i18n";
+import type { IntervalPref } from "../lib/interval";
+import { INTERVAL_LABELS } from "../lib/interval";
 import type { Period } from "../lib/period";
 import { PERIODS } from "../lib/period";
 import type { Theme } from "../lib/prefs";
@@ -39,6 +41,11 @@ interface Props {
 	 *  nothing visible is a choice that reads as broken. */
 	chart: ChartType | null;
 	onChart: (next: ChartType) => void;
+	/** The bucket width the reader has chosen for the graph. */
+	interval: IntervalPref;
+	/** The widths worth offering for the range on screen. */
+	intervals: IntervalPref[];
+	onInterval: (next: IntervalPref) => void;
 	/** The window the server actually used, shown under a preset name. */
 	resolved: string[] | undefined;
 	/** The filters in force. The live pill carries them too, so the number in the
@@ -121,8 +128,9 @@ export function currentVisitorsRequest(filters: Filter[]): StatsRequest {
  * address bar is always a description of what is on screen — which is what
  * makes a dashboard link worth sending to somebody.
  */
-export function TopBar({ state, sites, onNavigate, theme, onTheme, chart, onChart, resolved, filters, onHelp, onStep, onPeriod, asked, navigation, locked = false }: Props) {
+export function TopBar({ state, sites, onNavigate, theme, onTheme, chart, onChart, interval, intervals, onInterval, resolved, filters, onHelp, onStep, onPeriod, asked, navigation, locked = false }: Props) {
 	const label = periodLabel(state);
+	const view: ViewPrefs = { theme, chart, interval, intervals };
 	const live = state.preset === "realtime" && !state.from;
 
 	return (
@@ -185,14 +193,14 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, chart, onChar
 					    bound there, and without a button the whole layer is
 					    unreachable for the readers least able to ask for it back. */}
 					{!navigation && !locked && <HelpButton onHelp={onHelp} />}
-					{!navigation && <SettingsMenu theme={theme} onTheme={onTheme} chart={chart} onChart={onChart} onHelp={onHelp} />}
+					{!navigation && <SettingsMenu view={view} onTheme={onTheme} onChart={onChart} onInterval={onInterval} onHelp={onHelp} />}
 					{navigation && (
 						<AccountMenu
 							navigation={navigation}
-							theme={theme}
+							view={view}
 							onTheme={onTheme}
-							chart={chart}
 							onChart={onChart}
+							onInterval={onInterval}
 							onHelp={onHelp}
 							shortcuts={!locked}
 						/>
@@ -241,6 +249,7 @@ export type MenuRow =
 	| { kind: "action"; id: string; label: string; hint: string }
 	| { kind: "theme"; id: string; label: string; theme: Theme; glyph: string; current: boolean }
 	| { kind: "chart"; id: string; label: string; chart: ChartType; current: boolean }
+	| { kind: "interval"; id: string; label: string; interval: IntervalPref; current: boolean }
 	| { kind: "signout"; id: string; label: string; action: string; csrf: string };
 
 /** MenuActions are the handlers a row can invoke. Every menu supplies all of
@@ -249,7 +258,25 @@ export type MenuRow =
 export interface MenuActions {
 	onTheme: (next: Theme) => void;
 	onChart: (next: ChartType) => void;
+	onInterval: (next: IntervalPref) => void;
 	onHelp: () => void;
+}
+
+/** ViewPrefs is everything the shared view menu draws.
+ *
+ * One argument rather than four positional ones, because the next preference
+ * that earns a row would otherwise be the fifth thing a caller has to get in
+ * the right order. */
+export interface ViewPrefs {
+	theme: Theme;
+	/** The shape the graph is drawn as, or null on a screen with no graph. */
+	chart: ChartType | null;
+	/** The bucket width the reader has chosen, which may be one this range no
+	 *  longer offers. The row it names simply goes unmarked. */
+	interval: IntervalPref;
+	/** The widths worth offering for the range on screen. Empty means the range
+	 *  has only one sensible width, so the group is left out entirely. */
+	intervals: IntervalPref[];
 }
 
 /** MenuGroup is one divider-separated run of rows, with a heading when the rows
@@ -279,8 +306,7 @@ const THEME_ROWS: { theme: Theme; glyph: string; labelId: string }[] = [
  */
 export function accountMenuGroups(
 	navigation: Navigation,
-	theme: Theme,
-	chart: ChartType | null,
+	view: ViewPrefs,
 	shortcuts: boolean,
 ): MenuGroup[] {
 	const destinations: MenuRow[] = [
@@ -321,7 +347,7 @@ export function accountMenuGroups(
 		});
 	}
 
-	groups.push(...viewGroups(theme, chart));
+	groups.push(...viewGroups(view));
 
 	groups.push({
 		id: "session",
@@ -346,10 +372,10 @@ export function accountMenuGroups(
  * so there was nowhere else for them to come from; a builder both callers share
  * cannot drift like that again.
  */
-export function viewGroups(theme: Theme, chart: ChartType | null): MenuGroup[] {
+export function viewGroups(view: ViewPrefs): MenuGroup[] {
 	const groups: MenuGroup[] = [];
 
-	if (chart) {
+	if (view.chart) {
 		groups.push({
 			id: "graph",
 			label: t("dashboard.menu.graph"),
@@ -358,7 +384,24 @@ export function viewGroups(theme: Theme, chart: ChartType | null): MenuGroup[] {
 				id: `chart:${type}`,
 				label: t(CHART_LABELS[type]),
 				chart: type,
-				current: type === chart,
+				current: type === view.chart,
+			})),
+		});
+	}
+
+	// A screen with no graph has no buckets to widen, and a range with one
+	// sensible width has nothing to choose between. Both leave the group out
+	// rather than showing rows that change nothing.
+	if (view.chart && view.intervals.length > 1) {
+		groups.push({
+			id: "interval",
+			label: t("dashboard.menu.interval"),
+			rows: view.intervals.map((width) => ({
+				kind: "interval" as const,
+				id: `interval:${width}`,
+				label: t(INTERVAL_LABELS[width]),
+				interval: width,
+				current: width === view.interval,
 			})),
 		});
 	}
@@ -372,7 +415,7 @@ export function viewGroups(theme: Theme, chart: ChartType | null): MenuGroup[] {
 			label: t(row.labelId),
 			theme: row.theme,
 			glyph: row.glyph,
-			current: row.theme === theme,
+			current: row.theme === view.theme,
 		})),
 	});
 
@@ -384,18 +427,18 @@ export function viewGroups(theme: Theme, chart: ChartType | null): MenuGroup[] {
  * CSRF-protected sign-out. */
 function AccountMenu({
 	navigation,
-	theme,
+	view,
 	onTheme,
-	chart,
 	onChart,
+	onInterval,
 	onHelp,
 	shortcuts,
 }: {
 	navigation: Navigation;
-	theme: Theme;
+	view: ViewPrefs;
 	onTheme: (next: Theme) => void;
-	chart: ChartType | null;
 	onChart: (next: ChartType) => void;
+	onInterval: (next: IntervalPref) => void;
 	onHelp: () => void;
 	shortcuts: boolean;
 }) {
@@ -404,7 +447,7 @@ function AccountMenu({
 
 	useDismiss(wrap, open, () => setOpen(false));
 
-	const groups = accountMenuGroups(navigation, theme, chart, shortcuts);
+	const groups = accountMenuGroups(navigation, view, shortcuts);
 
 	return (
 		<div ref={wrap} className="relative" onKeyDown={(event) => stepFocus(wrap.current, event)}>
@@ -431,6 +474,7 @@ function AccountMenu({
 					actions={{
 						onTheme,
 						onChart,
+						onInterval,
 						onHelp: () => {
 							setOpen(false);
 							onHelp();
@@ -450,16 +494,16 @@ function AccountMenu({
  * the theme from the same builder the account menu uses.
  */
 function SettingsMenu({
-	theme,
+	view,
 	onTheme,
-	chart,
 	onChart,
+	onInterval,
 	onHelp,
 }: {
-	theme: Theme;
+	view: ViewPrefs;
 	onTheme: (next: Theme) => void;
-	chart: ChartType | null;
 	onChart: (next: ChartType) => void;
+	onInterval: (next: IntervalPref) => void;
 	onHelp: () => void;
 }) {
 	const [open, setOpen] = useState(false);
@@ -483,10 +527,11 @@ function SettingsMenu({
 
 			{open && (
 				<MenuPanel
-					groups={viewGroups(theme, chart)}
+					groups={viewGroups(view)}
 					actions={{
 						onTheme,
 						onChart,
+						onInterval,
 						onHelp: () => {
 							setOpen(false);
 							onHelp();
@@ -582,6 +627,28 @@ function GearIcon() {
 	);
 }
 
+/** How many bars each width's icon draws. The count is the point: the narrower
+ *  the bucket, the more of them a graph is cut into, which is the difference
+ *  between the choices rather than anything a label can say faster. "auto" gets
+ *  the middle count, since it is a width and not a fourth kind of thing. */
+const BUCKET_BARS: Record<IntervalPref, number> = { auto: 3, hour: 5, day: 4, week: 3, month: 2 };
+
+/** BucketIcon draws a row of bars standing for one bucket width. */
+function BucketIcon({ interval }: { interval: IntervalPref }) {
+	const bars = BUCKET_BARS[interval];
+	const pitch = 12 / bars;
+
+	return (
+		<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" className="shrink-0">
+			<g fill="currentColor">
+				{Array.from({ length: bars }, (_, index) => (
+					<rect key={index} x={index * pitch + 0.5} y="2" width={pitch - 1} height="8" />
+				))}
+			</g>
+		</svg>
+	);
+}
+
 /** MenuRowView draws one row. Choosing a theme or a graph shape leaves the menu
  * open, because the page changes underneath it and the next choice is one click
  * away. */
@@ -632,6 +699,23 @@ function MenuRowView({ row, actions }: { row: MenuRow; actions: MenuActions }) {
 				>
 					<span aria-hidden="true" className="flex w-4 justify-center text-muted">
 						<ShapeIcon type={row.chart} />
+					</span>
+					<span className="flex-1">{row.label}</span>
+					{row.current && <span aria-hidden="true" className="text-accent-ink">✓</span>}
+				</button>
+			);
+
+		case "interval":
+			return (
+				<button
+					type="button"
+					role="menuitemradio"
+					aria-checked={row.current}
+					onClick={() => actions.onInterval(row.interval)}
+					className={`${base} ${row.current ? "font-medium text-body" : "text-body"}`}
+				>
+					<span aria-hidden="true" className="flex w-4 justify-center text-muted">
+						<BucketIcon interval={row.interval} />
 					</span>
 					<span className="flex-1">{row.label}</span>
 					{row.current && <span aria-hidden="true" className="text-accent-ink">✓</span>}
