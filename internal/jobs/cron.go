@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
 // Cron turns "every hour" into rows in the jobs table.
@@ -48,7 +49,24 @@ type Cron struct {
 	lastRun     time.Time
 	lastCreated int
 	lastErr     error
+	failures    int
 }
+
+// unreadyAfterFailures is how many passes in a row must fail before Cron calls
+// itself unhealthy. A worker's readiness gates the traffic the whole process
+// serves, so a single lost pass has to stay a background hiccup: the work it
+// missed is recreated by the next pass, and a scheduler that has genuinely
+// stopped ticking is caught by Health's staleness rule instead.
+const unreadyAfterFailures = 3
+
+// The pauses between retries of a pass that met a locked database. SQLite's own
+// busy_timeout already waits, so these are the extra grace on top of it — long
+// enough to outlast a slow writer, short enough to finish well inside one
+// scheduler interval.
+const (
+	busyRetries   = 3
+	busyFirstWait = 250 * time.Millisecond
+)
 
 // CronEntry is one recurring job.
 type CronEntry struct {
@@ -152,9 +170,9 @@ func (c *Cron) EnqueueDue(ctx context.Context, now time.Time) (created int, runE
 	return created, nil
 }
 
-// Health reports whether Cron has run recently and whether its latest enqueue
-// pass succeeded. The created count is intentionally not treated as health:
-// zero is truthful and normal when another process already owns the buckets.
+// Health reports whether Cron has run recently and whether it has failed
+// repeatedly. The created count is intentionally not treated as health: zero is
+// truthful and normal when another process already owns the buckets.
 func (c *Cron) Health(now time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -162,8 +180,8 @@ func (c *Cron) Health(now time.Time) error {
 	if c.lastRun.IsZero() {
 		return errors.New("recurring scheduler has not run")
 	}
-	if c.lastErr != nil {
-		return fmt.Errorf("recurring scheduler failed: %w", c.lastErr)
+	if c.failures >= unreadyAfterFailures {
+		return fmt.Errorf("recurring scheduler failed %d times in a row: %w", c.failures, c.lastErr)
 	}
 	interval := c.Interval
 	if interval <= 0 {
@@ -182,16 +200,65 @@ func (c *Cron) recordRun(at time.Time, created int, err error) {
 	c.lastRun = at.UTC()
 	c.lastCreated = created
 	c.lastErr = err
+
+	if err != nil {
+		c.failures++
+	} else {
+		c.failures = 0
+	}
+
+	failures := c.failures
 	c.mu.Unlock()
 
 	if c.Log == nil {
 		return
 	}
 	if err != nil {
-		c.Log.Error("the recurring jobs could not be enqueued", "created_jobs", created, "error", err)
+		c.Log.Error("the recurring jobs could not be enqueued",
+			"created_jobs", created, "consecutive_failures", failures, "error", err)
 		return
 	}
 	c.Log.Info("recurring jobs enqueued", "created_jobs", created)
+}
+
+// enqueueDueWaiting runs one pass, waiting out a database another writer has
+// locked. Retrying is safe because a pass is idempotent: a bucket already
+// reserved is a no-op, so a second attempt can only finish what the first
+// started.
+func (c *Cron) enqueueDueWaiting(ctx context.Context, now time.Time) (int, error) {
+	return retryWhileBusy(ctx, busyRetries, busyFirstWait, func() (int, error) {
+		return c.EnqueueDue(ctx, now)
+	})
+}
+
+// retryWhileBusy repeats pass while SQLite reports the database locked, backing
+// off further each time. Any other error is returned on the spot, because
+// waiting does not fix a bad query.
+func retryWhileBusy(ctx context.Context, retries int, wait time.Duration, pass func() (int, error)) (int, error) {
+	// Work created before the lock is counted too. A retry re-walks the same
+	// buckets and reports only the ones it made itself, so summing the attempts
+	// is the true number of jobs this pass put on the queue.
+	total := 0
+
+	for attempt := 0; ; attempt++ {
+		created, err := pass()
+		total += created
+
+		if err == nil || attempt >= retries || !store.IsBusy(err) {
+			return total, err
+		}
+
+		timer := time.NewTimer(wait)
+
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return total, err
+		case <-timer.C:
+		}
+
+		wait *= 2
+	}
 }
 
 // Run enqueues due entries on a ticker until the context is cancelled. It runs
@@ -209,7 +276,7 @@ func (c *Cron) Run(ctx context.Context, now func() time.Time) {
 	}
 
 	runAt := now()
-	created, err := c.EnqueueDue(ctx, runAt)
+	created, err := c.enqueueDueWaiting(ctx, runAt)
 	c.recordRun(runAt, created, err)
 
 	ticker := time.NewTicker(interval)
@@ -221,7 +288,7 @@ func (c *Cron) Run(ctx context.Context, now func() time.Time) {
 			return
 		case <-ticker.C:
 			runAt := now()
-			created, err := c.EnqueueDue(ctx, runAt)
+			created, err := c.enqueueDueWaiting(ctx, runAt)
 			c.recordRun(runAt, created, err)
 		}
 	}
