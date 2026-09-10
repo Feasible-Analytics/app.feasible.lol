@@ -16,7 +16,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -53,7 +55,7 @@ type reportShape struct {
 var ga4Shapes = []reportShape{
 	{Name: "totals"},
 	{Name: "pages", GA4: []string{"hostName", "pagePath"}, Ours: []string{"event:hostname", "event:page"}},
-	{Name: "sources", GA4: []string{"sessionSource", "sessionMedium", "sessionCampaignName"}, Ours: []string{"visit:utm_source", "visit:utm_medium", "visit:utm_campaign"}},
+	{Name: "sources", GA4: []string{"sessionSource", "sessionMedium", "sessionCampaignName", "sessionDefaultChannelGroup"}, Ours: []string{"visit:source", "visit:utm_medium", "visit:utm_campaign", "visit:channel"}},
 	{Name: "locations", GA4: []string{"countryId", "region", "city"}, Ours: []string{"visit:country", "visit:region", "visit:city"}},
 	{Name: "devices", GA4: []string{"deviceCategory"}, Ours: []string{"visit:device"}},
 	{Name: "browsers", GA4: []string{"browser"}, Ours: []string{"visit:browser"}},
@@ -62,18 +64,19 @@ var ga4Shapes = []reportShape{
 }
 
 // ga4Metrics are the figures every shape asks for, in bind order.
-var ga4Metrics = []string{"totalUsers", "sessions", "screenPageViews", "bounces", "userEngagementDuration"}
+var ga4Metrics = []string{"totalUsers", "sessions", "screenPageViews", "engagedSessions", "userEngagementDuration"}
 
 // GA4Import runs one property's history into imported roll-up rows.
 //
-// It is resumable by month, and the cursor is written after each one. A year of
-// history is twelve passes over eight report shapes, and an access token that
-// expires half way through must not mean starting again: restarting a
-// half-finished import from the beginning would write every earlier month
-// twice, and no later check could tell which copy was the duplicate.
+// Each attempt replaces its own rows before replaying the requested window.
+// This matches StartImport and prevents interrupted imports from losing or
+// duplicating previously written months.
 func (a *App) GA4Import(ctx context.Context, db *sql.DB, cache *intern.Cache, record *dataio.Import,
 	connection *Connection, from, to time.Time, location *time.Location, now func() time.Time) error {
 
+	if connection.Property == "" || from.After(to) {
+		return errors.New("google: choose a GA4 property and a valid date range")
+	}
 	months := monthsBetween(from, to)
 
 	if err := dataio.StartImport(ctx, db, record.ID, len(months), now()); err != nil {
@@ -81,16 +84,9 @@ func (a *App) GA4Import(ctx context.Context, db *sql.DB, cache *intern.Cache, re
 	}
 
 	covered := map[string]bool{}
-	rowsWritten := record.RowsWritten
+	var rowsWritten int64
 
 	for index, month := range months {
-		// Everything before the cursor is already written. Comparing the label
-		// rather than a count is what makes the resume exact after a restart
-		// that lost the process's memory of where it was.
-		if record.Cursor != "" && month.label <= record.Cursor {
-			continue
-		}
-
 		for _, shape := range ga4Shapes {
 			written, err := a.importShape(ctx, db, cache, record, connection, shape, month, location, now)
 			if err != nil {
@@ -114,84 +110,96 @@ func (a *App) GA4Import(ctx context.Context, db *sql.DB, cache *intern.Cache, re
 		names = append(names, name)
 	}
 
+	sort.Strings(names)
+
 	// Before the import is marked complete, so a reader never sees a finished
 	// import whose wide summaries are still being written.
 	if err := dataio.SummariseImport(ctx, db, record.ID, record.SiteID, location); err != nil {
 		return err
 	}
 
-	return dataio.CompleteImport(ctx, db, record.ID, names, from.Unix(), to.Unix(), rowsWritten, now())
+	return dataio.CompleteImport(ctx, db, record.ID, names, from.Unix(), to.AddDate(0, 0, 1).Unix()-1, rowsWritten, now())
 }
 
 // importShape runs one report for one month and writes its rows.
 func (a *App) importShape(ctx context.Context, db *sql.DB, cache *intern.Cache, record *dataio.Import,
 	connection *Connection, shape reportShape, month monthRange, location *time.Location, now func() time.Time) (int64, error) {
 
-	report, err := a.runReport(ctx, db, connection, shape, month, now())
-	if err != nil {
-		return 0, err
-	}
-
 	writer, err := dataio.NewWriter(db, cache, record.ID, record.SiteID, shape.Ours)
 	if err != nil {
 		return 0, err
 	}
 
-	for _, row := range report.Rows {
-		// The first dimension is always the date, so a month is one request
-		// rather than thirty.
-		if len(row.DimensionValues) < 1+len(shape.Ours) {
-			continue
-		}
-
-		timestamp, err := parseGA4Date(row.DimensionValues[0].Value, location)
+	offset := 0
+	for {
+		report, err := a.runReportPage(ctx, db, connection, shape, month, now(), offset)
 		if err != nil {
-			return 0, fmt.Errorf("the %s report returned %q where a date was expected", shape.Name, row.DimensionValues[0].Value)
-		}
-
-		parsed := dataio.Row{
-			Timestamp:  timestamp,
-			Dimensions: map[string]string{},
-			Metrics:    map[string]int64{},
-		}
-
-		for i, name := range shape.Ours {
-			parsed.Dimensions[name] = row.DimensionValues[i+1].Value
-		}
-
-		for i, name := range ga4Metrics {
-			if i >= len(row.MetricValues) {
-				break
-			}
-
-			value, _ := strconv.ParseFloat(row.MetricValues[i].Value, 64)
-
-			switch name {
-			case "totalUsers":
-				parsed.Metrics[dataio.FieldVisitors] = int64(value)
-			case "sessions":
-				parsed.Metrics[dataio.FieldVisits] = int64(value)
-			case "screenPageViews":
-				parsed.Metrics[dataio.FieldPageviews] = int64(value)
-			case "bounces":
-				parsed.Metrics[dataio.FieldBounces] = int64(value)
-			case "userEngagementDuration":
-				// GA4 reports engagement in seconds; our duration column is
-				// seconds and our engagement column is milliseconds.
-				parsed.Metrics[dataio.FieldDuration] = int64(value)
-				parsed.Metrics[dataio.FieldEngagement] = int64(value * 1000)
-			}
-		}
-
-		if err := writer.Add(ctx, parsed); err != nil {
 			return 0, err
 		}
-	}
 
-	if err := writer.Flush(ctx); err != nil {
-		return 0, err
-	}
+		for _, row := range report.Rows {
+			// The first dimension is always the date, so a month is one request
+			// rather than thirty.
+			if len(row.DimensionValues) != 1+len(shape.Ours) || len(row.MetricValues) != len(ga4Metrics) {
+				return 0, fmt.Errorf("google: malformed %s report row", shape.Name)
+			}
 
+			timestamp, err := parseGA4Date(row.DimensionValues[0].Value, location)
+			if err != nil {
+				return 0, fmt.Errorf("the %s report returned %q where a date was expected", shape.Name, row.DimensionValues[0].Value)
+			}
+
+			parsed := dataio.Row{
+				Timestamp:  timestamp,
+				Dimensions: map[string]string{},
+				Metrics:    map[string]int64{},
+			}
+
+			for i, name := range shape.Ours {
+				parsed.Dimensions[name] = row.DimensionValues[i+1].Value
+			}
+
+			for i, name := range ga4Metrics {
+				value, err := strconv.ParseFloat(row.MetricValues[i].Value, 64)
+				if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value >= float64(math.MaxInt64)/1000 {
+					return 0, fmt.Errorf("google: invalid %s metric in %s report", name, shape.Name)
+				}
+
+				switch name {
+				case "totalUsers":
+					parsed.Metrics[dataio.FieldVisitors] = int64(value)
+				case "sessions":
+					parsed.Metrics[dataio.FieldVisits] = int64(value)
+				case "screenPageViews":
+					parsed.Metrics[dataio.FieldPageviews] = int64(value)
+				case "engagedSessions":
+					parsed.Metrics[dataio.FieldBounces] = max(0, parsed.Metrics[dataio.FieldVisits]-int64(value))
+					parsed.Metrics[dataio.FieldEngagementVisits] = int64(value)
+				case "userEngagementDuration":
+					// GA4 reports engagement in seconds; our duration column is
+					// seconds and our engagement column is milliseconds.
+					parsed.Metrics[dataio.FieldDuration] = int64(value)
+					parsed.Metrics[dataio.FieldEngagement] = int64(value * 1000)
+				}
+			}
+
+			if err := writer.Add(ctx, parsed); err != nil {
+				return 0, err
+			}
+		}
+
+		if err := writer.Flush(ctx); err != nil {
+			return 0, err
+		}
+
+		offset += len(report.Rows)
+		if offset >= report.RowCount {
+			break
+		}
+		if len(report.Rows) == 0 {
+			return 0, errors.New("google: incomplete GA4 report pagination")
+		}
+	}
 	return writer.Written(), nil
 }
 
@@ -207,16 +215,27 @@ type ga4Row struct {
 
 // ga4Report is the response shape.
 type ga4Report struct {
-	Rows  []ga4Row `json:"rows"`
-	Error *struct {
+	Rows     []ga4Row `json:"rows"`
+	RowCount int      `json:"rowCount"`
+	Error    *struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 		Status  string `json:"status"`
 	} `json:"error"`
 }
 
-// runReport calls the Data API for one shape and one month.
-func (a *App) runReport(ctx context.Context, db *sql.DB, connection *Connection, shape reportShape, month monthRange, now time.Time) (report *ga4Report, err error) {
+// ga4Order fixes pagination order across rows with equal dates by including every
+// requested dimension, preventing unstable page boundaries from losing rows.
+func ga4Order(dimensions []map[string]string) []map[string]any {
+	orders := make([]map[string]any, 0, len(dimensions))
+	for _, dimension := range dimensions {
+		orders = append(orders, map[string]any{"dimension": map[string]string{"dimensionName": dimension["name"]}})
+	}
+	return orders
+}
+
+// runReportPage calls the Data API for a bounded page of one monthly report.
+func (a *App) runReportPage(ctx context.Context, db *sql.DB, connection *Connection, shape reportShape, month monthRange, now time.Time, offset int) (report *ga4Report, err error) {
 	token, err := a.AccessToken(ctx, db, connection, now)
 	if err != nil {
 		return nil, err
@@ -237,7 +256,9 @@ func (a *App) runReport(ctx context.Context, db *sql.DB, connection *Connection,
 		"dateRanges": []map[string]string{{"startDate": month.start, "endDate": month.end}},
 		"dimensions": dimensions,
 		"metrics":    metrics,
-		"limit":      100000,
+		"limit":      "100000",
+		"offset":     strconv.Itoa(offset),
+		"orderBys":   ga4Order(dimensions),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("google: build report request: %w", err)

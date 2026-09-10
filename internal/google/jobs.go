@@ -20,6 +20,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dataio"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/pathclean"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 )
 
@@ -40,16 +41,17 @@ const SyncLookback = 24 * time.Hour
 // A window derived from the clock would slide forward between attempts and skip
 // whichever day the cursor had already passed.
 type ImportArgs struct {
-	AccountID int64 `json:"account_id"`
-	SiteID    int64 `json:"site_id"`
-	ImportID  int64 `json:"import_id"`
+	AccountID int64  `json:"account_id"`
+	SiteID    int64  `json:"site_id"`
+	ImportID  int64  `json:"import_id"`
+	Property  string `json:"property,omitempty"`
 
 	// From and To are inclusive day bounds as unix seconds.
 	From int64 `json:"from"`
 	To   int64 `json:"to"`
 }
 
-// Workers runs both Search Console jobs.
+// Workers runs GA4 imports and both Search Console jobs.
 //
 // It holds the OAuth application rather than reaching for configuration,
 // because an install with no Google credentials must have a worker that says so
@@ -73,7 +75,7 @@ func (w *Workers) now() time.Time {
 	return w.Now().UTC()
 }
 
-// Register attaches both jobs and the recurring tick.
+// Register attaches the Google import workers and the recurring search tick.
 //
 // Registration happens even with no OAuth application configured. A kind with
 // no worker is discarded with that reason on the row, and a backfill enqueued
@@ -84,6 +86,7 @@ func (w *Workers) Register(runner *jobs.Runner, cron *jobs.Cron) {
 		return
 	}
 
+	runner.Register(jobs.QueueImports, jobs.KindGA4Import, jobs.WorkerFunc(w.RunGA4Import))
 	runner.Register(jobs.QueueImports, jobs.KindSearchConsoleImport, jobs.WorkerFunc(w.RunImport))
 	runner.Register(jobs.QueueImports, jobs.KindSearchConsoleSync, jobs.Reporting(w.Log, w.RunSync))
 
@@ -295,4 +298,60 @@ func (w *Workers) fail(ctx context.Context, lease *accounts.Lease, id int64, rea
 	}
 
 	return jobs.PermanentError(errors.New(reason))
+}
+
+// RunGA4Import imports the explicitly selected property and historical window.
+// The job pins its property so reconnecting while queued cannot import another
+// property's history. Failures clear partial data and appear on the import row.
+func (w *Workers) RunGA4Import(ctx context.Context, job jobs.Job) error {
+	var args ImportArgs
+	if err := json.Unmarshal(job.Args, &args); err != nil {
+		return jobs.PermanentError(err)
+	}
+	lease, err := w.Accounts.Acquire(ctx, args.AccountID)
+	if err != nil {
+		return err
+	}
+	defer lease.Release() //nolint:errcheck // retain the useful import result
+	account := lease.Account
+	record, err := dataio.GetImportByID(ctx, account.Writer(), args.ImportID)
+	if err != nil {
+		return jobs.PermanentError(err)
+	}
+	if record.SiteID != args.SiteID || record.Source != dataio.SourceGA4 {
+		return jobs.PermanentError(errors.New("GA4 job does not match its import"))
+	}
+	if record.Status == dataio.StatusCompleted {
+		_, err := pathclean.Materialise(ctx, account.Writer(), account.Intern, record.SiteID)
+		return err
+	}
+	if w.App == nil {
+		return w.fail(ctx, lease, record.ID, "Google Analytics is not configured on this install")
+	}
+	location, err := w.location(record.SiteID)
+	if err != nil {
+		return w.fail(ctx, lease, record.ID, err.Error())
+	}
+	connection, err := GetConnection(ctx, account.Reader(), record.SiteID, ProviderGA4)
+	if err != nil {
+		return w.fail(ctx, lease, record.ID, err.Error())
+	}
+	if connection == nil || connection.NeedsReconnect() {
+		return w.fail(ctx, lease, record.ID, "Reconnect Google Analytics before importing history")
+	}
+	if args.Property == "" || args.From <= 0 || args.To < args.From {
+		return w.fail(ctx, lease, record.ID, "Choose a GA4 property and a valid date range")
+	}
+	if connection.Property != args.Property {
+		return w.fail(ctx, lease, record.ID, "The Analytics connection changed; choose the property and start the import again")
+	}
+	from, to := time.Unix(args.From, 0).In(location), time.Unix(args.To, 0).In(location)
+	if err := w.App.GA4Import(ctx, account.Writer(), account.Intern, record, connection, from, to, location, w.now); err != nil {
+		return w.fail(ctx, lease, record.ID, err.Error())
+	}
+	// Populate existing path-cleaning rules for paths introduced by the import.
+	if _, err := pathclean.Materialise(ctx, account.Writer(), account.Intern, record.SiteID); err != nil {
+		return err
+	}
+	return nil
 }

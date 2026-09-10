@@ -387,10 +387,12 @@ type page struct {
 	Exports    []exportView
 	SheetNames []string
 
-	GoogleEnabled         bool
-	SearchConsoleNoticeID string
-	GA4                   *google.Connection
-	SearchConsole         *google.Connection
+	GoogleEnabled          bool
+	SearchConsoleNoticeID  string
+	GA4                    *google.Connection
+	AnalyticsProperties    []google.AnalyticsProperty
+	AnalyticsPropertyError string
+	SearchConsole          *google.Connection
 
 	// SearchProperties is the choice a freshly connected grant still has to
 	// make. It is only fetched when the connection has no property yet, so an
@@ -1123,6 +1125,7 @@ func (h *Handler) imports(w http.ResponseWriter, r *http.Request, site sites.Sit
 		}
 
 		h.loadSearchProperties(r, account, site, &data)
+		h.loadAnalyticsProperties(r, account, &data)
 	}
 
 	h.render(w, r, "imports", data)
@@ -1501,6 +1504,11 @@ func (h *Handler) googleProperty(w http.ResponseWriter, r *http.Request, site si
 
 	if h.Google == nil {
 		http.Error(w, "no Google application is configured on this install", http.StatusNotFound)
+		return
+	}
+
+	if r.PostFormValue("provider") == google.ProviderGA4 {
+		h.analyticsImport(w, r, site)
 		return
 	}
 

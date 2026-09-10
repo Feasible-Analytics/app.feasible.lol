@@ -11,6 +11,7 @@ package google
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -340,5 +341,56 @@ func TestABackfillKeepsItsOwnWindow(t *testing.T) {
 
 	if stored.RowsWritten != 3 {
 		t.Errorf("rows written = %d, want one per day", stored.RowsWritten)
+	}
+}
+
+// TestGA4WorkerCompletesAndRecordsFailures runs the actual queued-job handler,
+// checking both completed history and cleanup after an invalid API response.
+func TestGA4WorkerCompletesAndRecordsFailures(t *testing.T) {
+	for _, bad := range []bool{false, true} {
+		t.Run(fmt.Sprint(bad), func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+			workers, account := newWorkers(t, &searchStub{}, now)
+			ga4TestServer(t, bad)
+			if err := SaveConnection(ctx, account.Writer(), Connection{SiteID: 1, AccountID: 1, Provider: ProviderGA4, Property: "123", AccessToken: "valid", ExpiresAt: now.Add(time.Hour).Unix()}, now); err != nil {
+				t.Fatal(err)
+			}
+			record, err := dataio.CreateImport(ctx, account.Writer(), 1, dataio.SourceGA4, "123", now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			args, err := json.Marshal(ImportArgs{AccountID: 1, SiteID: 1, ImportID: record.ID, Property: "123", From: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC).Unix(), To: time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC).Unix()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = workers.RunGA4Import(ctx, jobs.Job{Args: args})
+			if bad && err == nil {
+				t.Fatal("invalid data succeeded")
+			}
+			if !bad && err != nil {
+				t.Fatal(err)
+			}
+			stored, err := dataio.GetImportByID(ctx, account.Reader(), record.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := dataio.StatusCompleted
+			if bad {
+				want = dataio.StatusFailed
+			}
+			if stored.Status != want {
+				t.Fatalf("status=%s want %s", stored.Status, want)
+			}
+			if bad {
+				var rows int
+				if err := account.Reader().QueryRowContext(ctx, "SELECT COUNT(*) FROM imported_rollups WHERE import_id=?", record.ID).Scan(&rows); err != nil {
+					t.Fatal(err)
+				}
+				if rows != 0 {
+					t.Fatalf("failed import retained %d rows", rows)
+				}
+			}
+		})
 	}
 }
