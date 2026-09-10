@@ -13,6 +13,8 @@ import type { Annotation, Bootstrap, Metric, StatsRequest } from "../api/types";
 import type { FilterLabels, FilterState } from "../lib/filters";
 import { toApi, toggle } from "../lib/filters";
 import { t } from "../lib/i18n";
+import type { IntervalPref } from "../lib/interval";
+import { INTERVALS, effectiveInterval, intervalChoices, nextInterval } from "../lib/interval";
 import { useLoading } from "../lib/loading";
 import { canStep, step, today, yesterday } from "../lib/period";
 import { usePref, useTheme } from "../lib/prefs";
@@ -38,18 +40,6 @@ import { TILE_METRICS, TopStats } from "./TopStats";
 /** Every headline metric has a time-bucketed query representation and may be
  *  restored as the selected chart when a reader returns to the dashboard. */
 const GRAPH_METRICS: Metric[] = TILE_METRICS;
-
-/**
- * The bucket widths the `i` key cycles through.
- *
- * "auto" is the engine's own choice from the range, which is right nearly all
- * the time. The rest exist for the times it is not: a 91-day range drawn daily
- * is noise, and the same range drawn weekly is a trend. Minute is absent because
- * it only means anything on the live view, which has its own screen.
- */
-const INTERVALS = ["auto", "hour", "day", "week", "month"] as const;
-
-type IntervalPref = (typeof INTERVALS)[number];
 
 /**
  * App is the whole dashboard.
@@ -203,10 +193,16 @@ function AnalyticsDashboard() {
 
 	const totals = useStats(state.domain, state.domain ? totalsBody : null);
 
+	// The widths on offer come from the totals query rather than the graph's own
+	// answer. The graph's range is the range this choice went into, so reading it
+	// back to decide the choice would be a loop.
+	const intervals = intervalChoices(totals.data?.query.date_range);
+	const bucket = effectiveInterval(interval, intervals);
+
 	const graphBody: StatsRequest = {
 		metrics: [metric],
 		date_range: range,
-		dimensions: [interval === "auto" ? "time" : `time:${interval}`],
+		dimensions: [bucket === "auto" ? "time" : `time:${bucket}`],
 		filters: filters.length ? filters : undefined,
 		include: comparison,
 		exact: exact || undefined,
@@ -370,11 +366,7 @@ function AnalyticsDashboard() {
 
 		onCompare: () => navigate({ ...state, compare: state.compare === "off" ? "previous_period" : "off" }),
 
-		onInterval: () => {
-			const at = INTERVALS.indexOf(interval);
-
-			setIntervalPref(INTERVALS[(at + 1) % INTERVALS.length] as IntervalPref);
-		},
+		onInterval: () => setIntervalPref(nextInterval(interval, intervals)),
 
 		onShape: () => setChart(chart === "line" ? "bar" : "line"),
 
@@ -442,6 +434,9 @@ function AnalyticsDashboard() {
 						onTheme={setTheme}
 						chart={chart}
 						onChart={setChart}
+						interval={bucket}
+						intervals={intervals}
+						onInterval={setIntervalPref}
 						resolved={totals.data?.query.date_range}
 						filters={filters}
 						onHelp={() => setHelp(true)}
@@ -601,6 +596,9 @@ function LockedDashboard({ boot }: { boot: Bootstrap }) {
 				onTheme={setTheme}
 				chart={null}
 				onChart={() => {}}
+				interval="auto"
+				intervals={[]}
+				onInterval={() => {}}
 				resolved={undefined}
 				filters={[]}
 				onHelp={() => {}}

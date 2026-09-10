@@ -11,7 +11,9 @@ import { test } from "node:test";
 
 import type { Filter, Navigation } from "../api/types";
 import type { UrlState } from "../lib/url";
+import { INTERVALS } from "../lib/interval";
 import { CHART_TYPES } from "./MainGraph";
+import type { ViewPrefs } from "./TopBar";
 import { accountMenuGroups, currentVisitorsRequest, periodLabel, siteSwitchURL, viewGroups } from "./TopBar";
 
 test("the current visitors number always requests an exact answer", () => {
@@ -108,21 +110,27 @@ function account(overrides: Partial<Navigation> = {}): Navigation {
 	};
 }
 
+/** view is the preferences a menu is built from, with everything a given test
+ *  does not care about left at a value that draws every row. */
+function view(overrides: Partial<ViewPrefs> = {}): ViewPrefs {
+	return { theme: "system", chart: "line", interval: "auto", intervals: [...INTERVALS], ...overrides };
+}
+
 /** rowIDs is every row in the menu, flattened, for the presence assertions. */
 function rowIDs(groups: ReturnType<typeof accountMenuGroups>): string[] {
 	return groups.flatMap((group) => group.rows.map((row) => row.id));
 }
 
 test("the account menu is grouped, and ends with a separated sign out", () => {
-	const groups = accountMenuGroups(account(), "system", "line", true);
+	const groups = accountMenuGroups(account(), view(), true);
 
-	assert.deepEqual(groups.map((group) => group.id), ["destinations", "help", "graph", "theme", "session"]);
+	assert.deepEqual(groups.map((group) => group.id), ["destinations", "help", "graph", "interval", "theme", "session"]);
 
-	// Only the two groups of choices carry a heading: the others are
-	// self-evident, and a heading over one row reads as a label for that row.
+	// Only the groups of choices carry a heading: the others are self-evident,
+	// and a heading over one row reads as a label for that row.
 	assert.deepEqual(
 		groups.filter((group) => group.label).map((group) => group.id),
-		["graph", "theme"],
+		["graph", "interval", "theme"],
 	);
 
 	assert.deepEqual(groups.at(-1)?.rows.map((row) => row.kind), ["signout"]);
@@ -132,16 +140,16 @@ test("a destination nobody may reach is not in the menu", () => {
 	// Billing is absent for a member who cannot manage it, and site settings is
 	// absent when no site is in scope. The server decides both by omitting the
 	// URL, so the menu must key off the URL rather than re-deriving the rule.
-	assert.ok(rowIDs(accountMenuGroups(account(), "system", "line", true)).includes("billing"));
-	assert.ok(!rowIDs(accountMenuGroups(account({ billing_url: undefined }), "system", "line", true)).includes("billing"));
+	assert.ok(rowIDs(accountMenuGroups(account(), view(), true)).includes("billing"));
+	assert.ok(!rowIDs(accountMenuGroups(account({ billing_url: undefined }), view(), true)).includes("billing"));
 
-	assert.ok(rowIDs(accountMenuGroups(account(), "system", "line", true)).includes("site_settings"));
-	assert.ok(!rowIDs(accountMenuGroups(account({ site_settings_url: undefined }), "system", "line", true)).includes("site_settings"));
+	assert.ok(rowIDs(accountMenuGroups(account(), view(), true)).includes("site_settings"));
+	assert.ok(!rowIDs(accountMenuGroups(account({ site_settings_url: undefined }), view(), true)).includes("site_settings"));
 
 	// The two that are always there stay there.
 	for (const id of ["sites", "account", "shortcuts", "signout"]) {
 		assert.ok(
-			rowIDs(accountMenuGroups(account({ billing_url: undefined, site_settings_url: undefined }), "system", "line", true)).includes(id),
+			rowIDs(accountMenuGroups(account({ billing_url: undefined, site_settings_url: undefined }), view(), true)).includes(id),
 			`${id} must be in every menu`,
 		);
 	}
@@ -149,7 +157,7 @@ test("a destination nobody may reach is not in the menu", () => {
 
 test("exactly one theme is marked current, and it is the one in force", () => {
 	for (const theme of ["light", "dark", "system"] as const) {
-		const rows = accountMenuGroups(account(), theme, "line", true)
+		const rows = accountMenuGroups(account(), view({ theme }), true)
 			.flatMap((group) => group.rows)
 			.filter((row) => row.kind === "theme");
 
@@ -165,7 +173,7 @@ test("exactly one theme is marked current, and it is the one in force", () => {
 test("the shortcut row advertises the key that opens the overlay", () => {
 	// The whole reason the button left the bar is that the key is discoverable
 	// from the menu instead. A row with no key printed loses that.
-	const shortcuts = accountMenuGroups(account(), "system", "line", true)
+	const shortcuts = accountMenuGroups(account(), view(), true)
 		.flatMap((group) => group.rows)
 		.find((row) => row.id === "shortcuts");
 
@@ -177,7 +185,7 @@ test("a locked account is offered no shortcut row it cannot use", () => {
 	// A locked dashboard binds no keys at all, so the row would close the menu
 	// and do nothing — the silent no-op the house rules forbid. It draws no
 	// graph either, so the shape rows go with them for the same reason.
-	const groups = accountMenuGroups(account(), "system", null, false);
+	const groups = accountMenuGroups(account(), view({ chart: null }), false);
 
 	assert.deepEqual(groups.map((group) => group.id), ["destinations", "theme", "session"]);
 	assert.ok(!rowIDs(groups).includes("shortcuts"));
@@ -190,7 +198,7 @@ test("a locked account is offered no shortcut row it cannot use", () => {
 
 test("exactly one graph shape is marked current, and it is the one drawn", () => {
 	for (const shape of CHART_TYPES) {
-		const rows = accountMenuGroups(account(), "system", shape, true)
+		const rows = accountMenuGroups(account(), view({ chart: shape }), true)
 			.flatMap((group) => group.rows)
 			.filter((row) => row.kind === "chart");
 
@@ -205,9 +213,9 @@ test("exactly one graph shape is marked current, and it is the one drawn", () =>
 test("a dashboard with no account is offered both shapes and all three themes", () => {
 	// The whole point of the gear: a public dashboard is the copy strangers
 	// read, and it was the one copy with no way to switch the graph to bars.
-	const groups = viewGroups("system", "line");
+	const groups = viewGroups(view());
 
-	assert.deepEqual(groups.map((group) => group.id), ["graph", "theme"]);
+	assert.deepEqual(groups.map((group) => group.id), ["graph", "interval", "theme"]);
 
 	const rows = groups.flatMap((group) => group.rows);
 
@@ -230,10 +238,10 @@ test("both menus build their Graph and Theme rows from the same function", () =>
 	// copy of them.
 	for (const theme of ["light", "dark", "system"] as const) {
 		for (const shape of CHART_TYPES) {
-			const shared = accountMenuGroups(account(), theme, shape, true)
-				.filter((group) => group.id === "graph" || group.id === "theme");
+			const shared = accountMenuGroups(account(), view({ theme, chart: shape }), true)
+				.filter((group) => ["graph", "interval", "theme"].includes(group.id));
 
-			assert.deepEqual(viewGroups(theme, shape), shared, `${theme} / ${shape}`);
+			assert.deepEqual(viewGroups(view({ theme, chart: shape })), shared, `${theme} / ${shape}`);
 		}
 	}
 });
@@ -241,13 +249,13 @@ test("both menus build their Graph and Theme rows from the same function", () =>
 test("a screen with no graph offers the theme and nothing about a graph", () => {
 	// Same rule the account menu follows: a choice that changes nothing visible
 	// reads as broken, so the rows go rather than being disabled.
-	assert.deepEqual(viewGroups("system", null).map((group) => group.id), ["theme"]);
+	assert.deepEqual(viewGroups(view({ chart: null })).map((group) => group.id), ["theme"]);
 });
 
 test("the sign out row carries its own form target and token", () => {
 	// The row is drawn by a renderer shared with a menu that has no account
 	// behind it, so it cannot reach back for the URL and the token.
-	const signout = accountMenuGroups(account(), "system", "line", true)
+	const signout = accountMenuGroups(account(), view(), true)
 		.flatMap((group) => group.rows)
 		.find((row) => row.id === "signout");
 

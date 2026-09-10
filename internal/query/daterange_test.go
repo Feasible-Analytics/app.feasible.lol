@@ -375,3 +375,32 @@ func TestAbsoluteBoundsKeepTheirOffset(t *testing.T) {
 		t.Fatal("a range mixing wall-clock and absolute bounds must be refused")
 	}
 }
+
+// TestTheAutomaticBucketWidthFollowsTheSpan pins the thresholds an unqualified
+// `time` dimension resolves through. They are the width a reader sees when they
+// have picked "auto" in the graph interval menu, so a change here silently
+// redraws every dashboard that never touched that menu.
+func TestTheAutomaticBucketWidthFollowsTheSpan(t *testing.T) {
+	end := time.Date(2026, 8, 30, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		span time.Duration
+		want string
+	}{
+		{24 * time.Hour, IntervalHour},
+		{48 * time.Hour, IntervalHour},
+		{49 * time.Hour, IntervalDay},
+		{100 * 24 * time.Hour, IntervalDay},
+		{101 * 24 * time.Hour, IntervalWeek},
+		{400 * 24 * time.Hour, IntervalWeek},
+		{401 * 24 * time.Hour, IntervalMonth},
+	}
+
+	for _, c := range cases {
+		got := chooseInterval(Resolved{Start: end.Add(-c.span), End: end})
+
+		if got != c.want {
+			t.Errorf("a %s span buckets by %s, want %s", c.span, got, c.want)
+		}
+	}
+}
