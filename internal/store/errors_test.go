@@ -73,7 +73,7 @@ func TestIsBusyRecognisesALockedDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer impatient.Close()
+	defer impatient.Close() //nolint:errcheck // returning a pinned connection to the pool cannot fail usefully
 
 	if _, err := impatient.ExecContext(ctx, "PRAGMA busy_timeout = 0"); err != nil {
 		t.Fatal(err)
