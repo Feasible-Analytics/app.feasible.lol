@@ -210,6 +210,17 @@ func (a *App) getJSON(ctx context.Context, endpoint, token string, into any) (er
 		return fmt.Errorf("google: reading %s: %w", endpoint, err)
 	}
 
+	// HTTP failures must remain failures: decoding Google's error object into a
+	// property-list struct would otherwise report an empty successful account.
+	if response.StatusCode != http.StatusOK {
+		var failure struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(body, &failure)
+		return fmt.Errorf("google: API answered %d: %s", response.StatusCode, failure.Error.Message)
+	}
 	if err := json.Unmarshal(body, into); err != nil {
 		return fmt.Errorf("google: %s did not answer with JSON: %w", endpoint, err)
 	}

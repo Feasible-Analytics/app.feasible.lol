@@ -96,7 +96,7 @@
 			</div>
 			<div class="mt-4">
 				<div class="h-2 overflow-hidden bg-subtle" role="progressbar" aria-label="{{ t $.Lang "auth.imports.column_progress" }}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ .Progress }}"><span class="block h-full {{ if eq .Status "failed" }}bg-down{{ else if eq .Status "completed" }}bg-up{{ else }}bg-accent{{ end }} transition-[width]" style="width:{{ .Progress }}%"></span></div>
-				<div class="mt-2 flex flex-col gap-1 text-xs sm:flex-row sm:items-center sm:justify-between"><span class="text-muted">{{ t $.Lang "auth.imports.progress" "done" .ProgressDone "total" .ProgressTotal "rows" .RowsWritten }}</span>{{ if .Failure }}<span class="font-medium text-down-ink">{{ .Failure }}</span>{{ else if .Dimensions }}<span class="text-muted">{{ t $.Lang "auth.imports.carries" }} {{ range $i, $d := .Dimensions }}{{ if $i }}, {{ end }}{{ $d }}{{ end }}</span>{{ end }}</div>
+				<div class="mt-2 flex flex-col gap-1 text-xs sm:flex-row sm:items-center sm:justify-between"><span class="text-muted">{{ if eq .Source "ga4" }}{{ t $.Lang "auth.ga4.progress" "done" .ProgressDone "total" .ProgressTotal "rows" .RowsWritten }}{{ else }}{{ t $.Lang "auth.imports.progress" "done" .ProgressDone "total" .ProgressTotal "rows" .RowsWritten }}{{ end }}</span>{{ if .Failure }}<span class="font-medium text-down-ink">{{ .Failure }}</span>{{ else if .Dimensions }}<span class="text-muted">{{ t $.Lang "auth.imports.carries" }} {{ range $i, $d := .Dimensions }}{{ if $i }}, {{ end }}{{ $d }}{{ end }}</span>{{ end }}</div>
 			</div>
 		</article>
 		{{ end }}
@@ -171,6 +171,24 @@
 				<div class="mt-2 border-2 border-down/30 bg-down/10 px-4 py-3 text-sm text-down-ink">{{ .GA4.Failure }}</div>
 				{{ else }}
 				<p class="mt-2 text-xs text-muted">{{ t $.Lang "auth.google.connected_property" "email" .GA4.GoogleEmail "property" .GA4.Property }}</p>
+				{{ if $.AnalyticsPropertyError }}<p class="mt-2 text-sm text-down-ink">{{ $.AnalyticsPropertyError }}</p>{{ end }}
+				{{ if $.AnalyticsProperties }}
+				<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/google/property" $.Domain) }}" class="mt-3 grid gap-3">
+					<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+					<input type="hidden" name="provider" value="ga4">
+					<label class="text-xs text-muted" for="ga4-property">{{ t $.Lang "auth.ga4.property" }}</label>
+					<select id="ga4-property" name="property" required class="w-full border-2 border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+						<option value="">{{ t $.Lang "auth.ga4.choose" }}</option>
+						{{ range $.AnalyticsProperties }}<option value="{{ .Property }}">{{ .DisplayName }} ({{ .Property }})</option>{{ end }}
+					</select>
+					<label class="text-xs text-muted" for="ga4-from">{{ t $.Lang "auth.ga4.from" }}</label>
+					<input id="ga4-from" type="date" name="from" required class="border-2 border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+					<label class="text-xs text-muted" for="ga4-to">{{ t $.Lang "auth.ga4.to" }}</label>
+					<input id="ga4-to" type="date" name="to" required class="border-2 border-field bg-card px-3 py-2 text-sm text-body focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25">
+					<p class="text-xs text-muted">{{ t $.Lang "auth.ga4.help" }}</p>
+					<button type="submit" class="btn btn-secondary">{{ t $.Lang "auth.ga4.start" }}</button>
+				</form>
+				{{ end }}
 				{{ end }}
 
 				<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/google/disconnect" $.Domain) }}" class="mt-3">

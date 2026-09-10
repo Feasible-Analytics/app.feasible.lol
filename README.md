@@ -95,6 +95,29 @@ password once. It generates the password rather than accepting one on the
 command line so the credential is not saved in shell history or exposed in the
 process list. Save it, sign in, and change it from account settings.
 
+### Google Analytics 4 history
+
+With Google OAuth configured, open a site's **Imports & exports**, connect
+Analytics, choose a property returned by Google, and select the first and last
+historical day to import. Dates must end before today and before Feasible's
+existing traffic, without overlapping another traffic import. Progress and
+failures appear in the existing import history; a failed import removes its
+partial data and can be started again.
+
+The OAuth project's **Google Analytics Admin API** (property discovery) and
+**Google Analytics Data API** (reports) must be enabled. Both use the existing
+`analytics.readonly` permission; importing does not request write access.
+
+The worker imports daily totals, pages, sources/channels, locations, devices,
+browsers, operating systems, and landing pages. It follows all report pages
+and replaces its own partial rows on replay. Reports use the GA4 property's
+calendar dates, stored at the Feasible site's local midnight. These are
+aggregate reports, not raw events: multi-day visitors are summed daily users,
+bounces are sessions minus engaged sessions, and duration uses Google's
+engagement time. Google's reporting thresholds and aggregation can make these
+figures differ from native Feasible tracking. Deleting the import removes the
+imported reports; disconnecting Google removes the site's stored connection.
+
 ### Ingestion transport and app shard identity
 
 `FEASIBLE_APP_TRANSPORT` decides which process owns the public `/api/event`
