@@ -33,6 +33,12 @@ const (
 	ReasonReferrerSpam    = "referrer_spam"
 	ReasonOutdatedBrowser = "outdated_browser"
 	ReasonAutomation      = "automation"
+
+	// ReasonPagelessVisit is a visit that fired custom events on more than one
+	// path without ever loading one. It is decided at the writer rather than
+	// here, because it is a fact about a whole visit and this file only ever
+	// sees a single event.
+	ReasonPagelessVisit = "pageless_visit"
 )
 
 // File names the lists are refreshed into. Every list goes stale — providers

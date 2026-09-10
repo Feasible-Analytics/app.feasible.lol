@@ -444,7 +444,36 @@ func (x *executor) conditionsFor(t table, r Resolved) ([]expr, error) {
 		}
 	}
 
+	if hidden := x.engagementExclusion(where); hidden != nil {
+		conditions = append(conditions, *hidden)
+	}
+
 	return append(conditions, filters...), nil
+}
+
+// engagementExclusion keeps engagement out of a breakdown by event name.
+//
+// Engagement is emitted by the tracker to measure time on page, not by anyone
+// naming an event, so a row for it is a row for something nobody did. It also
+// reads as broken: the events metric already excludes engagement, so the row
+// arrives with visitors but a count of zero. Every other surface derives
+// engagement through a metric rather than grouping on it, which is why the
+// exclusion is scoped to this one dimension instead of the whole table.
+func (x *executor) engagementExclusion(where *whereBuilder) *expr {
+	if where.table != tableEvents || x.compile.engagementNameID < 0 {
+		return nil
+	}
+
+	for _, name := range x.query.Dimensions {
+		if name == DimensionEventName {
+			return &expr{
+				SQL:  where.alias + ".name_id <> ?",
+				Args: []any{x.compile.engagementNameID},
+			}
+		}
+	}
+
+	return nil
 }
 
 // warnSessionMetrics attaches a warning to every session-scoped metric in the

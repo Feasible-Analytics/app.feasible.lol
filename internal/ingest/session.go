@@ -73,6 +73,15 @@ type Session struct {
 	// by construction instead of by every caller remembering it.
 	InteractiveNonPageview bool
 
+	// CustomPathLo and CustomPathHi are the lowest and highest paths a
+	// non-pageview event has fired on, and empty when none has. Two strings
+	// rather than a set because the only question asked of them is whether
+	// there was more than one path, and min and max answer it in bounded space
+	// while staying independent of arrival order — a replayed batch folds to
+	// the same pair whichever way round it arrives.
+	CustomPathLo string
+	CustomPathHi string
+
 	// FirstAt and FirstTie mark the event the session's attribution and device
 	// block were taken from — the visit's first pageview. This is where
 	// "attribution is frozen at session start" actually lives, and it is why a
@@ -122,6 +131,27 @@ func (s *Session) Duration() int64 {
 // there is no sequence of arrivals that can produce a different answer.
 func (s *Session) IsBounce() bool {
 	return s.Pageviews < 2 && !s.InteractiveNonPageview
+}
+
+// LooksAutomated reports whether this visit could not have been made by a
+// browser running the tracker.
+//
+// The tracker sends a pageview as the page loads, before any handler it wires
+// up can fire, so a custom event always has a pageview in front of it. A visit
+// with no pageview at all is still ordinary — a form posted half an hour after
+// the page was read opens a fresh visit with only the submission in it — but
+// reaching a *second* path without loading either one is not: moving between
+// pages is what a page load is. What produces it is a script posting to the
+// event endpoint directly, and it arrives looking like a real browser because
+// it chooses what to claim.
+//
+// Being wrong here costs a real visitor, so the rule is the narrow one no
+// browser can satisfy rather than the broad one that catches more. The one
+// setup it can still misread is a site in manual mode that sends custom events
+// across several paths and never a pageview; the events are classified rather
+// than dropped, so that stays visible and reversible.
+func (s *Session) LooksAutomated() bool {
+	return s.Pageviews == 0 && s.CustomPathLo != "" && s.CustomPathLo != s.CustomPathHi
 }
 
 // covers reports whether an event at this timestamp belongs to this session.

@@ -16,6 +16,13 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
 )
 
+// DimensionEventName is the wire name for a breakdown by event name. It is
+// named, and exported, because three places outside the registry have to
+// recognise it: the goal compiler, the exclusion that keeps engagement out of
+// the breakdown, and the roll-up builder that has to leave it out for the same
+// reason.
+const DimensionEventName = "event:name"
+
 // dimension describes one thing a query can group by or filter on. It is a
 // table rather than a switch because the same three facts — which column holds
 // it on each fact table, and which dim_* table turns its id back into a string

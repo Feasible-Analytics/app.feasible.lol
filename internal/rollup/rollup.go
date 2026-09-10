@@ -803,14 +803,26 @@ func (c *chunk) aggregate(ctx context.Context, dimension query.RollupDim) error 
 func (c *chunk) aggregateEvents(ctx context.Context, dimension query.RollupDim) error {
 	fromBucket, toBucket := c.buckets()
 
+	column := factColumn(dimension, false)
+
+	// Engagement is the tracker measuring time on page, not an event anybody
+	// named, so a bucket keyed on its name is a row for something nobody did.
+	// Only this dimension groups on the name, so only this one can produce one;
+	// engagement rows still carry a page and a device, and there they describe
+	// a visitor who was genuinely there.
+	filter := ""
+	if dimension.Name == query.DimensionEventName {
+		filter = " AND f." + column + " <> ?"
+	}
+
 	sqlText := `
 		INSERT INTO ` + dimension.Table + ` (site_id, grain, bucket, dimension, value_id,
 			pageviews, events, event_visitors, event_visits)
-		SELECT ?, ?, f.bucket, ?, f.` + factColumn(dimension, false) + `,
+		SELECT ?, ?, f.bucket, ?, f.` + column + `,
 		       SUM(f.pageview), SUM(f.event), COUNT(DISTINCT f.user_id), COUNT(DISTINCT f.session_id)
 		FROM rollup_fact_event f
-		WHERE f.bucket >= ? AND f.bucket < ?
-		GROUP BY f.bucket, f.` + factColumn(dimension, false) + `
+		WHERE f.bucket >= ? AND f.bucket < ?` + filter + `
+		GROUP BY f.bucket, f.` + column + `
 		ON CONFLICT(site_id, grain, dimension, bucket, value_id) DO UPDATE SET
 			pageviews = excluded.pageviews,
 			events = excluded.events,
@@ -818,6 +830,9 @@ func (c *chunk) aggregateEvents(ctx context.Context, dimension query.RollupDim) 
 			event_visits = excluded.event_visits`
 
 	args := []any{c.site.ID, int64(c.grain), int64(dimension.Code), fromBucket, toBucket}
+	if filter != "" {
+		args = append(args, c.names.engagement)
+	}
 
 	if _, err := c.tx.ExecContext(ctx, sqlText, args...); err != nil {
 		return fmt.Errorf("rollup: aggregate events into %s (%d): %w", dimension.Table, dimension.Code, err)

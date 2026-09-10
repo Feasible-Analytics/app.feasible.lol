@@ -198,16 +198,21 @@ func TestHostnameDefaults(t *testing.T) {
 	}
 }
 
-// TestTrailingSlashDoesNotSplitAPage checks one page is one row. A trailing
-// slash on anything but the root would otherwise double every path on the site.
-func TestTrailingSlashDoesNotSplitAPage(t *testing.T) {
+// TestTrailingSlashIsRecordedAsSent checks the path is stored as the browser
+// reported it. `/pricing/` and `/pricing` are different URLs, and only one of
+// them is usually the address the site actually serves; merging them is a path
+// rule the site owner turns on, not something derive decides for them.
+func TestTrailingSlashIsRecordedAsSent(t *testing.T) {
 	h := newHandlerHarness(t)
 
 	with := derive(t, h, pageview("https://example.com/pricing/"), nil)
-	without := derive(t, h, pageview("https://example.com/pricing"), nil)
+	if with.Pathname != "/pricing/" {
+		t.Fatalf("pathname = %q, want /pricing/", with.Pathname)
+	}
 
-	if with.Pathname != without.Pathname {
-		t.Fatalf("a trailing slash split the page: %q vs %q", with.Pathname, without.Pathname)
+	without := derive(t, h, pageview("https://example.com/pricing"), nil)
+	if without.Pathname != "/pricing" {
+		t.Fatalf("pathname = %q, want /pricing", without.Pathname)
 	}
 
 	// The root itself keeps its slash, because "" is not a path.

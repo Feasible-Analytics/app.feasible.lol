@@ -934,6 +934,34 @@ func TestOnlyTheSessionScopedMetricsAreWarnedAbout(t *testing.T) {
 	}
 }
 
+// TestEventNameBreakdownLeavesOutEngagement checks the breakdown returns the
+// events somebody named and nothing else. Engagement is the tracker measuring
+// time on page, so a row for it is a row for something nobody did — and it
+// arrives looking broken, because the events metric already excludes it and the
+// count comes back zero beside a visitor total that does not.
+func TestEventNameBreakdownLeavesOutEngagement(t *testing.T) {
+	engine := newEngine(t)
+
+	q := baseQuery("visitors", "events")
+	q.Dimensions = []string{"event:name"}
+
+	result := run(t, engine, q)
+
+	names := make([]string, 0, len(result.Results))
+	for _, row := range result.Results {
+		names = append(names, row.Dimensions[0])
+		if row.Dimensions[0] == ingest.EventEngagement {
+			t.Errorf("engagement came back as a row: visitors=%v events=%v", row.Metrics[0], row.Metrics[1])
+		}
+	}
+
+	// The fixture's two real names still arrive, so the exclusion is not simply
+	// emptying the breakdown.
+	if len(names) != 2 {
+		t.Fatalf("event names = %v, want pageview and Signup", names)
+	}
+}
+
 // TestSessionMetricUnderAnEventDimensionWithNoAnalogueIsRefused checks the
 // other half of the guard rail: where there is no correctly-scoped answer, the
 // query is refused rather than answered with a plausible wrong number.

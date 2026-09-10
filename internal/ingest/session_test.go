@@ -306,6 +306,93 @@ func TestBounceNeverReturns(t *testing.T) {
 	}
 }
 
+// TestPagelessVisitOnTwoPathsLooksAutomated is the shape a script posting
+// straight to the event endpoint leaves behind: submissions on the login and
+// register pages of a site it never loaded.
+func TestPagelessVisitOnTwoPathsLooksAutomated(t *testing.T) {
+	session := applyAll(t, []Event{
+		event("Form: Submission", 1000, "/login"),
+		event("Form: Submission", 1020, "/register"),
+	})
+
+	if !session.LooksAutomated() {
+		t.Fatalf("two paths and no pageview should look automated, got lo=%q hi=%q pageviews=%d",
+			session.CustomPathLo, session.CustomPathHi, session.Pageviews)
+	}
+}
+
+// TestRepeatedSubmitsOnOnePathAreAPerson is the false positive that matters
+// most. Somebody whose login keeps failing submits the same form four times,
+// half an hour after the page was read, so the visit holds no pageview — and
+// they are still a person.
+func TestRepeatedSubmitsOnOnePathAreAPerson(t *testing.T) {
+	session := applyAll(t, []Event{
+		event("Form: Submission", 1000, "/login"),
+		event("Form: Submission", 1010, "/login"),
+		event("Form: Submission", 1020, "/login"),
+		event("Form: Submission", 1030, "/login"),
+	})
+
+	if session.LooksAutomated() {
+		t.Fatal("repeated submissions on one path are a person retrying, not a script")
+	}
+}
+
+// TestAVisitWithAPageviewIsNeverAutomated checks the rule cannot fire on a
+// visit that loaded a page, however many paths its custom events reached.
+func TestAVisitWithAPageviewIsNeverAutomated(t *testing.T) {
+	session := applyAll(t, []Event{
+		event(EventPageview, 1000, "/"),
+		event("signup", 1010, "/login"),
+		event("signup", 1020, "/register"),
+	})
+
+	if session.LooksAutomated() {
+		t.Fatal("a visit that loaded a page is not automated")
+	}
+}
+
+// TestEngagementDoesNotMakeAVisitLookAutomated checks the pings the tracker
+// emits on its own are left out. They carry a path, so counting them would
+// convict a visitor who did nothing but read.
+func TestEngagementDoesNotMakeAVisitLookAutomated(t *testing.T) {
+	session := applyAll(t, []Event{
+		event("Form: Submission", 1000, "/login"),
+		event(EventEngagement, 1010, "/login"),
+		event(EventEngagement, 1020, "/register"),
+	})
+
+	if session.LooksAutomated() {
+		t.Fatal("engagement pings should not widen the custom-event path range")
+	}
+}
+
+// TestPagelessVerdictSurvivesAShuffle checks the verdict is a fact about the
+// visit rather than about the order it arrived in. A retry reorders events
+// against fresh traffic, and a rule that flipped under that would classify the
+// same visitor differently on every delivery.
+func TestPagelessVerdictSurvivesAShuffle(t *testing.T) {
+	stream := []Event{
+		event("Form: Submission", 1000, "/register"),
+		event("Form: Submission", 1020, "/login"),
+		event("Form: Submission", 1040, "/"),
+		event(EventEngagement, 1050, "/login"),
+	}
+
+	random := rand.New(rand.NewSource(20260910))
+
+	for attempt := 0; attempt < 100; attempt++ {
+		shuffled := append([]Event(nil), stream...)
+		random.Shuffle(len(shuffled), func(i, j int) {
+			shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+		})
+
+		if !applyAll(t, shuffled).LooksAutomated() {
+			t.Fatalf("shuffle %d lost the verdict", attempt)
+		}
+	}
+}
+
 // TestAttributionIsFrozenAtSessionStart is the rule that generates the most
 // support questions: a UTM tag on the second pageview of a visit is discarded.
 // The later event carries a different source and must not overwrite the first.

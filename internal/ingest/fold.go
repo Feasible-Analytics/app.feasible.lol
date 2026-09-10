@@ -69,13 +69,22 @@ func (s *Session) fold(event *Event) {
 
 	if event.IsPageview() {
 		s.Pageviews++
-	} else if event.Interactive && !event.IsEngagement() {
+	} else if !event.IsEngagement() {
+		// Both rules here read "a person did something", so an engagement ping
+		// is excluded from both: the tracker emits it on its own. Counting it
+		// would make the bounce rate of every site zero, and would make a
+		// visitor who did nothing but read two pages look automated.
+
+		// Which paths this visit fired custom events on. Reaching a second one
+		// without ever loading a page is what LooksAutomated is asking about.
+		s.widenCustomPaths(event.Pathname)
+
 		// A non-pageview interactive event ends a bounce on its own, which is
 		// how a single-page site with a working sign-up form stops reporting a
-		// hundred per cent bounce rate. An engagement ping is excluded because
-		// it is emitted by the tracker rather than by a person: counting it
-		// would make the bounce rate of every site zero.
-		s.InteractiveNonPageview = true
+		// hundred per cent bounce rate.
+		if event.Interactive {
+			s.InteractiveNonPageview = true
+		}
 	}
 
 	tie := orderKey(event)
@@ -147,6 +156,27 @@ func (s *Session) fold(event *Event) {
 	}
 }
 
+// widenCustomPaths records one more path a custom event fired on, as the two
+// ends of the range seen so far. Taking a minimum and a maximum is what keeps
+// it order-independent: both are commutative, so no arrival order can produce a
+// different pair, and neither grows with the number of events.
+//
+// An empty path is ignored rather than stored, because it would take the low
+// end below every real path and make a single-page visit look like two.
+func (s *Session) widenCustomPaths(path string) {
+	if path == "" {
+		return
+	}
+
+	if s.CustomPathLo == "" || path < s.CustomPathLo {
+		s.CustomPathLo = path
+	}
+
+	if path > s.CustomPathHi {
+		s.CustomPathHi = path
+	}
+}
+
 // stamp copies the session's acquisition, geo and device block onto one of its
 // events. Every event row carries that copy, which is the entire reason a
 // source, country or browser breakdown of an event metric is one scan with no
@@ -196,6 +226,11 @@ func (s *Session) absorb(other *Session) {
 	s.Pageviews += other.Pageviews
 	s.Events += other.Events
 	s.InteractiveNonPageview = s.InteractiveNonPageview || other.InteractiveNonPageview
+
+	// Both ends of the absorbed range, so a visit that was briefly split into
+	// two rows is judged on everything it did rather than on half of it.
+	s.widenCustomPaths(other.CustomPathLo)
+	s.widenCustomPaths(other.CustomPathHi)
 
 	// The same precedence the fold uses, for the same reason: the surviving
 	// session is attributed to the first pageview of the visit the two of them

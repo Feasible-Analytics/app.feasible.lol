@@ -138,6 +138,15 @@ func internBatch(ctx context.Context, cache dimensionResolver, rows []eventRow, 
 				return nil, err
 			}
 		}
+
+		// The one classification no event carries. It describes the visit, so
+		// it is reached here rather than at derive, and the writer cannot
+		// resolve an id it was never handed.
+		if session.LooksAutomated() {
+			if err := add(intern.BotReason, ReasonPagelessVisit); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	return ids, nil

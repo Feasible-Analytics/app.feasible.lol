@@ -2458,3 +2458,76 @@ func TestAPanicInOneAccountStaysInThatAccount(t *testing.T) {
 		}
 	}
 }
+
+// TestPagelessVisitIsClassifiedOnDisk covers the verdict only a whole visit can
+// support: custom events on two paths with no pageview between them, which no
+// browser running the tracker can produce.
+//
+// The two events are written in separate batches on purpose. The deciding one
+// is the second, so the row that proves it is already on disk when the verdict
+// is reached — and a marking pass that only touched the batch in hand would
+// leave the first event counted.
+func TestPagelessVisitIsClassifiedOnDisk(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+
+	base := fixtureStart.Unix()
+
+	if _, err := writer.Write(ctx, []Event{writerEvent(1, "Form: Submission", base, "/login")}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events WHERE bot_reason_id <> 0"); got != 0 {
+		t.Fatalf("one submission on one path was classified, got %d rows — a person retrying a form looks like this", got)
+	}
+
+	if _, err := writer.Write(ctx, []Event{writerEvent(1, "Form: Submission", base+20, "/register")}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events WHERE bot_reason_id <> 0"); got != 2 {
+		t.Fatalf("%d events carry a bot reason, want both — the earlier row was left behind", got)
+	}
+
+	// Nothing is deleted: a wrong verdict has to stay recoverable.
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events"); got != 2 {
+		t.Fatalf("events table holds %d rows, want 2 — classification must not delete", got)
+	}
+
+	if got := countRows(t, manager, 1,
+		"SELECT COUNT(*) FROM events e JOIN dim_bot_reason r ON r.id = e.bot_reason_id WHERE r.value = 'pageless_visit'",
+	); got != 2 {
+		t.Fatalf("%d events carry the pageless_visit reason, want 2", got)
+	}
+
+	// The visit-grain fact a visitor count reads. Without it the events are
+	// classified and the visitor is still counted, which is the whole number
+	// this was meant to correct.
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM session_sampling WHERE is_bot = 1"); got != 1 {
+		t.Fatalf("%d sampled sessions are marked automated, want 1", got)
+	}
+}
+
+// TestPagelessVisitWithAPageviewIsLeftAlone is the other half of the rule. The
+// same events, with the page load in front of them, are a person.
+func TestPagelessVisitWithAPageviewIsLeftAlone(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+
+	base := fixtureStart.Unix()
+
+	if _, err := writer.Write(ctx, []Event{
+		writerEvent(1, EventPageview, base, "/login"),
+		writerEvent(1, "Form: Submission", base+10, "/login"),
+		writerEvent(1, "Form: Submission", base+20, "/register"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events WHERE bot_reason_id <> 0"); got != 0 {
+		t.Fatalf("%d events were classified on a visit that loaded a page, want 0", got)
+	}
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM session_sampling WHERE is_bot = 1"); got != 0 {
+		t.Fatalf("%d sampled sessions were marked automated, want 0", got)
+	}
+}
