@@ -172,9 +172,16 @@ func newAccountThrough(t testing.TB, version int) *accounts.Account {
 		t.Fatal(err)
 	}
 
+	// The cache is warmed only on a fixture that is at the newest schema. An
+	// older one is missing the dimension tables later migrations add, and
+	// warming would fail on the first of them — which says nothing about the
+	// boundary the fixture exists to sit on. Every caller that then asks a
+	// question needing interned values migrates the rest of the way first.
 	cache := intern.New(db.Writer())
-	if err := cache.Warm(context.Background()); err != nil {
-		t.Fatal(err)
+	if version >= migrate.Account().Version() {
+		if err := cache.Warm(context.Background()); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	return &accounts.Account{ID: 1, DB: db, Intern: cache}

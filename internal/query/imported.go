@@ -216,6 +216,12 @@ var importedOrder = []string{
 	"visit:os_version",
 	"visit:language",
 	ImportedPropertyDimension,
+
+	// Appended, not slotted in beside the three UTM tags above: the bit
+	// position is what every import already on disk means by `covered`, and
+	// moving one would re-interpret history that cannot be re-imported.
+	"visit:utm_content",
+	"visit:utm_term",
 }
 
 // ImportedPropertyDimension is the coverage bit used by imported property
@@ -241,6 +247,8 @@ var importedColumns = map[string]string{
 	"visit:utm_source":      "utm_source_id",
 	"visit:utm_medium":      "utm_medium_id",
 	"visit:utm_campaign":    "utm_campaign_id",
+	"visit:utm_content":     "utm_content_id",
+	"visit:utm_term":        "utm_term_id",
 	"visit:country":         "country_id",
 	"visit:region":          "region_id",
 	"visit:city":            "city_id",

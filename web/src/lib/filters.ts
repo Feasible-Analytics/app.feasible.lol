@@ -149,6 +149,18 @@ export const FILTERABLE: DimensionDef[] = [
 		labelId: "dashboard.dimension.utm_campaign",
 		groupId: "dashboard.filter.group.acquisition",
 	},
+	{
+		alias: "utm_content",
+		dimension: "visit:utm_content",
+		labelId: "dashboard.dimension.utm_content",
+		groupId: "dashboard.filter.group.acquisition",
+	},
+	{
+		alias: "utm_term",
+		dimension: "visit:utm_term",
+		labelId: "dashboard.dimension.utm_term",
+		groupId: "dashboard.filter.group.acquisition",
+	},
 
 	{
 		alias: "country",

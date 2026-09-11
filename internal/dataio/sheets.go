@@ -66,6 +66,8 @@ var dimensionHeaders = map[string]string{
 	"utm_source":               "visit:utm_source",
 	"utm_medium":               "visit:utm_medium",
 	"utm_campaign":             "visit:utm_campaign",
+	"utm_content":              "visit:utm_content",
+	"utm_term":                 "visit:utm_term",
 	"country":                  "visit:country",
 	"region":                   "visit:region",
 	"city":                     "visit:city",
@@ -143,8 +145,8 @@ var Sheets = []Sheet{
 	},
 	{
 		Name: "imported_sources", Grain: grainEvent | grainSession,
-		Dimensions: []string{"visit:source", "visit:referrer", "visit:utm_source", "visit:utm_medium", "visit:utm_campaign"},
-		Columns:    []string{"source", "referrer", "utm_source", "utm_medium", "utm_campaign"},
+		Dimensions: []string{"visit:source", "visit:referrer", "visit:utm_source", "visit:utm_medium", "visit:utm_campaign", "visit:utm_content", "visit:utm_term"},
+		Columns:    []string{"source", "referrer", "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term"},
 		Metrics:    []string{FieldVisitors, FieldVisits, FieldPageviews, FieldBounces, FieldDuration},
 	},
 	{
@@ -229,7 +231,7 @@ func SheetNames() []string {
 func KnownHeaders() []string {
 	names := []string{
 		DateHeader,
-		"link_url", "property", "value", "utm_content", "utm_term",
+		"link_url", "property", "value",
 		"total_scroll_depth", "total_scroll_depth_visits",
 		"total_time_on_page", "total_time_on_page_visits",
 	}

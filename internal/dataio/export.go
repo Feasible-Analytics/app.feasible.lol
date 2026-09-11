@@ -514,8 +514,8 @@ func writeRawEvents(ctx context.Context, db *sql.DB, archive *zip.Writer, siteID
 		       COALESCE(os.value, ''), COALESCE(ov.value, ''), COALESCE(la.value, ''),
 		       e.scroll_depth, e.engagement_time, COALESCE(bt.value, ''),
 		       COALESCE(ed.props, ''), COALESCE(CAST(ed.revenue_amount AS TEXT), ''),
-		       COALESCE(ed.revenue_currency, ''), COALESCE(ed.utm_content, ''),
-		       COALESCE(ed.utm_term, ''), COALESCE(ed.full_url, '')
+		       COALESCE(ed.revenue_currency, ''), COALESCE(ut.value, ''),
+		       COALESCE(uq.value, ''), COALESCE(ed.full_url, '')
 		FROM events e
 		LEFT JOIN event_details ed ON ed.event_id = e.id
 		LEFT JOIN dim_event_name n ON n.id = e.name_id
@@ -528,6 +528,8 @@ func writeRawEvents(ctx context.Context, db *sql.DB, archive *zip.Writer, siteID
 		LEFT JOIN dim_utm_source us ON us.id = e.utm_source_id
 		LEFT JOIN dim_utm_medium um ON um.id = e.utm_medium_id
 		LEFT JOIN dim_utm_campaign uc ON uc.id = e.utm_campaign_id
+		LEFT JOIN dim_utm_content ut ON ut.id = e.utm_content_id
+		LEFT JOIN dim_utm_term uq ON uq.id = e.utm_term_id
 		LEFT JOIN dim_country co ON co.id = e.country_id
 		LEFT JOIN dim_region re ON re.id = e.region_id
 		LEFT JOIN dim_city ci ON ci.id = e.city_id

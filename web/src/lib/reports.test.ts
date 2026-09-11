@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { before, test } from "node:test";
 
-import { PAGES, dimensionsOf, noticesOf } from "./reports";
+import { CARDS, PAGES, SOURCES, dimensionsOf, groupsOf, noticesOf } from "./reports";
 
 // The locale is read from the page once, so the stub is installed before any
 // test asks for a formatter.
@@ -17,6 +17,45 @@ before(() => {
 	globalThis.document = {
 		getElementById: () => ({ textContent: JSON.stringify({ locale: "en", messages: {} }) }),
 	} as unknown as Document;
+});
+
+test("the Sources card offers all five UTM tags behind one button", () => {
+	const campaigns = groupsOf(SOURCES).find((group) => group.labelId === "dashboard.group.campaigns");
+	assert.ok(campaigns);
+
+	assert.deepEqual(
+		campaigns.tabs.map((tab) => tab.dimension),
+		[
+			"visit:utm_source",
+			"visit:utm_medium",
+			"visit:utm_campaign",
+			"visit:utm_content",
+			"visit:utm_term",
+		],
+	);
+
+	// Every one of them excludes the untagged bucket. Without it the 90-odd
+	// percent of traffic carrying no tag is one row swamping the report.
+	for (const tab of campaigns.tabs) {
+		assert.deepEqual(tab.filters, [["is_not", tab.dimension, [""], { case_sensitive: true }]]);
+	}
+});
+
+test("a group opens on its first report, and every tab belongs to exactly one group", () => {
+	for (const card of CARDS) {
+		const groups = groupsOf(card);
+
+		for (const group of groups) {
+			assert.equal(group.tab, group.tabs[0]);
+		}
+
+		// The header draws one button per group, so a tab that fell out of the
+		// grouping would be a report nobody can reach.
+		assert.equal(
+			groups.reduce((count, group) => count + group.tabs.length, 0),
+			card.tabs.length,
+		);
+	}
 });
 
 test("the Pages card keeps captured titles outside its grouping dimensions", () => {
