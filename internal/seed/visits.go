@@ -255,9 +255,16 @@ func (g *generator) emitCustom(ctx context.Context, site *siteRun, person visito
 		return fmt.Errorf("seed: encode props: %w", err)
 	}
 
+	// A 404 names its own address; every other event fires where the visitor
+	// already was.
+	eventURL := pageURL
+	if event.Path != "" {
+		eventURL = "https://" + site.domain + event.Path
+	}
+
 	payload := &ingest.Payload{
 		Name:     event.Name,
-		URL:      pageURL,
+		URL:      eventURL,
 		Domain:   site.domain,
 		Referrer: from,
 		Props:    encoded,

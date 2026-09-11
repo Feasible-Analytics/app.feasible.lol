@@ -51,6 +51,10 @@ interface Props {
 	/** The filters in force. The live pill carries them too, so the number in the
 	 *  bar is about the same population as the page under it. */
 	filters: Filter[];
+	/** The filter pills and their editor. They live in the bar rather than in the
+	 *  page because the bar is what follows the reader down a long dashboard, and
+	 *  a filter you have to scroll back up to read is one you stop trusting. */
+	filterBar?: ReactNode;
 	onHelp: () => void;
 
 	// onStep is the same action the arrow keys perform. The arrows in the
@@ -97,6 +101,20 @@ export function siteSwitchURL(domain: string, search: string): string {
 }
 
 /**
+ * showsLiveCount decides whether the bar has room for the live number.
+ *
+ * The count steps aside for the filter pills rather than sharing the row with
+ * them. Both answer "what am I looking at"; the pills answer it about the
+ * choice the reader just made, and on a laptop the two together wrap the bar
+ * onto a second line that then follows them down every screen of the page.
+ *
+ * A locked account has no number at all: nothing behind this bar is fetching.
+ */
+export function showsLiveCount(locked: boolean, filters: Filter[]): boolean {
+	return !locked && filters.length === 0;
+}
+
+/**
  * currentVisitorsRequest builds the live-pill query, shared with the realtime
  * screen so the two can never disagree about what "current" means.
  *
@@ -128,7 +146,7 @@ export function currentVisitorsRequest(filters: Filter[]): StatsRequest {
  * address bar is always a description of what is on screen — which is what
  * makes a dashboard link worth sending to somebody.
  */
-export function TopBar({ state, sites, onNavigate, theme, onTheme, chart, onChart, interval, intervals, onInterval, resolved, filters, onHelp, onStep, onPeriod, asked, navigation, locked = false }: Props) {
+export function TopBar({ state, sites, onNavigate, theme, onTheme, chart, onChart, interval, intervals, onInterval, resolved, filters, filterBar, onHelp, onStep, onPeriod, asked, navigation, locked = false }: Props) {
 	const label = periodLabel(state);
 	const view: ViewPrefs = { theme, chart, interval, intervals };
 	const live = state.preset === "realtime" && !state.from;
@@ -165,12 +183,18 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, chart, onChar
 					}}
 				/>
 
-				{!locked && <CurrentVisitors
+				{showsLiveCount(locked, filters) && <CurrentVisitors
 					domain={state.domain}
 					filters={filters}
 					live={live}
 					onOpen={() => onNavigate({ ...state, preset: "realtime", from: "", to: "", drawer: null })}
 				/>}
+
+				{/* Its own full-width line on a phone, where there is no room to
+				    share one, and the elastic middle of the bar everywhere else:
+				    `flex-1` gives it a base width of nothing, so however many
+				    pills are on it the bar stays one line and the pills scroll. */}
+				{filterBar && <div className="order-last flex w-full min-w-0 items-center sm:order-none sm:w-auto sm:flex-1">{filterBar}</div>}
 
 				<div className="ml-auto flex items-center gap-2">
 					{/* Comparison is hidden on the live view rather than disabled:

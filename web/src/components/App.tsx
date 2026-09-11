@@ -410,6 +410,18 @@ function AnalyticsDashboard() {
 
 	useShortcuts(actions);
 
+	// One instance, wherever it is drawn. Rendering the bar twice and hiding one
+	// would mean two dimension-menu fetches and two half-typed value editors.
+	const filterBar = (
+		<FilterBar
+			domain={state.domain}
+			range={range}
+			filters={state.filters}
+			labels={state.labels}
+			onChange={changeFilters}
+		/>
+	);
+
 	const drawerCard = state.drawer ? findCard(state.drawer.card) : undefined;
 	const drawerTab = drawerCard && state.drawer ? findTab(drawerCard, state.drawer.tab) : undefined;
 
@@ -439,6 +451,7 @@ function AnalyticsDashboard() {
 						onInterval={setIntervalPref}
 						resolved={totals.data?.query.date_range}
 						filters={filters}
+						filterBar={filterBar}
 						onHelp={() => setHelp(true)}
 						onStep={actions.onStep}
 						onPeriod={actions.onPeriod}
@@ -451,19 +464,11 @@ function AnalyticsDashboard() {
 			<main className="mx-auto max-w-shell px-4 py-5 sm:px-5">
 				<RebuildNotice />
 
-				{/* The pills stay in an embed even though the editor is chrome:
-				    they are the record of what the numbers exclude, and a
-				    filtered figure with nothing saying so is the one that gets
-				    quoted as the whole picture. */}
-				<div className="mb-3">
-					<FilterBar
-						domain={state.domain}
-						range={range}
-						filters={state.filters}
-						labels={state.labels}
-						onChange={changeFilters}
-					/>
-				</div>
+				{/* An embed has no bar to put the pills in, and they have to be
+				    somewhere: they are the record of what the numbers exclude,
+				    and a filtered figure with nothing saying so is the one that
+				    gets quoted as the whole picture. */}
+				{embedded && <div className="mb-3">{filterBar}</div>}
 
 				{live ? (
 					<Realtime domain={state.domain} filters={filters} />
