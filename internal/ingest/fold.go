@@ -120,6 +120,8 @@ func (s *Session) fold(event *Event) {
 		s.UTMSource = event.UTMSource
 		s.UTMMedium = event.UTMMedium
 		s.UTMCampaign = event.UTMCampaign
+		s.UTMContent = event.UTMContent
+		s.UTMTerm = event.UTMTerm
 
 		s.Country = event.Country
 		s.Region = event.Region
@@ -195,6 +197,8 @@ func (s *Session) stamp(event *Event) {
 	event.UTMSource = s.UTMSource
 	event.UTMMedium = s.UTMMedium
 	event.UTMCampaign = s.UTMCampaign
+	event.UTMContent = s.UTMContent
+	event.UTMTerm = s.UTMTerm
 
 	event.Country = s.Country
 	event.Region = s.Region
@@ -245,6 +249,7 @@ func (s *Session) absorb(other *Session) {
 		s.FirstIsPageview = other.FirstIsPageview
 		s.Referrer, s.Source, s.Channel = other.Referrer, other.Source, other.Channel
 		s.UTMSource, s.UTMMedium, s.UTMCampaign = other.UTMSource, other.UTMMedium, other.UTMCampaign
+		s.UTMContent, s.UTMTerm = other.UTMContent, other.UTMTerm
 		s.Country, s.Region, s.City = other.Country, other.Region, other.City
 		s.DeviceType, s.ScreenSize = other.DeviceType, other.ScreenSize
 		s.Browser, s.BrowserVersion = other.Browser, other.BrowserVersion

@@ -1045,6 +1045,91 @@ func TestAccountMigratesAFreshDatabase(t *testing.T) {
 	}
 }
 
+// TestUTMContentAndTermSurviveBecomingDimensions covers the one-way door in
+// account 0020.
+//
+// The two rarer UTM tags were free text on the cold table, where nothing could
+// group by them, and the migration turns them into interned columns and then
+// drops the originals. Data already captured has to arrive on the other side:
+// the alternative is telling a customer that the campaign detail they have been
+// sending for months is gone, at the moment they finally get a report for it.
+func TestUTMContentAndTermSurviveBecomingDimensions(t *testing.T) {
+	ctx := context.Background()
+	db := newDatabase(t)
+
+	if _, err := Run(ctx, db, UpTo(Account(), 19)); err != nil {
+		t.Fatal(err)
+	}
+
+	// One visit, two events. Only the first carries the tags, which is what a
+	// real visit looks like: the campaign is on the landing URL and on nothing
+	// the visitor clicks afterwards.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO sessions (id, site_id, user_id, started_at, last_seen_at)
+		VALUES (7, 1, 500, 1000, 2000);
+		INSERT INTO events (id, site_id, timestamp, name_id, user_id, session_id, has_details)
+		VALUES (1, 1, 1000, 1, 500, 7, 1), (2, 1, 1500, 1, 500, 7, 0);
+		INSERT INTO event_details (event_id, utm_content, utm_term)
+		VALUES (1, 'headline-a', 'web analytics');
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Run(ctx, db, Account()); err != nil {
+		t.Fatal(err)
+	}
+
+	var content, term string
+	if err := db.QueryRowContext(ctx, `
+		SELECT c.value, q.value
+		FROM events e
+		JOIN dim_utm_content c ON c.id = e.utm_content_id
+		JOIN dim_utm_term q ON q.id = e.utm_term_id
+		WHERE e.id = 1`).Scan(&content, &term); err != nil {
+		t.Fatal(err)
+	}
+	if content != "headline-a" || term != "web analytics" {
+		t.Errorf("the event carries %q and %q, want headline-a and web analytics", content, term)
+	}
+
+	// The visit takes its acquisition from its first event, exactly as the
+	// three UTM columns beside these already did.
+	if err := db.QueryRowContext(ctx, `
+		SELECT c.value, q.value
+		FROM sessions s
+		JOIN dim_utm_content c ON c.id = s.utm_content_id
+		JOIN dim_utm_term q ON q.id = s.utm_term_id
+		WHERE s.id = 7`).Scan(&content, &term); err != nil {
+		t.Fatal(err)
+	}
+	if content != "headline-a" || term != "web analytics" {
+		t.Errorf("the visit carries %q and %q, want headline-a and web analytics", content, term)
+	}
+
+	// An event that carried no tag keeps the id that means "not set" rather
+	// than being handed the neighbouring event's campaign.
+	var untagged int64
+	if err := db.QueryRowContext(ctx,
+		"SELECT utm_content_id + utm_term_id FROM events WHERE id = 2").Scan(&untagged); err != nil {
+		t.Fatal(err)
+	}
+	if untagged != 0 {
+		t.Errorf("an untagged event was given ids %d, want 0", untagged)
+	}
+
+	// The free-text columns are gone, so there is one place a UTM tag lives.
+	for _, column := range []string{"utm_content", "utm_term"} {
+		var count int
+		if err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM pragma_table_info('event_details') WHERE name = ?", column).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Errorf("event_details still has %s", column)
+		}
+	}
+}
+
 // TestAccountV7ToCurrentKeepsPopulatedSessionOwnership validates the deployed
 // topology and M9 upgrade before sampling 0011 materializes its session facts,
 // without losing sessions or permanent UUID receipts.
@@ -1069,8 +1154,8 @@ func TestAccountV7ToCurrentKeepsPopulatedSessionOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 7 || result.To != 19 || fmt.Sprint(result.Applied) != "[8 9 10 11 12 13 14 15 16 17 18 19]" {
-		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 19 via [8 9 10 11 12 13 14 15 16 17 18 19]",
+	if result.From != 7 || result.To != 20 || fmt.Sprint(result.Applied) != "[8 9 10 11 12 13 14 15 16 17 18 19 20]" {
+		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 20 via [8 9 10 11 12 13 14 15 16 17 18 19 20]",
 			result.From, result.To, result.Applied)
 	}
 
@@ -1275,7 +1360,7 @@ func TestCoordinatedMigrationNumbers(t *testing.T) {
 		set  Set
 		want []int
 	}{
-		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}},
+		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}},
 		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}},
 	} {
 		t.Run(name, func(t *testing.T) {

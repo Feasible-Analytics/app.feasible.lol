@@ -1305,16 +1305,18 @@ func insertEvent(ctx context.Context, tx *sql.Tx, row eventRow, ids *dimensionID
 		INSERT INTO events (
 			site_id, timestamp, name_id, user_id, session_id,
 			hostname_id, pathname_id, page_title_id,
-			referrer_id, source_id, channel_id, utm_source_id, utm_medium_id, utm_campaign_id,
+			referrer_id, source_id, channel_id,
+			utm_source_id, utm_medium_id, utm_campaign_id, utm_content_id, utm_term_id,
 			country_id, region_id, city_id,
 			device_type_id, screen_size_id, browser_id, browser_version_id,
 			os_id, os_version_id, language_id,
 			scroll_depth, engagement_time, bot_reason_id, is_imported, has_details
-		) VALUES (?,?,?,?,?, ?,?,?, ?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?,?)`,
+		) VALUES (?,?,?,?,?, ?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?,?)`,
 		event.SiteID, event.Timestamp, ids.of(intern.EventName, event.Name), event.UserID, row.sessionID,
 		ids.of(intern.Hostname, event.Hostname), ids.of(intern.Pathname, event.Pathname), ids.of(intern.PageTitle, event.PageTitle),
 		ids.of(intern.Referrer, event.Referrer), ids.of(intern.Source, event.Source), ids.of(intern.Channel, event.Channel),
 		ids.of(intern.UTMSource, event.UTMSource), ids.of(intern.UTMMedium, event.UTMMedium), ids.of(intern.UTMCampaign, event.UTMCampaign),
+		ids.of(intern.UTMContent, event.UTMContent), ids.of(intern.UTMTerm, event.UTMTerm),
 		ids.of(intern.Country, event.Country), ids.of(intern.Region, event.Region), ids.of(intern.City, event.City),
 		ids.of(intern.DeviceType, event.DeviceType), ids.of(intern.ScreenSize, event.ScreenSize),
 		ids.of(intern.Browser, event.Browser), ids.of(intern.BrowserVersion, event.BrowserVersion),
@@ -1349,10 +1351,9 @@ func insertEvent(ctx context.Context, tx *sql.Tx, row eventRow, ids *dimensionID
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO event_details (event_id, props, revenue_amount, revenue_currency, utm_content, utm_term)
-		VALUES (?,?,?,?,?,?)`,
+		INSERT INTO event_details (event_id, props, revenue_amount, revenue_currency)
+		VALUES (?,?,?,?)`,
 		eventID, props, amount, currency,
-		nullIfEmpty(event.UTMContent), nullIfEmpty(event.UTMTerm),
 	); err != nil {
 		return fmt.Errorf("write batch: insert event details: %w", err)
 	}
@@ -1368,6 +1369,7 @@ func insertEvent(ctx context.Context, tx *sql.Tx, row eventRow, ids *dimensionID
 // a breakdown that does not add up.
 const sessionStampSet = `referrer_id = ?, source_id = ?, channel_id = ?, ` +
 	`utm_source_id = ?, utm_medium_id = ?, utm_campaign_id = ?, ` +
+	`utm_content_id = ?, utm_term_id = ?, ` +
 	`country_id = ?, region_id = ?, city_id = ?, ` +
 	`device_type_id = ?, screen_size_id = ?, browser_id = ?, browser_version_id = ?, ` +
 	`os_id = ?, os_version_id = ?, language_id = ?`
@@ -1383,6 +1385,8 @@ func sessionStampArgs(session *Session, ids *dimensionIDs) []any {
 		ids.of(intern.UTMSource, session.UTMSource),
 		ids.of(intern.UTMMedium, session.UTMMedium),
 		ids.of(intern.UTMCampaign, session.UTMCampaign),
+		ids.of(intern.UTMContent, session.UTMContent),
+		ids.of(intern.UTMTerm, session.UTMTerm),
 		ids.of(intern.Country, session.Country),
 		ids.of(intern.Region, session.Region),
 		ids.of(intern.City, session.City),
@@ -1429,11 +1433,12 @@ func upsertSession(ctx context.Context, tx *sql.Tx, session *Session, ids *dimen
 			id, site_id, user_id, started_at, last_seen_at, duration, is_bounce,
 			pageviews, events, entry_page_id, exit_page_id, entry_hostname_id, exit_hostname_id,
 			entry_props,
-			referrer_id, source_id, channel_id, utm_source_id, utm_medium_id, utm_campaign_id,
+			referrer_id, source_id, channel_id,
+			utm_source_id, utm_medium_id, utm_campaign_id, utm_content_id, utm_term_id,
 			country_id, region_id, city_id,
 			device_type_id, screen_size_id, browser_id, browser_version_id,
 			os_id, os_version_id, language_id, is_imported
-		) VALUES (?,?,?,?,?,?,?, ?,?,?,?,?,?, ?, ?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?,?)
+		) VALUES (?,?,?,?,?,?,?, ?,?,?,?,?,?, ?, ?,?,?, ?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			last_seen_at      = excluded.last_seen_at,
 			started_at        = excluded.started_at,
@@ -1452,6 +1457,8 @@ func upsertSession(ctx context.Context, tx *sql.Tx, session *Session, ids *dimen
 			utm_source_id     = excluded.utm_source_id,
 			utm_medium_id     = excluded.utm_medium_id,
 			utm_campaign_id   = excluded.utm_campaign_id,
+			utm_content_id    = excluded.utm_content_id,
+			utm_term_id       = excluded.utm_term_id,
 			country_id        = excluded.country_id,
 			region_id         = excluded.region_id,
 			city_id           = excluded.city_id,
@@ -1470,6 +1477,7 @@ func upsertSession(ctx context.Context, tx *sql.Tx, session *Session, ids *dimen
 		props,
 		ids.of(intern.Referrer, session.Referrer), ids.of(intern.Source, session.Source), ids.of(intern.Channel, session.Channel),
 		ids.of(intern.UTMSource, session.UTMSource), ids.of(intern.UTMMedium, session.UTMMedium), ids.of(intern.UTMCampaign, session.UTMCampaign),
+		ids.of(intern.UTMContent, session.UTMContent), ids.of(intern.UTMTerm, session.UTMTerm),
 		ids.of(intern.Country, session.Country), ids.of(intern.Region, session.Region), ids.of(intern.City, session.City),
 		ids.of(intern.DeviceType, session.DeviceType), ids.of(intern.ScreenSize, session.ScreenSize),
 		ids.of(intern.Browser, session.Browser), ids.of(intern.BrowserVersion, session.BrowserVersion),
@@ -1492,15 +1500,4 @@ func boolToInt(value bool) int {
 	}
 
 	return 0
-}
-
-// nullIfEmpty stores NULL rather than an empty string in the cold table. The
-// detail columns are sparse by nature, and a NULL costs a byte where an empty
-// string costs a row header entry on every row that does not use the column.
-func nullIfEmpty(value string) any {
-	if value == "" {
-		return nil
-	}
-
-	return value
 }

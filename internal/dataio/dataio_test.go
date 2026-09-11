@@ -837,9 +837,30 @@ func TestBotSessionsAreLeftOutOfAnExport(t *testing.T) {
 	}
 	if _, err := account.Writer().Exec(`
 		INSERT INTO event_details
-			(event_id, props, revenue_amount, revenue_currency, utm_content, utm_term, full_url)
-		VALUES (?, '{"plan":"yearly"}', 1299, 'USD', 'hero', 'privacy analytics',
+			(event_id, props, revenue_amount, revenue_currency, full_url)
+		VALUES (?, '{"plan":"yearly"}', 1299, 'USD',
 		        'https://example.com/neighbor-page?campaign=launch')
+	`, detailedEventID); err != nil {
+		t.Fatal(err)
+	}
+
+	// The two rarer UTM tags are interned columns on the event, exactly like
+	// the three beside them, so the export reaches them through a dim join.
+	if _, err := account.Writer().Exec(`
+		INSERT INTO dim_utm_content (value) VALUES ('hero');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := account.Writer().Exec(`
+		INSERT INTO dim_utm_term (value) VALUES ('privacy analytics');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := account.Writer().Exec(`
+		UPDATE events SET
+			utm_content_id = (SELECT id FROM dim_utm_content WHERE value = 'hero'),
+			utm_term_id    = (SELECT id FROM dim_utm_term WHERE value = 'privacy analytics')
+		WHERE id = ?
 	`, detailedEventID); err != nil {
 		t.Fatal(err)
 	}

@@ -151,6 +151,12 @@ var dimensions = map[string]dimension{
 	"visit:utm_campaign": {
 		Name: "visit:utm_campaign", EventColumn: "utm_campaign_id", SessionColumn: "utm_campaign_id", Interned: intern.UTMCampaign,
 	},
+	"visit:utm_content": {
+		Name: "visit:utm_content", EventColumn: "utm_content_id", SessionColumn: "utm_content_id", Interned: intern.UTMContent,
+	},
+	"visit:utm_term": {
+		Name: "visit:utm_term", EventColumn: "utm_term_id", SessionColumn: "utm_term_id", Interned: intern.UTMTerm,
+	},
 	"visit:country": {
 		Name: "visit:country", EventColumn: "country_id", SessionColumn: "country_id", Interned: intern.Country,
 	},

@@ -54,6 +54,8 @@ type Session struct {
 	UTMSource   string
 	UTMMedium   string
 	UTMCampaign string
+	UTMContent  string
+	UTMTerm     string
 
 	Country string
 	Region  string

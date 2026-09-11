@@ -52,7 +52,8 @@ type Row struct {
 var rollupColumns = []string{
 	"import_id", "site_id", "timestamp", "covered",
 	"name_id", "hostname_id", "pathname_id", "entry_page_id", "exit_page_id", "page_title_id",
-	"referrer_id", "source_id", "channel_id", "utm_source_id", "utm_medium_id", "utm_campaign_id",
+	"referrer_id", "source_id", "channel_id",
+	"utm_source_id", "utm_medium_id", "utm_campaign_id", "utm_content_id", "utm_term_id",
 	"country_id", "region_id", "city_id",
 	"device_type_id", "screen_size_id", "browser_id", "browser_version_id",
 	"os_id", "os_version_id", "language_id",
@@ -60,6 +61,30 @@ var rollupColumns = []string{
 	"visitors", "visits", "pageviews", "events", "exits", "bounces",
 	"duration_total", "engagement_total", "engagement_visits",
 	"scroll_depth_total", "scroll_depth_visits",
+}
+
+// The three runs of rollupColumns, found by name rather than counted.
+//
+// The dimension block is bound from a map of interned ids and the two blocks
+// around it are bound positionally, so the boundary between them has to move
+// whenever a dimension is added. Written as an index it moves silently, and a
+// row then binds its first metric into the last dimension's column.
+var (
+	firstDimensionColumn = indexOfColumn("name_id")
+	firstPropertyColumn  = indexOfColumn("property_key")
+)
+
+// indexOfColumn finds a column in the bind order, panicking when it is absent.
+// A panic at init is the right failure: the list is a constant, so a name that
+// is not in it is a typo that would otherwise become a mis-bound import.
+func indexOfColumn(name string) int {
+	for i, column := range rollupColumns {
+		if column == name {
+			return i
+		}
+	}
+
+	panic("dataio: " + name + " is not a roll-up column")
 }
 
 // Writer turns parsed rows into roll-up rows. It holds the interning cache
@@ -146,7 +171,7 @@ func (w *Writer) Add(ctx context.Context, row Row) error {
 	args := make([]any, 0, len(rollupColumns))
 	args = append(args, w.importID, w.siteID, row.Timestamp, int64(w.covered))
 
-	for _, column := range rollupColumns[4:26] {
+	for _, column := range rollupColumns[firstDimensionColumn:firstPropertyColumn] {
 		args = append(args, ids[column])
 	}
 

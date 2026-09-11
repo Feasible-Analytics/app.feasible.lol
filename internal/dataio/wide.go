@@ -25,7 +25,7 @@ var wideKeys = []string{
 	"covered",
 	"name_id", "hostname_id", "pathname_id", "entry_page_id", "exit_page_id", "page_title_id",
 	"referrer_id", "source_id", "channel_id",
-	"utm_source_id", "utm_medium_id", "utm_campaign_id",
+	"utm_source_id", "utm_medium_id", "utm_campaign_id", "utm_content_id", "utm_term_id",
 	"country_id", "region_id", "city_id",
 	"device_type_id", "screen_size_id",
 	"browser_id", "browser_version_id", "os_id", "os_version_id", "language_id",

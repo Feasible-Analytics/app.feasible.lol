@@ -48,33 +48,35 @@ const insertChunk = 12
 // them — exactly as it already allocates session ids.
 const eventColumns = `id, site_id, timestamp, name_id, user_id, session_id,
 	hostname_id, pathname_id, page_title_id,
-	referrer_id, source_id, channel_id, utm_source_id, utm_medium_id, utm_campaign_id,
+	referrer_id, source_id, channel_id,
+	utm_source_id, utm_medium_id, utm_campaign_id, utm_content_id, utm_term_id,
 	country_id, region_id, city_id,
 	device_type_id, screen_size_id, browser_id, browser_version_id,
 	os_id, os_version_id, language_id,
 	scroll_depth, engagement_time, bot_reason_id, is_imported, has_details`
 
 // eventColumnCount is how many values one event row binds.
-const eventColumnCount = 30
+const eventColumnCount = 32
 
 // insertDetailsSQL writes the cold row, and only when there is something to put
 // in it. It stays one row at a time because only a small share of events carry
-// properties, revenue or a long-tail UTM field.
+// properties or revenue.
 const insertDetailsSQL = `
-	INSERT INTO event_details (event_id, props, revenue_amount, revenue_currency, utm_content, utm_term)
-	VALUES (?,?,?,?,?,?)`
+	INSERT INTO event_details (event_id, props, revenue_amount, revenue_currency)
+	VALUES (?,?,?,?)`
 
 // sessionColumns is the session row in bind order.
 const sessionColumns = `id, site_id, user_id, started_at, last_seen_at, duration, is_bounce,
 	pageviews, events, entry_page_id, exit_page_id, entry_hostname_id, exit_hostname_id,
 	entry_props,
-	referrer_id, source_id, channel_id, utm_source_id, utm_medium_id, utm_campaign_id,
+	referrer_id, source_id, channel_id,
+	utm_source_id, utm_medium_id, utm_campaign_id, utm_content_id, utm_term_id,
 	country_id, region_id, city_id,
 	device_type_id, screen_size_id, browser_id, browser_version_id,
 	os_id, os_version_id, language_id, is_imported`
 
 // sessionColumnCount is how many values one session row binds.
-const sessionColumnCount = 31
+const sessionColumnCount = 33
 
 // sessionConflict updates a visit in place when it is still going. One row per
 // session updated in place is why every average in the query layer is a plain
@@ -98,6 +100,8 @@ const sessionConflict = `
 		utm_source_id     = excluded.utm_source_id,
 		utm_medium_id     = excluded.utm_medium_id,
 		utm_campaign_id   = excluded.utm_campaign_id,
+		utm_content_id    = excluded.utm_content_id,
+		utm_term_id       = excluded.utm_term_id,
 		country_id        = excluded.country_id,
 		region_id         = excluded.region_id,
 		city_id           = excluded.city_id,
@@ -287,6 +291,8 @@ func (w *batchWriter) internBatch(ctx context.Context, dirty []*ingest.Session) 
 			{intern.UTMSource, event.UTMSource},
 			{intern.UTMMedium, event.UTMMedium},
 			{intern.UTMCampaign, event.UTMCampaign},
+			{intern.UTMContent, event.UTMContent},
+			{intern.UTMTerm, event.UTMTerm},
 			{intern.Country, event.Country},
 			{intern.Region, event.Region},
 			{intern.City, event.City},
@@ -320,6 +326,8 @@ func (w *batchWriter) internBatch(ctx context.Context, dirty []*ingest.Session) 
 			{intern.UTMSource, session.UTMSource},
 			{intern.UTMMedium, session.UTMMedium},
 			{intern.UTMCampaign, session.UTMCampaign},
+			{intern.UTMContent, session.UTMContent},
+			{intern.UTMTerm, session.UTMTerm},
 			{intern.Country, session.Country},
 			{intern.Region, session.Region},
 			{intern.City, session.City},
@@ -432,6 +440,7 @@ func (w *batchWriter) writeSessions(ctx context.Context, tx *sql.Tx, dirty []*in
 				props,
 				w.of(intern.Referrer, session.Referrer), w.of(intern.Source, session.Source), w.of(intern.Channel, session.Channel),
 				w.of(intern.UTMSource, session.UTMSource), w.of(intern.UTMMedium, session.UTMMedium), w.of(intern.UTMCampaign, session.UTMCampaign),
+				w.of(intern.UTMContent, session.UTMContent), w.of(intern.UTMTerm, session.UTMTerm),
 				w.of(intern.Country, session.Country), w.of(intern.Region, session.Region), w.of(intern.City, session.City),
 				w.of(intern.DeviceType, session.DeviceType), w.of(intern.ScreenSize, session.ScreenSize),
 				w.of(intern.Browser, session.Browser), w.of(intern.BrowserVersion, session.BrowserVersion),
@@ -485,6 +494,7 @@ func (w *batchWriter) writeEvents(ctx context.Context, tx *sql.Tx) error {
 				w.of(intern.Hostname, event.Hostname), w.of(intern.Pathname, event.Pathname), w.of(intern.PageTitle, event.PageTitle),
 				w.of(intern.Referrer, event.Referrer), w.of(intern.Source, event.Source), w.of(intern.Channel, event.Channel),
 				w.of(intern.UTMSource, event.UTMSource), w.of(intern.UTMMedium, event.UTMMedium), w.of(intern.UTMCampaign, event.UTMCampaign),
+				w.of(intern.UTMContent, event.UTMContent), w.of(intern.UTMTerm, event.UTMTerm),
 				w.of(intern.Country, event.Country), w.of(intern.Region, event.Region), w.of(intern.City, event.City),
 				w.of(intern.DeviceType, event.DeviceType), w.of(intern.ScreenSize, event.ScreenSize),
 				w.of(intern.Browser, event.Browser), w.of(intern.BrowserVersion, event.BrowserVersion),
@@ -539,7 +549,6 @@ func insertDetails(ctx context.Context, stmt *sql.Stmt, row eventRow) error {
 
 	if _, err := stmt.ExecContext(ctx,
 		row.id, props, amount, currency,
-		nullIfEmpty(event.UTMContent), nullIfEmpty(event.UTMTerm),
 	); err != nil {
 		return fmt.Errorf("seed write: insert event details: %w", err)
 	}
@@ -592,14 +601,4 @@ func (w *batchWriter) seedIDs(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-// nullIfEmpty stores NULL rather than an empty string in the cold table, which
-// is what the ingest writer does and what the queries against it expect.
-func nullIfEmpty(value string) any {
-	if value == "" {
-		return nil
-	}
-
-	return value
 }

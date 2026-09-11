@@ -280,14 +280,6 @@ func planColumns(filename string, header []string) (*columnPlan, error) {
 			}
 			plan.linkURLIndex = i
 
-		case "utm_content", "utm_term":
-			if table != "imported_sources" {
-				return nil, unknownColumnError(filename, raw)
-			}
-			// Feasible retains these values on native event details, but they
-			// are not query dimensions. The source, medium and campaign beside
-			// them remain fully filterable after migration.
-
 		case "total_scroll_depth":
 			if table != "imported_pages" {
 				return nil, unknownColumnError(filename, raw)

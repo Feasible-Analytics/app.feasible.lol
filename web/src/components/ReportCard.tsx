@@ -6,18 +6,19 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { DateRange, Filter, StatsRequest } from "../api/types";
+import { useDismiss } from "../lib/dom";
 import type { FilterState } from "../lib/filters";
 import { compact, exact, percent } from "../lib/format";
 import { t } from "../lib/i18n";
 import { flagFor } from "../lib/labels";
 import { usePref } from "../lib/prefs";
-import type { CardDef, Tab } from "../lib/reports";
-import { PRIMARY, dimensionsOf, findTab, groupsOf, labelOf, noticesOf, subTabsOf } from "../lib/reports";
+import type { CardDef, Tab, TabGroup } from "../lib/reports";
+import { PRIMARY, dimensionsOf, findTab, groupsOf, labelOf, noticesOf } from "../lib/reports";
 import { useNearViewport, useStats } from "../lib/useStats";
-import { Bar, Empty, Failure, Favicon, Flag, InfoDot, Spinner } from "./atoms";
+import { Bar, Chevron, Empty, Failure, Favicon, Flag, InfoDot, Spinner } from "./atoms";
 import { SampledMark } from "./SampledBadge";
 import { tileLabelLower } from "./TopStats";
 import { WorldMap } from "./WorldMap";
@@ -128,14 +129,23 @@ export function ReportCard({
 	const on = selected.get(active.dimension);
 	const peak = Math.max(1, ...rows.map((row) => row.metrics[0] ?? 0));
 	const groups = groupsOf(card);
-	const subTabs = subTabsOf(card, active);
+
+	// Which group has its menu open, by key. It lives here rather than in the
+	// button because the panel has to be drawn outside the tab strip: the strip
+	// scrolls sideways on a narrow card, and anything overflowing a scroll box
+	// is clipped by it — a menu that opens inside one is a menu nobody sees.
+	const [menu, setMenu] = useState("");
+	const header = useRef<HTMLElement>(null);
+	const open = groups.find((group) => group.key === menu && group.tabs.length > 1);
+
+	useDismiss(header, Boolean(open), () => setMenu(""));
 
 	return (
 		<section
 			ref={ref}
 			className="group/card flex h-card flex-col overflow-hidden border-2 border-line bg-card"
 		>
-			<header className="flex h-10 shrink-0 items-center gap-2 px-5">
+			<header ref={header} className="relative flex h-10 shrink-0 items-center gap-2 px-5">
 				<h2 className="flex shrink-0 items-center gap-1.5 text-sm font-semibold text-body">
 					{t(card.titleId)}
 					<SampledMark sampling={stats.data?.meta.sampling} />
@@ -149,36 +159,38 @@ export function ReportCard({
 					)}
 				</h2>
 
+				{/* One row, whatever a card holds. A group of related reports is
+				    a menu rather than a second row of smaller tabs: five UTM
+				    tags will not fit across a 534px card at any size, and a
+				    strip that scrolls sideways hides the very report somebody
+				    came to find. */}
 				<div className="scroll-thin ml-auto flex items-center gap-0.5 overflow-x-auto">
-					{/* Both rows shrink to the smaller size once a group opens its
-					    sub-tabs: six tabs at full size do not fit a 534px card,
-					    and a strip that scrolls sideways hides the very tab
-					    somebody is looking for. */}
 					{groups.map((group) => (
 						<TabButton
 							key={group.key}
 							label={t(group.labelId)}
-							small={subTabs.length > 0}
-							active={(active.groupId ?? active.id) === group.key}
-							onClick={() => setTabId(group.tab.id)}
+							active={group.tabs.some((tab) => tab.id === active.id)}
+							menu={group.tabs.length > 1}
+							expanded={menu === group.key}
+							onClick={() =>
+								group.tabs.length > 1
+									? setMenu((was) => (was === group.key ? "" : group.key))
+									: setTabId(group.tab.id)
+							}
 						/>
 					))}
-
-					{subTabs.length > 0 && (
-						<>
-							<span aria-hidden="true" className="mx-0.5 h-4 w-px bg-line" />
-							{subTabs.map((tab) => (
-								<TabButton
-									key={tab.id}
-									label={t(tab.labelId)}
-									small
-									active={active.id === tab.id}
-									onClick={() => setTabId(tab.id)}
-								/>
-							))}
-						</>
-					)}
 				</div>
+
+				{open && (
+					<TabMenu
+						group={open}
+						active={active}
+						onPick={(id) => {
+							setMenu("");
+							setTabId(id);
+						}}
+					/>
+				)}
 			</header>
 
 			<div className="min-h-cardbody flex-1 px-5">
@@ -312,31 +324,76 @@ export function ReportCard({
 	);
 }
 
+/**
+ * TabMenu lists one group's reports, and marks the one on screen.
+ *
+ * The button above it stays named after the group rather than the report chosen
+ * inside it. The column heading under the card already says which dimension is
+ * showing, and a tab reading "Version" — of what? — would be the only place
+ * that question got asked.
+ */
+function TabMenu({
+	group,
+	active,
+	onPick,
+}: {
+	group: TabGroup;
+	active: Tab;
+	onPick: (id: string) => void;
+}) {
+	return (
+		<div
+			role="menu"
+			aria-label={t(group.labelId)}
+			className="pop absolute top-full right-5 z-40 mt-0.5 w-44 border-2 border-line bg-card p-1"
+		>
+			{group.tabs.map((tab) => (
+				<button
+					key={tab.id}
+					type="button"
+					role="menuitemradio"
+					aria-checked={tab.id === active.id}
+					onClick={() => onPick(tab.id)}
+					className={`w-full px-2.5 py-1.5 text-left text-sm transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover ${
+						tab.id === active.id ? "font-medium text-accent-ink" : "text-body"
+					}`}
+				>
+					{t(tab.labelId)}
+				</button>
+			))}
+		</div>
+	);
+}
+
 /** TabButton is one tab. The active one is filled rather than underlined so it
  *  still reads as selected inside a strip that scrolls sideways on a phone. */
 function TabButton({
 	label,
 	active,
-	small = false,
+	menu = false,
+	expanded = false,
 	onClick,
 }: {
 	label: string;
 	active: boolean;
-	small?: boolean;
+	/** Whether this button opens a menu rather than switching report directly. */
+	menu?: boolean;
+	expanded?: boolean;
 	onClick: () => void;
 }) {
 	return (
 		<button
 			type="button"
 			aria-pressed={active}
+			aria-expanded={menu ? expanded : undefined}
 			onClick={onClick}
 			className={[
-				"shrink-0 py-1 whitespace-nowrap transition-colors duration-150 ease-[var(--ease-ui)]",
-				small ? "px-1.5 text-[11px]" : "px-2 text-xs",
+				"flex shrink-0 items-center gap-1 px-2 py-1 text-xs whitespace-nowrap transition-colors duration-150 ease-[var(--ease-ui)]",
 				active ? "bg-accent/10 font-medium text-accent-ink" : "text-muted hover:text-body",
 			].join(" ")}
 		>
 			{label}
+			{menu && <Chevron />}
 		</button>
 	);
 }

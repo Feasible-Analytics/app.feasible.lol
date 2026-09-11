@@ -260,6 +260,8 @@ const (
 	rollupCodeUTMSource     = 33
 	rollupCodeUTMMedium     = 34
 	rollupCodeUTMCampaign   = 35
+	rollupCodeUTMContent    = 36
+	rollupCodeUTMTerm       = 37
 	rollupCodeCountry       = 40
 	rollupCodeRegion        = 41
 	rollupCodeCity          = 42
@@ -301,6 +303,8 @@ var rollupDims = []RollupDim{
 	{Code: rollupCodeUTMSource, Name: "visit:utm_source", Table: "rollup_sources", EventColumn: "utm_source_id", SessionColumn: "utm_source_id"},
 	{Code: rollupCodeUTMMedium, Name: "visit:utm_medium", Table: "rollup_sources", EventColumn: "utm_medium_id", SessionColumn: "utm_medium_id"},
 	{Code: rollupCodeUTMCampaign, Name: "visit:utm_campaign", Table: "rollup_sources", EventColumn: "utm_campaign_id", SessionColumn: "utm_campaign_id"},
+	{Code: rollupCodeUTMContent, Name: "visit:utm_content", Table: "rollup_sources", EventColumn: "utm_content_id", SessionColumn: "utm_content_id"},
+	{Code: rollupCodeUTMTerm, Name: "visit:utm_term", Table: "rollup_sources", EventColumn: "utm_term_id", SessionColumn: "utm_term_id"},
 
 	{Code: rollupCodeCountry, Name: "visit:country", Table: "rollup_locations", EventColumn: "country_id", SessionColumn: "country_id"},
 	{Code: rollupCodeRegion, Name: "visit:region", Table: "rollup_locations", EventColumn: "region_id", SessionColumn: "region_id"},

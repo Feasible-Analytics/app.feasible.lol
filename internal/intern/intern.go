@@ -46,6 +46,8 @@ const (
 	UTMSource      Dimension = "utm_source"
 	UTMMedium      Dimension = "utm_medium"
 	UTMCampaign    Dimension = "utm_campaign"
+	UTMContent     Dimension = "utm_content"
+	UTMTerm        Dimension = "utm_term"
 	Country        Dimension = "country"
 	Region         Dimension = "region"
 	City           Dimension = "city"
@@ -66,7 +68,7 @@ const (
 // build time.
 var Dimensions = []Dimension{
 	EventName, Hostname, Pathname, PageTitle,
-	Referrer, Source, Channel, UTMSource, UTMMedium, UTMCampaign,
+	Referrer, Source, Channel, UTMSource, UTMMedium, UTMCampaign, UTMContent, UTMTerm,
 	Country, Region, City,
 	DeviceType, ScreenSize, Browser, BrowserVersion, OS, OSVersion, Language,
 	BotReason,

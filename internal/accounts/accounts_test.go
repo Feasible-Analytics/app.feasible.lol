@@ -547,9 +547,9 @@ func TestEventRoundTrip(t *testing.T) {
 	}
 
 	if _, err := account.Writer().ExecContext(ctx, `
-		INSERT INTO event_details (event_id, props, revenue_amount, revenue_currency, utm_content, full_url)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, eventID, `{"plan":"pro"}`, 9900, "USD", "sidebar", "https://example.com/pricing?utm_content=sidebar"); err != nil {
+		INSERT INTO event_details (event_id, props, revenue_amount, revenue_currency, full_url)
+		VALUES (?, ?, ?, ?, ?)
+	`, eventID, `{"plan":"pro"}`, 9900, "USD", "https://example.com/pricing?utm_content=sidebar"); err != nil {
 		t.Fatal(err)
 	}
 

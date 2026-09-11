@@ -25,7 +25,6 @@ import {
 	groupsOf,
 	labelOf,
 	noticesOf,
-	subTabsOf,
 	tableTabs,
 } from "../lib/reports";
 import type { DrawerState } from "../lib/url";
@@ -162,7 +161,10 @@ export function Drawer({
 	const lastPage = Math.max(1, Math.ceil(totalRows / PAGE));
 
 	const groups = groupsOf(listing);
-	const subTabs = subTabsOf(listing, tab);
+
+	// The drawer has room for both rows where the card does not, so a group's
+	// reports stay visible side by side rather than folding into a menu.
+	const subTabs = groups.find((group) => group.tabs.some((entry) => entry.id === tab.id))?.tabs ?? [];
 	const breakdown = BREAKDOWNS.find((entry) => entry.id === state.breakdown);
 
 	/** sort flips a column, or switches to it descending first — which is what
@@ -251,7 +253,7 @@ export function Drawer({
 						/>
 					))}
 
-					{subTabs.length > 0 && (
+					{subTabs.length > 1 && (
 						<>
 							<span aria-hidden="true" className="mx-1 h-4 w-px bg-line" />
 							{subTabs.map((entry) => (

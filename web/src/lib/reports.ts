@@ -56,6 +56,21 @@ export interface Tab {
 	map?: boolean;
 }
 
+/**
+ * TabGroup is one button in a card's header.
+ *
+ * A group holding one report is that report. A group holding several is a menu
+ * over them, which is what keeps a card's header to one row however many
+ * reports sit behind it.
+ */
+export interface TabGroup {
+	key: string;
+	labelId: string;
+	/** The report the group opens on, which is its first. */
+	tab: Tab;
+	tabs: Tab[];
+}
+
 export interface CardDef {
 	id: string;
 	titleId: string;
@@ -119,7 +134,7 @@ export const SOURCES: CardDef = {
 		},
 		{
 			id: "utm_source",
-			labelId: "dashboard.dimension.source",
+			labelId: "dashboard.dimension.utm_source",
 			groupId: "dashboard.group.campaigns",
 			headingId: "dashboard.dimension.utm_source",
 			dimension: "visit:utm_source",
@@ -128,7 +143,7 @@ export const SOURCES: CardDef = {
 		},
 		{
 			id: "utm_medium",
-			labelId: "dashboard.tab.medium",
+			labelId: "dashboard.dimension.utm_medium",
 			groupId: "dashboard.group.campaigns",
 			headingId: "dashboard.dimension.utm_medium",
 			dimension: "visit:utm_medium",
@@ -137,11 +152,29 @@ export const SOURCES: CardDef = {
 		},
 		{
 			id: "utm_campaign",
-			labelId: "dashboard.tab.campaign",
+			labelId: "dashboard.dimension.utm_campaign",
 			groupId: "dashboard.group.campaigns",
 			headingId: "dashboard.dimension.utm_campaign",
 			dimension: "visit:utm_campaign",
 			filters: tagged("visit:utm_campaign"),
+			nounId: "dashboard.noun.tagged_campaigns",
+		},
+		{
+			id: "utm_content",
+			labelId: "dashboard.dimension.utm_content",
+			groupId: "dashboard.group.campaigns",
+			headingId: "dashboard.dimension.utm_content",
+			dimension: "visit:utm_content",
+			filters: tagged("visit:utm_content"),
+			nounId: "dashboard.noun.tagged_campaigns",
+		},
+		{
+			id: "utm_term",
+			labelId: "dashboard.dimension.utm_term",
+			groupId: "dashboard.group.campaigns",
+			headingId: "dashboard.dimension.utm_term",
+			dimension: "visit:utm_term",
+			filters: tagged("visit:utm_term"),
 			nounId: "dashboard.noun.tagged_campaigns",
 		},
 	],
@@ -356,27 +389,25 @@ export function findTab(card: CardDef, id: string): Tab {
 
 /** groupsOf lists a card's top tab row: the distinct groups, with ungrouped
  *  tabs standing for themselves. */
-export function groupsOf(card: CardDef): { key: string; labelId: string; tab: Tab }[] {
-	const seen = new Set<string>();
-	const groups: { key: string; labelId: string; tab: Tab }[] = [];
+export function groupsOf(card: CardDef): TabGroup[] {
+	const groups: TabGroup[] = [];
+	const byKey = new Map<string, TabGroup>();
 
 	for (const tab of card.tabs) {
 		const key = tab.groupId ?? tab.id;
-		if (seen.has(key)) continue;
+		const existing = byKey.get(key);
 
-		seen.add(key);
-		groups.push({ key, labelId: tab.groupId ?? tab.labelId, tab });
+		if (existing) {
+			existing.tabs.push(tab);
+			continue;
+		}
+
+		const group: TabGroup = { key, labelId: tab.groupId ?? tab.labelId, tab, tabs: [tab] };
+		byKey.set(key, group);
+		groups.push(group);
 	}
 
 	return groups;
-}
-
-/** subTabsOf lists the second tab row for a grouped tab, or nothing when the
- *  active tab stands alone. */
-export function subTabsOf(card: CardDef, active: Tab): Tab[] {
-	if (!active.groupId) return [];
-
-	return card.tabs.filter((tab) => tab.groupId === active.groupId);
 }
 
 /** labelOf renders one dimension value. The empty string is a real answer for

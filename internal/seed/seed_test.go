@@ -280,9 +280,9 @@ func TestInsertsCoverEveryColumn(t *testing.T) {
 		// which cold row belongs to which event — so nothing is left out today.
 		autoIncrement int
 	}{
-		{table: "events", inserted: 30, autoIncrement: 0},
-		{table: "sessions", inserted: 31, autoIncrement: 0},
-		{table: "event_details", inserted: 7, autoIncrement: 0},
+		{table: "events", inserted: 32, autoIncrement: 0},
+		{table: "sessions", inserted: 33, autoIncrement: 0},
+		{table: "event_details", inserted: 5, autoIncrement: 0},
 	} {
 		columns, err := columnCount(db, item.table)
 		if err != nil {
