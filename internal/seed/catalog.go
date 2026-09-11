@@ -583,6 +583,12 @@ type customEvent struct {
 	Name  string
 	Props map[string]string
 
+	// Path replaces the page the visitor was on when the event fired. It is
+	// set only for the 404 goal, whose whole point is an address that is not a
+	// real page — firing it on one would put every 404 in the top-pages report
+	// as a page that works.
+	Path string
+
 	// Revenue is set for the events that carry money. The currency varies
 	// deliberately — three of them — because a revenue report that has only
 	// ever seen one currency has never had to decide what to do about two.
@@ -599,12 +605,23 @@ var customEvents = []customEvent{
 	{Name: "Purchase", Props: map[string]string{"plan": "scale", "seats": "25"}, Revenue: true, Currency: "EUR"},
 	{Name: "Purchase", Props: map[string]string{"plan": "starter", "seats": "1"}, Revenue: true, Currency: "GBP"},
 	{Name: "Newsletter Signup", Props: map[string]string{"placement": "footer"}},
-	{Name: "Outbound Link Click", Props: map[string]string{"url": "https://docs.northwind.example/api"}},
-	{Name: "File Download", Props: map[string]string{"file": "quickstart.pdf"}},
 	{Name: "Add to Cart", Props: map[string]string{"sku": "NW-114", "quantity": "2"}},
 	{Name: "Contact Form", Props: map[string]string{"topic": "pricing"}},
 	{Name: "Search", Props: map[string]string{"query": "session timeout"}},
 	{Name: "Video Play", Props: map[string]string{"title": "product tour"}},
+
+	// The four the tracker detects on its own. Their names and their `url`
+	// property are the tracker's wire format rather than a choice made here: a
+	// seeded name that is one character out matches no automatic goal, and the
+	// dashboard then shows the goals we ship to every site as having never
+	// fired.
+	{Name: "Outbound Link: Click", Props: map[string]string{"url": "https://docs.northwind.example/api"}},
+	{Name: "Outbound Link: Click", Props: map[string]string{"url": "https://status.northwind.example/"}},
+	{Name: "File Download", Props: map[string]string{"url": "https://northwind.example/files/quickstart.pdf"}},
+	{Name: "File Download", Props: map[string]string{"url": "https://northwind.example/files/price-list.csv"}},
+	{Name: "Form: Submission"},
+	{Name: "404", Path: "/pricing-2024"},
+	{Name: "404", Path: "/docs/getting-startd"},
 }
 
 // maxPropsEvent is one event carrying exactly the property cap. Thirty is where

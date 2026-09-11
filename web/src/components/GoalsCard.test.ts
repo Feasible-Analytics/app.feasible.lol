@@ -13,6 +13,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import type { FunnelReport, FunnelReportStep, Goal, JourneyAnchor } from "../api/types";
+import { SPECIAL_GOALS } from "../lib/specialgoals";
 import { PanelFrame } from "./atoms";
 import { FunnelChart, anchorKey, behaviorCaveat, behaviorEnabled, blockHeight, filterAnchors, goalFilter, goalsFooter, goalsPrompt, hiddenGoalsNote } from "./GoalsCard";
 
@@ -86,6 +87,21 @@ test("deep-linked behavior tabs load before the lazy card reaches the viewport",
 test("the help bubble carries only the tab caveat when a report is complete", () => {
 	assert.deepEqual(behaviorCaveat("goals"), [messages["dashboard.behavior.goals.caveat"]]);
 	assert.deepEqual(behaviorCaveat("funnels"), [messages["dashboard.behavior.funnels.caveat"]]);
+});
+
+test("a special goal explains its own breakdown rather than the goals table", () => {
+	const outbound = SPECIAL_GOALS.find((entry) => entry.event === "Outbound Link: Click");
+	assert.ok(outbound);
+
+	assert.deepEqual(behaviorCaveat("goals", undefined, outbound), [
+		messages["dashboard.behavior.special.outbound_links_caveat"],
+	]);
+
+	// It takes over the first tab only. The tabs beside it are unchanged
+	// reports and keep saying what they always said.
+	assert.deepEqual(behaviorCaveat("properties", undefined, outbound), [
+		messages["dashboard.behavior.properties.caveat"],
+	]);
 });
 
 test("a partial report appends its reporting start date as a second paragraph", () => {

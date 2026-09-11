@@ -117,6 +117,16 @@ export function matchingRows<T extends { dimensions: string[] }>(
  */
 const VISIBLE_PILLS = 4;
 
+/**
+ * The bar is one line, and the pills scroll rather than wrap.
+ *
+ * It lives in the sticky header, where a second line is not a bit of extra
+ * height — it is a bit of extra height on every screen of a long dashboard. So
+ * the pills sit in a strip that gives way, and the two controls after it keep
+ * their place whatever is in front of them.
+ */
+const PILL_STRIP = "scroll-thin flex min-w-0 shrink items-center gap-1.5 overflow-x-auto";
+
 interface Props {
 	domain: string;
 	range: DateRange;
@@ -167,10 +177,9 @@ function fullValues(filter: FilterState, labels: FilterLabels): string {
 /**
  * FilterBar is the whole filter surface.
  *
- * It renders nothing at all when there are no filters and nothing is open,
- * beyond the one button that starts a filter — a permanently empty toolbar
- * above the graph would cost forty pixels on every dashboard to advertise a
- * feature most sessions never use.
+ * With nothing filtered it is one button, which is why it can sit in the top
+ * bar at all: a surface that claimed a row of its own whether or not anybody
+ * had filtered would cost that row on every screen of every dashboard.
  */
 export function FilterBar({ domain, range, filters, labels, onChange }: Props) {
 	const [open, setOpen] = useState(false);
@@ -227,37 +236,39 @@ export function FilterBar({ domain, range, filters, labels, onChange }: Props) {
 	};
 
 	return (
-		<div ref={wrap} className="relative flex flex-wrap items-center gap-1.5">
-			{shown.map((filter, index) => (
-				<Pill
-					key={`${filter.dimension}-${filter.operator}-${index}`}
-					filter={filter}
-					labels={labels}
-					onEdit={filter.dimension === "event:goal" ? undefined : () =>
-						setEditing({
-							index,
-							dimension: filter.dimension,
-							operator: filter.operator,
-							values: filter.values,
-						})
-					}
-					onRemove={() => onChange(remove(filters, index), labels)}
-				/>
-			))}
+		<div ref={wrap} className="relative flex min-w-0 items-center gap-1.5">
+			<div className={PILL_STRIP}>
+				{shown.map((filter, index) => (
+					<Pill
+						key={`${filter.dimension}-${filter.operator}-${index}`}
+						filter={filter}
+						labels={labels}
+						onEdit={filter.dimension === "event:goal" ? undefined : () =>
+							setEditing({
+								index,
+								dimension: filter.dimension,
+								operator: filter.operator,
+								values: filter.values,
+							})
+						}
+						onRemove={() => onChange(remove(filters, index), labels)}
+					/>
+				))}
 
-			{hidden > 0 && (
-				<button
-					type="button"
-					onClick={() => setExpanded(true)}
-					title={filters
-						.slice(VISIBLE_PILLS)
-						.map((filter) => describe(filter, labels))
-						.join(" · ")}
-					className="h-control border-2 border-line px-2.5 text-xs font-medium text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover hover:text-body"
-				>
-					{t("dashboard.filter.more", { count: hidden })}
-				</button>
-			)}
+				{hidden > 0 && (
+					<button
+						type="button"
+						onClick={() => setExpanded(true)}
+						title={filters
+							.slice(VISIBLE_PILLS)
+							.map((filter) => describe(filter, labels))
+							.join(" · ")}
+						className="h-control shrink-0 border-2 border-line px-2.5 text-xs font-medium text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover hover:text-body"
+					>
+						{t("dashboard.filter.more", { count: hidden })}
+					</button>
+				)}
+			</div>
 
 			<button
 				type="button"
@@ -266,7 +277,7 @@ export function FilterBar({ domain, range, filters, labels, onChange }: Props) {
 					setEditing(null);
 					setOpen((was) => !was);
 				}}
-				className="flex h-control items-center gap-1 border-2 border-dashed border-field px-2.5 text-xs font-medium text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:border-accent hover:text-accent-ink"
+				className="flex h-control shrink-0 items-center gap-1 border-2 border-dashed border-field px-2.5 text-xs font-medium text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:border-accent hover:text-accent-ink"
 			>
 				<span aria-hidden="true">+</span> {t("dashboard.filter.add")}
 			</button>
@@ -275,7 +286,7 @@ export function FilterBar({ domain, range, filters, labels, onChange }: Props) {
 				<button
 					type="button"
 					onClick={() => onChange([], {})}
-					className="h-control px-1.5 text-xs text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:text-body"
+					className="h-control shrink-0 px-1.5 text-xs text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:text-body"
 				>
 					{t("dashboard.filter.clear_all")}
 				</button>
@@ -311,6 +322,11 @@ export function FilterBar({ domain, range, filters, labels, onChange }: Props) {
  * The two halves are two buttons rather than one with a nested control, because
  * a button inside a button is invalid HTML that browsers repair differently, and
  * the repair is what decides whether the ✕ removes the filter or opens it.
+ *
+ * The text gives way before the ✕ does. A pill squeezed by its neighbours reads
+ * as "Goal is Outbo…" and can still be removed; one clipped by the bar's own
+ * edge reads the same and cannot, and a filter you can see but not remove is
+ * worse than one you cannot see.
  */
 function Pill({
 	filter,
@@ -327,18 +343,18 @@ function Pill({
 	const glyph = filter.values.length === 1 ? flagFor(filter.dimension, filter.values[0] ?? "") : "";
 
 	return (
-		<span className="flex h-control items-center border-2 border-line bg-subtle pr-0.5 pl-2.5 text-xs">
+		<span className="flex h-control min-w-24 shrink items-center border-2 border-line bg-subtle pr-0.5 pl-2.5 text-xs">
 			{onEdit ? (
 				<button
 					type="button"
 					onClick={onEdit}
 					title={t("dashboard.filter.edit_hint", { dimension: nameOf(filter.dimension), values: fullValues(filter, labels) })}
-					className="flex max-w-56 items-center gap-1.5 truncate font-medium text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent-ink"
+					className="flex max-w-56 min-w-0 items-center gap-1.5 truncate font-medium text-body transition-colors duration-150 ease-[var(--ease-ui)] hover:text-accent-ink"
 				>
 					<Flag glyph={glyph} /><span className="truncate">{text}</span>
 				</button>
 			) : (
-				<span className="flex max-w-56 items-center gap-1.5 truncate font-medium text-body" title={fullValues(filter, labels)}><Flag glyph={glyph} /><span className="truncate">{text}</span></span>
+				<span className="flex max-w-56 min-w-0 items-center gap-1.5 truncate font-medium text-body" title={fullValues(filter, labels)}><Flag glyph={glyph} /><span className="truncate">{text}</span></span>
 			)}
 
 			<button

@@ -14,6 +14,7 @@ import type {
 	Filter,
 	Funnel,
 	FunnelReport,
+	Goal,
 	GoalReport,
 	JourneyAnchor,
 	JourneyReport,
@@ -180,6 +181,17 @@ export async function query(
 	});
 
 	return (await response.json()) as StatsResponse;
+}
+
+/** goals lists a site's conversion definitions without measuring any of them.
+ * It carries no date range and no filters, so one answer stays correct for as
+ * long as the dashboard is open — which is what lets a filtered goal id be
+ * resolved to its definition without re-asking on every period change. */
+export async function goals(domain: string, signal?: AbortSignal): Promise<Goal[]> {
+	const response = await dashboardFetch(`/api/sites/${encodeURIComponent(domain)}/goals`, { signal });
+	const body = (await response.json()) as { goals?: Goal[] };
+
+	return Array.isArray(body.goals) ? body.goals : [];
 }
 
 /** goalsReport reads configured conversions over the dashboard's current

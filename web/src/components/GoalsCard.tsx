@@ -12,6 +12,7 @@ import {
 	bootstrap,
 	funnelReport,
 	funnels,
+	goals as listGoals,
 	goalsReport,
 	journeyReport,
 	properties,
@@ -36,7 +37,9 @@ import type {
 import type { FilterState } from "../lib/filters";
 import { compact, exact, metricAxisValue, metricTitle } from "../lib/format";
 import { n, t } from "../lib/i18n";
-import { useNearViewport, useRemote } from "../lib/useStats";
+import type { SpecialGoal } from "../lib/specialgoals";
+import { filteredGoalID, specialGoal } from "../lib/specialgoals";
+import { useNearViewport, useRemote, useStats } from "../lib/useStats";
 import type { BehaviorState, BehaviorTab } from "../lib/url";
 import { Bar, InfoDot, NumberCell, PanelEmpty, PanelFailure, PanelFrame, PanelLoading, SelectorBar } from "./atoms";
 
@@ -78,17 +81,36 @@ export function GoalsCard({ domain, range, filters, exact: exactAnswer, onFilter
 	const tab = behavior.tab;
 	const enabled = behaviorEnabled(tab, near);
 
+	// The definitions, not the report: a filter carries a goal id, and only the
+	// definition behind that id says whether this is one of the four the tracker
+	// fires on its own. The list is unfiltered and dateless, so it is asked for
+	// once per site rather than again on every period change.
+	const goalID = filteredGoalID(filters);
+	const definitions = useRemote<Goal[]>(domain, Boolean(domain) && Boolean(goalID), (signal) => listGoals(domain, signal));
+	const special = specialGoal(definitions.data?.find((goal) => String(goal.id) === goalID));
+
+	// Which of the two the first tab is has not been decided yet. Rendering the
+	// goals table meanwhile would run the goals report — the expensive one — for
+	// a table that is about to be replaced, and show a one-row list of the goal
+	// the reader has already picked while it did.
+	const resolving = Boolean(goalID) && !definitions.data && !definitions.error;
+
 	// The partial-reporting date belongs in the header's help bubble, but only
 	// the panel that fetched the report knows it, so the panel reports it up.
 	const [partialFrom, setPartialFrom] = useState<string>();
-	const [shown, setShown] = useState(tab);
+
+	// The first tab's identity is the tab plus whichever special goal has taken
+	// it over, because filtering to one of those swaps the panel underneath
+	// without the tab itself changing.
+	const showing = `${tab}:${special?.event ?? ""}`;
+	const [shown, setShown] = useState(showing);
 
 	// A tab change forgets the date in the same render that changes the tab,
 	// before the incoming panel mounts. Waiting for that panel to answer would
 	// leave the previous tab's caveat standing over numbers it does not
 	// describe.
-	if (shown !== tab) {
-		setShown(tab);
+	if (shown !== showing) {
+		setShown(showing);
 		setPartialFrom(undefined);
 	}
 
@@ -111,12 +133,12 @@ export function GoalsCard({ domain, range, filters, exact: exactAnswer, onFilter
  tab === candidate ? "bg-accent/10 font-semibold text-accent-ink" : "font-medium text-muted hover:text-body"
 							}`}
 						>
-							{behaviorTabLabel(candidate)}
+							{behaviorTabLabel(candidate, special)}
 						</button>
 					))}
 				</nav>
 
-				<InfoDot text={behaviorCaveat(tab, partialFrom)} />
+				<InfoDot text={behaviorCaveat(tab, partialFrom, special)} />
 
 				<button
 					type="button"
@@ -130,9 +152,13 @@ export function GoalsCard({ domain, range, filters, exact: exactAnswer, onFilter
 			</header>
 
 			<div className="min-h-[350px] flex-1">
-				{tab === "goals" && (
+				{tab === "goals" && (resolving ? (
+					<PanelLoading label={t("dashboard.goals.loading")} />
+				) : special ? (
+					<SpecialPanel domain={domain} range={range} filters={filters} exact={exactAnswer} enabled={enabled} special={special} onFilter={onFilter} />
+				) : (
 					<GoalsPanel domain={domain} request={request} enabled={enabled} onFilter={onFilter} settingsURL={settingsURL} onPartial={setPartialFrom} />
-				)}
+				))}
 				{tab === "properties" && (
 					<PropertiesPanel domain={domain} request={request} enabled={enabled} onFilter={onFilter} settingsURL={settingsURL} selected={behavior.property} onSelected={(property) => onBehaviorChange({ ...behavior, property })} />
 				)}
@@ -273,6 +299,96 @@ function GoalsEmpty({ prompt, settingsURL }: { prompt: Exclude<GoalsPrompt, "row
 			href={settingsURL}
 			action={t("dashboard.goals.see_all")}
 		/>
+	);
+}
+
+/** How many rows a special-goal breakdown asks for. The same hundred the
+ * property report defaults to, so the two tabs beside each other show the same
+ * depth of a site's long tail. */
+const SPECIAL_ROWS = 100;
+
+/**
+ * SpecialPanel is the detail behind one of the four goals the tracker detects.
+ *
+ * It is the same shape as a report card — a dimension, three numbers, a bar —
+ * and it goes through the ordinary stats endpoint rather than the property
+ * report. That is the point: the property report answers only for names the
+ * site has enabled, and nobody enables `url` because nobody sent it on purpose.
+ *
+ * Every filter already in force travels with the query, including the goal
+ * filter that put this panel on screen, so the conversion rate divides by the
+ * same population the rest of the dashboard is describing.
+ */
+function SpecialPanel({
+	domain,
+	range,
+	filters,
+	exact: exactAnswer,
+	enabled,
+	special,
+	onFilter,
+}: {
+	domain: string;
+	range: DateRange;
+	filters: Filter[];
+	exact: boolean;
+	enabled: boolean;
+	special: SpecialGoal;
+	onFilter: Props["onFilter"];
+}) {
+	const stats = useStats(
+		domain,
+		{
+			metrics: ["visitors", "events", "conversion_rate"],
+			date_range: range,
+			dimensions: [special.dimension],
+			filters: filters.length ? filters : undefined,
+			exact: exactAnswer || undefined,
+			pagination: { limit: SPECIAL_ROWS },
+		},
+		enabled,
+	);
+
+	if (stats.error) return <PanelFailure state={stats} />;
+	if (!stats.data) return <PanelLoading label={t("dashboard.behavior.special.loading")} />;
+
+	const rows = stats.data.results;
+
+	if (rows.length === 0) {
+		return <PanelEmpty title={t("dashboard.behavior.special.empty")} body={t("dashboard.behavior.special.empty_hint")} />;
+	}
+
+	const peak = Math.max(1, ...rows.map((row) => row.metrics[0] ?? 0));
+
+	return (
+		<PanelFrame>
+			<div className="px-4 sm:px-5">
+				<div className="grid h-8 grid-cols-[minmax(0,1fr)_70px_70px_70px] items-center gap-2 text-[11px] font-medium tracking-wide text-muted uppercase sm:grid-cols-[minmax(0,1fr)_100px_100px_100px]">
+					<span>{t(special.headingId)}</span><span className="text-right">{t("dashboard.column.visitors")}</span><span className="text-right">{t("dashboard.behavior.properties.events")}</span><span className="text-right">{t("dashboard.column.conversion_rate")}</span>
+				</div>
+
+				<ul className="pb-2">
+					{rows.map((row) => {
+						const value = row.dimensions[0] ?? "";
+						const visitors = row.metrics[0] ?? 0;
+
+						// An event that carried no value at all stays on screen and
+						// stays inert. "A third of your downloads have no url" is
+						// the most useful thing this tab can say, and it is not a
+						// value anybody can filter by.
+						return (
+							<li key={value} className="group/row relative grid h-10 grid-cols-[minmax(0,1fr)_70px_70px_70px] items-center gap-2 sm:grid-cols-[minmax(0,1fr)_100px_100px_100px]">
+								{visitors > 0 && <Bar share={visitors / peak} />}
+								{value && <button type="button" onClick={() => onFilter({ operator: "is", dimension: special.dimension, values: [value] }, value)} title={t("dashboard.row.filter_by", { name: value })} className="absolute inset-0"><span className="sr-only">{t("dashboard.row.filter_by", { name: value })}</span></button>}
+								<span className={`pointer-events-none relative truncate pl-2 text-sm ${value ? "text-body" : "italic text-muted"}`} title={value}>{value || t("dashboard.value.not_set")}</span>
+								<NumberCell value={visitors} /><NumberCell value={row.metrics[1] ?? 0} />
+								<span className="tnum pointer-events-none relative text-right text-sm text-body" title={metricTitle("conversion_rate", row.metrics[2] ?? 0)}>{metricAxisValue("conversion_rate", row.metrics[2] ?? 0)}</span>
+							</li>
+						);
+					})}
+				</ul>
+			</div>
+		</PanelFrame>
 	);
 }
 
@@ -683,13 +799,18 @@ function anchorLabel(anchor: JourneyAnchor): string {
 	return anchor.label || anchor.value;
 }
 
-/** behaviorTabLabel keeps catalogue references static for translation audits. */
-function behaviorTabLabel(tab: BehaviorTab): string {
+/** behaviorTabLabel keeps catalogue references static for translation audits.
+ *
+ * The first tab is named after the special goal whenever one is filtered.
+ * Leaving it as "Goals" would send a reader to a tab that no longer holds a
+ * list of goals — they have already picked one, and what is under it now is
+ * that goal's detail. */
+function behaviorTabLabel(tab: BehaviorTab, special?: SpecialGoal): string {
 	switch (tab) {
 		case "properties": return t("dashboard.behavior.tab.properties");
 		case "funnels": return t("dashboard.behavior.tab.funnels");
 		case "explore": return t("dashboard.behavior.tab.explore");
-		default: return t("dashboard.behavior.tab.goals");
+		default: return special ? t(special.labelId) : t("dashboard.behavior.tab.goals");
 	}
 }
 
@@ -697,13 +818,13 @@ function behaviorTabLabel(tab: BehaviorTab): string {
  * appends the reporting start date when the window reaches back past the point
  * the configuration became measurable. A shortened chart reads as a collapse
  * without it. */
-export function behaviorCaveat(tab: BehaviorTab, partialFrom?: string): string[] {
+export function behaviorCaveat(tab: BehaviorTab, partialFrom?: string, special?: SpecialGoal): string[] {
 	const caveat = (() => {
 		switch (tab) {
 			case "properties": return t("dashboard.behavior.properties.caveat");
 			case "funnels": return t("dashboard.behavior.funnels.caveat");
 			case "explore": return t("dashboard.behavior.explore.caveat");
-			default: return t("dashboard.behavior.goals.caveat");
+			default: return special ? t(special.caveatId) : t("dashboard.behavior.goals.caveat");
 		}
 	})();
 

@@ -14,7 +14,7 @@ import type { UrlState } from "../lib/url";
 import { INTERVALS } from "../lib/interval";
 import { CHART_TYPES } from "./MainGraph";
 import type { ViewPrefs } from "./TopBar";
-import { accountMenuGroups, currentVisitorsRequest, periodLabel, siteSwitchURL, viewGroups } from "./TopBar";
+import { accountMenuGroups, currentVisitorsRequest, periodLabel, showsLiveCount, siteSwitchURL, viewGroups } from "./TopBar";
 
 test("the current visitors number always requests an exact answer", () => {
 	const filter: Filter = ["is", "visit:country", ["US"]];
@@ -43,6 +43,15 @@ test("the live count is planned at event grain", () => {
 		request.metrics.includes("pageviews"),
 		"an event-scoped metric must be present or the count collapses to zero",
 	);
+});
+
+test("the live count gives the bar up to the filter pills", () => {
+	assert.equal(showsLiveCount(false, []), true);
+	assert.equal(showsLiveCount(false, [["is", "visit:country", ["US"]]]), false);
+
+	// A locked account fetches nothing, so there is no number to show whether
+	// or not anything is filtered.
+	assert.equal(showsLiveCount(true, []), false);
 });
 
 test("custom dates are friendly on the period button", () => {
