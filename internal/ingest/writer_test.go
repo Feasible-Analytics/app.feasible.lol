@@ -2473,15 +2473,15 @@ func TestPagelessVisitIsClassifiedOnDisk(t *testing.T) {
 
 	base := fixtureStart.Unix()
 
-	if _, err := writer.Write(ctx, []Event{writerEvent(1, "Form: Submission", base, "/login")}); err != nil {
+	if _, err := writer.Write(ctx, []Event{writerEvent(1, "signup", base, "/login")}); err != nil {
 		t.Fatal(err)
 	}
 
 	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events WHERE bot_reason_id <> 0"); got != 0 {
-		t.Fatalf("one submission on one path was classified, got %d rows — a person retrying a form looks like this", got)
+		t.Fatalf("one custom event on one path was classified, got %d rows — a single-page app calling the API looks like this", got)
 	}
 
-	if _, err := writer.Write(ctx, []Event{writerEvent(1, "Form: Submission", base+20, "/register")}); err != nil {
+	if _, err := writer.Write(ctx, []Event{writerEvent(1, "signup", base+20, "/register")}); err != nil {
 		t.Fatal(err)
 	}
 

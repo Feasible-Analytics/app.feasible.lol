@@ -82,10 +82,15 @@ func CurrentBrowsers() map[string]int {
 	out := make(map[string]int, 4)
 
 	for _, line := range parse(browsersFile) {
-		name, version, found := strings.Cut(line, " ")
-		if !found {
+		// The last space, not the first: a browser's reported name can hold one
+		// of its own, and cutting at the first turns "Microsoft Edge 152" into a
+		// product called Microsoft on version "Edge 152".
+		cut := strings.LastIndex(line, " ")
+		if cut < 0 {
 			continue
 		}
+
+		name, version := line[:cut], line[cut+1:]
 
 		major, err := strconv.Atoi(strings.TrimSpace(version))
 		if err != nil {

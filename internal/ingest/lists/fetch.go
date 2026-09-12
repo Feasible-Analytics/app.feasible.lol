@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/useragent"
 )
 
 // UserAgent identifies us to the services below. Several of them rate-limit an
@@ -587,7 +589,9 @@ func BrowserSources() []BrowserSource {
 			Major: majorFromChrome,
 		},
 		{
-			Name:  "Edge",
+			// The name the user-agent parser reports, because the refreshed
+			// file is keyed on it and a mismatch silently stops judging Edge.
+			Name:  useragent.BrowserEdge,
 			URL:   "https://edgeupdates.microsoft.com/api/products",
 			Major: majorFromEdge,
 		},

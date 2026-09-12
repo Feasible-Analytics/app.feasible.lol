@@ -199,6 +199,8 @@ func decideScoped(q *Query, scopes map[string]string) (*plan, error) {
 		}
 	}
 
+	p.SessionsEntryScoped = needsSessions && entryScopeRequired(p)
+
 	for _, name := range q.Metrics {
 		definition, _ := metricByName(name)
 
@@ -208,11 +210,29 @@ func decideScoped(q *Query, scopes map[string]string) (*plan, error) {
 		case scopeSession:
 			p.MetricTable[name] = tableSessions
 		case scopeEither:
+			// The sessions table wins whenever the query reads it and reads it
+			// about the same visits, even when the events table leads. A
+			// session is placed in time by when it started, so a short window
+			// holds sessions that began inside it and events belonging to
+			// sessions that began before it. Counting visits on events and the
+			// bounce rate on sessions puts two different populations in one
+			// row, and the narrower the window the further apart they drift: an
+			// hour can report five visits beside an average duration taken over
+			// four other ones.
+			//
+			// An entry-scoped breakdown is the exception, and the events table
+			// keeps it. There the sessions side answers "visits that began
+			// here" while the row is about a page; "visits" next to pageviews
+			// has to stay the visits that touched the page, or a page nobody
+			// entered on reports no visits beside a pageview count.
+			if needsSessions && !p.SessionsEntryScoped {
+				p.MetricTable[name] = tableSessions
+				continue
+			}
+
 			p.MetricTable[name] = p.Primary
 		}
 	}
-
-	p.SessionsEntryScoped = needsSessions && entryScopeRequired(p)
 
 	return p, nil
 }
