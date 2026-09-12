@@ -11,6 +11,8 @@ package lists
 import (
 	"net/netip"
 	"testing"
+
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/useragent"
 )
 
 // committedRanges is roughly what a full rebuild produces. The floors below are
@@ -179,7 +181,9 @@ func (s testSet) has(addr netip.Addr) bool {
 func TestCurrentBrowsersIsPresent(t *testing.T) {
 	current := CurrentBrowsers()
 
-	for _, name := range []string{"Chrome", "Edge"} {
+	// The names are the ones the user-agent parser reports, because that is
+	// what IsOutdatedBrowser looks the floor up by.
+	for _, name := range []string{"Chrome", useragent.BrowserEdge} {
 		major, ok := current[name]
 		if !ok {
 			t.Errorf("%s has no current version — run `make lists`", name)

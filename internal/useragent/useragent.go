@@ -35,6 +35,19 @@ const (
 	DeviceTV      = "TV"
 )
 
+// Browser names that are not simply the product's own name, for the same
+// reason the device classes are constants.
+const (
+	// BrowserMobileApp covers every webview embedded in another app. Naming the
+	// apps individually would scatter the same fact — this visit never reached
+	// a browser — across a dozen rows nobody sums.
+	BrowserMobileApp = "Mobile App"
+
+	// BrowserEdge is spelled the way the wider analytics ecosystem spells it,
+	// so a filter written against another product keeps working here.
+	BrowserEdge = "Microsoft Edge"
+)
+
 // Result is one parsed user agent. Empty strings mean "we could not tell",
 // which the schema already models as dimension id 0, so nothing downstream has
 // to distinguish absent from unknown.
@@ -66,9 +79,35 @@ type rule struct {
 // WebKit browser carries "Safari", so a list sorted by specificity is what
 // stops Edge being reported as Chrome and Chrome as Safari.
 var browserRules = []rule{
-	{match: "Edg/", name: "Edge", versionAfter: "Edg/"},
-	{match: "EdgA/", name: "Edge", versionAfter: "EdgA/"},
-	{match: "EdgiOS/", name: "Edge", versionAfter: "EdgiOS/"},
+	// In-app browsers come first. A webview embedded in Facebook, Instagram or
+	// WeChat carries the host Chrome or Safari tokens as well as its own, so
+	// anything below would claim it, and reporting it as Chrome hides how much
+	// of a site's traffic never left somebody else's app. They share one name
+	// because the question a dashboard answers is "did this person have a real
+	// browser", not which app it was.
+	{match: "FBAN/", name: BrowserMobileApp, versionAfter: "FBAV/"},
+	{match: "FBAV/", name: BrowserMobileApp, versionAfter: "FBAV/"},
+	{match: "FB_IAB", name: BrowserMobileApp, versionAfter: "FBAV/"},
+	{match: "Instagram ", name: BrowserMobileApp, versionAfter: "Instagram "},
+	{match: "LinkedInApp", name: BrowserMobileApp},
+	{match: "Twitter", name: BrowserMobileApp},
+	{match: "Snapchat", name: BrowserMobileApp, versionAfter: "Snapchat/"},
+	{match: "Pinterest", name: BrowserMobileApp, versionAfter: "Pinterest/"},
+	{match: "musical_ly", name: BrowserMobileApp, versionAfter: "musical_ly_"},
+	{match: "BytedanceWebview", name: BrowserMobileApp},
+	{match: "MicroMessenger", name: BrowserMobileApp, versionAfter: "MicroMessenger/"},
+	{match: "Line/", name: BrowserMobileApp, versionAfter: "Line/"},
+	{match: "GSA/", name: BrowserMobileApp, versionAfter: "GSA/"},
+
+	// Android's own marker for a webview rather than a browser. It is last of
+	// the in-app rules because a named app is worth matching first, and it is
+	// written with the surrounding punctuation so it cannot match a product
+	// whose name happens to end in "wv".
+	{match: "; wv)", name: BrowserMobileApp, versionAfter: "Chrome/"},
+
+	{match: "Edg/", name: BrowserEdge, versionAfter: "Edg/"},
+	{match: "EdgA/", name: BrowserEdge, versionAfter: "EdgA/"},
+	{match: "EdgiOS/", name: BrowserEdge, versionAfter: "EdgiOS/"},
 	{match: "OPR/", name: "Opera", versionAfter: "OPR/"},
 	{match: "Opera", name: "Opera", versionAfter: "Version/"},
 	{match: "SamsungBrowser/", name: "Samsung Internet", versionAfter: "SamsungBrowser/"},

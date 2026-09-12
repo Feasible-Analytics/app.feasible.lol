@@ -769,22 +769,16 @@ func Get(ctx context.Context, db *sql.DB, id int64) (Goal, error) {
 // They are the established names rather than ours, because matching the wire
 // format is what lets somebody migrate by changing one hostname — and because
 // a customer's existing snippet is already sending exactly these.
+// The four events the tracker detects without the customer writing code. They
+// are defined in the ingest package because the pipeline classifies visits by
+// them as well, and one spelling in one place is what keeps an automatic goal
+// from silently matching nothing.
 const (
-	// EventNotFound is fired by the tracker's 404 extension.
-	EventNotFound = "404"
-
-	// EventOutboundClick, EventFileDownload and EventFormSubmission are the
-	// other three the tracker can detect without the customer writing code.
-	// Each string has to be byte-identical to what the tracker sends, or the
-	// automatic goal matches nothing and reads as "this behaviour never
-	// happened" rather than as a bug.
-	EventOutboundClick  = "Outbound Link: Click"
-	EventFileDownload   = "File Download"
-	EventFormSubmission = "Form: Submission"
-
-	// EventFormSubmitLegacy is accepted so upgrades retain conversions sent by
-	// tracker releases that used the earlier event name.
-	EventFormSubmitLegacy = "Form: Submit"
+	EventNotFound         = ingest.EventNotFound
+	EventOutboundClick    = ingest.EventOutboundClick
+	EventFileDownload     = ingest.EventFileDownload
+	EventFormSubmission   = ingest.EventFormSubmission
+	EventFormSubmitLegacy = ingest.EventFormSubmitLegacy
 )
 
 // automaticGoals is what every new site gets. The 404 goal is the important

@@ -31,7 +31,22 @@ func TestParse(t *testing.T) {
 		{
 			name: "Edge, which claims to be Chrome",
 			ua:   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-			want: Result{Browser: "Edge", BrowserVersion: "120", OS: "Windows", OSVersion: "10", Device: DeviceDesktop},
+			want: Result{Browser: BrowserEdge, BrowserVersion: "120", OS: "Windows", OSVersion: "10", Device: DeviceDesktop},
+		},
+		{
+			name: "Facebook's in-app browser, which claims to be Safari",
+			ua:   "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 [FBAN/FBIOS;FBAV/450.0.0.35.108;FBBV/1234]",
+			want: Result{Browser: BrowserMobileApp, BrowserVersion: "450", OS: "iOS", OSVersion: "17.4", Device: DeviceMobile},
+		},
+		{
+			name: "Instagram's in-app browser on Android",
+			ua:   "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 Instagram 310.0.0.35.113 Android",
+			want: Result{Browser: BrowserMobileApp, BrowserVersion: "310", OS: "Android", OSVersion: "14", Device: DeviceMobile},
+		},
+		{
+			name: "a bare Android webview, which names no app",
+			ua:   "Mozilla/5.0 (Linux; Android 13; Pixel 7; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/119.0.0.0 Mobile Safari/537.36",
+			want: Result{Browser: BrowserMobileApp, BrowserVersion: "119", OS: "Android", OSVersion: "13", Device: DeviceMobile},
 		},
 		{
 			name: "Opera, which claims to be Chrome too",

@@ -67,6 +67,11 @@ func (s *Session) fold(event *Event) {
 		s.Events++
 	}
 
+	if event.IsEngagement() {
+		// Proof the tracker was running on a page a person was looking at.
+		s.Engaged = true
+	}
+
 	if event.IsPageview() {
 		s.Pageviews++
 	} else if !event.IsEngagement() {
@@ -84,6 +89,13 @@ func (s *Session) fold(event *Event) {
 		// hundred per cent bounce rate.
 		if event.Interactive {
 			s.InteractiveNonPageview = true
+		}
+
+		// Whether the tracker raised this event by itself. LooksAutomated reads
+		// it, because such an event needs a page load to have attached its
+		// handler and a manual one does not.
+		if event.IsTrackerAutomatic() {
+			s.AutomaticNonPageview = true
 		}
 	}
 
@@ -230,6 +242,8 @@ func (s *Session) absorb(other *Session) {
 	s.Pageviews += other.Pageviews
 	s.Events += other.Events
 	s.InteractiveNonPageview = s.InteractiveNonPageview || other.InteractiveNonPageview
+	s.AutomaticNonPageview = s.AutomaticNonPageview || other.AutomaticNonPageview
+	s.Engaged = s.Engaged || other.Engaged
 
 	// Both ends of the absorbed range, so a visit that was briefly split into
 	// two rows is judged on everything it did rather than on half of it.

@@ -324,17 +324,48 @@ func TestPagelessVisitOnTwoPathsLooksAutomated(t *testing.T) {
 // TestRepeatedSubmitsOnOnePathAreAPerson is the false positive that matters
 // most. Somebody whose login keeps failing submits the same form four times,
 // half an hour after the page was read, so the visit holds no pageview — and
-// they are still a person.
+// they are still a person. What proves it is the engagement ping: they were
+// looking at the page while they retyped, and the tracker said so.
 func TestRepeatedSubmitsOnOnePathAreAPerson(t *testing.T) {
 	session := applyAll(t, []Event{
 		event("Form: Submission", 1000, "/login"),
+		event(EventEngagement, 1005, "/login"),
 		event("Form: Submission", 1010, "/login"),
 		event("Form: Submission", 1020, "/login"),
 		event("Form: Submission", 1030, "/login"),
 	})
 
 	if session.LooksAutomated() {
-		t.Fatal("repeated submissions on one path are a person retrying, not a script")
+		t.Fatal("repeated submissions from a page that reported engagement are a person retrying, not a script")
+	}
+}
+
+// TestSubmitsWithNoEngagementAreAScript is the shape a poster to the event
+// endpoint leaves: the conversion it wants recorded and nothing else. A browser
+// on the page would have reported the reading time that went with it.
+func TestSubmitsWithNoEngagementAreAScript(t *testing.T) {
+	session := applyAll(t, []Event{
+		event("Form: Submission", 1000, "/login"),
+		event("Form: Submission", 1010, "/login"),
+	})
+
+	if !session.LooksAutomated() {
+		t.Fatal("submissions with no pageview and no engagement should look automated")
+	}
+}
+
+// TestManualEventsWithNoEngagementAreStillAPerson checks the automatic-event
+// rule is not applied to the site's own JS calls. A single-page app can call the
+// API long after the load that opened it, and nothing about that call implies a
+// page load the way one of our own handlers does.
+func TestManualEventsWithNoEngagementAreStillAPerson(t *testing.T) {
+	session := applyAll(t, []Event{
+		event("ran-screener", 1000, "/tools"),
+		event("ran-screener", 1010, "/tools"),
+	})
+
+	if session.LooksAutomated() {
+		t.Fatal("manual events on one path are the site's own code, not a script posting to the endpoint")
 	}
 }
 

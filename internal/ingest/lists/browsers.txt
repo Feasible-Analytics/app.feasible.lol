@@ -8,4 +8,4 @@
 # package and Tor Browser are far behind on purpose and permanently.
 
 Chrome 153
-Edge 152
+Microsoft Edge 152

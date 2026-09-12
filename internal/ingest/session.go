@@ -75,6 +75,19 @@ type Session struct {
 	// by construction instead of by every caller remembering it.
 	InteractiveNonPageview bool
 
+	// AutomaticNonPageview records that one of the events the tracker raises by
+	// itself — a form submission, an outbound click, a file download, a 404 —
+	// arrived. Those handlers are attached while a page loads, so in a browser
+	// they always sit behind a pageview, and a visit holding one without a
+	// pageview is the signal LooksAutomated reads.
+	AutomaticNonPageview bool
+
+	// Engaged records that an engagement ping arrived. A ping is proof the
+	// tracker was running on a page that somebody was looking at, which is the
+	// fact that separates a visit opened by a real interaction from one a
+	// script posted straight to the endpoint.
+	Engaged bool
+
 	// CustomPathLo and CustomPathHi are the lowest and highest paths a
 	// non-pageview event has fired on, and empty when none has. Two strings
 	// rather than a set because the only question asked of them is whether
@@ -136,24 +149,38 @@ func (s *Session) IsBounce() bool {
 }
 
 // LooksAutomated reports whether this visit could not have been made by a
-// browser running the tracker.
+// browser running the tracker. Both rules below start from the same fact: the
+// tracker sends a pageview as the page loads, before any handler it wires up
+// can fire, so in a browser something always loaded first.
 //
-// The tracker sends a pageview as the page loads, before any handler it wires
-// up can fire, so a custom event always has a pageview in front of it. A visit
-// with no pageview at all is still ordinary — a form posted half an hour after
-// the page was read opens a fresh visit with only the submission in it — but
-// reaching a *second* path without loading either one is not: moving between
-// pages is what a page load is. What produces it is a script posting to the
-// event endpoint directly, and it arrives looking like a real browser because
-// it chooses what to claim.
+// The first rule is paths. Reaching a *second* path without loading either one
+// is not something a browser does, because moving between pages is what a page
+// load is. What produces it is a script posting to the event endpoint directly,
+// and it arrives looking like a real browser because it chooses what to claim.
 //
-// Being wrong here costs a real visitor, so the rule is the narrow one no
-// browser can satisfy rather than the broad one that catches more. The one
-// setup it can still misread is a site in manual mode that sends custom events
-// across several paths and never a pageview; the events are classified rather
-// than dropped, so that stays visible and reversible.
+// The second rule is the tracker's own automatic events weighed against the
+// engagement pings. A form submission, an outbound click, a file download and a
+// 404 all come from handlers attached during a page load, so a visit holding
+// one and no pageview happened either on a page held open past the session
+// timeout or nowhere at all. The engagement ping is what tells those apart: a
+// page somebody is still looking at reports its reading time and scroll depth,
+// so the person who comes back to a stale tab and retries a login arrives with
+// pings, and a script that posts one event and stops arrives with none.
+//
+// A visit firing only *manual* events keeps the first rule alone, whether it
+// pinged or not. A long-lived single-page app can legitimately call the JS API
+// half an hour after the load that opened it, and what it calls is the site's
+// own code rather than a handler of ours that implies a page load.
 func (s *Session) LooksAutomated() bool {
-	return s.Pageviews == 0 && s.CustomPathLo != "" && s.CustomPathLo != s.CustomPathHi
+	if s.Pageviews > 0 {
+		return false
+	}
+
+	if s.CustomPathLo != "" && s.CustomPathLo != s.CustomPathHi {
+		return true
+	}
+
+	return s.AutomaticNonPageview && !s.Engaged
 }
 
 // covers reports whether an event at this timestamp belongs to this session.

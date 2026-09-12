@@ -55,6 +55,36 @@ const (
 	EventEngagement = "engagement"
 )
 
+// The events the tracker detects on its own, with no code from the customer.
+// Each string has to be byte-identical to what the tracker sends, and the
+// pipeline needs them as well as the goal matcher: a visit that fired one of
+// them without ever loading a page did not come from a browser running the
+// tracker, and that is decided here rather than in the goals package.
+const (
+	EventNotFound       = "404"
+	EventOutboundClick  = "Outbound Link: Click"
+	EventFileDownload   = "File Download"
+	EventFormSubmission = "Form: Submission"
+
+	// EventFormSubmitLegacy is the name tracker releases before the rename
+	// sent. It is still accepted so an upgrade does not lose conversions.
+	EventFormSubmitLegacy = "Form: Submit"
+)
+
+// automaticEventNames is the set above, for membership tests.
+var automaticEventNames = map[string]bool{
+	EventNotFound:         true,
+	EventOutboundClick:    true,
+	EventFileDownload:     true,
+	EventFormSubmission:   true,
+	EventFormSubmitLegacy: true,
+}
+
+// IsTrackerAutomatic reports whether the tracker raised this event by itself.
+func (e *Event) IsTrackerAutomatic() bool {
+	return automaticEventNames[e.Name]
+}
+
 // The screen-size buckets. They are stored as text because that is what a
 // dimension row is, and naming them here keeps the tracker, the pipeline and
 // the dashboard from each inventing their own spelling of "Mobile".

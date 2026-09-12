@@ -212,3 +212,80 @@ func TestNoFilterIsEntryScoped(t *testing.T) {
 		})
 	}
 }
+
+// TestVisitsFollowTheSessionsTableWhenOneIsRead pins the fix for a row whose
+// numbers described two different populations. A session is placed in time by
+// when it started, so a short window holds sessions that began inside it and
+// events belonging to sessions that began before it. Counting visits through
+// the events table while the bounce rate and the duration came from sessions
+// produced an hour reporting five visits beside an average taken over four
+// other ones.
+func TestVisitsFollowTheSessionsTableWhenOneIsRead(t *testing.T) {
+	q := Query{
+		SiteIDs: []int64{1},
+		Metrics: []string{"visitors", "visits", "pageviews", "bounce_rate", "visit_duration"},
+	}
+	q.Normalise()
+
+	p, err := decide(&q)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if p.Primary != tableEvents {
+		t.Fatalf("pageviews should still lead on events, primary = %v", p.Primary)
+	}
+
+	for _, name := range []string{"visitors", "visits", "bounce_rate", "visit_duration"} {
+		if got := p.MetricTable[name]; got != tableSessions {
+			t.Errorf("%s counted on %v, want the sessions table the bounce rate uses", name, got)
+		}
+	}
+
+	if got := p.MetricTable["pageviews"]; got != tableEvents {
+		t.Errorf("pageviews counted on %v, want events", got)
+	}
+}
+
+// TestVisitsStayOnEventsUnderAPageBreakdown is the other half of the rule. A
+// page breakdown narrows the session half to the visits that entered on each
+// page, so "visits" there has to keep meaning the visits that touched the page
+// — otherwise a page nobody entered on reports no visits beside its pageviews.
+func TestVisitsStayOnEventsUnderAPageBreakdown(t *testing.T) {
+	q := Query{
+		SiteIDs:    []int64{1},
+		Metrics:    []string{"visits", "pageviews", "bounce_rate"},
+		Dimensions: []string{"event:page"},
+	}
+	q.Normalise()
+
+	p, err := decide(&q)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !p.SessionsEntryScoped {
+		t.Fatal("a page breakdown with a bounce rate should be entry-scoped")
+	}
+
+	if got := p.MetricTable["visits"]; got != tableEvents {
+		t.Errorf("visits counted on %v, want the events table so it stays visits that touched the page", got)
+	}
+}
+
+// TestVisitsUseSessionsWhenNoEventMetricIsAsked checks the pre-existing choice
+// is untouched: with nothing event-scoped in the query the sessions table both
+// leads and counts.
+func TestVisitsUseSessionsWhenNoEventMetricIsAsked(t *testing.T) {
+	q := Query{SiteIDs: []int64{1}, Metrics: []string{"visitors", "visits"}}
+	q.Normalise()
+
+	p, err := decide(&q)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if p.Primary != tableSessions || p.MetricTable["visits"] != tableSessions {
+		t.Fatalf("primary = %v, visits on %v, want both on sessions", p.Primary, p.MetricTable["visits"])
+	}
+}

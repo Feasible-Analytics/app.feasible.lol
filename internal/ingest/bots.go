@@ -34,10 +34,10 @@ const (
 	ReasonOutdatedBrowser = "outdated_browser"
 	ReasonAutomation      = "automation"
 
-	// ReasonPagelessVisit is a visit that fired custom events on more than one
-	// path without ever loading one. It is decided at the writer rather than
-	// here, because it is a fact about a whole visit and this file only ever
-	// sees a single event.
+	// ReasonPagelessVisit is a visit that never loaded a page and still fired
+	// either the tracker's own automatic events or custom events on more than
+	// one path. It is decided at the writer rather than here, because it is a
+	// fact about a whole visit and this file only ever sees a single event.
 	ReasonPagelessVisit = "pageless_visit"
 )
 
