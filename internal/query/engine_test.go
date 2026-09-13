@@ -1636,3 +1636,65 @@ func TestAPingAloneDoesNotPutAnyoneOnAPage(t *testing.T) {
 		t.Errorf("/about = visitors %v, visits %v, pageviews %v — want 1, 1, 1", about[0], about[1], about[2])
 	}
 }
+
+// TestTheClassificationReasonCanBeReadBack covers the question nobody could ask
+// of their own data: not how much the filter took, but on what grounds.
+//
+// Every event has carried its reason since the first migration and no dimension
+// pointed at the column, so a disagreement over a wrongly-classified visitor had
+// no evidence on either side. Reading it is also the only way to tell a rule
+// that is working from one that never fires.
+func TestTheClassificationReasonCanBeReadBack(t *testing.T) {
+	engine, account := newEngineWithAccount(t)
+	ctx := context.Background()
+
+	id := func(dimension intern.Dimension, value string) int64 {
+		got, err := account.Intern.ID(ctx, dimension, value)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return got
+	}
+
+	// Two classified pageviews on /home, taken by different rules.
+	for i, reason := range []string{ingest.ReasonDatacenterIP, ingest.ReasonOutdatedBrowser} {
+		if _, err := account.Writer().ExecContext(ctx, `
+			INSERT INTO events (id, site_id, timestamp, name_id, user_id, session_id,
+				pathname_id, page_title_id, source_id, country_id, browser_id,
+				scroll_depth, engagement_time, bot_reason_id, has_details)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			200+i, 1, at(30, 9, 40+i), id(intern.EventName, ingest.EventPageview), int64(2000+i), 10+i,
+			id(intern.Pathname, "/home"), id(intern.PageTitle, "Home"), id(intern.Source, ""),
+			id(intern.Country, "US"), id(intern.Browser, "Chrome"), 255, 0, id(intern.BotReason, reason), 0,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	breakdown := func(q Query) map[string]float64 {
+		out := map[string]float64{}
+		for _, row := range run(t, engine, q).Results {
+			out[row.Dimensions[0]] = row.Metrics[0]
+		}
+
+		return out
+	}
+
+	clean := baseQuery("visitors")
+	clean.Dimensions = []string{"event:bot_reason"}
+
+	// The default filter keeps classified rows out, so the only reason left is
+	// the blank one every real visitor carries.
+	if got := breakdown(clean); len(got) != 1 || got[""] != 3 {
+		t.Errorf("default breakdown = %v, want only a blank reason with the fixture's 3 visitors", got)
+	}
+
+	withBots := clean
+	withBots.Include = Include{Bots: true}
+
+	got := breakdown(withBots)
+	if got[""] != 3 || got[ingest.ReasonDatacenterIP] != 1 || got[ingest.ReasonOutdatedBrowser] != 1 {
+		t.Errorf("breakdown including bots = %v, want 3 unclassified and one visitor under each reason", got)
+	}
+}
