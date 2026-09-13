@@ -1580,3 +1580,59 @@ func TestExcludingEngagementNeedsEventGrain(t *testing.T) {
 		t.Errorf("unfiltered visitors = %v, want 3", got)
 	}
 }
+
+// TestAPingAloneDoesNotPutAnyoneOnAPage covers the row a customer cannot
+// reconcile: more visitors than pageviews.
+//
+// A pageview can go missing while the engagement ping that follows it arrives —
+// a blocked first request, a tab closed mid-flight — and the page is then left
+// holding a ping and no view. Counting that ping as a presence makes the
+// visitors column larger than the pageviews column beside it, and no reader can
+// tell which of the two is lying. The page reports what it can prove.
+func TestAPingAloneDoesNotPutAnyoneOnAPage(t *testing.T) {
+	engine, account := newEngineWithAccount(t)
+	ctx := context.Background()
+
+	id := func(dimension intern.Dimension, value string) int64 {
+		got, err := account.Intern.ID(ctx, dimension, value)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return got
+	}
+
+	// A fourth visitor whose pageview for /about never arrived. The ping did.
+	if _, err := account.Writer().ExecContext(ctx, `
+		INSERT INTO events (id, site_id, timestamp, name_id, user_id, session_id,
+			pathname_id, page_title_id, source_id, country_id, browser_id,
+			scroll_depth, engagement_time, bot_reason_id, has_details)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		100, 1, at(30, 9, 30), id(intern.EventName, ingest.EventEngagement), int64(1004), 5,
+		id(intern.Pathname, "/about"), id(intern.PageTitle, ""), id(intern.Source, ""),
+		id(intern.Country, "US"), id(intern.Browser, "Chrome"), 40, 9000, id(intern.BotReason, ""), 0,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	q := baseQuery("visitors", "visits", "pageviews")
+	q.Dimensions = []string{"event:page"}
+
+	var about []float64
+
+	for _, row := range run(t, engine, q).Results {
+		if row.Dimensions[0] == "/about" {
+			about = row.Metrics
+		}
+	}
+
+	if about == nil {
+		t.Fatal("/about is missing from the breakdown")
+	}
+
+	// One pageview on /about in the fixture, by one visitor, on one visit. The
+	// ping adds a fourth visitor to the page and must change none of them.
+	if about[0] != 1 || about[1] != 1 || about[2] != 1 {
+		t.Errorf("/about = visitors %v, visits %v, pageviews %v — want 1, 1, 1", about[0], about[1], about[2])
+	}
+}

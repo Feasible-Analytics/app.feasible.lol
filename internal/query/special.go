@@ -252,9 +252,13 @@ func (x *executor) visitorDenominator(ctx context.Context, r Resolved, groups *g
 	}
 	conditions = append(conditions, extra...)
 
+	// The denominator has to be the same population the visitors metric reports,
+	// or a conversion rate is a fraction of a number that appears nowhere on the
+	// screen beside it. That count ignores engagement pings, so this one does.
 	st := statement{
 		table: tableEvents, alias: tableEvents.alias(), joins: joins,
-		dims: dims, columns: []expr{{SQL: "COUNT(DISTINCT e.user_id)"}}, conditions: conditions,
+		dims: dims, columns: countPresent(x.compile, tableEvents.alias(), "user_id"),
+		conditions: conditions,
 	}
 
 	sqlText, args := x.renderStatement(st)

@@ -300,6 +300,58 @@ func TestCarryOverMakesVisitorCountsReAggregate(t *testing.T) {
 // 14:00 is the same id in two hourly buckets. Adding those buckets counts them
 // twice. The test asserts both halves of that: the hourly rows really do
 // double-count when summed, and the daily figure the engine returns does not.
+// TestAPingAloneDoesNotPutAnyoneOnAPageInTheSummary is the rollup half of the
+// rule the raw engine keeps: an engagement ping reports on a page, it does not
+// arrive at one.
+//
+// The summary counts its visitors once, when the day is banked, and answers
+// every later question from that number. If it counted a lone ping there and
+// the raw path did not, a page would change its visitor count the moment the
+// day rolled over, which is the kind of drift nobody can unpick afterwards.
+func TestAPingAloneDoesNotPutAnyoneOnAPageInTheSummary(t *testing.T) {
+	account := openAccount(t)
+
+	// Two people read /home on the 29th. A third sent only a ping: their
+	// pageview never arrived.
+	sessions := []sessionRow{
+		{id: 1, user: 3001, startedAt: local(29, 9), lastSeen: local(29, 9), bounce: 1, pageviews: 1,
+			entryPage: "/home", exitPage: "/home", source: "Google", country: "US"},
+		{id: 2, user: 3002, startedAt: local(29, 10), lastSeen: local(29, 10), bounce: 1, pageviews: 1,
+			entryPage: "/home", exitPage: "/home", source: "Google", country: "US"},
+		{id: 3, user: 3003, startedAt: local(29, 11), lastSeen: local(29, 11), bounce: 1, pageviews: 0,
+			entryPage: "/home", exitPage: "/home", source: "Google", country: "US"},
+	}
+
+	events := []eventRow{
+		{session: 1, user: 3001, at: local(29, 9), name: ingest.EventPageview, page: "/home", source: "Google", country: "US"},
+		{session: 2, user: 3002, at: local(29, 10), name: ingest.EventPageview, page: "/home", source: "Google", country: "US"},
+		{session: 3, user: 3003, at: local(29, 11), name: ingest.EventEngagement, page: "/home", source: "Google", country: "US"},
+	}
+
+	writeFixture(t, account, sessions, events)
+	buildAll(t, account, fixtureNow)
+
+	raw, rolled := engines(account, fixtureNow)
+
+	q := query.Query{
+		SiteIDs:    []int64{testSite.ID},
+		Metrics:    []string{"visitors", "visits", "pageviews"},
+		Dimensions: []string{"event:page"},
+		DateRange:  query.DateRange{Preset: query.RangeLast7Days},
+		Timezone:   testSite.Timezone,
+	}
+
+	fromRaw := answer(t, raw, q)
+	fromRollup := answer(t, rolled, q)
+
+	// Two readers, two visits, two pageviews. The ping changes none of them.
+	if got := fromRaw.Results[0].Metrics; got[0] != 2 || got[1] != 2 || got[2] != 2 {
+		t.Errorf("raw /home = visitors %v, visits %v, pageviews %v — want 2, 2, 2", got[0], got[1], got[2])
+	}
+
+	compare(t, "ping-only visitor", q.Metrics, fromRaw, fromRollup)
+}
+
 func TestDailyVisitorsAreNotTheSumOfHourlyVisitors(t *testing.T) {
 	account := openAccount(t)
 

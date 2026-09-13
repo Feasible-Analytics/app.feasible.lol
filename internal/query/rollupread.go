@@ -323,6 +323,17 @@ func (x *executor) seamCorrection(ctx context.Context, name string, slot int, t 
 		return err
 	}
 
+	// The totals this correction subtracts from never counted an engagement
+	// ping, so the scan that finds the entities both days saw must not count one
+	// either. A visitor whose only row on one side is a ping was never added by
+	// either day, and subtracting them takes away somebody who was really there.
+	if t == tableEvents && x.compile.engagementNameID >= 0 {
+		conditions = append(conditions, expr{
+			SQL:  t.alias() + ".name_id <> ?",
+			Args: []any{x.compile.engagementNameID},
+		})
+	}
+
 	side := t.alias() + "." + t.timeColumn() + " >= ?"
 	boundary := today.Start.Unix()
 

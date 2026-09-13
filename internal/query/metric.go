@@ -126,12 +126,17 @@ type metric struct {
 // is wrong, every screen that shows it is wrong, and no amount of correct code
 // elsewhere helps.
 var metrics = map[string]metric{
-	// A visitor is a fingerprint, not a person. It counts the same on either
-	// table because every session's events carry its user id.
+	// A visitor is a fingerprint, not a person. A session row is a visit that
+	// happened, so on that table the id counts directly; on events it has to
+	// step around the engagement ping.
 	"visitors": {
 		Name: "visitors", Scope: scopeEither, Scaled: true,
-		Components: func(_ compileContext, _ table, alias string) []expr {
-			return []expr{{SQL: "COUNT(DISTINCT " + alias + ".user_id)"}}
+		Components: func(c compileContext, t table, alias string) []expr {
+			if t == tableSessions {
+				return []expr{{SQL: "COUNT(DISTINCT " + alias + ".user_id)"}}
+			}
+
+			return countPresent(c, alias, "user_id")
 		},
 		Combine: first,
 	},
@@ -139,7 +144,7 @@ var metrics = map[string]metric{
 	// One row of `sessions` is one visit.
 	"visits": {
 		Name: "visits", Scope: scopeEither, Scaled: true,
-		Components: func(_ compileContext, t table, alias string) []expr {
+		Components: func(c compileContext, t table, alias string) []expr {
 			// On sessions a visit is a row. On events it is a distinct session
 			// id, which is what makes "visits to this page" answerable without
 			// dragging the session table into an event-scoped breakdown.
@@ -147,7 +152,7 @@ var metrics = map[string]metric{
 				return []expr{{SQL: "COUNT(*)"}}
 			}
 
-			return []expr{{SQL: "COUNT(DISTINCT " + alias + ".session_id)"}}
+			return countPresent(c, alias, "session_id")
 		},
 		Combine: first,
 	},
@@ -349,6 +354,29 @@ func MetricNames() []string {
 	sort.Strings(names)
 
 	return names
+}
+
+// countPresent counts the distinct entities an events-table group actually
+// holds, ignoring engagement pings.
+//
+// An engagement ping reports reading time and scroll depth for a page a
+// pageview already announced. It is the tracker talking about a page, not a
+// person arriving at one, so on its own it must not put a visitor or a visit on
+// that page: the row would claim more visitors than pageviews, and a reader
+// cannot reconcile two columns that disagree about who was there. A pageview
+// that never arrived is a pageview we do not have, and the count says so.
+//
+// An account that has never recorded an engagement ping resolves the name to a
+// negative id, and the plain count is both correct and cheaper.
+func countPresent(c compileContext, alias, column string) []expr {
+	if c.engagementNameID < 0 {
+		return []expr{{SQL: "COUNT(DISTINCT " + alias + "." + column + ")"}}
+	}
+
+	return []expr{{
+		SQL:  "COUNT(DISTINCT CASE WHEN " + alias + ".name_id <> ? THEN " + alias + "." + column + " END)",
+		Args: []any{c.engagementNameID},
+	}}
 }
 
 // first returns the single component of a metric that has one.
