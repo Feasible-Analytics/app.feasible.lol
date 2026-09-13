@@ -44,10 +44,9 @@ const OPERATING_SYSTEMS = [
 	"FreeBSD",
 ];
 
-/** The names that show a globe, and why. Microsoft asked Simple Icons to remove
- *  its brands, and the rest have no public-domain mark either. */
+/** The names that show a globe. None has a public-domain mark, and none carries
+ *  enough traffic to be worth drawing one by hand the way Edge and Windows were. */
 const GLOBE = new Set([
-	"Microsoft Edge",
 	"Internet Explorer",
 	"Samsung Internet",
 	"Yandex Browser",

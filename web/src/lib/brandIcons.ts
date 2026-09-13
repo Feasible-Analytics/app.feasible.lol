@@ -30,11 +30,11 @@ export type BrandIcon = {
  * parser produces, because the dashboard groups by the stored value and a
  * second spelling here would silently show no icon.
  *
- * Names deliberately absent fall through to the globe: Microsoft Edge and
- * Internet Explorer have no public-domain mark, and Mobile App, Samsung
- * Internet and Yandex Browser would each need one drawn from scratch. A plain
- * globe reads as "a browser we have no logo for", which is true, and is what
- * the incumbent shows for the same rows.
+ * Names deliberately absent fall through to the globe: Internet Explorer,
+ * Samsung Internet, Yandex Browser and Mobile App. The first three have no
+ * public-domain mark and little enough traffic left to be worth drawing one;
+ * Mobile App is not a brand at all, it is any in-app webview. A plain globe
+ * reads as "a browser we have no logo for", which is true.
  */
 export const icons: Record<string, BrandIcon> = {
 	Chrome: {
@@ -105,6 +105,15 @@ export const icons: Record<string, BrandIcon> = {
 		path: "M12 0C8.21 0 4.831 1.757 2.632 4.501l3.953 6.848A5.454 5.454 0 0 1 12 6.545h10.691A12 12 0 0 0 12 0zM1.931 5.47A11.943 11.943 0 0 0 0 12c0 6.012 4.42 10.991 10.189 11.864l3.953-6.847a5.45 5.45 0 0 1-6.865-2.29zm13.342 2.166a5.446 5.446 0 0 1 1.45 7.09l.002.001h-.002l-5.344 9.257c.206.01.413.016.621.016 6.627 0 12-5.373 12-12 0-1.54-.29-3.011-.818-4.364zM12 16.364a4.364 4.364 0 1 1 0-8.728 4.364 4.364 0 0 1 0 8.728Z",
 		color: "#4285F4",
 	},
+	// Edge's swoosh, drawn here for the same reason Windows is: Microsoft asked
+	// Simple Icons to remove its brands and there is no public-domain copy. It
+	// is a band on a circle that thins to a point, which is the part of the real
+	// mark that survives at 16 pixels — the gradient does not.
+	"Microsoft Edge": {
+		path: "M9.30 2.58L10.16 2.37L11.04 2.25L11.93 2.20L12.81 2.23L13.69 2.35L14.56 2.54L15.40 2.81L16.22 3.15L17.00 3.57L17.74 4.06L18.44 4.61L19.08 5.22L19.66 5.89L20.18 6.61L20.64 7.37L21.02 8.17L21.33 9.00L21.56 9.86L21.72 10.73L21.79 11.62L21.79 12.50L21.70 13.39L21.54 14.26L21.29 15.11L20.97 15.94L20.58 16.73L20.12 17.49L19.59 18.20L19.00 18.86L18.35 19.47L17.65 20.01L16.90 20.49L16.11 20.90L15.29 21.23L14.44 21.49L13.58 21.67L12.69 21.78L11.81 21.80L10.92 21.74L10.05 21.60L9.19 21.39L8.35 21.09L7.54 20.73L6.77 20.29L6.04 19.78L5.36 19.21L4.74 18.58L4.17 17.90L3.67 17.17L3.24 16.39L2.88 15.58L2.59 14.74L2.38 13.88L2.25 13.00L2.20 12.12L2.23 11.23L2.34 10.35L2.53 9.48L2.79 8.64L3.14 7.82L3.55 7.04L4.03 6.29L4.58 5.59L5.19 4.95L5.75 5.53L5.30 6.21L4.92 6.93L4.61 7.66L4.37 8.40L4.21 9.16L4.12 9.91L4.10 10.65L4.14 11.38L4.25 12.09L4.42 12.78L4.65 13.44L4.93 14.06L5.27 14.64L5.65 15.19L6.07 15.68L6.52 16.13L7.01 16.53L7.52 16.87L8.05 17.16L8.59 17.40L9.15 17.58L9.71 17.71L10.26 17.79L10.82 17.82L11.36 17.79L11.89 17.72L12.40 17.60L12.89 17.44L13.35 17.24L13.78 17.00L14.19 16.73L14.56 16.43L14.89 16.10L15.19 15.75L15.45 15.38L15.67 15.00L15.86 14.61L16.00 14.21L16.11 13.80L16.18 13.40L16.21 13.00L16.21 12.60L16.17 12.21L16.10 11.84L16.00 11.48L15.87 11.13L15.71 10.81L15.53 10.50L15.32 10.22L15.10 9.96L14.86 9.72L14.60 9.51L14.33 9.33L14.05 9.17L13.76 9.03L13.47 8.92L13.17 8.84L12.87 8.78L12.57 8.75L12.27 8.74L11.98 8.76L11.68 8.79L11.40 8.85L11.12 8.92Z",
+		color: "#0F7EBF",
+	},
+
 	// Four squares on the same 24x24 grid as the rest, in Microsoft's blue.
 	Windows: {
 		path: "M2 2h9v9H2V2zm11 0h9v9h-9V2zM2 13h9v9H2v-9zm11 0h9v9h-9v-9z",
