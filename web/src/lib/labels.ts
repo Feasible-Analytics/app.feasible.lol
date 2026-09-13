@@ -171,3 +171,11 @@ export function flagFor(dimension: string, value: string): string {
 			return "";
 	}
 }
+
+/** hasBrandMark reports whether a dimension's values name a browser or an
+ *  operating system, which are the two that have logos. It is a dimension test
+ *  rather than a lookup so that a value we hold no logo for still gets the
+ *  globe placeholder and the column stays aligned. */
+export function hasBrandMark(dimension: string): boolean {
+	return dimension === "visit:browser" || dimension === "visit:os";
+}

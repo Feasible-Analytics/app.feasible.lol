@@ -10,6 +10,7 @@ import type { ReactNode } from "react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { iconFor } from "../lib/brandIcons";
 import { compact, exact } from "../lib/format";
 import { t } from "../lib/i18n";
 import type { RemoteState } from "../lib/useStats";
@@ -276,6 +277,50 @@ export function Flag({ glyph }: { glyph: string }) {
 		<span aria-hidden="true" className="w-4 shrink-0 text-center text-sm leading-none">
 			{glyph}
 		</span>
+	);
+}
+
+/**
+ * BrandMark is the browser or operating-system logo a row leads with.
+ *
+ * It draws from a path table compiled into the bundle rather than an image
+ * request, for the same reason the flag is a glyph: a logo per row fetched over
+ * the network would be a fan-out to somebody else's host on every paint. A name
+ * we hold no mark for gets the globe, which says "a browser" honestly and keeps
+ * the column aligned instead of leaving every third row indented differently.
+ * Decorative either way — the row's own text names the thing.
+ */
+export function BrandMark({ value }: { value: string }) {
+	const icon = iconFor(value);
+
+	if (!icon) {
+		return (
+			<svg
+				aria-hidden="true"
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				strokeWidth={1.75}
+				className="size-4 shrink-0 text-muted"
+			>
+				<circle cx="12" cy="12" r="9.25" />
+				<ellipse cx="12" cy="12" rx="4" ry="9.25" />
+				<path d="M2.75 12h18.5" />
+			</svg>
+		);
+	}
+
+	// A null colour is a mark whose own guidelines make it black, which would
+	// vanish on a dark card; it inherits the row's text colour instead.
+	return (
+		<svg
+			aria-hidden="true"
+			viewBox="0 0 24 24"
+			className="size-4 shrink-0"
+			style={icon.color ? { color: icon.color } : undefined}
+		>
+			<path d={icon.path} fill="currentColor" />
+		</svg>
 	);
 }
 
