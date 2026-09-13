@@ -1637,6 +1637,99 @@ func TestAPingAloneDoesNotPutAnyoneOnAPage(t *testing.T) {
 	}
 }
 
+// TestACityRowCarriesTheCountryItIsIn covers the flag on the Cities card.
+//
+// A city is stored as a bare name, so the row has no country of its own and two
+// Salems on different continents are one row. The country is attached after
+// aggregation rather than grouped by, because the summary tables key on a single
+// dimension and grouping by country here would drop the card onto a raw scan
+// every time somebody opens the dashboard.
+func TestACityRowCarriesTheCountryItIsIn(t *testing.T) {
+	engine, account := newEngineWithAccount(t)
+	ctx := context.Background()
+
+	id := func(dimension intern.Dimension, value string) int64 {
+		got, err := account.Intern.ID(ctx, dimension, value)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return got
+	}
+
+	// Salem twice in the US and once in India, plus a Bristol in Britain. The
+	// ambiguous name is the case the flag has to answer for.
+	visits := []struct {
+		session, user int64
+		city, country string
+		at            int64
+	}{
+		{10, 3001, "Salem", "US", at(30, 9, 10)},
+		{11, 3002, "Salem", "US", at(30, 9, 20)},
+		{12, 3003, "Salem", "IN", at(30, 9, 30)},
+		{13, 3004, "Bristol", "GB", at(30, 9, 40)},
+	}
+
+	for i, v := range visits {
+		if _, err := account.Writer().ExecContext(ctx, `
+			INSERT INTO sessions (id, site_id, user_id, started_at, last_seen_at, duration, is_bounce,
+				pageviews, events, entry_page_id, exit_page_id, source_id, country_id, city_id)
+			VALUES (?,?,?,?,?,0,1,1,1,?,?,?,?,?)`,
+			v.session, 1, v.user, v.at, v.at,
+			id(intern.Pathname, "/home"), id(intern.Pathname, "/home"), id(intern.Source, ""),
+			id(intern.Country, v.country), id(intern.City, v.city),
+		); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := account.Writer().ExecContext(ctx, `
+			INSERT INTO events (id, site_id, timestamp, name_id, user_id, session_id,
+				pathname_id, page_title_id, source_id, country_id, city_id,
+				scroll_depth, engagement_time, bot_reason_id, has_details)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,255,0,0,0)`,
+			300+i, 1, v.at, id(intern.EventName, ingest.EventPageview), v.user, v.session,
+			id(intern.Pathname, "/home"), id(intern.PageTitle, "Home"), id(intern.Source, ""),
+			id(intern.Country, v.country), id(intern.City, v.city),
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	q := baseQuery("visitors")
+	q.Dimensions = []string{"visit:city"}
+	q.Include = Include{CityCountries: true}
+
+	got := map[string]string{}
+	for _, row := range run(t, engine, q).Results {
+		got[row.Dimensions[0]] = row.Enrichments["country"]
+	}
+
+	// Salem is one row, and its flag is the country most of its visits came
+	// from rather than whichever row the database happened to reach first.
+	if got["Salem"] != "US" {
+		t.Errorf("Salem flag = %q, want US — two of its three visits were American", got["Salem"])
+	}
+
+	if got["Bristol"] != "GB" {
+		t.Errorf("Bristol flag = %q, want GB", got["Bristol"])
+	}
+}
+
+// TestCityCountriesNeedsTheCityDimension keeps the enrichment honest: asked for
+// without the dimension it reads from, it is a silent no-op rather than an
+// answer, and a caller cannot tell which they got.
+func TestCityCountriesNeedsTheCityDimension(t *testing.T) {
+	engine := newEngine(t)
+
+	q := baseQuery("visitors")
+	q.Dimensions = []string{"visit:country"}
+	q.Include = Include{CityCountries: true}
+
+	if _, err := engine.Run(context.Background(), q); err == nil {
+		t.Fatal("asking for city countries without the city dimension was accepted")
+	}
+}
+
 // TestTheClassificationReasonCanBeReadBack covers the question nobody could ask
 // of their own data: not how much the filter took, but on what grounds.
 //

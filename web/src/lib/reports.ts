@@ -6,7 +6,7 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
-import type { Filter, Meta, Metric } from "../api/types";
+import type { Filter, Include, Meta, Metric } from "../api/types";
 import { formatterLocale, t } from "./i18n";
 import { valueLabel } from "./labels";
 
@@ -33,6 +33,10 @@ export interface Tab {
 	/** A response enrichment shown alongside the primary dimension. It is not a
 	 *  grouping key, so changing or missing titles cannot split the path row. */
 	companion?: { enrichment: "page_title"; headingId: string };
+	/** Draw the flag from a response enrichment rather than from the row's own
+	 *  value. A city is stored as a bare name, so its row carries no country to
+	 *  read one from; the server attaches it after aggregation. */
+	flagEnrichment?: "country";
 	/** Rows whose label is the empty string mean this, rather than nothing. */
 	emptyLabelId?: string;
 	/** Applied on every request for this tab. It is part of what the report
@@ -255,6 +259,7 @@ export const LOCATIONS: CardDef = {
 			emptyLabelId: NOT_SET,
 			nounId: "dashboard.noun.cities",
 			caveatId: "dashboard.report.locations.cities_caveat",
+			flagEnrichment: "country",
 		},
 	],
 };
@@ -334,6 +339,17 @@ export const CARDS: CardDef[] = [SOURCES, PAGES, LOCATIONS, DEVICES];
 
 /** dimensionsOf returns the ordered grouping dimensions for a card or drawer
  * request. Response enrichments never appear here. */
+/** includeOf is the extras a tab needs, built key by key because the endpoint
+ *  refuses unknown fields and an explicit `undefined` is still a key on the
+ *  object literal a caller writes. Undefined when the tab needs nothing. */
+export function includeOf(tab: Tab): Include | undefined {
+	const include: Include = {};
+	if (tab.companion) include.page_titles = true;
+	if (tab.flagEnrichment) include.city_countries = true;
+
+	return Object.keys(include).length ? include : undefined;
+}
+
 export function dimensionsOf(tab: Tab, breakdown = ""): string[] {
 	const dimensions = [tab.dimension];
 	if (breakdown) dimensions.push(breakdown);

@@ -73,6 +73,7 @@ export interface Include {
 	time_labels?: boolean;
 	total_rows?: boolean;
 	page_titles?: boolean;
+	city_countries?: boolean;
 	comparisons?: Comparison;
 }
 
@@ -105,7 +106,7 @@ export interface ComparisonRow {
 export interface Row {
 	metrics: number[];
 	dimensions: string[];
-	enrichments?: { page_title?: string };
+	enrichments?: { page_title?: string; country?: string };
 	comparison?: ComparisonRow;
 }
 

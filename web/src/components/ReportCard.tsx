@@ -16,7 +16,8 @@ import { t } from "../lib/i18n";
 import { flagFor, hasBrandMark } from "../lib/labels";
 import { usePref } from "../lib/prefs";
 import type { CardDef, Tab, TabGroup } from "../lib/reports";
-import { PRIMARY, dimensionsOf, findTab, groupsOf, labelOf, noticesOf } from "../lib/reports";
+import { PRIMARY, dimensionsOf,
+	includeOf, findTab, groupsOf, labelOf, noticesOf } from "../lib/reports";
 import { useNearViewport, useStats } from "../lib/useStats";
 import { Bar, BrandMark, Chevron, Empty, Failure, Favicon, Flag, InfoDot, Spinner } from "./atoms";
 import { SampledMark } from "./SampledBadge";
@@ -119,7 +120,7 @@ export function ReportCard({
 		dimensions: dimensionsOf(active),
 		pagination: { limit: active.map ? MAP_ROWS : ROWS },
 		filters: combined.length ? combined : undefined,
-		include: active.companion ? { page_titles: true } : undefined,
+		include: includeOf(active),
 		exact: exactAnswer || undefined,
 	};
 
@@ -252,7 +253,7 @@ export function ReportCard({
 										<span className="pointer-events-none relative flex min-w-0 flex-1 items-center gap-2 pl-2 text-sm text-body">
 											{active.favicon && <Favicon name={raw || "Direct"} />}
 											{hasBrandMark(active.dimension) && <BrandMark value={raw} />}
-											<Flag glyph={flagFor(active.dimension, raw)} />
+											<Flag glyph={flagFor(active.dimension, raw, row.enrichments?.country ?? "")} />
 											<span
 												className={`flex min-w-0 flex-col justify-center leading-tight ${companion ? "gap-0.5" : ""}`}
 											>
