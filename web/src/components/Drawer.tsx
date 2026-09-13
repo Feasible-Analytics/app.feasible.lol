@@ -13,7 +13,7 @@ import type { CompareMode } from "../lib/compare";
 import type { FilterState } from "../lib/filters";
 import { exact, metricValue } from "../lib/format";
 import { formatterLocale, t } from "../lib/i18n";
-import { flagFor } from "../lib/labels";
+import { flagFor, hasBrandMark } from "../lib/labels";
 import type { CardDef } from "../lib/reports";
 import {
 	BREAKDOWNS,
@@ -29,7 +29,7 @@ import {
 } from "../lib/reports";
 import type { DrawerState } from "../lib/url";
 import { useStats } from "../lib/useStats";
-import { Caveats, ChangeChip, Empty, Failure, Favicon, Flag, Spinner } from "./atoms";
+import { BrandMark, Caveats, ChangeChip, Empty, Failure, Favicon, Flag, Spinner } from "./atoms";
 import { SampledBadge } from "./SampledBadge";
 
 /**
@@ -143,6 +143,7 @@ export function Drawer({
 		include: {
 			total_rows: true,
 			page_titles: tab.companion ? true : undefined,
+			city_countries: tab.flagEnrichment ? true : undefined,
 			// The earlier period is looked up by the keys already on this page
 			// rather than paginated on its own, so a comparison costs one extra
 			// query and never attaches a number to the wrong row.
@@ -361,7 +362,8 @@ export function Drawer({
 													className="flex w-full items-center gap-2 text-left"
 												>
 													{tab.favicon && <Favicon name={raw || "Direct"} />}
-													<Flag glyph={flagFor(tab.dimension, raw)} />
+													{hasBrandMark(tab.dimension) && <BrandMark value={raw} />}
+													<Flag glyph={flagFor(tab.dimension, raw, row.enrichments?.country ?? "")} />
 													<span className="flex min-w-0 flex-col justify-center leading-tight">
 														{companion && (
 															<span className="truncate text-xs font-medium text-body" title={companion}>

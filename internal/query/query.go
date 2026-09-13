@@ -200,6 +200,13 @@ type Include struct {
 	// roll-up read.
 	PageTitles bool `json:"page_titles,omitempty"`
 
+	// CityCountries enriches rows grouped by visit:city with the country that
+	// city resolved to. A city is stored as a bare name, so the row itself
+	// carries no country and cannot show a flag without one. Like the title
+	// above it is attached after aggregation rather than grouped by, so the
+	// card keeps reading the summary instead of falling back to a raw scan.
+	CityCountries bool `json:"city_countries,omitempty"`
+
 	Comparisons *Comparison `json:"comparisons,omitempty"`
 }
 
@@ -207,12 +214,13 @@ type Include struct {
 // the right way round. It exists so the inversion happens in one pair of
 // methods rather than at every boundary that decodes a request.
 type wireInclude struct {
-	Imports     bool        `json:"imports,omitempty"`
-	Bots        bool        `json:"bots,omitempty"`
-	TimeLabels  bool        `json:"time_labels,omitempty"`
-	TotalRows   bool        `json:"total_rows,omitempty"`
-	PageTitles  bool        `json:"page_titles,omitempty"`
-	Comparisons *Comparison `json:"comparisons,omitempty"`
+	Imports       bool        `json:"imports,omitempty"`
+	Bots          bool        `json:"bots,omitempty"`
+	TimeLabels    bool        `json:"time_labels,omitempty"`
+	TotalRows     bool        `json:"total_rows,omitempty"`
+	PageTitles    bool        `json:"page_titles,omitempty"`
+	CityCountries bool        `json:"city_countries,omitempty"`
+	Comparisons   *Comparison `json:"comparisons,omitempty"`
 }
 
 // UnmarshalJSON reads the wire's `imports` and stores its opposite.
@@ -228,6 +236,7 @@ func (i *Include) UnmarshalJSON(data []byte) error {
 		TimeLabels:     wire.TimeLabels,
 		TotalRows:      wire.TotalRows,
 		PageTitles:     wire.PageTitles,
+		CityCountries:  wire.CityCountries,
 		Comparisons:    wire.Comparisons,
 	}
 
@@ -238,12 +247,13 @@ func (i *Include) UnmarshalJSON(data []byte) error {
 // request the caller actually made.
 func (i Include) MarshalJSON() ([]byte, error) {
 	return json.Marshal(wireInclude{
-		Imports:     !i.ExcludeImports,
-		Bots:        i.Bots,
-		TimeLabels:  i.TimeLabels,
-		TotalRows:   i.TotalRows,
-		PageTitles:  i.PageTitles,
-		Comparisons: i.Comparisons,
+		Imports:       !i.ExcludeImports,
+		Bots:          i.Bots,
+		TimeLabels:    i.TimeLabels,
+		TotalRows:     i.TotalRows,
+		PageTitles:    i.PageTitles,
+		CityCountries: i.CityCountries,
+		Comparisons:   i.Comparisons,
 	})
 }
 
@@ -453,6 +463,10 @@ func (q *Query) Validate() error {
 
 	if q.Include.PageTitles && !seenDimension["event:page"] {
 		return invalid("include.page_titles requires the event:page dimension")
+	}
+
+	if q.Include.CityCountries && !seenDimension["visit:city"] {
+		return invalid("include.city_countries requires the visit:city dimension")
 	}
 
 	return nil

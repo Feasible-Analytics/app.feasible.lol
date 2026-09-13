@@ -1043,11 +1043,22 @@ func (x *executor) finalise(ctx context.Context, groups *groupSet) ([]Row, int, 
 		return nil, 0, err
 	}
 
+	countries, err := x.cityCountryEnrichments(ctx, final)
+	if err != nil {
+		return nil, 0, err
+	}
+
 	out := make([]Row, 0, len(final))
 	for _, row := range final {
 		response := Row{Metrics: row.values, Dimensions: row.labels}
 		if title := titles[pathIDFromFinalRow(row, x.plan)]; title != "" {
 			response.Enrichments = map[string]string{"page_title": title}
+		}
+		if country := countries[dimensionIDFromFinalRow(row, x.plan, "visit:city")]; country != "" {
+			if response.Enrichments == nil {
+				response.Enrichments = map[string]string{}
+			}
+			response.Enrichments["country"] = country
 		}
 		out = append(out, response)
 	}
@@ -1071,8 +1082,15 @@ func (x *executor) finalise(ctx context.Context, groups *groupSet) ([]Row, int, 
 // row. The include validator guarantees that dimension exists when title
 // enrichment is requested; this helper remains defensive for direct callers.
 func pathIDFromFinalRow(row finalRow, blueprint *plan) int64 {
+	return dimensionIDFromFinalRow(row, blueprint, "event:page")
+}
+
+// dimensionIDFromFinalRow recovers the interned id a row was grouped by, which
+// an enrichment needs because the row itself carries only the label. Zero means
+// the query did not group by that dimension at all.
+func dimensionIDFromFinalRow(row finalRow, blueprint *plan, name string) int64 {
 	for i, dimension := range blueprint.Dimensions {
-		if dimension.Name != "event:page" || i >= len(row.raw) {
+		if dimension.Name != name || i >= len(row.raw) {
 			continue
 		}
 		if id, ok := row.raw[i].(int64); ok {
@@ -1144,6 +1162,110 @@ func pageTitleEnrichmentQuery(pathIDs, siteIDs []int64, r Resolved, q *Query, pa
 	args = append(args, population.Args...)
 
 	return sqlText, args, nil
+}
+
+// cityCountryEnrichmentSQL resolves the country for a set of displayed cities.
+//
+// It groups rather than picking the first row it finds, because a city is
+// stored as a bare name: every Salem on earth interns to one id, and the only
+// honest answer for a flag is the country most of this window's visits to that
+// name came from. Bots and imports are not filtered out — the row is on screen
+// already, and this is only naming the country it sits in.
+const cityCountryEnrichmentSQL = `
+	WITH wanted(city_id) AS (
+		SELECT CAST(value AS INTEGER) FROM json_each(?)
+	), sites(site_id) AS (
+		SELECT CAST(value AS INTEGER) FROM json_each(?)
+	)
+	SELECT s.city_id, s.country_id, COUNT(*) AS visits
+	FROM sessions s
+	JOIN sites ON sites.site_id = s.site_id
+	JOIN wanted ON wanted.city_id = s.city_id
+	WHERE s.started_at >= ? AND s.started_at < ? AND s.country_id <> 0
+	GROUP BY s.city_id, s.country_id`
+
+// cityCountryEnrichments attaches a country to each city row so the card can
+// draw a flag beside a name that carries no country of its own.
+//
+// It runs once over the cities that survived ordering and pagination, which is
+// at most a page of them, and it is a separate statement rather than a second
+// grouping dimension on purpose: the summary tables key on one dimension, so
+// grouping by country here would drop the Cities card onto a raw scan on every
+// load.
+func (x *executor) cityCountryEnrichments(ctx context.Context, rows []finalRow) (map[int64]string, error) {
+	if !x.query.Include.CityCountries || len(rows) == 0 {
+		return map[int64]string{}, nil
+	}
+
+	cityIDs := make([]int64, 0, len(rows))
+	seen := map[int64]bool{}
+	for _, row := range rows {
+		id := dimensionIDFromFinalRow(row, x.plan, "visit:city")
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		cityIDs = append(cityIDs, id)
+	}
+	if len(cityIDs) == 0 {
+		return map[int64]string{}, nil
+	}
+
+	encodedCities, err := json.Marshal(cityIDs)
+	if err != nil {
+		return nil, fmt.Errorf("query: encode city ids: %w", err)
+	}
+	encodedSites, err := json.Marshal(x.query.SiteIDs)
+	if err != nil {
+		return nil, fmt.Errorf("query: encode city site ids: %w", err)
+	}
+
+	dbRows, err := x.engine.db.QueryContext(ctx, cityCountryEnrichmentSQL,
+		string(encodedCities), string(encodedSites), x.resolved.Start.Unix(), x.resolved.End.Unix())
+	if err != nil {
+		return nil, fmt.Errorf("query: enrich city countries: %w", err)
+	}
+	defer func() { _ = dbRows.Close() }()
+
+	// The winner is the country with the most visits. A tie falls to the lower
+	// id so that two renders of the same report cannot disagree.
+	type leader struct{ countryID, visits int64 }
+	best := map[int64]leader{}
+	for dbRows.Next() {
+		var cityID int64
+		var candidate leader
+		if err := dbRows.Scan(&cityID, &candidate.countryID, &candidate.visits); err != nil {
+			return nil, fmt.Errorf("query: enrich city countries: %w", err)
+		}
+		current, ok := best[cityID]
+		if !ok || candidate.visits > current.visits ||
+			candidate.visits == current.visits && candidate.countryID < current.countryID {
+			best[cityID] = candidate
+		}
+	}
+	if err := dbRows.Err(); err != nil {
+		return nil, fmt.Errorf("query: enrich city countries: %w", err)
+	}
+
+	countryIDs := make([]int64, 0, len(best))
+	for _, entry := range best {
+		countryIDs = append(countryIDs, entry.countryID)
+	}
+
+	dimension, _ := resolveDimension("visit:country")
+	labels, err := x.lookup(ctx, dimension, countryIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	countries := make(map[int64]string, len(best))
+	for cityID, entry := range best {
+		if label := labels[entry.countryID]; label != "" {
+			countries[cityID] = label
+		}
+	}
+
+	return countries, nil
 }
 
 // pageTitleEnrichments performs one batched lookup over the paths that survived

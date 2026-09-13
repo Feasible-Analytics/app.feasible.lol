@@ -158,10 +158,19 @@ export function valueLabel(dimension: string, value: string): string {
 	}
 }
 
-/** flagFor is the emoji a row leads with, or an empty string for a dimension
- *  that has no country in it. Cities are stored as a bare name with no country
- *  beside them, so a city row cannot carry a flag without guessing. */
-export function flagFor(dimension: string, value: string): string {
+/**
+ * flagFor is the emoji a row leads with, or an empty string for a dimension with
+ * no country in it.
+ *
+ * A country row reads its own value and a region row reads the country out of
+ * its ISO code. A city is stored as a bare name and has neither, so the server
+ * attaches the country as an enrichment and it arrives here as `enriched` —
+ * which wins outright, because a dimension that needed it has nothing else to
+ * offer.
+ */
+export function flagFor(dimension: string, value: string, enriched = ""): string {
+	if (enriched) return countryFlag(enriched);
+
 	switch (dimension) {
 		case "visit:country":
 			return countryFlag(value);
@@ -170,4 +179,12 @@ export function flagFor(dimension: string, value: string): string {
 		default:
 			return "";
 	}
+}
+
+/** hasBrandMark reports whether a dimension's values name a browser or an
+ *  operating system, which are the two that have logos. It is a dimension test
+ *  rather than a lookup so that a value we hold no logo for still gets the
+ *  globe placeholder and the column stays aligned. */
+export function hasBrandMark(dimension: string): boolean {
+	return dimension === "visit:browser" || dimension === "visit:os";
 }

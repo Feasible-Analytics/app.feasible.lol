@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { before, test } from "node:test";
 
-import { CARDS, PAGES, SOURCES, dimensionsOf, groupsOf, noticesOf } from "./reports";
+import { CARDS, PAGES, SOURCES, dimensionsOf, groupsOf, includeOf, noticesOf } from "./reports";
 
 // The locale is read from the page once, so the stub is installed before any
 // test asks for a formatter.
@@ -137,4 +137,21 @@ test("an answer with nothing to say about it produces no notices", () => {
 	assert.deepEqual(noticesOf(undefined), []);
 	assert.deepEqual(noticesOf({}), []);
 	assert.deepEqual(noticesOf({ metric_warnings: {} }), []);
+});
+
+test("a tab asks only for the extras it uses, because the endpoint refuses unknown fields", () => {
+	const locations = CARDS.find((card) => card.id === "locations");
+	assert.ok(locations, "the locations card is missing");
+
+	const tabOf = (id: string) => {
+		const tab = locations.tabs.find((entry) => entry.id === id);
+		assert.ok(tab, `the ${id} tab is missing`);
+
+		return tab;
+	};
+
+	// A city has no country of its own, so it asks for one. A country row is
+	// already the country and must not pay for a second query.
+	assert.deepEqual(includeOf(tabOf("cities")), { city_countries: true });
+	assert.equal(includeOf(tabOf("countries")), undefined);
 });
