@@ -97,6 +97,21 @@ func TestTwoRecipientsGetDifferentTokens(t *testing.T) {
 	}
 }
 
+// flipFirst changes a token's first character to one it is not already, so that
+// the forgery is always a forgery. Substituting a fixed letter leaves the token
+// untouched whenever it already began with that letter, and the test then
+// unsubscribes the address for real and reports the endpoint as broken.
+func flipFirst(token string) string {
+	flipped := []byte(token)
+	if flipped[0] == 'A' {
+		flipped[0] = 'B'
+	} else {
+		flipped[0] = 'A'
+	}
+
+	return string(flipped)
+}
+
 // TestAForgedTokenRemovesNothing is what stops the endpoint being a way to
 // empty somebody's recipient list.
 func TestAForgedTokenRemovesNothing(t *testing.T) {
@@ -111,7 +126,7 @@ func TestAForgedTokenRemovesNothing(t *testing.T) {
 		"empty":     "",
 		"nonsense":  "not-a-token",
 		"truncated": token[:len(token)-4],
-		"flipped":   "A" + token[1:],
+		"flipped":   flipFirst(token),
 	} {
 		if err := u.Remove(ctx, forged); err != nil {
 			t.Errorf("%s token: %v", name, err)
