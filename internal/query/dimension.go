@@ -121,6 +121,16 @@ var dimensions = map[string]dimension{
 		Name: "event:name", EventColumn: "name_id", Interned: intern.EventName,
 	},
 
+	// Why an event was classified as automated, and blank for the traffic that
+	// was not. The default filter drops classified rows, so a breakdown on this
+	// reads as one blank row until `include.bots` is set; with it, the answer is
+	// which rule took what. Without it, an argument about a wrongly-classified
+	// visitor has no evidence on either side — the reason is stored on every
+	// row and nothing could ask for it.
+	"event:bot_reason": {
+		Name: "event:bot_reason", EventColumn: "bot_reason_id", Interned: intern.BotReason,
+	},
+
 	// Session-scoped and nowhere else: a visit has one entry and one exit, and
 	// an event has neither.
 	"visit:entry_page": {
