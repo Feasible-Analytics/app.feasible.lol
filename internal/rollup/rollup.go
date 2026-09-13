@@ -807,19 +807,26 @@ func (c *chunk) aggregateEvents(ctx context.Context, dimension query.RollupDim) 
 
 	// Engagement is the tracker measuring time on page, not an event anybody
 	// named, so a bucket keyed on its name is a row for something nobody did.
-	// Only this dimension groups on the name, so only this one can produce one;
-	// engagement rows still carry a page and a device, and there they describe
-	// a visitor who was genuinely there.
+	// Only this dimension groups on the name, so only this one can produce one.
 	filter := ""
 	if dimension.Name == query.DimensionEventName {
 		filter = " AND f." + column + " <> ?"
 	}
 
+	// `f.event` is already zero for an engagement ping, which makes it the flag
+	// the visitor and visit counts filter on. A ping reports reading time for a
+	// page a pageview announced, so on its own it must not place anybody on
+	// that page: the row would carry more visitors than pageviews, and the two
+	// columns beside each other would contradict. This matches the raw query
+	// path, and the two have to agree or a report changes its answer the moment
+	// a day rolls up.
 	sqlText := `
 		INSERT INTO ` + dimension.Table + ` (site_id, grain, bucket, dimension, value_id,
 			pageviews, events, event_visitors, event_visits)
 		SELECT ?, ?, f.bucket, ?, f.` + column + `,
-		       SUM(f.pageview), SUM(f.event), COUNT(DISTINCT f.user_id), COUNT(DISTINCT f.session_id)
+		       SUM(f.pageview), SUM(f.event),
+		       COUNT(DISTINCT CASE WHEN f.event = 1 THEN f.user_id END),
+		       COUNT(DISTINCT CASE WHEN f.event = 1 THEN f.session_id END)
 		FROM rollup_fact_event f
 		WHERE f.bucket >= ? AND f.bucket < ?` + filter + `
 		GROUP BY f.bucket, f.` + column + `

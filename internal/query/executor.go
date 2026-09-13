@@ -454,11 +454,12 @@ func (x *executor) conditionsFor(t table, r Resolved) ([]expr, error) {
 // engagementExclusion keeps engagement out of a breakdown by event name.
 //
 // Engagement is emitted by the tracker to measure time on page, not by anyone
-// naming an event, so a row for it is a row for something nobody did. It also
-// reads as broken: the events metric already excludes engagement, so the row
-// arrives with visitors but a count of zero. Every other surface derives
-// engagement through a metric rather than grouping on it, which is why the
-// exclusion is scoped to this one dimension instead of the whole table.
+// naming an event, so a row for it is a row for something nobody did. The
+// metrics no longer count a ping towards a visitor, a visit or an event, so the
+// row would arrive entirely zero; dropping it is what keeps a list of the
+// things people did from ending in a name nobody chose. Every other surface
+// reads engagement through a metric rather than grouping on it, which is why
+// this is scoped to one dimension rather than the whole table.
 func (x *executor) engagementExclusion(where *whereBuilder) *expr {
 	if where.table != tableEvents || x.compile.engagementNameID < 0 {
 		return nil
