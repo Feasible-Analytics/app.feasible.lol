@@ -26,6 +26,18 @@ var (
 	Date    = "unknown"
 )
 
+// Info is the build identity in the shape the /version endpoint returns.
+type Info struct {
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+	BuiltAt string `json:"built_at"`
+}
+
+// Current returns the build identity stamped into this binary.
+func Current() Info {
+	return Info{Version: Version, Commit: Commit, BuiltAt: Date}
+}
+
 // String renders the one line `--version` prints. Support questions start with
 // "what exactly are you running", so the commit and the Go runtime are on the
 // line too — a version number alone never identifies a build from a branch.

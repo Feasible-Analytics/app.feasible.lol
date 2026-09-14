@@ -1,6 +1,6 @@
 //
 // server.go
-// One HTTP listener with timeouts, health probes and a graceful stop.
+// One HTTP listener with timeouts, health and version probes and a graceful stop.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/build"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 )
 
@@ -67,6 +68,9 @@ const (
 	PathReady = "/health/ready"
 )
 
+// PathVersion answers "which build is this process running" as JSON.
+const PathVersion = "/version"
+
 // Server is one listener and its lifecycle. It is a struct rather than a
 // function so that shutdown can flip the readiness flag before it stops
 // accepting, which is the whole of a zero-downtime deploy.
@@ -88,9 +92,9 @@ type Server struct {
 	listener net.Listener
 }
 
-// New builds a server around a handler, wrapping it with the health endpoints.
-// They are added here rather than by each caller so that every process in the
-// system answers the same three paths in the same way.
+// New builds a server around a handler, wrapping it with the health and version
+// endpoints. They are added here rather than by each caller so that every
+// process in the system answers the same paths in the same way.
 func New(name, addr string, handler http.Handler) *Server {
 	s := &Server{name: name}
 
@@ -98,6 +102,7 @@ func New(name, addr string, handler http.Handler) *Server {
 	mux.HandleFunc(PathHealth, s.handleHealth)
 	mux.HandleFunc(PathLive, s.handleLive)
 	mux.HandleFunc(PathReady, s.handleReady)
+	mux.HandleFunc(PathVersion, handleVersion)
 	mux.Handle("/", handler)
 
 	s.server = &http.Server{
@@ -188,6 +193,21 @@ func (s *Server) handleLive(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok\n"))
+}
+
+// handleVersion answers with the version, commit and build date stamped into
+// the binary at link time.
+func handleVersion(w http.ResponseWriter, _ *http.Request) {
+	body, err := json.Marshal(build.Current())
+	if err != nil {
+		http.Error(w, "version unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(append(body, '\n'))
 }
 
 // handleHealth answers the public uptime-monitoring endpoint. Its status uses
