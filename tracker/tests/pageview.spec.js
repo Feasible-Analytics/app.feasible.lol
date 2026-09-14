@@ -62,6 +62,44 @@ test("a prerendered page is not counted until somebody looks at it", async ({ pa
 	expect(named(state, "pageview")).toHaveLength(1);
 });
 
+// Chrome activates a prerendered page in this order: the page turns visible
+// while `document.prerendering` is still true, and only then does prerendering
+// end. A tracker that waits for visibility alone never counts the visit.
+test("an activated prerender is counted when prerendering ends after it turns visible", async ({ page }) => {
+	const state = await collect(page);
+
+	await page.addInitScript(() => {
+		window.__visibility = "hidden";
+		window.__prerendering = true;
+
+		Object.defineProperty(document, "visibilityState", {
+			configurable: true,
+			get: () => window.__visibility,
+		});
+		Object.defineProperty(document, "prerendering", {
+			configurable: true,
+			get: () => window.__prerendering,
+		});
+	});
+
+	await page.goto("/basic.html");
+	await page.waitForTimeout(400);
+
+	expect(state.events).toHaveLength(0);
+
+	await page.evaluate(() => {
+		window.__visibility = "visible";
+		document.dispatchEvent(new Event("visibilitychange"));
+
+		window.__prerendering = false;
+		document.dispatchEvent(new Event("prerenderingchange"));
+	});
+
+	const pageviews = await settledCount(state, "pageview", 1);
+
+	expect(pageviews).toHaveLength(1);
+});
+
 test("a page opened in a background tab is counted when it is looked at", async ({ page }) => {
 	const state = await collect(page);
 	await hideUntilRevealed(page, "hidden");
