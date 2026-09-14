@@ -48,11 +48,16 @@ function hidden() {
 	);
 }
 
+// REVEALS are the events that can end a deferral. Activating a prerendered page
+// fires visibilitychange while `document.prerendering` is still true, and
+// prerenderingchange only after it turns false.
+const REVEALS = ["visibilitychange", "prerenderingchange"];
+
 // onVisible fires the pageview that was held back, once.
 function onVisible() {
 	if (hidden()) return;
 
-	doc.removeEventListener("visibilitychange", onVisible);
+	for (const type of REVEALS) doc.removeEventListener(type, onVisible);
 	waiting = false;
 
 	const held = deferred;
@@ -74,7 +79,7 @@ export function pageview(opts) {
 
 		if (!waiting) {
 			waiting = true;
-			doc.addEventListener("visibilitychange", onVisible);
+			for (const type of REVEALS) doc.addEventListener(type, onVisible);
 		}
 
 		return;
