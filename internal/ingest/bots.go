@@ -213,18 +213,20 @@ var embeddedEngines = []string{"; wv)", "electron/", "cros "}
 // This is the half of the rule that keeps it honest. A browser goes stale for
 // two completely different reasons: nobody is driving it, or the machine it is
 // on stopped being supported. The second is most of a real audience — Windows 7
-// froze at Chrome 109, macOS Catalina at 138, Android 7 at 119, a Fire tablet
-// at 106 — and every one of those is somebody with an older device rather than
-// a script.
+// froze at Chrome 109, Android 7 at 119, a Fire tablet at 106 — and every one
+// of those is somebody with an older device rather than a script.
 //
 // Judging the version alone cannot tell the two apart, and it gets worse over
 // time rather than better: a frozen population sits at a fixed version while
 // the floor keeps advancing, so the rule would gradually turn whole classes of
 // real visitor into bots. Requiring a platform that would have given them a
 // current browser is what makes an old version mean something.
+//
+// macOS is absent because it reports one frozen version for every Mac ever
+// made, so no entry here could ever match one. It is judged on MacVersionFloor
+// instead.
 var updatingPlatforms = map[string]int{
 	"Windows": 10,
-	"macOS":   11,
 	"Android": 10,
 }
 
@@ -243,6 +245,22 @@ var updatingPlatforms = map[string]int{
 // nothing to say so. Missing a few of the farm costs a number that is slightly
 // too high, which is visible and fixable.
 const OutdatedBy = 18
+
+// MacVersionFloor is the oldest browser major a Mac can honestly claim.
+//
+// macOS is judged on this instead of on OutdatedBy because it will not say what
+// it is: Chrome and Safari freeze the macOS version in the header at 10.15, so
+// a machine bought last week and one that stopped updating in 2019 send the
+// same string and updatingPlatforms can tell nothing from it. Every Mac that
+// has ever reached either of our own sites reports 10.15.
+//
+// The version is all that is left, and it only means something below every
+// point a real Mac can be stuck at. Chrome's last release for the oldest macOS
+// anybody still browses from was 49, and Edge for Mac never shipped below 79,
+// so 49 clears both. This is an absolute floor rather than a distance from the
+// current release on purpose — a distance creeps upward every four weeks and
+// would eventually swallow the frozen machines it exists to protect.
+const MacVersionFloor = 49
 
 // IsOutdatedBrowser reports whether a browser is so far behind its current
 // release that no self-updating install could still be on it.
@@ -269,7 +287,7 @@ func (f *BotFilter) IsOutdatedBrowser(agent useragent.Result, userAgent string) 
 		return false
 	}
 
-	if !updatingPlatform(agent.OS, agent.OSVersion) {
+	if agent.OS != "macOS" && !updatingPlatform(agent.OS, agent.OSVersion) {
 		return false
 	}
 
@@ -283,6 +301,10 @@ func (f *BotFilter) IsOutdatedBrowser(agent useragent.Result, userAgent string) 
 	major, ok := majorVersion(agent.BrowserVersion)
 	if !ok {
 		return false
+	}
+
+	if agent.OS == "macOS" {
+		return major < MacVersionFloor
 	}
 
 	return major < newest-OutdatedBy

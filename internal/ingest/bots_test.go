@@ -271,6 +271,42 @@ func TestOutdatedBrowsers(t *testing.T) {
 	}
 }
 
+// TestAMacIsJudgedOnTheFloorRatherThanTheDistance covers the hole macOS's frozen
+// version string left in the rule.
+//
+// Chrome and Safari report 10.15 for every Mac ever made, so the platform test
+// could never match one and the whole rule was switched off for every Mac that
+// has ever reached us. Measured over a week of real traffic it fired fourteen
+// times, all Windows and Android, while two visitors claiming Chrome 17 on a
+// Mac were counted as people.
+func TestAMacIsJudgedOnTheFloorRatherThanTheDistance(t *testing.T) {
+	filter := NewBotFilter()
+	filter.SetCurrentBrowsers(pinned)
+
+	mac := func(version string) string {
+		return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+			"(KHTML, like Gecko) Chrome/" + version + ".0.0.0 Safari/537.36"
+	}
+
+	// No Mac on the web runs a browser this old. These are typed headers.
+	for _, version := range []string{"17", "31", "48"} {
+		ua := mac(version)
+		if !filter.IsOutdatedBrowser(parseUA(t, ua), ua) {
+			t.Errorf("Chrome %s on a Mac was not recognised as outdated", version)
+		}
+	}
+
+	// Every one of these is a Mac somebody could still be sitting at, and the
+	// middle three are versions our own traffic carried in a single week. The
+	// ordinary distance rule would have taken all four.
+	for _, version := range []string{"49", "99", "127", "135"} {
+		ua := mac(version)
+		if filter.IsOutdatedBrowser(parseUA(t, ua), ua) {
+			t.Errorf("Chrome %s on a Mac was called outdated", version)
+		}
+	}
+}
+
 // TestRealPeopleOnOldEnginesAreLeftAlone is the false-positive guard, and it is
 // the test that matters most in this file.
 //
