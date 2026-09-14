@@ -711,7 +711,9 @@ func loadLegacyFoldChunk(ctx context.Context, tx *sql.Tx, cache *SessionCache, a
 			(SELECT MIN(e.timestamp) FROM events e JOIN dim_event_name n ON n.id = e.name_id
 			 WHERE e.session_id = s.id AND n.value = 'pageview'),
 			(SELECT MAX(e.timestamp) FROM events e JOIN dim_event_name n ON n.id = e.name_id
-			 WHERE e.session_id = s.id AND n.value = 'pageview')
+			 WHERE e.session_id = s.id AND n.value = 'pageview'),
+			EXISTS (SELECT 1 FROM events e JOIN dim_event_name n ON n.id = e.name_id
+			 WHERE e.session_id = s.id AND n.value = 'engagement')
 		FROM sessions s
 		LEFT JOIN ingest_session_state state ON state.session_id = s.id
 		LEFT JOIN dim_pathname entry_page ON entry_page.id = s.entry_page_id
@@ -752,6 +754,7 @@ func loadLegacyFoldChunk(ctx context.Context, tx *sql.Tx, cache *SessionCache, a
 			bounce              int
 			props               sql.NullString
 			firstPage, lastPage sql.NullInt64
+			engaged             int
 		)
 		if err := rows.Scan(
 			&key.siteID, &key.userID,
@@ -763,7 +766,7 @@ func loadLegacyFoldChunk(ctx context.Context, tx *sql.Tx, cache *SessionCache, a
 			&session.Country, &session.Region, &session.City,
 			&session.DeviceType, &session.ScreenSize, &session.Browser, &session.BrowserVersion,
 			&session.OS, &session.OSVersion, &session.Language,
-			&firstPage, &lastPage,
+			&firstPage, &lastPage, &engaged,
 		); err != nil {
 			return fmt.Errorf("write batch: read legacy session: %w", err)
 		}
@@ -776,6 +779,11 @@ func loadLegacyFoldChunk(ctx context.Context, tx *sql.Tx, cache *SessionCache, a
 		session.SiteID = key.siteID
 		session.UserID = key.userID
 		session.InteractiveNonPageview = bounce == 0 && session.Pageviews < 2
+
+		// AutomatedReason reads it, and a visit restored without it would be
+		// marked unengaged however much it was read.
+		session.Engaged = engaged != 0
+
 		session.FirstAt = session.StartedAt
 		session.EntryAt = maxInt64
 		session.ExitAt = minInt64
@@ -955,7 +963,13 @@ func decodeDurableEvent(payload []byte) (Event, error) {
 // deletes adopted orphans in the same transaction as their fact rows.
 func persistDurableFoldState(ctx context.Context, tx *sql.Tx, sessions []*Session, merges []Merge, adopted []uuid.UUID) error {
 	for _, session := range sessions {
-		payload, err := json.Marshal(session)
+		// Stored as what markAutomatedVisits leaves on the events in this same
+		// transaction. The snapshot itself keeps the old value, which is what
+		// that pass reads to know whether there is a mark to take back.
+		stored := *session
+		stored.Marked = session.AutomatedReason() != ""
+
+		payload, err := json.Marshal(stored)
 		if err != nil {
 			return fmt.Errorf("write batch: encode durable session: %w", err)
 		}
@@ -1245,7 +1259,7 @@ func (w *Writer) commitDurable(ctx context.Context, accountID int64, tx *sql.Tx,
 		}
 	}
 
-	if err := markPagelessVisits(ctx, tx, dirty, ids); err != nil {
+	if err := markAutomatedVisits(ctx, tx, dirty, ids); err != nil {
 		return err
 	}
 
@@ -1259,35 +1273,55 @@ func (w *Writer) commitDurable(ctx context.Context, accountID int64, tx *sql.Tx,
 	return nil
 }
 
-// markPagelessVisits classifies the events of every visit that could not have
-// come from a browser. It runs after the inserts so that one statement covers
-// both what this batch wrote and what earlier batches already left on disk —
-// the deciding event is usually not the first, so the rows that prove it are
-// generally already stored.
+// visitReasons selects the ids of the verdicts only a whole visit can reach, so
+// the statements below never touch a reason an individual event was given.
+const visitReasons = "(SELECT id FROM dim_bot_reason WHERE value IN ('" +
+	ReasonPagelessVisit + "', '" + ReasonUnengagedVisit + "'))"
+
+// markAutomatedVisits writes each dirty visit's AutomatedReason onto its events.
+// It runs after the inserts so that one statement covers both what this batch
+// wrote and what earlier batches already left on disk — the deciding event is
+// usually not the first, so the rows that prove it are generally already stored.
 //
 // The events are classified rather than deleted, like every other bot verdict:
 // a wrong call has to be something the customer can toggle back into view, not
-// something we destroyed on their behalf. Rows already carrying a reason keep
-// it, because the first answer is the more specific one.
-func markPagelessVisits(ctx context.Context, tx *sql.Tx, dirty []*Session, ids *dimensionIDs) error {
+// something we destroyed on their behalf. Rows already carrying a per-event
+// reason keep it, because the first answer is the more specific one.
+//
+// The verdict follows the visit in both directions. A late engagement ping or
+// pageview can clear it, and the same events have to end up with the same rows
+// whichever order they arrived in.
+func markAutomatedVisits(ctx context.Context, tx *sql.Tx, dirty []*Session, ids *dimensionIDs) error {
 	for _, session := range dirty {
-		if !session.LooksAutomated() {
+		verdict := session.AutomatedReason()
+
+		if verdict == "" {
+			if !session.Marked {
+				continue
+			}
+
+			if _, err := tx.ExecContext(ctx,
+				"UPDATE events SET bot_reason_id = 0 WHERE session_id = ? AND bot_reason_id IN "+visitReasons,
+				session.ID,
+			); err != nil {
+				return fmt.Errorf("write batch: clear automated visit: %w", err)
+			}
 			continue
 		}
 
 		// Zero is the id of the empty string, which is also what "not automated"
 		// is stored as, so an unresolved reason here would write the verdict as
 		// its own opposite and leave nothing to find.
-		reason := ids.of(intern.BotReason, ReasonPagelessVisit)
+		reason := ids.of(intern.BotReason, verdict)
 		if reason == intern.EmptyID {
-			return fmt.Errorf("write batch: mark pageless visit: %q was not interned", ReasonPagelessVisit)
+			return fmt.Errorf("write batch: mark automated visit: %q was not interned", verdict)
 		}
 
 		if _, err := tx.ExecContext(ctx,
-			"UPDATE events SET bot_reason_id = ? WHERE session_id = ? AND bot_reason_id = 0",
-			reason, session.ID,
+			"UPDATE events SET bot_reason_id = ? WHERE session_id = ? AND bot_reason_id <> ? AND (bot_reason_id = 0 OR bot_reason_id IN "+visitReasons+")",
+			reason, session.ID, reason,
 		); err != nil {
-			return fmt.Errorf("write batch: mark pageless visit: %w", err)
+			return fmt.Errorf("write batch: mark automated visit: %w", err)
 		}
 	}
 

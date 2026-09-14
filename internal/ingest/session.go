@@ -79,7 +79,7 @@ type Session struct {
 	// itself — a form submission, an outbound click, a file download, a 404 —
 	// arrived. Those handlers are attached while a page loads, so in a browser
 	// they always sit behind a pageview, and a visit holding one without a
-	// pageview is the signal LooksAutomated reads.
+	// pageview is the signal AutomatedReason reads.
 	AutomaticNonPageview bool
 
 	// Engaged records that an engagement ping arrived. A ping is proof the
@@ -87,6 +87,10 @@ type Session struct {
 	// fact that separates a visit opened by a real interaction from one a
 	// script posted straight to the endpoint.
 	Engaged bool
+
+	// Marked records that this visit's stored events carry its AutomatedReason,
+	// so the writer can take the verdict back when a later event clears it.
+	Marked bool
 
 	// CustomPathLo and CustomPathHi are the lowest and highest paths a
 	// non-pageview event has fired on, and empty when none has. Two strings
@@ -148,10 +152,18 @@ func (s *Session) IsBounce() bool {
 	return s.Pageviews < 2 && !s.InteractiveNonPageview
 }
 
-// LooksAutomated reports whether this visit could not have been made by a
-// browser running the tracker. Both rules below start from the same fact: the
-// tracker sends a pageview as the page loads, before any handler it wires up
-// can fire, so in a browser something always loaded first.
+// UnengagedPageviews is how many pages a visit from an identifiable browser can
+// load without one engagement ping before it is marked unengaged_visit. The
+// tracker pings as it leaves every page, but a second pageview in the same
+// second as the first is common in real visits and arrives before any ping.
+const UnengagedPageviews = 3
+
+// AutomatedReason returns the visit-level bot reason this visit has earned, or
+// an empty string for a person.
+//
+// A visit with no pageview is judged by pageless_visit. Both of its rules start
+// from the same fact: the tracker sends a pageview as the page loads, before any
+// handler it wires up can fire, so in a browser something always loaded first.
 //
 // The first rule is paths. Reaching a *second* path without loading either one
 // is not something a browser does, because moving between pages is what a page
@@ -171,16 +183,33 @@ func (s *Session) IsBounce() bool {
 // pinged or not. A long-lived single-page app can legitimately call the JS API
 // half an hour after the load that opened it, and what it calls is the site's
 // own code rather than a handler of ours that implies a page load.
-func (s *Session) LooksAutomated() bool {
-	if s.Pageviews > 0 {
-		return false
+//
+// A visit with pageviews is judged by unengaged_visit, and only when the viewport
+// width shows our tracker sent them. That tracker pings as it leaves every page,
+// so a visit that never pings was read by nobody: at UnengagedPageviews pages, or
+// at the first page when the user agent names no operating system. That second
+// case still needs the missing ping, because a proxy can strip a real browser's
+// user agent.
+func (s *Session) AutomatedReason() string {
+	if s.Pageviews == 0 {
+		if s.CustomPathLo != "" && s.CustomPathLo != s.CustomPathHi {
+			return ReasonPagelessVisit
+		}
+		if s.AutomaticNonPageview && !s.Engaged {
+			return ReasonPagelessVisit
+		}
+		return ""
 	}
 
-	if s.CustomPathLo != "" && s.CustomPathLo != s.CustomPathHi {
-		return true
+	if s.Engaged || s.ScreenSize == "" {
+		return ""
 	}
 
-	return s.AutomaticNonPageview && !s.Engaged
+	if s.OS == "" || s.Pageviews >= UnengagedPageviews {
+		return ReasonUnengagedVisit
+	}
+
+	return ""
 }
 
 // covers reports whether an event at this timestamp belongs to this session.

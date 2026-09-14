@@ -2531,3 +2531,131 @@ func TestPagelessVisitWithAPageviewIsLeftAlone(t *testing.T) {
 		t.Fatalf("%d sampled sessions were marked automated, want 0", got)
 	}
 }
+
+// trackedWriterEvent builds an event as our tracker sends it from a browser
+// that names its operating system.
+func trackedWriterEvent(name string, timestamp int64, path string) Event {
+	e := writerEvent(1, name, timestamp, path)
+	e.ScreenSize = ScreenLaptop
+	e.OS = "Android"
+
+	return e
+}
+
+// reasonRows counts the events of account 1 carrying one bot reason.
+func reasonRows(t *testing.T, manager *accounts.Manager, reason string) int64 {
+	t.Helper()
+
+	return countRows(t, manager, 1,
+		"SELECT COUNT(*) FROM events e JOIN dim_bot_reason r ON r.id = e.bot_reason_id WHERE r.value = '"+reason+"'")
+}
+
+// TestUnengagedVisitIsMarkedAndTakenBack writes a visit one event at a time.
+// The third unread page marks every page before it, and a ping that arrives
+// afterwards takes the whole verdict back, visit-grain fact included.
+func TestUnengagedVisitIsMarkedAndTakenBack(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+
+	base := fixtureStart.Unix()
+
+	for i, path := range []string{"/releases/1/", "/releases/2/", "/releases/3/"} {
+		if _, err := writer.Write(ctx, []Event{trackedWriterEvent(EventPageview, base+int64(i)*10, path)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := reasonRows(t, manager, ReasonUnengagedVisit); got != 3 {
+		t.Fatalf("%d events carry %s after three unread pages, want 3", got, ReasonUnengagedVisit)
+	}
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM session_sampling WHERE is_bot = 1"); got != 1 {
+		t.Fatalf("%d sampled sessions are marked automated, want 1", got)
+	}
+
+	if _, err := writer.Write(ctx, []Event{trackedWriterEvent(EventEngagement, base+25, "/releases/3/")}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events WHERE bot_reason_id <> 0"); got != 0 {
+		t.Fatalf("%d events still carry a bot reason after the visit reported reading, want 0", got)
+	}
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM session_sampling WHERE is_bot = 1"); got != 0 {
+		t.Fatalf("%d sampled sessions are still marked automated, want 0", got)
+	}
+}
+
+// TestClearingAVisitVerdictKeepsAnEventReason checks the visit-level statements
+// leave a per-event reason alone in both directions, and that the visit stays a
+// bot while one remains.
+func TestClearingAVisitVerdictKeepsAnEventReason(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+
+	base := fixtureStart.Unix()
+
+	flagged := trackedWriterEvent(EventPageview, base, "/")
+	flagged.BotReason = ReasonDatacenterIP
+
+	if _, err := writer.Write(ctx, []Event{
+		flagged,
+		trackedWriterEvent(EventPageview, base+10, "/pricing"),
+		trackedWriterEvent(EventPageview, base+20, "/features"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := reasonRows(t, manager, ReasonDatacenterIP); got != 1 {
+		t.Fatalf("%d events carry %s, want 1 — the visit verdict overwrote it", got, ReasonDatacenterIP)
+	}
+	if got := reasonRows(t, manager, ReasonUnengagedVisit); got != 2 {
+		t.Fatalf("%d events carry %s, want 2", got, ReasonUnengagedVisit)
+	}
+
+	if _, err := writer.Write(ctx, []Event{trackedWriterEvent(EventEngagement, base+25, "/features")}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := reasonRows(t, manager, ReasonDatacenterIP); got != 1 {
+		t.Fatalf("%d events carry %s after the clear, want 1", got, ReasonDatacenterIP)
+	}
+	if got := reasonRows(t, manager, ReasonUnengagedVisit); got != 0 {
+		t.Fatalf("%d events still carry %s, want 0", got, ReasonUnengagedVisit)
+	}
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM session_sampling WHERE is_bot = 1"); got != 1 {
+		t.Fatalf("%d sampled sessions are marked automated, want 1 — an event reason remains", got)
+	}
+}
+
+// TestPagelessVisitBecomesUnengaged covers a verdict changing reason. Custom
+// events with no page, then one unread page from a browser naming no operating
+// system, leave every event under the reason the visit holds now.
+func TestPagelessVisitBecomesUnengaged(t *testing.T) {
+	ctx := context.Background()
+	writer, manager := newWriter(t)
+
+	base := fixtureStart.Unix()
+
+	if _, err := writer.Write(ctx, []Event{
+		writerEvent(1, "signup", base+10, "/login"),
+		writerEvent(1, "signup", base+20, "/register"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := reasonRows(t, manager, ReasonPagelessVisit); got != 2 {
+		t.Fatalf("%d events carry %s, want 2", got, ReasonPagelessVisit)
+	}
+
+	page := trackedWriterEvent(EventPageview, base, "/")
+	page.OS = ""
+
+	if _, err := writer.Write(ctx, []Event{page}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := reasonRows(t, manager, ReasonPagelessVisit); got != 0 {
+		t.Fatalf("%d events still carry %s, want 0", got, ReasonPagelessVisit)
+	}
+	if got := reasonRows(t, manager, ReasonUnengagedVisit); got != 3 {
+		t.Fatalf("%d events carry %s, want 3", got, ReasonUnengagedVisit)
+	}
+}

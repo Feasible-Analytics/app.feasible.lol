@@ -315,7 +315,7 @@ func TestPagelessVisitOnTwoPathsLooksAutomated(t *testing.T) {
 		event("Form: Submission", 1020, "/register"),
 	})
 
-	if !session.LooksAutomated() {
+	if session.AutomatedReason() != ReasonPagelessVisit {
 		t.Fatalf("two paths and no pageview should look automated, got lo=%q hi=%q pageviews=%d",
 			session.CustomPathLo, session.CustomPathHi, session.Pageviews)
 	}
@@ -335,7 +335,7 @@ func TestRepeatedSubmitsOnOnePathAreAPerson(t *testing.T) {
 		event("Form: Submission", 1030, "/login"),
 	})
 
-	if session.LooksAutomated() {
+	if session.AutomatedReason() != "" {
 		t.Fatal("repeated submissions from a page that reported engagement are a person retrying, not a script")
 	}
 }
@@ -349,7 +349,7 @@ func TestSubmitsWithNoEngagementAreAScript(t *testing.T) {
 		event("Form: Submission", 1010, "/login"),
 	})
 
-	if !session.LooksAutomated() {
+	if session.AutomatedReason() != ReasonPagelessVisit {
 		t.Fatal("submissions with no pageview and no engagement should look automated")
 	}
 }
@@ -364,7 +364,7 @@ func TestManualEventsWithNoEngagementAreStillAPerson(t *testing.T) {
 		event("ran-screener", 1010, "/tools"),
 	})
 
-	if session.LooksAutomated() {
+	if session.AutomatedReason() != "" {
 		t.Fatal("manual events on one path are the site's own code, not a script posting to the endpoint")
 	}
 }
@@ -378,7 +378,7 @@ func TestAVisitWithAPageviewIsNeverAutomated(t *testing.T) {
 		event("signup", 1020, "/register"),
 	})
 
-	if session.LooksAutomated() {
+	if session.AutomatedReason() != "" {
 		t.Fatal("a visit that loaded a page is not automated")
 	}
 }
@@ -393,7 +393,7 @@ func TestEngagementDoesNotMakeAVisitLookAutomated(t *testing.T) {
 		event(EventEngagement, 1020, "/register"),
 	})
 
-	if session.LooksAutomated() {
+	if session.AutomatedReason() != "" {
 		t.Fatal("engagement pings should not widen the custom-event path range")
 	}
 }
@@ -418,9 +418,128 @@ func TestPagelessVerdictSurvivesAShuffle(t *testing.T) {
 			shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
 		})
 
-		if !applyAll(t, shuffled).LooksAutomated() {
+		if applyAll(t, shuffled).AutomatedReason() != ReasonPagelessVisit {
 			t.Fatalf("shuffle %d lost the verdict", attempt)
 		}
+	}
+}
+
+// trackedPageview builds a pageview as our tracker sends it from a browser that
+// names its operating system.
+func trackedPageview(timestamp int64, path string) Event {
+	e := event(EventPageview, timestamp, path)
+	e.ScreenSize = ScreenLaptop
+	e.OS = "Android"
+
+	return e
+}
+
+// TestUnreadPagesAreUnengaged is the release-notes crawler: page after page
+// loaded in the tracker and not one of them reported being read.
+func TestUnreadPagesAreUnengaged(t *testing.T) {
+	two := applyAll(t, []Event{
+		trackedPageview(1000, "/releases/1/"),
+		trackedPageview(1010, "/releases/2/"),
+	})
+	if got := two.AutomatedReason(); got != "" {
+		t.Fatalf("two unread pages got %q, want a person — a second pageview often lands before the first ping", got)
+	}
+
+	three := applyAll(t, []Event{
+		trackedPageview(1000, "/releases/1/"),
+		trackedPageview(1010, "/releases/2/"),
+		trackedPageview(1020, "/releases/3/"),
+	})
+	if got := three.AutomatedReason(); got != ReasonUnengagedVisit {
+		t.Fatalf("three unread pages got %q, want %q", got, ReasonUnengagedVisit)
+	}
+}
+
+// TestOnePingMakesAVisitAPerson checks a single engagement ping is enough,
+// however many pages the visit loaded.
+func TestOnePingMakesAVisitAPerson(t *testing.T) {
+	session := applyAll(t, []Event{
+		trackedPageview(1000, "/"),
+		trackedPageview(1010, "/pricing"),
+		event(EventEngagement, 1015, "/pricing"),
+		trackedPageview(1020, "/features"),
+		trackedPageview(1030, "/register"),
+	})
+
+	if got := session.AutomatedReason(); got != "" {
+		t.Fatalf("a visit that reported reading got %q, want a person", got)
+	}
+}
+
+// TestNoOperatingSystemIsUnengagedFromTheFirstPage is the policy checker that
+// opens /privacy/ with a user agent naming no platform and leaves unread.
+func TestNoOperatingSystemIsUnengagedFromTheFirstPage(t *testing.T) {
+	page := trackedPageview(1000, "/privacy/")
+	page.OS = ""
+
+	if got := applyAll(t, []Event{page}).AutomatedReason(); got != ReasonUnengagedVisit {
+		t.Fatalf("one unread page with no operating system got %q, want %q", got, ReasonUnengagedVisit)
+	}
+
+	read := applyAll(t, []Event{page, event(EventEngagement, 1030, "/privacy/")})
+	if got := read.AutomatedReason(); got != "" {
+		t.Fatalf("a stripped user agent that reported reading got %q, want a person", got)
+	}
+}
+
+// TestPagesFromAnotherSenderAreNeverUnengaged checks the rule stays with our
+// tracker. A sender that reports no viewport may never send engagement at all.
+func TestPagesFromAnotherSenderAreNeverUnengaged(t *testing.T) {
+	var stream []Event
+	for i := int64(0); i < 5; i++ {
+		page := event(EventPageview, 1000+i*10, "/page/"+strconv.FormatInt(i, 10))
+		stream = append(stream, page)
+	}
+
+	if got := applyAll(t, stream).AutomatedReason(); got != "" {
+		t.Fatalf("pageviews with no viewport got %q, want a person", got)
+	}
+}
+
+// TestUnengagedVerdictSurvivesAShuffle checks a ping decides the visit wherever
+// it lands in the stream, including before the pageviews it belongs to.
+func TestUnengagedVerdictSurvivesAShuffle(t *testing.T) {
+	pages := []Event{
+		trackedPageview(1000, "/a"),
+		trackedPageview(1010, "/b"),
+		trackedPageview(1020, "/c"),
+	}
+	read := append(append([]Event(nil), pages...), event(EventEngagement, 1005, "/a"))
+
+	random := rand.New(rand.NewSource(20260914))
+
+	for attempt := 0; attempt < 100; attempt++ {
+		for _, stream := range [][]Event{pages, read} {
+			shuffled := append([]Event(nil), stream...)
+			random.Shuffle(len(shuffled), func(i, j int) {
+				shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+			})
+
+			want := ReasonUnengagedVisit
+			if len(stream) == len(read) {
+				want = ""
+			}
+
+			if got := applyAll(t, shuffled).AutomatedReason(); got != want {
+				t.Fatalf("shuffle %d of %d events got %q, want %q", attempt, len(stream), got, want)
+			}
+		}
+	}
+}
+
+// TestAbsorbKeepsAMark checks a merge carries the mark with the events it
+// repoints, so the survivor can still take the verdict back.
+func TestAbsorbKeepsAMark(t *testing.T) {
+	survivor := &Session{FirstAt: maxInt64, EntryAt: maxInt64, ExitAt: minInt64}
+	survivor.absorb(&Session{Marked: true, FirstAt: maxInt64, EntryAt: maxInt64, ExitAt: minInt64})
+
+	if !survivor.Marked {
+		t.Fatal("the survivor lost the absorbed visit's mark")
 	}
 }
 

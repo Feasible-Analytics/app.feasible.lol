@@ -81,7 +81,7 @@ func (s *Session) fold(event *Event) {
 		// visitor who did nothing but read two pages look automated.
 
 		// Which paths this visit fired custom events on. Reaching a second one
-		// without ever loading a page is what LooksAutomated is asking about.
+		// without ever loading a page is what AutomatedReason is asking about.
 		s.widenCustomPaths(event.Pathname)
 
 		// A non-pageview interactive event ends a bounce on its own, which is
@@ -91,7 +91,7 @@ func (s *Session) fold(event *Event) {
 			s.InteractiveNonPageview = true
 		}
 
-		// Whether the tracker raised this event by itself. LooksAutomated reads
+		// Whether the tracker raised this event by itself. AutomatedReason reads
 		// it, because such an event needs a page load to have attached its
 		// handler and a manual one does not.
 		if event.IsTrackerAutomatic() {
@@ -244,6 +244,9 @@ func (s *Session) absorb(other *Session) {
 	s.InteractiveNonPageview = s.InteractiveNonPageview || other.InteractiveNonPageview
 	s.AutomaticNonPageview = s.AutomaticNonPageview || other.AutomaticNonPageview
 	s.Engaged = s.Engaged || other.Engaged
+
+	// The absorbed visit's events are repointed here, marks and all.
+	s.Marked = s.Marked || other.Marked
 
 	// Both ends of the absorbed range, so a visit that was briefly split into
 	// two rows is judged on everything it did rather than on half of it.

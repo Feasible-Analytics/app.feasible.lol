@@ -18,15 +18,15 @@ import (
 // `x-feasible-dropped` header and lands on the customer's ingestion health
 // panel, and a free-text reason would make both unqueryable.
 //
-// Six of these are classifications rather than deletions — bot, datacenter_ip,
-// referrer_spam, outdated_browser, automation and pageless_visit. The row is
-// still written with its bot_reason set and
+// Seven of these are classifications rather than deletions — bot, datacenter_ip,
+// referrer_spam, outdated_browser, automation, pageless_visit and
+// unengaged_visit. The row is still written with its bot_reason set and
 // the customer gets a toggle, because the incumbent deletes bot traffic before
 // storing it and a wrongly-classified visitor is then gone forever.
 //
-// pageless_visit is the one of those the derive path never returns: it
-// describes a whole visit rather than one event, so only the writer can reach
-// it, and it never travels back in the response header.
+// pageless_visit and unengaged_visit are the two the derive path never returns:
+// they describe a whole visit rather than one event, so only the writer can
+// reach them, and they never travel back in the response header.
 const (
 	ReasonHostnameNotAllowed = "hostname_not_allowed"
 	ReasonUnknownSite        = "unknown_site"
@@ -60,6 +60,7 @@ var Reasons = []string{
 	ReasonOutdatedBrowser,
 	ReasonAutomation,
 	ReasonPagelessVisit,
+	ReasonUnengagedVisit,
 	ReasonHostnameNotAllowed,
 	ReasonUnknownSite,
 	ReasonAccountDormant,
