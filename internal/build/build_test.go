@@ -31,3 +31,16 @@ func TestString(t *testing.T) {
 		}
 	}
 }
+
+// TestCurrent checks the endpoint shape carries the three stamped values.
+func TestCurrent(t *testing.T) {
+	original := []string{Version, Commit, Date}
+	defer func() { Version, Commit, Date = original[0], original[1], original[2] }()
+
+	Version, Commit, Date = "v1.2.3", "abc1234", "2026-08-30T00:00:00Z"
+
+	want := Info{Version: "v1.2.3", Commit: "abc1234", BuiltAt: "2026-08-30T00:00:00Z"}
+	if got := Current(); got != want {
+		t.Fatalf("Current() = %+v, want %+v", got, want)
+	}
+}

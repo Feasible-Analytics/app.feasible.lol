@@ -1,6 +1,6 @@
 //
 // server_test.go
-// Tests for the health probes and the graceful stop.
+// Tests for the health and version probes and the graceful stop.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -10,12 +10,14 @@ package httpserver
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/build"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
 )
 
@@ -78,6 +80,44 @@ func TestHealthProbes(t *testing.T) {
 	}
 	if code, _ := get(t, base+PathReady); code != http.StatusOK {
 		t.Errorf("readiness = %d, want 200", code)
+	}
+}
+
+// TestVersionReportsTheStampedBuild checks /version returns the link-time build
+// identity as JSON, ahead of whatever handler the process mounts.
+func TestVersionReportsTheStampedBuild(t *testing.T) {
+	original := []string{build.Version, build.Commit, build.Date}
+	defer func() { build.Version, build.Commit, build.Date = original[0], original[1], original[2] }()
+
+	build.Version, build.Commit, build.Date = "v0.0.38", "6c9dba3abcd1", "2026-09-14T18:45:46Z"
+
+	_, base := newTestServer(t, http.NotFoundHandler())
+
+	resp, err := http.Get(base + PathVersion) //nolint:noctx // a test against a loopback listener
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+
+	var got build.Info
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+
+	want := build.Info{Version: "v0.0.38", Commit: "6c9dba3abcd1", BuiltAt: "2026-09-14T18:45:46Z"}
+	if got != want {
+		t.Fatalf("body = %+v, want %+v", got, want)
 	}
 }
 
