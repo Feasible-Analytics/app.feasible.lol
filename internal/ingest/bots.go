@@ -39,6 +39,11 @@ const (
 	// one path. It is decided at the writer rather than here, because it is a
 	// fact about a whole visit and this file only ever sees a single event.
 	ReasonPagelessVisit = "pageless_visit"
+
+	// ReasonUnengagedVisit is a visit that loaded pages in our tracker and never
+	// once reported reading one. It is decided at the writer for the same reason
+	// pageless_visit is.
+	ReasonUnengagedVisit = "unengaged_visit"
 )
 
 // File names the lists are refreshed into. Every list goes stale — providers
