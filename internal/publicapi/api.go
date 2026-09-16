@@ -121,6 +121,12 @@ type API struct {
 	// that generated it and nowhere else.
 	BaseURL string
 
+	// ScriptBaseURL is the origin snippets load the tracker script from when it
+	// is not BaseURL — a cache in front of this application. Snippets built
+	// against it name the event endpoint, because the script otherwise reports
+	// to wherever it was loaded from.
+	ScriptBaseURL string
+
 	Log *logger.Logger
 
 	// SampleThreshold is how many repeated event and session fact-row reads a

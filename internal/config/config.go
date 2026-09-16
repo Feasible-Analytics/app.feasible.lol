@@ -184,6 +184,22 @@ type App struct {
 	// configurable because a self-hoster's "talk to us" address is not ours.
 	SalesEmail string
 
+	// ScriptBaseURL is the public origin snippets load the tracker script from,
+	// when it is not this application's own. A visitor's browser has never
+	// spoken to us before, so three round trips of connection setup happen
+	// before the script arrives, and anybody who leaves inside that window is
+	// never counted. Pointing this at a cache close to the visitor turns those
+	// round trips from a continent into a city.
+	//
+	// It covers the script alone. Events keep going to BaseURL, so the cache
+	// never sees a visitor's address, and the script that travels through it is
+	// public and identical for every visitor to a site.
+	//
+	// Empty — the normal state for a self-hosted install — serves the script
+	// from this application, and the script reports to the origin it was loaded
+	// from.
+	ScriptBaseURL string
+
 	// SlackWebhookURL receives our own commercial notices — a signup, a
 	// subscription starting or ending, an account closing. It is ours rather
 	// than a customer's, so it is not the customer webhook system; empty, the
@@ -711,6 +727,7 @@ func LoadFrom(l *Loader) (*Config, error) {
 			ShardID:          shardID,
 			MailFrom:         l.String("FEASIBLE_APP_MAIL_FROM", DefaultAppMailFrom),
 			SalesEmail:       l.String("FEASIBLE_APP_SALES_EMAIL", DefaultAppSalesEmail),
+			ScriptBaseURL:    strings.TrimRight(strings.TrimSpace(l.String("FEASIBLE_APP_SCRIPT_BASE_URL", "")), "/"),
 			SlackWebhookURL:  strings.TrimSpace(l.String("FEASIBLE_SLACK_WEBHOOK_URL", "")),
 			OperatorEmail:    strings.TrimSpace(l.String("FEASIBLE_OPERATOR_EMAIL", "")),
 			SecretKey:        strings.TrimSpace(l.String("FEASIBLE_APP_SECRET_KEY", "")),
@@ -958,6 +975,16 @@ func (c *Config) Validate() error {
 	base, err := url.Parse(c.App.BaseURL)
 	if err != nil || base.Scheme == "" || base.Host == "" {
 		return fmt.Errorf("FEASIBLE_APP_BASE_URL: %q is not an absolute URL", c.App.BaseURL)
+	}
+
+	// A relative or mistyped value here would be pasted into every customer's
+	// snippet, and the failure it produces is a script tag that loads nothing on
+	// somebody else's site.
+	if c.App.ScriptBaseURL != "" {
+		script, err := url.Parse(c.App.ScriptBaseURL)
+		if err != nil || script.Scheme == "" || script.Host == "" {
+			return fmt.Errorf("FEASIBLE_APP_SCRIPT_BASE_URL: %q is not an absolute URL", c.App.ScriptBaseURL)
+		}
 	}
 	// A malformed entry here is rejected rather than skipped. Silently ignoring
 	// one produces a deployment that reads as configured and still refuses every

@@ -119,7 +119,14 @@ type Handler struct {
 	DisableCommerce bool
 
 	BaseURL string
-	Log     *logger.Logger
+
+	// ScriptBaseURL is the origin snippets load the tracker script from when it
+	// is not BaseURL — a cache in front of this application. Snippets then name
+	// the event endpoint explicitly, because the script otherwise reports to
+	// wherever it was loaded from.
+	ScriptBaseURL string
+
+	Log *logger.Logger
 
 	// Slack announces commercial events to our own team chat: an account
 	// created, an account closed. Nil sends nothing, which is what a
@@ -191,6 +198,7 @@ type Options struct {
 	DisableRegistration bool
 	DisableCommerce     bool
 	BaseURL             string
+	ScriptBaseURL       string
 	Log                 *logger.Logger
 	Slack               *slack.Notifier
 
@@ -245,6 +253,7 @@ func NewHandler(opts Options) (*Handler, error) {
 		DisableRegistration: opts.DisableRegistration,
 		DisableCommerce:     opts.DisableCommerce,
 		BaseURL:             strings.TrimRight(opts.BaseURL, "/"),
+		ScriptBaseURL:       strings.TrimRight(opts.ScriptBaseURL, "/"),
 		Log:                 opts.Log,
 		Slack:               opts.Slack,
 		Verifier:            opts.OutboundPolicy.NewClient(verifyTimeout),

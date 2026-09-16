@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -47,14 +48,20 @@ const RoutingDelay = 15 * time.Second
 // individually, so a customer proxying a single well-known filename loses their
 // traffic the day it is listed; a token that differs per site means one listing
 // costs one site.
-func Snippet(baseURL string, keyer *tracker.Keyer, site *Site) string {
+func Snippet(baseURL, scriptBaseURL string, keyer *tracker.Keyer, site *Site) string {
 	base := strings.TrimRight(baseURL, "/")
 
 	if keyer == nil {
-		return SnippetLegacy(baseURL, site)
+		return SnippetLegacy(baseURL, scriptBaseURL, site)
 	}
 
-	return fmt.Sprintf("%s\n"+`<script defer src="%s%s"></script>`, tracker.QueueStub, base, keyer.Path(site.Domain))
+	source := scriptSource(base, scriptBaseURL) + keyer.Path(site.Domain)
+
+	if endpoint := eventEndpoint(base, scriptBaseURL); endpoint != "" {
+		source += "?api=" + url.QueryEscape(endpoint)
+	}
+
+	return fmt.Sprintf("%s\n"+`<script defer src="%s"></script>`, tracker.QueueStub, source)
 }
 
 // SnippetLegacy renders the attribute-carrying variant.
@@ -63,9 +70,41 @@ func Snippet(baseURL string, keyer *tracker.Keyer, site *Site) string {
 // shape an existing installation already has, so somebody migrating changes one
 // hostname and nothing else. It is also what a tag manager needs, where the
 // script tag is pasted into a field that may strip an opaque path.
-func SnippetLegacy(baseURL string, site *Site) string {
-	return fmt.Sprintf("%s\n"+`<script defer data-domain="%s" src="%s%s"></script>`,
-		tracker.QueueStub, site.Domain, strings.TrimRight(baseURL, "/"), tracker.PathLegacy)
+func SnippetLegacy(baseURL, scriptBaseURL string, site *Site) string {
+	base := strings.TrimRight(baseURL, "/")
+	attributes := `defer data-domain="` + site.Domain + `"`
+
+	if endpoint := eventEndpoint(base, scriptBaseURL); endpoint != "" {
+		attributes += ` data-api="` + endpoint + `"`
+	}
+
+	return fmt.Sprintf("%s\n"+`<script %s src="%s%s"></script>`,
+		tracker.QueueStub, attributes, scriptSource(base, scriptBaseURL), tracker.PathLegacy)
+}
+
+// scriptSource picks the origin the script tag points at.
+func scriptSource(baseURL, scriptBaseURL string) string {
+	if script := strings.TrimRight(scriptBaseURL, "/"); script != "" {
+		return script
+	}
+
+	return baseURL
+}
+
+// eventEndpoint names where the script reports, and is empty when the script's
+// own origin is the right answer.
+//
+// The script defaults to reporting to wherever it was loaded from, which is what
+// makes a customer's reverse proxy work with nothing else to configure. That
+// default is wrong in exactly one case: when we serve the script from a cache in
+// front of this application, because events must reach us rather than the cache.
+func eventEndpoint(baseURL, scriptBaseURL string) string {
+	script := strings.TrimRight(scriptBaseURL, "/")
+	if script == "" || script == baseURL {
+		return ""
+	}
+
+	return baseURL + "/api/event"
 }
 
 // InstallPlatform is one set of paste-this-here instructions.

@@ -44,7 +44,7 @@ func TestSnippetUsesThePerSiteToken(t *testing.T) {
 
 	keyer := tracker.NewKeyer(make([]byte, tracker.SecretSize), nil)
 
-	snippet := Snippet("https://feasible.lol", keyer, site)
+	snippet := Snippet("https://feasible.lol", "", keyer, site)
 
 	if strings.Contains(snippet, tracker.PathLegacy) {
 		t.Errorf("the default snippet should use the per-site path: %s", snippet)
@@ -56,10 +56,46 @@ func TestSnippetUsesThePerSiteToken(t *testing.T) {
 
 	// The legacy variant is offered too, because it is the exact shape an
 	// existing installation already has and what a tag manager needs.
-	legacy := SnippetLegacy("https://feasible.lol", site)
+	legacy := SnippetLegacy("https://feasible.lol", "", site)
 
 	if !strings.Contains(legacy, `data-domain="example.com"`) {
 		t.Errorf("the legacy snippet should carry data-domain: %s", legacy)
+	}
+}
+
+// TestSnippetNamesTheEventEndpointWhenTheScriptComesFromElsewhere checks the one
+// case where the script's own origin is the wrong place to report to.
+//
+// The script defaults to posting back to wherever it was loaded from. Served
+// from a read-only cache in front of us, that default sends every event to the
+// cache, which answers reads and nothing else — a site that loads the script
+// perfectly and counts nobody.
+func TestSnippetNamesTheEventEndpointWhenTheScriptComesFromElsewhere(t *testing.T) {
+	site := &Site{Domain: "example.com"}
+	keyer := tracker.NewKeyer(make([]byte, tracker.SecretSize), nil)
+
+	snippet := Snippet("https://app.feasible.lol", "https://js.feasible.lol", keyer, site)
+
+	if !strings.Contains(snippet, `src="https://js.feasible.lol/js/`) {
+		t.Errorf("the script should load from the script origin: %s", snippet)
+	}
+
+	if !strings.Contains(snippet, "api=https%3A%2F%2Fapp.feasible.lol%2Fapi%2Fevent") {
+		t.Errorf("the snippet should name the event endpoint: %s", snippet)
+	}
+
+	legacy := SnippetLegacy("https://app.feasible.lol", "https://js.feasible.lol", site)
+
+	if !strings.Contains(legacy, `data-api="https://app.feasible.lol/api/event"`) {
+		t.Errorf("the legacy snippet should name the event endpoint: %s", legacy)
+	}
+
+	// Same origin for both is the ordinary install, and it must stay silent
+	// about the endpoint: naming one is what breaks a customer's own proxy.
+	plain := Snippet("https://app.feasible.lol", "https://app.feasible.lol/", keyer, site)
+
+	if strings.Contains(plain, "api=") {
+		t.Errorf("a script served from this application should not name an endpoint: %s", plain)
 	}
 }
 
@@ -285,9 +321,9 @@ func TestBothSnippetsCarryTheQueueStub(t *testing.T) {
 	site := &Site{Domain: "example.com"}
 
 	for name, snippet := range map[string]string{
-		"the per-site snippet":      Snippet("https://feasible.lol", keyer, site),
-		"the legacy snippet":        SnippetLegacy("https://feasible.lol", site),
-		"the snippet with no keyer": Snippet("https://feasible.lol", nil, site),
+		"the per-site snippet":      Snippet("https://feasible.lol", "", keyer, site),
+		"the legacy snippet":        SnippetLegacy("https://feasible.lol", "", site),
+		"the snippet with no keyer": Snippet("https://feasible.lol", "", nil, site),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if !strings.Contains(snippet, tracker.QueueStub) {
@@ -355,7 +391,7 @@ func TestVerifyReadsTheScriptTagAndNotTheStub(t *testing.T) {
 		body string
 		want VerifyOutcome
 	}{
-		"the whole snippet": {SnippetLegacy("https://feasible.lol", site), VerifyFound},
+		"the whole snippet": {SnippetLegacy("https://feasible.lol", "", site), VerifyFound},
 		"the stub alone":    {tracker.QueueStub, VerifyMissing},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -402,7 +438,7 @@ func TestAPolicyThatRefusesInlineScriptsIsReported(t *testing.T) {
 		"no policy at all": {"", false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			page := "<html><head>" + SnippetLegacy("https://feasible.lol", site) + "</head><body></body></html>"
+			page := "<html><head>" + SnippetLegacy("https://feasible.lol", "", site) + "</head><body></body></html>"
 
 			result := verifyAgainst(t, func(w http.ResponseWriter, r *http.Request) {
 				if test.policy != "" {

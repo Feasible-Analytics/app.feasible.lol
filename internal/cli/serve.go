@@ -409,6 +409,7 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 		DisableRegistration: !e.cfg.App.Hosted,
 		DisableCommerce:     !e.cfg.App.Hosted,
 		BaseURL:             e.cfg.App.BaseURL,
+		ScriptBaseURL:       e.cfg.App.ScriptBaseURL,
 		Log:                 e.log,
 		Slack:               e.slack,
 		OutboundPolicy:      outbound.PolicyFor(e.cfg),
