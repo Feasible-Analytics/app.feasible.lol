@@ -32,8 +32,8 @@ func (h *Handler) showOnboarding(w http.ResponseWriter, r *http.Request) {
 	}
 	p.Data["Site"] = site
 	p.Data["FirstRun"] = firstRun
-	p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
-	p.Data["SnippetLegacy"] = SnippetLegacy(h.BaseURL, site)
+	p.Data["Snippet"] = Snippet(h.BaseURL, h.ScriptBaseURL, h.Keyer, site)
+	p.Data["SnippetLegacy"] = SnippetLegacy(h.BaseURL, h.ScriptBaseURL, site)
 	p.Data["Platforms"] = InstallPlatforms()
 	p.Data["PollMillis"] = int(FirstEventPollInterval.Milliseconds())
 	p.Data["RoutingDelay"] = int(RoutingDelay.Seconds())
@@ -117,8 +117,8 @@ func (h *Handler) doVerifyInstall(w http.ResponseWriter, r *http.Request) {
 
 		p := h.newPage(r, tr(r, "auth.title.onboarding", "site", site.Label()), "sites")
 		p.Data["Site"] = site
-		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
-		p.Data["SnippetLegacy"] = SnippetLegacy(h.BaseURL, site)
+		p.Data["Snippet"] = Snippet(h.BaseURL, h.ScriptBaseURL, h.Keyer, site)
+		p.Data["SnippetLegacy"] = SnippetLegacy(h.BaseURL, h.ScriptBaseURL, site)
 		p.Data["Platforms"] = InstallPlatforms()
 		p.Data["PollMillis"] = int(FirstEventPollInterval.Milliseconds())
 		p.Data["RoutingDelay"] = int(RoutingDelay.Seconds())
@@ -142,8 +142,8 @@ func (h *Handler) doVerifyInstall(w http.ResponseWriter, r *http.Request) {
 	}
 	p.Data["Site"] = site
 	p.Data["FirstRun"] = firstRun
-	p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
-	p.Data["SnippetLegacy"] = SnippetLegacy(h.BaseURL, site)
+	p.Data["Snippet"] = Snippet(h.BaseURL, h.ScriptBaseURL, h.Keyer, site)
+	p.Data["SnippetLegacy"] = SnippetLegacy(h.BaseURL, h.ScriptBaseURL, site)
 	p.Data["Platforms"] = InstallPlatforms()
 	p.Data["PollMillis"] = int(FirstEventPollInterval.Milliseconds())
 	p.Data["RoutingDelay"] = int(RoutingDelay.Seconds())

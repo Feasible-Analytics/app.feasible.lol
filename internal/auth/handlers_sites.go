@@ -400,7 +400,7 @@ func (h *Handler) showSiteSettings(w http.ResponseWriter, r *http.Request) {
 	p.Data["Site"] = site
 	p.Data["Folders"] = folders
 	p.Data["Timezones"] = CommonTimezones()
-	p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
+	p.Data["Snippet"] = Snippet(h.BaseURL, h.ScriptBaseURL, h.Keyer, site)
 	p.Data["DualWrite"] = site.DualWriteActive(h.Store.Now())
 	p.Data["DualWriteHours"] = int(DualWriteWindow.Hours())
 	p.Data["TransferTeams"] = h.transferDestinations(r.Context(), userFrom(r).ID, team.ID)
@@ -627,7 +627,7 @@ func (h *Handler) doSiteGeneral(w http.ResponseWriter, r *http.Request) {
 		p.Settings = h.settingsShell(r, p, site, team.ID)
 		p.Data["Site"] = site
 		p.Data["Timezones"] = CommonTimezones()
-		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
+		p.Data["Snippet"] = Snippet(h.BaseURL, h.ScriptBaseURL, h.Keyer, site)
 		p.Data["DualWriteHours"] = int(DualWriteWindow.Hours())
 
 		if errors.Is(err, ErrNotFound) {
@@ -672,7 +672,7 @@ func (h *Handler) doSiteDomain(w http.ResponseWriter, r *http.Request) {
 		p.Settings = h.settingsShell(r, p, site, team.ID)
 		p.Data["Site"] = site
 		p.Data["Timezones"] = CommonTimezones()
-		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
+		p.Data["Snippet"] = Snippet(h.BaseURL, h.ScriptBaseURL, h.Keyer, site)
 		p.Data["DualWriteHours"] = int(DualWriteWindow.Hours())
 
 		if errors.Is(err, ErrDomainTaken) {
@@ -711,7 +711,7 @@ func (h *Handler) doSiteReset(w http.ResponseWriter, r *http.Request) {
 		p.Settings = h.settingsShell(r, p, site, team.ID)
 		p.Data["Site"] = site
 		p.Data["Timezones"] = CommonTimezones()
-		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
+		p.Data["Snippet"] = Snippet(h.BaseURL, h.ScriptBaseURL, h.Keyer, site)
 		p.Data["DualWriteHours"] = int(DualWriteWindow.Hours())
 		p.Error = i18n.T(p.Lang, "auth.error.confirm_reset")
 
@@ -750,7 +750,7 @@ func (h *Handler) doSiteDelete(w http.ResponseWriter, r *http.Request) {
 		p.Settings = h.settingsShell(r, p, site, team.ID)
 		p.Data["Site"] = site
 		p.Data["Timezones"] = CommonTimezones()
-		p.Data["Snippet"] = Snippet(h.BaseURL, h.Keyer, site)
+		p.Data["Snippet"] = Snippet(h.BaseURL, h.ScriptBaseURL, h.Keyer, site)
 		p.Data["DualWriteHours"] = int(DualWriteWindow.Hours())
 		p.Error = i18n.T(p.Lang, "auth.error.confirm_delete")
 

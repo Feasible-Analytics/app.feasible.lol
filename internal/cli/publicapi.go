@@ -91,6 +91,7 @@ func buildPublic(e *env, control *sql.DB, cache *sites.Cache, manager *accounts.
 		Webhooks:         hooks,
 		Dispatcher:       dispatcher,
 		BaseURL:          e.cfg.App.BaseURL,
+		ScriptBaseURL:    e.cfg.App.ScriptBaseURL,
 		Log:              e.log,
 		SampleThreshold:  e.cfg.API.QuerySampleThreshold,
 	}

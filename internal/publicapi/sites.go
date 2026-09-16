@@ -448,7 +448,7 @@ func (a *API) handleGetTracker(w http.ResponseWriter, r *http.Request) {
 	a.write(w, http.StatusOK, map[string]any{
 		"site_id": site.Domain,
 		"config":  config,
-		"snippet": trackerSnippet(a.BaseURL, site.Domain, config),
+		"snippet": trackerSnippet(a.BaseURL, a.ScriptBaseURL, site.Domain, config),
 	})
 }
 
@@ -477,7 +477,7 @@ func (a *API) handleUpdateTracker(w http.ResponseWriter, r *http.Request) {
 	a.write(w, http.StatusOK, map[string]any{
 		"site_id": site.Domain,
 		"config":  config,
-		"snippet": trackerSnippet(a.BaseURL, site.Domain, &config),
+		"snippet": trackerSnippet(a.BaseURL, a.ScriptBaseURL, site.Domain, &config),
 	})
 }
 
@@ -488,9 +488,15 @@ func (a *API) handleUpdateTracker(w http.ResponseWriter, r *http.Request) {
 // Every value is escaped: a quote in an excluded-pages pattern would otherwise
 // end the attribute early and hand the customer a snippet that silently
 // tracks with the wrong settings.
-func trackerSnippet(baseURL, domain string, config *TrackerConfig) string {
+func trackerSnippet(baseURL, scriptBaseURL, domain string, config *TrackerConfig) string {
 	if baseURL == "" {
 		baseURL = "https://feasible.lol"
+	}
+
+	baseURL = strings.TrimRight(baseURL, "/")
+	source := strings.TrimRight(scriptBaseURL, "/")
+	if source == "" {
+		source = baseURL
 	}
 
 	attributes := []string{
@@ -498,8 +504,17 @@ func trackerSnippet(baseURL, domain string, config *TrackerConfig) string {
 		`data-domain="` + html.EscapeString(domain) + `"`,
 	}
 
-	if config.APIEndpoint != "" {
-		attributes = append(attributes, `data-api="`+html.EscapeString(config.APIEndpoint)+`"`)
+	endpoint := config.APIEndpoint
+
+	// A script served from a cache in front of us would otherwise report to the
+	// cache, which answers reads and nothing else. The customer's own choice
+	// still wins: they may be proxying the script themselves.
+	if endpoint == "" && source != baseURL {
+		endpoint = baseURL + "/api/event"
+	}
+
+	if endpoint != "" {
+		attributes = append(attributes, `data-api="`+html.EscapeString(endpoint)+`"`)
 	}
 	// Each flag carries an explicit value, and the localhost one carries the
 	// hyphenated name. The script reads a flag with `getAttribute`, which hands
