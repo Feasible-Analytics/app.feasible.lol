@@ -63,39 +63,40 @@ func TestSnippetUsesThePerSiteToken(t *testing.T) {
 	}
 }
 
-// TestSnippetNamesTheEventEndpointWhenTheScriptComesFromElsewhere checks the one
-// case where the script's own origin is the wrong place to report to.
+// TestSnippetIsOneURLWithNothingElseToSet checks that pointing the script at a
+// cache changes the host and nothing else.
 //
-// The script defaults to posting back to wherever it was loaded from. Served
-// from a read-only cache in front of us, that default sends every event to the
-// cache, which answers reads and nothing else — a site that loads the script
-// perfectly and counts nobody.
-func TestSnippetNamesTheEventEndpointWhenTheScriptComesFromElsewhere(t *testing.T) {
+// The snippet must never name an endpoint of its own. The script reports to
+// wherever it was loaded from, which is what makes a customer's reverse proxy
+// work untouched, and a second URL in the tag is a second thing to paste wrong.
+func TestSnippetIsOneURLWithNothingElseToSet(t *testing.T) {
 	site := &Site{Domain: "example.com"}
 	keyer := tracker.NewKeyer(make([]byte, tracker.SecretSize), nil)
 
-	snippet := Snippet("https://app.feasible.lol", "https://js.feasible.lol", keyer, site)
+	snippet := Snippet("https://app.feasible.lol", "https://cdn.feasible.lol", keyer, site)
 
-	if !strings.Contains(snippet, `src="https://js.feasible.lol/js/`) {
+	if !strings.Contains(snippet, `src="https://cdn.feasible.lol/js/`) {
 		t.Errorf("the script should load from the script origin: %s", snippet)
 	}
 
-	if !strings.Contains(snippet, "api=https%3A%2F%2Fapp.feasible.lol%2Fapi%2Fevent") {
-		t.Errorf("the snippet should name the event endpoint: %s", snippet)
+	for _, unwanted := range []string{"api=", "data-api"} {
+		if strings.Contains(snippet, unwanted) {
+			t.Errorf("the snippet should carry no endpoint (%s): %s", unwanted, snippet)
+		}
 	}
 
-	legacy := SnippetLegacy("https://app.feasible.lol", "https://js.feasible.lol", site)
+	legacy := SnippetLegacy("https://app.feasible.lol", "https://cdn.feasible.lol", site)
 
-	if !strings.Contains(legacy, `data-api="https://app.feasible.lol/api/event"`) {
-		t.Errorf("the legacy snippet should name the event endpoint: %s", legacy)
+	if !strings.Contains(legacy, `src="https://cdn.feasible.lol/js/`) || strings.Contains(legacy, "data-api") {
+		t.Errorf("the legacy snippet should load from the script origin and name no endpoint: %s", legacy)
 	}
 
-	// Same origin for both is the ordinary install, and it must stay silent
-	// about the endpoint: naming one is what breaks a customer's own proxy.
-	plain := Snippet("https://app.feasible.lol", "https://app.feasible.lol/", keyer, site)
+	// With nothing configured the application serves its own script, which is
+	// every self-hosted install.
+	plain := Snippet("https://app.feasible.lol", "", keyer, site)
 
-	if strings.Contains(plain, "api=") {
-		t.Errorf("a script served from this application should not name an endpoint: %s", plain)
+	if !strings.Contains(plain, `src="https://app.feasible.lol/js/`) {
+		t.Errorf("an unconfigured install should serve its own script: %s", plain)
 	}
 }
 

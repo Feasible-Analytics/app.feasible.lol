@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -57,10 +56,6 @@ func Snippet(baseURL, scriptBaseURL string, keyer *tracker.Keyer, site *Site) st
 
 	source := scriptSource(base, scriptBaseURL) + keyer.Path(site.Domain)
 
-	if endpoint := eventEndpoint(base, scriptBaseURL); endpoint != "" {
-		source += "?api=" + url.QueryEscape(endpoint)
-	}
-
 	return fmt.Sprintf("%s\n"+`<script defer src="%s"></script>`, tracker.QueueStub, source)
 }
 
@@ -72,39 +67,23 @@ func Snippet(baseURL, scriptBaseURL string, keyer *tracker.Keyer, site *Site) st
 // script tag is pasted into a field that may strip an opaque path.
 func SnippetLegacy(baseURL, scriptBaseURL string, site *Site) string {
 	base := strings.TrimRight(baseURL, "/")
-	attributes := `defer data-domain="` + site.Domain + `"`
 
-	if endpoint := eventEndpoint(base, scriptBaseURL); endpoint != "" {
-		attributes += ` data-api="` + endpoint + `"`
-	}
-
-	return fmt.Sprintf("%s\n"+`<script %s src="%s%s"></script>`,
-		tracker.QueueStub, attributes, scriptSource(base, scriptBaseURL), tracker.PathLegacy)
+	return fmt.Sprintf("%s\n"+`<script defer data-domain="%s" src="%s%s"></script>`,
+		tracker.QueueStub, site.Domain, scriptSource(base, scriptBaseURL), tracker.PathLegacy)
 }
 
 // scriptSource picks the origin the script tag points at.
+//
+// Whatever it names has to answer /api/event as well as serve the file, because
+// the script reports to wherever it was loaded from. That default is what makes
+// a customer's own reverse proxy work with nothing else to configure, and
+// keeping it means the snippet stays one URL with nothing to get half-right.
 func scriptSource(baseURL, scriptBaseURL string) string {
 	if script := strings.TrimRight(scriptBaseURL, "/"); script != "" {
 		return script
 	}
 
 	return baseURL
-}
-
-// eventEndpoint names where the script reports, and is empty when the script's
-// own origin is the right answer.
-//
-// The script defaults to reporting to wherever it was loaded from, which is what
-// makes a customer's reverse proxy work with nothing else to configure. That
-// default is wrong in exactly one case: when we serve the script from a cache in
-// front of this application, because events must reach us rather than the cache.
-func eventEndpoint(baseURL, scriptBaseURL string) string {
-	script := strings.TrimRight(scriptBaseURL, "/")
-	if script == "" || script == baseURL {
-		return ""
-	}
-
-	return baseURL + "/api/event"
 }
 
 // InstallPlatform is one set of paste-this-here instructions.
