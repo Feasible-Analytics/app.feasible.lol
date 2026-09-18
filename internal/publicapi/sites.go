@@ -532,7 +532,7 @@ func trackerSnippet(baseURL, scriptBaseURL, domain string, config *TrackerConfig
 	// different snippet from the screen beside it would read as a bug in one of
 	// them, and the one without the stub loses events fired before load.
 	return tracker.QueueStub + "\n" + `<script ` + strings.Join(attributes, " ") + ` src="` +
-		html.EscapeString(strings.TrimRight(baseURL, "/")) + `/js/script.js"></script>`
+		html.EscapeString(source) + `/js/script.js"></script>`
 }
 
 // handleListCustomProps lists a site's allowed properties.

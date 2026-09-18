@@ -171,6 +171,29 @@ func TestListSitesPaginatesAtAHundred(t *testing.T) {
 	}
 }
 
+// TestTrackerSnippetLoadsFromTheScriptOrigin checks that the snippet this API
+// hands out points at the same place the dashboard's does.
+//
+// Two screens describing one installation have to agree. A snippet that names
+// the application while the dashboard names the cache is not a slower install,
+// it is a second answer to the same question, and whichever one the customer
+// happens to copy is the one they will be debugging later.
+func TestTrackerSnippetLoadsFromTheScriptOrigin(t *testing.T) {
+	cached := trackerSnippet("https://app.feasible.lol", "https://cdn.feasible.lol", "example.com", &TrackerConfig{})
+
+	if !strings.Contains(cached, `src="https://cdn.feasible.lol/js/script.js"`) {
+		t.Errorf("snippet should load from the script origin: %s", cached)
+	}
+
+	// Nothing configured is every self-hosted install: the application serves
+	// its own script.
+	plain := trackerSnippet("https://app.feasible.lol", "", "example.com", &TrackerConfig{})
+
+	if !strings.Contains(plain, `src="https://app.feasible.lol/js/script.js"`) {
+		t.Errorf("snippet should fall back to this application: %s", plain)
+	}
+}
+
 // TestTrackerConfigRoundTrips checks the per-site script configuration and the
 // snippet built from it, which is the thing a customer actually copies.
 func TestTrackerConfigRoundTrips(t *testing.T) {
