@@ -504,17 +504,8 @@ func trackerSnippet(baseURL, scriptBaseURL, domain string, config *TrackerConfig
 		`data-domain="` + html.EscapeString(domain) + `"`,
 	}
 
-	endpoint := config.APIEndpoint
-
-	// A script served from a cache in front of us would otherwise report to the
-	// cache, which answers reads and nothing else. The customer's own choice
-	// still wins: they may be proxying the script themselves.
-	if endpoint == "" && source != baseURL {
-		endpoint = baseURL + "/api/event"
-	}
-
-	if endpoint != "" {
-		attributes = append(attributes, `data-api="`+html.EscapeString(endpoint)+`"`)
+	if config.APIEndpoint != "" {
+		attributes = append(attributes, `data-api="`+html.EscapeString(config.APIEndpoint)+`"`)
 	}
 	// Each flag carries an explicit value, and the localhost one carries the
 	// hyphenated name. The script reads a flag with `getAttribute`, which hands
