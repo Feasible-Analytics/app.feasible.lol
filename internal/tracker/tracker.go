@@ -112,15 +112,22 @@ const (
 	siteSuffix = ".js"
 )
 
-// CacheControl is how long a browser may keep the script.
+// CacheControl is how long the script may be kept, and the two halves are
+// deliberately different.
 //
-// One hour is a deliberate compromise. Caching it for a year would be free
-// bandwidth, but a tracker bug then lives in browser caches for a year — and
-// every hard-won lesson in this package is a story that ends with "old scripts
-// stay in caches for months". One hour means a fix reaches everybody within the
-// hour, and an ETag means the hourly revalidation is a 304 rather than a
-// download.
-const CacheControl = "public, max-age=3600"
+// A browser gets an hour. Caching it for a year would be free bandwidth, but a
+// tracker bug then lives in browser caches for a year — and every hard-won
+// lesson in this package is a story that ends with "old scripts stay in caches
+// for months". Nothing can reach a file already sitting in somebody's browser,
+// so that number is the one that has to stay small. An ETag makes the hourly
+// recheck a 304 rather than a download.
+//
+// A shared cache gets a day, because a shared cache can be emptied on demand and
+// a deployment does exactly that. The reason to want the longer number is a site
+// with ordinary traffic: a few dozen requests an hour spread across hundreds of
+// edges means most visitors are the first at their own edge within the hour, and
+// a cache nobody is warm in is a cache that is not helping anyone.
+const CacheControl = "public, max-age=3600, s-maxage=86400"
 
 // DomainSource is the routing map this handler reads to turn a per-site token
 // back into a domain. It is an interface rather than the concrete site cache so
