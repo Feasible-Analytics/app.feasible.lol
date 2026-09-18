@@ -15,8 +15,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeSites is a routing map with a fixed domain list.
@@ -148,6 +150,57 @@ func TestLegacyScriptIsServedUnconfigured(t *testing.T) {
 	if got := recorder.Header().Get("Content-Type"); !strings.Contains(got, "javascript") {
 		t.Fatalf("content type %q is not JavaScript", got)
 	}
+}
+
+// TestBrowsersAreCachedForLessTimeThanSharedCaches pins the two halves of the
+// cache header, which are different on purpose and easy to collapse into one.
+//
+// A shared cache can be emptied on demand and a deployment does exactly that, so
+// it may hold the script for a day. A browser cannot be reached at all once it
+// has a copy, so a bug shipped into one lives there until it expires. Raising
+// the browser number to match, or dropping the shared one, is the mistake this
+// catches — and either way the symptom is silence, because a stale tracker looks
+// exactly like a working one.
+func TestBrowsersAreCachedForLessTimeThanSharedCaches(t *testing.T) {
+	browser, shared := cacheSeconds(t, CacheControl)
+
+	if browser > time.Hour {
+		t.Errorf("a browser may keep the script for %s; a fix cannot reach one that already has a copy", browser)
+	}
+
+	if shared <= browser {
+		t.Errorf("shared caches keep the script for %s against a browser's %s, so the edge is no warmer than a browser", shared, browser)
+	}
+}
+
+// cacheSeconds reads max-age and s-maxage out of a Cache-Control header.
+func cacheSeconds(t *testing.T, header string) (browser, shared time.Duration) {
+	t.Helper()
+
+	for _, part := range strings.Split(header, ",") {
+		name, value, found := strings.Cut(strings.TrimSpace(part), "=")
+		if !found {
+			continue
+		}
+
+		seconds, err := strconv.Atoi(value)
+		if err != nil {
+			t.Fatalf("Cache-Control %q has an unreadable %s", header, name)
+		}
+
+		switch name {
+		case "max-age":
+			browser = time.Duration(seconds) * time.Second
+		case "s-maxage":
+			shared = time.Duration(seconds) * time.Second
+		}
+	}
+
+	if browser == 0 || shared == 0 {
+		t.Fatalf("Cache-Control %q is missing max-age or s-maxage", header)
+	}
+
+	return browser, shared
 }
 
 // TestVitalsModuleIsServedAsACacheableModule covers the generated route the
