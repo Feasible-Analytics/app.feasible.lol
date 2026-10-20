@@ -738,6 +738,52 @@ func TestDurableWriteFailureReturns503WithoutFalseCounters(t *testing.T) {
 	}
 }
 
+// TestALeavingSenderKeepsItsEventQueued covers a browser that closes the request
+// before the flush confirms. The event stays queued and is written by the next
+// flush, so nothing is logged as lost.
+func TestALeavingSenderKeepsItsEventQueued(t *testing.T) {
+	h := newHandlerHarness(t)
+	transport := &recording{}
+	h.service.Buffer = NewBuffer(transport, 100, time.Hour)
+	h.service.Handler.Buffer = h.service.Buffer
+	h.service.Handler.Durable = true
+
+	var out bytes.Buffer
+	h.service.Handler.Log = logger.New(logger.Options{Level: "debug", Output: &out})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The sender leaves once the event is in the buffer, the moment the handler
+	// starts waiting on the flush.
+	go func() {
+		for h.service.Buffer.Len() == 0 {
+			time.Sleep(time.Millisecond)
+		}
+		cancel()
+	}()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/event", strings.NewReader(validBody)).WithContext(ctx)
+	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("User-Agent", visitors[0].userAgent)
+	req.Header.Set("X-Forwarded-For", visitors[0].ip)
+	h.service.Handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if strings.Contains(out.String(), "could not be persisted") {
+		t.Fatalf("a queued event was logged as lost: %s", out.String())
+	}
+	if got := h.service.Buffer.Len(); got != 1 {
+		t.Fatalf("buffer holds %d events after the sender left, want 1", got)
+	}
+
+	if err := h.service.Buffer.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := transport.count(); got != 1 {
+		t.Fatalf("the flush sent %d batches, want 1", got)
+	}
+}
+
 // TestUnreadablePropsAreDroppedWithAReason checks a props object we cannot read
 // is a counted drop rather than a 400. The sender is a beacon: a status code it
 // cannot act on produces a retry that fails in exactly the same way.
