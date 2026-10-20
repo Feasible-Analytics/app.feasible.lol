@@ -215,7 +215,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if h.Durable {
 		if err := h.Buffer.AddAndWait(r.Context(), *event); err != nil {
-			if h.Log != nil {
+			// A request that ends before the flush confirms leaves its event
+			// queued, and the flush reports its own failures, so only a write
+			// that failed while the request was still open is logged here.
+			if h.Log != nil && r.Context().Err() == nil {
 				h.Log.Error("event could not be persisted before the response", "domain", payload.Domain, "error", err)
 			}
 
