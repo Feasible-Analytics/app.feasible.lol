@@ -44,6 +44,12 @@ const (
 	// once reported reading one. It is decided at the writer for the same reason
 	// pageless_visit is.
 	ReasonUnengagedVisit = "unengaged_visit"
+
+	// ReasonCrawlerSwarm is a visit in a burst of unread, direct visits from one
+	// device and place, each on a different page. It is one crawler sending
+	// every page from a new address, so each page arrives as its own visitor.
+	// It is decided at the writer, across visits.
+	ReasonCrawlerSwarm = "crawler_swarm"
 )
 
 // File names the lists are refreshed into. Every list goes stale — providers

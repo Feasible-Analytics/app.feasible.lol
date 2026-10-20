@@ -151,6 +151,11 @@ func internBatch(ctx context.Context, cache dimensionResolver, rows []eventRow, 
 				return nil, err
 			}
 		}
+		if session.swarmCandidate() {
+			if err := add(intern.BotReason, ReasonCrawlerSwarm); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	return ids, nil

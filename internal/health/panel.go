@@ -635,6 +635,7 @@ var explanations = map[string]string{
 	ingest.ReasonAutomation:         "settings.health.reason.automation",
 	ingest.ReasonPagelessVisit:      "settings.health.reason.pageless_visit",
 	ingest.ReasonUnengagedVisit:     "settings.health.reason.unengaged_visit",
+	ingest.ReasonCrawlerSwarm:       "settings.health.reason.crawler_swarm",
 
 	ingest.TruncationProps:           "settings.health.reason.truncation_props",
 	ingest.TruncationPropName:        "settings.health.reason.truncation_prop_name",

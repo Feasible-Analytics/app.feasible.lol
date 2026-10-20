@@ -1262,6 +1262,9 @@ func (w *Writer) commitDurable(ctx context.Context, accountID int64, tx *sql.Tx,
 	if err := markAutomatedVisits(ctx, tx, dirty, ids); err != nil {
 		return err
 	}
+	if err := markSwarms(ctx, tx, dirty, ids); err != nil {
+		return err
+	}
 
 	if err := w.fail(accountID, WriterStageBeforeCommit); err != nil {
 		return err
