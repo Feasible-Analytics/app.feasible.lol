@@ -1021,11 +1021,11 @@ func TestAccountMigratesAFreshDatabase(t *testing.T) {
 		}
 	}
 
-	// The three filter indexes are the whole reason a filtered query does not
-	// fall back to a full scan, and an index is easy to drop by accident in a
+	// The filter indexes are the whole reason a filtered query does not fall
+	// back to a full scan, and an index is easy to drop by accident in a
 	// later migration.
 	for _, index := range []string{
-		"events_main", "events_session", "events_page", "events_source", "events_country",
+		"events_main", "events_session", "events_page", "events_source", "events_country", "events_hostname",
 		"ingest_session_state_expiry", "ingest_orphan_engagements_expiry",
 
 		// This one is on a table a later migration rebuilds to widen a CHECK
@@ -1154,8 +1154,8 @@ func TestAccountV7ToCurrentKeepsPopulatedSessionOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 7 || result.To != 21 || fmt.Sprint(result.Applied) != "[8 9 10 11 12 13 14 15 16 17 18 19 20 21]" {
-		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 21 via [8 9 10 11 12 13 14 15 16 17 18 19 20 21]",
+	if result.From != 7 || result.To != 22 || fmt.Sprint(result.Applied) != "[8 9 10 11 12 13 14 15 16 17 18 19 20 21 22]" {
+		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 22 via [8 9 10 11 12 13 14 15 16 17 18 19 20 21 22]",
 			result.From, result.To, result.Applied)
 	}
 
@@ -1360,7 +1360,7 @@ func TestCoordinatedMigrationNumbers(t *testing.T) {
 		set  Set
 		want []int
 	}{
-		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21}},
+		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22}},
 		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}},
 	} {
 		t.Run(name, func(t *testing.T) {
