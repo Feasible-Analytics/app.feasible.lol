@@ -15,6 +15,37 @@ import (
 	"time"
 )
 
+// TestHostnameFilterSeeksBySiteHostAndTime proves a hostname filter seeks the
+// matching events. A filter cannot use the daily summaries, so the only thing
+// standing between it and a read of every event in the window is this index.
+func TestHostnameFilterSeeksBySiteHostAndTime(t *testing.T) {
+	engine, account := newEngineWithAccount(t)
+
+	q := baseQuery("events")
+	q.Filters = []Filter{{Operator: OpIs, Dimension: "event:hostname", Values: []string{"docs.example.com"}}}
+	q.Normalise()
+
+	resolved, err := q.DateRange.Resolve(fixtureNow, time.UTC, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	filterSQL, filterArgs, err := engine.EventFilterSQL(context.Background(), q.SiteIDs, resolved, q.Filters, "e")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The surrounding predicates are the ones every event report adds: one
+	// site, the window, and ordinary traffic. The plan has to seek through
+	// them, not scan and then discard.
+	sqlText := "SELECT COUNT(*) FROM events e WHERE e.site_id = ? AND e.timestamp >= ? AND e.timestamp < ? AND e.bot_reason_id = 0 AND " + filterSQL
+	args := append([]any{int64(1), resolved.Start.Unix(), resolved.End.Unix()}, filterArgs...)
+	plan := explainPlan(t, account, sqlText, args)
+	if !strings.Contains(plan, "USING INDEX events_hostname") {
+		t.Fatalf("hostname filter is not a site/host/time seek:\n%s\n%s", sqlText, plan)
+	}
+}
+
 // filterCase is one filter and the numbers it should produce against the
 // fixture. Every expectation is counted by hand from the ten events in
 // engine_test.go.
