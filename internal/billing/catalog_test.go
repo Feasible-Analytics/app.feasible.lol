@@ -23,7 +23,7 @@ func TestDescribeResolvesConfiguredPricesAndAdmitsCustomOnes(t *testing.T) {
 	}
 
 	yearly := plans.Describe("price_y")
-	if yearly.Key != "yearly" || yearly.Label != "$100 / year" || yearly.Amount != 10000 || yearly.Interval != "year" {
+	if yearly.Key != "yearly" || yearly.Label != "$99 / year" || yearly.Amount != 9900 || yearly.Interval != "year" {
 		t.Fatalf("yearly described as %+v", yearly)
 	}
 

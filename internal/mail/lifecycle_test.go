@@ -63,6 +63,13 @@ func TestEveryTemplateRendersInBothVoices(t *testing.T) {
 				t.Fatalf("%s/%s: %v", trigger, entry.Template, err)
 			}
 
+			if entry.Template != lifecycle.TemplateAccountDeleted && !strings.Contains(content.Primary.Label, "$9.99/month or $99/year") {
+				t.Errorf("%s/%s has outdated upgrade pricing: %q", trigger, entry.Template, content.Primary.Label)
+			}
+			if strings.Contains(msg.Text, "$100") || strings.Contains(msg.HTML, "$100") {
+				t.Errorf("%s/%s still advertises the retired annual price", trigger, entry.Template)
+			}
+
 			if strings.TrimSpace(msg.Subject) == "" {
 				t.Errorf("%s/%s has no subject", trigger, entry.Template)
 			}

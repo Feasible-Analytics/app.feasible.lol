@@ -32,11 +32,11 @@ func (p PlanPrice) Label() string {
 	return p.Price + " / " + p.Interval
 }
 
-// Monthly and Yearly are the catalogue. The yearly plan is priced as ten
-// months, which is the saving the pricing page advertises.
+// Monthly and Yearly are the catalogue, matching the published offer.
+// Both amounts are before tax; the yearly plan is billed once each year.
 var (
 	Monthly = PlanPrice{Key: "monthly", Interval: "month", Amount: 999, Price: "$9.99"}
-	Yearly  = PlanPrice{Key: "yearly", Interval: "year", Amount: 10000, Price: "$100"}
+	Yearly  = PlanPrice{Key: "yearly", Interval: "year", Amount: 9900, Price: "$99"}
 )
 
 // Plan is a price id resolved against the catalogue, as a page or a mirror

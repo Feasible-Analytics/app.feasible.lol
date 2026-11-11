@@ -42,7 +42,7 @@ func TestPreflightRequestsUseTheBasilMinimumHeaderAndRunCheckoutSmoke(t *testing
 		case "/v1/prices/price_monthly":
 			fmt.Fprint(w, `{"id":"price_monthly","active":true,"livemode":true,"product":"prod_feasible","type":"recurring","currency":"usd","unit_amount":999,"tax_behavior":"exclusive","recurring":{"interval":"month","interval_count":1}}`)
 		case "/v1/prices/price_yearly":
-			fmt.Fprint(w, `{"id":"price_yearly","active":true,"livemode":true,"product":"prod_feasible","type":"recurring","currency":"usd","unit_amount":10000,"tax_behavior":"exclusive","recurring":{"interval":"year","interval_count":1}}`)
+			fmt.Fprint(w, `{"id":"price_yearly","active":true,"livemode":true,"product":"prod_feasible","type":"recurring","currency":"usd","unit_amount":9900,"tax_behavior":"exclusive","recurring":{"interval":"year","interval_count":1}}`)
 		case "/v1/webhook_endpoints":
 			fmt.Fprintf(w, `{"object":"list","has_more":false,"data":[{"id":"we_1","url":"https://feasible.lol/webhooks/stripe","status":"enabled","api_version":%q,"enabled_events":["*"]}]}`, stripe.ManagedPaymentsAPIVersion)
 		case "/v1/checkout/sessions":
@@ -128,7 +128,7 @@ func TestPreflightRejectsIncompatibleCatalogueAndWebhook(t *testing.T) {
 		case "/v1/prices/price_monthly":
 			fmt.Fprint(w, `{"id":"price_monthly","active":true,"product":"prod_feasible","type":"recurring","currency":"usd","unit_amount":999,"tax_behavior":"unspecified","recurring":{"interval":"month","interval_count":1}}`)
 		case "/v1/prices/price_yearly":
-			fmt.Fprint(w, `{"id":"price_yearly","active":true,"product":"prod_other","type":"recurring","currency":"usd","unit_amount":10000,"tax_behavior":"exclusive","recurring":{"interval":"year","interval_count":1}}`)
+			fmt.Fprint(w, `{"id":"price_yearly","active":true,"product":"prod_other","type":"recurring","currency":"usd","unit_amount":9900,"tax_behavior":"exclusive","recurring":{"interval":"year","interval_count":1}}`)
 		case "/v1/webhook_endpoints":
 			fmt.Fprintf(w, `{"data":[{"url":"https://feasible.lol/webhooks/stripe","status":"enabled","api_version":%q,"enabled_events":["checkout.session.completed"]}]}`, stripe.ManagedPaymentsAPIVersion)
 		default:
@@ -365,4 +365,26 @@ func preflightText(report PreflightReport) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// TestPreflightRejectsTheRetiredHundredDollarYearlyPrice prevents a deployment
+// from restoring the old Stripe price while the customer-facing offer is $99.
+func TestPreflightRejectsTheRetiredHundredDollarYearlyPrice(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"price_old_yearly","active":true,"livemode":true,"product":"prod_feasible","type":"recurring","currency":"usd","unit_amount":10000,"tax_behavior":"exclusive","recurring":{"interval":"year","interval_count":1}}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := stripe.New("sk_live_fake")
+	client.BaseURL = server.URL
+	service := &Service{Stripe: client}
+	product := &stripe.Product{ID: "prod_feasible", LiveMode: true}
+	var report PreflightReport
+	if service.preflightPrice(context.Background(), &report, "yearly price", "price_old_yearly", product, Yearly) {
+		t.Fatal("retired $100 yearly price passed preflight")
+	}
+	if !strings.Contains(preflightText(report), "amount is 10000 usd, want 9900 usd") {
+		t.Fatalf("report does not identify the annual price mismatch: %+v", report.Checks)
+	}
 }
