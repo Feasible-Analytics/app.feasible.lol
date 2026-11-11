@@ -1,8 +1,6 @@
 module github.com/Feasible-Analytics/app.feasible.lol
 
-go 1.26
-
-toolchain go1.26.8
+go 1.26.11
 
 require (
 	github.com/pquerna/otp v1.5.0

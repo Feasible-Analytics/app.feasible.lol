@@ -154,7 +154,8 @@ jobs:
   # Go suite, and holding fast feedback hostage to it helps nobody.
   tracker:
     name: Tracker end-to-end
-    runs-on: ubuntu-latest
+    # Playwright 1.56 supports Ubuntu 24.04, not the moving ubuntu-latest image.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
