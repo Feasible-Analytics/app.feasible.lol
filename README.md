@@ -27,7 +27,7 @@ feasible.lol takes a different position:
 
 - **One binary.** No Docker, no external database, no reverse proxy required. It
   runs on a $5 VPS or a Raspberry Pi, on any CPU architecture.
-- **One price.** $9.99/month or $100/year, up to a million pageviews a month.
+- **One price.** $9.99/month or $99/year, up to a million pageviews a month.
   Every feature included — funnels, custom properties, revenue tracking, the API.
   No tiers.
 - **Self-hosting is complete and free.** Not a reduced edition. The same build,

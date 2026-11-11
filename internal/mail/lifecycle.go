@@ -78,9 +78,9 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 	// One button, because a lapsed subscription is as often an expired card as
 	// a decision and both are fixed on the same screen. Two buttons to one page
 	// asks somebody to guess which of them is the one that helps.
-	label := "Upgrade — $9.99/month or $100/year"
+	label := "Upgrade — $9.99/month or $99/year"
 	if lapse {
-		label = "Update your card or upgrade — $9.99/month or $100/year"
+		label = "Update your card or upgrade — $9.99/month or $99/year"
 	}
 
 	content := Content{
@@ -113,7 +113,7 @@ func LifecycleContent(notice lifecycle.Notice) (Content, error) {
 			content.Heading = "Seven days left on your trial"
 			content.Body = []string{
 				"Your trial of feasible.lol ends on " + day(notice.LocksAt) + ". Everything works normally until then.",
-				"It is $9.99 a month, or $100 a year. One price, every feature, unlimited sites, unlimited team members, unlimited retention, and a million pageviews and custom events a month.",
+				"It is $9.99 a month, or $99 a year. One price, every feature, unlimited sites, unlimited team members, unlimited retention, and a million pageviews and custom events a month.",
 				"If you do not upgrade, the dashboard locks on " + day(notice.LocksAt) + " — but we keep collecting your data for another thirty days, so paying any time before " + day(notice.StopsAt) + " brings back a complete history with no gap in it.",
 			}
 		}
