@@ -222,6 +222,59 @@ func engines(account *accounts.Account, now time.Time) (*query.Engine, *query.En
 	return raw, rolled
 }
 
+// TestABuildLeavesTheWriterFreeWhileItAggregates is the property ingestion
+// depends on. The account has one write connection, and a build that
+// aggregated on it would hold every event for that account until it finished.
+func TestABuildLeavesTheWriterFreeWhileItAggregates(t *testing.T) {
+	account := openAccount(t)
+	sessions, events := carryFixture()
+	writeFixture(t, account, sessions, events)
+
+	builder := rollup.New(account.Writer())
+	builder.Now = func() time.Time { return fixtureNow }
+	builder.Sleep = rollup.NoRest
+
+	probes := 0
+	builder.Staged = func() {
+		probes++
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		// The writer begins IMMEDIATE, so this takes the write lock as well as
+		// the connection.
+		tx, err := account.Writer().BeginTx(ctx, nil)
+		if err != nil {
+			t.Errorf("the writer was not free while the build aggregated: %v", err)
+			return
+		}
+
+		if err := tx.Rollback(); err != nil {
+			t.Error(err)
+		}
+	}
+
+	today := query.RollupBucketStart(fixtureNow.In(losAngeles), query.GrainDay, losAngeles)
+	if err := builder.Rebuild(context.Background(), rollup.Request{
+		Site: testSite, Grain: query.GrainDay, From: today.AddDate(0, 0, -7), To: today.AddDate(0, 0, 1),
+		CoverThrough: today, FromBeginning: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if probes == 0 {
+		t.Fatal("the build never reached its publish step")
+	}
+
+	var rows int
+	if err := account.Reader().QueryRow("SELECT COUNT(*) FROM rollup_visitors WHERE site_id = ?", testSite.ID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows == 0 {
+		t.Fatal("the build published no rows")
+	}
+}
+
 // carryFixture is a visitor who comes back later the same UTC day but on the
 // next local day, and another who does the same across the boundary between the
 // summary and today.
