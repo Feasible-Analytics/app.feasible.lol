@@ -625,6 +625,13 @@ func (b *Builder) buildChunk(ctx context.Context, staging *sql.DB, site Site, gr
 	}
 	defer tx.Rollback() //nolint:errcheck // the staged tables are discarded either way
 
+	// Read before anything else, so it belongs to the snapshot the chunk
+	// aggregates.
+	seen, err := generation(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+
 	work := &chunk{tx: tx, site: site, grain: grain, names: names, from: from, to: to, location: site.Location()}
 
 	if err := work.prepare(ctx); err != nil {
@@ -654,7 +661,38 @@ func (b *Builder) buildChunk(ctx context.Context, staging *sql.DB, site Site, gr
 		b.Staged()
 	}
 
-	return work.publish(ctx, b.DB)
+	return work.publish(ctx, b.DB, seen)
+}
+
+// ErrDataChanged reports that data was erased from the account after a build
+// took its snapshot. Nothing was published, and the next pass rebuilds from
+// what is there now.
+var ErrDataChanged = errors.New("rollup: data was erased while the build was running")
+
+// Invalidate tells every build in flight on the account that data under its
+// snapshot is gone. It belongs in the transaction that erases the data, so a
+// build either sees the erase in its snapshot or sees this number move and
+// publishes nothing.
+func Invalidate(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO rollup_generation (singleton, generation) VALUES (1, 1)
+		ON CONFLICT(singleton) DO UPDATE SET generation = generation + 1`); err != nil {
+		return fmt.Errorf("rollup: invalidate builds in flight: %w", err)
+	}
+
+	return nil
+}
+
+// generation reads the account's erase counter.
+func generation(ctx context.Context, tx *sql.Tx) (int64, error) {
+	var value int64
+	if err := tx.QueryRowContext(ctx,
+		"SELECT COALESCE((SELECT generation FROM rollup_generation WHERE singleton = 1), 0)",
+	).Scan(&value); err != nil {
+		return 0, fmt.Errorf("rollup: read the erase generation: %w", err)
+	}
+
+	return value, nil
 }
 
 // stagingTable is the temporary table a chunk builds one summary table's rows
@@ -694,8 +732,9 @@ func (c *chunk) createStaging(ctx context.Context) error {
 }
 
 // publish replaces the chunk's buckets with the staged rows in one write
-// transaction on the account's writer, and returns how long that took.
-func (c *chunk) publish(ctx context.Context, writer *sql.DB) (time.Duration, error) {
+// transaction on the account's writer, and returns how long that took. It
+// publishes nothing if data was erased after the staging snapshot was taken.
+func (c *chunk) publish(ctx context.Context, writer *sql.DB, seen int64) (time.Duration, error) {
 	began := time.Now()
 
 	tx, err := writer.BeginTx(ctx, nil)
@@ -703,6 +742,14 @@ func (c *chunk) publish(ctx context.Context, writer *sql.DB) (time.Duration, err
 		return 0, err
 	}
 	defer tx.Rollback() //nolint:errcheck // a rollback after a successful commit is a no-op
+
+	current, err := generation(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	if current != seen {
+		return 0, ErrDataChanged
+	}
 
 	if err := c.clear(ctx, tx); err != nil {
 		return 0, err

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/rollup"
 )
 
 // LeaseDuration is how soon a crashed operation may be retried. The durable
@@ -311,6 +312,12 @@ func (s *Service) eraseSite(ctx context.Context, operation claim) error {
 		err = eraseClassifiedSiteRows(ctx, tx, operation.SiteID, accountResetDisposition, deferredFiles)
 	}
 	if err != nil {
+		return fmt.Errorf("destructive: erase analytics: %w", err)
+	}
+
+	// A roll-up build may be aggregating a snapshot taken before this erase.
+	// This tells it to throw that work away instead of publishing it.
+	if err := rollup.Invalidate(ctx, tx); err != nil {
 		return fmt.Errorf("destructive: erase analytics: %w", err)
 	}
 

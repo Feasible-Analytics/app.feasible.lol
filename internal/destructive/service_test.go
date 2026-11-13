@@ -152,6 +152,19 @@ func TestSiteDeletionIsDurableAndBlocksTransfer(t *testing.T) {
 	}
 }
 
+// rollupGeneration reads the account's roll-up erase counter.
+func rollupGeneration(t *testing.T, db *sql.DB) int64 {
+	t.Helper()
+
+	var generation int64
+	if err := db.QueryRowContext(context.Background(),
+		"SELECT generation FROM rollup_generation WHERE singleton = 1").Scan(&generation); err != nil {
+		t.Fatal(err)
+	}
+
+	return generation
+}
+
 // TestResetPreservesConfigurationAndDeleteErasesEverything makes the schema
 // itself the coverage oracle. Reset follows the exhaustive analytics/config
 // policy while deletion removes every direct or inherited site-scoped row.
@@ -165,6 +178,8 @@ func TestResetPreservesConfigurationAndDeleteErasesEverything(t *testing.T) {
 			assertEveryScopedTableSeeded(t, f.account.Writer(), f.siteID, nil)
 			assertEveryScopedTableSeeded(t, f.db, f.siteID, map[string]bool{"sites": true})
 
+			generationBefore := rollupGeneration(t, f.account.Writer())
+
 			var err error
 			if operation == "reset" {
 				err = f.service.ResetSite(ctx, f.ownerID, f.siteID)
@@ -173,6 +188,12 @@ func TestResetPreservesConfigurationAndDeleteErasesEverything(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("%s site: %v", operation, err)
+			}
+
+			// A roll-up build that took its snapshot before the erase must see
+			// this move, or it publishes the erased traffic back.
+			if after := rollupGeneration(t, f.account.Writer()); after <= generationBefore {
+				t.Fatalf("%s left the roll-up generation at %d, want it past %d", operation, after, generationBefore)
 			}
 
 			if operation == "reset" {

@@ -11,6 +11,7 @@ package rollup
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -253,6 +254,15 @@ func (w *Worker) buildSite(ctx context.Context, ref SiteRef) error {
 			Site: ref.Site, Grain: grain, From: from, To: to, CoverThrough: today,
 			FromBeginning: !from.After(earliest),
 		}); err != nil {
+			// An erase is not a failure: the next pass starts from what is left.
+			if errors.Is(err, ErrDataChanged) {
+				if w.Log != nil {
+					w.Log.Info("roll-up build discarded because data was erased during it", "site", ref.Site.Domain)
+				}
+
+				return nil
+			}
+
 			return err
 		}
 

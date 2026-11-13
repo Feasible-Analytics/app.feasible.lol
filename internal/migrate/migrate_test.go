@@ -1154,8 +1154,8 @@ func TestAccountV7ToCurrentKeepsPopulatedSessionOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 7 || result.To != 22 || fmt.Sprint(result.Applied) != "[8 9 10 11 12 13 14 15 16 17 18 19 20 21 22]" {
-		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 22 via [8 9 10 11 12 13 14 15 16 17 18 19 20 21 22]",
+	if result.From != 7 || result.To != 23 || fmt.Sprint(result.Applied) != "[8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23]" {
+		t.Fatalf("account upgrade moved from %d to %d via %v, want 7 to 23 via [8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23]",
 			result.From, result.To, result.Applied)
 	}
 
@@ -1360,7 +1360,7 @@ func TestCoordinatedMigrationNumbers(t *testing.T) {
 		set  Set
 		want []int
 	}{
-		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22}},
+		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23}},
 		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}},
 	} {
 		t.Run(name, func(t *testing.T) {
