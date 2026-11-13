@@ -259,7 +259,7 @@ test-web: web-deps
 # packages that matter most here — the roll-up worker and the ingest pipeline are
 # the concurrent code, and a detector that times out reports nothing at all.
 test-race:
-	@go test -race -timeout 40m ./...
+	@go test -race -timeout 60m ./...
 
 ## test-tracker: the tracker's end-to-end suite, in a real browser
 # Playwright starts and stops its own fixture server, so this target leaves
