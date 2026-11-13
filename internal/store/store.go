@@ -93,7 +93,7 @@ func Open(path string) (*sql.DB, error) {
 		}
 	}
 
-	db, err := sql.Open(DriverName, DSN(path, TxLockImmediate))
+	db, err := openUninterruptible(DSN(path, TxLockImmediate))
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
