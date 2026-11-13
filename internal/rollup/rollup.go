@@ -27,6 +27,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
 // HourlyRetention is how long hourly buckets are kept. Nothing offers an hourly
@@ -108,9 +109,8 @@ func (s Site) Zone() string {
 
 // Builder rebuilds summary buckets for one account database.
 type Builder struct {
-	// DB is the account's writer handle. A build writes, and it reads the raw
-	// tables through the same connection so that its temporary working tables
-	// and its statements see each other.
+	// DB is the account's writer handle. A build publishes its finished rows
+	// through it; the aggregation runs on a second connection to the same file.
 	DB *sql.DB
 
 	// Now is the clock a build measures "today" against, injectable because
@@ -127,6 +127,10 @@ type Builder struct {
 	// not have to wait out a pause, and it is injectable so a build that is not
 	// competing with anything — a seed, a test — can decline to rest.
 	Sleep func(ctx context.Context, d time.Duration) error
+
+	// Staged runs after a chunk is aggregated and before it is published. Tests
+	// use it to check the account while a build is mid-flight.
+	Staged func()
 }
 
 // The bounds on one rest. MinYield keeps the pause real even after a chunk that
@@ -236,6 +240,15 @@ func (b *Builder) Rebuild(ctx context.Context, request Request) error {
 		return err
 	}
 
+	var staging *sql.DB
+	if !grain.Derived() {
+		staging, err = b.openStaging(ctx)
+		if err != nil {
+			return err
+		}
+		defer staging.Close()
+	}
+
 	size := defaultChunk(grain)
 
 	for start := from; start.Before(to); {
@@ -247,11 +260,15 @@ func (b *Builder) Rebuild(ctx context.Context, request Request) error {
 
 		// A wide bucket is the sum of the daily rows under it, so it reads those
 		// rather than every event again.
-		var buildErr error
+		var (
+			buildErr error
+			held     time.Duration
+		)
 		if grain.Derived() {
 			buildErr = b.deriveChunk(ctx, site, grain, start, end)
+			held = time.Since(began)
 		} else {
-			buildErr = b.buildChunk(ctx, site, grain, names, start, end)
+			held, buildErr = b.buildChunk(ctx, staging, site, grain, names, start, end)
 		}
 
 		if buildErr != nil {
@@ -268,7 +285,9 @@ func (b *Builder) Rebuild(ctx context.Context, request Request) error {
 			return err
 		}
 
-		size = nextChunkSize(grain, size, took)
+		// The chunk size bounds how long ingestion waits, so it follows the
+		// write transaction, not the staging work before it.
+		size = nextChunkSize(grain, size, held)
 		start = end
 
 		if start.Before(to) {
@@ -553,16 +572,43 @@ func deriveTable(ctx context.Context, tx *sql.Tx, table string, siteID int64, gr
 	return nil
 }
 
-// buildChunk rewrites one slice of buckets inside a single transaction. The
-// transaction is the unit that makes a roll-up safe to rebuild while the site
-// is live: a reader either sees the old buckets or the new ones.
-func (b *Builder) buildChunk(ctx context.Context, site Site, grain query.Grain, names eventNames, from, to time.Time) (err error) {
-	// The working tables are temporary and therefore per connection, so the
-	// whole chunk runs on one pinned connection rather than on whichever
-	// connection the pool hands out next.
-	conn, err := b.DB.Conn(ctx)
+// openStaging opens a second connection to the account's file for the heavy
+// half of a build. The writer is the account's only write connection, so a
+// build that aggregated on it would hold up ingestion for as long as the
+// aggregation took, lock or no lock.
+func (b *Builder) openStaging(ctx context.Context) (*sql.DB, error) {
+	var path string
+	if err := b.DB.QueryRowContext(ctx, "SELECT file FROM pragma_database_list WHERE name = 'main'").Scan(&path); err != nil {
+		return nil, fmt.Errorf("rollup: locate the account database: %w", err)
+	}
+
+	if path == "" {
+		return nil, errors.New("rollup: a build needs a database file, and this one is in memory")
+	}
+
+	staging, err := store.Open(path)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("rollup: open the staging connection: %w", err)
+	}
+
+	// The working tables are temporary and therefore per connection, so the
+	// staging handle is one connection.
+	staging.SetMaxOpenConns(1)
+
+	return staging, nil
+}
+
+// buildChunk rewrites one slice of buckets and returns how long it held the
+// account's write lock.
+//
+// The aggregation reads the raw tables on the staging connection and writes
+// only temporary tables there. The finished rows then replace the old buckets
+// in one short write transaction, so a reader sees the old buckets or the new
+// ones and ingestion waits only for the copy.
+func (b *Builder) buildChunk(ctx context.Context, staging *sql.DB, site Site, grain query.Grain, names eventNames, from, to time.Time) (held time.Duration, err error) {
+	conn, err := staging.Conn(ctx)
+	if err != nil {
+		return 0, err
 	}
 	defer func() {
 		if closeErr := conn.Close(); closeErr != nil {
@@ -570,25 +616,35 @@ func (b *Builder) buildChunk(ctx context.Context, site Site, grain query.Grain, 
 		}
 	}()
 
-	tx, err := conn.BeginTx(ctx, nil)
+	// A read-only transaction is a plain BEGIN: every statement reads the same
+	// snapshot, and none of them asks for the write lock. Nothing in it is
+	// kept, so it is rolled back rather than committed.
+	tx, err := conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return err
+		return 0, err
 	}
-	defer tx.Rollback() //nolint:errcheck // a rollback after a successful commit is a no-op
+	defer tx.Rollback() //nolint:errcheck // the staged tables are discarded either way
+
+	// Read before anything else, so it belongs to the snapshot the chunk
+	// aggregates.
+	seen, err := generation(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
 
 	work := &chunk{tx: tx, site: site, grain: grain, names: names, from: from, to: to, location: site.Location()}
 
 	if err := work.prepare(ctx); err != nil {
-		return err
+		return 0, err
 	}
 
-	if err := work.clear(ctx); err != nil {
-		return err
+	if err := work.createStaging(ctx); err != nil {
+		return 0, err
 	}
 
 	for _, dimension := range query.RollupDims() {
 		if err := work.aggregate(ctx, dimension); err != nil {
-			return err
+			return 0, err
 		}
 	}
 
@@ -597,11 +653,165 @@ func (b *Builder) buildChunk(ctx context.Context, site Site, grain query.Grain, 
 	// and never added to the hour beside it.
 	if grain == query.GrainDay {
 		if err := work.carryOver(ctx); err != nil {
-			return err
+			return 0, err
 		}
 	}
 
-	return tx.Commit()
+	if b.Staged != nil {
+		b.Staged()
+	}
+
+	return work.publish(ctx, b.DB, seen)
+}
+
+// ErrDataChanged reports that data was erased from the account after a build
+// took its snapshot. Nothing was published, and the next pass rebuilds from
+// what is there now.
+var ErrDataChanged = errors.New("rollup: data was erased while the build was running")
+
+// Invalidate tells every build in flight on the account that data under its
+// snapshot is gone. It belongs in the transaction that erases the data, so a
+// build either sees the erase in its snapshot or sees this number move and
+// publishes nothing.
+func Invalidate(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO rollup_generation (singleton, generation) VALUES (1, 1)
+		ON CONFLICT(singleton) DO UPDATE SET generation = generation + 1`); err != nil {
+		return fmt.Errorf("rollup: invalidate builds in flight: %w", err)
+	}
+
+	return nil
+}
+
+// generation reads the account's erase counter.
+func generation(ctx context.Context, tx *sql.Tx) (int64, error) {
+	var value int64
+	if err := tx.QueryRowContext(ctx,
+		"SELECT COALESCE((SELECT generation FROM rollup_generation WHERE singleton = 1), 0)",
+	).Scan(&value); err != nil {
+		return 0, fmt.Errorf("rollup: read the erase generation: %w", err)
+	}
+
+	return value, nil
+}
+
+// stagingTable is the temporary table a chunk builds one summary table's rows
+// in.
+func stagingTable(table string) string {
+	return "stage_" + table
+}
+
+// createStaging makes an empty temporary copy of every summary table. Each copy
+// is built from the real table's own definition, so it has the same columns,
+// defaults and primary key, and the aggregates' upserts work unchanged.
+func (c *chunk) createStaging(ctx context.Context) error {
+	for _, table := range query.RollupTables() {
+		var definition string
+		if err := c.tx.QueryRowContext(ctx,
+			"SELECT sql FROM main.sqlite_master WHERE type = 'table' AND name = ?", table,
+		).Scan(&definition); err != nil {
+			return fmt.Errorf("rollup: read the definition of %s: %w", table, err)
+		}
+
+		prefix := "CREATE TABLE " + table
+		if !strings.HasPrefix(definition, prefix) {
+			return fmt.Errorf("rollup: the definition of %s does not start with %q", table, prefix)
+		}
+
+		staged := stagingTable(table)
+		if _, err := c.tx.ExecContext(ctx, "DROP TABLE IF EXISTS temp."+staged); err != nil {
+			return fmt.Errorf("rollup: stage %s: %w", table, err)
+		}
+
+		if _, err := c.tx.ExecContext(ctx, "CREATE TEMP TABLE "+staged+strings.TrimPrefix(definition, prefix)); err != nil {
+			return fmt.Errorf("rollup: stage %s: %w", table, err)
+		}
+	}
+
+	return nil
+}
+
+// publish replaces the chunk's buckets with the staged rows in one write
+// transaction on the account's writer, and returns how long that took. It
+// publishes nothing if data was erased after the staging snapshot was taken.
+func (c *chunk) publish(ctx context.Context, writer *sql.DB, seen int64) (time.Duration, error) {
+	began := time.Now()
+
+	tx, err := writer.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback() //nolint:errcheck // a rollback after a successful commit is a no-op
+
+	current, err := generation(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	if current != seen {
+		return 0, ErrDataChanged
+	}
+
+	if err := c.clear(ctx, tx); err != nil {
+		return 0, err
+	}
+
+	for _, table := range query.RollupTables() {
+		if err := c.copyStaged(ctx, tx, table); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("rollup: publish: %w", err)
+	}
+
+	return time.Since(began), nil
+}
+
+// copyStaged streams one staged table into its summary table. The staged rows
+// cover exactly the buckets clear just emptied, so a plain insert cannot
+// collide with anything.
+func (c *chunk) copyStaged(ctx context.Context, writer *sql.Tx, table string) (err error) {
+	rows, err := c.tx.QueryContext(ctx, "SELECT * FROM temp."+stagingTable(table))
+	if err != nil {
+		return fmt.Errorf("rollup: read staged %s: %w", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return fmt.Errorf("rollup: read staged %s: %w", table, err)
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(columns)), ", ")
+	insert, err := writer.PrepareContext(ctx,
+		"INSERT INTO main."+table+" ("+strings.Join(columns, ", ")+") VALUES ("+placeholders+")")
+	if err != nil {
+		return fmt.Errorf("rollup: publish %s: %w", table, err)
+	}
+	defer func() { _ = insert.Close() }()
+
+	values := make([]any, len(columns))
+	targets := make([]any, len(columns))
+	for i := range values {
+		targets[i] = &values[i]
+	}
+
+	for rows.Next() {
+		if err := rows.Scan(targets...); err != nil {
+			return fmt.Errorf("rollup: read staged %s: %w", table, err)
+		}
+
+		if _, err := insert.ExecContext(ctx, values...); err != nil {
+			return fmt.Errorf("rollup: publish %s: %w", table, err)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("rollup: read staged %s: %w", table, err)
+	}
+
+	return nil
 }
 
 // chunk is one transaction's worth of work.
@@ -766,11 +976,11 @@ var workingTables = []string{
 // clear removes the buckets this chunk is about to write. A rebuild is a
 // replacement rather than an increment, which is what makes "any bucket can be
 // rebuilt from raw at any time" true rather than aspirational.
-func (c *chunk) clear(ctx context.Context) error {
+func (c *chunk) clear(ctx context.Context, writer *sql.Tx) error {
 	fromBucket, toBucket := c.buckets()
 
 	for _, table := range query.RollupTables() {
-		if _, err := c.tx.ExecContext(ctx,
+		if _, err := writer.ExecContext(ctx,
 			"DELETE FROM "+table+" WHERE site_id = ? AND grain = ? AND bucket >= ? AND bucket < ?",
 			c.site.ID, int64(c.grain), fromBucket, toBucket,
 		); err != nil {
@@ -821,7 +1031,7 @@ func (c *chunk) aggregateEvents(ctx context.Context, dimension query.RollupDim) 
 	// path, and the two have to agree or a report changes its answer the moment
 	// a day rolls up.
 	sqlText := `
-		INSERT INTO ` + dimension.Table + ` (site_id, grain, bucket, dimension, value_id,
+		INSERT INTO ` + stagingTable(dimension.Table) + ` (site_id, grain, bucket, dimension, value_id,
 			pageviews, events, event_visitors, event_visits)
 		SELECT ?, ?, f.bucket, ?, f.` + column + `,
 		       SUM(f.pageview), SUM(f.event),
@@ -858,7 +1068,7 @@ func (c *chunk) aggregateSessions(ctx context.Context, dimension query.RollupDim
 	fromBucket, toBucket := c.buckets()
 
 	sqlText := `
-		INSERT INTO ` + dimension.Table + ` (site_id, grain, bucket, dimension, value_id,
+		INSERT INTO ` + stagingTable(dimension.Table) + ` (site_id, grain, bucket, dimension, value_id,
 			visits, visitors, bounces, visit_duration, session_pageviews)
 		SELECT ?, ?, f.bucket, ?, f.` + factColumn(dimension, true) + `,
 		       COUNT(*), COUNT(DISTINCT f.user_id), SUM(f.is_bounce), SUM(f.duration), SUM(f.pageviews)
@@ -1015,7 +1225,7 @@ func (c *chunk) carryColumn(ctx context.Context, dimension query.RollupDim, sour
 	fromBucket, toBucket := c.buckets()
 
 	sqlText := `
-		UPDATE ` + dimension.Table + ` AS r
+		UPDATE ` + stagingTable(dimension.Table) + ` AS r
 		SET ` + target + ` = c.carried
 		FROM (
 			SELECT a.bucket AS bucket, a.v AS v, COUNT(*) AS carried

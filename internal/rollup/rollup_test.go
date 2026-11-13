@@ -14,6 +14,7 @@ package rollup_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -220,6 +221,118 @@ func engines(account *accounts.Account, now time.Time) (*query.Engine, *query.En
 	rolled.Now = func() time.Time { return now }
 
 	return raw, rolled
+}
+
+// TestABuildLeavesTheWriterFreeWhileItAggregates is the property ingestion
+// depends on. The account has one write connection, and a build that
+// aggregated on it would hold every event for that account until it finished.
+func TestABuildLeavesTheWriterFreeWhileItAggregates(t *testing.T) {
+	account := openAccount(t)
+	sessions, events := carryFixture()
+	writeFixture(t, account, sessions, events)
+
+	builder := rollup.New(account.Writer())
+	builder.Now = func() time.Time { return fixtureNow }
+	builder.Sleep = rollup.NoRest
+
+	probes := 0
+	builder.Staged = func() {
+		probes++
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		// The writer begins IMMEDIATE, so this takes the write lock as well as
+		// the connection.
+		tx, err := account.Writer().BeginTx(ctx, nil)
+		if err != nil {
+			t.Errorf("the writer was not free while the build aggregated: %v", err)
+			return
+		}
+
+		if err := tx.Rollback(); err != nil {
+			t.Error(err)
+		}
+	}
+
+	today := query.RollupBucketStart(fixtureNow.In(losAngeles), query.GrainDay, losAngeles)
+	if err := builder.Rebuild(context.Background(), rollup.Request{
+		Site: testSite, Grain: query.GrainDay, From: today.AddDate(0, 0, -7), To: today.AddDate(0, 0, 1),
+		CoverThrough: today, FromBeginning: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if probes == 0 {
+		t.Fatal("the build never reached its publish step")
+	}
+
+	var rows int
+	if err := account.Reader().QueryRow("SELECT COUNT(*) FROM rollup_visitors WHERE site_id = ?", testSite.ID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows == 0 {
+		t.Fatal("the build published no rows")
+	}
+}
+
+// TestAnEraseDuringABuildPublishesNothing covers a reset that lands after a
+// build took its snapshot. Publishing that snapshot would put the erased
+// traffic back on the dashboard, and nothing would ever take it off again.
+func TestAnEraseDuringABuildPublishesNothing(t *testing.T) {
+	ctx := context.Background()
+	account := openAccount(t)
+	sessions, events := carryFixture()
+	writeFixture(t, account, sessions, events)
+
+	builder := rollup.New(account.Writer())
+	builder.Now = func() time.Time { return fixtureNow }
+	builder.Sleep = rollup.NoRest
+
+	builder.Staged = func() {
+		tx, err := account.Writer().BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+		for _, table := range []string{"events", "sessions"} {
+			if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE site_id = ?", testSite.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		if err := rollup.Invalidate(ctx, tx); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	today := query.RollupBucketStart(fixtureNow.In(losAngeles), query.GrainDay, losAngeles)
+	err := builder.Rebuild(ctx, rollup.Request{
+		Site: testSite, Grain: query.GrainDay, From: today.AddDate(0, 0, -7), To: today.AddDate(0, 0, 1),
+		CoverThrough: today, FromBeginning: true,
+	})
+	if !errors.Is(err, rollup.ErrDataChanged) {
+		t.Fatalf("rebuild across an erase returned %v, want ErrDataChanged", err)
+	}
+
+	var rows int
+	if err := account.Reader().QueryRow("SELECT COUNT(*) FROM rollup_visitors WHERE site_id = ?", testSite.ID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("the build published %d rows of erased traffic", rows)
+	}
+
+	if _, found, err := builder.Coverage(ctx, testSite.ID, query.GrainDay); err != nil {
+		t.Fatal(err)
+	} else if found {
+		t.Fatal("the build recorded coverage for data that was erased")
+	}
 }
 
 // carryFixture is a visitor who comes back later the same UTC day but on the
