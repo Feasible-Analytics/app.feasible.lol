@@ -338,6 +338,12 @@ func (w *Writer) writeAccountDurable(ctx context.Context, accountID int64, event
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
+	// A batch that has the account finishes even if the sender stops waiting.
+	// The sender retries, and the retry is acknowledged from the UUIDs this
+	// commit claims; abandoning the work instead means a batch slower than the
+	// sender's timeout is retried, and abandoned, forever.
+	ctx = context.WithoutCancel(ctx)
+
 	identities, err := reserveSessionIDs(ctx, account.Writer(), len(events))
 	if err != nil {
 		return nil, err

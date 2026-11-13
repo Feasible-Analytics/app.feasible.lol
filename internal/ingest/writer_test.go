@@ -381,6 +381,49 @@ func TestWriteIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestABatchFinishesAfterTheSenderStopsWaiting covers a batch slower than the
+// sender's timeout. The sender's request is cancelled mid-write; the batch must
+// still commit, or every retry of it is abandoned the same way.
+func TestABatchFinishesAfterTheSenderStopsWaiting(t *testing.T) {
+	writer, manager := newWriter(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	writer.Failpoint = func(_ int64, stage string) error {
+		if stage == WriterStageAfterClaim {
+			cancel()
+		}
+
+		return nil
+	}
+
+	batch := []Event{
+		writerEvent(1, EventPageview, fixtureStart.Unix(), "/"),
+		writerEvent(1, EventPageview, fixtureStart.Unix()+30, "/pricing"),
+	}
+
+	committed, err := writer.Write(ctx, batch)
+	if err != nil {
+		t.Fatalf("the batch failed once its sender stopped waiting: %v", err)
+	}
+	if len(committed) != 2 {
+		t.Fatalf("committed %d events, want 2", len(committed))
+	}
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events"); got != 2 {
+		t.Fatalf("events table holds %d rows, want 2", got)
+	}
+
+	writer.Failpoint = nil
+	again, err := writer.Write(context.Background(), batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 2 {
+		t.Fatalf("the retry acknowledged %d events, want 2", len(again))
+	}
+}
+
 // TestIndependentWritersClaimOneUUIDAtomically exercises separate process-local
 // locks over the same account file. SQLite must settle every retry while only
 // one process writes the fact.
