@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
 	"time"
@@ -55,6 +56,31 @@ type IngestResponse struct {
 	Committed []uuid.UUID `json:"committed,omitempty"`
 	NotMine   []string    `json:"not_mine,omitempty"`
 	Error     string      `json:"error,omitempty"`
+
+	// Failed gives each account that could not be written its own reason.
+	Failed map[int64]string `json:"failed,omitempty"`
+}
+
+// accountFailures splits a batch's joined error into one reason per account.
+func accountFailures(err error) map[int64]string {
+	list := []error{err}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		list = joined.Unwrap()
+	}
+
+	var failed map[int64]string
+	for _, err := range list {
+		var account *AccountError
+		if !errors.As(err, &account) {
+			continue
+		}
+		if failed == nil {
+			failed = map[int64]string{}
+		}
+		failed[account.AccountID] = account.Err.Error()
+	}
+
+	return failed
 }
 
 // observe records the request view for the events that committed.
@@ -198,6 +224,7 @@ func (s *InternalShard) handleIngest(w http.ResponseWriter, r *http.Request) {
 
 		if err != nil {
 			response.Error = err.Error()
+			response.Failed = accountFailures(err)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(response)

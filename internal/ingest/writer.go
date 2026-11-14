@@ -216,6 +216,22 @@ func (w *Writer) lockFor(accountID int64) *accountLock {
 	return state
 }
 
+// AccountError is one account's failure inside a batch. Keeping the account
+// on the error lets the shard tell the sender which account failed and why, so
+// the sender can hold that account alone.
+type AccountError struct {
+	AccountID int64
+	Err       error
+}
+
+// Error names the account ahead of its failure.
+func (e *AccountError) Error() string {
+	return fmt.Sprintf("account %d: %v", e.AccountID, e.Err)
+}
+
+// Unwrap exposes the underlying failure to errors.Is and errors.As.
+func (e *AccountError) Unwrap() error { return e.Err }
+
 // Write applies a batch and returns the ids that are durably committed.
 //
 // The batch is grouped by account and written as one transaction per account.
@@ -273,7 +289,9 @@ func (w *Writer) Write(ctx context.Context, batch []Event) ([]uuid.UUID, error) 
 				// Every failure is kept, not only the first: a batch where four
 				// accounts failed for four reasons is four things somebody has to
 				// know about.
-				failures = append(failures, err)
+				if err != nil {
+					failures = append(failures, &AccountError{AccountID: accountID, Err: err})
+				}
 				mu.Unlock()
 			}
 		}()
@@ -298,7 +316,7 @@ func (w *Writer) Write(ctx context.Context, batch []Event) ([]uuid.UUID, error) 
 func (w *Writer) writeAccount(ctx context.Context, accountID int64, events []Event) (committed []uuid.UUID, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("write batch: account %d panicked: %v", accountID, recovered)
+			err = fmt.Errorf("write batch: panicked: %v", recovered)
 		}
 	}()
 
