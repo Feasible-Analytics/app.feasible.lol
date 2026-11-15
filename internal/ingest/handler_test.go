@@ -923,3 +923,61 @@ func TestAForwardedVisitorIsCountedAtTheirOwnAddress(t *testing.T) {
 		t.Errorf("counted at %q with the option off, want the sender %q", plain.ClientIP, server)
 	}
 }
+
+// TestASilentRelayIsReportedAsTheSocket is a customer's proxy on a shared edge
+// that forwards no visitor. The event is counted at the proxy either way, and
+// the source has to say so, because the proxy warning counts that source and
+// a browser stating nothing must not look the same.
+func TestASilentRelayIsReportedAsTheSocket(t *testing.T) {
+	h := newHandlerHarness(t)
+	h.service.Pipeline.TrustSender = true
+	h.service.Bots.SetDatacenterRanges([]string{"198.51.100.0/24"})
+
+	const server, browser, visitor = "198.51.100.20", "81.2.69.143", "81.2.69.142"
+
+	cases := []struct {
+		name       string
+		observed   string
+		stated     string
+		wantIP     string
+		wantSource string
+	}{
+		{"a relay that forwards the visitor", server, visitor, visitor, clientip.SourceForwardedFor},
+		{"a relay that forwards nothing", server, "", server, clientip.SourceSocket},
+		{"a relay that forwards only a private address", server, "10.0.3.4, 192.168.1.14", server, clientip.SourceSocket},
+		{"a browser that states nothing", browser, "", browser, clientip.SourceForwardedFor},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			headers := map[string]string{HeaderDebug: "true", clientip.HeaderForwardedFor: tc.observed}
+			if tc.stated != "" {
+				headers[clientip.HeaderSenderForwardedFor] = tc.stated
+			}
+
+			var debug Debug
+			recorder := post(t, h, "text/plain", validBody, headers)
+			if err := json.NewDecoder(recorder.Body).Decode(&debug); err != nil {
+				t.Fatalf("status %d: %v", recorder.Code, err)
+			}
+
+			if debug.ClientIP != tc.wantIP || debug.ClientIPSource != tc.wantSource {
+				t.Errorf("counted at %q from %q, want %q from %q", debug.ClientIP, debug.ClientIPSource, tc.wantIP, tc.wantSource)
+			}
+		})
+	}
+
+	// The relay's event is still accepted and classified, never refused, and
+	// the health recorder is handed the socket source the warning counts.
+	var seen []Observation
+	h.service.Handler.Observer = ObserverFunc(func(o Observation) { seen = append(seen, o) })
+
+	recorder := post(t, h, "text/plain", validBody, map[string]string{clientip.HeaderForwardedFor: server})
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status %d, want 202", recorder.Code)
+	}
+
+	if len(seen) != 1 || seen[0].Debug.ClientIPSource != clientip.SourceSocket {
+		t.Fatalf("the health recorder saw %+v, want one request from the socket", seen)
+	}
+}

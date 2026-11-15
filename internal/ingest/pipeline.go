@@ -112,6 +112,20 @@ func (p *Pipeline) VisitorIP(r *http.Request) clientip.ClientIP {
 	return clientip.ResolveVisitorIP(r, p.Trusted, p.TrustSender)
 }
 
+// reportedSource names where an event's address came from, for the debug view
+// and the health panel. Behind a shared edge a browser and a customer's relay
+// that forwards nothing both arrive with no stated visitor, and only the relay
+// is a fault. A hosting-provider address that stated no visitor is reported as
+// the socket, which is what the proxy warning counts; a browser keeps the
+// header the edge supplied.
+func (p *Pipeline) reportedSource(client clientip.ClientIP) string {
+	if client.SenderSilent && p.Bots != nil && p.Bots.IsDatacenterIP(client.Addr) {
+		return clientip.SourceSocket
+	}
+
+	return client.Source
+}
+
 // Debug is what X-Debug-Request returns: the resolved IP and every derived
 // field. It exists so anyone can debug their proxy in one curl, rather than
 // filing a ticket about numbers that look wrong for a reason only we can see.
@@ -253,7 +267,7 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 	rawUserAgent := r.Header.Get("User-Agent")
 
 	result.Debug.ClientIP = clientIP
-	result.Debug.ClientIPSource = client.Source
+	result.Debug.ClientIPSource = p.reportedSource(client)
 	result.Debug.TrustedProxy = !p.Trusted.Empty()
 	result.Debug.Domain = payload.Domain
 	result.Debug.EventName = payload.Name
