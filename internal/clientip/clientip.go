@@ -34,6 +34,12 @@ const (
 
 	// HeaderForwardedFor carries the chain appended by each proxy.
 	HeaderForwardedFor = "X-Forwarded-For"
+
+	// HeaderSenderForwardedFor carries the X-Forwarded-For chain exactly as
+	// the sender supplied it, copied there by a trusted edge that overwrites
+	// X-Forwarded-For with the address it observed. Only ResolveVisitorIP
+	// reads it, so a sender's own claim never reaches a login or API limit.
+	HeaderSenderForwardedFor = "X-Feasible-Sender-Forwarded-For"
 )
 
 // Names for where an address came from, returned to the debug endpoint. A
@@ -166,6 +172,68 @@ func ResolveClientIP(r *http.Request, trusted *TrustedProxies) ClientIP {
 	}
 
 	return ClientIP{Source: SourceNone}
+}
+
+// ResolveVisitorIP works out whose visit an event describes. It is for the
+// event endpoint only, where the sender is often a customer's own proxy or
+// server relaying a visitor, and the visitor is who must be located, hashed
+// and rate limited.
+//
+// With trustSender off it is ResolveClientIP. With it on, the sender is
+// believed one hop further: the chain a trusted edge copied into
+// X-Feasible-Sender-Forwarded-For names the visitor, provided it holds a
+// public address. A sender can only misstate visits to the site it is
+// already able to send any event for, which is why this is safe for events
+// and for nothing else.
+//
+// X-Feasible-IP and CF-Connecting-IP keep their precedence, and the address
+// the edge observed is the answer whenever the sender stated nothing usable.
+func ResolveVisitorIP(r *http.Request, trusted *TrustedProxies, trustSender bool) ClientIP {
+	client := ResolveClientIP(r, trusted)
+	if !trustSender || client.Source == SourceFeasibleIP || client.Source == SourceCloudflare {
+		return client
+	}
+
+	// The copy is only as good as whoever wrote it, so it is read from a
+	// trusted edge and never from a directly connected sender.
+	if !trusted.Contains(parseAddr(hostOnly(r.RemoteAddr))) {
+		return client
+	}
+
+	if addr := statedVisitor(r.Header.Get(HeaderSenderForwardedFor), trusted); addr.IsValid() {
+		return ClientIP{Addr: addr, Source: SourceForwardedFor}
+	}
+
+	return client
+}
+
+// statedVisitor returns the nearest public address in the chain a sender
+// supplied, reading right to left. Private and trusted hops are skipped
+// because they are the sender's own infrastructure, and a forward proxy on an
+// office network states a private address that would otherwise merge everyone
+// behind every such proxy. A malformed hop ends the walk with no answer.
+func statedVisitor(value string, trusted *TrustedProxies) netip.Addr {
+	parts := strings.Split(value, ",")
+
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := strings.TrimSpace(parts[i])
+		if part == "" {
+			continue
+		}
+
+		addr := parseAddr(part)
+		if !addr.IsValid() {
+			return netip.Addr{}
+		}
+
+		if trusted.Contains(addr) || IsPrivateOrLocal(addr) {
+			continue
+		}
+
+		return addr
+	}
+
+	return netip.Addr{}
 }
 
 // forwardedClient returns the nearest untrusted address in an X-Forwarded-For

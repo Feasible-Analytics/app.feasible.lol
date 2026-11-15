@@ -344,3 +344,128 @@ func TestIsPrivateOrLocal(t *testing.T) {
 		t.Error("the zero address reported as private; callers check validity themselves")
 	}
 }
+
+// TestVisitorIPBelievesTheSender covers the event endpoint behind a shared
+// edge. The edge overwrites X-Forwarded-For with the sender it observed and
+// copies the sender's own chain alongside, and the visitor is the nearest
+// public address in that copy.
+func TestVisitorIPBelievesTheSender(t *testing.T) {
+	trusted := mustTrust(t, "127.0.0.1")
+
+	cases := []struct {
+		name        string
+		peer        string
+		trustSender bool
+		headers     map[string]string
+		wantIP      string
+		wantSource  string
+	}{
+		{
+			name:        "a customer's proxy states the visitor",
+			peer:        "127.0.0.1:41000",
+			trustSender: true,
+			headers: map[string]string{
+				HeaderForwardedFor:       "198.51.100.20",
+				HeaderSenderForwardedFor: "81.2.69.142",
+			},
+			wantIP:     "81.2.69.142",
+			wantSource: SourceForwardedFor,
+		},
+		{
+			name:        "the nearest public hop wins over one written further left",
+			peer:        "127.0.0.1:41000",
+			trustSender: true,
+			headers: map[string]string{
+				HeaderForwardedFor:       "198.51.100.20",
+				HeaderSenderForwardedFor: "203.0.113.66, 81.2.69.142, 10.0.3.4",
+			},
+			wantIP:     "81.2.69.142",
+			wantSource: SourceForwardedFor,
+		},
+		{
+			name:        "an office proxy's private address leaves the sender in place",
+			peer:        "127.0.0.1:41000",
+			trustSender: true,
+			headers: map[string]string{
+				HeaderForwardedFor:       "198.51.100.20",
+				HeaderSenderForwardedFor: "192.168.1.14",
+			},
+			wantIP:     "198.51.100.20",
+			wantSource: SourceForwardedFor,
+		},
+		{
+			name:        "a malformed chain leaves the sender in place",
+			peer:        "127.0.0.1:41000",
+			trustSender: true,
+			headers: map[string]string{
+				HeaderForwardedFor:       "198.51.100.20",
+				HeaderSenderForwardedFor: "81.2.69.142, unknown",
+			},
+			wantIP:     "198.51.100.20",
+			wantSource: SourceForwardedFor,
+		},
+		{
+			name:        "a sender that states nothing is counted itself",
+			peer:        "127.0.0.1:41000",
+			trustSender: true,
+			headers:     map[string]string{HeaderForwardedFor: "198.51.100.20"},
+			wantIP:      "198.51.100.20",
+			wantSource:  SourceForwardedFor,
+		},
+		{
+			name:        "the explicit override still wins",
+			peer:        "127.0.0.1:41000",
+			trustSender: true,
+			headers: map[string]string{
+				HeaderFeasibleIP:         "203.0.113.5",
+				HeaderForwardedFor:       "198.51.100.20",
+				HeaderSenderForwardedFor: "81.2.69.142",
+			},
+			wantIP:     "203.0.113.5",
+			wantSource: SourceFeasibleIP,
+		},
+		{
+			name: "the copy is ignored when the option is off",
+			peer: "127.0.0.1:41000",
+			headers: map[string]string{
+				HeaderForwardedFor:       "198.51.100.20",
+				HeaderSenderForwardedFor: "81.2.69.142",
+			},
+			wantIP:     "198.51.100.20",
+			wantSource: SourceForwardedFor,
+		},
+		{
+			name:        "the copy is ignored from a peer that is not the edge",
+			peer:        "198.51.100.20:41000",
+			trustSender: true,
+			headers:     map[string]string{HeaderSenderForwardedFor: "81.2.69.142"},
+			wantIP:      "198.51.100.20",
+			wantSource:  SourceSocket,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ResolveVisitorIP(newIPRequest(tc.peer, tc.headers), trusted, tc.trustSender)
+			if got.String() != tc.wantIP || got.Source != tc.wantSource {
+				t.Errorf("got %s from %s, want %s from %s", got.String(), got.Source, tc.wantIP, tc.wantSource)
+			}
+		})
+	}
+}
+
+// TestKeyNeverReadsTheSenderCopy pins the boundary that makes believing a
+// sender safe: the address a login, reset or API limit is keyed on comes from
+// the edge alone, whatever the sender wrote.
+func TestKeyNeverReadsTheSenderCopy(t *testing.T) {
+	trusted := mustTrust(t, "127.0.0.1")
+
+	request := newIPRequest("127.0.0.1:41000", map[string]string{
+		HeaderForwardedFor:       "198.51.100.20",
+		HeaderSenderForwardedFor: "81.2.69.142",
+	})
+
+	if got := Key(request, trusted); got != "198.51.100.20" {
+		t.Errorf("Key = %q, want the address the edge observed", got)
+	}
+}

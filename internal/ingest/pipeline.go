@@ -78,12 +78,17 @@ type SaltSource interface {
 // injected, because every one of these is a different licensing, deployment or
 // performance decision and none of them should be reachable from a call site.
 type Pipeline struct {
-	Sites     SiteResolver
-	Salts     SaltSource
-	Geo       geo.Locator
-	Agents    *useragent.Cache
-	Bots      *BotFilter
-	Trusted   *clientip.TrustedProxies
+	Sites   SiteResolver
+	Salts   SaltSource
+	Geo     geo.Locator
+	Agents  *useragent.Cache
+	Bots    *BotFilter
+	Trusted *clientip.TrustedProxies
+
+	// TrustSender believes the visitor address a sender states through a
+	// trusted edge. See clientip.ResolveVisitorIP.
+	TrustSender bool
+
 	Shards    ShardResolver
 	Shield    IPShield
 	Hostnames HostnamePolicy
@@ -98,6 +103,13 @@ type Pipeline struct {
 	// one process — a test suite runs several — cannot make each other's
 	// stamps jump.
 	derived atomic.Int64
+}
+
+// VisitorIP resolves the address an event is counted at. The handler's rate
+// limit and the derivation below both call it, so one event is never limited
+// at one address and located at another.
+func (p *Pipeline) VisitorIP(r *http.Request) clientip.ClientIP {
+	return clientip.ResolveVisitorIP(r, p.Trusted, p.TrustSender)
 }
 
 // Debug is what X-Debug-Request returns: the resolved IP and every derived
@@ -235,7 +247,7 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 
 	// Step 1. The single highest-leverage configuration in the system, and the
 	// one that fails silently behind a 202 in every direction.
-	client := clientip.ResolveClientIP(r, p.Trusted)
+	client := p.VisitorIP(r)
 	clientIP := client.String()
 
 	rawUserAgent := r.Header.Get("User-Agent")
