@@ -64,9 +64,14 @@ FEASIBLE_APP_BASE_URL=https://stats.example.com
 FEASIBLE_APP_LISTEN=127.0.0.1:19301
 FEASIBLE_APP_DATA_DIR=./data
 FEASIBLE_INGEST_SALT=$(openssl rand -hex 32)
+FEASIBLE_INGEST_TRUSTED_PROXIES=127.0.0.1,::1
 FEASIBLE_OPERATOR_EMAIL=you@example.com
 EOF
 ```
+
+`FEASIBLE_INGEST_TRUSTED_PROXIES` is for the TLS proxy you'll run on the same machine (see below).
+Leave it out and every visitor arrives as `127.0.0.1`, so locations come out unknown, people on the
+same browser count as one visitor, and the bot filters judge your proxy instead of the visitor.
 
 Then create the databases, make your account and start it:
 
@@ -87,7 +92,26 @@ the snippet it shows you into your pages' `<head>`. The heart of it is one tag:
 A few things worth knowing:
 
 - **TLS.** `serve` speaks plain HTTP. Put any TLS proxy in front of it, Caddy or nginx, and set
-  `FEASIBLE_APP_BASE_URL` to the public `https://` address.
+  `FEASIBLE_APP_BASE_URL` to the public `https://` address. With Caddy on the same machine, this is
+  the whole config:
+
+  ```
+  stats.example.com {
+  	reverse_proxy 127.0.0.1:19301 {
+  		header_up -X-Feasible-IP
+  		header_up -CF-Connecting-IP
+  	}
+  }
+  ```
+
+  Caddy sets `X-Forwarded-For` itself. The two `header_up` lines drop headers Feasible would
+  believe ahead of it, so a visitor can't send their own. With nginx, set
+  `proxy_set_header X-Forwarded-For $remote_addr;` and set those two headers to `""`.
+- **Trusted proxies.** `FEASIBLE_INGEST_TRUSTED_PROXIES` takes addresses or CIDR ranges,
+  comma-separated, and both `serve` and `ingest` read it. Only connections from that list may say
+  who the visitor is. It's empty by default, which is right only when nothing sits in front of
+  Feasible. Behind a load balancer or CDN, add its ranges too. Leave it out behind a proxy and ten
+  wrong passwords from anyone lock everyone out of sign-in for 15 minutes.
 - **`FEASIBLE_APP_HOSTED=false`** turns off billing, trials, usage limits and public sign-up. Every
   feature stays on. Run `account create` again for each separate account; teammates join by
   invitation from inside the app.
