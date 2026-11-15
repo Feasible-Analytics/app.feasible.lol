@@ -29,6 +29,16 @@ and a `gh repo create`, with no rework.
 | `gtm-template/` | `feasible-gtm-template` | Apache-2.0 | What the tag manager community gallery expects. |
 | `looker-studio-connector/` | `feasible-looker-studio` | MIT | Apps Script, deployed by the customer into their own Google account. |
 
+## What has been split out
+
+Two folders have their public repository. The copy here is where a change is written and reviewed;
+the public repository is what people install from, so a change lands in both.
+
+| Folder | Public repository | How it is released |
+|---|---|---|
+| `sdk-go/` | [Feasible-Analytics/feasible-go](https://github.com/Feasible-Analytics/feasible-go) | A `v*` tag on `main`. `go get` reads it straight from GitHub. |
+| `gtm-template/` | [Feasible-Analytics/feasible-gtm-template](https://github.com/Feasible-Analytics/feasible-gtm-template) | A new entry at the top of `versions` in `metadata.yaml`, naming the commit in that repository. |
+
 The main product stays AGPL-3.0-or-later. Nothing in this directory is linked into the binary, and
 nothing in the binary depends on anything here.
 

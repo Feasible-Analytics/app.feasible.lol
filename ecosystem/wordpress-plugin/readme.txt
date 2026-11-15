@@ -1,5 +1,5 @@
 === Feasible Analytics ===
-Contributors: cloudmanic
+Contributors: spicermatthews
 Tags: analytics, privacy, statistics, cookieless, site search
 Requires at least: 5.9
 Tested up to: 7.1
