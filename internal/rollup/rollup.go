@@ -36,9 +36,9 @@ import (
 // saving for a graph nobody can ask for.
 const HourlyRetention = 14 * 24 * time.Hour
 
-// Chunk sizes for a rebuild. A build holds the write lock, so it is cut into
-// pieces that ingestion can interleave with rather than one transaction that
-// stops a busy site for a minute.
+// The largest chunk a rebuild grows to, in buckets. A build starts at one day
+// and doubles while its chunks stay cheap, so a quiet site builds in a few
+// large chunks and a busy one a day at a time.
 const (
 	dayChunk  = 7
 	hourChunk = 3
@@ -50,16 +50,21 @@ const (
 	monthChunk = 2
 )
 
-// chunkTarget is how long one chunk's transaction should take, and minChunk is
-// how far the size may shrink to hit it.
+// The limits a chunk's size is steered by, and minChunk is how far the size may
+// shrink to meet them. The size halves while a chunk misses either limit, which
+// needs no measurement of any particular site, because a site whose days are
+// expensive measures itself.
 //
-// A writer waiting on the account gives up after the 5s busy_timeout in
-// internal/store, so a chunk that runs longer than that turns an ingest
-// delivery into a "database is locked". The target leaves most of that window
-// spare, and the size halves until it fits — which needs no measurement of any
-// particular site, because a site whose days are expensive measures itself.
+// chunkTarget bounds the publish, which holds the account's write lock. A
+// writer waiting on the account gives up after the 5s busy_timeout in
+// internal/store, and the target leaves most of that window spare.
+//
+// workTarget bounds the whole chunk. The build rests in proportion to each
+// chunk, so a smaller chunk is what turns a busy site's build into short
+// bursts with the CPU handed back between them.
 const (
 	chunkTarget = 2 * time.Second
+	workTarget  = 30 * time.Second
 	minChunk    = 1
 )
 
@@ -117,10 +122,10 @@ type Builder struct {
 	// every interesting property of a roll-up is about which day it is.
 	Now func() time.Time
 
-	// Yield is how long a build rests between chunks, as a multiple of how long
-	// the chunk itself took. Roll-up freshness is a cache and storing an event
-	// is not, so when the two want the same lock the cache gives way. Zero
-	// means DefaultYield.
+	// Yield is how long a build rests after each chunk, as a multiple of how
+	// long the chunk took. The build shares the machine with ingestion and the
+	// dashboards, and a roll-up is a cache, so at the default it uses about
+	// half a core however big the site is. Zero means DefaultYield.
 	Yield float64
 
 	// Sleep is how the rest is taken. It takes the context so a shutdown does
@@ -134,12 +139,13 @@ type Builder struct {
 }
 
 // The bounds on one rest. MinYield keeps the pause real even after a chunk that
-// took no measurable time, and MaxYield stops a single slow chunk from stalling
-// a rebuild for minutes.
+// took no measurable time, and MaxYield bounds the pause after a chunk that
+// cannot be made smaller, a single day of a very busy site, so the hourly pass
+// still finishes well inside its hour.
 const (
 	DefaultYield = 1.0
 	MinYield     = time.Millisecond
-	MaxYield     = 5 * time.Second
+	MaxYield     = 2 * time.Minute
 )
 
 // New builds a builder over an account's writer handle.
@@ -147,12 +153,14 @@ func New(db *sql.DB) *Builder {
 	return &Builder{DB: db, Now: func() time.Time { return time.Now().UTC() }}
 }
 
-// NoRest is a Sleep for a build that is not competing with live ingestion — a
-// seed, or a test. Resting there buys nobody a lock and only costs wall clock.
+// NoRest is a Sleep for a build that is not competing with live traffic — a
+// seed, or a test. Resting there gives the CPU to nobody and only costs wall
+// clock.
 func NoRest(context.Context, time.Duration) error { return nil }
 
 // rest pauses in proportion to the work just done, so a rebuild that is cheap
-// barely pauses and one that is expensive gives most of the lock away.
+// barely pauses and one that is expensive hands the CPU back for as long as it
+// held it.
 func (b *Builder) rest(ctx context.Context, took time.Duration) error {
 	ratio := b.Yield
 	if ratio == 0 {
@@ -249,7 +257,7 @@ func (b *Builder) Rebuild(ctx context.Context, request Request) error {
 		defer staging.Close()
 	}
 
-	size := defaultChunk(grain)
+	size := firstChunk(grain)
 
 	for start := from; start.Before(to); {
 		end := b.chunkEnd(start, grain, size, to, location)
@@ -285,22 +293,35 @@ func (b *Builder) Rebuild(ctx context.Context, request Request) error {
 			return err
 		}
 
-		// The chunk size bounds how long ingestion waits, so it follows the
-		// write transaction, not the staging work before it.
-		size = nextChunkSize(grain, size, held)
+		size = nextChunkSize(grain, size, held, took)
 		start = end
 
-		if start.Before(to) {
-			if err := b.rest(ctx, took); err != nil {
-				return err
-			}
+		// The rest follows the last chunk too. The worker's next build, for
+		// another grain or another site, would otherwise start straight
+		// after it, and two chunks back to back are one long burst.
+		if err := b.rest(ctx, took); err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
-// defaultChunk is how many buckets a rebuild starts out doing at a time.
+// firstChunk is how many buckets a rebuild starts with: one day of a grain read
+// from events, so a site whose days are expensive never builds several at once,
+// and the ceiling for a derived grain, which sums daily rows and is cheap.
+func firstChunk(grain query.Grain) int {
+	switch grain {
+	case query.GrainHour:
+		return 24
+	case query.GrainDay:
+		return 1
+	default:
+		return defaultChunk(grain)
+	}
+}
+
+// defaultChunk is the most buckets one chunk may cover.
 func defaultChunk(grain query.Grain) int {
 	switch grain {
 	case query.GrainHour:
@@ -314,19 +335,16 @@ func defaultChunk(grain query.Grain) int {
 	}
 }
 
-// nextChunkSize halves the chunk while its transaction runs longer than a
-// waiting writer will tolerate, and grows it back towards the default when it
-// does not. The default is a ceiling, never a floor.
-//
-// A site whose days are cheap keeps the large chunk and finishes quickly; a
-// site whose days are expensive finds its own size, which is what bounds the
-// blocking interval without anybody having measured that site.
-func nextChunkSize(grain query.Grain, size int, took time.Duration) int {
-	if took > chunkTarget {
+// nextChunkSize halves the chunk while its publish holds the write lock longer
+// than chunkTarget or the whole chunk runs longer than workTarget, and grows it
+// back towards the default when it is well inside both. The default is a
+// ceiling, never a floor.
+func nextChunkSize(grain query.Grain, size int, held, took time.Duration) int {
+	if held > chunkTarget || took > workTarget {
 		return max(size/2, minChunk)
 	}
 
-	if took < chunkTarget/4 {
+	if held < chunkTarget/4 && took < workTarget/4 {
 		return min(size*2, defaultChunk(grain))
 	}
 

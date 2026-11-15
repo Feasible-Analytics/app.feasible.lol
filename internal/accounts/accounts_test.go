@@ -1414,7 +1414,7 @@ func TestACachedHandleStopsWorkingAfterAnotherManagerDeletesIt(t *testing.T) {
 // class of bug worth catching here; the delta is what makes a real stack dump
 // usable when other tests have left managers alive.
 func TestTheWatcherIsOneGoroutineWhateverTheAccountCount(t *testing.T) {
-	before := watchersRunning(t)
+	before := settledWatchers(t)
 
 	manager := NewManager(t.TempDir())
 	manager.MaxOpen = 100
@@ -1615,6 +1615,29 @@ func waitForWatchers(t *testing.T, baseline, want int) int {
 	}
 
 	return watching
+}
+
+// settledWatchers counts the watchers already running once the count stops
+// moving. A manager an earlier test closed may still be stopping its watcher,
+// and a baseline that includes it reads one short once it is gone.
+func settledWatchers(t *testing.T) int {
+	t.Helper()
+
+	count := watchersRunning(t)
+	steady := time.Now()
+
+	for deadline := time.Now().Add(10 * deletionWatchInterval); time.Now().Before(deadline); {
+		time.Sleep(20 * time.Millisecond)
+
+		if now := watchersRunning(t); now != count {
+			count, steady = now, time.Now()
+		}
+		if time.Since(steady) >= 2*deletionWatchInterval {
+			break
+		}
+	}
+
+	return count
 }
 
 // watchersRunning counts the goroutines parked in watchTombstones right now.

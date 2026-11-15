@@ -91,17 +91,17 @@ func TestTheWorkerNeverCoversToday(t *testing.T) {
 		}
 	}
 
-	// Today's daily row is built even though it is not covered, so that sealing
-	// the day at midnight is one small rebuild rather than a day's work.
+	// Nor is today built. A report reads today from raw events, so a row for
+	// it would be rebuilt every hour and never read.
 	var todayRows int
 	if err := reopened.Reader().QueryRow(
-		"SELECT COUNT(*) FROM rollup_visitors WHERE site_id = ? AND grain = ? AND bucket = ?",
-		testSite.ID, int64(query.GrainDay), boundary).Scan(&todayRows); err != nil {
+		"SELECT COUNT(*) FROM rollup_visitors WHERE site_id = ? AND bucket >= ?",
+		testSite.ID, boundary).Scan(&todayRows); err != nil {
 		t.Fatal(err)
 	}
 
-	if todayRows == 0 {
-		t.Error("today's daily row was not built, so sealing the day will be a full day's work")
+	if todayRows != 0 {
+		t.Errorf("%d rows were built for today, which no report reads", todayRows)
 	}
 }
 
@@ -340,8 +340,9 @@ func TestTheWorkerResumesAPartialBank(t *testing.T) {
 // rule written for the derived grains would extend the hourly rebuild to the
 // whole retention window on every pass, for every site older than a fortnight.
 //
-// The chunks a pass takes are what it costs: a rework of a couple of days is
-// one, and a fortnight is five.
+// The chunks a pass takes are what it costs. A rework builds two days of each
+// grain a day at a time, which is four; a fortnight of hourly buckets alone is
+// six more.
 func TestASteadyPassDoesNotRebuildTheWholeHourlyWindow(t *testing.T) {
 	dir := t.TempDir()
 
@@ -391,9 +392,8 @@ func TestASteadyPassDoesNotRebuildTheWholeHourlyWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// One rest is one chunk more than the minimum, across all four grains. A
-	// fortnight of hourly buckets alone is four on top of that.
-	if rests > 2 {
+	// The build rests once after every chunk.
+	if rests > 4 {
 		t.Errorf("a steady pass rested %d times, so it is rebuilding far more than a rework", rests)
 	}
 }
