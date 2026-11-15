@@ -364,10 +364,10 @@ func (r *Result) Dropped() bool {
 //
 // Two things are required on every event and neither can be guessed by the
 // server: the visitor's IP and their User-Agent. A request from your server
-// carrying neither arrives from a datacentre address with no visitor in it, and
-// the endpoint answers 400 rather than quietly attributing the visit to your
-// hosting provider. That is why they are constructor parameters on Event and
-// not optional fields, and why FromRequest exists.
+// carrying neither arrives from a datacentre address with no visitor in it. The
+// hosted service files it as datacenter_ip and a self-hosted install answers
+// 400. That is why they are constructor parameters on Event and not optional
+// fields, and why FromRequest exists.
 type Client struct {
 	domain      string
 	endpoint    string

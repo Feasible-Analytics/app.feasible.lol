@@ -52,10 +52,12 @@ This helper has no trusted-proxy configuration, so the WordPress edge must strip
 forwarding headers and write its own. A directly exposed installation should use `REMOTE_ADDR`
 instead so a client cannot choose its fingerprint or geolocation.
 
-The analytics server honours `X-Forwarded-For` only from an address on its trusted-proxy list
-(`FEASIBLE_INGEST_TRUSTED_PROXIES`); from any other peer it uses the socket address, which is your
-web host. On a self-hosted instance, add your web host's outbound address to that list, and confirm
-with `X-Debug-Request: true` — the derived event's `client_ip_source` should read `x-forwarded-for`.
+The hosted service counts the event at the nearest public address in `X-Forwarded-For`, whoever the
+sender is, so there is nothing to set up. A self-hosted instance honours the header only from an
+address on its trusted-proxy list (`FEASIBLE_INGEST_TRUSTED_PROXIES`); from any other peer it uses
+the socket address, which is your web host. There, add your web host's outbound address to that
+list. Confirm either one with `X-Debug-Request: true` — the derived event's `client_ip_source`
+should read `x-forwarded-for`.
 
 The upstream status code and the `x-feasible-dropped` header come back to the browser unchanged, so
 a classified event is still visible to whoever is debugging it. `X-Debug-Request: true` passes

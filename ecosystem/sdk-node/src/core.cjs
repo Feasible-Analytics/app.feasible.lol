@@ -216,10 +216,10 @@ function wait(ms, signal) {
 //
 // Two things are required on every event and neither can be guessed by the
 // server: the visitor's IP and their User-Agent. A call from your server
-// carrying neither arrives from a datacentre address with no visitor in it, and
-// the endpoint answers 400 rather than quietly attributing the visit to your
-// hosting provider. That is why `clientIp` and `userAgent` are required
-// properties, validated at call time, and why the two visitor helpers exist.
+// carrying neither arrives from a datacentre address with no visitor in it. The
+// hosted service files it as datacenter_ip and a self-hosted install answers
+// 400. That is why `clientIp` and `userAgent` are required properties,
+// validated at call time, and why the two visitor helpers exist.
 class FeasibleClient {
 	// The constructor validates the domain immediately, because the domain
 	// comes from configuration and a typo there is a silent nothing-recorded
