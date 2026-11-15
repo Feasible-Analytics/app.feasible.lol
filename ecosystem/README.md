@@ -45,13 +45,14 @@ nothing in the binary depends on anything here.
 ## The one thing every server-side SDK exists to prevent
 
 A server-side call that does not forward the visitor's real IP and the visitor's real User-Agent is
-classified as a datacentre bot and dropped. That single mistake is the largest support burden in this
+counted at the caller's own server: no location, every visitor merged into one, and usually filed as
+`datacenter_ip` and left out of the reports. That single mistake is the largest support burden in this
 product category, and it is invisible: the endpoint answers `202` either way.
 
 So in every SDK here, both are **required arguments**, and every one of them ships a helper that
-takes them off the incoming request rather than making the caller remember. The server helps too —
+takes them off the incoming request rather than making the caller remember. A self-hosted install helps too —
 a request arriving from a datacentre address with neither is answered with a `400` and a sentence
-naming what is missing, rather than being counted as a bot in silence.
+naming what is missing. The hosted service answers it `202` and files it as `datacenter_ip`.
 
 ## The wire contract they all match
 

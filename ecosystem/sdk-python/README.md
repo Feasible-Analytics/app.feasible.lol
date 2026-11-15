@@ -15,8 +15,10 @@ library only — no `requests`, nothing to conflict with what your application a
 
 A browser sends its own address and its own `User-Agent`. Your server does not. When you call the
 ingest endpoint from Python, **you** have to forward both, and if you do not, the request arrives from
-a datacentre address with nothing to identify the visitor. The server classifies it as a bot and drops
-it. You get a `202`, your code logs a success, and the numbers are quietly wrong for weeks.
+a datacentre address with nothing to identify the visitor. The event is counted at your server: no location, every visitor merged into one, and usually filed as
+`datacenter_ip` and left out of your reports. On the hosted service you get a `202`, your code logs a
+success, and the numbers are quietly wrong for weeks. A self-hosted install answers a call that
+carries neither with a `400` naming what is missing.
 
 So this SDK makes both **required arguments**:
 
@@ -53,11 +55,13 @@ address. They have no trusted-proxy configuration. Use them only behind an appli
 strips client-supplied forwarding headers and writes its own. On a directly exposed app, pass the
 socket address explicitly so a client cannot choose its fingerprint or geolocation.
 
-The client sends the visitor's address as `X-Forwarded-For`. **The ingest server honours that header
-only from an address on its trusted-proxy list** (`FEASIBLE_INGEST_TRUSTED_PROXIES`); from any other
-peer it uses the socket address, which is your server. On a self-hosted instance, add the address your
-application calls from to that list. Check it with `client.debug()`: the derived event's `client_ip_source` is
-`x-forwarded-for` when the header was used and `socket` when it was not.
+The client sends the visitor's address as `X-Forwarded-For`. **The hosted service** counts the event
+at the nearest public address in that header, whoever the sender is, so there is nothing to set up.
+**A self-hosted install** believes the header only from an address on its trusted-proxy list
+(`FEASIBLE_INGEST_TRUSTED_PROXIES`, empty by default). From any other peer it uses the socket address,
+which is your server, so add the address your application calls from to that list. Check either one
+with `client.debug()`: the derived event's `client_ip_source` is `x-forwarded-for` when the header was
+used and `socket` when it was not.
 
 ## Install
 

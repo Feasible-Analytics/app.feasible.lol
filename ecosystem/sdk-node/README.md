@@ -15,11 +15,12 @@ analytics. Zero runtime dependencies, no build step, MIT licensed.
 
 **A server-side call must carry the visitor's real IP and the visitor's real User-Agent.**
 
-Your server is in a datacentre. The analytics endpoint sees the address the request came
-from, and if that address is a datacentre with no forwarded visitor in it, the event is a
-bot: it is classified, dropped, and your dashboard shows nothing. This is the single most
-common way server-side analytics goes wrong, and the endpoint answers `400` with a
-sentence naming what is missing rather than pretending it worked.
+Your server is in a datacentre. The analytics endpoint sees the address the request came from,
+and with no forwarded visitor in it the event is counted at your server: no location, every
+visitor merged into one, and usually filed as `datacenter_ip` and left out of your reports.
+This is the single most common way server-side analytics goes wrong, and it is quiet. The
+hosted service answers `202` with the reason in the `x-feasible-dropped` header. A self-hosted
+install answers a call that carries neither with a `400` and a sentence naming what is missing.
 
 So `clientIp` and `userAgent` are **required properties on every event**, validated at call
 time. A call missing either throws a `FeasibleValidationError` naming the property and
@@ -40,11 +41,13 @@ configuration. Use them only behind an application edge that strips client-suppl
 headers and writes its own. On a directly exposed app, pass the socket address explicitly so a
 client cannot choose its fingerprint or geolocation.
 
-The client sends `clientIp` as `X-Forwarded-For`. **The ingest server honours that header only
-from an address on its trusted-proxy list** (`FEASIBLE_INGEST_TRUSTED_PROXIES`); from any other
-peer it uses the socket address, which is your server. On a self-hosted instance, add the
-address your application calls from to that list. Check it with `debug()`: the derived event's
-`client_ip_source` is `x-forwarded-for` when the header was used and `socket` when it was not.
+The client sends `clientIp` as `X-Forwarded-For`. **The hosted service** counts the event at
+the nearest public address in that header, whoever the sender is, so there is nothing to set
+up. **A self-hosted install** believes the header only from an address on its trusted-proxy
+list (`FEASIBLE_INGEST_TRUSTED_PROXIES`, empty by default). From any other peer it uses the
+socket address, which is your server, so add the address your application calls from to that
+list. Check either one with `debug()`: the derived event's `client_ip_source` is
+`x-forwarded-for` when the header was used and `socket` when it was not.
 
 ## Install
 
