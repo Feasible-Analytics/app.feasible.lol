@@ -359,6 +359,7 @@ func TestVisitorIPBelievesTheSender(t *testing.T) {
 		headers     map[string]string
 		wantIP      string
 		wantSource  string
+		wantSilent  bool
 	}{
 		{
 			name:        "a customer's proxy states the visitor",
@@ -392,6 +393,7 @@ func TestVisitorIPBelievesTheSender(t *testing.T) {
 			},
 			wantIP:     "198.51.100.20",
 			wantSource: SourceForwardedFor,
+			wantSilent: true,
 		},
 		{
 			name:        "a malformed chain leaves the sender in place",
@@ -403,6 +405,7 @@ func TestVisitorIPBelievesTheSender(t *testing.T) {
 			},
 			wantIP:     "198.51.100.20",
 			wantSource: SourceForwardedFor,
+			wantSilent: true,
 		},
 		{
 			name:        "a sender that states nothing is counted itself",
@@ -411,6 +414,7 @@ func TestVisitorIPBelievesTheSender(t *testing.T) {
 			headers:     map[string]string{HeaderForwardedFor: "198.51.100.20"},
 			wantIP:      "198.51.100.20",
 			wantSource:  SourceForwardedFor,
+			wantSilent:  true,
 		},
 		{
 			name:        "the explicit override still wins",
@@ -449,6 +453,10 @@ func TestVisitorIPBelievesTheSender(t *testing.T) {
 			got := ResolveVisitorIP(newIPRequest(tc.peer, tc.headers), trusted, tc.trustSender)
 			if got.String() != tc.wantIP || got.Source != tc.wantSource {
 				t.Errorf("got %s from %s, want %s from %s", got.String(), got.Source, tc.wantIP, tc.wantSource)
+			}
+
+			if got.SenderSilent != tc.wantSilent {
+				t.Errorf("SenderSilent = %v, want %v", got.SenderSilent, tc.wantSilent)
 			}
 		})
 	}

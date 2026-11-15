@@ -230,7 +230,10 @@ an event relayed through one is counted at that server. Set
 only, copy the sender's own `X-Forwarded-For` into
 `X-Feasible-Sender-Forwarded-For` while it overwrites `X-Forwarded-For` with the
 address it observed. The event endpoint then counts the nearest public address
-in that copy, and falls back to the observed sender when there is none. The edge
+in that copy, and falls back to the observed sender when there is none. A
+fallback to a hosting-provider address is reported as `client_ip_source`
+`socket`, so a customer's proxy that forwards nothing raises the health panel's
+proxy warning while a browser, which never states a visitor, does not. The edge
 must remove `X-Feasible-Sender-Forwarded-For` on every other route. Logins, the
 dashboard and the API never read it, so a sender can only misstate visits to a
 site it can already send any event for.

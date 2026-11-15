@@ -126,6 +126,12 @@ type ClientIP struct {
 
 	// Source names the header the address came from, for the debug endpoint.
 	Source string
+
+	// SenderSilent is true when ResolveVisitorIP looked for the visitor a
+	// sender stated and found none, so Addr is the sender a trusted edge
+	// observed. A browser and a relay that forwards nothing both look like
+	// this, and the caller tells them apart by what kind of address it is.
+	SenderSilent bool
 }
 
 // String renders the address for hashing and logging. It is the canonical
@@ -187,7 +193,8 @@ func ResolveClientIP(r *http.Request, trusted *TrustedProxies) ClientIP {
 // and for nothing else.
 //
 // X-Feasible-IP and CF-Connecting-IP keep their precedence, and the address
-// the edge observed is the answer whenever the sender stated nothing usable.
+// the edge observed is the answer whenever the sender stated nothing usable,
+// marked SenderSilent.
 func ResolveVisitorIP(r *http.Request, trusted *TrustedProxies, trustSender bool) ClientIP {
 	client := ResolveClientIP(r, trusted)
 	if !trustSender || client.Source == SourceFeasibleIP || client.Source == SourceCloudflare {
@@ -203,6 +210,8 @@ func ResolveVisitorIP(r *http.Request, trusted *TrustedProxies, trustSender bool
 	if addr := statedVisitor(r.Header.Get(HeaderSenderForwardedFor), trusted); addr.IsValid() {
 		return ClientIP{Addr: addr, Source: SourceForwardedFor}
 	}
+
+	client.SenderSilent = true
 
 	return client
 }
