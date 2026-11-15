@@ -133,6 +133,10 @@ type Handler struct {
 	// self-hosted install and every test get.
 	Slack *slack.Notifier
 
+	// SignupEvent reports each new account to the installation's own
+	// analytics. Nil reports nothing.
+	SignupEvent func(r *http.Request, method string, referral Referral)
+
 	// Verifier fetches a customer's page during the installation check. It is a
 	// field so a test can answer without a network, and so the timeout is set
 	// in one place. It dials through the outbound policy: the domain is a value
@@ -202,6 +206,10 @@ type Options struct {
 	Log                 *logger.Logger
 	Slack               *slack.Notifier
 
+	// SignupEvent is told about each account the moment it exists. Nil records
+	// nothing, which is what an install with no analytics site of its own gets.
+	SignupEvent func(r *http.Request, method string, referral Referral)
+
 	// OutboundPolicy bounds where the installation check may connect. Its zero
 	// value refuses loopback and every private range, which is the safe default
 	// for a build that forgets to set it.
@@ -256,6 +264,7 @@ func NewHandler(opts Options) (*Handler, error) {
 		ScriptBaseURL:       strings.TrimRight(opts.ScriptBaseURL, "/"),
 		Log:                 opts.Log,
 		Slack:               opts.Slack,
+		SignupEvent:         opts.SignupEvent,
 		Verifier:            opts.OutboundPolicy.NewClient(verifyTimeout),
 		Avatars:             opts.Avatars,
 		HelpURL:             opts.HelpURL,
@@ -271,7 +280,6 @@ func NewHandler(opts Options) (*Handler, error) {
 // ServeHTTP dispatches to the route table.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	i18n.Apply(w, r)
-	h.recordFirstTouch(w, r)
 	h.mux.ServeHTTP(&languageResponseWriter{ResponseWriter: w, request: r}, r)
 }
 

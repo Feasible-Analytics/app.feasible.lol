@@ -11,7 +11,7 @@
   <p class="mt-1 text-sm text-muted">{{ t $.Lang "auth.register.subtitle" }}</p>
 
   {{ if .GoogleEnabled }}
-    <a href="/auth/google?next={{ .Data.Next }}"
+    <a href="/auth/google?next={{ .Data.Next }}{{ .Data.Referral.LinkSuffix }}"
        class="mt-6 flex w-full items-center justify-center gap-2 border-2 border-field bg-card px-4 py-2.5 text-sm font-medium text-body hover:bg-hover">
       <svg class="h-4 w-4" viewBox="0 0 24 24" aria-hidden="true">
         <path fill="#4285F4" d="M22.5 12.2c0-.7-.1-1.4-.2-2H12v4h6a5 5 0 0 1-2.2 3.3v2.7h3.6c2.1-2 3.1-4.9 3.1-8z"/>
@@ -30,6 +30,9 @@
   <form method="post" action="{{ url $.Lang "/register" }}" class="{{ if not .GoogleEnabled }}mt-6{{ end }} space-y-4">
     <input type="hidden" name="csrf_token" value="{{ .CSRF }}">
     <input type="hidden" name="next" value="{{ .Data.Next }}">
+    {{ range $name, $values := .Data.Referral.Values }}
+      <input type="hidden" name="{{ $name }}" value="{{ index $values 0 }}">
+    {{ end }}
 
     <div>
       <label for="name" class="block text-sm font-medium text-body">{{ t $.Lang "auth.register.name" }} <span class="text-faint">{{ t $.Lang "auth.register.optional" }}</span></label>

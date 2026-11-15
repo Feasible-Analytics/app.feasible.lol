@@ -10,6 +10,7 @@ package auth
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/slack"
 )
@@ -62,6 +63,16 @@ func (h *Handler) announceGoogleSignup(ctx context.Context, user *User, referral
 	h.announceSignup(user, teamID, SignupMethodGoogle, referral)
 }
 
+// recordSignup reports a new account to the installation's own analytics, when
+// it has been given somewhere to report to.
+func (h *Handler) recordSignup(r *http.Request, method string, referral Referral) {
+	if h == nil || h.SignupEvent == nil {
+		return
+	}
+
+	h.SignupEvent(r, method, referral)
+}
+
 // announceClosure posts an owner deleting their account. It is called before
 // the deletion runs, because afterwards there is no name or address left to
 // put in the message.
@@ -77,7 +88,7 @@ func (h *Handler) announceClosure(user *User, teamID int64) {
 	})
 }
 
-// slackReferral turns a stored first touch into the shape the chat notice
+// slackReferral turns a stored referral into the shape the chat notice
 // speaks. The two are separate types because one is a database row and the
 // other is a message, and a change to either must not silently reshape the
 // other.
