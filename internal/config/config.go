@@ -206,6 +206,11 @@ type App struct {
 	// normal state everywhere but our own deployment, sends nothing.
 	SlackWebhookURL string
 
+	// SignupEventDomain is the site, tracked by this installation, that
+	// receives a Signup event each time an account is created. Empty records
+	// nothing.
+	SignupEventDomain string
+
 	// OperatorEmail is who a self-hosted deployment's people write to for
 	// support. We can see neither their data nor their machine.
 	OperatorEmail string
@@ -716,23 +721,24 @@ func LoadFrom(l *Loader) (*Config, error) {
 			IngestSalt:    l.String("FEASIBLE_INGEST_SALT", DefaultIngestSalt),
 		},
 		App: App{
-			Listen:           l.String("FEASIBLE_APP_LISTEN", DefaultAppListen),
-			DataDir:          l.String("FEASIBLE_APP_DATA_DIR", DefaultAppDataDir),
-			MaxOpenAccounts:  maxOpenAccounts,
-			WriteConcurrency: writeConcurrency,
-			BaseURL:          strings.TrimRight(l.String("FEASIBLE_APP_BASE_URL", DefaultAppBaseURL), "/"),
-			Transport:        strings.ToLower(l.String("FEASIBLE_APP_TRANSPORT", DefaultAppTransport)),
-			MailTransport:    strings.ToLower(l.String("FEASIBLE_APP_MAIL_TRANSPORT", DefaultAppMailTransport)),
-			Hosted:           hosted,
-			ShardID:          shardID,
-			MailFrom:         l.String("FEASIBLE_APP_MAIL_FROM", DefaultAppMailFrom),
-			SalesEmail:       l.String("FEASIBLE_APP_SALES_EMAIL", DefaultAppSalesEmail),
-			ScriptBaseURL:    strings.TrimRight(strings.TrimSpace(l.String("FEASIBLE_APP_SCRIPT_BASE_URL", "")), "/"),
-			SlackWebhookURL:  strings.TrimSpace(l.String("FEASIBLE_SLACK_WEBHOOK_URL", "")),
-			OperatorEmail:    strings.TrimSpace(l.String("FEASIBLE_OPERATOR_EMAIL", "")),
-			SecretKey:        strings.TrimSpace(l.String("FEASIBLE_APP_SECRET_KEY", "")),
-			Worker:           worker,
-			Gravatar:         gravatar,
+			Listen:            l.String("FEASIBLE_APP_LISTEN", DefaultAppListen),
+			DataDir:           l.String("FEASIBLE_APP_DATA_DIR", DefaultAppDataDir),
+			MaxOpenAccounts:   maxOpenAccounts,
+			WriteConcurrency:  writeConcurrency,
+			BaseURL:           strings.TrimRight(l.String("FEASIBLE_APP_BASE_URL", DefaultAppBaseURL), "/"),
+			Transport:         strings.ToLower(l.String("FEASIBLE_APP_TRANSPORT", DefaultAppTransport)),
+			MailTransport:     strings.ToLower(l.String("FEASIBLE_APP_MAIL_TRANSPORT", DefaultAppMailTransport)),
+			Hosted:            hosted,
+			ShardID:           shardID,
+			MailFrom:          l.String("FEASIBLE_APP_MAIL_FROM", DefaultAppMailFrom),
+			SalesEmail:        l.String("FEASIBLE_APP_SALES_EMAIL", DefaultAppSalesEmail),
+			ScriptBaseURL:     strings.TrimRight(strings.TrimSpace(l.String("FEASIBLE_APP_SCRIPT_BASE_URL", "")), "/"),
+			SlackWebhookURL:   strings.TrimSpace(l.String("FEASIBLE_SLACK_WEBHOOK_URL", "")),
+			SignupEventDomain: strings.ToLower(strings.TrimSpace(l.String("FEASIBLE_APP_SIGNUP_EVENT_DOMAIN", ""))),
+			OperatorEmail:     strings.TrimSpace(l.String("FEASIBLE_OPERATOR_EMAIL", "")),
+			SecretKey:         strings.TrimSpace(l.String("FEASIBLE_APP_SECRET_KEY", "")),
+			Worker:            worker,
+			Gravatar:          gravatar,
 			SMTP: SMTP{
 				Host:     strings.TrimSpace(l.String("FEASIBLE_SMTP_HOST", "")),
 				Port:     smtpPort,

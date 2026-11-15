@@ -1,6 +1,6 @@
 //
 // referral.go
-// First touch: where somebody came from, carried to the day they sign up.
+// Where a new account came from, carried to sign-up on the link and nowhere else.
 //
 // Created: 2026-09-05
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -14,180 +14,139 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"html/template"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
-	"time"
 )
 
-// referralCookie carries first touch until the account exists.
-//
-// It is first-party, holds nothing about a person, and never leaves this
-// deployment. The alternative is recording the referrer of the registration
-// POST, which is always our own form — every account would look self-referred
-// and the real answer would be lost.
-const referralCookie = "fs_ref"
+// The parameters a link to the sign-up page may carry. The campaign labels are
+// the standard ones. The other two are stated by the page that sent the
+// visitor, because by the time a browser reaches the form the only referrer it
+// reports is that page.
+const (
+	paramSource   = "utm_source"
+	paramMedium   = "utm_medium"
+	paramCampaign = "utm_campaign"
+	paramReferrer = "referrer"
+	paramLanding  = "landing"
+)
 
-// ReferralWindow is how long a first touch is still the reason somebody signed
-// up. Long enough for the read-about-it-then-think-about-it path this product
-// actually gets, short enough that a visit last quarter is not credited for a
-// decision made today.
-const ReferralWindow = 30 * 24 * time.Hour
+// The bounds on every stored and reported value. These arrive on a public URL,
+// so they are attacker-controlled text that ends up in a database row and a
+// chat message.
+const (
+	maxReferralLabel   = 80
+	maxReferralDomain  = 253
+	maxReferralLanding = 200
+)
 
-// maxReferralField bounds every stored and reported value. These arrive on a
-// public URL, so they are attacker-controlled text that ends up in a database
-// row and a chat message.
-const maxReferralField = 200
+// referralDomain is the shape of a hostname. Anything else in the referrer
+// field is dropped rather than stored.
+var referralDomain = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`)
 
-// Referral is where one person came from. Every field is optional: most
-// browsers send no referrer, and most visits carry no campaign.
+// Referral is where one person came from. Every field is optional: many
+// browsers and most apps send no referrer, and most visits carry no campaign.
 type Referral struct {
-	Referrer    string `json:"r,omitempty"`
-	Source      string `json:"s,omitempty"`
-	Medium      string `json:"m,omitempty"`
-	Campaign    string `json:"c,omitempty"`
-	LandingPage string `json:"l,omitempty"`
+	// Referrer is the domain that sent them, never a full address.
+	Referrer string `json:"r,omitempty"`
 
-	// FirstSeenAt is when they first arrived, in unix seconds. The gap between
-	// it and the account's creation is how long they thought about it.
-	FirstSeenAt int64 `json:"t,omitempty"`
+	Source   string `json:"s,omitempty"`
+	Medium   string `json:"m,omitempty"`
+	Campaign string `json:"c,omitempty"`
+
+	// LandingPage is the path of the first marketing page they saw, without
+	// its query string.
+	LandingPage string `json:"l,omitempty"`
 }
 
-// Empty reports whether we learned nothing at all. A recorded landing page
-// counts: it is the difference between "they came directly" and "we do not
-// know", and those are not the same answer.
+// Empty reports whether we learned nothing at all.
 func (r Referral) Empty() bool {
 	return r.Referrer == "" && r.Source == "" && r.Medium == "" &&
 		r.Campaign == "" && r.LandingPage == ""
 }
 
-// recordFirstTouch remembers where this visitor came from, once.
-//
-// It runs on the first page anybody loads and never again, because first touch
-// is the question. A visitor who already carries the cookie, or who is already
-// signed in, has either been answered or is not a prospect.
-func (h *Handler) recordFirstTouch(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		return
+// Values renders the referral as the link parameters it arrived in, so a form
+// or a redirect can hand it to the next request.
+func (r Referral) Values() url.Values {
+	values := url.Values{}
+
+	for _, field := range []struct{ name, value string }{
+		{paramSource, r.Source},
+		{paramMedium, r.Medium},
+		{paramCampaign, r.Campaign},
+		{paramReferrer, r.Referrer},
+		{paramLanding, r.LandingPage},
+	} {
+		if field.value != "" {
+			values.Set(field.name, field.value)
+		}
 	}
 
-	// A page load, not an asset or a beacon. Anything else would overwrite
-	// nothing but would set a cookie on requests that are not a person
-	// arriving.
-	if !strings.Contains(r.Header.Get("Accept"), "text/html") {
-		return
-	}
-
-	if _, err := r.Cookie(referralCookie); err == nil {
-		return
-	}
-
-	// Somebody signed in is not arriving for the first time. Their attribution,
-	// if we ever captured it, was written when they registered.
-	if _, err := r.Cookie(SessionCookieName); err == nil {
-		return
-	}
-
-	touch := requestReferral(r)
-	touch.LandingPage = clipField(r.URL.Path)
-	touch.FirstSeenAt = time.Now().UTC().Unix()
-
-	encoded, err := encodeReferral(touch)
-	if err != nil {
-		return
-	}
-
-	http.SetCookie(w, &http.Cookie{
-		Name:     referralCookie,
-		Value:    encoded,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   strings.HasPrefix(h.BaseURL, "https://"),
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(ReferralWindow.Seconds()),
-	})
+	return values
 }
 
-// clearFirstTouch drops the cookie once its contents have been stored. Keeping
-// it would credit a second account created from the same browser to the same
-// first touch, which is a different visit.
-func clearFirstTouch(w http.ResponseWriter, secure bool) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     referralCookie,
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   -1,
-	})
+// LinkSuffix is the referral as extra query parameters for a link that already
+// has a query string. It is typed as a URL so the template writes it as
+// parameters rather than escaping it into the value before it.
+func (r Referral) LinkSuffix() template.URL {
+	encoded := r.Values().Encode()
+	if encoded == "" {
+		return ""
+	}
+
+	return template.URL("&" + encoded) //nolint:gosec // url.Values.Encode escapes every name and value
 }
 
-// signupReferral is what to store against a new account.
-//
-// The cookie is preferred because it is the visit that actually sent them. The
-// live request is the fallback for somebody who registered on the same page
-// load that brought them, or whose browser refused the cookie.
-func signupReferral(r *http.Request) Referral {
+// requestReferral reads what one request says about where its visitor came
+// from. The link parameters and the form's hidden fields are the same names, so
+// the page load, the posted form and the federated sign-in link all read here.
+func requestReferral(r *http.Request) Referral {
 	if r == nil {
 		return Referral{}
 	}
 
-	if cookie, err := r.Cookie(referralCookie); err == nil {
-		if touch, err := decodeReferral(cookie.Value); err == nil && !touch.Empty() {
-			if touch.FirstSeenAt == 0 ||
-				time.Since(time.Unix(touch.FirstSeenAt, 0)) <= ReferralWindow {
-				return touch
-			}
-		}
-	}
-
-	touch := requestReferral(r)
-	if touch.Empty() {
-		return Referral{}
-	}
-
-	touch.LandingPage = clipField(r.URL.Path)
-	touch.FirstSeenAt = time.Now().UTC().Unix()
-
-	return touch
-}
-
-// requestReferral reads what one request carries about where it came from.
-func requestReferral(r *http.Request) Referral {
-	referral := Referral{Referrer: clipField(r.Referer())}
-
 	query := r.URL.Query()
 
-	// A tagged link puts the parameters on the URL; a form can carry them
-	// forward in a hidden field. Both are read, and the first non-empty wins.
+	// The first non-empty value wins, with the address ahead of the form body.
 	pick := func(names ...string) string {
 		for _, name := range names {
 			if value := strings.TrimSpace(query.Get(name)); value != "" {
-				return clipField(value)
+				return value
 			}
 			if value := strings.TrimSpace(r.PostFormValue(name)); value != "" {
-				return clipField(value)
+				return value
 			}
 		}
 
 		return ""
 	}
 
-	referral.Source = pick("utm_source", "ref", "via")
-	referral.Medium = pick("utm_medium")
-	referral.Campaign = pick("utm_campaign")
+	referral := Referral{
+		Source:      clipField(pick(paramSource, "ref", "via"), maxReferralLabel),
+		Medium:      clipField(pick(paramMedium), maxReferralLabel),
+		Campaign:    clipField(pick(paramCampaign), maxReferralLabel),
+		Referrer:    cleanDomain(pick(paramReferrer)),
+		LandingPage: cleanLanding(pick(paramLanding)),
+	}
 
-	// Our own pages are not a referral. Reporting the last hop would make every
-	// signup look self-referred and hide whoever actually sent them.
-	if sameHost(referral.Referrer, r.Host) {
+	// A visitor who followed a link straight to this deployment has no page of
+	// ours to state the referrer for them, so the browser's own header is read.
+	if referral.Referrer == "" {
+		referral.Referrer = cleanDomain(r.Referer())
+	}
+
+	// Our own pages are not a referral. Reporting them would make every
+	// sign-up look self-referred and hide whoever actually sent the visitor.
+	if ownDomain(referral.Referrer, r.Host) {
 		referral.Referrer = ""
 	}
 
 	return referral
 }
 
-// encodeReferral packs a first touch into a cookie value.
+// encodeReferral packs a referral into a token that is safe inside a URL.
 func encodeReferral(referral Referral) (string, error) {
 	payload, err := json.Marshal(referral)
 	if err != nil {
@@ -197,13 +156,9 @@ func encodeReferral(referral Referral) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(payload), nil
 }
 
-// decodeReferral reads a cookie value back.
-//
-// The value is not signed. There is nothing to forge: the only thing a visitor
-// can do by editing it is lie about where they came from, which they can do
-// anyway by sending any referrer they like. Every field is clipped again on the
-// way out, because the length limit is what protects the row and the chat
-// message and this is the path that skipped it.
+// decodeReferral reads a token back. Every field is cleaned again on the way
+// out, because the token travels through the browser and the length limits are
+// what protect the row and the chat message.
 func decodeReferral(value string) (Referral, error) {
 	payload, err := base64.RawURLEncoding.DecodeString(value)
 	if err != nil {
@@ -215,32 +170,114 @@ func decodeReferral(value string) (Referral, error) {
 		return Referral{}, err
 	}
 
-	referral.Referrer = clipField(referral.Referrer)
-	referral.Source = clipField(referral.Source)
-	referral.Medium = clipField(referral.Medium)
-	referral.Campaign = clipField(referral.Campaign)
-	referral.LandingPage = clipField(referral.LandingPage)
+	referral.Referrer = cleanDomain(referral.Referrer)
+	referral.Source = clipField(referral.Source, maxReferralLabel)
+	referral.Medium = clipField(referral.Medium, maxReferralLabel)
+	referral.Campaign = clipField(referral.Campaign, maxReferralLabel)
+	referral.LandingPage = cleanLanding(referral.LandingPage)
 
 	return referral, nil
 }
 
-// sameHost reports whether a referrer points back at this deployment.
-func sameHost(referrer, host string) bool {
-	if referrer == "" || host == "" {
-		return false
+// stateWithReferral appends a referral to a federated sign-in's state value.
+// The identity provider returns the state unchanged on the callback link, which
+// is what carries the referral across a redirect that leaves this deployment.
+func stateWithReferral(state string, referral Referral) string {
+	if referral.Empty() {
+		return state
 	}
 
-	parsed, err := url.Parse(referrer)
+	encoded, err := encodeReferral(referral)
 	if err != nil {
+		return state
+	}
+
+	return state + "." + encoded
+}
+
+// referralFromState reads back what stateWithReferral appended. A state with
+// nothing appended, or with something unreadable, is an empty referral.
+func referralFromState(state string) Referral {
+	_, encoded, found := strings.Cut(state, ".")
+	if !found {
+		return Referral{}
+	}
+
+	referral, err := decodeReferral(encoded)
+	if err != nil {
+		return Referral{}
+	}
+
+	return referral
+}
+
+// cleanDomain reduces a referrer to its hostname. It accepts a bare hostname or
+// a full address and keeps only the host, lower-cased, so no path, query string
+// or port is ever stored.
+func cleanDomain(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+
+	if strings.Contains(value, "://") {
+		parsed, err := url.Parse(value)
+		if err != nil {
+			return ""
+		}
+		value = parsed.Hostname()
+	} else {
+		if cut := strings.IndexAny(value, "/?#"); cut >= 0 {
+			value = value[:cut]
+		}
+		if host, _, found := strings.Cut(value, ":"); found {
+			value = host
+		}
+	}
+
+	if len(value) > maxReferralDomain || !referralDomain.MatchString(value) {
+		return ""
+	}
+
+	return value
+}
+
+// cleanLanding reduces a landing page to its path. Anything that is not a
+// local path is dropped, and the query string and fragment are cut off.
+func cleanLanding(value string) string {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") {
+		return ""
+	}
+
+	if cut := strings.IndexAny(value, "?#"); cut >= 0 {
+		value = value[:cut]
+	}
+
+	return clipField(value, maxReferralLanding)
+}
+
+// ownDomain reports whether a referring domain is this deployment or the site
+// it sits under, so app.example.com treats example.com and www.example.com as
+// its own pages.
+func ownDomain(domain, host string) bool {
+	if domain == "" || host == "" {
 		return false
 	}
 
-	return strings.EqualFold(parsed.Host, host)
+	host = strings.ToLower(host)
+	if name, _, found := strings.Cut(host, ":"); found {
+		host = name
+	}
+
+	domain = strings.TrimPrefix(domain, "www.")
+
+	return host == domain || strings.HasSuffix(host, "."+domain)
 }
 
 // clipField bounds one value and strips the control characters that would let a
-// crafted referrer forge extra lines in a chat message.
-func clipField(value string) string {
+// crafted link forge extra lines in a chat message.
+func clipField(value string, limit int) string {
 	value = strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\r' || r == '\t' {
 			return ' '
@@ -249,18 +286,15 @@ func clipField(value string) string {
 		return r
 	}, strings.TrimSpace(value))
 
-	if len(value) > maxReferralField {
-		return value[:maxReferralField] + "…"
+	if len(value) > limit {
+		return strings.ToValidUTF8(value[:limit], "")
 	}
 
 	return value
 }
 
-// SaveReferral records where one account came from.
-//
-// It is a separate write rather than part of the account transaction. Losing an
-// attribution row is a gap in a report; failing a registration over one would
-// cost the customer the thing they were trying to do.
+// SaveReferral records where one account came from. The first write for an
+// account is the only one kept.
 func (s *Store) SaveReferral(ctx context.Context, userID int64, referral Referral) error {
 	if referral.Empty() {
 		return nil
@@ -268,27 +302,25 @@ func (s *Store) SaveReferral(ctx context.Context, userID int64, referral Referra
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO user_referrals
-			(user_id, referrer, source, medium, campaign, landing_page, first_seen_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			(user_id, referrer, source, medium, campaign, landing_page, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id) DO NOTHING`,
 		userID, referral.Referrer, referral.Source, referral.Medium,
-		referral.Campaign, referral.LandingPage, referral.FirstSeenAt,
-		s.Now().UTC().Unix(),
+		referral.Campaign, referral.LandingPage, s.Now().UTC().Unix(),
 	)
 
 	return err
 }
 
-// Referral reads back where one account came from. It is here for the reports
-// this table exists to make answerable, and for the tests.
+// Referral reads back where one account came from.
 func (s *Store) Referral(ctx context.Context, userID int64) (Referral, bool, error) {
 	var referral Referral
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT referrer, source, medium, campaign, landing_page, first_seen_at
+		SELECT referrer, source, medium, campaign, landing_page
 		FROM user_referrals WHERE user_id = ?`, userID).
 		Scan(&referral.Referrer, &referral.Source, &referral.Medium,
-			&referral.Campaign, &referral.LandingPage, &referral.FirstSeenAt)
+			&referral.Campaign, &referral.LandingPage)
 
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -301,24 +333,15 @@ func (s *Store) Referral(ctx context.Context, userID int64) (Referral, bool, err
 	return referral, true, nil
 }
 
-// captureReferral stores where a brand-new account came from and returns what
-// it stored, so the chat notice and the row can never disagree.
-//
-// A failed write is logged and the registration continues. Losing an
-// attribution row is a gap in a report; failing a signup over one would cost
-// somebody the thing they came here to do.
-func (h *Handler) captureReferral(w http.ResponseWriter, r *http.Request, userID int64) Referral {
-	referral := signupReferral(r)
-
-	clearFirstTouch(w, strings.HasPrefix(h.BaseURL, "https://"))
-
+// captureReferral stores where a brand-new account came from. A failed write
+// is logged and the registration continues, because an attribution row is not
+// worth failing a sign-up over.
+func (h *Handler) captureReferral(ctx context.Context, userID int64, referral Referral) {
 	if referral.Empty() || h.Store == nil {
-		return referral
+		return
 	}
 
-	if err := h.Store.SaveReferral(r.Context(), userID, referral); err != nil && h.Log != nil {
+	if err := h.Store.SaveReferral(ctx, userID, referral); err != nil && h.Log != nil {
 		h.Log.Error("could not store where an account came from", "user", userID, "error", err)
 	}
-
-	return referral
 }

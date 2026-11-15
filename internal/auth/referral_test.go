@@ -1,6 +1,6 @@
 //
 // referral_test.go
-// Tests for capturing first touch and keeping it until the account exists.
+// Tests for carrying where a visitor came from to the account they create.
 //
 // Created: 2026-09-05
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -9,12 +9,12 @@
 package auth
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 )
 
 // pageRequest is a browser asking for an HTML page.
@@ -43,158 +43,311 @@ func signupRequest(t *testing.T, target, referer string, form url.Values) *http.
 	return req
 }
 
-// firstTouchCookie runs a page load through the recorder and returns the cookie
-// it set, or nil.
-func firstTouchCookie(t *testing.T, req *http.Request) *http.Cookie {
+// readBody returns a response's body and closes it.
+func readBody(t *testing.T, resp *http.Response) string {
 	t.Helper()
+	defer closeResponseBody(t, resp)
 
-	recorder := httptest.NewRecorder()
-	(&Handler{BaseURL: "https://app.example.test"}).recordFirstTouch(recorder, req)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	for _, cookie := range recorder.Result().Cookies() {
-		if cookie.Name == referralCookie {
-			return cookie
+	return string(body)
+}
+
+// TestLinkParametersAreRead covers the link the marketing site builds: the
+// campaign labels, the domain that sent the visitor and the page they landed on.
+func TestLinkParametersAreRead(t *testing.T) {
+	req := pageRequest(t,
+		"https://app.example.test/register?utm_source=hn&utm_medium=social&utm_campaign=launch"+
+			"&referrer=news.example.test&landing=%2Fpricing%2F",
+		"https://example.test/")
+
+	got := requestReferral(req)
+	want := Referral{
+		Referrer: "news.example.test", Source: "hn", Medium: "social",
+		Campaign: "launch", LandingPage: "/pricing/",
+	}
+	if got != want {
+		t.Fatalf("the link was read wrong:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// TestHiddenFieldsAreRead covers the posted form, whose own referrer is always
+// the sign-up page and whose address carries nothing.
+func TestHiddenFieldsAreRead(t *testing.T) {
+	req := signupRequest(t, "https://app.example.test/register", "https://app.example.test/register", url.Values{
+		"utm_source": {"reddit"},
+		"referrer":   {"www.reddit.example"},
+		"landing":    {"/"},
+	})
+
+	got := requestReferral(req)
+	want := Referral{Referrer: "www.reddit.example", Source: "reddit", LandingPage: "/"}
+	if got != want {
+		t.Fatalf("the form was read wrong:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// TestOnlyTheReferringDomainIsKept is the privacy claim: a referrer's path and
+// query string can hold a search term or a token, and neither is ever kept.
+func TestOnlyTheReferringDomainIsKept(t *testing.T) {
+	cases := map[string]string{
+		"https://News.Example.test/item?id=1&token=secret": "news.example.test",
+		"news.example.test/item?id=1":                      "news.example.test",
+		"news.example.test:8443":                           "news.example.test",
+		"android-app://com.example.reader/":                "com.example.reader",
+		"not a domain":                                     "",
+		"<script>":                                         "",
+		"":                                                 "",
+	}
+
+	for input, want := range cases {
+		if got := cleanDomain(input); got != want {
+			t.Errorf("cleanDomain(%q) = %q, want %q", input, got, want)
 		}
 	}
 
-	return nil
-}
-
-// TestFirstTouchSurvivesToTheSignup is the whole reason this exists. The
-// registration form is posted from our own page, so without carrying the
-// original visit across, every account would look self-referred.
-func TestFirstTouchSurvivesToTheSignup(t *testing.T) {
-	landing := pageRequest(t,
-		"https://app.example.test/pricing?utm_source=hn&utm_medium=social&utm_campaign=launch",
-		"https://news.example.test/item?id=1")
-	landing.Host = "app.example.test"
-
-	cookie := firstTouchCookie(t, landing)
-	if cookie == nil {
-		t.Fatal("no first touch was recorded")
-	}
-
-	// Days later, on our own form.
-	signup := signupRequest(t, "https://app.example.test/register", "https://app.example.test/pricing", nil)
-	signup.Host = "app.example.test"
-	signup.AddCookie(cookie)
-
-	referral := signupReferral(signup)
-
-	if referral.Referrer != "https://news.example.test/item?id=1" {
-		t.Fatalf("the original referrer was lost: %+v", referral)
-	}
-	if referral.Source != "hn" || referral.Medium != "social" || referral.Campaign != "launch" {
-		t.Fatalf("the original campaign was lost: %+v", referral)
-	}
-	if referral.LandingPage != "/pricing" {
-		t.Fatalf("the landing page was lost: %+v", referral)
+	req := pageRequest(t, "https://app.example.test/register", "https://news.example.test/item?id=1&token=secret")
+	if got := requestReferral(req).Referrer; got != "news.example.test" {
+		t.Fatalf("the browser's referrer was stored as %q", got)
 	}
 }
 
-// TestFirstTouchIsNotOverwritten covers the "first" in first touch. Somebody who
-// arrives from one place and wanders the site must stay credited to the place
-// they arrived from.
-func TestFirstTouchIsNotOverwritten(t *testing.T) {
-	first := pageRequest(t, "https://app.example.test/", "https://news.example.test/")
-	first.Host = "app.example.test"
-
-	cookie := firstTouchCookie(t, first)
-	if cookie == nil {
-		t.Fatal("no first touch was recorded")
+// TestTheLandingPageIsAPath keeps a query string, another site's address and
+// anything that is not a path out of the landing page.
+func TestTheLandingPageIsAPath(t *testing.T) {
+	cases := map[string]string{
+		"/pricing/":                 "/pricing/",
+		"/pricing/?email=a@b.test":  "/pricing/",
+		"/docs/#install":            "/docs/",
+		"//evil.example.test/":      "",
+		"https://evil.example.test": "",
+		"pricing":                   "",
 	}
 
-	second := pageRequest(t, "https://app.example.test/pricing", "https://elsewhere.example.test/")
-	second.Host = "app.example.test"
-	second.AddCookie(cookie)
-
-	if again := firstTouchCookie(t, second); again != nil {
-		t.Fatalf("a later page overwrote the first touch: %q", again.Value)
+	for input, want := range cases {
+		if got := cleanLanding(input); got != want {
+			t.Errorf("cleanLanding(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
 
-// TestSignedInVisitorsAreNotRecorded keeps the cookie off people who already
-// have an account. They are not a prospect and their attribution was written
-// the day they registered.
-func TestSignedInVisitorsAreNotRecorded(t *testing.T) {
-	req := pageRequest(t, "https://app.example.test/sites", "https://news.example.test/")
-	req.Host = "app.example.test"
-	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "a-session"})
-
-	if cookie := firstTouchCookie(t, req); cookie != nil {
-		t.Fatalf("a signed-in request was recorded: %q", cookie.Value)
-	}
-}
-
-// TestAssetsAreNotRecorded keeps the cookie off requests that are not a person
-// arriving on a page.
-func TestAssetsAreNotRecorded(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "https://app.example.test/static/app.css", nil)
-	req.Header.Set("Accept", "text/css,*/*;q=0.1")
-
-	if cookie := firstTouchCookie(t, req); cookie != nil {
-		t.Fatalf("an asset request was recorded: %q", cookie.Value)
-	}
-}
-
-// TestOurOwnPagesAreNotAReferral is what keeps the field meaningful. Every
-// signup is posted from our own form.
+// TestOurOwnPagesAreNotAReferral covers both the deployment itself and the
+// site it sits under, whether the browser or the link names them.
 func TestOurOwnPagesAreNotAReferral(t *testing.T) {
-	req := pageRequest(t, "https://app.example.test/register", "https://app.example.test/pricing")
-	req.Host = "app.example.test"
+	for _, referer := range []string{
+		"https://app.example.test/login",
+		"https://example.test/pricing/",
+		"https://www.example.test/",
+	} {
+		req := pageRequest(t, "https://app.example.test/register", referer)
+		req.Host = "app.example.test"
 
-	if referral := requestReferral(req); referral.Referrer != "" {
-		t.Fatalf("our own page was reported as a referral: %+v", referral)
+		if got := requestReferral(req); !got.Empty() {
+			t.Errorf("%s was recorded as a referral: %+v", referer, got)
+		}
+	}
+
+	req := pageRequest(t, "https://app.example.test/register?referrer=example.test", "")
+	req.Host = "app.example.test"
+	if got := requestReferral(req); got.Referrer != "" {
+		t.Fatalf("a link naming our own site was recorded as a referral: %+v", got)
+	}
+
+	req = pageRequest(t, "https://app.example.test/register", "https://notexample.test/")
+	req.Host = "app.example.test"
+	if got := requestReferral(req); got.Referrer != "notexample.test" {
+		t.Fatalf("a different site was mistaken for our own: %+v", got)
 	}
 }
 
-// TestStaleFirstTouchIsIgnored covers a visit old enough that it is no longer
-// the reason somebody signed up.
-func TestStaleFirstTouchIsIgnored(t *testing.T) {
-	stale, err := encodeReferral(Referral{
-		Referrer:    "https://news.example.test/",
-		FirstSeenAt: time.Now().Add(-2 * ReferralWindow).Unix(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	req := signupRequest(t, "https://app.example.test/register", "", nil)
-	req.Host = "app.example.test"
-	req.AddCookie(&http.Cookie{Name: referralCookie, Value: stale})
-
-	if referral := signupReferral(req); referral.Referrer != "" {
-		t.Fatalf("a stale first touch was credited: %+v", referral)
-	}
-}
-
-// TestReferralFieldsAreBounded covers text an attacker controls. A referrer is
-// whatever a browser was told to send, and it reaches a database row and a chat
-// message.
+// TestReferralFieldsAreBounded holds the limit on text that arrives on a public
+// link and ends up in a row and a chat message.
 func TestReferralFieldsAreBounded(t *testing.T) {
-	long := "https://example.test/" + strings.Repeat("a", maxReferralField*2)
+	long := strings.Repeat("a", 5000)
 
-	forged, err := encodeReferral(Referral{Referrer: long + "\nfake line"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	req := pageRequest(t, "https://app.example.test/register?utm_source="+long+
+		"&utm_campaign=line%0Abreak&landing=/"+long+"&referrer="+long, "")
 
-	// Through the cookie, which is the path that skipped the live clip.
-	decoded, err := decodeReferral(forged)
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := requestReferral(req)
 
-	if strings.ContainsAny(decoded.Referrer, "\r\n") {
-		t.Fatalf("a referrer kept its line breaks: %q", decoded.Referrer)
+	if len(got.Source) != maxReferralLabel {
+		t.Errorf("the source is %d characters, want %d", len(got.Source), maxReferralLabel)
 	}
-	if len([]rune(decoded.Referrer)) > maxReferralField+1 {
-		t.Fatalf("a referrer was not clipped: %d runes", len([]rune(decoded.Referrer)))
+	if len(got.LandingPage) != maxReferralLanding {
+		t.Errorf("the landing page is %d characters, want %d", len(got.LandingPage), maxReferralLanding)
+	}
+	if got.Referrer != "" {
+		t.Errorf("an oversized referrer was kept: %d characters", len(got.Referrer))
+	}
+	if strings.ContainsAny(got.Campaign, "\n\r") {
+		t.Errorf("a line break survived in the campaign: %q", got.Campaign)
 	}
 }
 
-// TestReferralIsStoredOnce covers the row itself, including the redelivery
-// guard: an account's origin is written when it is created and never revised.
+// TestNoCookieIsSetForAVisitor is the promise this file keeps: a visitor who
+// arrives on a tagged link is remembered by the link and nothing else.
+func TestNoCookieIsSetForAVisitor(t *testing.T) {
+	app := newTestApp(t)
+
+	req := pageRequest(t, "/login?utm_source=hn", "https://news.example.test/item?id=1")
+	recorder := httptest.NewRecorder()
+	app.ServeHTTP(recorder, req)
+
+	for _, cookie := range recorder.Result().Cookies() {
+		if strings.Contains(cookie.Value, "hn") || strings.Contains(cookie.Name, "ref") {
+			t.Fatalf("a visitor was given a cookie about where they came from: %s", cookie.Name)
+		}
+	}
+}
+
+// TestTheSignupFormCarriesTheLink checks the page hands the link's parameters
+// to the form as hidden fields, which is the only place they are held.
+func TestTheSignupFormCarriesTheLink(t *testing.T) {
+	app := newTestApp(t)
+	c := newClient(t, app)
+
+	body := c.body("/register?utm_source=hn&utm_medium=social&utm_campaign=launch&referrer=news.example.test&landing=/pricing/")
+
+	for _, field := range []string{
+		`name="utm_source" value="hn"`,
+		`name="utm_medium" value="social"`,
+		`name="utm_campaign" value="launch"`,
+		`name="referrer" value="news.example.test"`,
+		`name="landing" value="/pricing/"`,
+	} {
+		if !strings.Contains(body, field) {
+			t.Errorf("the form is missing %s", field)
+		}
+	}
+
+	if plain := c.body("/register"); strings.Contains(plain, `name="utm_source"`) {
+		t.Error("an untagged visit was given a source field")
+	}
+}
+
+// TestASignupStoresItsSourceAndIsReported walks the whole path: a tagged link,
+// the form, the account, the stored row and the one report that an account now
+// exists.
+func TestASignupStoresItsSourceAndIsReported(t *testing.T) {
+	app := newTestApp(t)
+
+	type report struct {
+		method   string
+		referral Referral
+	}
+	var reports []report
+	app.SignupEvent = func(_ *http.Request, method string, referral Referral) {
+		reports = append(reports, report{method, referral})
+	}
+
+	c := newClient(t, app)
+
+	// A rejected form reports nothing and keeps the source for the next try.
+	resp := c.post("/register", url.Values{
+		"email": {"jane@example.test"}, "password": {"short"},
+		"utm_source": {"hn"}, "referrer": {"news.example.test"}, "landing": {"/pricing/"},
+	})
+	rejected := readBody(t, resp)
+	if !strings.Contains(rejected, `name="utm_source" value="hn"`) {
+		t.Fatal("a rejected form lost where the visitor came from")
+	}
+	if len(reports) != 0 {
+		t.Fatalf("a rejected form was reported as a sign-up: %+v", reports)
+	}
+
+	resp = c.post("/register", url.Values{
+		"email": {"jane@example.test"}, "password": {"a long enough password"},
+		"utm_source": {"hn"}, "utm_medium": {"social"}, "utm_campaign": {"launch"},
+		"referrer": {"https://news.example.test/item?id=1"}, "landing": {"/pricing/?x=1"},
+	})
+	closeResponseBody(t, resp)
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("registration answered %d", resp.StatusCode)
+	}
+
+	want := Referral{
+		Referrer: "news.example.test", Source: "hn", Medium: "social",
+		Campaign: "launch", LandingPage: "/pricing/",
+	}
+
+	user, err := app.store.UserByEmail(t.Context(), "jane@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stored, found, err := app.store.Referral(t.Context(), user.ID)
+	if err != nil || !found {
+		t.Fatalf("the source was not stored: found=%v err=%v", found, err)
+	}
+	if stored != want {
+		t.Fatalf("the stored source is wrong:\n got %+v\nwant %+v", stored, want)
+	}
+
+	if len(reports) != 1 || reports[0].method != SignupMethodPassword || reports[0].referral != want {
+		t.Fatalf("the sign-up was not reported exactly once with its source: %+v", reports)
+	}
+
+	// A second attempt on the same address creates nothing and reports nothing.
+	resp = newClient(t, app).post("/register", url.Values{
+		"email": {"jane@example.test"}, "password": {"a long enough password"},
+	})
+	closeResponseBody(t, resp)
+	if len(reports) != 1 {
+		t.Fatalf("a refused registration was reported as a sign-up: %+v", reports)
+	}
+}
+
+// TestTheSourceSurvivesAFederatedSignIn covers the redirect out to an identity
+// provider and back, where the state value is the only thing returned.
+func TestTheSourceSurvivesAFederatedSignIn(t *testing.T) {
+	referral := Referral{Referrer: "news.example.test", Source: "hn", LandingPage: "/pricing/"}
+
+	state := stateWithReferral("abc123", referral)
+	if !strings.HasPrefix(state, "abc123.") {
+		t.Fatalf("the state lost its random half: %q", state)
+	}
+	if got := referralFromState(state); got != referral {
+		t.Fatalf("the source did not survive the state:\n got %+v\nwant %+v", got, referral)
+	}
+
+	if got := stateWithReferral("abc123", Referral{}); got != "abc123" {
+		t.Fatalf("an empty source changed the state: %q", got)
+	}
+	if got := referralFromState("abc123"); !got.Empty() {
+		t.Fatalf("a bare state produced a source: %+v", got)
+	}
+	if got := referralFromState("abc123.not-a-token!"); !got.Empty() {
+		t.Fatalf("an unreadable state produced a source: %+v", got)
+	}
+
+	// A state edited in the browser is still cleaned on the way back in.
+	forged, err := encodeReferral(Referral{Referrer: "https://news.example.test/item?id=1", LandingPage: "//evil.example.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := referralFromState("abc123." + forged); got.Referrer != "news.example.test" || got.LandingPage != "" {
+		t.Fatalf("a forged state was not cleaned: %+v", got)
+	}
+}
+
+// TestTheFederatedLinkCarriesTheSource checks the link written into the page
+// keeps its own parameters apart from the ones it carries.
+func TestTheFederatedLinkCarriesTheSource(t *testing.T) {
+	suffix := string(Referral{Source: "a&b", LandingPage: "/pricing/"}.LinkSuffix())
+	if suffix != "&landing=%2Fpricing%2F&utm_source=a%26b" {
+		t.Fatalf("the link suffix is %q", suffix)
+	}
+
+	if got := (Referral{}).LinkSuffix(); got != "" {
+		t.Fatalf("an empty source added %q to the link", got)
+	}
+}
+
+// TestReferralIsStoredOnce covers the row itself: an account's origin is
+// written when it is created and never revised.
 func TestReferralIsStoredOnce(t *testing.T) {
 	store, _ := newTestStore(t)
 
@@ -204,12 +357,8 @@ func TestReferralIsStoredOnce(t *testing.T) {
 	}
 
 	first := Referral{
-		Referrer:    "https://news.example.test/item?id=1",
-		Source:      "hn",
-		Medium:      "social",
-		Campaign:    "launch",
-		LandingPage: "/pricing",
-		FirstSeenAt: 1788591600,
+		Referrer: "news.example.test", Source: "hn", Medium: "social",
+		Campaign: "launch", LandingPage: "/pricing/",
 	}
 	if err := store.SaveReferral(t.Context(), user.ID, first); err != nil {
 		t.Fatal(err)
@@ -250,49 +399,8 @@ func TestNothingLearnedStoresNothing(t *testing.T) {
 	}
 }
 
-// TestCaptureClearsTheCookie stops one browser's first touch being credited to
-// every account created from it.
-func TestCaptureClearsTheCookie(t *testing.T) {
-	store, _ := newTestStore(t)
-	h := &Handler{Store: store, BaseURL: "https://app.example.test"}
-
-	user, _, err := store.CreateUser(t.Context(), "jane@example.test", "Jane Doe", "hash", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	value, err := encodeReferral(Referral{Source: "hn", LandingPage: "/pricing"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	req := signupRequest(t, "https://app.example.test/register", "", nil)
-	req.Host = "app.example.test"
-	req.AddCookie(&http.Cookie{Name: referralCookie, Value: value})
-
-	recorder := httptest.NewRecorder()
-	if referral := h.captureReferral(recorder, req, user.ID); referral.Source != "hn" {
-		t.Fatalf("the captured referral was wrong: %+v", referral)
-	}
-
-	var cleared bool
-	for _, cookie := range recorder.Result().Cookies() {
-		if cookie.Name == referralCookie && cookie.MaxAge < 0 {
-			cleared = true
-		}
-	}
-	if !cleared {
-		t.Fatal("the first-touch cookie was not cleared after it was stored")
-	}
-
-	if _, found, err := store.Referral(t.Context(), user.ID); err != nil || !found {
-		t.Fatalf("the captured referral was not stored: found=%v err=%v", found, err)
-	}
-}
-
 // TestReferralDiesWithTheAccount is a deletion claim, so it is checked rather
-// than assumed. An attribution row that outlives the account it describes is
-// data we told somebody we had destroyed.
+// than assumed.
 func TestReferralDiesWithTheAccount(t *testing.T) {
 	store, db := newTestStore(t)
 

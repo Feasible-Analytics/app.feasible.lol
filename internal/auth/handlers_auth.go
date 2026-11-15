@@ -51,6 +51,7 @@ func (h *Handler) showRegister(w http.ResponseWriter, r *http.Request) {
 	p := h.newPage(r, tr(r, "auth.title.register"), "")
 	p.Data["Next"] = next
 	p.Data["MinLength"] = MinPasswordLength
+	p.Data["Referral"] = requestReferral(r)
 	if invitation, ok := h.pendingInvitation(r); ok {
 		p.Data["Email"] = invitation.Email
 		p.Data["Next"] = "/invitations/accept"
@@ -90,6 +91,11 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 	p.Data["Name"] = name
 	p.Data["Next"] = next
 	p.Data["MinLength"] = MinPasswordLength
+
+	// A form that is shown again after an error still carries where the
+	// visitor came from, so a mistyped password does not cost the answer.
+	referral := requestReferral(r)
+	p.Data["Referral"] = referral
 
 	fail := func(message string) {
 		p.Error = message
@@ -159,8 +165,9 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 
 	h.Log.Info("account created", "user", user.ID, "team", team.ID, "ip", source)
 
-	referral := h.captureReferral(w, r, user.ID)
+	h.captureReferral(r.Context(), user.ID, referral)
 	h.announceSignup(user, team.ID, SignupMethodPassword, referral)
+	h.recordSignup(r, SignupMethodPassword, referral)
 
 	h.sendVerification(r, user, next)
 	h.startSession(w, r, user)
