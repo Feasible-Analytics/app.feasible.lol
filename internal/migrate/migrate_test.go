@@ -1344,13 +1344,68 @@ func TestRebuildingTheObservationsTableKeepsWhatWasInIt(t *testing.T) {
 	}
 }
 
+// TestStoredReferrersAreReducedToTheirDomain checks the rows written before
+// only a domain was kept: the path and query string of each referrer go, the
+// rest of the row stays.
+func TestStoredReferrersAreReducedToTheirDomain(t *testing.T) {
+	ctx := context.Background()
+	db := newDatabase(t)
+
+	if _, err := Run(ctx, db, UpTo(System(), 17)); err != nil {
+		t.Fatal(err)
+	}
+
+	for id, row := range map[int]struct{ referrer, landing string }{
+		1: {"https://News.Example.test/item?id=1&token=secret", "/register?utm_source=hn"},
+		2: {"https://example.test:8443", "/pricing"},
+		3: {"", "/"},
+	} {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO users (id, email, password_hash, created_at, updated_at)
+			VALUES (?, ?, 'hash', 1, 1)`, id, fmt.Sprintf("user%d@example.test", id)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO user_referrals (user_id, referrer, source, landing_page, first_seen_at, created_at)
+			VALUES (?, ?, 'hn', ?, 5, 9)`, id, row.referrer, row.landing); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := Run(ctx, db, System()); err != nil {
+		t.Fatal(err)
+	}
+
+	for id, want := range map[int]struct{ referrer, landing string }{
+		1: {"news.example.test", "/register"},
+		2: {"example.test", "/pricing"},
+		3: {"", "/"},
+	} {
+		var referrer, source, landing string
+		var created int64
+		if err := db.QueryRowContext(ctx, `
+			SELECT referrer, source, landing_page, created_at FROM user_referrals WHERE user_id = ?`, id).
+			Scan(&referrer, &source, &landing, &created); err != nil {
+			t.Fatal(err)
+		}
+		if referrer != want.referrer || landing != want.landing || source != "hn" || created != 9 {
+			t.Errorf("row %d is %q %q %q %d, want %q %q", id, referrer, landing, source, created, want.referrer, want.landing)
+		}
+	}
+
+	if _, err := db.ExecContext(ctx, "SELECT first_seen_at FROM user_referrals"); err == nil {
+		t.Error("the arrival time column is still there")
+	}
+}
+
 // TestCoordinatedMigrationNumbers pins the upgrade order requested by the
 // app-shard runtime: account ingest state and hostname authority follow the
 // deployed 0007 settings migration, while the system chain preserves every
 // historical step before removing obsolete salt storage in migration 12,
 // recording the last accepted authenticator step in 13, the account picture
-// bytes in 14, where each person came from in 15, the clock they read in 16 and
-// when each account last changed a rule in 17.
+// bytes in 14, where each person came from in 15, the clock they read in 16,
+// when each account last changed a rule in 17 and the reduction of a stored
+// referrer to its domain in 18.
 // The account chain then carries the lossless imported-rollup fields in 13, the
 // channel parity for those imports in 14, the event-receipt prune index in 15,
 // the session-prune-by-time indexes in 16, the automation letters the tracker
@@ -1361,7 +1416,7 @@ func TestCoordinatedMigrationNumbers(t *testing.T) {
 		want []int
 	}{
 		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23}},
-		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}},
+		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := make([]int, 0, len(test.set.Migrations))

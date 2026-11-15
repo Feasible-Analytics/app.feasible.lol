@@ -40,6 +40,10 @@ func (h *Handler) startGoogle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The state is the one value the identity provider hands back unchanged,
+	// so it carries where the visitor came from across the redirect.
+	pkce.State = stateWithReferral(pkce.State, requestReferral(r))
+
 	if err := SetOAuthStateCookie(w, h.Sealer, pkce, safeNext(r.URL.Query().Get("next")), h.BaseURL); err != nil {
 		h.fail(w, r, err)
 		return
@@ -107,7 +111,10 @@ func (h *Handler) finishGoogle(w http.ResponseWriter, r *http.Request) {
 
 	if created {
 		h.Log.Info("account created through google", "user", user.ID)
-		h.announceGoogleSignup(r.Context(), user, h.captureReferral(w, r, user.ID))
+		referral := referralFromState(state)
+		h.captureReferral(r.Context(), user.ID, referral)
+		h.announceGoogleSignup(r.Context(), user, referral)
+		h.recordSignup(r, SignupMethodGoogle, referral)
 	}
 
 	// Every sign-in, not only the first: somebody who changes their Google

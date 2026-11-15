@@ -17,12 +17,11 @@ import (
 // quietly says less than the database knows.
 func TestSlackReferralCarriesEveryField(t *testing.T) {
 	stored := Referral{
-		Referrer:    "https://news.example.test/item?id=1",
+		Referrer:    "news.example.test",
 		Source:      "hn",
 		Medium:      "social",
 		Campaign:    "launch",
 		LandingPage: "/pricing",
-		FirstSeenAt: 1788591600,
 	}
 
 	message := slackReferral(stored)
