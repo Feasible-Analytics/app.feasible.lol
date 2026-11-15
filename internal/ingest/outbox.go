@@ -10,11 +10,15 @@ package ingest
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +46,17 @@ const (
 // enough that a night-long outage does not bury everything else.
 const outboxFailureReportEvery = 240
 
+// outboxAccountHoldMax is the longest an account whose writes keep failing
+// waits between tries. Each try costs the shard's lock wait on top of the
+// batch it rides in, so a broken account is tried rarely, but often enough
+// that its backlog starts draining within minutes of it recovering.
+const outboxAccountHoldMax = 5 * time.Minute
+
+// outboxAccountReportEvery is how many consecutive failed tries pass between
+// repeat reports of one broken account: about an hour once its hold is at the
+// cap.
+const outboxAccountReportEvery = 12
+
 // Outbox owns every event after the public 202 and before the app shard's
 // commit acknowledgment.
 type Outbox struct {
@@ -57,7 +72,26 @@ type Outbox struct {
 	// that can reach no shard at all accepts events forever and says nothing.
 	Log *logger.Logger
 
+	// holds are the accounts whose writes the shard refused, keyed by shard and
+	// account. They live in memory: after a restart a broken account costs one
+	// more try before it is held again.
+	holdsMu sync.Mutex
+	holds   map[accountKey]*accountHold
+
 	closeOnce sync.Once
+}
+
+// accountKey names one account on one destination shard.
+type accountKey struct {
+	shard   int
+	account int64
+}
+
+// accountHold is one account's run of failed tries and when it may be tried
+// again.
+type accountHold struct {
+	failures int
+	until    time.Time
 }
 
 // deliveryState tracks one loop's run of consecutive failures, so a broken
@@ -255,7 +289,9 @@ func (o *Outbox) createSchema(ctx context.Context) error {
 			next_try_at INTEGER NOT NULL DEFAULT 0,
 			last_error TEXT NOT NULL DEFAULT ''
 		);
-		CREATE INDEX IF NOT EXISTS outbox_send ON outbox(shard_id, next_try_at, id);
+		DROP INDEX IF EXISTS outbox_send;
+		CREATE INDEX IF NOT EXISTS outbox_account ON outbox(shard_id, account_id, id, next_try_at);
+		CREATE INDEX IF NOT EXISTS outbox_created ON outbox(created_at);
 		CREATE TABLE IF NOT EXISTS outbox_parked (
 			id INTEGER PRIMARY KEY,
 			shard_id INTEGER NOT NULL,
@@ -292,7 +328,18 @@ func (o *Outbox) runShard(ctx context.Context, shard int) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			o.report(state, o.deliver(ctx, shard), "outbox delivery", "shard", shard+1,
+			sent, err := o.deliverBatch(ctx, shard)
+			if ctx.Err() != nil {
+				return
+			}
+
+			// A tick with nothing due says nothing about the shard. Counting it
+			// as a success would report a broken shard as recovered while its
+			// rows wait out their backoff.
+			if !sent && err == nil {
+				continue
+			}
+			o.report(state, err, "outbox delivery", "shard", shard+1,
 				"destination", o.Shards[shard])
 		}
 	}
@@ -309,7 +356,11 @@ func (o *Outbox) runUnrouted(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			o.report(state, o.resolveUnrouted(ctx), "outbox route resolution")
+			err := o.resolveUnrouted(ctx)
+			if ctx.Err() != nil {
+				return
+			}
+			o.report(state, err, "outbox route resolution")
 		}
 	}
 }
@@ -339,13 +390,31 @@ func (o *Outbox) report(state *deliveryState, err error, what string, attrs ...a
 
 // deliver sends one due batch and applies per-UUID acknowledgments.
 func (o *Outbox) deliver(ctx context.Context, shard int) error {
+	_, err := o.deliverBatch(ctx, shard)
+
+	return err
+}
+
+// deliverBatch sends one due batch and reports whether there was one to send.
+func (o *Outbox) deliverBatch(ctx context.Context, shard int) (bool, error) {
 	if !o.Router.DestinationReady(shard) {
-		return fmt.Errorf("outbox destination %d has not validated its app shard identity", shard+1)
+		return false, fmt.Errorf("outbox destination %d has not validated its app shard identity", shard+1)
 	}
 	rows, err := o.selectRows(ctx, shard)
 	if err != nil || len(rows) == 0 {
-		return err
+		return false, err
 	}
+
+	return true, o.send(ctx, shard, rows)
+}
+
+// send posts a batch to its shard and applies the answer row by row.
+//
+// An error means the shard could not be reached, answered nonsense, or wrote
+// none of several accounts. When the shard answers and only some accounts
+// failed, the others went through: the shard is working, and the failed
+// accounts are held and reported on their own.
+func (o *Outbox) send(ctx context.Context, shard int, rows []outboxRow) error {
 	events := make([]Event, 0, len(rows))
 	for _, row := range rows {
 		events = append(events, row.Event)
@@ -390,28 +459,53 @@ func (o *Outbox) deliver(ctx context.Context, shard int) error {
 	for _, domain := range result.NotMine {
 		notMine[domain] = struct{}{}
 	}
-	var remaining []outboxRow
+	answered := map[int64]bool{}
+	failed := map[int64][]outboxRow{}
 	for _, row := range rows {
-		if _, ok := committed[row.Event.UUID]; ok {
-			continue
-		}
 		if _, ok := notMine[row.Event.Domain]; ok {
 			continue
 		}
-		remaining = append(remaining, row)
-	}
-	if len(remaining) > 0 {
-		reason := result.Error
-		if reason == "" {
-			reason = response.Status
+		answered[row.Event.AccountID] = true
+		if _, ok := committed[row.Event.UUID]; ok {
+			continue
 		}
-		return o.retryRows(ctx, remaining, reason, response.StatusCode >= 400 && response.StatusCode < 500)
+		failed[row.Event.AccountID] = append(failed[row.Event.AccountID], row)
+	}
+	reason := result.Error
+	if reason == "" {
+		reason = response.Status
+	}
+	permanent := response.StatusCode >= 400 && response.StatusCode < 500
+	for account := range answered {
+		if len(failed[account]) == 0 {
+			o.releaseAccount(shard, account)
+			continue
+		}
+		why := reason
+		if own, ok := result.Failed[account]; ok {
+			why = own
+		}
+		if err := o.scheduleRetry(ctx, failed[account], why, permanent); err != nil {
+			return err
+		}
+		o.holdAccount(shard, account, why)
+	}
+
+	// A shard that wrote none of several accounts is failing as a whole, and
+	// that has to show at the shard level as well as account by account.
+	if len(failed) > 1 && len(failed) == len(answered) {
+		return fmt.Errorf("outbox shard wrote none of %d accounts: %s", len(failed), reason)
 	}
 
 	return nil
 }
 
-// selectRows reads one fair, bounded batch for a destination.
+// selectRows reads one bounded batch for a destination.
+//
+// The batch takes one row from each account with rows due, then a second from
+// each, and so on, oldest first. An account with a deep backlog therefore fills
+// only what the others leave, and an account alone in the queue fills the whole
+// batch. Held accounts are skipped until their hold runs out.
 func (o *Outbox) selectRows(ctx context.Context, shard int) ([]outboxRow, error) {
 	age, err := o.OldestAge()
 	if err != nil {
@@ -421,14 +515,142 @@ func (o *Outbox) selectRows(ctx context.Context, shard int) ([]outboxRow, error)
 	if age > outboxCatchUpAfter {
 		limit = outboxCatchUpBatch
 	}
+	now := o.clock()
+
+	accounts, err := o.queuedAccounts(ctx, shard)
+	if err != nil {
+		return nil, err
+	}
+
+	// Each account's due ids are read in rounds, an equal share of the space
+	// left each time, so a tick reads about one batch of ids however many
+	// accounts have a backlog.
+	type queue struct {
+		account int64
+		ids     []int64
+		more    bool
+	}
+
+	var queues []*queue
+	for _, account := range accounts {
+		if !o.held(shard, account, now) {
+			queues = append(queues, &queue{account: account, more: true})
+		}
+	}
+	for read, open := 0, len(queues); open > 0 && read < limit; {
+		share := max((limit-read)/open, 1)
+		open = 0
+		for _, q := range queues {
+			if !q.more {
+				continue
+			}
+			after := int64(math.MinInt64)
+			if len(q.ids) > 0 {
+				after = q.ids[len(q.ids)-1]
+			}
+			ids, err := o.dueIDs(ctx, shard, q.account, now, after, share)
+			if err != nil {
+				return nil, err
+			}
+			q.ids = append(q.ids, ids...)
+			read += len(ids)
+			q.more = len(ids) == share
+			if q.more {
+				open++
+			}
+		}
+	}
+
+	type turn struct {
+		turn int
+		id   int64
+	}
+
+	var turns []turn
+	for _, q := range queues {
+		for i, id := range q.ids {
+			turns = append(turns, turn{turn: i, id: id})
+		}
+	}
+	slices.SortFunc(turns, func(a, b turn) int {
+		return cmp.Or(cmp.Compare(a.turn, b.turn), cmp.Compare(a.id, b.id))
+	})
+
+	ids := make([]int64, 0, min(len(turns), limit))
+	for _, t := range turns[:min(len(turns), limit)] {
+		ids = append(ids, t.id)
+	}
+	slices.Sort(ids)
+
+	return o.loadRows(ctx, shard, ids)
+}
+
+// queuedAccounts lists the accounts with any row queued for a destination. It
+// steps through the index one account at a time, so its cost follows the
+// number of accounts rather than the depth of the queue.
+func (o *Outbox) queuedAccounts(ctx context.Context, shard int) ([]int64, error) {
+	var accounts []int64
+	after := int64(math.MinInt64)
+	for {
+		var account int64
+		err := o.DB.QueryRowContext(ctx,
+			"SELECT account_id FROM outbox WHERE shard_id = ? AND account_id > ? ORDER BY account_id LIMIT 1",
+			shard, after).Scan(&account)
+		if errors.Is(err, sql.ErrNoRows) {
+			return accounts, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("outbox list accounts shard %d: %w", shard, err)
+		}
+		accounts = append(accounts, account)
+		after = account
+	}
+}
+
+// dueIDs reads up to limit of one account's due rows after id after, oldest
+// first.
+func (o *Outbox) dueIDs(ctx context.Context, shard int, account int64, now time.Time, after int64, limit int) ([]int64, error) {
+	rows, err := o.DB.QueryContext(ctx, `
+		SELECT id FROM outbox
+		WHERE shard_id = ? AND account_id = ? AND id > ? AND next_try_at <= ? ORDER BY id LIMIT ?`,
+		shard, account, after, now.Unix(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("outbox select shard %d account %d: %w", shard, account, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("outbox scan shard %d account %d: %w", shard, account, err)
+		}
+		ids = append(ids, id)
+	}
+
+	return ids, rows.Err()
+}
+
+// loadRows reads and decodes the chosen rows. A row that no longer decodes is
+// parked rather than retried, because it will never decode.
+func (o *Outbox) loadRows(ctx context.Context, shard int, ids []int64) ([]outboxRow, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	list, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("outbox select shard %d: %w", shard, err)
+	}
 	rows, err := o.DB.QueryContext(ctx, `
 		SELECT id, attempts, payload FROM outbox
-		WHERE shard_id = ? AND next_try_at <= ? ORDER BY id LIMIT ?`, shard, o.clock().Unix(), limit)
+		WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id`, string(list))
 	if err != nil {
 		return nil, fmt.Errorf("outbox select shard %d: %w", shard, err)
 	}
 	defer func() { _ = rows.Close() }()
+
 	var selected []outboxRow
+	undecodable := map[int64]string{}
 	for rows.Next() {
 		var row outboxRow
 		var payload []byte
@@ -436,15 +658,79 @@ func (o *Outbox) selectRows(ctx context.Context, shard int) ([]outboxRow, error)
 			return nil, fmt.Errorf("outbox scan shard %d: %w", shard, err)
 		}
 		if err := json.Unmarshal(payload, &row.Event); err != nil {
-			if parkErr := o.parkIDs(ctx, []int64{row.ID}, "decode event: "+err.Error()); parkErr != nil {
-				return nil, parkErr
-			}
+			undecodable[row.ID] = "decode event: " + err.Error()
 			continue
 		}
 		selected = append(selected, row)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("outbox select shard %d: %w", shard, err)
+	}
+	for id, reason := range undecodable {
+		if err := o.parkIDs(ctx, []int64{id}, reason); err != nil {
+			return nil, err
+		}
+	}
 
-	return selected, rows.Err()
+	return selected, nil
+}
+
+// held reports whether an account is waiting out a hold on a destination.
+func (o *Outbox) held(shard int, account int64, now time.Time) bool {
+	o.holdsMu.Lock()
+	defer o.holdsMu.Unlock()
+
+	hold, ok := o.holds[accountKey{shard: shard, account: account}]
+
+	return ok && now.Before(hold.until)
+}
+
+// holdAccount keeps an account the shard could not write out of the next
+// batches. The hold doubles with each failed try up to outboxAccountHoldMax,
+// so one broken account stops riding in every batch the others need.
+func (o *Outbox) holdAccount(shard int, account int64, reason string) {
+	o.holdsMu.Lock()
+	if o.holds == nil {
+		o.holds = map[accountKey]*accountHold{}
+	}
+	key := accountKey{shard: shard, account: account}
+	hold := o.holds[key]
+
+	// A hold that ran out long ago belongs to an earlier failure whose rows
+	// left some other way, rerouted or parked. This failure is news, and
+	// starts its own count.
+	if hold == nil || o.clock().Sub(hold.until) > outboxAccountHoldMax {
+		hold = &accountHold{}
+		o.holds[key] = hold
+	}
+	hold.failures++
+	wait := min(time.Second<<min(hold.failures-1, 10), outboxAccountHoldMax)
+	hold.until = o.clock().Add(wait)
+	failures := hold.failures
+	o.holdsMu.Unlock()
+
+	if o.Log != nil && (failures == 1 || failures%outboxAccountReportEvery == 0) {
+		o.Log.Error("outbox account delivery failed",
+			"shard", shard+1, "destination", o.Shards[shard], "account_id", account,
+			"consecutive_failures", failures, "held_for", wait.String(), "error", reason)
+	}
+}
+
+// releaseAccount clears an account's hold once the shard commits its rows,
+// and says so if it had been failing.
+func (o *Outbox) releaseAccount(shard int, account int64) {
+	key := accountKey{shard: shard, account: account}
+
+	o.holdsMu.Lock()
+	hold, ok := o.holds[key]
+	delete(o.holds, key)
+	o.holdsMu.Unlock()
+
+	if ok && o.clock().Sub(hold.until) <= outboxAccountHoldMax && o.Log != nil {
+		o.Log.Info("outbox account delivery recovered",
+			"shard", shard+1, "destination", o.Shards[shard], "account_id", account,
+			"failed_attempts", hold.failures)
+	}
 }
 
 // deleteCommitted removes only UUIDs from the batch this destination received.
@@ -467,8 +753,19 @@ func (o *Outbox) deleteCommitted(ctx context.Context, rows []outboxRow, ids []uu
 	return nil
 }
 
-// retryRows schedules transient failures and parks repeated permanent failures.
+// retryRows schedules a batch the shard never answered for, and reports the
+// delivery as deferred.
 func (o *Outbox) retryRows(ctx context.Context, rows []outboxRow, reason string, permanent bool) error {
+	if err := o.scheduleRetry(ctx, rows, reason, permanent); err != nil {
+		return err
+	}
+
+	return fmt.Errorf("outbox delivery deferred: %s", reason)
+}
+
+// scheduleRetry backs off transient failures and parks repeated permanent
+// failures.
+func (o *Outbox) scheduleRetry(ctx context.Context, rows []outboxRow, reason string, permanent bool) error {
 	// Exhausted rows are parked together so a whole batch giving up is one
 	// entry in the log rather than five hundred.
 	var exhausted []int64
@@ -488,12 +785,10 @@ func (o *Outbox) retryRows(ctx context.Context, rows []outboxRow, reason string,
 	}
 
 	if len(exhausted) > 0 {
-		if err := o.parkIDs(ctx, exhausted, reason); err != nil {
-			return err
-		}
+		return o.parkIDs(ctx, exhausted, reason)
 	}
 
-	return fmt.Errorf("outbox delivery deferred: %s", reason)
+	return nil
 }
 
 // parkRows moves an already-decoded group out of the active path.

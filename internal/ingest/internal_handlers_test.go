@@ -228,3 +228,21 @@ func TestInternalShardAcknowledgesOnlyOwnedEvents(t *testing.T) {
 		t.Fatalf("not_mine = %v", response.NotMine)
 	}
 }
+
+// TestEachFailedAccountGetsItsOwnReason checks the shard splits a batch's
+// failures by account, so a sender holding two broken accounts can report
+// each with its own cause instead of both causes against both.
+func TestEachFailedAccountGetsItsOwnReason(t *testing.T) {
+	err := errors.Join(
+		&AccountError{AccountID: 7, Err: errors.New("disk full")},
+		&AccountError{AccountID: 21, Err: errors.New("database is locked")},
+	)
+
+	failed := accountFailures(err)
+	if len(failed) != 2 || failed[7] != "disk full" || failed[21] != "database is locked" {
+		t.Fatalf("failures were split as %v", failed)
+	}
+	if failed := accountFailures(errors.New("not an account's failure")); failed != nil {
+		t.Fatalf("an error with no account was split as %v", failed)
+	}
+}
