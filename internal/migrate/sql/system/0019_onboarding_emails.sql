@@ -1,5 +1,5 @@
 --
--- 0018_onboarding_emails.sql
+-- 0019_onboarding_emails.sql
 -- When the onboarding emails began, and which accounts asked for them to stop.
 --
 -- Created: 2026-11-15
