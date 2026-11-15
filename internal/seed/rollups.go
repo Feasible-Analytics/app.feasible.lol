@@ -58,12 +58,9 @@ func buildRollups(ctx context.Context, run *accountRun, from, now time.Time) err
 				}
 			}
 
-			// The daily build runs one day past today so that today's row
-			// exists; the covered window still stops at midnight.
+			// Every grain stops at the start of today, as the worker's does: a
+			// report reads today from raw events.
 			to := today
-			if grain == query.GrainDay {
-				to = today.AddDate(0, 0, 1)
-			}
 
 			// A wide bucket is whole only once every day under it is, so the
 			// one today falls in is left out.

@@ -1402,11 +1402,10 @@ func localFromRollup(local int64) time.Time {
 	return time.Date(wall.Year(), wall.Month(), wall.Day(), wall.Hour(), 0, 0, 0, losAngeles)
 }
 
-// TestARebuildRestsBetweenChunks pins the priority order. A rebuild holds the
-// account's write lock and the ingest outbox delivering into the same account
-// wants it: roll-up freshness is a cache, storing an event is not, so the cache
-// gives way.
-func TestARebuildRestsBetweenChunks(t *testing.T) {
+// TestARebuildRestsAfterEveryChunk pins the priority order. A rebuild shares
+// the machine with ingestion and the dashboards, and roll-up freshness is a
+// cache, so the build hands the CPU back for about as long as each chunk took.
+func TestARebuildRestsAfterEveryChunk(t *testing.T) {
 	account := openAccount(t)
 
 	sessions, events := carryFixture()
@@ -1432,7 +1431,7 @@ func TestARebuildRestsBetweenChunks(t *testing.T) {
 	}
 
 	if len(rests) == 0 {
-		t.Fatal("a thirty-day rebuild never let go of the write lock")
+		t.Fatal("a thirty-day rebuild never rested")
 	}
 
 	for _, rest := range rests {
@@ -1445,8 +1444,9 @@ func TestARebuildRestsBetweenChunks(t *testing.T) {
 		}
 	}
 
-	// A build never pauses after its last chunk, because nothing is waiting on
-	// it then and the pause would be pure wall-clock cost.
+	// The last chunk rests too. The worker starts the next grain or the next
+	// site straight after a build, and two chunks back to back are one long
+	// burst.
 	rests = nil
 
 	if err := builder.Rebuild(context.Background(), rollup.Request{
@@ -1456,8 +1456,23 @@ func TestARebuildRestsBetweenChunks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(rests) != 0 {
-		t.Errorf("a one-chunk rebuild rested %d times, want none", len(rests))
+	if len(rests) != 1 {
+		t.Errorf("a one-chunk rebuild rested %d times, want once after its chunk", len(rests))
+	}
+
+	// A rework of two days is built a day at a time, so a site whose days are
+	// expensive never builds two of them in one go.
+	rests = nil
+
+	if err := builder.Rebuild(context.Background(), rollup.Request{
+		Site: testSite, Grain: query.GrainDay, From: today.AddDate(0, 0, -2), To: today,
+		CoverThrough: today, FromBeginning: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(rests) != 2 {
+		t.Errorf("a two-day rebuild took %d chunks, want one per day", len(rests))
 	}
 }
 

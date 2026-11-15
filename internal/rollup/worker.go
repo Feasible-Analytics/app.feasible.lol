@@ -1,6 +1,6 @@
 //
 // worker.go
-// The hourly job that seals finished buckets and keeps today's row fresh.
+// The hourly job that seals finished buckets.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -62,9 +62,9 @@ type Worker struct {
 	// Every is how often Run rebuilds. Zero means Interval.
 	Every time.Duration
 
-	// Rest is how each build hands the write lock back between chunks. Nil is
-	// the builder's own pacing, which is what a running server wants; a rebuild
-	// on a machine with nothing else writing can pass rollup.NoRest.
+	// Rest is how each build hands the CPU back after a chunk. Nil is the
+	// builder's own pacing, which is what a running server wants; a rebuild on
+	// a machine with nothing else running can pass rollup.NoRest.
 	Rest func(ctx context.Context, d time.Duration) error
 }
 
@@ -230,22 +230,16 @@ func (w *Worker) buildSite(ctx context.Context, ref SiteRef) error {
 			from = daily.firstWholeBucket(laterOf(from, daily.oldest), grain, location)
 		}
 
-		// Daily buckets run one day past today so that today's row exists and
-		// is fresh; sealing it at midnight is then one small rebuild rather
-		// than a whole day's work. Hourly buckets stop at today, because the
-		// only hours a report reads from the summary are the ones on days that
-		// are already over.
+		// Every grain stops at the start of today. A report reads today from
+		// raw events, so a row for it would be rebuilt every hour and never
+		// read.
 		to := today
-		if grain == query.GrainDay {
-			to = today.AddDate(0, 0, 1)
-		}
 
-		// A derived bucket is only whole once every day under it is written, and
-		// the daily pass runs one day past today. Building the bucket today
-		// falls in would produce a partial row that a later pass has to correct;
-		// leaving it out means a report reads today from the daily rows, which
-		// is what it does for every range that does not end on a bucket edge
-		// anyway.
+		// A derived bucket is only whole once every day under it is written.
+		// Building the bucket today falls in would produce a partial row that a
+		// later pass has to correct; leaving it out means a report reads those
+		// days from the daily rows, which is what it does for every range that
+		// does not end on a bucket edge anyway.
 		if grain.Derived() {
 			to = query.RollupBucketStart(today, grain, location)
 		}
