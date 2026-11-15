@@ -194,7 +194,8 @@ func ResolveClientIP(r *http.Request, trusted *TrustedProxies) ClientIP {
 //
 // X-Feasible-IP and CF-Connecting-IP keep their precedence, and the address
 // the edge observed is the answer whenever the sender stated nothing usable,
-// marked SenderSilent.
+// marked SenderSilent. The same holds when a trusted CDN sits in front of the
+// edge, so a sender may post to either hostname.
 func ResolveVisitorIP(r *http.Request, trusted *TrustedProxies, trustSender bool) ClientIP {
 	client := ResolveClientIP(r, trusted)
 	if !trustSender || client.Source == SourceFeasibleIP || client.Source == SourceCloudflare {
@@ -207,7 +208,7 @@ func ResolveVisitorIP(r *http.Request, trusted *TrustedProxies, trustSender bool
 		return client
 	}
 
-	if addr := statedVisitor(r.Header.Get(HeaderSenderForwardedFor), trusted); addr.IsValid() {
+	if addr := statedVisitor(r.Header.Get(HeaderSenderForwardedFor), trusted, client.Addr); addr.IsValid() {
 		return ClientIP{Addr: addr, Source: SourceForwardedFor}
 	}
 
@@ -221,8 +222,13 @@ func ResolveVisitorIP(r *http.Request, trusted *TrustedProxies, trustSender bool
 // because they are the sender's own infrastructure, and a forward proxy on an
 // office network states a private address that would otherwise merge everyone
 // behind every such proxy. A malformed hop ends the walk with no answer.
-func statedVisitor(value string, trusted *TrustedProxies) netip.Addr {
+//
+// The sender's own address at the right of the chain is skipped too. A CDN
+// in front of the edge appends the sender it saw before the edge copies the
+// chain, and that hop is who sent the event, never who they sent it for.
+func statedVisitor(value string, trusted *TrustedProxies, sender netip.Addr) netip.Addr {
 	parts := strings.Split(value, ",")
+	trailing := sender.IsValid()
 
 	for i := len(parts) - 1; i >= 0; i-- {
 		part := strings.TrimSpace(parts[i])
@@ -234,6 +240,11 @@ func statedVisitor(value string, trusted *TrustedProxies) netip.Addr {
 		if !addr.IsValid() {
 			return netip.Addr{}
 		}
+
+		if trailing && addr == sender {
+			continue
+		}
+		trailing = false
 
 		if trusted.Contains(addr) || IsPrivateOrLocal(addr) {
 			continue

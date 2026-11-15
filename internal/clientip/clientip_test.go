@@ -350,7 +350,7 @@ func TestIsPrivateOrLocal(t *testing.T) {
 // copies the sender's own chain alongside, and the visitor is the nearest
 // public address in that copy.
 func TestVisitorIPBelievesTheSender(t *testing.T) {
-	trusted := mustTrust(t, "127.0.0.1")
+	trusted := mustTrust(t, "127.0.0.1", "130.176.0.0/17")
 
 	cases := []struct {
 		name        string
@@ -415,6 +415,40 @@ func TestVisitorIPBelievesTheSender(t *testing.T) {
 			wantIP:      "198.51.100.20",
 			wantSource:  SourceForwardedFor,
 			wantSilent:  true,
+		},
+		{
+			name:        "a CDN in front of the edge appends the sender, and the visitor is left of it",
+			peer:        "127.0.0.1:41000",
+			trustSender: true,
+			headers: map[string]string{
+				HeaderForwardedFor:       "81.2.69.142, 198.51.100.20, 130.176.0.9",
+				HeaderSenderForwardedFor: "81.2.69.142, 198.51.100.20",
+			},
+			wantIP:     "81.2.69.142",
+			wantSource: SourceForwardedFor,
+		},
+		{
+			name:        "a browser through the CDN states nothing and is counted itself",
+			peer:        "127.0.0.1:41000",
+			trustSender: true,
+			headers: map[string]string{
+				HeaderForwardedFor:       "198.51.100.20, 130.176.0.9",
+				HeaderSenderForwardedFor: "198.51.100.20",
+			},
+			wantIP:     "198.51.100.20",
+			wantSource: SourceForwardedFor,
+			wantSilent: true,
+		},
+		{
+			name:        "a sender's address further left is still a stated hop",
+			peer:        "127.0.0.1:41000",
+			trustSender: true,
+			headers: map[string]string{
+				HeaderForwardedFor:       "198.51.100.20, 10.0.3.4, 198.51.100.20, 130.176.0.9",
+				HeaderSenderForwardedFor: "198.51.100.20, 10.0.3.4, 198.51.100.20",
+			},
+			wantIP:     "198.51.100.20",
+			wantSource: SourceForwardedFor,
 		},
 		{
 			name:        "the explicit override still wins",
