@@ -1274,6 +1274,11 @@ func (s *Service) retireCheckoutClaim(ctx context.Context, lease lifecycle.Accou
 	return s.Store.MarkCheckoutClaimStatus(ctx, claim, "expired")
 }
 
+// ErrSubscriptionExists is returned by Checkout when the account already has a
+// subscription that can still charge, so a page can send the customer to the
+// billing portal.
+var ErrSubscriptionExists = errors.New("billing: account already has a subscription")
+
 // Checkout creates or resumes the one hosted checkout allowed for an account.
 // The database claim is committed before Stripe is called and carries a stable
 // idempotency key, so a crash or a second process can only recover the same
@@ -1314,8 +1319,8 @@ func (s *Service) Checkout(ctx context.Context, teamID int64, planKey, email str
 		}
 		for i := range subscriptions {
 			if subscriptions[i].BlocksCheckout() {
-				return nil, fmt.Errorf("billing: account %d already has subscription %s in %s; manage its plan in the billing portal",
-					teamID, subscriptions[i].ID, subscriptions[i].Status)
+				return nil, fmt.Errorf("billing: account %d already has subscription %s in %s; manage its plan in the billing portal: %w",
+					teamID, subscriptions[i].ID, subscriptions[i].Status, ErrSubscriptionExists)
 			}
 		}
 	}
@@ -1350,7 +1355,7 @@ func (s *Service) Checkout(ctx context.Context, teamID int64, planKey, email str
 				if err := s.Store.MarkCheckoutClaimStatus(ctx, claim, "complete"); err != nil {
 					return nil, err
 				}
-				return nil, fmt.Errorf("billing: account %d already completed checkout; wait for billing confirmation or use the portal", teamID)
+				return nil, fmt.Errorf("billing: account %d already completed checkout; wait for billing confirmation or use the portal: %w", teamID, ErrSubscriptionExists)
 			}
 			if err := s.verifyCompletedCheckoutIsTerminal(ctx, lease, session, existing.CustomerID); err != nil {
 				return nil, err
@@ -1368,7 +1373,7 @@ func (s *Service) Checkout(ctx context.Context, teamID int64, planKey, email str
 	}
 	if found && claim.Status == "complete" {
 		if existing.CustomerID == "" {
-			return nil, fmt.Errorf("billing: account %d already completed checkout; wait for billing confirmation or use the portal", teamID)
+			return nil, fmt.Errorf("billing: account %d already completed checkout; wait for billing confirmation or use the portal: %w", teamID, ErrSubscriptionExists)
 		}
 		if err := s.retireCheckoutClaim(ctx, lease, claim); err != nil {
 			return nil, err

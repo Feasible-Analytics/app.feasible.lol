@@ -38,6 +38,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/stripe"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/usage"
 )
 
@@ -327,6 +328,10 @@ type planPanel struct {
 	RenewsOn          string
 	CancelAtPeriodEnd bool
 	HasCustomer       bool
+
+	// Subscribed is true while a subscription can still charge. Checkout
+	// refuses such an account, so the screen offers the portal alone.
+	Subscribed bool
 }
 
 // timelineRow is one step of the lifecycle, shown only when a clock is running.
@@ -403,6 +408,7 @@ func (h *Handler) billing(w http.ResponseWriter, r *http.Request) {
 			PaymentState:      mirror.PaymentState,
 			CancelAtPeriodEnd: mirror.CancelAtPeriodEnd,
 			HasCustomer:       mirror.CustomerID != "",
+			Subscribed:        mirror.SubscriptionID != "" && (&stripe.Subscription{Status: mirror.Status}).BlocksCheckout(),
 		}
 
 		if !mirror.CurrentPeriodEnd.IsZero() {
@@ -571,6 +577,12 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	session, err := h.Billing.Checkout(r.Context(), account.ID, r.FormValue("plan"), account.Email)
+	if errors.Is(err, billing.ErrSubscriptionExists) {
+		h.message(w, r, lang, "pages.title.billing", i18n.T(lang, "pages.checkout.subscribed.heading"),
+			[]string{i18n.T(lang, "pages.checkout.subscribed.body")},
+			[]link{{Label: i18n.T(lang, "pages.link.back_to_billing"), URL: accountURL("/billing", account.ID, nil)}})
+		return
+	}
 	if err != nil {
 		h.fail(w, err)
 		return

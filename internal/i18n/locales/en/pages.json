@@ -52,6 +52,8 @@
   "pages.billing.usage.projected": "Month-end estimate",
   "pages.billing.usage.used": "Used",
   "pages.checkout.disabled.body": "No payment provider is configured here. That is the normal state of a self-hosted install, and nothing about the software you are running is limited by it.",
+  "pages.checkout.subscribed.body": "This account already has a subscription. To switch between monthly and yearly, change the card or cancel, use \"Manage card, invoices and plan\" on the billing page.",
+  "pages.checkout.subscribed.heading": "You already have a plan",
   "pages.error.bad_account_id": "{value} is not an account id.",
   "pages.error.no_account_named": "No account was named — add ?team=<id> until sign-in exists.",
   "pages.error.render": "Something went wrong rendering this page.",

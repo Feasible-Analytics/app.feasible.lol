@@ -95,7 +95,7 @@
 <section class="mt-6">
 	<h2 class="kicker mb-3">{{ t .Lang "pages.billing.plan.heading" }}</h2>
 
-	<div class="grid gap-6 {{ if not .Comped }}lg:grid-cols-2{{ end }}">
+	<div class="grid gap-6 {{ if and (not .Comped) (not .Plan.Subscribed) }}lg:grid-cols-2{{ end }}">
 		<div class="border-2 border-line bg-card p-6">
 			<dl class="grid grid-cols-2 gap-x-6 gap-y-4">
 				<div>
@@ -133,7 +133,7 @@
 			{{ end }}
 		</div>
 
-		{{ if not .Comped }}
+		{{ if and (not .Comped) (not .Plan.Subscribed) }}
 		<div class="border-2 border-line bg-card p-6">
 			<p class="text-[11px] font-semibold tracking-wide text-accent-ink uppercase">{{ t .Lang "pages.billing.upgrade.label" }}</p>
 
