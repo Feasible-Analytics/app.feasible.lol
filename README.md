@@ -10,257 +10,192 @@
 
 Privacy-first web analytics. One Go binary. One SQLite database per account.
 
-No cookies. No personal data. No consent banner. GDPR, CCPA and PECR compliant by
-construction, and a tracking script under 3 KB.
+No cookies, no consent banner, and visitor IP addresses are never written to disk. Run it
+yourself for free, or let us host it for $99 a year.
+
+![The Feasible dashboard, showing the live demo site](.github/readme/dashboard.png)
 
 ## Status
 
-Early development. Nothing here works yet.
+Live in production at [app.feasible.lol](https://app.feasible.lol). The hosted service runs this
+code, and the self-hosted build is the same binary with every feature in it.
+
+It's ready for real sites, hosted or on your own server. Releases are still numbered 0.0.x and
+ship often. Migrations never run on their own, so run `feasible db migrate` after every upgrade.
+
+## Try it
+
+- **Live demo, no sign-up:**
+  [app.feasible.lol/public/stopoverpayingforanalytics.com](https://app.feasible.lol/public/stopoverpayingforanalytics.com).
+  The traffic is generated, so click anything.
+- **Hosted:** [sign up](https://app.feasible.lol/register) for a 30-day free trial. No card. After
+  that it's $9.99 a month or $99 a year for unlimited sites, unlimited teammates and 1,000,000
+  pageviews and events a month across all of them. Going over never stops collection or adds a
+  charge.
+- **Self-hosted:** free, below.
+
+## Self-host
+
+Download the archive for your platform from the
+[latest release](https://github.com/Feasible-Analytics/app.feasible.lol/releases/latest). There are
+builds for Linux, macOS and Windows, on amd64 and arm64.
+
+```bash
+tar -xzf feasible_*_linux_amd64.tar.gz
+./feasible --version
+```
+
+Or build it from source with Go 1.26 or newer. The compiled dashboard and tracker are committed,
+so Node is only needed if you change them.
+
+```bash
+go build -o feasible ./cmd/feasible
+```
+
+Write the minimum configuration to a file, with your own hostname and email. The salt is generated
+once here and has to stay the same afterwards, because it's part of how visitors are counted each
+day.
+
+```bash
+cat > feasible.env <<EOF
+FEASIBLE_ENV=production
+FEASIBLE_APP_HOSTED=false
+FEASIBLE_APP_BASE_URL=https://stats.example.com
+FEASIBLE_APP_LISTEN=127.0.0.1:19301
+FEASIBLE_APP_DATA_DIR=./data
+FEASIBLE_INGEST_SALT=$(openssl rand -hex 32)
+FEASIBLE_OPERATOR_EMAIL=you@example.com
+EOF
+```
+
+Then create the databases, make your account and start it:
+
+```bash
+set -a; . ./feasible.env; set +a
+./feasible db migrate
+./feasible account create --email you@example.com --name "Your Name"
+./feasible serve
+```
+
+`account create` prints a generated password once. Sign in at your base URL, add a site, and paste
+the snippet it shows you into your pages' `<head>`. The heart of it is one tag:
+
+```html
+<script defer data-domain="example.com" src="https://stats.example.com/js/script.js"></script>
+```
+
+A few things worth knowing:
+
+- **TLS.** `serve` speaks plain HTTP. Put any TLS proxy in front of it, Caddy or nginx, and set
+  `FEASIBLE_APP_BASE_URL` to the public `https://` address.
+- **`FEASIBLE_APP_HOSTED=false`** turns off billing, trials, usage limits and public sign-up. Every
+  feature stays on. Run `account create` again for each separate account; teammates join by
+  invitation from inside the app.
+- **Email.** The default `log` transport writes messages to `tmp/mail/` and sends nothing. Set
+  `FEASIBLE_APP_MAIL_TRANSPORT=smtp` and `FEASIBLE_SMTP_HOST` so password resets and reports
+  actually arrive.
+- **Locations.** Drop the free DB-IP Lite country or city `.mmdb` file into `data/geoip/`. Without
+  one, locations show as unknown and everything else works.
+- **Google.** Sign-in with Google, the GA4 import and Search Console terms share one OAuth client:
+  `FEASIBLE_GOOGLE_CLIENT_ID` and `FEASIBLE_GOOGLE_CLIENT_SECRET`. Leave them unset and those
+  features hide themselves.
+- **Backups.** `./feasible db backup` writes a consistent snapshot of every database. Don't `cp`
+  files a running process is writing.
+
+Every variable is documented in [`.env.sample`](.env.sample). The full guide is at
+[feasible.lol/docs/self-hosting](https://feasible.lol/docs/self-hosting/).
+
+## What's in it
+
+- **One-page dashboard.** Visitors, visits, pageviews, bounce rate, visit duration, channels,
+  sources and all five UTM tags, pages with entry and exit, countries, regions and cities,
+  devices, browsers, operating systems and languages. Realtime, filters and period comparison.
+- **Goals and funnels.** Custom events and properties, funnels of 2 to 8 steps, revenue by source,
+  scroll depth, outbound links, file downloads and 404s. Core Web Vitals, if you turn them on.
+- **Search terms** people used to find you, from Google Search Console.
+- **Imports.** Google Analytics 4 history by connecting your Google account, or CSV exports from
+  another tool. Export your raw data any time.
+- **Reports and alerts.** Weekly and monthly email and Slack reports, traffic spike and drop
+  alerts, annotations.
+- **Sharing.** Teams with roles, guest access to a single site, public or password-protected
+  dashboards, two-factor login.
+- **Bot filtering you can inspect.** Every dropped event is counted with the reason it was dropped.
+- **API.** One key type for the Stats API, the Sites API and signed webhooks.
+- **MCP.** Connect Claude, ChatGPT, Cursor or VS Code by pasting one URL and approving it, then ask
+  "why did traffic drop last week?" in plain words. `feasible mcp` serves the same tools over stdio.
+- **Integrations** in [`ecosystem/`](ecosystem/): a WordPress plugin, a Google Tag Manager template,
+  a Looker Studio connector, an npm package for the tracker, and SDKs for Go, Node, PHP, Python and
+  Ruby. They aren't published to their stores yet, so install them from here.
+
+## How it's built
+
+- **Go, one binary.** The React dashboard, the server-rendered pages, the tracker, email templates,
+  migrations and the bot lists are all embedded with `go:embed`. The release archive is about 8 MB.
+  Nothing to copy alongside it.
+- **SQLite, one database per account.** A small `system.db` holds users, teams and sites. Each
+  account's events live in their own file, through a pure Go driver, so there's no cgo. One
+  directory is the whole install.
+- **Ingest.** The tracker posts to `/api/event`. The IP address is used in memory for geolocation
+  and a daily-salted visitor hash, then dropped before anything is written. Self-hosted, events are
+  batched and committed straight to the account's database. Hosted, separate ingest processes
+  commit each event to a local SQLite outbox, answer `202`, and forward signed batches to the app
+  server that owns the site. A row leaves the outbox only after that server confirms the commit.
+- **Reports** read hourly and daily roll-up tables, so a year of data answers in under a second.
+- **The tracker** is plain JavaScript, about 3.6 KB gzipped. The build fails if it grows past 3.75
+  KiB. Web Vitals is a separate module that loads only on sites that turn it on.
+- **Disk.** A million pageviews takes about 300 MB once indexed and rolled up. Write and read
+  numbers, and how they were measured, are in
+  [`internal/bench/RESULTS.md`](internal/bench/RESULTS.md).
 
 ## Why
 
-Good privacy-friendly analytics exists, but it is priced per pageview and its best
-features sit behind the top tier. Self-hosting it means Docker, PostgreSQL,
-ClickHouse and at least 2 GB of RAM.
+Privacy-friendly analytics is usually priced per site, per seat or per pageview tier, with funnels,
+revenue and the API saved for the top plan. Self-hosting it usually means Docker, a separate
+analytics database and a few gigabytes of RAM before you count a single visit.
 
-feasible.lol takes a different position:
+Feasible is one price with everything in it. The self-hosted build is the same build, with nothing
+taken out. If you can run a binary, you can run it.
 
-- **One binary.** No Docker, no external database, no reverse proxy required. It
-  runs on a $5 VPS or a Raspberry Pi, on any CPU architecture.
-- **One price.** $9.99/month or $99/year, up to a million pageviews a month.
-  Every feature included — funnels, custom properties, revenue tracking, the API.
-  No tiers.
-- **Self-hosting is complete and free.** Not a reduced edition. The same build,
-  every feature, every release.
+## Developing
 
-## Running it
-
-You need Go 1.23 or newer. Caddy is only needed for the three-process mode, and
-Node only once there is a dashboard to compile.
+You need Go 1.26 or newer. Node is needed to rebuild the dashboard, the stylesheet or the tracker.
+Caddy is only needed for the three-process mode.
 
 ```bash
 cp .env.sample .env
-make build
-make dev-solo          # one process, everything in it — the self-hoster path
+make build             # compile the front end, then the binary
+make dev-solo          # one process, everything in it: the self-hosted shape
 ```
 
-For the production shape, run each process in its own terminal so its log stream
-stays readable:
+For the hosted shape, run each process in its own terminal so its logs stay readable:
 
 ```bash
-make caddy             # :19300 — the only port you open in a browser
-make app               # :19301 — application and signed internal routes
-make ingest            # :19302 — events and health
-make testsite          # :19303 — a real page with the snippet installed
+make caddy             # :19300, the only port you open in a browser
+make app               # :19301, the app and signed internal routes
+make ingest            # :19302, events and health
+make testsite          # :19303, a real page with the snippet installed
 ```
 
-`make dev` runs all three at once. Every runnable target has a `-ts` twin
-(`make app-ts`, `make dev-ts`) that binds to the Tailscale address and moves
-`FEASIBLE_APP_BASE_URL` with it, so the app is reachable from another machine.
-Each process has one listener. Caddy exposes customer paths and denies
-`/internal/*`; trusted services connect directly over the protected network.
+`make dev` runs all three at once. Every runnable target has a `-ts` twin (`make app-ts`,
+`make dev-ts`) that binds to the Tailscale address and moves `FEASIBLE_APP_BASE_URL` with it, so the
+app is reachable from another machine. `make` on its own lists everything.
 
-`make` on its own lists everything.
-
-### Hosted and self-hosted mode
-
-`FEASIBLE_APP_HOSTED` is a safety boundary, not a branding switch. The binary
-defaults it to `true`. Cloudmanic Labs' hosted service leaves it true, which
-enables public account registration, trials, Stripe billing, usage limits,
-payment locks and the payment lifecycle.
-
-A self-hosted installation must explicitly set:
-
-```dotenv
-FEASIBLE_APP_HOSTED=false
-```
-
-In that mode every product feature is free and unrestricted. Feasible does not
-start billing, usage metering, account locks or payment-driven deletion, even if
-Stripe variables are present. Public password and Google signup are disabled so
-exposing the login page to the internet does not let strangers create accounts.
-Invited team members can still complete an invitation, and existing users can
-sign in or reset their passwords normally.
-
-The server operator creates each account from the machine that holds
-`system.db`. Create as many independent accounts as the installation needs:
+You don't need local services to develop. Email is written to `tmp/mail/`, a missing geolocation
+file means "unknown", and Stripe webhooks come through the CLI:
 
 ```bash
-feasible db migrate
-feasible account create --email owner@example.com --name "Account owner"
+stripe listen --forward-to localhost:19301/webhooks/stripe
 ```
 
-The command creates a verified owner with no trial dates and prints a generated
-password once. It generates the password rather than accepting one on the
-command line so the credential is not saved in shell history or exposed in the
-process list. Save it, sign in, and change it from account settings.
+`FEASIBLE_APP_TRANSPORT` picks who owns `/api/event`: `direct` writes from the app process, and
+`http` hands it to separate `feasible ingest` processes. [`.env.sample`](.env.sample) covers the
+shard and signing settings for the split topology, and
+[`ops/load-balancer.md`](ops/load-balancer.md) covers failure and drain behavior. Before the hosted
+service takes traffic, `feasible billing preflight --checkout-smoke` checks its Stripe setup.
 
-### Google Analytics 4 history
+### Health
 
-With Google OAuth configured, open a site's **Imports & exports**, connect
-Analytics, choose a property returned by Google, and select the first and last
-historical day to import. Dates must end before today and before Feasible's
-existing traffic, without overlapping another traffic import. Progress and
-failures appear in the existing import history; a failed import removes its
-partial data and can be started again.
-
-The OAuth project's **Google Analytics Admin API** (property discovery) and
-**Google Analytics Data API** (reports) must be enabled. Both use the existing
-`analytics.readonly` permission; importing does not request write access.
-
-The worker imports daily totals, pages, sources/channels, locations, devices,
-browsers, operating systems, and landing pages. It follows all report pages
-and replaces its own partial rows on replay. Reports use the GA4 property's
-calendar dates, stored at the Feasible site's local midnight. These are
-aggregate reports, not raw events: multi-day visitors are summed daily users,
-bounces are sessions minus engaged sessions, and duration uses Google's
-engagement time. Google's reporting thresholds and aggregation can make these
-figures differ from native Feasible tracking. Deleting the import removes the
-imported reports; disconnecting Google removes the site's stored connection.
-
-### Ingestion transport and app shard identity
-
-`FEASIBLE_APP_TRANSPORT` decides which process owns the public `/api/event`
-endpoint. It accepts two values:
-
-- `direct` mounts the event endpoint in `feasible serve` and writes accepted
-  events directly to the account database. This is the default and the normal
-  self-hosted configuration.
-- `http` leaves the event endpoint to one or more separate `feasible ingest`
-  processes. Each ingester durably records an event in its local `buffer.db`
-  before forwarding a signed batch to the app shard that owns the site. Use
-  this for the separated hosted topology or for testing that topology locally.
-
-A single-process self-hosted installation should use:
-
-```dotenv
-FEASIBLE_APP_TRANSPORT=direct
-FEASIBLE_APP_SHARD_ID=1
-```
-
-`FEASIBLE_APP_SHARD_ID` is the app's one-based stable identity. In `http` mode,
-it must equal the app's position in every ingester's ordered
-`FEASIBLE_INGEST_SHARDS` array. For example:
-
-```dotenv
-FEASIBLE_INGEST_SHARDS='["http://app-one:19301","http://app-two:19301"]'
-```
-
-The app at `http://app-one:19301` uses `FEASIBLE_APP_SHARD_ID=1`; the app at
-`http://app-two:19301` uses `FEASIBLE_APP_SHARD_ID=2`. The ingest processes
-verify this identity before delivering queued events, so swapping two shard
-addresses cannot send pageviews to the wrong app. `http` transport also
-requires the same `FEASIBLE_INTERNAL_KEY` on every app and ingester so their
-private requests can be authenticated.
-
-### Hosted topology
-
-The single-process self-hosted mode writes directly to account SQLite. Hosted
-production separates the failure domains:
-
-```text
-public load balancer -> any ingester -> owning app shard -> account SQLite
-                              |
-                              +-> local persistent buffer.db
-```
-
-Each ingester derives the privacy-safe event, discards the raw IP address,
-commits the event to its own `FEASIBLE_INGEST_BUFFER_PATH`, and only then
-returns `202`. It polls the complete ordered `FEASIBLE_INGEST_SHARDS` list for
-domain ownership and removes an outbox row only when the owning app names that
-UUID after commit. An app outage delays dashboards while ingesters keep pageviews.
-The shard list is a JSON array because its order defines stable shard identity.
-
-App listeners publish authenticated domain snapshots and accept durable batches
-alongside dashboard traffic. `FEASIBLE_APP_SHARD_ID` is the
-app's one-based stable position in the ingester list. In hosted production these
-listeners are reachable only over protected networking and internal requests
-use `FEASIBLE_INTERNAL_KEY`; `/internal/*` is never exposed by the public load
-balancer. See [.env.sample](.env.sample) for the complete app
-and ingester configuration and [ops/load-balancer.md](ops/load-balancer.md) for
-failure and drain behavior.
-
-Every ingester receives the same `FEASIBLE_INGEST_SALT` and combines it with
-the UTC day locally. That small, deterministic measure keeps visitor hashes
-separate across days without making ingestion depend on an app, database row,
-rotation worker, or private salt endpoint.
-
-The shared metadata file on each app shard is `system.db`. An installation from
-before that rename must stop all Feasible processes and run `feasible db migrate`
-once; the command moves the former filename and SQLite sidecars before applying
-migrations.
-
-### Local services you do not need
-
-- **Email.** `FEASIBLE_APP_MAIL_TRANSPORT=log` prints the message to stdout and
-  writes the rendered HTML to `tmp/mail/*.html`. No SMTP server, no mail catcher.
-- **Geolocation.** A missing GeoIP database degrades to "unknown" rather than
-  failing. An optional data file must never stop you running the app.
-- **Stripe.** Webhooks come through the CLI:
-
-  ```bash
-  stripe listen --forward-to localhost:19301/webhooks/stripe
-  ```
-
-  Before a hosted deployment takes traffic, verify the configured product,
-  prices, webhook event subscriptions, Managed Payments activation, accepted
-  terms and tax-code eligibility with:
-
-  ```bash
-  feasible billing preflight --checkout-smoke
-  ```
-
-  The smoke creates no customer or charge and immediately expires monthly and
-  yearly Checkout Sessions. The read-only form, without `--checkout-smoke`,
-  reports the Stripe Dashboard-only checks as required and exits non-zero rather
-  than claiming the deployment is ready.
-
-## What it needs to run
-
-One binary, one directory, no Docker and no database server. These are measured
-numbers rather than guesses — see `internal/bench/RESULTS.md` for how, and for
-the machine they were taken on.
-
-| | Minimum | Comfortable |
-|---|---|---|
-| CPU | 1 core | 2 cores |
-| Memory | 512 MB | 2 GB |
-| Disk | 1 GB plus your data | SSD, and see below |
-| OS | Linux, macOS or BSD, x86-64 or arm64 | |
-| Anything else | nothing | |
-
-**Disk is the number that grows.** A million pageviews is about 300 MB once it
-is indexed and summarised — roughly 210 bytes an event, measured rather than
-guessed. Raw rows age out and roll-ups do not, so a site sending a million a
-month settles well below twelve times that a year. Leave the write-ahead logs
-headroom: they are checkpointed automatically, but a full disk is not a state
-SQLite can write its way out of.
-
-**Throughput.** A single-account install sustains around three and a half
-thousand events a second through the whole accept path — far more than a site
-sending a million pageviews a month generates, which is under half an event a
-second on average. The rate falls as one process serves more accounts,
-because one shared write buffer spread over more databases makes smaller
-transactions: about 1,300 a second at sixteen accounts and 400 at 256.
-
-A success response waits for a durable commit, either the direct account commit
-or the hosted ingester outbox commit. That is the promise a 202 makes here, and
-it means an accept is measured in hundreds of milliseconds rather than
-microseconds: a quiet site waits out the 500 ms flush timer on every event, and
-a busy one is quicker per event because the batch fills before the timer fires.
-The visitor never waits for any of it — the tracker sends with `keepalive` and
-does not read the answer. `internal/bench/RESULTS.md` has the curve.
-
-Reports read from summary tables in tens of milliseconds over 28 days and under
-a second over a year; the same report from raw rows takes seconds, which is why
-the roll-up worker exists.
-
-**Building** needs Node as well, because the dashboard and the stylesheet are
-compiled before Go embeds them. Running never does.
-
-## Watching it run
-
-Every process serves three health endpoints on its single listener:
+Every process serves three endpoints on its one listener:
 
 ```bash
 curl https://app.feasible.lol/health  # public: can customers use the site
@@ -268,71 +203,12 @@ curl localhost:19301/health/live      # internal: is this process running
 curl localhost:19301/health/ready     # internal: may this process take traffic
 ```
 
-`/health` is the public endpoint for an external uptime monitor. It returns plain
-text `ok` with HTTP 200 only when the app is ready to serve customers. An app
-process returns `unhealthy` with HTTP 503 while it is draining or a required
-dependency has failed; the public proxy may replace that body with its maintenance
-page when the whole app pool is unavailable. Point the monitor at the public
-Caddy URL so it covers DNS, TLS, the proxy, and the app pool—not merely one
-process on one host. Check the status code; the body is only a convenient answer
-for a person using `curl`.
+Point an uptime monitor at the public `/health` and check the status code. `/health/live` checks
+nothing on purpose, so a slow database can't turn into a restart loop. `/health/ready` returns
+`503` with a JSON body naming every failed dependency. There's no `/metrics` endpoint.
 
-`/health/live` is a process liveness probe. It checks nothing on purpose: a
-liveness probe that failed on a slow database would turn one slow database into
-a restart loop everywhere at once. Use it only when deciding whether a process
-needs to be restarted; it is not proof that the site works.
-
-`/health/ready` is the internal readiness probe for load balancing and blue/green
-deployments. Caddy removes an unready color from its pool, and deployment waits
-for a new color to return HTTP 200 before retiring the old one. A failure returns
-HTTP 503 with a JSON body naming every dependency and what was wrong with it, so
-it is both a traffic decision and a diagnosis.
-
-There is deliberately no `/metrics` endpoint. Operational measurements will be
-collected outside the public HTTP application; customer-specific ingestion
-counts remain available on each site's ingestion-health panel.
-
-### Team membership API
-
-`PUT /api/v1/teams/memberships` creates a revocable invitation that expires in
-48 hours; it never inserts a membership directly. The response includes the
-invitation id, normalized email, role, expiry, and one-time invitation token,
-with the same status and shape whether or not the address already has an
-account. `owner` is not an invitational role: ownership changes only through the
-ownership-transfer workflow. The verified recipient must accept the invitation
-before gaining access.
-
-`PUT /api/v1/sites/guests` follows the same rule for site-only access. It
-creates a revocable 48-hour `guest_viewer` or `guest_editor` invitation for any
-email address and returns the same response shape for existing and unknown
-accounts. No `guest_memberships` row exists until the verified recipient
-accepts. `DELETE /api/v1/sites/guest-invitations/{invitation_id}?site_id=...`
-revokes an outstanding site invitation.
-
-### When it goes wrong
-
-[`ops/`](ops/) holds the operational half: the load balancer's health-check
-settings, a runbook per failure this system actually has, and the game day that
-breaks things on purpose to check the runbooks are true. [`ops/README.md`](ops/README.md)
-lists every metric the binary emits, which is also the list a runbook is allowed
-to name.
-
-## Cutting a release
-
-Releases are deliberate stability checkpoints, not an automatic result of every
-merge. When `main` is in a state we are confident shipping, open the repository's
-**Actions** tab, select **Release**, choose **Run workflow**, and run it from
-`main`. This is always a manual decision.
-
-The optional version field accepts either `1.2.3` or `v1.2.3`. Leave it blank
-for the normal release: the workflow increments the patch component of the most
-recent semantic release tag (`x.y.z`). A repository with no previous release
-starts at `v0.0.1`.
-
-The workflow snapshots current `main`, creates the version tag and GitHub
-Release, and attaches Linux, Windows and macOS builds for amd64 and arm64 plus a
-SHA-256 checksum manifest. Do not run it until the pull requests making up the
-release are merged and `main` is stable.
+[`ops/`](ops/) holds the runbooks, the load balancer settings and the game day that breaks things
+on purpose to prove the runbooks right.
 
 ### Before you push
 
@@ -342,9 +218,16 @@ make lint
 make check-env         # every environment variable is documented in .env.sample
 ```
 
+### Cutting a release
+
+Releases are a deliberate choice, never automatic. When `main` is stable, run the **Release**
+workflow from the Actions tab. Leave the version blank to bump the patch number, or give one like
+`1.2.3`. It tags `main`, creates the GitHub Release and attaches Linux, Windows and macOS builds for
+amd64 and arm64 with a SHA-256 checksum file.
+
 ## License
 
-[GNU AGPL-3.0-or-later](LICENSE).
+[GNU AGPL-3.0-or-later](LICENSE). Run it, change it and self-host it freely. If you offer it to
+others as a network service, you have to make your source available to those users.
 
-You may run, modify and self-host this freely. If you offer it to others as a
-network service, you must make your source available to those users.
+[feasible.lol](https://feasible.lol)
