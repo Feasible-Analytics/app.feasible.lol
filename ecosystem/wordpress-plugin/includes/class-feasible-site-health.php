@@ -122,7 +122,7 @@ class Feasible_Site_Health {
 		$settings = Feasible_Settings::all();
 
 		$info['feasible-analytics'] = array(
-			'label'  => __( 'feasible.lol Analytics', 'feasible-analytics' ),
+			'label'  => __( 'Feasible Analytics', 'feasible-analytics' ),
 			'fields' => array(
 				'version'      => array(
 					'label' => __( 'Plugin version', 'feasible-analytics' ),

@@ -31,8 +31,6 @@ class Feasible_Plugin {
 	 * @return void
 	 */
 	public static function boot() {
-		add_action( 'init', array( __CLASS__, 'load_textdomain' ) );
-
 		Feasible_Proxy::register();
 		Feasible_Snippet::register();
 
@@ -42,19 +40,6 @@ class Feasible_Plugin {
 
 			add_action( 'admin_init', array( __CLASS__, 'maybe_upgrade' ) );
 		}
-	}
-
-	/**
-	 * load_textdomain loads the translation catalogue.
-	 *
-	 * It runs on init rather than at file scope because loading a text domain
-	 * before the locale is settled gives every string the wrong language on
-	 * multilingual sites.
-	 *
-	 * @return void
-	 */
-	public static function load_textdomain() {
-		load_plugin_textdomain( 'feasible-analytics', false, dirname( plugin_basename( FEASIBLE_PLUGIN_FILE ) ) . '/languages' );
 	}
 
 	/**
