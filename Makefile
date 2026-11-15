@@ -254,12 +254,16 @@ test-web: web-deps
 	fi
 
 ## test-race: the same tests under the race detector
-# Its own target with its own timeout. The detector slows every test by roughly
-# an order of magnitude, so the ten-minute per-package default expires in the
-# packages that matter most here — the roll-up worker and the ingest pipeline are
-# the concurrent code, and a detector that times out reports nothing at all.
+# Two third-party engines are compiled without instrumentation: SQLite and the C
+# library under it, which are transpiled to Go here and so get what a cgo build
+# of SQLite would, and the blowfish cipher inside bcrypt. Neither shares memory
+# with our code except through the packages in front of them, the SQLite driver
+# and bcrypt, and those stay instrumented. The timeout is per package.
+RACE_GCFLAGS := -gcflags='modernc.org/...=-race=false' -gcflags='modernc.org/sqlite=' \
+	-gcflags='golang.org/x/crypto/blowfish=-race=false'
+
 test-race:
-	@go test -race -timeout 60m ./...
+	@go test -race $(RACE_GCFLAGS) -timeout 15m ./...
 
 ## test-tracker: the tracker's end-to-end suite, in a real browser
 # Playwright starts and stops its own fixture server, so this target leaves

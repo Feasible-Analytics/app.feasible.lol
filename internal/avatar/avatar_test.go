@@ -10,8 +10,11 @@ package avatar
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
 	"database/sql"
+	"encoding/binary"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -135,22 +138,73 @@ func TestSomethingThatIsNotAPictureIsRefused(t *testing.T) {
 // spends: a few kilobytes of PNG can describe a canvas tens of thousands of
 // pixels on a side, and reading it is gigabytes.
 func TestADecompressionBombIsRefusedFromItsHeader(t *testing.T) {
-	// A single-colour PNG compresses to almost nothing, which is exactly what
-	// makes this shape dangerous.
-	bomb := image.NewRGBA(image.Rect(0, 0, 20000, 20000))
+	encoded := blankPNG(t, 20000, 20000)
 
-	var encoded bytes.Buffer
-	if err := png.Encode(&encoded, bomb); err != nil {
-		t.Fatalf("encode the fixture: %v", err)
+	config, err := png.DecodeConfig(bytes.NewReader(encoded))
+	if err != nil || config.Width != 20000 || config.Height != 20000 {
+		t.Fatalf("the fixture reads as %dx%d (%v), not a 20000x20000 PNG", config.Width, config.Height, err)
 	}
 
-	if encoded.Len() > MaxDownloadBytes {
-		t.Fatalf("the fixture is %d bytes, which the download cap would catch first", encoded.Len())
+	if len(encoded) > MaxDownloadBytes {
+		t.Fatalf("the fixture is %d bytes, which the download cap would catch first", len(encoded))
 	}
 
-	if _, err := Normalise(encoded.Bytes()); err == nil {
+	if _, err := Normalise(encoded); err == nil {
 		t.Fatal("a 20000x20000 picture was decoded")
 	}
+}
+
+// blankPNG writes a complete, decodable all-black PNG of the given size as
+// 1-bit greyscale, one zero row at a time, so the full canvas is never held in
+// memory. A single-colour PNG compresses to almost nothing, which is what makes
+// this shape dangerous.
+func blankPNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+
+	var out bytes.Buffer
+	out.WriteString("\x89PNG\r\n\x1a\n")
+
+	// Bit depth 1 and colour type 0, greyscale. The last three bytes stay zero:
+	// deflate, adaptive filtering, no interlace.
+	header := make([]byte, 13)
+	binary.BigEndian.PutUint32(header[0:], uint32(width))
+	binary.BigEndian.PutUint32(header[4:], uint32(height))
+	header[8], header[9] = 1, 0
+	writeChunk(&out, "IHDR", header)
+
+	// Each row is a filter-type byte followed by the row's pixels packed eight
+	// to a byte, and every byte of an all-black row is zero.
+	var pixels bytes.Buffer
+	compressor := zlib.NewWriter(&pixels)
+	row := make([]byte, 1+(width+7)/8)
+	for range height {
+		if _, err := compressor.Write(row); err != nil {
+			t.Fatalf("compress a row: %v", err)
+		}
+	}
+	if err := compressor.Close(); err != nil {
+		t.Fatalf("finish the pixel stream: %v", err)
+	}
+	writeChunk(&out, "IDAT", pixels.Bytes())
+	writeChunk(&out, "IEND", nil)
+
+	return out.Bytes()
+}
+
+// writeChunk appends one PNG chunk: its length, its type, its data, and the
+// CRC-32 of the type and data that every decoder checks.
+func writeChunk(out *bytes.Buffer, kind string, data []byte) {
+	var length [4]byte
+	binary.BigEndian.PutUint32(length[:], uint32(len(data)))
+	out.Write(length[:])
+
+	out.WriteString(kind)
+	out.Write(data)
+
+	var sum [4]byte
+	checksum := crc32.Update(crc32.ChecksumIEEE([]byte(kind)), crc32.IEEETable, data)
+	binary.BigEndian.PutUint32(sum[:], checksum)
+	out.Write(sum[:])
 }
 
 // TestTheEtagFollowsTheBytes is what makes the cache header safe. The URL is
