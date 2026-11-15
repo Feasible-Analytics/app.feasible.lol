@@ -1,21 +1,29 @@
 <!--
   unsubscribe.html
-  Getting off a report or an alert somebody else signed you up for.
+  Getting off a report, an alert or the setup emails.
 
   Created: 2026-09-06
   Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 -->
 {{ define "content" }}
 <div class="border-2 border-line bg-card p-8">
-  {{ if .Data.Done }}
+  {{ if and .Data.Done .Data.Tips }}
+    <h1 class="text-xl font-semibold text-heading">{{ t $.Lang "auth.unsubscribe.tips_done_title" }}</h1>
+    <p class="mt-2 text-sm text-muted">{{ t $.Lang "auth.unsubscribe.tips_done" }}</p>
+  {{ else if .Data.Done }}
     <h1 class="text-xl font-semibold text-heading">{{ t $.Lang "auth.unsubscribe.done_title" }}</h1>
     <p class="mt-2 text-sm text-muted">{{ t $.Lang "auth.unsubscribe.done" }}</p>
     <p class="mt-4 text-sm text-muted">{{ t $.Lang "auth.unsubscribe.owner" }}</p>
   {{ else if .Data.Known }}
+    {{ if .Data.Tips }}
+    <h1 class="text-xl font-semibold text-heading">{{ t $.Lang "auth.unsubscribe.tips_title" }}</h1>
+    <p class="mt-2 text-sm text-muted">{{ t $.Lang "auth.unsubscribe.tips_subtitle" }}</p>
+    {{ else }}
     <h1 class="text-xl font-semibold text-heading">{{ t $.Lang "auth.unsubscribe.title" }}</h1>
     <p class="mt-2 text-sm text-muted">
       {{ t $.Lang "auth.unsubscribe.subtitle" "list" .Data.List "site" .Data.Site }}
     </p>
+    {{ end }}
 
     <!--
       No CSRF token, deliberately. The same path answers a one-click POST from
@@ -25,7 +33,7 @@
     -->
     <form method="post" action="{{ $.BaseURL }}/unsubscribe/{{ .Data.Token }}" class="mt-6">
       <button type="submit" class="w-full btn btn-primary">
-        {{ t $.Lang "auth.unsubscribe.submit" }}
+        {{ if .Data.Tips }}{{ t $.Lang "auth.unsubscribe.tips_submit" }}{{ else }}{{ t $.Lang "auth.unsubscribe.submit" }}{{ end }}
       </button>
     </form>
   {{ else }}

@@ -294,16 +294,47 @@ type Content struct {
 	// screen, and a facts row is a small right-aligned value.
 	Code string
 
+	// Links is a list of named destinations under the body, one to a line,
+	// for a message that points at several pages rather than at one button.
+	Links []Button
+
+	// After is body copy that belongs below the links.
+	After []string
+
 	Figures []Figure
 	Tables  []Table
-	// Unsubscribe is where this recipient stops receiving this message. Only
-	// the report and the alert set it; see Message.Unsubscribe for why.
+	// Unsubscribe is where this recipient stops receiving this message. The
+	// report, the alert and the onboarding emails set it; see
+	// Message.Unsubscribe for why the rest do not.
 	Unsubscribe string
+
+	// UnsubscribeLabel is the words on that link. Empty means the default.
+	UnsubscribeLabel string
+
+	// Signature is the sign-off of a message written by a person, one line to
+	// an entry.
+	Signature []string
+
+	// ReplyTo is where a reply goes when it is not the sending address.
+	ReplyTo string
 
 	Facts     []Fact
 	Primary   Button
 	Secondary []Button
 	Closing   string
+}
+
+// DefaultUnsubscribeLabel is the wording of the way out when a message does not
+// choose its own.
+const DefaultUnsubscribeLabel = "Stop receiving this email"
+
+// UnsubscribeText is the words on the unsubscribe link.
+func (c Content) UnsubscribeText() string {
+	if strings.TrimSpace(c.UnsubscribeLabel) != "" {
+		return c.UnsubscribeLabel
+	}
+
+	return DefaultUnsubscribeLabel
 }
 
 // Company hands the layout the sender's name and address, since a template can
@@ -435,6 +466,22 @@ func (c Content) Text() string {
 		b.WriteString("\n\n")
 	}
 
+	for _, link := range c.Links {
+		b.WriteString(link.Label)
+		b.WriteString(": ")
+		b.WriteString(link.URL)
+		b.WriteString("\n")
+	}
+
+	if len(c.Links) > 0 {
+		b.WriteString("\n")
+	}
+
+	for _, paragraph := range c.After {
+		b.WriteString(paragraph)
+		b.WriteString("\n\n")
+	}
+
 	for _, figure := range c.Figures {
 		b.WriteString(figure.Label)
 		b.WriteString(": ")
@@ -499,6 +546,12 @@ func (c Content) Text() string {
 		b.WriteString("\n")
 	}
 
+	if len(c.Signature) > 0 {
+		b.WriteString("\n")
+		b.WriteString(strings.Join(c.Signature, "\n"))
+		b.WriteString("\n")
+	}
+
 	if c.Closing != "" {
 		b.WriteString("\n")
 		b.WriteString(c.Closing)
@@ -506,7 +559,9 @@ func (c Content) Text() string {
 	}
 
 	if c.Unsubscribe != "" {
-		b.WriteString("\nStop receiving this email: ")
+		b.WriteString("\n")
+		b.WriteString(c.UnsubscribeText())
+		b.WriteString(": ")
 		b.WriteString(c.Unsubscribe)
 		b.WriteString("\n")
 	}
@@ -532,6 +587,7 @@ func (c Content) Message(to, tag string) (Message, error) {
 		Text:        c.Text(),
 		Tag:         tag,
 		Unsubscribe: c.Unsubscribe,
+		ReplyTo:     c.ReplyTo,
 	}, nil
 }
 

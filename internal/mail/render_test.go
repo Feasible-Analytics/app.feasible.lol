@@ -777,3 +777,87 @@ func TestARichMessageMatchesItsGolden(t *testing.T) {
 			"\n--- want ---\n%s\n--- got ---\n%s", want, got)
 	}
 }
+
+// TestLinksAfterAndSignatureRenderInBothBodies covers the three blocks a
+// message written by a person uses: a list of named links, copy below it, and
+// a sign-off, in that order and in both the HTML and the text.
+func TestLinksAfterAndSignatureRenderInBothBodies(t *testing.T) {
+	content := Content{
+		Subject: "Where the snippet goes",
+		Heading: "The install guide",
+		Body:    []string{"Hi Sam,", "Pick your platform."},
+		Links: []Button{
+			{Label: "WordPress", URL: "https://feasible.lol/integrations/wordpress/"},
+			{Label: "Shopify", URL: "https://feasible.lol/integrations/shopify/"},
+		},
+		After:            []string{"Using a tag manager?"},
+		Signature:        []string{"Best,", "~Spicer"},
+		Closing:          "Reply and we'll help.",
+		Unsubscribe:      "https://app.feasible.lol/unsubscribe/abc",
+		UnsubscribeLabel: "Stop these setup emails",
+		ReplyTo:          FounderAddress,
+	}
+
+	html, err := content.HTML()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []string{
+		`<a class="accent" href="https://feasible.lol/integrations/wordpress/"`,
+		`<a class="accent" href="https://feasible.lol/integrations/shopify/"`,
+		">Stop these setup emails</a>",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("the HTML is missing %q", want)
+		}
+	}
+
+	if strings.Contains(html, DefaultUnsubscribeLabel) {
+		t.Error("the HTML still carries the default unsubscribe wording")
+	}
+
+	text := content.Text()
+
+	for _, body := range []string{html, text} {
+		order := []string{"Pick your platform.", "WordPress", "Shopify", "Using a tag manager?", "Best,", "~Spicer", "Reply and we"}
+
+		at := 0
+		for _, want := range order {
+			next := strings.Index(body[at:], want)
+			if next < 0 {
+				t.Fatalf("%q is missing or out of order", want)
+			}
+
+			at += next
+		}
+	}
+
+	if !strings.Contains(text, "WordPress: https://feasible.lol/integrations/wordpress/\n") ||
+		!strings.Contains(text, "Stop these setup emails: https://app.feasible.lol/unsubscribe/abc\n") {
+		t.Errorf("the text twin lost a link:\n%s", text)
+	}
+
+	message, err := content.Message("sam@example.com", "onboarding_welcome")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.ReplyTo != FounderAddress {
+		t.Errorf("reply-to = %q", message.ReplyTo)
+	}
+}
+
+// TestTheUnsubscribeWordingDefaults keeps the report and the alert reading as
+// they always have.
+func TestTheUnsubscribeWordingDefaults(t *testing.T) {
+	content := Content{Subject: "s", Heading: "h", Body: []string{"b"}, Unsubscribe: "https://app.feasible.lol/unsubscribe/abc"}
+
+	html, err := content.HTML()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(html, ">Stop receiving this email</a>") || !strings.Contains(content.Text(), "Stop receiving this email: https://") {
+		t.Error("the default unsubscribe wording changed")
+	}
+}

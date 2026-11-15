@@ -90,6 +90,16 @@
 {{ if .Link }}
 <p style="margin:0 0 14px 0; font-size:16px; line-height:1.55; word-break:break-all;"><a class="accent" href="{{ .Link }}" style="color:{{ $c.AccentText }};">{{ .Link }}</a></p>
 {{ end }}
+{{- if .Links }}
+<p class="text" style="margin:0 0 14px 0; font-size:16px; line-height:1.8; color:{{ $c.Text }};">
+{{- range $index, $link := .Links }}{{ if $index }}<br>{{ end }}
+<a class="accent" href="{{ $link.URL }}" style="color:{{ $c.AccentText }};">{{ $link.Label }}</a>
+{{- end }}
+</p>
+{{- end }}
+{{- range .After }}
+<p class="text" style="margin:0 0 14px 0; font-size:16px; line-height:1.55; color:{{ $c.Text }};">{{ . }}</p>
+{{- end }}
 {{ if .Code }}
 <p class="ink" style="margin:24px 0; font-size:30px; line-height:1.2; letter-spacing:6px; font-weight:800;
           font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color:{{ $c.Ink }};">{{ .Code }}</p>
@@ -166,6 +176,13 @@
 <a class="button outline" href="{{ $button.URL }}"
    style="display:inline-block; padding:11px 18px;{{ if or $primary $index }} margin-left:6px;{{ end }} font-size:16px; border:2px solid {{ $c.Ink }}; color:{{ $c.Ink }}; font-weight:800; text-decoration:none;">{{ $button.Label }}</a>
 {{ end }}
+{{- if .Signature }}
+<p class="text" style="margin:{{ if or .Primary.URL .Secondary }}22px{{ else }}0{{ end }} 0 0 0; font-size:16px; line-height:1.55; color:{{ $c.Text }};">
+{{- range $index, $line := .Signature }}{{ if $index }}<br>{{ end }}
+{{ $line }}
+{{- end }}
+</p>
+{{- end }}
 </td>
 </tr>
 {{ if or .Closing .Unsubscribe }}
@@ -173,7 +190,7 @@
 <td class="pad rule" style="padding:18px 32px 0 32px; border-top:2px solid {{ $c.Rule }};">
 <p class="muted" style="margin:0; font-size:14px; line-height:1.55; color:{{ $c.Muted }};">
 {{ .Closing }}
-{{- if .Unsubscribe }} <a class="accent" href="{{ .Unsubscribe }}" style="color:{{ $c.AccentText }};">Stop receiving this email</a>.{{ end }}
+{{- if .Unsubscribe }} <a class="accent" href="{{ .Unsubscribe }}" style="color:{{ $c.AccentText }};">{{ .UnsubscribeText }}</a>.{{ end }}
 </p>
 </td>
 </tr>

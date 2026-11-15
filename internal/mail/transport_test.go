@@ -540,3 +540,27 @@ func TestAnUnsubscribeURLCannotInjectAHeader(t *testing.T) {
 		}
 	}
 }
+
+// TestAReplyToIsCarriedOnlyWhenSet covers the onboarding emails, whose replies
+// go to a person, and every other message, whose replies go to the sender.
+func TestAReplyToIsCarriedOnlyWhenSet(t *testing.T) {
+	message := Message{
+		To:      "anna@example.com",
+		Subject: "Three steps to your first pageview",
+		HTML:    "<p>hi</p>",
+		Text:    "hi",
+		Tag:     "onboarding_welcome",
+		ReplyTo: FounderAddress,
+	}
+
+	raw := RenderMIME("feasible.lol <hello@feasible.lol>", message)
+	if !strings.Contains(raw, "Reply-To: Spicer Matthews <spicer@feasible.lol>\r\n") {
+		t.Errorf("the message has no Reply-To:\n%s", raw)
+	}
+
+	message.ReplyTo = ""
+
+	if raw := RenderMIME("feasible.lol <hello@feasible.lol>", message); strings.Contains(raw, "Reply-To") {
+		t.Errorf("a message with no reply address carries a Reply-To:\n%s", raw)
+	}
+}

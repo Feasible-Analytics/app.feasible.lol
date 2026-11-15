@@ -35,6 +35,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/jobs"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/onboarding"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/outbound"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/pathclean"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/reports"
@@ -145,7 +146,18 @@ func runServe(e *env, args []string) int {
 		return ExitError
 	}
 
-	app, err := buildApp(e, control, manager, service, site, secret, mailer, com.Gate, com.Purger, unsubscribe)
+	// The onboarding emails carry a stop link sealed with the same key and
+	// redeemed on the same page, so the page is handed both.
+	tips := &onboarding.Stopper{
+		Store:   com.Onboarding.Store,
+		Sealer:  unsubscribe.Sealer,
+		BaseURL: e.cfg.App.BaseURL,
+		Log:     e.log,
+	}
+	com.Onboarding.Stop = tips
+
+	app, err := buildApp(e, control, manager, service, site, secret, mailer, com.Gate, com.Purger,
+		unsubscribers{tips: tips, reports: unsubscribe})
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return ExitError
@@ -359,6 +371,31 @@ func buildUnsubscriber(e *env, control *sql.DB) (*reports.Unsubscriber, error) {
 		BaseURL: e.cfg.App.BaseURL,
 		Log:     e.log,
 	}, nil
+}
+
+// unsubscribers answers the one unsubscribe page for both kinds of link: the
+// onboarding stop link, and a report or alert recipient's.
+type unsubscribers struct {
+	tips    *onboarding.Stopper
+	reports *reports.Unsubscriber
+}
+
+// Describe says what a token would stop, asking whichever side minted it.
+func (u unsubscribers) Describe(ctx context.Context, token string) (site, list string, ok bool) {
+	if u.tips.Owns(token) {
+		return u.tips.Describe(ctx, token)
+	}
+
+	return u.reports.Describe(ctx, token)
+}
+
+// Remove redeems a token with whichever side minted it.
+func (u unsubscribers) Remove(ctx context.Context, token string) error {
+	if u.tips.Owns(token) {
+		return u.tips.Remove(ctx, token)
+	}
+
+	return u.reports.Remove(ctx, token)
 }
 
 // buildApp assembles the server-rendered application.

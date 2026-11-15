@@ -10,6 +10,7 @@ package mail
 
 import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/onboarding"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/usage"
 )
 
@@ -65,6 +66,9 @@ func Tags() []string {
 	for _, scheduled := range lifecycle.Sequence {
 		tags = append(tags, scheduled.Template)
 	}
+
+	// The onboarding emails are tagged with their template, the same way.
+	tags = append(tags, onboarding.Templates()...)
 
 	for _, level := range []usage.Level{usage.LevelWarn, usage.LevelNear, usage.LevelReached} {
 		tags = append(tags, usageTag(level))

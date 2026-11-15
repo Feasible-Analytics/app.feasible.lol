@@ -23,6 +23,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/onboarding"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/reports"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/usage"
 )
@@ -91,6 +92,15 @@ func Contents() (map[string]mail.Content, error) {
 		}
 
 		built[scheduled.Template] = content
+	}
+
+	for _, template := range onboarding.Templates() {
+		content, err := mail.OnboardingContent(onboardingNotice(template))
+		if err != nil {
+			return nil, fmt.Errorf("mailsample: onboarding %s: %w", template, err)
+		}
+
+		built[template] = content
 	}
 
 	for _, level := range []usage.Level{usage.LevelWarn, usage.LevelNear, usage.LevelReached} {
@@ -194,6 +204,21 @@ func lifecycleNotice(scheduled lifecycle.Scheduled) lifecycle.Notice {
 		Announced:  at.AddDate(0, 0, 3),
 		BillingURL: baseURL + "/billing",
 		ExportURL:  baseURL + "/settings/export",
+	}
+}
+
+// onboardingNotice is a new account that has added a site and counted nothing.
+func onboardingNotice(template string) onboarding.Notice {
+	return onboarding.Notice{
+		TeamID:     1,
+		Template:   template,
+		To:         Recipient,
+		FirstName:  "Sam",
+		MessageKey: "sample-" + template,
+		SiteDomain: "harbor.my",
+		InstallURL: baseURL + "/onboarding/1",
+		AddSiteURL: baseURL + "/sites/new",
+		StopURL:    baseURL + "/unsubscribe/sample",
 	}
 }
 

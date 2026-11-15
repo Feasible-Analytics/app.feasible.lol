@@ -43,6 +43,11 @@ var listNames = map[string]string{
 	"alert_drop":     "auth.unsubscribe.list.alert_drop",
 }
 
+// listTips is the one list that belongs to an account rather than to a site:
+// the setup emails a new account is sent. The page words it differently,
+// because there is no site to name and nobody else on the list.
+const listTips = "onboarding_tips"
+
 // showUnsubscribe asks before it acts.
 //
 // A GET that unsubscribed would let any link-scanning proxy in a corporate mail
@@ -63,6 +68,14 @@ func (h *Handler) showUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	site, list, ok := h.Unsubscribe.Describe(r.Context(), token)
+
+	if ok && list == listTips {
+		p.Data["Known"] = true
+		p.Data["Tips"] = true
+		h.render(w, r, "unsubscribe", p, http.StatusOK)
+
+		return
+	}
 
 	name, named := listNames[list]
 	if !named {
@@ -86,8 +99,14 @@ func (h *Handler) showUnsubscribe(w http.ResponseWriter, r *http.Request) {
 // the only thing this can do is take one address off one list.
 func (h *Handler) doUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
+	tips := false
 
 	if h.Unsubscribe != nil {
+		// Read before the removal, since a token that has been redeemed may no
+		// longer describe anything.
+		_, list, ok := h.Unsubscribe.Describe(r.Context(), token)
+		tips = ok && list == listTips
+
 		if err := h.Unsubscribe.Remove(r.Context(), token); err != nil {
 			h.fail(w, r, err)
 
@@ -104,6 +123,7 @@ func (h *Handler) doUnsubscribe(w http.ResponseWriter, r *http.Request) {
 
 	p := h.newPage(r, tr(r, "auth.title.unsubscribe"), "")
 	p.Data["Done"] = true
+	p.Data["Tips"] = tips
 
 	h.render(w, r, "unsubscribe", p, http.StatusOK)
 }

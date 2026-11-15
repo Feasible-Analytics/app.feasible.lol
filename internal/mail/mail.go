@@ -82,6 +82,10 @@ func PostalAddress() string {
 const (
 	DefaultFrom  = "feasible.lol <hello@feasible.lol>"
 	SalesAddress = "sales@feasible.lol"
+
+	// FounderAddress is where a reply to an onboarding email goes. Those
+	// emails are signed by a person and sent only by the hosted service.
+	FounderAddress = "Spicer Matthews <spicer@feasible.lol>"
 )
 
 // dialTimeout caps how long a send waits on an unreachable SMTP host. Without
@@ -110,13 +114,17 @@ type Message struct {
 	Tag string
 
 	// Unsubscribe is where this recipient stops receiving this message, and it
-	// is set only on the report and the alert.
+	// is set only on the report, the alert and the onboarding emails.
 	//
-	// The other twenty-two are transactional messages to an account holder
-	// about their own account. An unsubscribe link on "we delete your data
-	// tomorrow" would be a way to miss the warning, not a courtesy, so those
-	// carry neither the header nor the footer link.
+	// The rest are transactional messages to an account holder about their own
+	// account. An unsubscribe link on "we delete your data tomorrow" would be a
+	// way to miss the warning, not a courtesy, so those carry neither the
+	// header nor the footer link.
 	Unsubscribe string
+
+	// ReplyTo is where a reply goes when it is not the sending address. Empty
+	// leaves replies going to From.
+	ReplyTo string
 }
 
 // Result is what a transport observed. It is deliberately not a boolean:
