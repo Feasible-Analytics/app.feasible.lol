@@ -59,6 +59,8 @@ jobs:
   race:
     name: Race detector
     runs-on: ubuntu-latest
+    # A cap for a hung job. The per-package test timeout is in the Make target.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
