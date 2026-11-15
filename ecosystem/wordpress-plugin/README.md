@@ -6,7 +6,7 @@
   Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 -->
 
-# feasible.lol Analytics for WordPress
+# Feasible Analytics for WordPress
 
 Privacy-first analytics for WordPress, served from **your own domain on randomised paths**.
 
@@ -107,7 +107,7 @@ something a plugin should offer.
 ## Installation
 
 1. Copy this folder into `wp-content/plugins/feasible-analytics` and activate it.
-2. Go to **feasible.lol → Settings**, enter your site domain exactly as it is registered, and save.
+2. Go to **Feasible → Settings**, enter your site domain exactly as it is registered, and save.
 3. Leave the proxy on. The screen shows the two URLs it is serving.
 4. Turn on the measurements you want.
 5. Optional: paste a shared dashboard link to get the dashboard inside wp-admin.

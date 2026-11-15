@@ -8,8 +8,8 @@
 //
 
 /**
- * Plugin Name:       feasible.lol Analytics
- * Plugin URI:        https://feasible.lol/wordpress
+ * Plugin Name:       Feasible Analytics
+ * Plugin URI:        https://feasible.lol/integrations/wordpress/
  * Description:       Privacy-first analytics for WordPress. Serves the tracking script and the event endpoint from your own domain on randomised paths, tracks site searches and 404s, and puts your dashboard inside wp-admin.
  * Version:           1.0.0
  * Requires at least: 5.9

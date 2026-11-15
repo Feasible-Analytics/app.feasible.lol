@@ -55,8 +55,8 @@ class Feasible_Admin {
 	 */
 	public static function add_menu() {
 		add_menu_page(
-			__( 'feasible.lol Analytics', 'feasible-analytics' ),
-			__( 'feasible.lol', 'feasible-analytics' ),
+			__( 'Feasible Analytics', 'feasible-analytics' ),
+			__( 'Feasible', 'feasible-analytics' ),
 			'manage_options',
 			self::PAGE,
 			array( __CLASS__, 'render_settings' ),
@@ -66,7 +66,7 @@ class Feasible_Admin {
 
 		add_submenu_page(
 			self::PAGE,
-			__( 'feasible.lol Settings', 'feasible-analytics' ),
+			__( 'Feasible Settings', 'feasible-analytics' ),
 			__( 'Settings', 'feasible-analytics' ),
 			'manage_options',
 			self::PAGE,
@@ -75,7 +75,7 @@ class Feasible_Admin {
 
 		add_submenu_page(
 			self::PAGE,
-			__( 'feasible.lol Dashboard', 'feasible-analytics' ),
+			__( 'Feasible Dashboard', 'feasible-analytics' ),
 			__( 'Dashboard', 'feasible-analytics' ),
 			'manage_options',
 			self::DASHBOARD_PAGE,
@@ -478,7 +478,7 @@ class Feasible_Admin {
 		}
 
 		echo '<div class="wrap">';
-		echo '<h1>' . esc_html__( 'feasible.lol Analytics', 'feasible-analytics' ) . '</h1>';
+		echo '<h1>' . esc_html__( 'Feasible Analytics', 'feasible-analytics' ) . '</h1>';
 
 		self::rotation_notice();
 		settings_errors( Feasible_Settings::OPTION );

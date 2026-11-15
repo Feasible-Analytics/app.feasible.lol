@@ -7,7 +7,7 @@
 # Created: 2026-08-30
 msgid ""
 msgstr ""
-"Project-Id-Version: feasible.lol Analytics 1.0.0\n"
+"Project-Id-Version: Feasible Analytics 1.0.0\n"
 "Report-Msgid-Bugs-To: https://feasible.lol/support\n"
 "Last-Translator: \n"
 "Language-Team: \n"
@@ -20,15 +20,15 @@ msgstr ""
 "X-Domain: feasible-analytics\n"
 
 #: includes/class-feasible-admin.php:58 includes/class-feasible-admin.php:481 includes/class-feasible-site-health.php:125
-msgid "feasible.lol Analytics"
+msgid "Feasible Analytics"
 msgstr ""
 
 #: includes/class-feasible-admin.php:59
-msgid "feasible.lol"
+msgid "Feasible"
 msgstr ""
 
 #: includes/class-feasible-admin.php:69
-msgid "feasible.lol Settings"
+msgid "Feasible Settings"
 msgstr ""
 
 #: includes/class-feasible-admin.php:70 includes/class-feasible-admin.php:93
@@ -36,7 +36,7 @@ msgid "Settings"
 msgstr ""
 
 #: includes/class-feasible-admin.php:78 includes/class-feasible-dashboard.php:93
-msgid "feasible.lol Dashboard"
+msgid "Feasible Dashboard"
 msgstr ""
 
 #: includes/class-feasible-admin.php:79 includes/class-feasible-admin.php:163

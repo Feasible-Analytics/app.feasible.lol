@@ -142,10 +142,9 @@ class Feasible_Measurements {
 	 * @return array
 	 */
 	public static function not_found_props() {
-		$request = isset( $_SERVER['REQUEST_URI'] ) ? wp_unslash( $_SERVER['REQUEST_URI'] ) : '';
-		$request = is_string( $request ) ? $request : '';
+		$request = isset( $_SERVER['REQUEST_URI'] ) ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
 
-		$path = wp_parse_url( esc_url_raw( $request ), PHP_URL_PATH );
+		$path = wp_parse_url( $request, PHP_URL_PATH );
 		$path = is_string( $path ) ? $path : '/';
 
 		return array(

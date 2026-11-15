@@ -207,7 +207,7 @@ class Feasible_Proxy {
 			return false;
 		}
 
-		$header = trim( (string) wp_unslash( $_SERVER['HTTP_IF_NONE_MATCH'] ) );
+		$header = trim( sanitize_text_field( wp_unslash( $_SERVER['HTTP_IF_NONE_MATCH'] ) ) );
 
 		return '' !== $header && false !== strpos( $header, $etag );
 	}
@@ -301,7 +301,7 @@ class Feasible_Proxy {
 		nocache_headers();
 		header( 'Content-Type: text/plain; charset=utf-8' );
 
-		$method = isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( (string) wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) : 'GET';
+		$method = isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) ) : 'GET';
 
 		if ( 'OPTIONS' === $method ) {
 			header( 'Allow: POST, OPTIONS' );

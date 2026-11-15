@@ -90,7 +90,7 @@ class Feasible_Dashboard {
 		$settings = admin_url( 'admin.php?page=feasible-analytics' );
 
 		echo '<div class="wrap">';
-		echo '<h1>' . esc_html__( 'feasible.lol Dashboard', 'feasible-analytics' ) . '</h1>';
+		echo '<h1>' . esc_html__( 'Feasible Dashboard', 'feasible-analytics' ) . '</h1>';
 
 		if ( '' === $url ) {
 			echo '<p>' . esc_html__( 'No shared dashboard link is set yet. Create a shared link for this site in feasible.lol, then paste it into the settings screen and it will appear here.', 'feasible-analytics' ) . '</p>';

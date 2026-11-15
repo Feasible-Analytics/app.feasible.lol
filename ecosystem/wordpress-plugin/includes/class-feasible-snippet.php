@@ -49,6 +49,9 @@ class Feasible_Snippet {
 		// The proxy path is already unique to this site and the ETag decides
 		// freshness, so a version string would only fragment the browser cache
 		// on every WordPress upgrade.
+		// The script is served with its own ETag and changes upstream, not with
+		// this plugin, so a plugin version in the URL would say nothing true.
+		// phpcs:ignore WordPress.WP.EnqueuedResourceParameters.MissingVersion
 		wp_enqueue_script( self::HANDLE, self::script_src(), array(), null, $in_footer );
 
 		// The queue stub has to exist before anything calls feasible(). The
