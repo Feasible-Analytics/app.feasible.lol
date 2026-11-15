@@ -358,6 +358,9 @@ func renderMessage(from string, msg Message, escape func(string) string) string 
 
 	b.WriteString("From: " + headerValue(from) + "\r\n")
 	b.WriteString("To: " + headerValue(msg.To) + "\r\n")
+	if msg.ReplyTo != "" {
+		b.WriteString("Reply-To: " + headerValue(msg.ReplyTo) + "\r\n")
+	}
 	b.WriteString("Subject: " + encodeSubject(msg.Subject) + "\r\n")
 	b.WriteString("Date: " + time.Now().UTC().Format(time.RFC1123Z) + "\r\n")
 	if msg.MessageID != "" {

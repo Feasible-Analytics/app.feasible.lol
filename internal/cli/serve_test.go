@@ -10,7 +10,9 @@ package cli
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +29,8 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dashboard"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/onboarding"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/reports"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
@@ -933,5 +937,74 @@ func TestDashboardAssetsAreServedWithoutASession(t *testing.T) {
 	response := s.send(t, http.MethodGet, "/dashboard/example.com", "", nil)
 	if response.Code == http.StatusOK {
 		t.Error("GET /dashboard/example.com was served to a logged-out caller")
+	}
+}
+
+// tokenSealer is a reversible stand-in for the application key.
+type tokenSealer struct{}
+
+// SealToken marks the claim as sealed.
+func (tokenSealer) SealToken(plaintext string) (string, error) {
+	return "sealed:" + hex.EncodeToString([]byte(plaintext)), nil
+}
+
+// OpenToken reads a claim it sealed and refuses anything else.
+func (tokenSealer) OpenToken(token string) (string, error) {
+	raw, ok := strings.CutPrefix(token, "sealed:")
+	if !ok {
+		return "", errors.New("not sealed here")
+	}
+
+	plaintext, err := hex.DecodeString(raw)
+
+	return string(plaintext), err
+}
+
+// TestTheUnsubscribePageAnswersBothKindsOfLink proves an onboarding stop link
+// is redeemed by the onboarding side and anything else is handed to the report
+// unsubscriber, which treats a token it cannot read as already unsubscribed.
+func TestTheUnsubscribePageAnswersBothKindsOfLink(t *testing.T) {
+	dir := t.TempDir()
+	control, err := store.Open(filepath.Join(dir, "system.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	applySystemMigrations(t, control)
+
+	if _, err := control.Exec(`INSERT INTO teams (id, name, created_at, updated_at) VALUES (1, 'Example', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	tips := &onboarding.Stopper{Store: onboarding.NewStore(control), Sealer: tokenSealer{}, BaseURL: "https://app.example"}
+	both := unsubscribers{
+		tips:    tips,
+		reports: &reports.Unsubscriber{Store: reports.NewStore(control), Sealer: tokenSealer{}, BaseURL: "https://app.example"},
+	}
+
+	_, token, _ := strings.Cut(tips.Link(1), onboarding.StopPath)
+
+	if _, list, ok := both.Describe(context.Background(), token); !ok || list != onboarding.ListTips {
+		t.Fatalf("describe = %q, %v; want the setup emails", list, ok)
+	}
+
+	if err := both.Remove(context.Background(), token); err != nil {
+		t.Fatal(err)
+	}
+
+	var stopped int
+	if err := control.QueryRow(`SELECT COUNT(*) FROM onboarding_optouts WHERE team_id = 1`).Scan(&stopped); err != nil {
+		t.Fatal(err)
+	}
+	if stopped != 1 {
+		t.Fatalf("opt-outs = %d, want 1", stopped)
+	}
+
+	if _, _, ok := both.Describe(context.Background(), "not-a-token"); ok {
+		t.Fatal("an unreadable token was described")
+	}
+
+	if err := both.Remove(context.Background(), "not-a-token"); err != nil {
+		t.Fatalf("an unreadable token failed the page: %v", err)
 	}
 }

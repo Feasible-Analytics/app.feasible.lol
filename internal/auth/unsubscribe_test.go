@@ -196,3 +196,53 @@ func TestTheTokenIsNotWrittenToTheLog(t *testing.T) {
 		t.Errorf("the log path is %q", got)
 	}
 }
+
+// TestTheSetupEmailsHaveTheirOwnWords covers the one list that belongs to an
+// account rather than a site: the page names no site and no list, and the
+// confirmation does not send the reader to "the person who set this up".
+func TestTheSetupEmailsHaveTheirOwnWords(t *testing.T) {
+	app := newTestApp(t)
+	h := app.Handler
+	fake := &fakeUnsubscriber{list: "onboarding_tips", known: true}
+	h.Unsubscribe = fake
+
+	recorder := httptest.NewRecorder()
+	h.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/unsubscribe/tips123", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("code = %d", recorder.Code)
+	}
+
+	body := recorder.Body.String()
+
+	for _, want := range []string{"Stop the setup emails", "password reset", `method="post"`, "/unsubscribe/tips123"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the page is missing %q", want)
+		}
+	}
+
+	if len(fake.removed) != 0 {
+		t.Errorf("the GET removed %q", fake.removed)
+	}
+
+	recorder = httptest.NewRecorder()
+	h.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/unsubscribe/tips123", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("code = %d", recorder.Code)
+	}
+
+	if len(fake.removed) != 1 || fake.removed[0] != "tips123" {
+		t.Fatalf("removed = %q", fake.removed)
+	}
+
+	body = recorder.Body.String()
+
+	if !strings.Contains(body, "The setup emails have stopped") {
+		t.Error("the confirmation does not say the setup emails stopped")
+	}
+
+	if strings.Contains(body, "The person who set this report up") {
+		t.Error("the confirmation talks about a report")
+	}
+}

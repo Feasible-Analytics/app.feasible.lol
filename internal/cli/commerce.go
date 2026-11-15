@@ -21,6 +21,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/onboarding"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/stripe"
 
@@ -50,6 +51,10 @@ type commerce struct {
 	Gate           *access.Gate
 	Pages          *billingui.Handler
 	Mailer         *mail.Mailer
+
+	// Onboarding sends a new account its welcome and install help. It runs
+	// only on the hosted service, with the other loops below.
+	Onboarding *onboarding.Service
 }
 
 // buildCommerce assembles everything from the resolved configuration.
@@ -139,7 +144,17 @@ func buildCommerce(e *env, control *sql.DB, manager *accounts.Manager, siteCache
 		gate = access.New(lifecycleStore, usageStore, siteCache, e.log)
 	}
 
+	onboardingService := &onboarding.Service{
+		Store:   onboarding.NewStore(control),
+		Outbox:  lifecycleStore,
+		Traffic: onboarding.AccountTraffic{Accounts: manager},
+		Notify:  mail.NewOnboardingMailer(mailer),
+		Log:     e.log,
+		BaseURL: e.cfg.App.BaseURL,
+	}
+
 	return &commerce{
+		Onboarding:     onboardingService,
 		Hosted:         e.cfg.App.Hosted,
 		Lifecycle:      lifecycleService,
 		LifecycleStore: lifecycleStore,
@@ -232,7 +247,7 @@ func (c *commerce) Routes(mux *http.ServeMux, app *auth.Handler) {
 	mux.Handle(billing.WebhookPath, c.Webhook)
 }
 
-// Start launches the three background loops. Each runs independently, because a
+// Start launches the background loops. Each runs independently, because a
 // failure in one must not silence the others: a usage sweep that stops still
 // leaves the deletion clock running, and that is the one that must never stop
 // quietly.
@@ -245,4 +260,5 @@ func (c *commerce) Start(ctx context.Context, run func(func())) {
 	run(func() { c.Gate.Run(ctx) })
 	run(func() { c.Lifecycle.Run(ctx) })
 	run(func() { c.Volume.Run(ctx) })
+	run(func() { c.Onboarding.Run(ctx) })
 }

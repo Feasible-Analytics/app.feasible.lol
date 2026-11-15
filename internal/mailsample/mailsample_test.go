@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/onboarding"
 )
 
 // TestTheAddressIsAWholeAddress is what stops the guard below being circular.
@@ -224,9 +225,10 @@ func TestEveryMessageHasAPreheader(t *testing.T) {
 // turns on, and the one somebody will ask about again.
 //
 // The report and the alert go to addresses somebody else typed in, on a
-// schedule, so they need a way out. The other twenty-two are transactional
-// messages to an account holder about their own account: an unsubscribe link on
-// "we delete your data tomorrow" is a way to miss the warning.
+// schedule, so they need a way out. The onboarding emails are help nobody asked
+// for, so they need one too. The rest are transactional messages to an account
+// holder about their own account: an unsubscribe link on "we delete your data
+// tomorrow" is a way to miss the warning.
 func TestOnlyTheReportAndTheAlertOfferAnUnsubscribe(t *testing.T) {
 	messages, err := Messages()
 	if err != nil {
@@ -239,6 +241,19 @@ func TestOnlyTheReportAndTheAlertOfferAnUnsubscribe(t *testing.T) {
 		mail.TagReportPreview: true,
 		mail.TagAlertSpike:    true,
 		mail.TagAlertDrop:     true,
+	}
+
+	// The onboarding emails must carry theirs, in the header and in both
+	// bodies: one sent without a way out is the failure, not the exception.
+	for _, tag := range onboarding.Templates() {
+		recurring[tag] = true
+
+		message := messages[tag]
+		if message.Unsubscribe == "" ||
+			!strings.Contains(message.HTML, "Stop these setup emails") ||
+			!strings.Contains(message.Text, "Stop these setup emails") {
+			t.Errorf("%s does not offer a way to stop the setup emails", tag)
+		}
 	}
 
 	for tag, message := range messages {

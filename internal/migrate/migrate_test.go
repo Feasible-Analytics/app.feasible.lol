@@ -1349,8 +1349,9 @@ func TestRebuildingTheObservationsTableKeepsWhatWasInIt(t *testing.T) {
 // deployed 0007 settings migration, while the system chain preserves every
 // historical step before removing obsolete salt storage in migration 12,
 // recording the last accepted authenticator step in 13, the account picture
-// bytes in 14, where each person came from in 15, the clock they read in 16 and
-// when each account last changed a rule in 17.
+// bytes in 14, where each person came from in 15, the clock they read in 16,
+// when each account last changed a rule in 17 and when the onboarding emails
+// began in 18.
 // The account chain then carries the lossless imported-rollup fields in 13, the
 // channel parity for those imports in 14, the event-receipt prune index in 15,
 // the session-prune-by-time indexes in 16, the automation letters the tracker
@@ -1361,7 +1362,7 @@ func TestCoordinatedMigrationNumbers(t *testing.T) {
 		want []int
 	}{
 		"account": {set: Account(), want: []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23}},
-		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}},
+		"system":  {set: System(), want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := make([]int, 0, len(test.set.Migrations))

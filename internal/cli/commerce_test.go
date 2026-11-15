@@ -21,7 +21,8 @@ import (
 )
 
 // TestSelfHostedCommerceIsInert proves the mode flag wins over stale payment
-// secrets and does not start metering, lock, lifecycle or volume workers.
+// secrets and does not start metering, lock, lifecycle, volume or onboarding
+// email workers.
 func TestSelfHostedCommerceIsInert(t *testing.T) {
 	dir := t.TempDir()
 	control, err := store.Open(filepath.Join(dir, "system.db"))
@@ -56,5 +57,36 @@ func TestSelfHostedCommerceIsInert(t *testing.T) {
 	com.Start(context.Background(), func(func()) { started++ })
 	if started != 0 {
 		t.Fatalf("self-hosted mode started %d commercial workers", started)
+	}
+}
+
+// TestHostedCommerceRunsTheOnboardingEmails is the other half: the hosted
+// service starts the onboarding sweeper beside the four commercial loops.
+func TestHostedCommerceRunsTheOnboardingEmails(t *testing.T) {
+	dir := t.TempDir()
+	control, err := store.Open(filepath.Join(dir, "system.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	applySystemMigrations(t, control)
+
+	e := &env{
+		cfg: &config.Config{App: config.App{Hosted: true, BaseURL: "http://localhost:19300", DataDir: dir}},
+		log: logger.New(logger.Options{Level: "error"}),
+	}
+	manager := accounts.NewManager(dir)
+	defer manager.CloseAll() //nolint:errcheck // the test has no useful cleanup recovery
+
+	com := buildCommerce(e, control, manager, sites.New(control), nil)
+	if com.Onboarding == nil || com.Onboarding.Store == nil || com.Onboarding.Outbox == nil ||
+		com.Onboarding.Traffic == nil || com.Onboarding.Notify == nil {
+		t.Fatalf("the onboarding sweeper is not fully assembled: %+v", com.Onboarding)
+	}
+
+	started := 0
+	com.Start(context.Background(), func(func()) { started++ })
+	if started != 5 {
+		t.Fatalf("hosted mode started %d workers, want the four commercial loops and the onboarding emails", started)
 	}
 }
