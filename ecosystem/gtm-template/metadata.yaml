@@ -7,17 +7,17 @@
 #
 # Licensed under the Apache Licence, Version 2.0. See LICENSE in this folder.
 #
-# The gallery reads this file from the default branch of the public repository
-# and matches each entry in `versions` to a commit. A sha that is not a real
-# commit on this repository fails validation, so the placeholder below has to be
-# replaced with the commit that carries the release before the template is
-# submitted.
+# The gallery reads this file from the main branch of the public repository,
+# Feasible-Analytics/feasible-gtm-template, and matches each entry in `versions`
+# to a commit there. Each sha is the commit in that repository that carries the
+# released template.tpl. Newest first.
 #
 
-homepage: https://github.com/Feasible-Analytics/gtm-template
+homepage: "https://feasible.lol"
+documentation: "https://github.com/Feasible-Analytics/feasible-gtm-template#readme"
 
 versions:
-  - sha: 0000000000000000000000000000000000000000
+  - sha: 719b59440fa798df29f65127383cc74c6123ac7d
     changeNotes: |-
       First release.
 

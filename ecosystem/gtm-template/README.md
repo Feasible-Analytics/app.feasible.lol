@@ -17,7 +17,7 @@ text, the gallery manifest, and this page.
 
 ## Installing it in a container
 
-**From the Community Template Gallery** (once it is published):
+**From the Community Template Gallery** (once Google has approved it):
 
 1. In your container, open **Templates → Tag Templates → Search Gallery**.
 2. Search for **Feasible Analytics** and add it.
@@ -111,32 +111,17 @@ path, an event tag calling the tracker with its name, properties and revenue, an
 event that arrives before the script and is queued, and a missing site domain
 failing cleanly rather than hanging.
 
-## Submitting it to the Community Template Gallery
+## Releasing a new version
 
-The gallery reads a public GitHub repository. It has to look exactly like this:
+The gallery reads the public repository
+[Feasible-Analytics/feasible-gtm-template](https://github.com/Feasible-Analytics/feasible-gtm-template),
+which holds `template.tpl`, `metadata.yaml` and `LICENSE` in its root on `main`.
 
-1. **Put this folder in its own public repository** on GitHub, with
-   `template.tpl`, `metadata.yaml` and `LICENSE` in the repository root. The
-   gallery does not read subdirectories.
-2. **Set the repository description** — it becomes the template's gallery
-   description — and add the topic **`gtm-template`**, which is how the gallery
-   finds the repository at all.
-3. **Fill in `metadata.yaml`.** Set `homepage` to the repository URL, and replace
-   the placeholder `sha` with the real commit SHA of the release. A sha that is
-   not a commit on the default branch fails validation.
-4. **Check `___INFO___` in `template.tpl`**: `displayName`, `description`,
-   `categories` and `brand.displayName` are what a person reads in the gallery.
-5. **Add the template's logo** as a square PNG at least 96×96 in the repository
-   root; the gallery picks it up from there.
-6. **Sign in** at
-   [tagmanager.google.com/gallery](https://tagmanager.google.com/gallery/) with
-   the GitHub account that owns the repository, and submit it.
-7. Google reviews it by hand. The two things that come back most often are a
-   permission wider than the code needs and a missing or unparseable
-   `metadata.yaml`.
-
-Each later release is a new commit plus a new entry at the **top** of `versions`
-in `metadata.yaml`. The gallery treats the first entry as current.
+1. Import `template.tpl` into GTM's template editor, make the change, and run the **Tests** tab.
+2. On the **Info** tab, tick the gallery terms box, save, and export. Name the file `template.tpl`.
+3. Commit it to the public repository.
+4. Add an entry at the **top** of `versions` in `metadata.yaml` with that commit's SHA, and commit
+   again. The gallery picks the update up in two or three days.
 
 ## Licence
 

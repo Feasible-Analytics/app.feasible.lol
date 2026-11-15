@@ -1,4 +1,4 @@
-___TERMS_OF_SERVICE___
+﻿___TERMS_OF_SERVICE___
 
 By creating or modifying this file you agree to Google Tag Manager's Community
 Template Gallery Developer Terms of Service available at
@@ -19,7 +19,8 @@ ___INFO___
   ],
   "brand": {
     "id": "brand_dummy",
-    "displayName": "Feasible Analytics"
+    "displayName": "Feasible Analytics",
+    "thumbnail": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAIAAABt+uBvAAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAYKADAAQAAAABAAAAYAAAAACpM19OAAADNUlEQVR4Ae3cMW/TQBQH8LNjJ1VBMCAGBgYWFhZ2JD4GXwIhJkbUsRsrX4Cv0RUmmBAgWsTEgIREC0hA4vh4ziGUp0fzd+MXLkh/y0PvXmzf/fxcn3txi083LwUupwuUp4cY6QQIBPKAQAQCAiDMDCIQEABhZhCBgAAIM4MIBARAmBlEICAAwswgAgEBEGYGEQgIgDAziEBAAISZQQQCAiBcgfhZwzGG6TSEeNbtPD9fVWHk1i+3HXU9FJ3d8+XtW2EyyUZUlvHty/j+MJQ+vz1cgdq22D1X3d8rrl4LTeOZFP33Ndlp9h/MD1+F8aT/Ris+6Qokx5EkEpq27dYsi/ehvYESijDJmmXxPq7PhZqF4t8clEDAmUAEAgIgzAwiEBAAYWYQgYAACDODANBmRtLgoEvhonB88u72W9Vej6mplVmBROfH9/jxg+dziTyjnnwOsmenJStQVcejF9N7d8L0Zyj8LnbRqcdOPiErUOqE9CetXn1y3Y/feXNt1vbsjEDgXBCIQEAAhJlBBAICIMwMIhAQAOEtGCj+ngIZPAvi93ixbJYbSHo12VmMpAdf7M1sE5NxWYFms+L6jfGTg+UztvbPzd7d9vmzUNdr7+GvG2YFkgn8elxcvhJcnr27uebB16lBygu0mKqOc9OqtSq851RTIwZf+Wv15T/aiEDgZBGIQEAAhJlBBAICIMwMIhAQAGFmEADKPZKW5m3mKRz0u3c4N1D6W4eLkctODFxWoKqKR6+bx/thPh+eR/HdG+dp/gVWViCZbv72tX164DP17P21hZRMWYGkCXJdpK/EO87Nm8tkSAXvYkCPQAQCAiDMDCIQEADhDdzF5MaUVnDobR9Dp+Z7A6W/nMvbfn1e+JPPjEbDh4jwRAz5gCuQvA755bh59DBcuBjaHjMwZRFOjl2G0UMIVm9b+P8nTvlGZv8ZmD8DxdXNzBd1zaDUDaeXRfOZqCPzNq84bIFA1kTVEEhx2AKBrImqIZDisAUCWRNVQyDFYQsEsiaqhkCKwxYIZE1UDYEUhy0QyJqoGgIpDlsgkDVRNQRSHLZAIGuiagikOGyBQNZE1RBIcdgCgayJqvkFnyF6+iFCv0kAAAAASUVORK5CYII\u003d"
   },
   "description": "Loads the Feasible Analytics tracker and sends pageviews, custom events, custom properties and revenue. Cookieless, privacy-first web analytics.",
   "containerContexts": [
@@ -67,7 +68,7 @@ ___TEMPLATE_PARAMETERS___
     "name": "domain",
     "displayName": "Site domain",
     "simpleValueType": true,
-    "help": "The site exactly as it is registered with Feasible, for example <code>example.com</code>. No scheme, no www unless the site is registered with it, no trailing slash.",
+    "help": "The site exactly as it is registered with Feasible, for example \u003ccode\u003eexample.com\u003c/code\u003e. No scheme, no www unless the site is registered with it, no trailing slash.",
     "valueValidators": [
       {
         "type": "NON_EMPTY"
@@ -87,7 +88,7 @@ ___TEMPLATE_PARAMETERS___
     "displayName": "Analytics host",
     "simpleValueType": true,
     "defaultValue": "https://app.feasible.lol",
-    "help": "Where the tracker is served from and where events are sent. Leave the default for the hosted service; change it for a self-hosted instance or your own proxy. A host other than the default also has to be added to this template's <strong>inject_script</strong> permission, which only the container owner can do.",
+    "help": "Where the tracker is served from and where events are sent. Leave the default for the hosted service; change it for a self-hosted instance or your own proxy. A host other than the default also has to be added to this template\u0027s \u003cstrong\u003einject_script\u003c/strong\u003e permission, which only the container owner can do.",
     "valueValidators": [
       {
         "type": "NON_EMPTY"
@@ -106,7 +107,7 @@ ___TEMPLATE_PARAMETERS___
     "name": "scriptPath",
     "displayName": "Custom script path",
     "simpleValueType": true,
-    "help": "Optional. Defaults to <code>/js/script.js</code>. Set it to the per-site path Feasible generated for you (<code>/js/fs-xxxxxxxxxxxxxxxx.js</code>), or to whatever path you serve the script from behind your own domain.",
+    "help": "Optional. Defaults to \u003ccode\u003e/js/script.js\u003c/code\u003e. Set it to the per-site path Feasible generated for you (\u003ccode\u003e/js/fs-xxxxxxxxxxxxxxxx.js\u003c/code\u003e), or to whatever path you serve the script from behind your own domain.",
     "enablingConditions": [
       {
         "paramName": "tagType",
@@ -120,7 +121,7 @@ ___TEMPLATE_PARAMETERS___
     "name": "hashRouting",
     "checkboxText": "Count hash changes as pageviews",
     "simpleValueType": true,
-    "help": "For single-page apps that route with <code>#</code> fragments rather than the History API.",
+    "help": "For single-page apps that route with \u003ccode\u003e#\u003c/code\u003e fragments rather than the History API.",
     "enablingConditions": [
       {
         "paramName": "tagType",
@@ -134,7 +135,7 @@ ___TEMPLATE_PARAMETERS___
     "name": "manualPageviews",
     "checkboxText": "Send pageviews manually",
     "simpleValueType": true,
-    "help": "Stops the tracker sending a pageview on load. Send them yourself with a <strong>Send an event</strong> tag whose event name is <code>pageview</code>.",
+    "help": "Stops the tracker sending a pageview on load. Send them yourself with a \u003cstrong\u003eSend an event\u003c/strong\u003e tag whose event name is \u003ccode\u003epageview\u003c/code\u003e.",
     "enablingConditions": [
       {
         "paramName": "tagType",
@@ -174,7 +175,7 @@ ___TEMPLATE_PARAMETERS___
     "name": "eventName",
     "displayName": "Event name",
     "simpleValueType": true,
-    "help": "The name the event is reported under, for example <code>Signup</code>. The name <code>pageview</code> sends a pageview.",
+    "help": "The name the event is reported under, for example \u003ccode\u003eSignup\u003c/code\u003e. The name \u003ccode\u003epageview\u003c/code\u003e sends a pageview.",
     "valueValidators": [
       {
         "type": "NON_EMPTY"
@@ -221,7 +222,7 @@ ___TEMPLATE_PARAMETERS___
     "name": "revenueAmount",
     "displayName": "Revenue amount",
     "simpleValueType": true,
-    "help": "Optional. A number such as <code>19.99</code>, or a variable holding one. Leave it empty for an event that carries no money.",
+    "help": "Optional. A number such as \u003ccode\u003e19.99\u003c/code\u003e, or a variable holding one. Leave it empty for an event that carries no money.",
     "enablingConditions": [
       {
         "paramName": "tagType",
@@ -236,7 +237,7 @@ ___TEMPLATE_PARAMETERS___
     "displayName": "Revenue currency",
     "simpleValueType": true,
     "defaultValue": "USD",
-    "help": "An ISO 4217 code, for example <code>USD</code> or <code>GBP</code>. Required whenever an amount is set.",
+    "help": "An ISO 4217 code, for example \u003ccode\u003eUSD\u003c/code\u003e or \u003ccode\u003eGBP\u003c/code\u003e. Required whenever an amount is set.",
     "enablingConditions": [
       {
         "paramName": "tagType",
@@ -839,3 +840,5 @@ ___NOTES___
 
 Created on 2026-08-30. Copyright (c) 2026 Cloudmanic Labs, LLC.
 Licensed under the Apache Licence, Version 2.0.
+
+
