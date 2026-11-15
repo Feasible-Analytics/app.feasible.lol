@@ -562,6 +562,88 @@ func TestCheckoutWithoutAProviderExplainsItself(t *testing.T) {
 	}
 }
 
+// TestBillingOffersASubscriberThePortalAlone covers an account whose
+// subscription can still charge: checkout refuses it, so the plan buttons must
+// not be on the page. An ended subscription gets them back.
+func TestBillingOffersASubscriberThePortalAlone(t *testing.T) {
+	for status, wantButtons := range map[string]bool{"active": false, "past_due": false, "canceled": true} {
+		handler, control := newHandler(t)
+		stamp := pagesNow.Unix()
+
+		if _, err := control.Exec(`
+			INSERT INTO subscriptions
+				(team_id, stripe_customer_id, stripe_subscription_id, status, plan,
+				 stripe_price_id, payment_state, created_at, updated_at)
+			VALUES (1, 'cus_subscriber', 'sub_subscriber', ?, 'monthly', 'price_monthly', 'paid', ?, ?)
+		`, status, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+
+		body := render(t, handler, "/billing?team=1").Body.String()
+		if got := strings.Contains(body, `action="/billing/checkout"`); got != wantButtons {
+			t.Errorf("status %s: plan buttons shown = %v, want %v", status, got, wantButtons)
+		}
+		if !strings.Contains(body, `action="/billing/portal"`) {
+			t.Errorf("status %s: the billing page does not offer the portal", status)
+		}
+	}
+}
+
+// TestCheckoutBySubscriberExplainsItself posts the checkout form for an account
+// the provider reports as subscribed. The customer gets a page that says so and
+// points back to billing, and no Checkout Session is created.
+func TestCheckoutBySubscriberExplainsItself(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/subscriptions") {
+			_, _ = w.Write([]byte(`{"data":[{"id":"sub_subscriber","status":"active","customer":"cus_subscriber"}],"has_more":false}`))
+			return
+		}
+
+		t.Errorf("unexpected Stripe call %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"unexpected"}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	handler, control := newHandler(t)
+	stamp := pagesNow.Unix()
+	if _, err := control.Exec(`
+		INSERT INTO subscriptions
+			(team_id, stripe_customer_id, stripe_subscription_id, status, plan,
+			 stripe_price_id, payment_state, created_at, updated_at)
+		VALUES (1, 'cus_subscriber', 'sub_subscriber', 'active', 'monthly', 'price_monthly', 'paid', ?, ?)
+	`, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+
+	client := stripe.New("sk_test_fake")
+	client.BaseURL = server.URL
+	handler.Billing.Stripe = client
+	handler.CurrentAccount = func(*http.Request) (Account, error) {
+		return Account{ID: 1, Email: "owner@example.com"}, nil
+	}
+	handler.ValidateForm = func(http.ResponseWriter, *http.Request) bool { return true }
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	request := httptest.NewRequest(http.MethodPost, "/billing/checkout", strings.NewReader("plan=yearly"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("checkout answered %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{"You already have a plan", "/billing?team=1"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the page is missing %q: %s", want, body)
+		}
+	}
+}
+
 // TestInjectedAccountAccessProtectsBillingAndCSRF verifies the package-level
 // contract used by auth: account routes require its middleware, forged account
 // ids are ignored, and authenticated POSTs run its CSRF check first.
