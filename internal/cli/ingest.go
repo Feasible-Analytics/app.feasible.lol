@@ -49,6 +49,7 @@ func runIngest(e *env, args []string) int {
 		"buffer_path", e.cfg.Ingest.BufferPath,
 		"internal_signing", e.cfg.Shared.InternalKey != "",
 		"trusted_proxies", len(e.cfg.Ingest.TrustedProxies),
+		"trust_sender_address", e.cfg.Ingest.TrustSenderAddress,
 		"env", e.cfg.Shared.Env,
 		"trace_events", e.cfg.Shared.TraceEvents,
 	)
@@ -80,7 +81,8 @@ func runIngest(e *env, args []string) int {
 	}
 	service, err := ingest.NewRemoteService(ctx, outbox, ingest.Options{
 		DataDir: *dataDir, TrustedProxies: e.cfg.Ingest.TrustedProxies,
-		IngestSalt: e.cfg.Shared.IngestSalt, Log: e.log,
+		TrustSenderAddress: e.cfg.Ingest.TrustSenderAddress,
+		IngestSalt:         e.cfg.Shared.IngestSalt, Log: e.log,
 	})
 	if err != nil {
 		_ = outbox.Close()

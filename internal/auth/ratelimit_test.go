@@ -173,3 +173,31 @@ func TestClientKeyFollowsATrustedProxy(t *testing.T) {
 		t.Error("two visitors behind one proxy share a rate-limit bucket")
 	}
 }
+
+// TestClientKeyIgnoresASendersStatedAddress checks a login stays keyed on the
+// address our proxy observed when the request also carries the header the
+// event endpoint believes. Rotating it must not buy a fresh set of attempts.
+func TestClientKeyIgnoresASendersStatedAddress(t *testing.T) {
+	trusted, err := clientip.ParseTrustedProxies([]string{"127.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := httptest.NewRequest("POST", "/login", nil)
+	first.RemoteAddr = "127.0.0.1:54321"
+	first.Header.Set(clientip.HeaderForwardedFor, "198.51.100.7")
+	first.Header.Set(clientip.HeaderSenderForwardedFor, "81.2.69.142")
+
+	if key := ClientKey(first, trusted, "login"); key != "login|198.51.100.7" {
+		t.Errorf("want the address the proxy observed, got %q", key)
+	}
+
+	second := httptest.NewRequest("POST", "/login", nil)
+	second.RemoteAddr = "127.0.0.1:54322"
+	second.Header.Set(clientip.HeaderForwardedFor, "198.51.100.7")
+	second.Header.Set(clientip.HeaderSenderForwardedFor, "81.2.69.143")
+
+	if ClientKey(second, trusted, "login") != ClientKey(first, trusted, "login") {
+		t.Error("a different stated address moved the same client into a new bucket")
+	}
+}

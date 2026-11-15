@@ -130,7 +130,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Apply the per-source ceiling before parsing and derivation. It remains a
 	// named 202 drop because a browser beacon cannot act usefully on a 429.
-	if h.Limiter != nil && !h.Limiter.Allow(clientip.ResolveClientIP(r, h.Pipeline.Trusted).Addr) {
+	if h.Limiter != nil && !h.Limiter.Allow(h.Pipeline.VisitorIP(r).Addr) {
 		h.drop(w, 0, "", ReasonRateLimited)
 		return
 	}
@@ -313,7 +313,7 @@ func (h *Handler) serverSideCallerProblem(r *http.Request) string {
 		return ""
 	}
 
-	client := clientip.ResolveClientIP(r, h.Pipeline.Trusted)
+	client := h.Pipeline.VisitorIP(r)
 	if client.Source != clientip.SourceSocket || !h.Pipeline.Bots.IsDatacenterIP(client.Addr) {
 		return ""
 	}

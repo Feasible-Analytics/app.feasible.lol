@@ -223,6 +223,18 @@ whether the proxy created them or merely passed them through. An edge may append
 `X-Forwarded-For`, because the right-to-left walk ignores spoofed entries before
 the address that edge observed.
 
+**A shared edge can relay a visitor a customer's own proxy or server states.**
+An edge serving many customers cannot list each customer's server as trusted, so
+an event relayed through one is counted at that server. Set
+`FEASIBLE_INGEST_TRUST_SENDER_ADDRESS=true` and have the edge, on the event route
+only, copy the sender's own `X-Forwarded-For` into
+`X-Feasible-Sender-Forwarded-For` while it overwrites `X-Forwarded-For` with the
+address it observed. The event endpoint then counts the nearest public address
+in that copy, and falls back to the observed sender when there is none. The edge
+must remove `X-Feasible-Sender-Forwarded-For` on every other route. Logins, the
+dashboard and the API never read it, so a sender can only misstate visits to a
+site it can already send any event for.
+
 ```bash
 curl -s -X POST https://<public-host>/api/event \
   -H 'content-type: application/json' \

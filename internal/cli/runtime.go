@@ -96,9 +96,11 @@ func buildIngest(ctx context.Context, e *env, dataDir string) (*ingest.Service, 
 	service, err := ingest.NewService(ctx, control, manager, ingest.Options{
 		DataDir:        dataDir,
 		TrustedProxies: e.cfg.Ingest.TrustedProxies,
-		IngestSalt:     e.cfg.Shared.IngestSalt,
-		Concurrency:    e.cfg.App.WriteConcurrency,
-		Log:            e.log,
+
+		TrustSenderAddress: e.cfg.Ingest.TrustSenderAddress,
+		IngestSalt:         e.cfg.Shared.IngestSalt,
+		Concurrency:        e.cfg.App.WriteConcurrency,
+		Log:                e.log,
 	})
 	if err != nil {
 		control.Close()

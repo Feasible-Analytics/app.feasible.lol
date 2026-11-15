@@ -37,6 +37,10 @@ type Options struct {
 	// X-Forwarded-For. Empty means all forwarded headers are ignored.
 	TrustedProxies []string
 
+	// TrustSenderAddress believes the visitor address a sender states through
+	// a trusted proxy. See clientip.ResolveVisitorIP.
+	TrustSenderAddress bool
+
 	// IngestSalt is the shared input used to derive the current and previous UTC
 	// day's fingerprint salts without contacting an app shard.
 	IngestSalt string
@@ -154,15 +158,17 @@ func NewService(ctx context.Context, control *sql.DB, manager *accounts.Manager,
 	}
 
 	service.Pipeline = &Pipeline{
-		Sites:    siteCache,
-		Salts:    saltSource,
-		Geo:      locator,
-		Agents:   service.Agents,
-		Bots:     bots,
-		Trusted:  trusted,
-		Shards:   DirectShard{},
-		Counters: counters,
-		Now:      now,
+		Sites:   siteCache,
+		Salts:   saltSource,
+		Geo:     locator,
+		Agents:  service.Agents,
+		Bots:    bots,
+		Trusted: trusted,
+
+		TrustSender: opts.TrustSenderAddress,
+		Shards:      DirectShard{},
+		Counters:    counters,
+		Now:         now,
 	}
 
 	// Direct mode flows accept → derive → buffer → account write. Hosted
@@ -228,7 +234,7 @@ func NewRemoteService(ctx context.Context, outbox *Outbox, opts Options) (*Servi
 	}
 	service.Pipeline = &Pipeline{
 		Sites: outbox.Router, Salts: saltSource, Geo: locator, Agents: service.Agents,
-		Bots: bots, Trusted: trusted, Shards: outbox.Router, Shield: outbox.Router,
+		Bots: bots, Trusted: trusted, TrustSender: opts.TrustSenderAddress, Shards: outbox.Router, Shield: outbox.Router,
 		Hostnames: outbox.Router, Counters: counters, Now: now,
 	}
 	service.Buffer = NewBuffer(outbox, opts.BufferSize, opts.FlushInterval)

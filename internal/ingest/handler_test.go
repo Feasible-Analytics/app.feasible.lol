@@ -883,3 +883,43 @@ func TestGetIsRefused(t *testing.T) {
 		t.Fatalf("status %d, want 405", recorder.Code)
 	}
 }
+
+// TestAForwardedVisitorIsCountedAtTheirOwnAddress is the proxied and
+// server-side case on a shared edge. The edge reports the customer's server
+// in X-Forwarded-For and copies what that server stated alongside, and the
+// event has to be counted at the visitor, not at the server relaying them.
+func TestAForwardedVisitorIsCountedAtTheirOwnAddress(t *testing.T) {
+	h := newHandlerHarness(t)
+	h.service.Pipeline.TrustSender = true
+
+	const server, visitor = "198.51.100.20", "81.2.69.142"
+	headers := map[string]string{
+		HeaderDebug:                       "true",
+		clientip.HeaderForwardedFor:       server,
+		clientip.HeaderSenderForwardedFor: visitor,
+	}
+
+	var forwarded Debug
+	recorder := post(t, h, "text/plain", validBody, headers)
+	if err := json.NewDecoder(recorder.Body).Decode(&forwarded); err != nil {
+		t.Fatalf("status %d: %v", recorder.Code, err)
+	}
+
+	if forwarded.ClientIP != visitor || forwarded.ClientIPSource != clientip.SourceForwardedFor {
+		t.Errorf("counted at %q from %q, want the visitor %q", forwarded.ClientIP, forwarded.ClientIPSource, visitor)
+	}
+
+	// Without the option the same request is the server's, which is what an
+	// install whose proxy never set the header must keep getting.
+	h.service.Pipeline.TrustSender = false
+
+	var plain Debug
+	recorder = post(t, h, "text/plain", validBody, headers)
+	if err := json.NewDecoder(recorder.Body).Decode(&plain); err != nil {
+		t.Fatalf("status %d: %v", recorder.Code, err)
+	}
+
+	if plain.ClientIP != server {
+		t.Errorf("counted at %q with the option off, want the sender %q", plain.ClientIP, server)
+	}
+}

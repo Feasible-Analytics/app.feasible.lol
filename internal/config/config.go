@@ -361,6 +361,13 @@ type Ingest struct {
 	// fingerprint, geolocation or shield address.
 	TrustedProxies []string
 
+	// TrustSenderAddress makes the event endpoint believe the visitor address
+	// a sender states, when a trusted proxy has copied the sender's
+	// X-Forwarded-For into X-Feasible-Sender-Forwarded-For. It lets a
+	// customer's own proxy or server relay a visitor through a shared edge.
+	// Logins and the API never read that header.
+	TrustSenderAddress bool
+
 	// PlaintextShards names destinations that may be addressed over http even
 	// in hosted production, as network prefixes in CIDR form or as hostname
 	// suffixes. It is additive: loopback and Tailscale are accepted without it.
@@ -658,6 +665,10 @@ func LoadFrom(l *Loader) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	trustSender, err := l.Bool("FEASIBLE_INGEST_TRUST_SENDER_ADDRESS", false)
+	if err != nil {
+		return nil, err
+	}
 	startTLS, err := l.Bool("FEASIBLE_SMTP_STARTTLS", true)
 	if err != nil {
 		return nil, err
@@ -782,6 +793,8 @@ func LoadFrom(l *Loader) (*Config, error) {
 			BufferPath:      l.String("FEASIBLE_INGEST_BUFFER_PATH", DefaultIngestBufferPath),
 			TrustedProxies:  parseList(l.String("FEASIBLE_INGEST_TRUSTED_PROXIES", "")),
 			PlaintextShards: parseList(l.String("FEASIBLE_INGEST_PLAINTEXT_SHARDS", "")),
+
+			TrustSenderAddress: trustSender,
 		},
 	}
 
