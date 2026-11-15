@@ -231,6 +231,9 @@ only, copy the sender's own `X-Forwarded-For` into
 `X-Feasible-Sender-Forwarded-For` while it overwrites `X-Forwarded-For` with the
 address it observed. The event endpoint then counts the nearest public address
 in that copy, and falls back to the observed sender when there is none. A
+trusted CDN in front of the edge appends the sender to the chain before the edge
+copies it, so the sender's own address at the right of the copy is skipped and a
+relay may post through the CDN or straight to the edge. A
 fallback to a hosting-provider address is reported as `client_ip_source`
 `socket`, so a customer's proxy that forwards nothing raises the health panel's
 proxy warning while a browser, which never states a visitor, does not. The edge
