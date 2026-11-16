@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
@@ -129,7 +130,18 @@ func (h *Handler) doVerifyInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := VerifyInstallation(r.Context(), h.Verifier, h.BaseURL, site)
+	result := VerifyInstallation(r.Context(), h.Verifier,
+		InstallCheck{BaseURL: h.BaseURL, ScriptBaseURL: h.ScriptBaseURL, Keyer: h.Keyer}, site)
+
+	// A snippet the fetch could not see is only missing if nothing is arriving.
+	if result.Outcome == VerifyMissing && h.Traffic != nil {
+		at, err := h.Traffic.LastEventAt(r.Context(), site.AccountID, site.ID)
+		if err != nil {
+			h.Log.Debug("no traffic yet for this site", "site", site.ID, "error", err)
+		} else if at > 0 {
+			result = result.WithRecentVisit(time.Unix(at, 0), time.Now())
+		}
+	}
 
 	h.Log.Info("installation checked", "site", site.ID, "domain", site.Domain,
 		"outcome", string(result.Outcome), "status", result.StatusCode)
