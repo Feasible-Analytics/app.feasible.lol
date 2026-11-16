@@ -1684,6 +1684,39 @@ func TestLoginIsRateLimited(t *testing.T) {
 	}
 }
 
+// TestRegistrationFromOneAddressIsRateLimited checks both halves of the
+// per-address sign-up limit: a room full of people behind one address all get
+// in, and the address is still refused once it passes the limit.
+func TestRegistrationFromOneAddressIsRateLimited(t *testing.T) {
+	app := newTestApp(t)
+
+	// register signs up one more person from the same address, each in their
+	// own browser, and returns where the form sent them.
+	register := func(i int) *http.Response {
+		return newClient(t, app).post("/register", url.Values{
+			"email":    {fmt.Sprintf("person%d@example.com", i)},
+			"password": {"a long enough password"},
+		})
+	}
+
+	for i := 0; i < RegisterAttempts; i++ {
+		resp := register(i)
+		closeResponseBody(t, resp)
+
+		if location := resp.Header.Get("Location"); location != "/verify-email" {
+			t.Fatalf("sign-up %d of %d from one address should succeed, got %q (status %d)",
+				i+1, RegisterAttempts, location, resp.StatusCode)
+		}
+	}
+
+	resp := register(RegisterAttempts)
+	defer closeResponseBody(t, resp)
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("want the sign-up past the limit refused with 400, got %d", resp.StatusCode)
+	}
+}
+
 // TestPasswordResetFlow walks the whole recovery path: ask, read the emailed
 // link, set a new password, and sign in with it.
 func TestPasswordResetFlow(t *testing.T) {

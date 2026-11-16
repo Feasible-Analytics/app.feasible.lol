@@ -28,6 +28,15 @@ const (
 	LoginAttempts = 10
 	LoginWindow   = 15 * time.Minute
 
+	// RegisterAttempts and RegisterWindow bound sign-ups from one address. An
+	// address is not a person: an office, a campus or a mobile carrier puts
+	// hundreds of people behind one, and they tend to arrive together when
+	// somebody shares a link. Thirty in fifteen minutes lets a room full of
+	// them in, while a script on one address is still held to two a minute,
+	// each one past the human check.
+	RegisterAttempts = 30
+	RegisterWindow   = 15 * time.Minute
+
 	// ResetAttempts and ResetWindowLimit bound reset emails, per address and
 	// per source. The cost of getting this wrong is not a break-in, it is
 	// somebody's inbox being used as a weapon against them.
@@ -47,10 +56,11 @@ const (
 	// still cannot turn our sending domain into somebody's mailbomb.
 	//
 	// It is the backstop under the human check rather than the defence itself,
-	// which is why it sits far above any real hour. The day this fires on a
-	// person is a launch, and a launch that finds the door shut costs more than
-	// the mailbomb this bounds.
-	SignupEmails      = 200
+	// which is why it sits far above any real hour, a busy launch hour
+	// included. A launch that finds the door shut costs more than the mailbomb
+	// this bounds, and a thousand an hour is still a small fraction of what
+	// the mail provider lets us send.
+	SignupEmails      = 1000
 	SignupEmailWindow = time.Hour
 
 	// VerifyInstallAttempts and VerifyInstallWindow bound the installation

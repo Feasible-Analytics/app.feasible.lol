@@ -115,7 +115,7 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 	// Registration is rate limited per source. Without it, one script creates
 	// accounts as fast as bcrypt runs and every one of them sends an email from
 	// our domain to an address the script chose.
-	if !h.Limiter.Allow(ClientKey(r, h.Trusted, "register"), LoginAttempts, LoginWindow) {
+	if !h.Limiter.Allow(ClientKey(r, h.Trusted, "register"), RegisterAttempts, RegisterWindow) {
 		fail(i18n.T(p.Lang, "auth.error.too_many_registrations"))
 		return
 	}
