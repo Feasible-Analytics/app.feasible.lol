@@ -128,7 +128,8 @@ export function t(id: string, args?: Record<string, string | number>): string {
  * It is t for a sentence with a link or another element inside it. The sentence
  * stays one translated string with a named placeholder, so a translator can put
  * the element wherever the grammar needs it. A missing id and an unknown
- * placeholder render exactly as they do in t.
+ * placeholder render exactly as they do in t, and so does a placeholder given
+ * null or a boolean, which React would otherwise render as nothing.
  */
 export function tx(id: string, args: Record<string, ReactNode>): ReactNode {
 	const text = catalogue().messages[id];
@@ -199,7 +200,7 @@ function split<T>(text: string, args: Record<string, T>): Array<string | T> {
 		const name = rest.slice(open + 1, close);
 		const value = Object.hasOwn(args, name) ? args[name] : undefined;
 
-		if (value === undefined) {
+		if (value === undefined || value === null || typeof value === "boolean") {
 			literal += rest.slice(0, close + 1);
 			rest = rest.slice(close + 1);
 

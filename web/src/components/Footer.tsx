@@ -33,17 +33,16 @@ export function releaseURL(version: string): string | undefined {
 }
 
 /**
- * WithFooter lays a dashboard screen out above the footer.
- *
- * The column is at least a screen tall so the footer sits at the bottom of a
- * short screen rather than under its last card. An embed gets the screen alone:
- * it is a component on somebody else's page and carries none of our chrome.
+ * WithFooter lays a dashboard screen out above the footer, in a column at least
+ * as tall as the visible viewport so the footer sits at the bottom of a short
+ * screen. An embed gets the screen alone: it is a component on somebody else's
+ * page and carries none of our chrome.
  */
 export function WithFooter({ boot, children }: { boot: Bootstrap; children: ReactNode }) {
 	if (boot.shared?.embed) return <>{children}</>;
 
 	return (
-		<div className="flex min-h-screen flex-col">
+		<div className="flex min-h-dvh flex-col">
 			{children}
 			<Footer version={boot.version} />
 		</div>
@@ -58,7 +57,7 @@ export function Footer({ version }: { version: string }) {
 
 	return (
 		<footer className="mx-auto mt-auto w-full max-w-shell px-4 sm:px-5">
-			<div className="flex flex-col gap-1 border-t-2 border-line py-4 text-xs text-muted sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+			<div className="flex flex-col items-start gap-1 border-t-2 border-line py-4 text-xs text-muted sm:flex-row sm:items-center sm:justify-between sm:gap-4">
 				<p>
 					{tx("dashboard.footer.credit", {
 						company: (

@@ -69,6 +69,17 @@ test("tx leaves an unknown placeholder visible with its braces, as t does", () =
 	assert.equal(t("test.tx.unknown", { company: "Cloudmanic" }), "Hello {who}, from Cloudmanic");
 });
 
+test("tx leaves a placeholder given nothing renderable visible", () => {
+	for (const empty of [null, false, true, undefined]) {
+		assert.equal(html(tx("dashboard.footer.credit", { company: empty })), "<p>Made with love by {company}</p>", String(empty));
+	}
+});
+
+test("tx keeps a placeholder given zero or an empty string", () => {
+	assert.equal(html(tx("dashboard.footer.credit", { company: 0 })), "<p>Made with love by 0</p>");
+	assert.equal(html(tx("dashboard.footer.credit", { company: "" })), "<p>Made with love by </p>");
+});
+
 test("tx leaves an unclosed brace as text", () => {
 	assert.equal(
 		html(tx("test.tx.unclosed", { company })),

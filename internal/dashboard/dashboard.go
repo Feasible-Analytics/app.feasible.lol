@@ -237,8 +237,7 @@ type Bootstrap struct {
 
 	// Version is the build stamped into the running binary, shown verbatim in
 	// the dashboard footer: a release tag such as v0.0.59, a `git describe`
-	// string on a local build, or "dev" on an unstamped one. It is the same
-	// value GET /version already serves to anyone.
+	// string on a local build, or "dev" on an unstamped one.
 	Version string `json:"version"`
 }
 
