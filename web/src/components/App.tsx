@@ -25,6 +25,7 @@ import { dateRange, useUrlState } from "../lib/url";
 import { useStats } from "../lib/useStats";
 import { Drawer } from "./Drawer";
 import { FilterBar } from "./FilterBar";
+import { WithFooter } from "./Footer";
 import { GoalsCard } from "./GoalsCard";
 import type { ChartType } from "./MainGraph";
 import { CHART_TYPES, MARKER_ATTRIBUTE, MainGraph } from "./MainGraph";
@@ -53,10 +54,17 @@ export function App() {
 	const boot = bootstrap();
 	const sites = boot.sites.slice().sort();
 
-	if (sites.length === 0) return <NoSites />;
-	if (boot.lock && boot.navigation) return <LockedDashboard boot={boot} />;
-
-	return <AnalyticsDashboard />;
+	return (
+		<WithFooter boot={boot}>
+			{sites.length === 0 ? (
+				<NoSites />
+			) : boot.lock && boot.navigation ? (
+				<LockedDashboard boot={boot} />
+			) : (
+				<AnalyticsDashboard />
+			)}
+		</WithFooter>
+	);
 }
 
 /** RebuildNotice explains a slow dashboard while a site's summary is rebuilt.
@@ -461,7 +469,7 @@ function AnalyticsDashboard() {
 				</>
 			)}
 
-			<main className="mx-auto max-w-shell px-4 py-5 sm:px-5">
+			<main className="mx-auto w-full max-w-shell px-4 py-5 sm:px-5">
 				<RebuildNotice />
 
 				{/* An embed has no bar to put the pills in, and they have to be
@@ -613,7 +621,7 @@ function LockedDashboard({ boot }: { boot: Bootstrap }) {
 				navigation={boot.navigation}
 				locked
 			/>
-			<main className="mx-auto max-w-2xl px-4 py-16 sm:px-5">
+			<main className="mx-auto w-full max-w-2xl px-4 py-16 sm:px-5">
 				<section className="border-2 border-line bg-card p-8 text-center">
 					<div className="mx-auto flex size-12 items-center justify-center bg-down/10 text-xl text-down">!</div>
 					<h1 className="mt-4 text-xl font-semibold text-body">{t("dashboard.locked.title")}</h1>
@@ -639,7 +647,7 @@ const EMPTY: ReadonlySet<string> = new Set();
  *  broken and a broken dashboard gets a support ticket. */
 function NoSites() {
 	return (
-		<div className="flex min-h-screen items-center justify-center bg-page px-6">
+		<div className="flex grow items-center justify-center bg-page px-6 py-10">
 			<section className="w-full max-w-md border-2 border-line bg-card p-8 text-center">
 				<p className="font-display text-2xl font-extrabold tracking-tight text-heading">Feasible<span className="text-accent">.lol</span></p>
 				<h1 className="mt-5 text-xl font-semibold text-body">{t("dashboard.no_sites.title")}</h1>

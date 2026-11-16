@@ -34,6 +34,7 @@ import (
 	"strings"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/assets"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/build"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
 )
@@ -233,6 +234,12 @@ type Bootstrap struct {
 	// the one after the rebuild finishes — close enough for something that runs
 	// for minutes to hours, and it costs no polling.
 	Rebuild *Rebuild `json:"rebuild,omitempty"`
+
+	// Version is the build stamped into the running binary, shown verbatim in
+	// the dashboard footer: a release tag such as v0.0.59, a `git describe`
+	// string on a local build, or "dev" on an unstamped one. It is the same
+	// value GET /version already serves to anyone.
+	Version string `json:"version"`
 }
 
 // Rebuild is how far a site's summary has got. Every number the dashboard shows
@@ -352,6 +359,10 @@ func (h *Handler) WriteShell(w http.ResponseWriter, r *http.Request, boot Bootst
 	// not something to push onto strangers on the internet.
 	if boot.HourCycle == "" {
 		boot.HourCycle = timefmt.FromCookie(r)
+	}
+
+	if boot.Version == "" {
+		boot.Version = build.Version
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

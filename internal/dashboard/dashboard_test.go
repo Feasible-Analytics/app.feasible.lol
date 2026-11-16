@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/assets"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/build"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/httpserver"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/timefmt"
@@ -292,6 +293,44 @@ func TestTheShellResolvesTheReadersClock(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTheShellCarriesTheBuildVersion covers the version the dashboard footer
+// prints. Every caller of WriteShell gets the stamped build without naming it,
+// and a caller that did name one keeps it.
+func TestTheShellCarriesTheBuildVersion(t *testing.T) {
+	original := build.Version
+	defer func() { build.Version = original }()
+
+	build.Version = "v1.2.3-4-gabcdef0-dirty"
+
+	t.Run("the authenticated shell", func(t *testing.T) {
+		body := get(t, New(fakeSites{domains: []string{"example.com"}}), "/dashboard/example.com").Body.String()
+
+		if !strings.Contains(body, `"version":"v1.2.3-4-gabcdef0-dirty"`) {
+			t.Fatalf("the shell did not carry the stamped version; bootstrap was:\n%s", bootstrapBlock(body))
+		}
+	})
+
+	t.Run("a blank caller version is filled", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		New(nil).WriteShell(w, httptest.NewRequest(http.MethodGet, "/share/abc", nil), Bootstrap{Sites: []string{"example.com"}})
+
+		body := w.Body.String()
+		if !strings.Contains(body, `"version":"v1.2.3-4-gabcdef0-dirty"`) {
+			t.Fatalf("WriteShell did not fill a blank version; bootstrap was:\n%s", bootstrapBlock(body))
+		}
+	})
+
+	t.Run("a caller version is kept", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		New(nil).WriteShell(w, httptest.NewRequest(http.MethodGet, "/share/abc", nil), Bootstrap{Sites: []string{"example.com"}, Version: "v9.9.9"})
+
+		body := w.Body.String()
+		if !strings.Contains(body, `"version":"v9.9.9"`) || strings.Contains(body, "v1.2.3-4-gabcdef0-dirty") {
+			t.Fatalf("WriteShell overwrote the caller's version; bootstrap was:\n%s", bootstrapBlock(body))
+		}
+	})
 }
 
 // bootstrapBlock pulls the embedded JSON out of a rendered shell so a failure

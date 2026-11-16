@@ -371,6 +371,10 @@ export interface Bootstrap {
 	 *  is honest for something that runs for minutes to hours and costs no
 	 *  polling. */
 	rebuild?: RollupRebuild;
+	/** The build stamped into the running binary, shown verbatim in the footer:
+	 *  a release tag such as v0.0.59, a `git describe` string on a local build,
+	 *  or "dev". Empty only when the page was served without a bootstrap. */
+	version: string;
 }
 
 /** How far a site's summary has got. Every number on the dashboard is correct

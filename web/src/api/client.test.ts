@@ -181,6 +181,7 @@ test("nothing the server puts in the bootstrap is dropped on the way in", () => 
 		lock: { reason: "volume", error: "too much" },
 		shared: { mode: "share", base: "/share/x", domain: "example.com", capability: "x", embed: false, storage: true },
 		rebuild: { percent: 42 },
+		version: "v0.0.59",
 	};
 
 	globalThis.document = {
@@ -195,15 +196,16 @@ test("nothing the server puts in the bootstrap is dropped on the way in", () => 
 
 test("a bootstrap whose required fields are wrong still yields a usable one", () => {
 	globalThis.document = {
-		getElementById: () => ({ textContent: JSON.stringify({ sites: "not-a-list", hour_cycle: "nonsense", messages: [] }) }),
+		getElementById: () => ({ textContent: JSON.stringify({ sites: "not-a-list", hour_cycle: "nonsense", messages: [], version: 59 }) }),
 	} as unknown as Document;
 
 	const boot = readBootstrap();
 
-	// Field by field, because the four coerced ones are the point here and a
+	// Field by field, because the coerced ones are the point here and a
 	// whole-object compare would also be satisfied by them arriving untouched.
 	assert.deepEqual(boot.sites, []);
 	assert.equal(boot.locale, "");
 	assert.equal(boot.hour_cycle, "24", "an unrecognised dial falls back to 24 rather than through to the page");
 	assert.deepEqual(boot.messages, {}, "an array is not a catalogue");
+	assert.equal(boot.version, "", "a version that is not a string is left out rather than printed");
 });

@@ -67,14 +67,14 @@ export function bootstrap(): Bootstrap {
 export function readBootstrap(): Bootstrap {
 	const node = document.getElementById("feasible-bootstrap");
 
-	if (!node?.textContent) return { sites: [], locale: "", hour_cycle: "", messages: {} };
+	if (!node?.textContent) return { sites: [], locale: "", hour_cycle: "", messages: {}, version: "" };
 
 	try {
 		const parsed = JSON.parse(node.textContent) as Partial<Bootstrap>;
 		const messages = parsed.messages;
 
-		// Spread, then coerce the four the dashboard cannot run without. Every
-		// other field the server sends arrives on its own, so one nobody
+		// Spread, then coerce the fields the type promises are always there.
+		// Every other field the server sends arrives on its own, so one nobody
 		// remembered to name here is not silently dropped.
 		return {
 			...parsed,
@@ -82,9 +82,10 @@ export function readBootstrap(): Bootstrap {
 			locale: typeof parsed.locale === "string" ? parsed.locale : "",
 			hour_cycle: parsed.hour_cycle === "12" ? "12" : "24",
 			messages: messages && typeof messages === "object" && !Array.isArray(messages) ? messages : {},
+			version: typeof parsed.version === "string" ? parsed.version : "",
 		};
 	} catch {
-		return { sites: [], locale: "", hour_cycle: "", messages: {} };
+		return { sites: [], locale: "", hour_cycle: "", messages: {}, version: "" };
 	}
 }
 
