@@ -40,7 +40,7 @@ ordered by how safe it is to remove.
 | Path | What it is | Safe to remove |
 |---|---|---|
 | `backups/` | Snapshots from `feasible db backup` | **Yes** — oldest first |
-| `favicons/` | Cached source icons for report rows | **Yes** — refetched on demand |
+| `favicons/` | Cached source icons for report rows, capped at 64 MB | **Yes** — refetched on demand |
 | `exports/` | Prepared archives from the export screen | **Yes, once collected** — see below |
 | `imports/` | Uploaded files waiting to be imported | **Only after the import has run** |
 | `geoip/dbip-city-lite.mmdb` | City geolocation, ~60 MB | **Yes** — countries still work, cities go unknown |

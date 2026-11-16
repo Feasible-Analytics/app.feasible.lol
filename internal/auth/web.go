@@ -144,9 +144,8 @@ type Handler struct {
 	// what it can see on its own network and read the answer back.
 	Verifier *http.Client
 
-	// Avatars fetches and stores account pictures. It is asked on sign-in and
-	// on a Google reconnect, and it never fails a request: a person with no
-	// picture keeps the letter circle.
+	// Avatars fetches and stores the picture Google returns with a sign-in.
+	// It never fails a request: a person with no picture keeps their initials.
 	Avatars *avatar.Refresher
 
 	// HelpURL and SupportURL are the two destinations in the account menu that
@@ -215,8 +214,8 @@ type Options struct {
 	// for a build that forgets to set it.
 	OutboundPolicy outbound.Policy
 
-	// Avatars fetches account pictures. Nil leaves every account on the letter
-	// circle, which is what a build with no outbound access should get.
+	// Avatars fetches account pictures. Nil leaves every account on its
+	// initials, which is what a build with no outbound access should get.
 	Avatars *avatar.Refresher
 
 	// HelpURL and SupportURL are the two account-menu destinations that leave
@@ -827,7 +826,7 @@ func (h *Handler) NavigationForDashboard(w http.ResponseWriter, r *http.Request)
 		SitesURL:   "/sites",
 		AccountURL: "/settings",
 		LogoutURL:  "/logout",
-		AvatarURL:  avatar.URL(user.ID, h.Avatars.State(r.Context(), user.ID).ETag),
+		AvatarURL:  avatar.URL(user.ID),
 		CSRF:       h.FormToken(w, r),
 	}
 
@@ -1213,7 +1212,7 @@ func (h *Handler) RunPrune(ctx context.Context) {
 	}
 }
 
-// AvatarHandler serves stored account pictures behind the session.
+// AvatarHandler serves account pictures behind the session.
 //
 // A picture is account data, so the route requires a signed-in person and then
 // checks that the id in the path is theirs. Without that second check a numeric
@@ -1229,6 +1228,14 @@ func (h *Handler) AvatarHandler() http.Handler {
 			user := userFrom(r)
 
 			return user != nil && user.ID == userID
+		},
+		Person: func(r *http.Request, _ int64) (string, string) {
+			user := userFrom(r)
+			if user == nil {
+				return "", ""
+			}
+
+			return user.DisplayName(), user.Email
 		},
 	}
 

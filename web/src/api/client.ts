@@ -381,6 +381,19 @@ async function dashboardFetch(path: string, init: DashboardInit = {}): Promise<R
 	throw new QueryError(response.status, message, code);
 }
 
+/** faviconURL is where the icon for one source row is served from. An image
+ * request cannot carry the capability headers, so a public or shared view names
+ * its capability in the query string instead. */
+export function faviconURL(domain: string, name: string): string {
+	const query = new URLSearchParams({ site: domain });
+	const view = shared();
+
+	if (view?.mode === "share") query.set("share", view.capability);
+	if (view?.mode === "public") query.set("public", view.capability);
+
+	return `/favicon/sources/${encodeURIComponent(name)}?${query.toString()}`;
+}
+
 /** capabilityHeaders carries the public/shared capability on every stats
  * request. Navigation only changes the URL beneath the stable share base, so
  * this value remains attached while filters, periods and drawers change. */

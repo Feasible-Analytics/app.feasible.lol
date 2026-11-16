@@ -30,7 +30,7 @@
 				<div><h2 id="plausible-upload-title" class="text-base font-semibold text-heading">{{ t $.Lang "auth.imports.upload_title" }}</h2><p class="mt-1 text-sm leading-6 text-muted">{{ t $.Lang "auth.imports.upload_help" }}</p></div>
 			</div>
 
-			<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/imports/upload" .Domain) }}" enctype="multipart/form-data" class="mt-5" data-import-form data-error-type="{{ t $.Lang "auth.imports.client_error_type" }}" data-error-size="{{ t $.Lang "auth.imports.client_error_size" }}" data-uploading="{{ t $.Lang "auth.imports.client_uploading" }}" data-selected="{{ t $.Lang "auth.imports.client_selected" }}">
+			<form method="post" action="{{ url $.Lang (printf "/settings/sites/%s/imports/upload" .Domain) }}" enctype="multipart/form-data" class="mt-5" data-import-form data-error-type="{{ t $.Lang "auth.imports.client_error_type" }}" data-error-size-zip="{{ t $.Lang "auth.imports.client_error_size_zip" }}" data-error-size-csv="{{ t $.Lang "auth.imports.client_error_size_csv" }}" data-uploading="{{ t $.Lang "auth.imports.client_uploading" }}" data-selected="{{ t $.Lang "auth.imports.client_selected" }}">
 				<input type="hidden" name="csrf_token" value="{{.CSRF}}">
 				<label for="import-file" class="group relative flex min-h-44 cursor-pointer flex-col items-center justify-center border-2 border-dashed border-field bg-page px-5 py-8 text-center transition-colors hover:border-accent hover:bg-accent/5 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/25" data-import-dropzone>
 					<svg viewBox="0 0 24 24" fill="none" class="h-8 w-8 text-muted transition-colors group-hover:text-accent-ink" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7.5A2.5 2.5 0 0 1 6.5 5h2l1.5 2h7.5A2.5 2.5 0 0 1 20 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5v-9Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 16v-6m0 0-2.5 2.5M12 10l2.5 2.5"/></svg>
@@ -308,7 +308,7 @@
 				}
 
 				if (file.size > maximumBytes) {
-					showError(form.dataset.errorSize);
+					showError(lowerName.endsWith(".csv") ? form.dataset.errorSizeCsv : form.dataset.errorSizeZip);
 					return;
 				}
 

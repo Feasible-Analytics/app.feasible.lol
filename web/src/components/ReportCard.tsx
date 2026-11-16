@@ -251,7 +251,7 @@ export function ReportCard({
 										</button>
 
 										<span className="pointer-events-none relative flex min-w-0 flex-1 items-center gap-2 pl-2 text-sm text-body">
-											{active.favicon && <Favicon name={raw || "Direct"} />}
+											{active.favicon && <Favicon name={raw || "Direct"} domain={domain} />}
 											{hasBrandMark(active.dimension) && <BrandMark value={raw} />}
 											<Flag glyph={flagFor(active.dimension, raw, row.enrichments?.country ?? "")} />
 											<span

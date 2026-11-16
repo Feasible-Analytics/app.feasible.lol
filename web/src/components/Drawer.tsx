@@ -361,7 +361,7 @@ export function Drawer({
 													)}
 													className="flex w-full items-center gap-2 text-left"
 												>
-													{tab.favicon && <Favicon name={raw || "Direct"} />}
+													{tab.favicon && <Favicon name={raw || "Direct"} domain={domain} />}
 													{hasBrandMark(tab.dimension) && <BrandMark value={raw} />}
 													<Flag glyph={flagFor(tab.dimension, raw, row.enrichments?.country ?? "")} />
 													<span className="flex min-w-0 flex-col justify-center leading-tight">

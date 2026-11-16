@@ -15,8 +15,11 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // stub answers every upstream request from a script, and records what was
@@ -57,6 +60,7 @@ func newProxy(t *testing.T, upstream *stub) *Favicons {
 
 	f := NewFavicons(t.TempDir(), nil)
 	f.Client = &http.Client{Transport: upstream}
+	f.Scope = func(*http.Request) (string, bool) { return view, true }
 
 	return f
 }
@@ -207,6 +211,8 @@ func TestFailureFallsBackToATile(t *testing.T) {
 			body: []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`)},
 	} {
 		f := newProxy(t, upstream)
+		shown(f, "producthunt.com")
+
 		w := fetch(t, f, "producthunt.com")
 
 		if w.Code != http.StatusOK {
@@ -228,6 +234,7 @@ func TestFailureFallsBackToATile(t *testing.T) {
 func TestFailureIsRemembered(t *testing.T) {
 	upstream := &stub{status: http.StatusNotFound}
 	f := newProxy(t, upstream)
+	shown(f, "producthunt.com")
 
 	fetch(t, f, "producthunt.com")
 	fetch(t, f, "producthunt.com")
@@ -276,4 +283,266 @@ func TestTileIsStableAndEscaped(t *testing.T) {
 			t.Errorf("tile(%q) is not safe SVG: %s", name, body)
 		}
 	}
+}
+
+// view is the scope every test request belongs to unless it says otherwise.
+const view = "1\x00session"
+
+// shown records that the test view was shown these names, as the stats
+// endpoint does when it answers a source report.
+func shown(f *Favicons, names ...string) {
+	f.Allow(view, names)
+}
+
+// TestAnUnknownNameCostsNothing is the abuse case. A name no report has shown
+// the viewer must not reach the network, the disk or the memory cache, however
+// much it looks like a hostname.
+func TestAnUnknownNameCostsNothing(t *testing.T) {
+	upstream := &stub{status: http.StatusOK, contentType: "image/x-icon", body: []byte("icon-bytes")}
+	f := newProxy(t, upstream)
+
+	for _, name := range []string{"random-a1b2c3.com", "another.random.io", "producthunt.com"} {
+		w := fetch(t, f, name)
+
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<svg") {
+			t.Errorf("%q answered %d %q, want the tile", name, w.Code, w.Body.String())
+		}
+
+		if got := w.Header().Get("Cache-Control"); got != refusedCacheControl {
+			t.Errorf("%q answered Cache-Control %q, want %q", name, got, refusedCacheControl)
+		}
+	}
+
+	if len(upstream.calls) != 0 {
+		t.Errorf("upstream was asked %v for names nobody was shown", upstream.calls)
+	}
+
+	if entries, _ := os.ReadDir(f.Dir); len(entries) != 0 {
+		t.Errorf("%d file(s) were written for names nobody was shown", len(entries))
+	}
+
+	if len(f.memory) != 0 {
+		t.Errorf("%d answer(s) were remembered for names nobody was shown", len(f.memory))
+	}
+}
+
+// TestAnIconAlreadyCachedIsNotServedToAStranger keeps the cache from answering
+// "does anybody here get traffic from this site" to somebody who was never
+// shown the name.
+func TestAnIconAlreadyCachedIsNotServedToAStranger(t *testing.T) {
+	upstream := &stub{status: http.StatusOK, contentType: "image/x-icon", body: []byte("icon-bytes")}
+	f := newProxy(t, upstream)
+
+	shown(f, "producthunt.com")
+
+	if body := fetch(t, f, "producthunt.com").Body.String(); body != "icon-bytes" {
+		t.Fatalf("the entitled view got %q, want the icon", body)
+	}
+
+	f.Scope = func(*http.Request) (string, bool) { return "2\x00public:2", true }
+
+	if body := fetch(t, f, "producthunt.com").Body.String(); !strings.Contains(body, "<svg") {
+		t.Errorf("another view got %q, want the tile", body)
+	}
+
+	f.Scope = func(*http.Request) (string, bool) { return "", false }
+
+	if body := fetch(t, f, "producthunt.com").Body.String(); !strings.Contains(body, "<svg") {
+		t.Errorf("a request with no view got %q, want the tile", body)
+	}
+}
+
+// TestTheRateLimitStopsFetchesNotCachedIcons covers the limit on misses. Once
+// it is spent a new name gets the tile, and a name already cached is still
+// served, because that costs nothing.
+func TestTheRateLimitStopsFetchesNotCachedIcons(t *testing.T) {
+	upstream := &stub{status: http.StatusOK, contentType: "image/x-icon", body: []byte("icon-bytes")}
+	f := newProxy(t, upstream)
+
+	shown(f, "one.com", "two.com")
+	fetch(t, f, "one.com")
+
+	f.Limit = func(*http.Request) bool { return false }
+
+	if body := fetch(t, f, "two.com").Body.String(); !strings.Contains(body, "<svg") {
+		t.Errorf("a fetch over the limit answered %q, want the tile", body)
+	}
+
+	if body := fetch(t, f, "one.com").Body.String(); body != "icon-bytes" {
+		t.Errorf("a cached icon answered %q over the limit, want the icon", body)
+	}
+
+	if len(upstream.calls) != 1 {
+		t.Errorf("upstream was asked %d times, want 1", len(upstream.calls))
+	}
+}
+
+// TestTheDiskCacheStaysUnderItsCap fills the cache well past its limit and
+// checks the directory never ends a write above it and keeps the newest icon.
+func TestTheDiskCacheStaysUnderItsCap(t *testing.T) {
+	upstream := &stub{status: http.StatusOK, contentType: "image/x-icon", body: bytes.Repeat([]byte("x"), 1000)}
+	f := newProxy(t, upstream)
+	f.MaxDiskBytes = 10_000
+
+	for index := range 50 {
+		name := "site" + strconv.Itoa(index) + ".com"
+
+		shown(f, name)
+		fetch(t, f, name)
+
+		if size := directorySize(t, f.Dir); size > f.MaxDiskBytes {
+			t.Fatalf("after %d icons the cache holds %d bytes, over the %d cap", index+1, size, f.MaxDiskBytes)
+		}
+	}
+
+	if _, err := os.Stat(f.pathFor("site49.com")); err != nil {
+		t.Errorf("the newest icon was evicted: %v", err)
+	}
+}
+
+// TestACacheLeftOverTheCapIsPrunedOnTheFirstWrite covers a directory that was
+// already too large when the process started.
+func TestACacheLeftOverTheCapIsPrunedOnTheFirstWrite(t *testing.T) {
+	upstream := &stub{status: http.StatusOK, contentType: "image/x-icon", body: []byte("icon-bytes")}
+	f := newProxy(t, upstream)
+	f.MaxDiskBytes = 10_000
+
+	for index := range 30 {
+		file := filepath.Join(f.Dir, "old"+strconv.Itoa(index)+".ico")
+
+		if err := os.WriteFile(file, bytes.Repeat([]byte("x"), 1000), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		// The lower the number, the older the file.
+		age := time.Now().Add(-time.Duration(30-index) * time.Hour)
+		if err := os.Chtimes(file, age, age); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	shown(f, "new.com")
+	fetch(t, f, "new.com")
+
+	if size := directorySize(t, f.Dir); size > f.MaxDiskBytes {
+		t.Errorf("the cache holds %d bytes after a write, over the %d cap", size, f.MaxDiskBytes)
+	}
+
+	if _, err := os.Stat(filepath.Join(f.Dir, "old0.ico")); err == nil {
+		t.Error("the oldest icon survived the prune")
+	}
+
+	if _, err := os.Stat(filepath.Join(f.Dir, "old29.ico")); err != nil {
+		t.Errorf("the newest of the old icons was evicted before older ones: %v", err)
+	}
+}
+
+// TestTheMemoryCacheStaysUnderItsCap covers the half of the cache that would
+// otherwise grow with every distinct source until the process was restarted.
+func TestTheMemoryCacheStaysUnderItsCap(t *testing.T) {
+	upstream := &stub{status: http.StatusOK, contentType: "image/x-icon", body: bytes.Repeat([]byte("x"), 1000)}
+	f := newProxy(t, upstream)
+	f.MaxMemoryBytes = 10_000
+
+	for index := range 50 {
+		name := "site" + strconv.Itoa(index) + ".com"
+
+		shown(f, name)
+		fetch(t, f, name)
+
+		if f.memoryBytes > f.MaxMemoryBytes {
+			t.Fatalf("after %d icons memory holds %d bytes, over the %d cap", index+1, f.memoryBytes, f.MaxMemoryBytes)
+		}
+	}
+}
+
+// TestAnOversizedIconIsRefused keeps a file near the ceiling from being stored
+// cut short and served as a corrupt image.
+func TestAnOversizedIconIsRefused(t *testing.T) {
+	upstream := &stub{status: http.StatusOK, contentType: "image/png", body: bytes.Repeat([]byte("x"), maxIconBytes+1)}
+	f := newProxy(t, upstream)
+
+	if body := fetch(t, f, "Hacker News").Body.String(); !strings.Contains(body, "<svg") {
+		t.Error("an icon over the size limit was served")
+	}
+
+	if entries, _ := os.ReadDir(f.Dir); len(entries) != 0 {
+		t.Errorf("%d file(s) were written for an oversized icon", len(entries))
+	}
+}
+
+// TestHostForRefusesAddressesAndInternalNames covers the names that are shaped
+// like a hostname and are not a public site.
+func TestHostForRefusesAddressesAndInternalNames(t *testing.T) {
+	for _, name := range []string{
+		"127.0.0.1",
+		"10.0.0.8",
+		"192.168.1.1",
+		"2130706433.1",
+		"0x7f.0.0.1",
+		"printer.local",
+		"db.internal",
+		"router.lan",
+		"wiki.corp",
+		"app.localhost",
+		"1.0.0.127.in-addr.arpa",
+		"hidden.onion",
+		"-bad.com",
+		"bad-.com",
+		"double..dot.com",
+		"single.c",
+	} {
+		if got := hostFor(name); got != "" {
+			t.Errorf("hostFor(%q) = %q, want it refused", name, got)
+		}
+	}
+}
+
+// TestTheRecordOfShownNamesIsBounded keeps Allow itself from being the thing
+// that grows without limit.
+func TestTheRecordOfShownNamesIsBounded(t *testing.T) {
+	f := NewFavicons("", nil)
+
+	for index := range maxScopes + 500 {
+		f.Allow("scope"+strconv.Itoa(index), []string{"a.com"})
+	}
+
+	if len(f.scopes) > maxScopes {
+		t.Errorf("%d views are remembered, over the %d cap", len(f.scopes), maxScopes)
+	}
+
+	names := make([]string, 0, maxNamesPerScope*3)
+	for index := range maxNamesPerScope * 3 {
+		names = append(names, "site"+strconv.Itoa(index)+".com")
+	}
+
+	f.Allow("big", names)
+	f.Allow("big", names)
+
+	if got := len(f.scopes["big"].names); got > maxNamesPerScope {
+		t.Errorf("one view remembers %d names, over the %d cap", got, maxNamesPerScope)
+	}
+}
+
+// directorySize adds up the files in the cache directory.
+func directorySize(t *testing.T, dir string) int64 {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var total int64
+
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		total += info.Size()
+	}
+
+	return total
 }

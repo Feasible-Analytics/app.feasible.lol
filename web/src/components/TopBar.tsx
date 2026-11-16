@@ -236,14 +236,12 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, chart, onChar
 }
 
 /**
- * AccountFace is the picture, or the first letter of the name when there is
- * none.
+ * AccountFace is the person's picture, or the first letter of their name when
+ * it fails to load.
  *
- * The letter is not a placeholder to be apologised for: it is the right answer
- * for anybody who has neither a Google picture nor a Gravatar, and it is what a
- * picture that fails to load falls back to. The source is always our own origin
- * — the server fetched it once, precisely so a browser never tells Google or
- * Gravatar who is looking at which page.
+ * The source is always our own origin: a picture from a Google sign-in was
+ * fetched once by the server, and everybody else gets initials the server
+ * draws, so a browser never tells a third party who is looking at which page.
  */
 function AccountFace({ navigation }: { navigation: Navigation }) {
 	const [broken, setBroken] = useState(false);

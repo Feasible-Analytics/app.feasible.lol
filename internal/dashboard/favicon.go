@@ -16,8 +16,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -58,8 +60,34 @@ const (
 
 // browserCacheControl is how long the reader's browser may keep an icon. A day
 // is long enough that scrolling a dashboard costs no requests and short enough
-// that a site's rebrand shows up without anybody clearing a cache.
-const browserCacheControl = "public, max-age=86400"
+// that a site's rebrand shows up without anybody clearing a cache. It is
+// private because whether a name gets an icon depends on who is asking.
+const browserCacheControl = "private, max-age=86400"
+
+// refusedCacheControl goes on a tile that stands in for an icon we declined to
+// look up. The same URL may deserve a real icon a moment later, once a report
+// has listed the name or the rate limit has passed.
+const refusedCacheControl = "no-store"
+
+// Bounds on what the proxy holds. Every one is a ceiling on what a stranger
+// can make this process keep.
+const (
+	// DefaultMaxDiskBytes caps the cache directory. A typical icon is a few
+	// kilobytes, so this is tens of thousands of sources.
+	DefaultMaxDiskBytes = 64 << 20
+
+	// DefaultMaxMemoryBytes caps the icon bytes held in memory.
+	DefaultMaxMemoryBytes = 16 << 20
+
+	// maxMemoryEntries caps the entries held in memory, misses included, since
+	// a miss weighs nothing and would otherwise never count against the bytes.
+	maxMemoryEntries = 20000
+
+	// maxScopes and maxNamesPerScope cap the record of which names each
+	// dashboard view has been shown.
+	maxScopes        = 5000
+	maxNamesPerScope = 2000
+)
 
 // hostAllowed is what a hostname may contain before we will put it in a URL.
 // The value reaching here comes from our own source table or from a stored
@@ -88,8 +116,35 @@ type Favicons struct {
 
 	Log *logger.Logger
 
-	mu     sync.Mutex
-	memory map[string]cached
+	// Scope names the dashboard view a request belongs to, after proving the
+	// request may read it. It is the same key the stats endpoint passes to
+	// Allow. Nil, or false, means the request has no view: only the built-in
+	// sources get an icon then.
+	Scope func(*http.Request) (string, bool)
+
+	// Limit reports whether this request may cost an upstream fetch. Nil
+	// allows every one.
+	Limit func(*http.Request) bool
+
+	// MaxDiskBytes and MaxMemoryBytes cap the two halves of the cache. Zero
+	// takes the defaults.
+	MaxDiskBytes   int64
+	MaxMemoryBytes int64
+
+	mu          sync.Mutex
+	memory      map[string]cached
+	memoryBytes int64
+	scopes      map[string]*scope
+
+	disk      sync.Mutex
+	diskBytes int64
+	diskKnown bool
+}
+
+// scope is the set of source names one dashboard view has been shown.
+type scope struct {
+	names map[string]struct{}
+	used  time.Time
 }
 
 // cached is one remembered answer, hit or miss.
@@ -106,7 +161,82 @@ func NewFavicons(dir string, log *logger.Logger) *Favicons {
 		Client: &http.Client{Timeout: fetchTimeout},
 		Log:    log,
 		memory: map[string]cached{},
+		scopes: map[string]*scope{},
 	}
+}
+
+// Allow records that a dashboard view was shown these source names, which is
+// what entitles a request from that view to an icon for one of them. The stats
+// endpoint calls it with every source report it answers.
+func (f *Favicons) Allow(key string, names []string) {
+	if key == "" || len(names) == 0 {
+		return
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	entry, ok := f.scopes[key]
+	if !ok || len(entry.names)+len(names) > maxNamesPerScope {
+		entry = &scope{names: make(map[string]struct{}, len(names))}
+		f.scopes[key] = entry
+	}
+
+	entry.used = time.Now()
+
+	for _, name := range names {
+		if len(entry.names) >= maxNamesPerScope {
+			break
+		}
+
+		entry.names[name] = struct{}{}
+	}
+
+	if len(f.scopes) <= maxScopes {
+		return
+	}
+
+	// Over the ceiling, the views nobody has looked at longest go first. An
+	// open dashboard re-registers its names on its next refresh.
+	keys := make([]string, 0, len(f.scopes))
+	for candidate := range f.scopes {
+		keys = append(keys, candidate)
+	}
+
+	sort.Slice(keys, func(i, j int) bool { return f.scopes[keys[i]].used.Before(f.scopes[keys[j]].used) })
+
+	for _, candidate := range keys[:len(keys)-maxScopes*3/4] {
+		delete(f.scopes, candidate)
+	}
+}
+
+// entitled reports whether this request may have a real icon for this name: a
+// built-in source, or a name a report already showed to the view it comes from.
+func (f *Favicons) entitled(r *http.Request, name string) bool {
+	if referrer.Known(name) {
+		return true
+	}
+
+	if f.Scope == nil {
+		return false
+	}
+
+	key, ok := f.Scope(r)
+	if !ok || key == "" {
+		return false
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	entry, ok := f.scopes[key]
+	if !ok {
+		return false
+	}
+
+	_, shown := entry.names[name]
+
+	return shown
 }
 
 // ServeHTTP answers one icon request.
@@ -120,10 +250,10 @@ func (f *Favicons) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		name = strings.TrimPrefix(r.URL.Path, FaviconPrefix)
 	}
 
-	body, contentType := f.icon(r.Context(), name)
+	body, contentType, cacheControl := f.icon(r, name)
 
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", browserCacheControl)
+	w.Header().Set("Cache-Control", cacheControl)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 
@@ -132,26 +262,46 @@ func (f *Favicons) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// tileType is the content type of the fallback tile.
+const tileType = "image/svg+xml; charset=utf-8"
+
 // icon resolves one source name to image bytes, going to the network at most
-// once per name per cache lifetime.
-func (f *Favicons) icon(ctx context.Context, name string) ([]byte, string) {
+// once per name per cache lifetime, and only for a name the request is
+// entitled to.
+func (f *Favicons) icon(r *http.Request, name string) (body []byte, contentType, cacheControl string) {
 	host := hostFor(name)
 	if host == "" {
 		// A channel, a campaign tag or direct traffic. There is no site to
 		// fetch an icon from, and pretending otherwise would spend a request to
 		// arrive at the same tile.
-		return tile(name), "image/svg+xml; charset=utf-8"
+		return tile(name), tileType, browserCacheControl
+	}
+
+	// A name no report has shown this viewer gets the tile without touching
+	// the cache or the network. Anything else would let a stranger fill the
+	// disk with names of their choosing, use this server to fetch for them,
+	// and learn from the answer which sites send other accounts traffic.
+	if !f.entitled(r, name) {
+		return tile(name), tileType, refusedCacheControl
 	}
 
 	if hit, ok := f.remembered(host); ok {
 		if hit.body == nil {
-			return tile(name), "image/svg+xml; charset=utf-8"
+			return tile(name), tileType, browserCacheControl
 		}
 
-		return hit.body, hit.contentType
+		return hit.body, hit.contentType, browserCacheControl
 	}
 
-	body, contentType, err := f.fetch(ctx, host)
+	if f.Limit != nil && !f.Limit(r) {
+		if f.Log != nil {
+			f.Log.Warn("favicon fetch refused by the rate limit", "host", host)
+		}
+
+		return tile(name), tileType, refusedCacheControl
+	}
+
+	fetched, fetchedType, err := f.fetch(r.Context(), host)
 	if err != nil {
 		if f.Log != nil {
 			f.Log.Debug("favicon fetch failed", "host", host, "error", err)
@@ -159,12 +309,12 @@ func (f *Favicons) icon(ctx context.Context, name string) ([]byte, string) {
 
 		f.remember(host, cached{until: time.Now().Add(failureMaxAge)})
 
-		return tile(name), "image/svg+xml; charset=utf-8"
+		return tile(name), tileType, browserCacheControl
 	}
 
-	f.remember(host, cached{body: body, contentType: contentType, until: time.Now().Add(successMaxAge)})
+	f.remember(host, cached{body: fetched, contentType: fetchedType, until: time.Now().Add(successMaxAge)})
 
-	return body, contentType
+	return fetched, fetchedType, browserCacheControl
 }
 
 // remembered reads the memory cache, falling back to disk. Disk is what makes a
@@ -198,22 +348,67 @@ func (f *Favicons) remembered(host string) (cached, bool) {
 
 	entry := cached{body: body, contentType: "image/x-icon", until: info.ModTime().Add(successMaxAge)}
 
-	f.mu.Lock()
-	f.memory[host] = entry
-	f.mu.Unlock()
+	f.hold(host, entry)
 
 	return entry, true
 }
 
+// hold puts one answer in memory and keeps the memory half under its caps.
+func (f *Favicons) hold(host string, entry cached) {
+	limit := f.MaxMemoryBytes
+	if limit <= 0 {
+		limit = DefaultMaxMemoryBytes
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if previous, ok := f.memory[host]; ok {
+		f.memoryBytes -= int64(len(previous.body))
+	}
+
+	f.memory[host] = entry
+	f.memoryBytes += int64(len(entry.body))
+
+	if f.memoryBytes <= limit && len(f.memory) <= maxMemoryEntries {
+		return
+	}
+
+	// Expired answers go first, then whatever the map yields until there is
+	// headroom again. What is dropped here is still on disk when it was a hit.
+	now := time.Now()
+
+	for candidate, held := range f.memory {
+		if candidate != host && now.After(held.until) {
+			f.memoryBytes -= int64(len(held.body))
+			delete(f.memory, candidate)
+		}
+	}
+
+	for candidate, held := range f.memory {
+		if f.memoryBytes <= limit*3/4 && len(f.memory) <= maxMemoryEntries*3/4 {
+			break
+		}
+
+		if candidate == host {
+			continue
+		}
+
+		f.memoryBytes -= int64(len(held.body))
+		delete(f.memory, candidate)
+	}
+}
+
 // remember stores an answer in memory, and a successful one on disk as well.
 func (f *Favicons) remember(host string, entry cached) {
-	f.mu.Lock()
-	f.memory[host] = entry
-	f.mu.Unlock()
+	f.hold(host, entry)
 
 	if f.Dir == "" || entry.body == nil {
 		return
 	}
+
+	f.disk.Lock()
+	defer f.disk.Unlock()
 
 	if err := os.MkdirAll(f.Dir, 0o755); err != nil {
 		return
@@ -230,7 +425,81 @@ func (f *Favicons) remember(host string, entry cached) {
 
 	if err := os.Rename(temporary, f.pathFor(host)); err != nil {
 		_ = os.Remove(temporary)
+
+		return
 	}
+
+	limit := f.MaxDiskBytes
+	if limit <= 0 {
+		limit = DefaultMaxDiskBytes
+	}
+
+	f.diskBytes += int64(len(entry.body))
+
+	if !f.diskKnown || f.diskBytes > limit {
+		f.prune(limit, f.pathFor(host))
+	}
+}
+
+// prune measures the cache directory and, when it is over the limit, deletes
+// the oldest icons until it is a quarter under it, sparing the one just
+// written. The caller holds f.disk.
+//
+// The directory is read rather than trusted from a running total because the
+// total starts unknown after a restart and drifts when an icon is rewritten.
+func (f *Favicons) prune(limit int64, keep string) {
+	entries, err := os.ReadDir(f.Dir)
+	if err != nil {
+		return
+	}
+
+	type file struct {
+		path     string
+		size     int64
+		modified time.Time
+	}
+
+	files := make([]file, 0, len(entries))
+
+	var total int64
+
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil || entry.IsDir() {
+			continue
+		}
+
+		files = append(files, file{path: filepath.Join(f.Dir, entry.Name()), size: info.Size(), modified: info.ModTime()})
+		total += info.Size()
+	}
+
+	if total > limit {
+		sort.Slice(files, func(i, j int) bool { return files[i].modified.Before(files[j].modified) })
+
+		removed := 0
+
+		for _, candidate := range files {
+			if total <= limit*3/4 {
+				break
+			}
+
+			if candidate.path == keep {
+				continue
+			}
+
+			if err := os.Remove(candidate.path); err == nil {
+				total -= candidate.size
+				removed++
+			}
+		}
+
+		if f.Log != nil {
+			f.Log.Info("favicon cache pruned", "removed", removed, "bytes", total)
+		}
+	}
+
+	f.diskBytes = total
+	f.diskKnown = true
 }
 
 // pathFor is where one host's icon is cached. The filename is a hash rather
@@ -272,9 +541,15 @@ func (f *Favicons) fetch(ctx context.Context, host string) (body []byte, content
 		return nil, "", fmt.Errorf("upstream answered %d", response.StatusCode)
 	}
 
-	body, err = io.ReadAll(io.LimitReader(response.Body, maxIconBytes))
+	// One byte past the cap is read so an oversized icon is refused instead of
+	// stored cut short.
+	body, err = io.ReadAll(io.LimitReader(response.Body, maxIconBytes+1))
 	if err != nil {
 		return nil, "", err
+	}
+
+	if len(body) > maxIconBytes {
+		return nil, "", fmt.Errorf("upstream answered with more than %d bytes", maxIconBytes)
 	}
 
 	if len(body) == 0 {
@@ -314,13 +589,54 @@ func hostFor(name string) string {
 		}
 	}
 
-	// A hostname with no dot is not a site, and a leading or trailing dot is
-	// not a hostname at all.
-	if !strings.Contains(host, ".") || strings.HasPrefix(host, ".") || strings.HasSuffix(host, ".") {
+	if !publicHostname(host) {
 		return ""
 	}
 
 	return host
+}
+
+// privateSuffixes are the endings of names that only resolve inside somebody's
+// network, or are reserved and resolve nowhere. None of them is a site with an
+// icon, and none of them is a name we should be asking a third party about.
+var privateSuffixes = []string{
+	"local", "localhost", "localdomain", "internal", "intranet", "lan", "home", "corp",
+	"private", "test", "example", "invalid", "onion", "arpa",
+}
+
+// publicHostname reports whether a lower-cased name is shaped like a hostname
+// on the public internet: dotted labels, an alphabetic top-level domain, not an
+// address and not an internal name.
+func publicHostname(host string) bool {
+	if _, err := netip.ParseAddr(host); err == nil {
+		return false
+	}
+
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return false
+	}
+
+	for _, label := range labels {
+		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+	}
+
+	// A numeric last label is an address in some spelling, such as a decimal
+	// or shortened IPv4, and never a registered domain.
+	last := labels[len(labels)-1]
+	if len(last) < 2 || strings.ContainsAny(last, "0123456789") && !strings.HasPrefix(last, "xn--") {
+		return false
+	}
+
+	for _, suffix := range privateSuffixes {
+		if last == suffix {
+			return false
+		}
+	}
+
+	return true
 }
 
 // tilePalette is the set of backgrounds a letter tile picks from. They are the
