@@ -135,3 +135,35 @@ func TestFirstEventAtIsTheOnboardingPoll(t *testing.T) {
 		t.Errorf("want %d, got %d", when, at)
 	}
 }
+
+// TestLastEventAtIsTheNewestVisit checks the query the installation check uses
+// to tell a working site from a silent one: zero with no traffic, then the
+// start of the most recent visit rather than the first.
+func TestLastEventAtIsTheNewestVisit(t *testing.T) {
+	traffic, manager := newTestTraffic(t)
+	ctx := context.Background()
+
+	at, err := traffic.LastEventAt(ctx, 1, 7)
+	if err != nil {
+		t.Fatalf("last event: %v", err)
+	}
+
+	if at != 0 {
+		t.Errorf("a site with no traffic should report zero, got %d", at)
+	}
+
+	older := time.Now().Add(-72 * time.Hour).Unix()
+	newer := time.Now().Add(-time.Hour).Unix()
+
+	insertSession(t, manager, 1, 7, older)
+	insertSession(t, manager, 1, 7, newer)
+
+	at, err = traffic.LastEventAt(ctx, 1, 7)
+	if err != nil {
+		t.Fatalf("last event: %v", err)
+	}
+
+	if at != newer {
+		t.Errorf("want %d, got %d", newer, at)
+	}
+}

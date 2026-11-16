@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
@@ -32,7 +33,7 @@ func verifyAgainst(t *testing.T, handler http.HandlerFunc, site *Site) VerifyRes
 
 	client := &http.Client{Transport: rewriteTo(server.URL)}
 
-	return VerifyInstallation(context.Background(), client, "https://feasible.lol", site)
+	return VerifyInstallation(context.Background(), client, InstallCheck{BaseURL: "https://feasible.lol"}, site)
 }
 
 // TestSnippetUsesThePerSiteToken checks the default snippet carries the opaque
@@ -301,7 +302,7 @@ func TestInstallationCheckCannotReachAPrivateAddress(t *testing.T) {
 	}
 
 	for _, domain := range []string{"127.0.0.1", "169.254.169.254", "10.0.0.1"} {
-		result := VerifyInstallation(context.Background(), handler.Verifier, "https://feasible.lol", &Site{Domain: domain})
+		result := VerifyInstallation(context.Background(), handler.Verifier, InstallCheck{BaseURL: "https://feasible.lol"}, &Site{Domain: domain})
 
 		if result.Outcome != VerifyUnreachable {
 			t.Fatalf("%s was reachable: outcome = %q", domain, result.Outcome)
@@ -458,5 +459,238 @@ func TestAPolicyThatRefusesInlineScriptsIsReported(t *testing.T) {
 					result.Message, warned, test.warned)
 			}
 		})
+	}
+}
+
+// hostedCheck is the hosted service's shape: the application on one host and
+// the script on another, with per-site paths.
+func hostedCheck() InstallCheck {
+	return InstallCheck{
+		BaseURL:       "https://app.feasible.lol",
+		ScriptBaseURL: "https://cdn.feasible.lol",
+		Keyer:         tracker.NewKeyer(make([]byte, tracker.SecretSize), nil),
+	}
+}
+
+// verifyPage runs the check for example.com against a page with the given
+// body and Content-Security-Policy.
+func verifyPage(t *testing.T, check InstallCheck, policy, body string) VerifyResult {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if policy != "" {
+			w.Header().Set("Content-Security-Policy", policy)
+		}
+
+		writeTestResponse(t, w, body)
+	}))
+	t.Cleanup(server.Close)
+
+	client := &http.Client{Transport: rewriteTo(server.URL)}
+
+	return VerifyInstallation(context.Background(), client, check, &Site{Domain: "example.com"})
+}
+
+// TestVerifyAcceptsTheSnippetWeHandOut checks the exact text the install
+// screen shows passes its own check, for both variants and on every host a
+// hosted or self-hosted server gives out.
+func TestVerifyAcceptsTheSnippetWeHandOut(t *testing.T) {
+	site := &Site{Domain: "example.com"}
+	hosted := hostedCheck()
+	selfHosted := InstallCheck{BaseURL: "https://stats.example.org", Keyer: hosted.Keyer}
+
+	cases := map[string]struct {
+		check InstallCheck
+		body  string
+	}{
+		"hosted, per-site":      {hosted, Snippet(hosted.BaseURL, hosted.ScriptBaseURL, hosted.Keyer, site)},
+		"hosted, data-domain":   {hosted, SnippetLegacy(hosted.BaseURL, hosted.ScriptBaseURL, site)},
+		"hosted, older install": {hosted, Snippet(hosted.BaseURL, "", hosted.Keyer, site)},
+		"hosted, older legacy":  {hosted, SnippetLegacy(hosted.BaseURL, "", site)},
+		"self-hosted":           {selfHosted, Snippet(selfHosted.BaseURL, "", selfHosted.Keyer, site)},
+		"self-hosted, legacy":   {selfHosted, SnippetLegacy(selfHosted.BaseURL, "", site)},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			result := verifyPage(t, c.check, "", "<html><head>"+c.body+"</head></html>")
+
+			if result.Outcome != VerifyFound {
+				t.Errorf("want %q, got %q: %s", VerifyFound, result.Outcome, result.Message)
+			}
+		})
+	}
+}
+
+// TestVerifyReadsTagsHoweverTheyAreWritten checks the forms a real page serves
+// the tag in after a minifier, a CMS or a person has been at it.
+func TestVerifyReadsTagsHoweverTheyAreWritten(t *testing.T) {
+	check := hostedCheck()
+	path := check.Keyer.Path("example.com")
+	src := "https://cdn.feasible.lol" + path
+
+	cases := map[string]string{
+		"unquoted":              `<script defer src=` + src + `></script>`,
+		"single-quoted":         `<script defer src='` + src + `'></script>`,
+		"src first":             `<script src="` + src + `" defer></script>`,
+		"async":                 `<script async src="` + src + `"></script>`,
+		"uppercase":             `<SCRIPT DEFER SRC="` + src + `"></SCRIPT>`,
+		"spaces and newlines":   "<script\n  defer\n  src = \"" + src + "\"\n></script>",
+		"protocol-relative":     `<script defer src="//cdn.feasible.lol` + path + `"></script>`,
+		"query string":          `<script defer src="` + src + `?hash=1"></script>`,
+		"a > in another value":  `<script data-note="a > b" defer src="` + src + `"></script>`,
+		"extra attributes":      `<script type="text/javascript" id="feasible-js" defer data-wp-strategy="defer" src="` + src + `"></script>`,
+		"unquoted data-domain":  `<script defer data-domain=example.com src=https://cdn.feasible.lol/js/script.js></script>`,
+		"data-domain after src": `<script src='https://app.feasible.lol/js/script.js' data-domain='www.example.com' async></script>`,
+		"after other scripts":   `<script src="/app.js"></script><script>var a = "<script>";</script><script defer src=` + src + `></script>`,
+	}
+
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			result := verifyPage(t, check, "", body)
+
+			if result.Outcome != VerifyFound {
+				t.Errorf("want %q, got %q: %s", VerifyFound, result.Outcome, result.Message)
+			}
+		})
+	}
+}
+
+// TestVerifyRecognisesAProxiedInstall checks a script served from the
+// customer's own domain, where no hostname of ours appears on the page.
+func TestVerifyRecognisesAProxiedInstall(t *testing.T) {
+	check := hostedCheck()
+	file := strings.TrimPrefix(check.Keyer.Path("example.com"), tracker.PathPrefix)
+
+	cases := map[string]string{
+		"per-site path, relative":   `<script defer data-api="/stats/api/event" src="/stats/js/` + file + `"></script>`,
+		"per-site path, own host":   `<script defer data-api=/stats/api/event src=https://example.com/stats/js/` + file + `></script>`,
+		"shared path, data-domain":  `<script defer data-domain="example.com" data-api="/stats/api/event" src="/stats/js/script.js"></script>`,
+		"renamed path, data-domain": `<script defer data-domain="example.com" data-api="https://example.com/wp-json/k3/e" src="https://example.com/k3/m9.js"></script>`,
+	}
+
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			// A policy that only allows the site itself still loads a script
+			// the site serves.
+			result := verifyPage(t, check, "script-src 'self' 'unsafe-inline'", body)
+
+			if result.Outcome != VerifyFound {
+				t.Errorf("want %q, got %q: %s", VerifyFound, result.Outcome, result.Message)
+			}
+		})
+	}
+}
+
+// TestVerifyIgnoresScriptsThatAreNotOurs checks a data-domain alone is not
+// taken for our snippet, because other analytics scripts carry one too.
+func TestVerifyIgnoresScriptsThatAreNotOurs(t *testing.T) {
+	cases := map[string]string{
+		"another tool with data-domain": `<script defer data-domain="example.com" src="https://stats.example.net/js/tracker.js"></script>`,
+		"an unrelated script":           `<script src="https://example.com/static/app.js" defer></script>`,
+		"our name in the text only":     `<p>We moved to cdn.feasible.lol last week.</p><script src="/app.js"></script>`,
+	}
+
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			result := verifyPage(t, hostedCheck(), "", body)
+
+			if result.Outcome != VerifyMissing {
+				t.Errorf("want %q, got %q: %s", VerifyMissing, result.Outcome, result.Message)
+			}
+		})
+	}
+}
+
+// TestVerifyReportsAnotherSitesPath checks the copy-paste mistake in its
+// per-site form, where there is no data-domain to read.
+func TestVerifyReportsAnotherSitesPath(t *testing.T) {
+	check := hostedCheck()
+	other := `<script defer src="https://cdn.feasible.lol` + check.Keyer.Path("other.example.com") + `"></script>`
+
+	result := verifyPage(t, check, "", other)
+
+	if result.Outcome != VerifyWrongDomain {
+		t.Errorf("want %q, got %q: %s", VerifyWrongDomain, result.Outcome, result.Message)
+	}
+
+	// A page carrying both is installed: the right one is what counts.
+	both := other + `<script defer src="https://cdn.feasible.lol` + check.Keyer.Path("example.com") + `"></script>`
+
+	if result := verifyPage(t, check, "", both); result.Outcome != VerifyFound {
+		t.Errorf("want %q, got %q: %s", VerifyFound, result.Outcome, result.Message)
+	}
+}
+
+// TestVerifyChecksThePolicyAgainstTheScriptHost checks the policy is read for
+// the host the tag loads from, which is not the application's.
+func TestVerifyChecksThePolicyAgainstTheScriptHost(t *testing.T) {
+	check := hostedCheck()
+	body := `<script defer src=https://cdn.feasible.lol` + check.Keyer.Path("example.com") + `></script>`
+
+	cases := map[string]VerifyOutcome{
+		"script-src 'self' https://cdn.feasible.lol": VerifyFound,
+		"script-src 'self' https:":                   VerifyFound,
+		"script-src 'nonce-abc123' 'strict-dynamic'": VerifyFound,
+		"script-src 'self' https://app.feasible.lol": VerifyBlockedByCSP,
+		"default-src 'self'":                         VerifyBlockedByCSP,
+	}
+
+	for policy, want := range cases {
+		result := verifyPage(t, check, policy, body)
+
+		if result.Outcome != want {
+			t.Errorf("%q: want %q, got %q: %s", policy, want, result.Outcome, result.Message)
+		}
+
+		if want == VerifyBlockedByCSP && !strings.Contains(result.Message, "cdn.feasible.lol") {
+			t.Errorf("%q: the message should name the host to allow: %s", policy, result.Message)
+		}
+	}
+}
+
+// TestMissingSnippetSaysWhatATagManagerUserNeeds checks the message for a page
+// with nothing in its HTML is true for a tag manager install as well as for a
+// page that was never deployed.
+func TestMissingSnippetSaysWhatATagManagerUserNeeds(t *testing.T) {
+	result := verifyPage(t, hostedCheck(), "", `<script src="https://www.googletagmanager.com/gtm.js?id=GTM-XXXX" async></script>`)
+
+	if result.Outcome != VerifyMissing || result.OK() {
+		t.Fatalf("want %q, got %q", VerifyMissing, result.Outcome)
+	}
+
+	for _, want := range []string{"tag manager", "first visit"} {
+		if !strings.Contains(result.Message, want) {
+			t.Errorf("the message should mention %q: %s", want, result.Message)
+		}
+	}
+}
+
+// TestRecentVisitStandsInForAnUnseenSnippet checks that visits arriving turn
+// "not in the HTML" into a pass, and that nothing else is changed by them.
+func TestRecentVisitStandsInForAnUnseenSnippet(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	missing := VerifyResult{Outcome: VerifyMissing, URL: "https://example.com/", Message: "missing"}
+
+	recent := missing.WithRecentVisit(now.Add(-time.Hour), now)
+	if recent.Outcome != VerifyCollecting || !recent.OK() {
+		t.Errorf("a visit an hour ago should pass, got %q", recent.Outcome)
+	}
+
+	if !strings.Contains(recent.Message, "Visits are arriving") {
+		t.Errorf("the message should say why it passed: %s", recent.Message)
+	}
+
+	if stale := missing.WithRecentVisit(now.Add(-48*time.Hour), now); stale.Outcome != VerifyMissing {
+		t.Errorf("a visit two days ago proves nothing about today, got %q", stale.Outcome)
+	}
+
+	if never := missing.WithRecentVisit(time.Time{}, now); never.Outcome != VerifyMissing {
+		t.Errorf("no visit at all should stay missing, got %q", never.Outcome)
+	}
+
+	wrong := VerifyResult{Outcome: VerifyWrongDomain}
+	if got := wrong.WithRecentVisit(now, now); got.Outcome != VerifyWrongDomain {
+		t.Errorf("only a missing snippet is overridden, got %q", got.Outcome)
 	}
 }

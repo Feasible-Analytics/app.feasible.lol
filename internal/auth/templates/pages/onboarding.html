@@ -140,6 +140,7 @@
  {{ if .OK }}border-up/30 bg-up/10 text-up-ink{{ else }}border-down/30 bg-down/10 text-down-ink{{ end }}">
         <p class="font-medium">
           {{ if eq .Outcome "found" }}{{ t $.Lang "auth.onboarding.verify_found" }}{{ end }}
+          {{ if eq .Outcome "collecting" }}{{ t $.Lang "auth.onboarding.verify_collecting" }}{{ end }}
           {{ if eq .Outcome "missing" }}{{ t $.Lang "auth.onboarding.verify_missing" }}{{ end }}
           {{ if eq .Outcome "wrong_domain" }}{{ t $.Lang "auth.onboarding.verify_wrong_domain" }}{{ end }}
           {{ if eq .Outcome "blocked_by_csp" }}{{ t $.Lang "auth.onboarding.verify_blocked" }}{{ end }}

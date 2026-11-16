@@ -190,6 +190,26 @@ func (t *Traffic) FirstEventAt(ctx context.Context, accountID, siteID int64) (in
 	return nullInt64(at), nil
 }
 
+// LastEventAt reports when a site most recently started a visit, as unix
+// seconds, or zero if it never has.
+func (t *Traffic) LastEventAt(ctx context.Context, accountID, siteID int64) (int64, error) {
+	lease, err := t.manager.Acquire(ctx, accountID)
+	if err != nil {
+		return 0, fmt.Errorf("auth: last event: %w", err)
+	}
+	defer lease.Release() //nolint:errcheck // the query result is more useful than an unlock error
+
+	var at sql.NullInt64
+
+	err = lease.Account.Reader().QueryRowContext(ctx,
+		"SELECT MAX(started_at) FROM sessions WHERE site_id = ?", siteID).Scan(&at)
+	if err != nil {
+		return 0, fmt.Errorf("auth: last event: %w", err)
+	}
+
+	return nullInt64(at), nil
+}
+
 // RollupProgress reports whether a site's reports are still being rebuilt, and
 // how far along.
 //
