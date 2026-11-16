@@ -508,13 +508,15 @@ func faviconAccess(r *http.Request) *http.Request {
 //
 // It dials through the same outbound policy every other request made on
 // somebody else's say-so uses. Google's picture URL arrives in a response we
-// did not write, which is no reason to open a second, unguarded way out of
+// did not write, and Gravatar is a hostname in our source rather than a
+// customer's, but neither is a reason to open a second, unguarded way out of
 // this process.
 func newAvatarRefresher(e *env, control *sql.DB) *avatar.Refresher {
 	return &avatar.Refresher{
-		Store:  avatar.NewStore(control, func() int64 { return time.Now().UTC().Unix() }),
-		Client: outbound.PolicyFor(e.cfg).NewClient(avatar.FetchTimeout),
-		Log:    e.log,
+		Store:    avatar.NewStore(control, func() int64 { return time.Now().UTC().Unix() }),
+		Client:   outbound.PolicyFor(e.cfg).NewClient(avatar.FetchTimeout),
+		Gravatar: e.cfg.App.Gravatar,
+		Log:      e.log,
 	}
 }
 

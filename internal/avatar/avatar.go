@@ -8,16 +8,15 @@
 
 // Package avatar turns a picture belonging to a person into bytes we hold.
 //
-// A person who signs in with Google has the picture Google returned with their
-// profile. It may not be linked to from a page: an <img> pointing at Google
-// tells it the viewer's address, their user agent and, through the Referer,
-// which page of this product they are reading — on every load. The picture is
-// therefore fetched here once, checked, shrunk and stored, and the browser only
-// ever talks to us. Google's URL rotates besides, so keeping one would not have
-// worked anyway.
+// Google and Gravatar both serve images, and neither may be linked to from a
+// page: an <img> pointing at them tells that provider the viewer's address,
+// their user agent and, through the Referer, which page of this product they
+// are reading — on every load. The picture is therefore fetched here once,
+// checked, shrunk and stored, and the browser only ever talks to us. Google's
+// URL rotates besides, so keeping one would not have worked anyway.
 //
-// Everybody else gets their initials on a colour, drawn by this process. No
-// address, and no hash of one, is sent anywhere to find a picture.
+// Somebody neither provider has a picture for gets their initials on a colour,
+// drawn by this process.
 package avatar
 
 import (
@@ -35,6 +34,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 	"unicode"
 
 	"golang.org/x/image/draw"
@@ -71,14 +71,31 @@ type Image struct {
 	ETag string
 }
 
-// SourceGoogle names where a stored picture came from.
-const SourceGoogle = "google"
+// SourceGoogle and SourceGravatar name where a stored picture came from. A
+// Google picture is the person's own choice inside an account they are signed
+// in to, so it outranks a Gravatar derived from their address.
+const (
+	SourceGoogle   = "google"
+	SourceGravatar = "gravatar"
+)
 
 // ErrNoImage means the provider said clearly that it has no picture for this
 // person. Everything else — a timeout, a 500, a rate limit — is an ordinary
 // error, so a provider having a bad day is never recorded as a person having no
 // picture.
 var ErrNoImage = errors.New("avatar: the provider has no picture")
+
+// GravatarURL is where to ask for the picture behind an email address.
+//
+// The address is lower-cased and trimmed before hashing because that is the
+// scheme Gravatar specifies; hashing the address as typed silently misses. The
+// d=404 is what makes a missing picture a miss instead of a generated pattern,
+// and s= asks for the size we intend to keep rather than the full original.
+func GravatarURL(email string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
+
+	return fmt.Sprintf("https://gravatar.com/avatar/%s?d=404&s=%d", hex.EncodeToString(sum[:]), MaxDimension)
+}
 
 // Fetch downloads one picture and normalises it.
 //
@@ -217,6 +234,60 @@ func NewStore(db *sql.DB, now func() int64) *Store {
 	return &Store{db: db, now: now}
 }
 
+// State is what is known about a person's picture without loading it. It is a
+// separate read from the picture itself because the pages that decide whether
+// to show one never need the bytes.
+type State struct {
+	// ETag is empty when there is nothing to serve.
+	ETag string
+
+	// Source names the provider a stored picture came from.
+	Source string
+
+	// Asked reports that a provider has answered at some point, whether or not
+	// it had anything. It says a row exists, and nothing about whether the
+	// answer is still worth trusting.
+	Asked bool
+
+	// AskedRecently is the one the lookup branches on: a stored picture, or a
+	// miss recorded within MissRetry. It is what stops an address with no
+	// Gravatar costing an outbound request on every sign-in, without stopping
+	// one that appears later from ever being found.
+	AskedRecently bool
+}
+
+// MissRetry is how long a remembered miss is trusted for.
+//
+// A week: long enough that a mailbox with no Gravatar is asked about roughly
+// weekly rather than on every sign-in, short enough that somebody who sets one
+// up sees it within a week.
+const MissRetry = 7 * 24 * time.Hour
+
+// State reads one person's picture status. A person with no row is not an
+// error: having no picture is the common case, not a failure.
+func (s *Store) State(ctx context.Context, userID int64) (State, error) {
+	var state State
+
+	var fetchedAt int64
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT etag, source, fetched_at FROM user_avatars WHERE user_id = ?
+	`, userID).Scan(&state.ETag, &state.Source, &fetchedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return State{}, nil
+	}
+	if err != nil {
+		return State{}, fmt.Errorf("avatar: read state: %w", err)
+	}
+
+	state.Asked = true
+
+	// A stored picture never goes stale here; only a miss does.
+	state.AskedRecently = state.ETag != "" || s.now()-fetchedAt < int64(MissRetry.Seconds())
+
+	return state, nil
+}
+
 // Read returns one person's stored picture, or an empty Image when there is
 // none. The caller draws the initials instead.
 func (s *Store) Read(ctx context.Context, userID int64) (Image, error) {
@@ -254,6 +325,24 @@ func (s *Store) Save(ctx context.Context, userID int64, source string, picture I
 	`, userID, picture.Bytes, picture.Type, picture.ETag, source, s.now())
 	if err != nil {
 		return fmt.Errorf("avatar: save: %w", err)
+	}
+
+	return nil
+}
+
+// RememberMiss records that a provider had nothing for this person.
+//
+// It deliberately leaves any bytes already stored alone. A provider answering
+// "no picture" is not a reason to throw away one somebody already has, and
+// without that rule a single 404 from one source erases what another supplied.
+func (s *Store) RememberMiss(ctx context.Context, userID int64, source string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO user_avatars (user_id, type, etag, source, fetched_at)
+		VALUES (?, '', '', ?, ?)
+		ON CONFLICT(user_id) DO UPDATE SET source = excluded.source, fetched_at = excluded.fetched_at
+	`, userID, source, s.now())
+	if err != nil {
+		return fmt.Errorf("avatar: remember miss: %w", err)
 	}
 
 	return nil

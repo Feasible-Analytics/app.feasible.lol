@@ -393,8 +393,8 @@ export interface Navigation {
 	billing_url?: string;
 	export_url?: string;
 	logout_url: string;
-	/** The person's picture, always on our own origin: one stored from a
-	 *  Google sign-in, or initials the server draws. */
+	/** The person's picture, always on our own origin: one the server stored
+	 *  from Google or Gravatar, or initials it draws. */
 	avatar_url?: string;
 	csrf: string;
 }

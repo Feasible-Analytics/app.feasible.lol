@@ -144,8 +144,9 @@ type Handler struct {
 	// what it can see on its own network and read the answer back.
 	Verifier *http.Client
 
-	// Avatars fetches and stores the picture Google returns with a sign-in.
-	// It never fails a request: a person with no picture keeps their initials.
+	// Avatars fetches and stores account pictures. It is asked on sign-in and
+	// on a Google reconnect, and it never fails a request: a person with no
+	// picture keeps their initials.
 	Avatars *avatar.Refresher
 
 	// HelpURL and SupportURL are the two destinations in the account menu that
