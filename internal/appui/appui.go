@@ -79,8 +79,8 @@ type Header struct {
 	// package that happens to print a time.
 	HourCycle string
 
-	// AvatarURL is empty for somebody with no stored picture, which leaves the
-	// letter circle the dashboard uses.
+	// AvatarURL is where the person's picture is served from: a stored one, or
+	// their initials.
 	AvatarURL string
 
 	Role     teams.Role

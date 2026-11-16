@@ -471,19 +471,50 @@ func supportAddress(e *env) string {
 	return e.cfg.App.SalesEmail
 }
 
+// newFavicons builds the icon proxy. It is a variable so a test can hand the
+// assembled routes a proxy that answers without a network.
+var newFavicons = dashboard.NewFavicons
+
+// How many icons may be fetched from upstream in one minute, by one address and
+// by everybody together. A first look at a long list of sources is about a
+// hundred icons; nothing a person does comes near the total.
+const (
+	faviconFetchesPerAddress = 120
+	faviconFetchesInTotal    = 600
+)
+
+// faviconAccess rewrites an icon request so the stats authorizer can read it.
+// An <img> cannot send the capability headers a stats call carries, so a public
+// or shared dashboard names its capability in the query string instead.
+func faviconAccess(r *http.Request) *http.Request {
+	query := r.URL.Query()
+	clone := r.Clone(r.Context())
+
+	clone.Header.Del(sharing.HeaderPublic)
+	clone.Header.Del(sharing.HeaderShare)
+
+	if public := query.Get("public"); public != "" {
+		clone.Header.Set(sharing.HeaderPublic, public)
+	}
+
+	if share := query.Get("share"); share != "" {
+		clone.Header.Set(sharing.HeaderShare, share)
+	}
+
+	return clone
+}
+
 // newAvatarRefresher builds the account-picture fetcher.
 //
 // It dials through the same outbound policy every other request made on
 // somebody else's say-so uses. Google's picture URL arrives in a response we
-// did not write, and Gravatar is a hostname in our source rather than a
-// customer's, but neither is a reason to open a second, unguarded way out of
+// did not write, which is no reason to open a second, unguarded way out of
 // this process.
 func newAvatarRefresher(e *env, control *sql.DB) *avatar.Refresher {
 	return &avatar.Refresher{
-		Store:    avatar.NewStore(control, func() int64 { return time.Now().UTC().Unix() }),
-		Client:   outbound.PolicyFor(e.cfg).NewClient(avatar.FetchTimeout),
-		Gravatar: e.cfg.App.Gravatar,
-		Log:      e.log,
+		Store:  avatar.NewStore(control, func() int64 { return time.Now().UTC().Unix() }),
+		Client: outbound.PolicyFor(e.cfg).NewClient(avatar.FetchTimeout),
+		Log:    e.log,
 	}
 }
 
@@ -799,7 +830,20 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	// rather than from the reader's browser is what keeps a dashboard from
 	// telling every site that ever linked to yours that somebody is looking at
 	// their referral traffic.
-	mux.Handle(dashboard.FaviconPattern, dashboard.NewFavicons(filepath.Join(dataDir, "favicons"), e.log))
+	favicons := newFavicons(filepath.Join(dataDir, "favicons"), e.log)
+	favicons.Scope = func(r *http.Request) (string, bool) {
+		return stats.Scope(faviconAccess(r), r.URL.Query().Get("site"))
+	}
+
+	fetches := auth.NewLimiter()
+	favicons.Limit = func(r *http.Request) bool {
+		return fetches.Allow("address:"+clientip.Key(r, app.Trusted), faviconFetchesPerAddress, time.Minute) &&
+			fetches.Allow("everyone", faviconFetchesInTotal, time.Minute)
+	}
+
+	stats.Sources = favicons.Allow
+
+	mux.Handle(dashboard.FaviconPattern, favicons)
 
 	mux.Handle(avatar.Pattern, app.AvatarHandler())
 

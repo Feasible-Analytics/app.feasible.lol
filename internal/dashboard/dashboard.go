@@ -255,8 +255,8 @@ type Navigation struct {
 	ExportURL       string `json:"export_url,omitempty"`
 	LogoutURL       string `json:"logout_url"`
 
-	// AvatarURL is absent for a person with no stored picture, which is what
-	// leaves the account button on its letter circle.
+	// AvatarURL is where the person's picture is served from: a stored one,
+	// or their initials.
 	AvatarURL string `json:"avatar_url,omitempty"`
 
 	CSRF   string `json:"csrf"`

@@ -10,6 +10,7 @@ import type { ReactNode } from "react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { faviconURL } from "../api/client";
 import { iconFor } from "../lib/brandIcons";
 import { compact, exact } from "../lib/format";
 import { t } from "../lib/i18n";
@@ -246,11 +247,14 @@ export function Failure({ message, onRetry }: { message: string; onRetry: () => 
  * origin, so that opening a dashboard does not fan out a request to every site
  * that ever linked to yours — which would leak your traffic sources to them,
  * one referrer header at a time, on a privacy-first product.
+ *
+ * The proxy only answers with a real icon for a name a report on this site has
+ * shown this viewer, so the URL says which site the row belongs to.
  */
-export function Favicon({ name }: { name: string }) {
+export function Favicon({ name, domain }: { name: string; domain: string }) {
 	return (
 		<img
-			src={`/favicon/sources/${encodeURIComponent(name || "Direct")}`}
+			src={faviconURL(domain, name || "Direct")}
 			alt=""
 			aria-hidden="true"
 			width={16}

@@ -316,6 +316,20 @@ func buildHostsByName() map[string]string {
 	return byName
 }
 
+// Known reports whether a name is one of the built-in sources, as opposed to a
+// hostname that merely looks like one.
+func Known(name string) bool {
+	name = strings.TrimSpace(name)
+
+	if _, ok := hostsByName[name]; ok {
+		return true
+	}
+
+	_, ok := hostsByName[strings.ToLower(name)]
+
+	return ok
+}
+
 // HostFor resolves a source name back to a hostname an icon can be fetched for.
 //
 // A report groups by the canonical source name — "Hacker News", not

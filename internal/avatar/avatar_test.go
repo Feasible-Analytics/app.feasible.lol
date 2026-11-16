@@ -237,23 +237,6 @@ func TestTheEtagFollowsTheBytes(t *testing.T) {
 	}
 }
 
-// TestGravatarAsksForACleanMiss checks the two query parameters that matter.
-// Without d=404 a missing picture arrives as a generated pattern, which we
-// would then store and serve as though somebody had chosen it.
-func TestGravatarAsksForACleanMiss(t *testing.T) {
-	url := GravatarURL("  Spicer@Example.COM ")
-
-	if !strings.Contains(url, "d=404") {
-		t.Errorf("gravatar URL %q does not ask for a clean miss", url)
-	}
-
-	// The address is lower-cased and trimmed before hashing because that is the
-	// scheme Gravatar specifies; hashing it as typed silently never matches.
-	if url != GravatarURL("spicer@example.com") {
-		t.Errorf("a differently typed address produced a different URL: %q", url)
-	}
-}
-
 // newStore builds a store over a migrated system database with one person in
 // it, which is what every write below needs.
 func newStore(t *testing.T) (*Store, *sql.DB, int64) {
@@ -302,68 +285,9 @@ func TestAStoredPictureComesBackWhole(t *testing.T) {
 	}
 }
 
-// TestAMissIsRememberedAndReadsAsNoPicture is what stops an address with no
-// Gravatar costing an outbound request on every sign-in for ever.
-func TestAMissIsRememberedAndReadsAsNoPicture(t *testing.T) {
-	avatars, _, userID := newStore(t)
-	ctx := context.Background()
-
-	if err := avatars.RememberMiss(ctx, userID, SourceGravatar); err != nil {
-		t.Fatalf("remember miss: %v", err)
-	}
-
-	got, err := avatars.Read(ctx, userID)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if len(got.Bytes) != 0 || got.ETag != "" {
-		t.Errorf("a remembered miss read back as a picture: %d bytes, tag %q", len(got.Bytes), got.ETag)
-	}
-
-	state, err := avatars.State(ctx, userID)
-	if err != nil {
-		t.Fatalf("read state: %v", err)
-	}
-	if !state.Asked {
-		t.Error("a miss left no record that the provider had been asked")
-	}
-	if state.ETag != "" {
-		t.Errorf("a miss reported the tag %q, which would send the front end after an image", state.ETag)
-	}
-}
-
-// TestAMissDoesNotDestroyAPictureSomebodyAlreadyHas is the rule that keeps one
-// provider from erasing another. Google answering "no picture" says nothing
-// about the Gravatar already stored, and treating it as though it did means a
-// person's picture disappears for a reason nobody can see.
-func TestAMissDoesNotDestroyAPictureSomebodyAlreadyHas(t *testing.T) {
-	avatars, _, userID := newStore(t)
-	ctx := context.Background()
-
-	picture, err := Normalise(square(t, 64, "png"))
-	if err != nil {
-		t.Fatalf("normalise: %v", err)
-	}
-	if err := avatars.Save(ctx, userID, SourceGravatar, picture); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-
-	if err := avatars.RememberMiss(ctx, userID, SourceGoogle); err != nil {
-		t.Fatalf("remember miss: %v", err)
-	}
-
-	got, err := avatars.Read(ctx, userID)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if !bytes.Equal(got.Bytes, picture.Bytes) {
-		t.Error("a miss from one provider erased the picture another had supplied")
-	}
-}
-
-// TestReadingSomebodyWithNoPictureIsNotAnError keeps the letter circle an
-// ordinary answer. A person who never signed in with Google and has no Gravatar
-// is the common case, not a failure.
+// TestReadingSomebodyWithNoPictureIsNotAnError keeps the initials an ordinary
+// answer. A person who never signed in with Google is the common case, not a
+// failure.
 func TestReadingSomebodyWithNoPictureIsNotAnError(t *testing.T) {
 	avatars, _, userID := newStore(t)
 
@@ -384,74 +308,55 @@ func TestReadingSomebodyWithNoPictureIsNotAnError(t *testing.T) {
 	}
 }
 
-// TestAMissGoesStaleAndAPictureDoesNot pins the read the retry depends on.
-//
-// A remembered miss that never expires means somebody who signs up today and
-// creates a Gravatar next week never gets it — there is no refresh job and no
-// request-time repair, so the next sign-in short-circuits for ever.
-func TestAMissGoesStaleAndAPictureDoesNot(t *testing.T) {
-	ctx := context.Background()
-
-	week := int64(MissRetry.Seconds())
-
+// TestInitialsComeFromTheNameThenTheAddress covers which letters are drawn.
+func TestInitialsComeFromTheNameThenTheAddress(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		age    int64
-		recent bool
+		name, email, want string
 	}{
-		{"just now", 0, true},
-		{"a day old", 24 * 60 * 60, true},
-		{"a minute inside the week", week - 60, true},
-		{"a minute past the week", week + 60, false},
-		{"a year old", 365 * 24 * 60 * 60, false},
+		{"Ada Lovelace", "ada@example.com", "AL"},
+		{"ada", "ada@example.com", "A"},
+		{"Mary Jane van Dyke", "m@example.com", "MD"},
+		{"", "grace.hopper@example.com", "G"},
+		{"   ", "", "?"},
+		{"élodie durand", "e@example.com", "ÉD"},
+		{"(the) boss", "b@example.com", "B"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			avatars, db, userID := newStore(t)
+		body := string(Initials(tc.name, tc.email).Bytes)
 
-			if _, err := db.ExecContext(ctx, `
-				INSERT INTO user_avatars (user_id, type, etag, source, fetched_at)
-				VALUES (?, '', '', ?, ?)`, userID, SourceGravatar, avatars.now()-tc.age); err != nil {
-				t.Fatal(err)
-			}
+		if !strings.Contains(body, ">"+tc.want+"</text>") {
+			t.Errorf("Initials(%q, %q) does not draw %q: %s", tc.name, tc.email, tc.want, body)
+		}
+	}
+}
 
-			state, err := avatars.State(ctx, userID)
-			if err != nil {
-				t.Fatal(err)
-			}
+// TestInitialsAreStableAndSafe covers the two properties the picture is served
+// on. The colour follows the address, so a person looks the same everywhere and
+// two people with one name do not; and a name is typed by a stranger and
+// written into a document on our origin, so nothing in it may become markup.
+func TestInitialsAreStableAndSafe(t *testing.T) {
+	first := Initials("Sam Smith", "sam@example.com")
 
-			if !state.Asked {
-				t.Error("a row that exists reported as never asked")
-			}
-
-			if state.AskedRecently != tc.recent {
-				t.Errorf("a miss %d seconds old reported recent = %v, want %v", tc.age, state.AskedRecently, tc.recent)
-			}
-		})
+	if again := Initials("Sam Smith", "SAM@example.com "); !bytes.Equal(first.Bytes, again.Bytes) || first.ETag != again.ETag {
+		t.Error("the same person produced two different pictures")
 	}
 
-	// A stored picture is never stale here, however old the row is.
-	avatars, _, userID := newStore(t)
+	differs := false
 
-	picture, err := Normalise(square(t, 64, "png"))
-	if err != nil {
-		t.Fatal(err)
+	for _, other := range []string{"a@example.com", "b@example.com", "c@example.com", "d@example.com"} {
+		if !bytes.Equal(first.Bytes, Initials("Sam Smith", other).Bytes) {
+			differs = true
+		}
 	}
 
-	if err := avatars.Save(ctx, userID, SourceGoogle, picture); err != nil {
-		t.Fatal(err)
+	if !differs {
+		t.Error("five people with one name all got the same colour")
 	}
 
-	if _, err := avatars.db.ExecContext(ctx,
-		"UPDATE user_avatars SET fetched_at = ? WHERE user_id = ?", avatars.now()-10*week, userID); err != nil {
-		t.Fatal(err)
-	}
+	for _, name := range []string{"<script>alert(1)</script>", `"onload="x`, "&lt; &amp;", "<b >"} {
+		body := string(Initials(name, "x@example.com").Bytes)
 
-	state, err := avatars.State(ctx, userID)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !state.AskedRecently {
-		t.Error("an old stored picture was treated as a stale miss and would be re-fetched")
+		if strings.Count(body, "<") != 5 || strings.Contains(body, "script") {
+			t.Errorf("Initials(%q) is not safe SVG: %s", name, body)
+		}
 	}
 }

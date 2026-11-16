@@ -8,12 +8,16 @@
 
 // Package avatar turns a picture belonging to a person into bytes we hold.
 //
-// Google and Gravatar both serve images, and neither may be linked to from a
-// page: an <img> pointing at them tells that provider the viewer's address,
-// their user agent and, through the Referer, which page of this product they
-// are reading — on every load. The picture is therefore fetched here once,
-// checked, shrunk and stored, and the browser only ever talks to us. Google's
-// URL rotates besides, so keeping one would not have worked anyway.
+// A person who signs in with Google has the picture Google returned with their
+// profile. It may not be linked to from a page: an <img> pointing at Google
+// tells it the viewer's address, their user agent and, through the Referer,
+// which page of this product they are reading — on every load. The picture is
+// therefore fetched here once, checked, shrunk and stored, and the browser only
+// ever talks to us. Google's URL rotates besides, so keeping one would not have
+// worked anyway.
+//
+// Everybody else gets their initials on a colour, drawn by this process. No
+// address, and no hash of one, is sent anywhere to find a picture.
 package avatar
 
 import (
@@ -24,13 +28,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"html"
 	"image"
 	"image/jpeg"
 	"image/png"
 	"io"
 	"net/http"
 	"strings"
-	"time"
+	"unicode"
 
 	"golang.org/x/image/draw"
 
@@ -66,31 +71,14 @@ type Image struct {
 	ETag string
 }
 
-// SourceGoogle and SourceGravatar name where a stored picture came from. A
-// Google picture is the person's own choice inside an account they are signed
-// in to, so it outranks a Gravatar derived from their address.
-const (
-	SourceGoogle   = "google"
-	SourceGravatar = "gravatar"
-)
+// SourceGoogle names where a stored picture came from.
+const SourceGoogle = "google"
 
 // ErrNoImage means the provider said clearly that it has no picture for this
 // person. Everything else — a timeout, a 500, a rate limit — is an ordinary
 // error, so a provider having a bad day is never recorded as a person having no
 // picture.
 var ErrNoImage = errors.New("avatar: the provider has no picture")
-
-// GravatarURL is where to ask for the picture behind an email address.
-//
-// The address is lower-cased and trimmed before hashing because that is the
-// scheme Gravatar specifies; hashing the address as typed silently misses. The
-// d=404 is what makes a missing picture a miss instead of a generated pattern,
-// and s= asks for the size we intend to keep rather than the full original.
-func GravatarURL(email string) string {
-	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
-
-	return fmt.Sprintf("https://gravatar.com/avatar/%s?d=404&s=%d", hex.EncodeToString(sum[:]), MaxDimension)
-}
 
 // Fetch downloads one picture and normalises it.
 //
@@ -229,62 +217,8 @@ func NewStore(db *sql.DB, now func() int64) *Store {
 	return &Store{db: db, now: now}
 }
 
-// State is what is known about a person's picture without loading it. It is a
-// separate read from the picture itself because the pages that decide whether
-// to show one never need the bytes.
-type State struct {
-	// ETag is empty when there is nothing to serve.
-	ETag string
-
-	// Source names the provider a stored picture came from.
-	Source string
-
-	// Asked reports that a provider has answered at some point, whether or not
-	// it had anything. It says a row exists, and nothing about whether the
-	// answer is still worth trusting.
-	Asked bool
-
-	// AskedRecently is the one the lookup branches on: a stored picture, or a
-	// miss recorded within MissRetry. It is what stops an address with no
-	// Gravatar costing an outbound request on every sign-in, without stopping
-	// one that appears later from ever being found.
-	AskedRecently bool
-}
-
-// MissRetry is how long a remembered miss is trusted for.
-//
-// A week: long enough that a mailbox with no Gravatar is asked about roughly
-// weekly rather than on every sign-in, short enough that somebody who sets one
-// up sees it within a week.
-const MissRetry = 7 * 24 * time.Hour
-
-// State reads one person's picture status. A person with no row is not an
-// error: having no picture is the common case, not a failure.
-func (s *Store) State(ctx context.Context, userID int64) (State, error) {
-	var state State
-
-	var fetchedAt int64
-
-	err := s.db.QueryRowContext(ctx, `
-		SELECT etag, source, fetched_at FROM user_avatars WHERE user_id = ?
-	`, userID).Scan(&state.ETag, &state.Source, &fetchedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return State{}, nil
-	}
-	if err != nil {
-		return State{}, fmt.Errorf("avatar: read state: %w", err)
-	}
-
-	state.Asked = true
-
-	// A stored picture never goes stale here; only a miss does.
-	state.AskedRecently = state.ETag != "" || s.now()-fetchedAt < int64(MissRetry.Seconds())
-
-	return state, nil
-}
-
 // Read returns one person's stored picture, or an empty Image when there is
-// none. The caller renders the letter, which is a fine default.
+// none. The caller draws the initials instead.
 func (s *Store) Read(ctx context.Context, userID int64) (Image, error) {
 	var (
 		raw         []byte
@@ -325,20 +259,73 @@ func (s *Store) Save(ctx context.Context, userID int64, source string, picture I
 	return nil
 }
 
-// RememberMiss records that a provider had nothing for this person.
+// initialsPalette is the set of backgrounds an initials picture picks from.
+// Each is dark enough for white text to pass contrast at the size it is drawn.
+var initialsPalette = []string{
+	"#0f766e", "#0369a1", "#6d28d9", "#c2410c", "#4338ca", "#047857", "#b45309", "#be123c", "#a21caf", "#334155",
+}
+
+// Initials draws the picture for somebody with no stored one: up to two
+// initials on a colour.
 //
-// It deliberately leaves any bytes already stored alone. A provider answering
-// "no picture" is not a reason to throw away one somebody already has, and
-// without that rule a single 404 from one source erases what another supplied.
-func (s *Store) RememberMiss(ctx context.Context, userID int64, source string) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO user_avatars (user_id, type, etag, source, fetched_at)
-		VALUES (?, '', '', ?, ?)
-		ON CONFLICT(user_id) DO UPDATE SET source = excluded.source, fetched_at = excluded.fetched_at
-	`, userID, source, s.now())
-	if err != nil {
-		return fmt.Errorf("avatar: remember miss: %w", err)
+// The colour is derived from the address, so a person keeps the same one on
+// every screen and after every restart, and two people called Sam are still
+// told apart. The initials come from the name, or from the address when there
+// is no name.
+func Initials(name, email string) Image {
+	letters := initialsOf(name)
+	if letters == "" {
+		letters = initialsOf(strings.SplitN(email, "@", 2)[0])
+	}
+	if letters == "" {
+		letters = "?"
 	}
 
-	return nil
+	key := strings.ToLower(strings.TrimSpace(email))
+	if key == "" {
+		key = strings.ToLower(strings.TrimSpace(name))
+	}
+
+	sum := sha256.Sum256([]byte(key))
+	colour := initialsPalette[int(sum[0])%len(initialsPalette)]
+
+	size := "28"
+	if len([]rune(letters)) == 1 {
+		size = "32"
+	}
+
+	// The letters are escaped because a name is whatever somebody typed, and
+	// this document is served from our own origin.
+	body := []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">` +
+		`<rect width="64" height="64" fill="` + colour + `"/>` +
+		`<text x="32" y="33" text-anchor="middle" dominant-baseline="central" fill="#ffffff" ` +
+		`font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="` + size + `" font-weight="600">` +
+		html.EscapeString(letters) + `</text></svg>`)
+
+	etag := sha256.Sum256(body)
+
+	return Image{Bytes: body, Type: "image/svg+xml; charset=utf-8", ETag: `"` + hex.EncodeToString(etag[:16]) + `"`}
+}
+
+// initialsOf takes the first letter of the first and last words of a name. A
+// word that does not start with a letter or a digit is skipped, so punctuation
+// never becomes somebody's picture.
+func initialsOf(name string) string {
+	var picked []rune
+
+	for _, word := range strings.Fields(name) {
+		first := []rune(word)[0]
+		if unicode.IsLetter(first) || unicode.IsDigit(first) {
+			picked = append(picked, unicode.ToUpper(first))
+		}
+	}
+
+	switch len(picked) {
+	case 0:
+		return ""
+	case 1:
+		return string(picked[0])
+	default:
+		return string([]rune{picked[0], picked[len(picked)-1]})
+	}
 }

@@ -71,6 +71,11 @@ type Handler struct {
 	// sampling off.
 	SampleThreshold int64
 
+	// Sources is told which source names a report returned and to which view,
+	// so the icon proxy can serve icons for those names and no others. Nil
+	// tells nobody.
+	Sources func(scope string, names []string)
+
 	// live holds the answers to reports whose range reaches today. A finished
 	// period is never held: it cannot change, and it is already answered from
 	// the summary tables in single-digit milliseconds.
@@ -280,6 +285,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.record(domain, result, took)
+	h.noteSources(site, authorization, parsed, result)
 
 	encoded, err := json.Marshal(result)
 	if err != nil {
@@ -292,6 +298,60 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeBody(w, http.StatusOK, encoded)
+}
+
+// SourceDimension is the dimension whose values are drawn with an icon.
+const SourceDimension = "visit:source"
+
+// SourceScope names one view of one site: the site and the access it was
+// reached through. Two requests share a scope only when they are entitled to
+// the same reports.
+func SourceScope(site sites.Site, authorization Authorization) string {
+	return strconv.FormatInt(site.ID, 10) + "\x00" + authorization.CacheKey
+}
+
+// Scope resolves and authorizes a request for a site and names its view. It is
+// how something beside the stats endpoint, such as the icon proxy, asks the
+// same access question and lands on the same key.
+func (h *Handler) Scope(r *http.Request, domain string) (string, bool) {
+	if h.Authorize == nil || domain == "" {
+		return "", false
+	}
+
+	site, ok := h.Sites.Lookup(domain)
+	if !ok {
+		return "", false
+	}
+
+	authorization, err := h.Authorize(r, site)
+	if err != nil {
+		return "", false
+	}
+
+	return SourceScope(site, authorization), true
+}
+
+// noteSources reports the source names in a result to Sources.
+func (h *Handler) noteSources(site sites.Site, authorization Authorization, parsed *request, result *query.Result) {
+	if h.Sources == nil {
+		return
+	}
+
+	for index, dimension := range parsed.Dimensions {
+		if dimension != SourceDimension {
+			continue
+		}
+
+		names := make([]string, 0, len(result.Results))
+
+		for _, row := range result.Results {
+			if index < len(row.Dimensions) && row.Dimensions[index] != "" {
+				names = append(names, row.Dimensions[index])
+			}
+		}
+
+		h.Sources(SourceScope(site, authorization), names)
+	}
 }
 
 // record logs a report that took longer than SlowReport, with where it was

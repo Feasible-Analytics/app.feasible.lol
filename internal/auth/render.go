@@ -242,12 +242,7 @@ func (h *Handler) HeaderFor(r *http.Request) appui.Header {
 		}
 	}
 
-	// The picture is read separately from the person because it lives in its
-	// own table: the row a session lookup reads on every request has no
-	// business carrying fifty kilobytes nobody asked for.
-	if h.Avatars != nil {
-		header.AvatarURL = avatar.URL(user.ID, h.Avatars.State(r.Context(), user.ID).ETag)
-	}
+	header.AvatarURL = avatar.URL(user.ID)
 
 	return header
 }

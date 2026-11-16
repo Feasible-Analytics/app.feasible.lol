@@ -23,10 +23,13 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/access"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/auth"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/billingui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/dashboard"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/intern"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/onboarding"
@@ -120,6 +123,7 @@ const lockedTeam = 1
 type stack struct {
 	routes       http.Handler
 	gate         *access.Gate
+	manager      *accounts.Manager
 	key          string
 	dataDir      string
 	sessionToken string
@@ -226,6 +230,7 @@ func newStack(t *testing.T) *stack {
 	return &stack{
 		routes:       serveRoutes(e, service, manager, secret, dir, app, public, com, data.settings, extra),
 		gate:         com.Gate,
+		manager:      manager,
 		key:          key,
 		dataDir:      dir,
 		sessionToken: sessionToken,
@@ -691,6 +696,129 @@ func TestStatsCapabilitiesAreRevalidatedThroughTheAssembledRoute(t *testing.T) {
 	})
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("password-protected direct stats answered %d, want 401: %s", response.Code, response.Body.String())
+	}
+}
+
+// iconUpstream answers every icon fetch with the same bytes and counts them.
+type iconUpstream struct {
+	calls int
+}
+
+// RoundTrip satisfies http.RoundTripper.
+func (u *iconUpstream) RoundTrip(r *http.Request) (*http.Response, error) {
+	u.calls++
+
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"image/x-icon"}},
+		Body:       io.NopCloser(strings.NewReader("icon-bytes")),
+		Request:    r,
+	}, nil
+}
+
+// TestSourceIconsAreOnlyFetchedForNamesAReportShowedTheViewer drives the icon
+// proxy through the assembled routes on a public dashboard. A name nobody was
+// shown costs no fetch and no file; the same name, once the public sources
+// report has listed it, gets its icon; and that entitles no other view to it.
+func TestSourceIconsAreOnlyFetchedForNamesAReportShowedTheViewer(t *testing.T) {
+	upstream := &iconUpstream{}
+	original := newFavicons
+	newFavicons = func(dir string, log *logger.Logger) *dashboard.Favicons {
+		favicons := original(dir, log)
+		favicons.Client = &http.Client{Transport: upstream}
+
+		return favicons
+	}
+	t.Cleanup(func() { newFavicons = original })
+
+	s := newStack(t)
+	s.pay(t)
+
+	ctx := context.Background()
+
+	account, err := s.manager.Open(ctx, lockedTeam)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pageview, err := account.Intern.ID(ctx, intern.EventName, ingest.EventPageview)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	source, err := account.Intern.ID(ctx, intern.Source, "blog.partner.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	at := time.Now().UTC().Add(-time.Hour).Unix()
+
+	if _, err := account.Writer().ExecContext(ctx, `
+		INSERT INTO sessions (id, site_id, user_id, started_at, last_seen_at, duration, is_bounce, pageviews, events, source_id)
+		VALUES (1, 1, 500, ?, ?, 30, 0, 1, 1, ?)`, at, at+30, source); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := account.Writer().ExecContext(ctx, `
+		INSERT INTO events (site_id, timestamp, name_id, user_id, session_id, source_id)
+		VALUES (1, ?, ?, 500, 1, ?)`, at, pageview, source); err != nil {
+		t.Fatal(err)
+	}
+
+	icons := filepath.Join(s.dataDir, "favicons")
+	public := "/favicon/sources/blog.partner.org?site=example.com&public=public"
+
+	isTile := func(response *httptest.ResponseRecorder) bool {
+		return response.Code == http.StatusOK && strings.Contains(response.Body.String(), "<svg")
+	}
+
+	for _, path := range []string{public, "/favicon/sources/blog.partner.org", "/favicon/sources/random-a1b2c3.com?site=example.com&public=public"} {
+		if response := s.send(t, http.MethodGet, path, "", nil); !isTile(response) {
+			t.Errorf("%s answered %d %q before any report, want the tile", path, response.Code, response.Body.String())
+		}
+	}
+
+	if upstream.calls != 0 {
+		t.Fatalf("%d icon(s) were fetched for names no report had shown", upstream.calls)
+	}
+
+	if entries, _ := os.ReadDir(icons); len(entries) != 0 {
+		t.Fatalf("%d file(s) were cached for names no report had shown", len(entries))
+	}
+
+	report := s.send(t, http.MethodPost, "/api/stats/example.com/query",
+		`{"metrics":["visitors"],"date_range":"7d","dimensions":["visit:source"]}`,
+		map[string]string{"Content-Type": "application/json", sharing.HeaderPublic: "public"})
+	if report.Code != http.StatusOK || !strings.Contains(report.Body.String(), "blog.partner.org") {
+		t.Fatalf("the public sources report answered %d: %s", report.Code, report.Body.String())
+	}
+
+	if response := s.send(t, http.MethodGet, public, "", nil); response.Body.String() != "icon-bytes" {
+		t.Errorf("a source on the public dashboard answered %q, want its icon", response.Body.String())
+	}
+
+	// Still nothing for a name the report did not list, a request that names
+	// no site, or a signed-in view that has not run the report itself.
+	for _, tc := range []struct {
+		path    string
+		headers map[string]string
+	}{
+		{"/favicon/sources/random-a1b2c3.com?site=example.com&public=public", nil},
+		{"/favicon/sources/blog.partner.org", nil},
+		{"/favicon/sources/blog.partner.org?site=example.com", map[string]string{"Cookie": auth.SessionCookieName + "=" + s.sessionToken}},
+		{"/favicon/sources/blog.partner.org?site=other.example.net&public=public", nil},
+	} {
+		if response := s.send(t, http.MethodGet, tc.path, "", tc.headers); !isTile(response) {
+			t.Errorf("%s answered %d %q, want the tile", tc.path, response.Code, response.Body.String())
+		}
+	}
+
+	if upstream.calls != 1 {
+		t.Errorf("upstream was asked %d times, want once", upstream.calls)
+	}
+
+	if entries, _ := os.ReadDir(icons); len(entries) != 1 {
+		t.Errorf("the cache holds %d file(s), want one", len(entries))
 	}
 }
 
