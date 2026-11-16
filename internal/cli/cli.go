@@ -57,6 +57,7 @@ Commands:
   billing      Inspect and drive the account lifecycle: status, trial, sweep.
   comp         Grant durable complimentary access by account owner email.
   account      Create verified accounts on a self-hosted installation.
+  avatar       Backfill the picture on the account button.
   mail         Render every email to HTML files with sample data.
 
 Flags:
@@ -208,6 +209,8 @@ func Run(opts Options) int {
 		return runComp(e, args[1:])
 	case "account":
 		return runAccount(e, args[1:])
+	case "avatar":
+		return runAvatar(e, args[1:])
 	case "mail":
 		return runMail(e, args[1:])
 	default:

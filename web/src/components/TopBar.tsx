@@ -239,7 +239,7 @@ export function TopBar({ state, sites, onNavigate, theme, onTheme, chart, onChar
  * AccountFace is the person's picture, or the first letter of their name when
  * it fails to load.
  *
- * The source is always our own origin: a picture from a Google sign-in was
+ * The source is always our own origin: a picture from Google or Gravatar was
  * fetched once by the server, and everybody else gets initials the server
  * draws, so a browser never tells a third party who is looking at which page.
  */
