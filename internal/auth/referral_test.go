@@ -9,6 +9,7 @@
 package auth
 
 import (
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -187,19 +188,56 @@ func TestReferralFieldsAreBounded(t *testing.T) {
 	}
 }
 
+// visitCookies returns the cookies a page hands a browser that arrives with none.
+func visitCookies(t *testing.T, app *testApp, target, referer string) []*http.Cookie {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	app.ServeHTTP(recorder, pageRequest(t, target, referer))
+
+	resp := recorder.Result()
+	defer closeResponseBody(t, resp)
+
+	return resp.Cookies()
+}
+
 // TestNoCookieIsSetForAVisitor is the promise this file keeps: a visitor who
-// arrives on a tagged link is remembered by the link and nothing else.
+// arrives on a tagged link is remembered by the link and nothing else. The
+// form token is the one cookie the page sets, and it is checked by name and
+// shape because its value is random and can spell anything.
 func TestNoCookieIsSetForAVisitor(t *testing.T) {
 	app := newTestApp(t)
 
-	req := pageRequest(t, "/login?utm_source=hn", "https://news.example.test/item?id=1")
-	recorder := httptest.NewRecorder()
-	app.ServeHTTP(recorder, req)
+	plain := visitCookies(t, app, "/login", "")
+	tagged := visitCookies(t, app, "/login?utm_source=hn&utm_medium=social&utm_campaign=launch&referrer=news.example.test&landing=/pricing/",
+		"https://news.example.test/item?id=1")
 
-	for _, cookie := range recorder.Result().Cookies() {
-		if strings.Contains(cookie.Value, "hn") || strings.Contains(cookie.Name, "ref") {
+	if len(plain) != 1 || plain[0].Name != csrfCookieName {
+		t.Fatalf("an untagged visit was given %+v, want only %s", plain, csrfCookieName)
+	}
+
+	for _, cookie := range tagged {
+		if cookie.Name != csrfCookieName {
 			t.Fatalf("a visitor was given a cookie about where they came from: %s", cookie.Name)
 		}
+	}
+	if len(tagged) != 1 {
+		t.Fatalf("a tagged visit was given %d cookies, want 1", len(tagged))
+	}
+
+	token, ok := app.Sealer.VerifySignedValue(tagged[0].Value)
+	if !ok {
+		t.Fatalf("the form token cookie is not a signed token: %q", tagged[0].Value)
+	}
+
+	plainToken, _ := app.Sealer.VerifySignedValue(plain[0].Value)
+	if len(token) != len(plainToken) || len(tagged[0].Value) != len(plain[0].Value) {
+		t.Fatalf("a tagged link changed the form token cookie: %d characters, want %d", len(tagged[0].Value), len(plain[0].Value))
+	}
+
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(raw) == 0 {
+		t.Fatalf("the form token is not random bytes: %q (%v)", token, err)
 	}
 }
 
