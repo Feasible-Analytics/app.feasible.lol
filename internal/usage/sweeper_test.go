@@ -261,14 +261,22 @@ func TestTwoConsecutiveMonthsAsksThenLocks(t *testing.T) {
 		t.Fatal("the dashboard locked immediately")
 	}
 
-	found := false
-	for _, level := range f.levels() {
-		if level == "second_month" {
-			found = true
+	var asked *Notice
+	for i := range f.sent {
+		if f.sent[i].Level == LevelSecondMonth {
+			asked = &f.sent[i]
 		}
 	}
-	if !found {
+	if asked == nil {
 		t.Fatal("the second-month email was not sent")
+	}
+
+	// The email names the two finished months the rule counted, oldest first,
+	// rather than leaving the mail package to quote the month in progress.
+	if len(asked.Over) != 2 ||
+		asked.Over[0].Period != "2026-01" || asked.Over[0].Counts.Billable() != 1_100_000 ||
+		asked.Over[1].Period != "2026-02" || asked.Over[1].Counts.Billable() != 1_200_000 {
+		t.Fatalf("the second-month email carries %+v, want January at 1,100,000 and February at 1,200,000", asked.Over)
 	}
 
 	// Thirteen days later, still nothing.

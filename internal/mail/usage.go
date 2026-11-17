@@ -12,6 +12,8 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/usage"
 )
@@ -105,13 +107,28 @@ func UsageContent(notice usage.Notice) (Content, error) {
 			"If this becomes the normal shape of your traffic, let us talk — that is a better outcome for both of us than either of us discovering it on an invoice.",
 		}
 
-	case "second_month":
-		content.Subject = "Two months over your plan — can we talk by " + day(notice.Deadline) + "?"
-		content.Heading = "Two months running, above your plan"
+	case usage.LevelSecondMonth:
+		// This email is about the two finished months the rule counted. The
+		// month in progress stays out of it: it goes out in the first hour of
+		// a month, when that count is a few thousand, and printed beside the
+		// limit it reads as if the account were nowhere near it.
+		if len(notice.Over) == 0 {
+			return Content{}, fmt.Errorf("mail: the second-month email for team %d has no months to name", notice.TeamID)
+		}
+
+		content.Facts = nil
+		for _, month := range notice.Over {
+			content.Facts = append(content.Facts, Fact{Label: monthName(month.Period), Value: thousands(month.Counts.Billable())})
+		}
+		content.Facts = append(content.Facts, Fact{Label: "Included each month", Value: limit})
+
+		content.Subject = "Two months over your plan. Can we talk by " + day(notice.Deadline) + "?"
+		content.Heading = "Two months over your plan"
 		content.Body = []string{
-			"You have now been over the volume included in your plan for two consecutive months — " + used + " this month against " + limit + " included.",
-			"We would like to move you onto something that fits. Reply to this email, or write to " + notice.SalesEmail + ", any time before " + day(notice.Deadline) + ".",
-			"If we have not heard from you by then, your dashboard will lock until we do. We will keep collecting every event the whole time, your settings and exports stay open, and the moment your usage is back inside the plan — or you reply — it unlocks immediately. Nothing is deleted and no data is lost.",
+			"You used " + overSentence(notice.Over) + ". Your plan includes " + limit + " a month.",
+			"We'd like to move you onto a plan that fits. Reply to this email, or write to " + notice.SalesEmail + ", any time before " + day(notice.Deadline) + ".",
+			"If we haven't heard from you by then, your dashboard will lock until we do. We keep collecting every event the whole time, your settings and exports stay open, and nothing is deleted.",
+			"It unlocks immediately when you reply, or as soon as a full month finishes under the plan.",
 		}
 
 	default:
@@ -130,6 +147,39 @@ func projectionSentence(notice usage.Notice) string {
 	}
 
 	return "At the current rate you will finish the month at around " + thousands(notice.Projected) + "."
+}
+
+// overSentence lists each finished month's count, as in "1,321,002 pageviews
+// and custom events in September and 1,649,270 in October". The unit is named
+// once, on the first month, so the sentence stays short.
+func overSentence(months []usage.PeriodCounts) string {
+	parts := make([]string, 0, len(months))
+
+	for i, month := range months {
+		unit := " in "
+		if i == 0 {
+			unit = " pageviews and custom events in "
+		}
+
+		parts = append(parts, thousands(month.Counts.Billable())+unit+monthName(month.Period))
+	}
+
+	if len(parts) == 1 {
+		return parts[0]
+	}
+
+	return strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
+}
+
+// monthName turns a billing period like "2026-10" into "October". A period
+// that does not parse is printed as it is, which is still the right month.
+func monthName(period string) string {
+	at, err := time.Parse("2006-01", period)
+	if err != nil {
+		return period
+	}
+
+	return at.Format("January")
 }
 
 // thousands formats a count with separators. Seven-digit numbers are the whole

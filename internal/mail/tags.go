@@ -70,7 +70,7 @@ func Tags() []string {
 	// The onboarding emails are tagged with their template, the same way.
 	tags = append(tags, onboarding.Templates()...)
 
-	for _, level := range []usage.Level{usage.LevelWarn, usage.LevelNear, usage.LevelReached} {
+	for _, level := range []usage.Level{usage.LevelWarn, usage.LevelNear, usage.LevelReached, usage.LevelSecondMonth} {
 		tags = append(tags, usageTag(level))
 	}
 
