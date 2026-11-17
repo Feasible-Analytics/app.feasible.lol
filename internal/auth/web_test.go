@@ -1717,6 +1717,36 @@ func TestRegistrationFromOneAddressIsRateLimited(t *testing.T) {
 	}
 }
 
+// TestAccountCreatedCarriesNoAddress checks the sign-up line names the new
+// account and nothing about where it came from, because the privacy page tells
+// people we don't keep their IP address when they sign up.
+func TestAccountCreatedCarriesNoAddress(t *testing.T) {
+	app := newTestApp(t)
+
+	var out strings.Builder
+	app.Log = logger.New(logger.Options{Level: "info", Output: &out})
+
+	resp := newClient(t, app).post("/register", url.Values{
+		"email":    {"person@example.com"},
+		"password": {"a long enough password"},
+	})
+	closeResponseBody(t, resp)
+
+	var line string
+	for candidate := range strings.Lines(out.String()) {
+		if strings.Contains(candidate, "account created") {
+			line = candidate
+		}
+	}
+
+	if line == "" {
+		t.Fatalf("no account created line was logged:\n%s", out.String())
+	}
+	if strings.Contains(line, "ip=") || strings.Contains(line, "127.0.0.1") {
+		t.Errorf("the account created line carries an address: %s", line)
+	}
+}
+
 // TestPasswordResetFlow walks the whole recovery path: ask, read the emailed
 // link, set a new password, and sign in with it.
 func TestPasswordResetFlow(t *testing.T) {

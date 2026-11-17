@@ -17,10 +17,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 )
@@ -388,7 +390,8 @@ func (h *logHandler) WithGroup(name string) slog.Handler {
 }
 
 // appendAttr flattens one slog attribute onto out. Every value is sent as a
-// string, which is how PostHog stores log attributes.
+// string, which is how PostHog stores log attributes. An attribute that carries
+// an IP address is left out; see carriesAddress.
 func appendAttr(out []otlpAttribute, prefix string, a slog.Attr) []otlpAttribute {
 	a.Value = a.Value.Resolve()
 	if a.Equal(slog.Attr{}) {
@@ -412,7 +415,68 @@ func appendAttr(out []otlpAttribute, prefix string, a slog.Attr) []otlpAttribute
 		return out
 	}
 
-	return append(out, stringAttribute(prefix+a.Key, valueString(a.Value)))
+	key, value := prefix+a.Key, valueString(a.Value)
+	if carriesAddress(key, value) {
+		return out
+	}
+
+	return append(out, stringAttribute(key, value))
+}
+
+// addressKeys are attribute names that hold a network address, written in the
+// form normalizeKey produces. The privacy page tells people we don't keep their
+// IP address, and PostHog is a third party, so an attribute under one of these
+// names never leaves the box. The local log still has it.
+var addressKeys = map[string]bool{
+	"ip": true, "ips": true, "ipaddr": true, "ipaddress": true,
+	"addr": true, "remote": true, "remoteip": true, "remoteaddr": true, "remoteaddress": true,
+	"clientip": true, "clientaddr": true, "clientaddress": true,
+	"visitorip": true, "sourceip": true, "srcip": true, "realip": true, "xrealip": true,
+	"forwardedfor": true, "xforwardedfor": true, "cfconnectingip": true, "xfeasibleip": true,
+	"peer": true, "peerip": true, "peeraddr": true,
+}
+
+// carriesAddress reports whether an attribute must stay out of the shipped
+// copy. A key is checked at every level, so a group or a dotted name such as
+// request.remote_addr is caught, and the value is checked too, so an address
+// logged under a name nobody thought of is caught as well.
+func carriesAddress(key, value string) bool {
+	for segment := range strings.SplitSeq(key, ".") {
+		if addressKeys[normalizeKey(segment)] {
+			return true
+		}
+	}
+
+	return isAddress(value)
+}
+
+// normalizeKey lowercases a key and drops underscores and hyphens, so
+// remoteAddr, remote_addr and Remote-Addr are one name.
+func normalizeKey(key string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '_' || r == '-' {
+			return -1
+		}
+
+		return unicode.ToLower(r)
+	}, key)
+}
+
+// isAddress reports whether value is an IP address, bare, bracketed or with a
+// port, or a comma-separated chain with one in it, the way X-Forwarded-For
+// carries them.
+func isAddress(value string) bool {
+	for part := range strings.SplitSeq(value, ",") {
+		part = strings.TrimSpace(part)
+		if _, err := netip.ParseAddrPort(part); err == nil {
+			return true
+		}
+		if _, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(part, "["), "]")); err == nil {
+			return true
+		}
+	}
+
+	return false
 }
 
 // valueString renders a resolved slog value.

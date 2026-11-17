@@ -163,7 +163,7 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.Log.Info("account created", "user", user.ID, "team", team.ID, "ip", source)
+	h.Log.Info("account created", "user", user.ID, "team", team.ID)
 
 	h.captureReferral(r.Context(), user.ID, referral)
 	h.announceSignup(user, team.ID, SignupMethodPassword, referral)
