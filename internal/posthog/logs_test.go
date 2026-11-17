@@ -335,3 +335,98 @@ func TestShippingThroughTheLogger(t *testing.T) {
 		t.Fatalf("the local log is missing a line:\n%s", out.String())
 	}
 }
+
+// TestAddressesStayLocal checks no IP address reaches PostHog, whatever the
+// line, the key, the group or the spelling, while the local log keeps every
+// one of them and the attributes around them still ship.
+func TestAddressesStayLocal(t *testing.T) {
+	host, received := logsServer(t, http.StatusOK)
+	e, _ := exporter(t, host, 100)
+
+	var out bytes.Buffer
+	log := logger.New(logger.Options{Level: "info", Output: &out, Ship: e.Handler()})
+
+	log.Warn("registration refused by the human check", "ip", "203.0.113.7", "email", "person@example.com")
+	log.With("remote", "198.51.100.2:443").Warn("stripe webhook rejected", "error", "bad signature")
+	log.WithGroup("request").Info("grouped",
+		"remote_addr", "[2001:db8::1]:8080", slog.Group("client", "IP", "192.0.2.4"), "path", "/register")
+	log.WithGroup("ip").Info("under an address group", "v4", "192.0.2.9")
+	log.Info("spellings", "client.ip", "192.0.2.5", "Remote-Addr", "192.0.2.6", "clientIp", "192.0.2.10",
+		"addr", "127.0.0.1:19301")
+	log.Info("unnamed", "forwarded", "192.0.2.8, 10.0.0.1", "seen_from", "2001:db8::2",
+		"version", "v1.2.3", "count", 1234)
+
+	closeExporter(t, e)
+	b := expectBatch(t, received)
+
+	if len(b.Records) != 6 {
+		t.Fatalf("got %d records, want 6", len(b.Records))
+	}
+
+	shipped, err := json.Marshal(b.Records)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	addresses := []string{
+		"203.0.113.7", "198.51.100.2", "2001:db8::1", "192.0.2.4", "192.0.2.9", "192.0.2.5", "192.0.2.6",
+		"192.0.2.10", "127.0.0.1", "192.0.2.8", "2001:db8::2",
+	}
+	for _, address := range addresses {
+		if strings.Contains(string(shipped), address) {
+			t.Errorf("%s was shipped: %s", address, shipped)
+		}
+		if !strings.Contains(out.String(), address) {
+			t.Errorf("%s is missing from the local log:\n%s", address, out.String())
+		}
+	}
+
+	kept := map[string]map[string]string{
+		"registration refused by the human check": {"email": "person@example.com"},
+		"stripe webhook rejected":                 {"error": "bad signature"},
+		"grouped":                                 {"request.path": "/register"},
+		"unnamed":                                 {"version": "v1.2.3", "count": "1234"},
+	}
+	for _, r := range b.Records {
+		for key, want := range kept[r.Body] {
+			if r.Attrs[key] != want {
+				t.Errorf("%q: attribute %s = %q, want %q (all: %v)", r.Body, key, r.Attrs[key], want, r.Attrs)
+			}
+		}
+		if len(kept[r.Body]) == 0 && len(r.Attrs) != 0 {
+			t.Errorf("%q shipped attributes it should not have: %v", r.Body, r.Attrs)
+		}
+	}
+}
+
+// TestCarriesAddress pins which keys and values count as an address, and that
+// values which only look a little like one still ship.
+func TestCarriesAddress(t *testing.T) {
+	for _, tc := range []struct {
+		key, value string
+		want       bool
+	}{
+		{"ip", "", true},
+		{"remote", "anything", true},
+		{"req.remote_ip", "x", true},
+		{"X-Forwarded-For", "x", true},
+		{"ip.v4", "x", true},
+		{"from", "203.0.113.7", true},
+		{"from", "[2001:db8::1]:443", true},
+		{"from", "[2001:db8::1]", true},
+		{"from", "fe80::1%eth0", true},
+		{"chain", "unknown, 203.0.113.7", true},
+		{"client_ip_source", "X-Forwarded-For", false},
+		{"email", "person@example.com", false},
+		{"version", "0.0.61", false},
+		{"count", "1234", false},
+		{"duration", "1.5s", false},
+		{"at", "2026-11-16T21:38:00Z", false},
+		{"hash", "ab:cd", false},
+		{"description", "ship it", false},
+	} {
+		if got := carriesAddress(tc.key, tc.value); got != tc.want {
+			t.Errorf("carriesAddress(%q, %q) = %v, want %v", tc.key, tc.value, got, tc.want)
+		}
+	}
+}
