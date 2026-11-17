@@ -424,6 +424,64 @@ func TestABatchFinishesAfterTheSenderStopsWaiting(t *testing.T) {
 	}
 }
 
+// TestAWriteWaitsOutAnotherProcessHoldingTheLock checks a batch waits for a
+// write lock another connection holds for six seconds, as the backup sidecar
+// does across a checkpoint of a large account, and then commits.
+func TestAWriteWaitsOutAnotherProcessHoldingTheLock(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	manager := accounts.NewManager(dir)
+	t.Cleanup(func() { checkClose(t, "account manager", manager.CloseAll) })
+
+	writer := NewWriter(manager)
+	writer.Now = func() time.Time { return fixtureStart }
+
+	// The account exists and is migrated before anything else holds it.
+	if _, err := manager.Open(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	other, err := store.Open(accounts.Path(dir, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { checkClose(t, "other connection", other.Close) })
+
+	const hold = 6 * time.Second
+	if hold >= store.WriteBusyTimeout {
+		t.Fatalf("the hold %v must stay inside the write wait %v for this to test anything", hold, store.WriteBusyTimeout)
+	}
+
+	held, err := other.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := time.AfterFunc(hold, func() { _ = held.Rollback() })
+	t.Cleanup(func() {
+		release.Stop()
+		_ = held.Rollback()
+	})
+
+	started := time.Now()
+	committed, err := writer.Write(ctx, []Event{writerEvent(1, EventPageview, fixtureStart.Unix(), "/waited")})
+	if err != nil {
+		t.Fatalf("a write lock held elsewhere for %v failed the batch: %v", hold, err)
+	}
+
+	// Committing early would mean the lock was never really held, and the test
+	// proved nothing.
+	if waited := time.Since(started); waited < hold-time.Second {
+		t.Fatalf("the batch committed after %v, while the lock was held for %v", waited, hold)
+	}
+	if len(committed) != 1 {
+		t.Fatalf("committed %d events, want 1", len(committed))
+	}
+	if got := countRows(t, manager, 1, "SELECT COUNT(*) FROM events"); got != 1 {
+		t.Fatalf("events table holds %d rows, want 1", got)
+	}
+}
+
 // TestIndependentWritersClaimOneUUIDAtomically exercises separate process-local
 // locks over the same account file. SQLite must settle every retry while only
 // one process writes the fact.
@@ -1769,7 +1827,7 @@ func countedDatabase(t *testing.T) (*sql.DB, *atomic.Int64) {
 
 	sql.Register(name, countingDriver{inner: &sqlite.Driver{}, count: count})
 
-	db, err := sql.Open(name, store.DSN(filepath.Join(t.TempDir(), "account.db"), store.TxLockImmediate))
+	db, err := sql.Open(name, store.WriteDSN(filepath.Join(t.TempDir(), "account.db")))
 	if err != nil {
 		t.Fatal(err)
 	}

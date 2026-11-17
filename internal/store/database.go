@@ -51,7 +51,7 @@ func OpenDatabase(path string) (*Database, error) {
 		}
 	}
 
-	writer, err := openUninterruptible(DSN(path, TxLockImmediate))
+	writer, err := openUninterruptible(WriteDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}

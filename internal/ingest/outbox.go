@@ -46,6 +46,11 @@ const (
 // enough that a night-long outage does not bury everything else.
 const outboxFailureReportEvery = 240
 
+// outboxErrorAfter is the run of consecutive failed tries at which a delivery
+// failure is logged as an error. The first try of a run is a warning, because
+// the outbox retries it within seconds.
+const outboxErrorAfter = 3
+
 // outboxAccountHoldMax is the longest an account whose writes keep failing
 // waits between tries. Each try costs the shard's lock wait on top of the
 // batch it rides in, so a broken account is tried rarely, but often enough
@@ -365,10 +370,11 @@ func (o *Outbox) runUnrouted(ctx context.Context) {
 	}
 }
 
-// report turns one tick's outcome into something a person can see. It reports
-// the tick a loop starts failing and the tick it recovers, and repeats while it
-// is still broken, because a queue that has been stuck since last night must
-// not look the same in a log as one that is fine.
+// report turns one tick's outcome into something a person can see. It warns on
+// the tick a loop starts failing, raises an error once the run reaches
+// outboxErrorAfter, reports the tick it recovers, and repeats while it is
+// still broken, because a queue that has been stuck since last night must not
+// look the same in a log as one that is fine.
 func (o *Outbox) report(state *deliveryState, err error, what string, attrs ...any) {
 	if err == nil {
 		if state.failures > 0 && o.Log != nil {
@@ -383,8 +389,13 @@ func (o *Outbox) report(state *deliveryState, err error, what string, attrs ...a
 	if o.Log == nil {
 		return
 	}
-	if state.failures == 1 || state.failures%outboxFailureReportEvery == 0 {
-		o.Log.Error(what+" failed", append(attrs, "consecutive_failures", state.failures, "error", err)...)
+
+	attrs = append(attrs, "consecutive_failures", state.failures, "error", err)
+	switch {
+	case state.failures == 1:
+		o.Log.Warn(what+" failed", attrs...)
+	case state.failures == outboxErrorAfter || state.failures%outboxFailureReportEvery == 0:
+		o.Log.Error(what+" failed", attrs...)
 	}
 }
 
@@ -687,7 +698,9 @@ func (o *Outbox) held(shard int, account int64, now time.Time) bool {
 
 // holdAccount keeps an account the shard could not write out of the next
 // batches. The hold doubles with each failed try up to outboxAccountHoldMax,
-// so one broken account stops riding in every batch the others need.
+// so one broken account stops riding in every batch the others need. The first
+// failure is a warning and the run becomes an error at outboxErrorAfter, the
+// same as a whole destination.
 func (o *Outbox) holdAccount(shard int, account int64, reason string) {
 	o.holdsMu.Lock()
 	if o.holds == nil {
@@ -709,10 +722,19 @@ func (o *Outbox) holdAccount(shard int, account int64, reason string) {
 	failures := hold.failures
 	o.holdsMu.Unlock()
 
-	if o.Log != nil && (failures == 1 || failures%outboxAccountReportEvery == 0) {
-		o.Log.Error("outbox account delivery failed",
-			"shard", shard+1, "destination", o.Shards[shard], "account_id", account,
-			"consecutive_failures", failures, "held_for", wait.String(), "error", reason)
+	if o.Log == nil {
+		return
+	}
+
+	attrs := []any{
+		"shard", shard + 1, "destination", o.Shards[shard], "account_id", account,
+		"consecutive_failures", failures, "held_for", wait.String(), "error", reason,
+	}
+	switch {
+	case failures == 1:
+		o.Log.Warn("outbox account delivery failed", attrs...)
+	case failures == outboxErrorAfter || failures%outboxAccountReportEvery == 0:
+		o.Log.Error("outbox account delivery failed", attrs...)
 	}
 }
 

@@ -332,13 +332,15 @@ func TestStuckDeliveryIsReported(t *testing.T) {
 	closeTestOutbox(t, outbox)
 	outbox.Log = logger.New(logger.Options{Level: "error", Output: &lines})
 
-	ctx, cancel := context.WithTimeout(testContext(), 4*outboxPoll)
+	// Long enough for the run to reach outboxErrorAfter with room to spare, and
+	// far short of the repeat.
+	ctx, cancel := context.WithTimeout(testContext(), (outboxErrorAfter+5)*outboxPoll)
 	defer cancel()
 	outbox.Run(ctx)
 
 	logged := strings.Count(lines.String(), "outbox delivery failed")
 	if logged == 0 {
-		t.Fatalf("a destination that never validated was never reported: %q", lines.String())
+		t.Fatalf("a destination that never validated was never reported as an error: %q", lines.String())
 	}
 
 	// Several ticks failed, and a stuck destination must not turn the log into
@@ -363,8 +365,8 @@ func TestDeliveryRecoveryIsReported(t *testing.T) {
 	}
 	outbox.report(state, nil, "outbox delivery", "shard", 1)
 
-	if got := strings.Count(lines.String(), "outbox delivery failed"); got != 2 {
-		t.Fatalf("%d failures were reported across %d ticks, want the first and one repeat",
+	if got := strings.Count(lines.String(), "outbox delivery failed"); got != 3 {
+		t.Fatalf("%d failures were reported across %d ticks, want the first, the one that became an error, and one repeat",
 			got, outboxFailureReportEvery)
 	}
 	if !strings.Contains(lines.String(), "outbox delivery recovered") {
@@ -373,8 +375,38 @@ func TestDeliveryRecoveryIsReported(t *testing.T) {
 
 	// The run of failures is over, so the next one is news again.
 	outbox.report(state, errors.New("connection refused"), "outbox delivery", "shard", 1)
-	if got := strings.Count(lines.String(), "outbox delivery failed"); got != 3 {
-		t.Fatalf("a fresh failure after recovery was reported %d times, want 3 in total", got)
+	if got := strings.Count(lines.String(), "outbox delivery failed"); got != 4 {
+		t.Fatalf("a fresh failure after recovery was reported %d times, want 4 in total", got)
+	}
+}
+
+// TestAFailureThatClearsIsOnlyAWarning checks one failed try that the next tick
+// clears is a warning, and a run of outboxErrorAfter failures is one error.
+func TestAFailureThatClearsIsOnlyAWarning(t *testing.T) {
+	var lines bytes.Buffer
+
+	outbox := &Outbox{Log: logger.New(logger.Options{Level: "info", Output: &lines})}
+	state := &deliveryState{}
+
+	outbox.report(state, errors.New("database is locked"), "outbox delivery", "shard", 1)
+	outbox.report(state, nil, "outbox delivery", "shard", 1)
+
+	if strings.Contains(lines.String(), "level=ERROR") {
+		t.Fatalf("one failure that cleared on the next tick was logged as an error: %q", lines.String())
+	}
+	if !strings.Contains(lines.String(), "level=WARN") || !strings.Contains(lines.String(), "database is locked") {
+		t.Fatalf("the failure was not reported as a warning with its reason: %q", lines.String())
+	}
+
+	lines.Reset()
+	for range outboxErrorAfter {
+		outbox.report(state, errors.New("database is locked"), "outbox delivery", "shard", 1)
+	}
+
+	if got := strings.Count(lines.String(), "level=ERROR"); got != 1 ||
+		!strings.Contains(lines.String(), fmt.Sprintf("consecutive_failures=%d ", outboxErrorAfter)) {
+		t.Fatalf("a run of %d failures produced %d errors, want one naming the run: %q",
+			outboxErrorAfter, got, lines.String())
 	}
 }
 
@@ -623,11 +655,20 @@ func TestAFailingAccountIsHeldAndDrainsOnceItRecovers(t *testing.T) {
 		t.Fatalf("%d events were parked", got)
 	}
 
+	// A warning when it breaks, an error once it keeps failing, and one repeat.
 	failed := strings.Count(lines.String(), "outbox account delivery failed")
-	if failed != 2 || !strings.Contains(lines.String(), "account_id=10") ||
+	if failed != 3 || !strings.Contains(lines.String(), "account_id=10") ||
 		!strings.Contains(lines.String(), "account 10 cannot take writes") {
-		t.Fatalf("21 failed tries were reported %d times, want the first and one repeat, naming the account and the reason: %q",
+		t.Fatalf("21 failed tries were reported %d times, want three, naming the account and the reason: %q",
 			failed, lines.String())
+	}
+	if warned := strings.Count(lines.String(), "level=WARN"); warned != 1 {
+		t.Fatalf("%d failures were warnings, want only the first: %q", warned, lines.String())
+	}
+	if errored := strings.Count(lines.String(), "level=ERROR"); errored != 2 ||
+		!strings.Contains(lines.String(), fmt.Sprintf("consecutive_failures=%d ", outboxErrorAfter)) {
+		t.Fatalf("%d failures were errors, want the run reaching %d and one repeat: %q",
+			errored, outboxErrorAfter, lines.String())
 	}
 	if got := strings.Count(lines.String(), "outbox account delivery recovered"); got != 1 {
 		t.Fatalf("the recovery was reported %d times, want once: %q", got, lines.String())

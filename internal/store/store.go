@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -40,7 +41,6 @@ const DriverName = "sqlite"
 //	                  otherwise a successful 202 can outrun its fact rows
 //	secure_delete     overwrite deleted secret material rather than leaving it
 //	                  recoverable in free database pages
-//	busy_timeout      5s of waiting instead of an immediate "database is locked"
 //	foreign_keys      on, because SQLite defaults it off and silently keeps
 //	                  orphans otherwise
 //	cache_size        -64000 = 64 MB of page cache
@@ -48,22 +48,47 @@ const DriverName = "sqlite"
 //	                  memory and turns most reads into page-cache hits
 //	temp_store        MEMORY, so a GROUP BY spilling to a temp table stays in RAM
 //	wal_autocheckpoint 1000 pages, keeping the WAL from growing without bound
+//
+// busy_timeout is added once per handle by DSN and WriteDSN: the driver runs it
+// before the other pragmas and does not keep the order of two.
 const Pragmas = "_pragma=journal_mode(WAL)" +
 	"&_pragma=synchronous(FULL)" +
 	"&_pragma=secure_delete(1)" +
-	"&_pragma=busy_timeout(5000)" +
 	"&_pragma=foreign_keys(1)" +
 	"&_pragma=cache_size(-64000)" +
 	"&_pragma=mmap_size(268435456)" +
 	"&_pragma=temp_store(MEMORY)" +
 	"&_pragma=wal_autocheckpoint(1000)"
 
-// DSN builds the connection string for a database file. Every caller goes
-// through it so that a pragma can never be applied to one handle and forgotten
-// on another — a difference that would not fail, it would just quietly perform
-// or behave differently depending on which handle a query landed on.
+// ReadBusyTimeout is how long a read handle waits for a lock before SQLite
+// answers "database is locked".
+const ReadBusyTimeout = 5 * time.Second
+
+// WriteBusyTimeout is how long a handle that writes waits for a write lock
+// another connection holds, such as the backup sidecar's across a checkpoint or
+// the outgoing process's during a deploy. It stays inside the 30 seconds an
+// ingest delivery has at both ends, so a write that waited still has time to
+// commit and answer.
+const WriteBusyTimeout = 20 * time.Second
+
+// DSN builds the connection string for a handle that reads. Every caller goes
+// through DSN or WriteDSN so that a pragma can never be applied to one handle
+// and forgotten on another, a difference that would not fail but would quietly
+// change how a query behaves depending on the handle it landed on.
 func DSN(path string, extra ...string) string {
-	dsn := "file:" + path + "?" + Pragmas
+	return buildDSN(path, ReadBusyTimeout, extra)
+}
+
+// WriteDSN builds the connection string for a handle that writes: it takes the
+// write lock at BEGIN and waits WriteBusyTimeout for it.
+func WriteDSN(path string, extra ...string) string {
+	return buildDSN(path, WriteBusyTimeout, append([]string{TxLockImmediate}, extra...))
+}
+
+// buildDSN joins the shared pragmas, the handle's one busy_timeout, and any
+// extra parameters.
+func buildDSN(path string, busy time.Duration, extra []string) string {
+	dsn := "file:" + path + "?" + Pragmas + fmt.Sprintf("&_pragma=busy_timeout(%d)", busy.Milliseconds())
 
 	for _, param := range extra {
 		dsn += "&" + param
@@ -93,7 +118,7 @@ func Open(path string) (*sql.DB, error) {
 		}
 	}
 
-	db, err := openUninterruptible(DSN(path, TxLockImmediate))
+	db, err := openUninterruptible(WriteDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
