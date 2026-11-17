@@ -11,6 +11,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,6 +84,19 @@ func TestPragmasAreAppliedToBothHandles(t *testing.T) {
 		if cache := pragma(t, handle, "cache_size"); cache != "-64000" {
 			t.Errorf("%s cache_size is %q, want -64000", name, cache)
 		}
+	}
+}
+
+// TestEachHandleWaitsItsOwnTimeForALock pins how long the writer and the
+// readers wait for a lock.
+func TestEachHandleWaitsItsOwnTimeForALock(t *testing.T) {
+	db := newDatabase(t)
+
+	if got, want := pragma(t, db.Writer(), "busy_timeout"), fmt.Sprint(WriteBusyTimeout.Milliseconds()); got != want {
+		t.Errorf("writer busy_timeout is %s ms, want %s", got, want)
+	}
+	if got, want := pragma(t, db.Reader(), "busy_timeout"), fmt.Sprint(ReadBusyTimeout.Milliseconds()); got != want {
+		t.Errorf("reader busy_timeout is %s ms, want %s", got, want)
 	}
 }
 
@@ -165,16 +179,35 @@ func TestCloseClosesBothHandles(t *testing.T) {
 // a pragma that is missing does not fail — it just quietly changes how the
 // database behaves under load.
 func TestDSNCarriesEveryPragma(t *testing.T) {
-	dsn := DSN("/tmp/x.db", "_txlock=immediate")
-
-	for _, want := range []string{
+	shared := []string{
 		"file:/tmp/x.db?",
-		"journal_mode(WAL)", "synchronous(FULL)", "secure_delete(1)", "busy_timeout(5000)",
+		"journal_mode(WAL)", "synchronous(FULL)", "secure_delete(1)",
 		"foreign_keys(1)", "cache_size(-64000)", "mmap_size(268435456)",
-		"temp_store(MEMORY)", "wal_autocheckpoint(1000)", "_txlock=immediate",
+		"temp_store(MEMORY)", "wal_autocheckpoint(1000)",
+	}
+
+	for name, dsn := range map[string]string{
+		"read":  DSN("/tmp/x.db", "_pragma=query_only(1)"),
+		"write": WriteDSN("/tmp/x.db"),
 	} {
-		if !strings.Contains(dsn, want) {
-			t.Errorf("the DSN is missing %s: %s", want, dsn)
+		for _, want := range shared {
+			if !strings.Contains(dsn, want) {
+				t.Errorf("the %s DSN is missing %s: %s", name, want, dsn)
+			}
 		}
+
+		// The driver does not keep the order of two busy_timeout pragmas.
+		if got := strings.Count(dsn, "busy_timeout("); got != 1 {
+			t.Errorf("the %s DSN sets busy_timeout %d times, want once: %s", name, got, dsn)
+		}
+	}
+
+	if read := DSN("/tmp/x.db", "_pragma=query_only(1)"); !strings.Contains(read, "busy_timeout(5000)") ||
+		!strings.Contains(read, "query_only(1)") || strings.Contains(read, TxLockImmediate) {
+		t.Errorf("the read DSN should wait 5s, be query-only and take no write lock at BEGIN: %s", read)
+	}
+	if write := WriteDSN("/tmp/x.db"); !strings.Contains(write, "busy_timeout(20000)") ||
+		!strings.Contains(write, TxLockImmediate) {
+		t.Errorf("the write DSN should wait 20s and take the write lock at BEGIN: %s", write)
 	}
 }

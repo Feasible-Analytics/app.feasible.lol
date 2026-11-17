@@ -55,9 +55,8 @@ const (
 // needs no measurement of any particular site, because a site whose days are
 // expensive measures itself.
 //
-// chunkTarget bounds the publish, which holds the account's write lock. A
-// writer waiting on the account gives up after the 5s busy_timeout in
-// internal/store, and the target leaves most of that window spare.
+// chunkTarget bounds the publish, which holds the account's write lock while
+// every other write to the account, ingestion included, waits behind it.
 //
 // workTarget bounds the whole chunk. The build rests in proportion to each
 // chunk, so a smaller chunk is what turns a busy site's build into short
