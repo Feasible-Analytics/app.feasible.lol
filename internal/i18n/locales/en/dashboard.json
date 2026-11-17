@@ -178,6 +178,7 @@
   "dashboard.filter.remove_value": "Remove {value}",
   "dashboard.filter.search_placeholder": "Search values, or type one…",
   "dashboard.filter.value_label": "Filter value",
+  "dashboard.footer.credit": "Made with love by {company}",
   "dashboard.format.compact.billion": "{value}B",
   "dashboard.format.compact.million": "{value}M",
   "dashboard.format.compact.thousand": "{value}k",

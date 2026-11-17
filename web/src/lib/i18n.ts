@@ -6,6 +6,9 @@
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
 //
 
+import type { ReactNode } from "react";
+import { Fragment, createElement } from "react";
+
 import { bootstrap } from "../api/client";
 
 /**
@@ -120,6 +123,23 @@ export function t(id: string, args?: Record<string, string | number>): string {
 }
 
 /**
+ * tx renders one string with React nodes in place of its placeholders.
+ *
+ * It is t for a sentence with a link or another element inside it. The sentence
+ * stays one translated string with a named placeholder, so a translator can put
+ * the element wherever the grammar needs it. A missing id and an unknown
+ * placeholder render exactly as they do in t, and so does a placeholder given
+ * null or a boolean, which React would otherwise render as nothing.
+ */
+export function tx(id: string, args: Record<string, ReactNode>): ReactNode {
+	const text = catalogue().messages[id];
+
+	if (!text) return id;
+
+	return createElement(Fragment, null, ...split(text, args));
+}
+
+/**
  * n renders a string that changes with a count.
  *
  * The id names the base and the plural category is a suffix on it, the same
@@ -144,21 +164,31 @@ export function n(id: string, count: number, args?: Record<string, string | numb
 	return interpolate(text, { ...args, count });
 }
 
+/** interpolate substitutes {name} placeholders with text. */
+function interpolate(text: string, args?: Record<string, string | number>): string {
+	if (!args || !text.includes("{")) return text;
+
+	return split(text, args).join("");
+}
+
 /**
- * interpolate substitutes {name} placeholders.
+ * split cuts a string at its {name} placeholders and returns the pieces in
+ * order, with each named value in place of its placeholder.
  *
  * It is a hand-written scan rather than a replace with a regular expression
  * because the failure mode has to be gentle in the same way the Go side's is:
  * an unknown placeholder is left exactly as written, braces and all, so the
  * broken string is visible and searchable rather than silently blank. A
  * substituted value is never rescanned either, so a search term containing a
- * brace cannot turn into a placeholder.
+ * brace cannot turn into a placeholder. Only the caller's own keys count, so a
+ * placeholder such as {constructor} is unknown rather than a property every
+ * object inherits.
  */
-function interpolate(text: string, args?: Record<string, string | number>): string {
-	if (!args || !text.includes("{")) return text;
+function split<T>(text: string, args: Record<string, T>): Array<string | T> {
+	const parts: Array<string | T> = [];
 
 	let rest = text;
-	let out = "";
+	let literal = "";
 
 	for (;;) {
 		const open = rest.indexOf("{");
@@ -167,20 +197,28 @@ function interpolate(text: string, args?: Record<string, string | number>): stri
 		const close = rest.indexOf("}", open);
 		if (close < 0) break;
 
-		const value = args[rest.slice(open + 1, close)];
+		const name = rest.slice(open + 1, close);
+		const value = Object.hasOwn(args, name) ? args[name] : undefined;
 
-		if (value === undefined) {
-			out += rest.slice(0, close + 1);
+		if (value === undefined || value === null || typeof value === "boolean") {
+			literal += rest.slice(0, close + 1);
 			rest = rest.slice(close + 1);
 
 			continue;
 		}
 
-		out += rest.slice(0, open) + String(value);
+		literal += rest.slice(0, open);
+		if (literal) parts.push(literal);
+		parts.push(value);
+
+		literal = "";
 		rest = rest.slice(close + 1);
 	}
 
-	return out + rest;
+	literal += rest;
+	if (literal) parts.push(literal);
+
+	return parts;
 }
 
 /**
