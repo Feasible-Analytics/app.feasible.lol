@@ -452,6 +452,28 @@ func (s *Store) Load(ctx context.Context, teamID int64) (Subscription, error) {
 	return out, nil
 }
 
+// OwnerEmail is the address of a team's first owner. It is empty when the team
+// has no owner left, which is not an error.
+func (s *Store) OwnerEmail(ctx context.Context, teamID int64) (string, error) {
+	var email string
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT u.email FROM team_memberships m
+		JOIN users u ON u.id = m.user_id
+		WHERE m.team_id = ? AND m.role = 'owner'
+		ORDER BY m.id LIMIT 1
+	`, teamID).Scan(&email)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("billing: owner of %d: %w", teamID, err)
+	}
+
+	return email, nil
+}
+
 // DeletionStarted reports whether day-90 destruction has become terminal for
 // an account. A late webhook may be older than local processing time, but once
 // the immutable deletion audit exists it must never recreate billing state.

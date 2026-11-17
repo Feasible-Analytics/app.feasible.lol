@@ -25,6 +25,10 @@ import (
 type Logger struct {
 	*slog.Logger
 
+	// local writes to this process's own output only, never to Ship. It is
+	// what the identity trace uses, so a visitor's address stays on this box.
+	local *slog.Logger
+
 	// traceEvents mirrors --trace-events. It is held here so call sites can skip
 	// building an expensive trace payload when nobody will read it.
 	traceEvents bool
@@ -48,6 +52,10 @@ type Options struct {
 	// Output defaults to stdout. Everything goes to stdout on purpose: files and
 	// syslog are the supervisor's job, not ours.
 	Output io.Writer
+
+	// Ship, when set, also receives every record, after Output has written
+	// it. It applies its own level. The identity trace never reaches it.
+	Ship slog.Handler
 }
 
 // New builds a logger from options. An unrecognised level falls back to info
@@ -68,8 +76,15 @@ func New(opts Options) *Logger {
 		handler = slog.NewTextHandler(out, handlerOpts)
 	}
 
+	local := slog.New(handler)
+	shipped := local
+	if opts.Ship != nil {
+		shipped = slog.New(slog.NewMultiHandler(handler, opts.Ship))
+	}
+
 	return &Logger{
-		Logger:        slog.New(handler),
+		Logger:        shipped,
+		local:         local,
 		traceEvents:   opts.TraceEvents,
 		traceIdentity: opts.TraceIdentity,
 	}
@@ -160,13 +175,14 @@ func (l *Logger) TraceIdentityEnabled() bool {
 // disagree about whether four visits are one person or three, and the only way
 // to settle it is to see whether the address changed between them. Nothing else
 // in the system writes an address anywhere, so the line is deliberately loud and
-// its own switch. Leave it off.
+// its own switch. Leave it off. It is written to this process's own output and
+// never shipped.
 func (l *Logger) TraceIdentity(attrs ...any) {
 	if !l.traceIdentity {
 		return
 	}
 
-	l.Warn("identity trace (writes IP addresses)", attrs...)
+	l.local.Warn("identity trace (writes IP addresses)", attrs...)
 }
 
 // TraceEvent prints a fully derived event — geo, fingerprint, channel, every

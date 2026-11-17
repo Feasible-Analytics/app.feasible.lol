@@ -13,10 +13,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/posthog"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
@@ -534,4 +536,58 @@ func itoa(value int64) string {
 	}
 
 	return digits
+}
+
+// TestCreatingASiteIsRecordedInPostHog checks a site made through the API is
+// recorded against the person who owns the key, the same event the dashboard
+// form sends.
+func TestCreatingASiteIsRecordedInPostHog(t *testing.T) {
+	h := newHarness(t)
+
+	events := make(chan map[string]any, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		events <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	h.API.PostHog = posthog.New(posthog.Options{Token: "phc_test", Host: server.URL})
+
+	if status, body := h.post(t, "/api/v1/sites", `{"domain":"fresh.example.com"}`); status != http.StatusCreated {
+		t.Fatalf("create status = %d (%s)", status, body)
+	}
+
+	select {
+	case event := <-events:
+		props, _ := event["properties"].(map[string]any)
+		if event["event"] != posthog.EventSiteAdded || event["distinct_id"] != "owner@example.test" ||
+			props["domain"] != "fresh.example.com" || props["source"] != posthog.SourceAPI ||
+			props["team_id"] != float64(teamID) {
+			t.Fatalf("event = %v", event)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no posthog event was delivered")
+	}
+}
+
+// TestActorEmailFallsBackToTheOwner checks a key whose person is gone still
+// names somebody.
+func TestActorEmailFallsBackToTheOwner(t *testing.T) {
+	h := newHarness(t)
+
+	email, err := h.API.System.ActorEmail(t.Context(), teamID, 999)
+	if err != nil || email != "owner@example.test" {
+		t.Fatalf("ActorEmail = %q, %v; want the team owner", email, err)
+	}
+
+	email, err = h.API.System.ActorEmail(t.Context(), 999, 999)
+	if err != nil || email != "" {
+		t.Fatalf("ActorEmail for nobody = %q, %v; want empty", email, err)
+	}
 }

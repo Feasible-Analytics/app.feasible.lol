@@ -90,6 +90,10 @@ const (
 	// sentinel for that rather than a copy of the figure: two constants that
 	// have to agree are two constants that eventually do not.
 	DefaultQuerySampleThreshold = 0
+
+	// DefaultPostHogHost is PostHog's US Cloud ingestion origin. An EU
+	// project sets FEASIBLE_POSTHOG_HOST to https://eu.i.posthog.com.
+	DefaultPostHogHost = "https://us.i.posthog.com"
 )
 
 // Layout of the data directory. These are constants because both the migrate
@@ -150,6 +154,20 @@ type Shared struct {
 	// with the UTC day locally, so daily visitor identifiers agree without an
 	// app-side salt authority or network request.
 	IngestSalt string
+
+	// PostHog is the project that receives our product events and a copy of
+	// every log line. An empty token sends nothing.
+	PostHog PostHog
+}
+
+// PostHog is one PostHog project. Its project token is write-only, so it
+// carries both the product events and the log stream.
+type PostHog struct {
+	// Token is the project token, the one that begins phc_.
+	Token string
+
+	// Host is the ingestion origin for the project's region.
+	Host string
 }
 
 // App holds the values only the `serve` process reads.
@@ -730,6 +748,10 @@ func LoadFrom(l *Loader) (*Config, error) {
 			TraceIdentity: traceIdentity,
 			InternalKey:   strings.TrimSpace(l.String("FEASIBLE_INTERNAL_KEY", "")),
 			IngestSalt:    l.String("FEASIBLE_INGEST_SALT", DefaultIngestSalt),
+			PostHog: PostHog{
+				Token: strings.TrimSpace(l.String("FEASIBLE_POSTHOG_TOKEN", "")),
+				Host:  strings.TrimRight(strings.TrimSpace(l.String("FEASIBLE_POSTHOG_HOST", DefaultPostHogHost)), "/"),
+			},
 		},
 		App: App{
 			Listen:            l.String("FEASIBLE_APP_LISTEN", DefaultAppListen),
@@ -989,6 +1011,13 @@ func (c *Config) Validate() error {
 	// checked, which reads as protection and is none.
 	if (c.App.Turnstile.SiteKey == "") != (c.App.Turnstile.SecretKey == "") {
 		return fmt.Errorf("FEASIBLE_TURNSTILE_SITE_KEY and FEASIBLE_TURNSTILE_SECRET_KEY must be set together or not at all")
+	}
+
+	if c.Shared.PostHog.Token != "" {
+		host, err := url.Parse(c.Shared.PostHog.Host)
+		if err != nil || host.Scheme == "" || host.Host == "" {
+			return fmt.Errorf("FEASIBLE_POSTHOG_HOST: %q is not an absolute URL", c.Shared.PostHog.Host)
+		}
 	}
 
 	base, err := url.Parse(c.App.BaseURL)

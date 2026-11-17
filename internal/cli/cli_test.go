@@ -133,3 +133,15 @@ func TestUnknownFlag(t *testing.T) {
 		t.Fatalf("exit code %d, want %d", code, ExitUsage)
 	}
 }
+
+// TestServiceNameSeparatesTheProcesses checks the app and ingest logs carry
+// different service names in PostHog, and every other command shares one.
+func TestServiceNameSeparatesTheProcesses(t *testing.T) {
+	for command, want := range map[string]string{
+		"serve": "feasible-app", "ingest": "feasible-ingest", "db": "feasible-cli", "billing": "feasible-cli",
+	} {
+		if got := serviceName(command); got != want {
+			t.Errorf("serviceName(%q) = %q, want %q", command, got, want)
+		}
+	}
+}

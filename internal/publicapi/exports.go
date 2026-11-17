@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/posthog"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
@@ -109,8 +110,30 @@ func (a *API) NewSite(ctx context.Context, key *apikeys.Key, domain, displayName
 	// hangs off — provisioning a client, kicking off onboarding — so it is
 	// published rather than left as something only our database knows.
 	a.publishEvent(ctx, key.TeamID, site)
+	a.recordSiteAdded(ctx, key, site)
 
 	return site, nil
+}
+
+// recordSiteAdded records the site in PostHog against the person who owns the
+// key, or the team's owner when the key's person cannot be read.
+func (a *API) recordSiteAdded(ctx context.Context, key *apikeys.Key, site *Site) {
+	if !a.PostHog.Enabled() {
+		return
+	}
+
+	email, err := a.System.ActorEmail(ctx, key.TeamID, key.UserID)
+	if err != nil && a.Log != nil {
+		a.Log.Warn("could not read who added a site", "site", site.ID, "team", key.TeamID, "error", err)
+	}
+
+	a.PostHog.SiteAdded(posthog.SiteAdded{
+		Email:  email,
+		TeamID: key.TeamID,
+		SiteID: site.ID,
+		Domain: site.Domain,
+		Source: posthog.SourceAPI,
+	})
 }
 
 // publishEvent sends the site.created webhook without letting a webhook failure

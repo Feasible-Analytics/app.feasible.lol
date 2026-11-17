@@ -12,16 +12,19 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/build"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/posthog"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/slack"
 )
 
@@ -32,6 +35,10 @@ const (
 	ExitError = 1
 	ExitUsage = 2
 )
+
+// shutdownGrace bounds how long the command waits on exit for PostHog to take
+// the last log batch and any event still being delivered.
+const shutdownGrace = 5 * time.Second
 
 // usage is the help text. It is a constant rather than generated from the flag
 // package because the subcommands carry the meaning here, and flag's own output
@@ -76,6 +83,7 @@ type env struct {
 	cfg              *config.Config
 	log              *logger.Logger
 	slack            *slack.Notifier
+	posthog          *posthog.Client
 	stdout           io.Writer
 	stderr           io.Writer
 	systemMigrations migrate.Set
@@ -164,13 +172,41 @@ func Run(opts Options) int {
 		cfg.Shared.TraceEvents = true
 	}
 
-	log := logger.New(logger.Options{
+	logOptions := logger.Options{
 		Level:         cfg.Shared.LogLevel,
 		Format:        cfg.Shared.LogFormat,
 		TraceEvents:   cfg.Shared.TraceEvents,
 		TraceIdentity: cfg.Shared.TraceIdentity,
 		Output:        stdout,
+	}
+
+	// The exporter reports its own failures through a logger that does not
+	// ship, so a PostHog outage is written locally instead of queued for
+	// PostHog.
+	local := logger.New(logOptions)
+	log := local
+	shipper := posthog.NewLogExporter(posthog.LogOptions{
+		Token:   cfg.Shared.PostHog.Token,
+		Host:    cfg.Shared.PostHog.Host,
+		Service: serviceName(args[0]),
+		Env:     cfg.Shared.Env,
+		Version: build.Version,
+		Level:   logger.ParseLevel(cfg.Shared.LogLevel),
+		Log:     local,
 	})
+	if shipper != nil {
+		logOptions.Ship = shipper.Handler()
+		log = logger.New(logOptions)
+	}
+
+	events := posthog.New(posthog.Options{
+		Token: cfg.Shared.PostHog.Token,
+		Host:  cfg.Shared.PostHog.Host,
+		Env:   cfg.Shared.Env,
+		Log:   log,
+	})
+
+	defer flushPostHog(events, shipper, local)
 
 	e := &env{
 		cfg: cfg,
@@ -181,6 +217,7 @@ func Run(opts Options) int {
 			Env:        cfg.Shared.Env,
 			Log:        log,
 		}),
+		posthog:          events,
 		stdout:           stdout,
 		stderr:           stderr,
 		systemMigrations: opts.SystemMigrations,
@@ -217,6 +254,35 @@ func Run(opts Options) int {
 		fmt.Fprintf(stderr, "unknown command %q\n\n", args[0])
 		fmt.Fprint(stderr, usage)
 		return ExitUsage
+	}
+}
+
+// serviceName is the service.name each command's logs carry in PostHog, so
+// the app and ingest processes filter apart.
+func serviceName(command string) string {
+	switch command {
+	case "serve":
+		return "feasible-app"
+	case "ingest":
+		return "feasible-ingest"
+	}
+
+	return "feasible-cli"
+}
+
+// flushPostHog waits a bounded time for events still being delivered, then
+// for the last log batch. Events go first because a failed delivery logs a
+// line the exporter should still ship. What misses the deadline is reported
+// to the local log.
+func flushPostHog(events *posthog.Client, shipper *posthog.LogExporter, local *logger.Logger) {
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+	defer cancel()
+
+	if err := events.Close(ctx); err != nil {
+		local.Warn("posthog events were still being delivered at exit", "error", err)
+	}
+	if err := shipper.Close(ctx); err != nil {
+		local.Warn("the last log batch did not reach posthog before exit", "error", err)
 	}
 }
 

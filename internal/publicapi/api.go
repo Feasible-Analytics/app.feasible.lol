@@ -39,6 +39,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/apikeys"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/posthog"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/query"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
@@ -128,6 +129,10 @@ type API struct {
 	ScriptBaseURL string
 
 	Log *logger.Logger
+
+	// PostHog records each site a key creates as a product event. Nil sends
+	// nothing.
+	PostHog *posthog.Client
 
 	// SampleThreshold is how many repeated event and session fact-row reads a
 	// query may be estimated to perform before it is answered from a sample. It
