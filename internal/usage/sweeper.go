@@ -40,6 +40,11 @@ type Notice struct {
 	// message quotes as the reply-by.
 	Deadline time.Time
 
+	// Over is set only on the second-month email: the two complete months that
+	// went over, oldest first. That email is about those months, and Billable
+	// is the month in progress, which on the first of the month is near zero.
+	Over []PeriodCounts
+
 	SalesEmail string
 	BillingURL string
 }
@@ -259,7 +264,12 @@ func (s *Sweeper) runOverage(ctx context.Context, teamID int64, period string, b
 			return err
 		}
 
-		claimed, err := s.Store.RecordNotice(ctx, teamID, period, "second_month")
+		over, err := s.monthsBefore(ctx, teamID, period, 2)
+		if err != nil {
+			return err
+		}
+
+		claimed, err := s.Store.RecordNotice(ctx, teamID, period, LevelSecondMonth)
 		if err != nil {
 			return err
 		}
@@ -277,9 +287,10 @@ func (s *Sweeper) runOverage(ctx context.Context, teamID int64, period string, b
 
 		outcome, err := s.Notify.Notify(ctx, Notice{
 			TeamID: teamID, TeamName: name, To: email,
-			Level: "second_month", Period: period,
+			Level: LevelSecondMonth, Period: period,
 			Billable: billable, Limit: MonthlyLimit,
 			Deadline:   action.Deadline,
+			Over:       over,
 			SalesEmail: s.SalesEmail, BillingURL: s.BillingURL,
 		})
 		if err != nil {
@@ -288,7 +299,7 @@ func (s *Sweeper) runOverage(ctx context.Context, teamID int64, period string, b
 			// anything. Both the claim and the deadline are taken back so the
 			// next sweep opens the conversation properly.
 			clearErr := s.Store.ClearOverage(ctx, teamID)
-			releaseErr := s.Store.ReleaseNotice(ctx, teamID, period, "second_month")
+			releaseErr := s.Store.ReleaseNotice(ctx, teamID, period, LevelSecondMonth)
 
 			return errors.Join(err, clearErr, releaseErr)
 		}
@@ -320,6 +331,30 @@ func (s *Sweeper) runOverage(ctx context.Context, teamID int64, period string, b
 	}
 
 	return nil
+}
+
+// monthsBefore reads the n complete months before period, oldest first. The
+// second-month email quotes them, since they are the months the rule counted.
+func (s *Sweeper) monthsBefore(ctx context.Context, teamID int64, period string, n int) ([]PeriodCounts, error) {
+	out := make([]PeriodCounts, n)
+	cursor := period
+
+	for i := n - 1; i >= 0; i-- {
+		previous, err := PreviousPeriod(cursor)
+		if err != nil {
+			return nil, err
+		}
+
+		counts, err := s.Store.Get(ctx, teamID, previous)
+		if err != nil {
+			return nil, err
+		}
+
+		out[i] = PeriodCounts{Period: previous, Counts: counts}
+		cursor = previous
+	}
+
+	return out, nil
 }
 
 // contact resolves an account's billing contact, or reports why it could not.

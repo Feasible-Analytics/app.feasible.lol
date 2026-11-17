@@ -103,7 +103,7 @@ func Contents() (map[string]mail.Content, error) {
 		built[template] = content
 	}
 
-	for _, level := range []usage.Level{usage.LevelWarn, usage.LevelNear, usage.LevelReached} {
+	for _, level := range []usage.Level{usage.LevelWarn, usage.LevelNear, usage.LevelReached, usage.LevelSecondMonth} {
 		content, err := mail.UsageContent(usageNotice(level))
 		if err != nil {
 			return nil, fmt.Errorf("mailsample: usage %s: %w", level, err)
@@ -236,6 +236,10 @@ func usageNotice(level usage.Level) usage.Notice {
 		Deadline:   at.AddDate(0, 0, 21),
 		SalesEmail: mail.SalesAddress,
 		BillingURL: baseURL + "/billing",
+		Over: []usage.PeriodCounts{
+			{Period: "2026-07", Counts: usage.Counts{Pageviews: 1_288_004, CustomEvents: 33_118}},
+			{Period: "2026-08", Counts: usage.Counts{Pageviews: 1_604_730, CustomEvents: 44_540}},
+		},
 	}
 }
 

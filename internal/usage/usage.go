@@ -101,6 +101,12 @@ const (
 	LevelReached Level = "reached"
 )
 
+// LevelSecondMonth is the conversation email: two complete months over. It is
+// a Level so it shares the notices table and the mail tag with the three rungs,
+// but LevelFor never returns it, because it is about finished months rather
+// than the count of the month in progress.
+const LevelSecondMonth Level = "second_month"
+
 // LevelFor maps a billable count onto the highest rung it has passed. It is a
 // pure function so the in-app meter, the email job and the tests all agree
 // about where the boundaries are.
