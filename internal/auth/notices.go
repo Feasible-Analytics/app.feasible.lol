@@ -1,6 +1,7 @@
 //
 // notices.go
-// The commercial events this package announces to our own Slack.
+// The commercial events this package announces to our own Slack and records in
+// PostHog.
 //
 // Created: 2026-09-05
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -12,6 +13,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/posthog"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/slack"
 )
 
@@ -23,21 +25,35 @@ const (
 	SignupMethodGoogle   = "google"
 )
 
-// announceSignup posts a new account to Slack.
+// announceSignup posts a new account to Slack and records it in PostHog.
 //
 // The referral is passed in rather than read here, because the caller has
 // already stored it and the message must say the same thing the row does.
 func (h *Handler) announceSignup(user *User, teamID int64, method string, referral Referral) {
-	if h == nil || !h.Slack.Enabled() || user == nil {
+	if h == nil || user == nil {
 		return
 	}
 
-	h.Slack.SignedUp(slack.Signup{
-		Name:     user.Name,
+	if h.Slack.Enabled() {
+		h.Slack.SignedUp(slack.Signup{
+			Name:     user.Name,
+			Email:    user.Email,
+			TeamID:   teamID,
+			Method:   method,
+			Referral: slackReferral(referral),
+		})
+	}
+
+	h.PostHog.SignedUp(posthog.Signup{
 		Email:    user.Email,
+		Name:     user.Name,
 		TeamID:   teamID,
 		Method:   method,
-		Referral: slackReferral(referral),
+		Referrer: referral.Referrer,
+		Source:   referral.Source,
+		Medium:   referral.Medium,
+		Campaign: referral.Campaign,
+		Landing:  referral.LandingPage,
 	})
 }
 
@@ -49,7 +65,7 @@ func (h *Handler) announceSignup(user *User, teamID int64, method string, referr
 // more than the link, and a signup that vanishes because of a second query is
 // the wrong trade.
 func (h *Handler) announceGoogleSignup(ctx context.Context, user *User, referral Referral) {
-	if h == nil || !h.Slack.Enabled() || user == nil {
+	if h == nil || user == nil || (!h.Slack.Enabled() && !h.PostHog.Enabled()) {
 		return
 	}
 
@@ -61,6 +77,22 @@ func (h *Handler) announceGoogleSignup(ctx context.Context, user *User, referral
 	}
 
 	h.announceSignup(user, teamID, SignupMethodGoogle, referral)
+}
+
+// recordSiteAdded records a site registered to a team in PostHog, against the
+// person who added it.
+func (h *Handler) recordSiteAdded(user *User, site *Site, source string) {
+	if h == nil || user == nil || site == nil {
+		return
+	}
+
+	h.PostHog.SiteAdded(posthog.SiteAdded{
+		Email:  user.Email,
+		TeamID: site.TeamID,
+		SiteID: site.ID,
+		Domain: site.Domain,
+		Source: source,
+	})
 }
 
 // recordSignup reports a new account to the installation's own analytics, when

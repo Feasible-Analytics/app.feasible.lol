@@ -20,6 +20,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/lifecycle"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/posthog"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/slack"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/stripe"
 )
@@ -94,6 +95,9 @@ type Service struct {
 	// Slack announces a subscription starting, changing term, or ending to our
 	// own team chat. Nil sends nothing.
 	Slack *slack.Notifier
+
+	// PostHog records the same changes as product events. Nil sends nothing.
+	PostHog *posthog.Client
 
 	// Now is injectable so the tests can drive the signature window and the
 	// lifecycle clock together.
@@ -354,7 +358,7 @@ func (s *Service) reconcileLockedWithRecovery(ctx context.Context, lease lifecyc
 	// After the write, so a notice only ever describes a change that is
 	// durable, and only once: a redelivered event finds the mirror already
 	// equal and reports nothing.
-	s.announcePlanChange(existing, mirror)
+	s.announcePlanChange(ctx, existing, mirror)
 
 	if trigger == stripe.EventCheckoutCompleted || trigger == stripe.EventCheckoutAsyncPaymentSucceeded ||
 		trigger == stripe.EventCheckoutAsyncPaymentFailed {

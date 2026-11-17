@@ -10,6 +10,7 @@ package logger
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"strings"
@@ -164,5 +165,61 @@ func TestTraceEventGating(t *testing.T) {
 
 	if !strings.Contains(on.String(), "event trace") {
 		t.Fatalf("trace not logged while enabled: %q", on.String())
+	}
+}
+
+// shipped is a slog handler that keeps every record it is given.
+type shipped struct {
+	level   slog.Level
+	records *[]slog.Record
+}
+
+// Enabled reports whether level reaches this handler.
+func (s shipped) Enabled(_ context.Context, level slog.Level) bool { return level >= s.level }
+
+// Handle keeps the record.
+func (s shipped) Handle(_ context.Context, r slog.Record) error {
+	*s.records = append(*s.records, r)
+	return nil
+}
+
+// WithAttrs is not needed by these tests.
+func (s shipped) WithAttrs([]slog.Attr) slog.Handler { return s }
+
+// WithGroup is not needed by these tests.
+func (s shipped) WithGroup(string) slog.Handler { return s }
+
+// TestShipReceivesEveryLineAtItsOwnLevel checks a shipped copy of each record
+// goes to Ship as well as to the local output, filtered by Ship's own level.
+func TestShipReceivesEveryLineAtItsOwnLevel(t *testing.T) {
+	var out bytes.Buffer
+	var records []slog.Record
+
+	log := New(Options{Level: "debug", Output: &out, Ship: shipped{level: slog.LevelInfo, records: &records}})
+	log.Debug("local only")
+	log.EventReceived("example.com", "1", "", "no such site")
+
+	if !strings.Contains(out.String(), "local only") || !strings.Contains(out.String(), "event dropped") {
+		t.Fatalf("the local log is missing a line: %q", out.String())
+	}
+
+	if len(records) != 1 || records[0].Message != "event dropped" {
+		t.Fatalf("shipped %d records, want only the drop", len(records))
+	}
+}
+
+// TestIdentityTraceIsNeverShipped keeps visitor addresses on this machine.
+func TestIdentityTraceIsNeverShipped(t *testing.T) {
+	var out bytes.Buffer
+	var records []slog.Record
+
+	log := New(Options{Level: "debug", Output: &out, TraceIdentity: true, Ship: shipped{records: &records}})
+	log.TraceIdentity("client_ip", "203.0.113.5")
+
+	if !strings.Contains(out.String(), "203.0.113.5") {
+		t.Fatalf("the identity trace did not reach the local log: %q", out.String())
+	}
+	if len(records) != 0 {
+		t.Fatalf("the identity trace was shipped: %v", records[0].Message)
 	}
 }

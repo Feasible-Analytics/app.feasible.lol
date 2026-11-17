@@ -20,6 +20,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/appui"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/posthog"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/rollup"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
@@ -326,6 +327,7 @@ func (h *Handler) doNewSite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.Log.Info("site created", "site", site.ID, "team", team.ID, "domain", site.Domain, "timezone", site.Timezone)
+	h.recordSiteAdded(userFrom(r), site, posthog.SourceDashboard)
 
 	// Account-backed defaults are created before onboarding so the first
 	// dashboard request sees the same automatic goals as every later request.

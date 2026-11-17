@@ -419,6 +419,53 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.Ingest.BufferPath != DefaultIngestBufferPath {
 		t.Errorf("outbox path: got %q", cfg.Ingest.BufferPath)
 	}
+	if cfg.Shared.PostHog.Token != "" || cfg.Shared.PostHog.Host != DefaultPostHogHost {
+		t.Errorf("posthog: got %+v, want no token and the US host", cfg.Shared.PostHog)
+	}
+}
+
+// TestLoadFromReadsPostHog checks the project token and a regional host, with
+// the trailing slash an operator pastes from a browser removed.
+func TestLoadFromReadsPostHog(t *testing.T) {
+	t.Setenv("FEASIBLE_POSTHOG_TOKEN", " phc_example ")
+	t.Setenv("FEASIBLE_POSTHOG_HOST", "https://eu.i.posthog.com/")
+
+	loader, err := NewLoader(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(loader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := PostHog{Token: "phc_example", Host: "https://eu.i.posthog.com"}
+	if cfg.Shared.PostHog != want {
+		t.Fatalf("posthog = %+v, want %+v", cfg.Shared.PostHog, want)
+	}
+}
+
+// TestLoadFromRejectsARelativePostHogHost checks a host every event and log
+// batch would fail against is refused at start-up, but only when a token means
+// it would be used.
+func TestLoadFromRejectsARelativePostHogHost(t *testing.T) {
+	t.Setenv("FEASIBLE_POSTHOG_HOST", "us.i.posthog.com")
+
+	loader, err := NewLoader(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadFrom(loader); err != nil {
+		t.Fatalf("an unused host was refused: %v", err)
+	}
+
+	t.Setenv("FEASIBLE_POSTHOG_TOKEN", "phc_example")
+
+	if _, err := LoadFrom(loader); err == nil || !strings.Contains(err.Error(), "FEASIBLE_POSTHOG_HOST") {
+		t.Fatalf("a relative host was accepted: %v", err)
+	}
 }
 
 // TestLoadFromProductionLoggingDefaults checks that production flips the logging

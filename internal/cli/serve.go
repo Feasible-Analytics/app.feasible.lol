@@ -449,6 +449,7 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 		ScriptBaseURL:       e.cfg.App.ScriptBaseURL,
 		Log:                 e.log,
 		Slack:               e.slack,
+		PostHog:             e.posthog,
 		SignupEvent:         newSignupReporter(e, service).Hook(),
 		OutboundPolicy:      outbound.PolicyFor(e.cfg),
 		Avatars:             newAvatarRefresher(e, control),

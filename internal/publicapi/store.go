@@ -453,6 +453,24 @@ func (c *SystemStore) Members(ctx context.Context, teamID int64) ([]Member, erro
 	return members, rows.Err()
 }
 
+// ActorEmail is the address of the user behind a key, or of the team's first
+// owner when that user is gone. It is empty when neither exists.
+func (c *SystemStore) ActorEmail(ctx context.Context, teamID, userID int64) (string, error) {
+	var email string
+
+	err := c.db.QueryRowContext(ctx, `
+		SELECT COALESCE(
+			(SELECT email FROM users WHERE id = ?),
+			(SELECT u.email FROM team_memberships m JOIN users u ON u.id = m.user_id
+			 WHERE m.team_id = ? AND m.role = 'owner' ORDER BY m.id LIMIT 1),
+			'')`, userID, teamID).Scan(&email)
+	if err != nil {
+		return "", fmt.Errorf("publicapi: actor email: %w", err)
+	}
+
+	return email, nil
+}
+
 // MembershipTarget reads the target user and role for a team-scoped membership
 // id. The HTTP layer uses the role for a clear refusal, while the teams store
 // repeats hierarchy and last-owner enforcement for the user inside its API.

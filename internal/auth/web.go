@@ -28,6 +28,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/mail"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/outbound"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/posthog"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/slack"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
@@ -133,6 +134,10 @@ type Handler struct {
 	// self-hosted install and every test get.
 	Slack *slack.Notifier
 
+	// PostHog records a signup and a site added as product events. Nil sends
+	// nothing.
+	PostHog *posthog.Client
+
 	// SignupEvent reports each new account to the installation's own
 	// analytics. Nil reports nothing.
 	SignupEvent func(r *http.Request, method string, referral Referral)
@@ -205,6 +210,7 @@ type Options struct {
 	ScriptBaseURL       string
 	Log                 *logger.Logger
 	Slack               *slack.Notifier
+	PostHog             *posthog.Client
 
 	// SignupEvent is told about each account the moment it exists. Nil records
 	// nothing, which is what an install with no analytics site of its own gets.
@@ -264,6 +270,7 @@ func NewHandler(opts Options) (*Handler, error) {
 		ScriptBaseURL:       strings.TrimRight(opts.ScriptBaseURL, "/"),
 		Log:                 opts.Log,
 		Slack:               opts.Slack,
+		PostHog:             opts.PostHog,
 		SignupEvent:         opts.SignupEvent,
 		Verifier:            opts.OutboundPolicy.NewClient(verifyTimeout),
 		Avatars:             opts.Avatars,
