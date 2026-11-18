@@ -196,17 +196,119 @@ func TestHTTPRequiresABearerToken(t *testing.T) {
 	}
 }
 
-// TestInitializeIsAllowedWithoutAToken checks the one exception. A client has to
-// be able to find out what this server is and which authorisation server it uses
-// before it has a token; refusing the handshake outright leaves it with no way
-// to start.
-func TestInitializeIsAllowedWithoutAToken(t *testing.T) {
+// initializeBody is a complete handshake request.
+const initializeBody = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"` +
+	ProtocolVersion + `","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`
+
+// challenged posts one body and returns the status, the WWW-Authenticate
+// header and the decoded body, for the tests that check a refusal.
+func (h *httpFixture) challenged(t *testing.T, token, body string) (int, string, map[string]any) {
+	t.Helper()
+
+	request, err := http.NewRequest(http.MethodPost, h.Server.URL+Path, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	request.Header.Set("Content-Type", "application/json")
+
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeResponse(t, response)
+
+	decoded := map[string]any{}
+	_ = json.NewDecoder(response.Body).Decode(&decoded)
+
+	return response.StatusCode, response.Header.Get("WWW-Authenticate"), decoded
+}
+
+// wantChallenge fails the test unless a response is the 401 that starts
+// sign-in: a Bearer challenge naming the protected-resource metadata.
+func wantChallenge(t *testing.T, status int, challenge string) {
+	t.Helper()
+
+	if status != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", status)
+	}
+
+	if !strings.HasPrefix(challenge, "Bearer ") {
+		t.Errorf("WWW-Authenticate = %q, want a Bearer challenge", challenge)
+	}
+
+	want := `resource_metadata="http://replaced` + PathProtectedResourceMetadata + `"`
+	if !strings.Contains(challenge, want) {
+		t.Errorf("WWW-Authenticate = %q, want it to contain %s", challenge, want)
+	}
+}
+
+// TestEveryMethodNeedsAToken checks that nothing is answered without a
+// credential, the handshake included. Clients decide whether a server needs
+// sign-in from the first answer they get, and a server that welcomes an
+// anonymous initialize is set up as one that needs no sign-in at all.
+func TestEveryMethodNeedsAToken(t *testing.T) {
 	h := newHTTPFixture(t)
 
-	status, body := h.rpc(t, "", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"`+ProtocolVersion+`","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`)
+	bodies := map[string]string{
+		"initialize":                initializeBody,
+		"server/discover":           `{"jsonrpc":"2.0","id":1,"method":"server/discover"}`,
+		"notifications/initialized": `{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		"ping":                      `{"jsonrpc":"2.0","id":1,"method":"ping"}`,
+		"tools/list":                `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
+		"resources/list":            `{"jsonrpc":"2.0","id":1,"method":"resources/list"}`,
+		"resources/templates/list":  `{"jsonrpc":"2.0","id":1,"method":"resources/templates/list"}`,
+		"prompts/list":              `{"jsonrpc":"2.0","id":1,"method":"prompts/list"}`,
+		"empty body":                ``,
+	}
+
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			status, challenge, _ := h.challenged(t, "", body)
+			wantChallenge(t, status, challenge)
+		})
+	}
+}
+
+// TestToolCallWithoutATokenStartsSignIn checks the call an assistant makes when
+// someone asks a question: with no token it gets the 401 and the challenge
+// that sends the person to sign in, and the tool does not run.
+func TestToolCallWithoutATokenStartsSignIn(t *testing.T) {
+	h := newHTTPFixture(t)
+
+	status, challenge, body := h.challenged(t, "",
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_sites","arguments":{}}}`)
+
+	wantChallenge(t, status, challenge)
+
+	if _, ran := body["result"]; ran {
+		t.Fatalf("the tool answered without a token: %+v", body)
+	}
+}
+
+// TestABadTokenIsChallengedAtTheHandshake checks that an expired or revoked
+// token is refused on initialize too. That refusal is what makes a client
+// refresh its token before it does anything else.
+func TestABadTokenIsChallengedAtTheHandshake(t *testing.T) {
+	h := newHTTPFixture(t)
+
+	status, challenge, _ := h.challenged(t, "not-a-real-token", initializeBody)
+	wantChallenge(t, status, challenge)
+}
+
+// TestInitializeWithAKey checks the handshake still succeeds once a client has
+// a credential.
+func TestInitializeWithAKey(t *testing.T) {
+	h := newHTTPFixture(t)
+
+	status, body := h.rpc(t, h.Raw, initializeBody)
 
 	if status != http.StatusOK {
-		t.Fatalf("status = %d, want the handshake to be allowed", status)
+		t.Fatalf("status = %d (%+v)", status, body)
 	}
 
 	if _, ok := body["result"]; !ok {

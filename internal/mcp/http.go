@@ -104,13 +104,12 @@ func (h *Handler) post(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The credential is resolved before the method is even parsed, except for
-	// initialize: a client has to be able to discover what this server is and
-	// which authorisation server to use before it has a token, and refusing the
-	// handshake outright is how a client ends up with no way to start.
+	// Every request needs a credential, the handshake included. Clients decide
+	// whether a server needs sign-in from how it answers the first request, so
+	// an anonymous initialize must get the challenge, not a welcome.
 	key, authErr := h.credential(r)
 
-	if authErr != nil && !isInitialize(body) {
+	if authErr != nil {
 		h.challenge(w, authErr)
 		return
 	}
@@ -134,21 +133,6 @@ func (h *Handler) post(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(response); err != nil && h.Server.Log != nil {
 		h.Server.Log.Error("mcp response could not be written", "error", err)
 	}
-}
-
-// isInitialize reports whether a body is the handshake, without committing to
-// parsing it properly — a malformed body is not the handshake either way, and
-// the real parse happens a line later.
-func isInitialize(body []byte) bool {
-	var probe struct {
-		Method string `json:"method"`
-	}
-
-	if err := json.Unmarshal(body, &probe); err != nil {
-		return false
-	}
-
-	return probe.Method == "initialize"
 }
 
 // credential authenticates the bearer token.
