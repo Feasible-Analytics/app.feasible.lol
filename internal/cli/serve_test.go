@@ -225,7 +225,7 @@ func newStack(t *testing.T) *stack {
 	// route table, so they are built here too. A stack that left them out would
 	// let this file's enumeration pass while the process it describes served
 	// paths nobody had checked.
-	extra := buildServices(e, control, manager, service, mailer)
+	extra := buildServices(e, control, manager, service, site.shields, mailer)
 
 	return &stack{
 		routes:       serveRoutes(e, service, manager, secret, dir, app, public, com, data.settings, extra),

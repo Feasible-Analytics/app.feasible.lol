@@ -38,12 +38,16 @@ func (w *testBatchWriter) Write(_ context.Context, events []Event) ([]uuid.UUID,
 	return ids, nil
 }
 
-// testRoutingShields publishes the one rule that must cross the privacy
-// boundary before an ingester discards the raw address.
+// testRoutingShields publishes the two rules that cross into the ingest tier.
 type testRoutingShields struct{}
 
 // BlockedIPPrefixes returns one deterministic network for protocol assertions.
 func (testRoutingShields) BlockedIPPrefixes(int64) []string { return []string{"192.0.2.0/24"} }
+
+// AllowedHostnames returns one extra hostname for protocol assertions.
+func (testRoutingShields) AllowedHostnames(int64) []string {
+	return []string{"checkout.partner.example"}
+}
 
 // TestInternalShardPublishesRouting verifies an ingester can fetch ownership
 // without opening the app's system database.
@@ -66,6 +70,9 @@ func TestInternalShardPublishesRouting(t *testing.T) {
 	}
 	if domains.Shard != 7 || len(domains.Sites) != 1 || domains.Sites[0].Site.Domain != "active.example" || len(domains.Sites[0].BlockedIPs) != 1 {
 		t.Fatalf("routing snapshot = %+v", domains)
+	}
+	if allowed := domains.Sites[0].AllowedHostnames; len(allowed) != 1 || allowed[0] != "checkout.partner.example" {
+		t.Fatalf("routing snapshot allowed hostnames = %v, want the site's hostname rule", allowed)
 	}
 
 	notModified := httptest.NewRecorder()

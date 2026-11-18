@@ -403,6 +403,20 @@ func (c *Cache) BlockedIPPrefixes(siteID int64) []string {
 	return c.Ruleset(siteID).BlockedIPPrefixes()
 }
 
+// AllowedHostnames returns the hostnames a site added beyond its own domain.
+// An app shard publishes them to ingesters so an ingester's early hostname
+// check agrees with the writer's.
+func (c *Cache) AllowedHostnames(siteID int64) []string {
+	return c.Ruleset(siteID).AllowedHostnames()
+}
+
+// ListsHostname reports whether a site added this hostname beyond its own
+// domain. The health recorder asks it to tell a hostname somebody allowed from
+// one nobody did.
+func (c *Cache) ListsHostname(siteID int64, hostname string) bool {
+	return c.Ruleset(siteID).ListsHostname(hostname)
+}
+
 // BuiltAt reports when the snapshot was made, so a stalled refresh is visible
 // rather than merely quiet.
 func (c *Cache) BuiltAt() time.Time {
@@ -468,8 +482,10 @@ func (c *Cache) Run(ctx context.Context, onError func(error)) {
 // A signature change on either side is a compile error here rather than a
 // shield that silently stops being consulted.
 var (
-	_ ingest.IPShield    = (*Cache)(nil)
-	_ ingest.ShardShield = (*Cache)(nil)
+	_ ingest.IPShield       = (*Cache)(nil)
+	_ ingest.ShardShield    = (*Cache)(nil)
+	_ ingest.HostnamePolicy = (*Cache)(nil)
+	_ ingest.RoutingShields = (*Cache)(nil)
 )
 
 // Viewer is the address the settings page shows the customer, with enough

@@ -25,6 +25,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/reports"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/settings"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/shields"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
 )
@@ -70,17 +71,23 @@ type services struct {
 // than a silent success — lives inside it, and a second path to a mail server
 // would be a second path that has none of them.
 func buildServices(e *env, control *sql.DB, manager *accounts.Manager,
-	service *ingest.Service, mailer *mail.Mailer) *services {
+	service *ingest.Service, rules *shields.Cache, mailer *mail.Mailer) *services {
 	s := &services{
 		Teams:       teams.NewStore(control),
 		Sharing:     sharing.NewStore(control),
 		Reports:     reports.NewStore(control),
-		Health:      health.NewStore(manager, service.Sites, control),
+		Health:      health.NewStore(manager, service.Sites, rules),
 		Annotations: annotations.NewStore(manager),
 		Mailer:      mailer,
 		Recorder:    health.NewRecorder(manager, service.Sites, e.log),
 		control:     control,
 		siteCache:   service.Sites,
+	}
+
+	// The recorder flags a hostname as unexpected by the same rules the writer
+	// refuses it by, so the panel never warns about traffic that counts.
+	if rules != nil {
+		s.Recorder.Hostnames = rules
 	}
 
 	s.Notifier = &reports.Notifier{

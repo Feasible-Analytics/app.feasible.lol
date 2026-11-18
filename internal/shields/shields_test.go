@@ -10,6 +10,7 @@ package shields
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -136,6 +137,55 @@ func TestRegisteredDomainIsTheDefaultHostnameAllowList(t *testing.T) {
 		if set.HostnameAllowed(rejected) {
 			t.Errorf("default hostname policy allowed %q", rejected)
 		}
+	}
+}
+
+// TestADuplicateRuleMatchesErrExists checks the second save of the same rule.
+// The Shields page shows the sentence; the health panel's Allow button matches
+// the sentinel and treats the hostname as allowed.
+func TestADuplicateRuleMatchesErrExists(t *testing.T) {
+	ctx := context.Background()
+	account := newAccount(t)
+	now := time.Unix(1_800_000_000, 0)
+
+	if _, err := Add(ctx, account.Writer(), 1, KindHostname, "checkout.example.net", "", now); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Add(ctx, account.Writer(), 1, KindHostname, "https://www.Checkout.example.net/", "", now)
+	if !errors.Is(err, ErrExists) {
+		t.Fatalf("the duplicate answered %v, want ErrExists", err)
+	}
+
+	if err.Error() != "checkout.example.net is already on the hostname list" {
+		t.Errorf("the duplicate reads %q", err.Error())
+	}
+
+	if _, err := Add(ctx, account.Writer(), 1, KindHostname, "two words", "", now); errors.Is(err, ErrExists) {
+		t.Error("a validation failure matched ErrExists")
+	}
+}
+
+// TestListsHostnameNamesOnlyAddedHostnames separates the hostnames somebody
+// added from the ones the registered domain accepts on its own.
+func TestListsHostnameNamesOnlyAddedHostnames(t *testing.T) {
+	set := CompileFor("example.com", []Rule{{Kind: KindHostname, Value: "checkout.example.net"}})
+
+	for hostname, want := range map[string]bool{
+		"checkout.example.net":     true,
+		"www.Checkout.example.net": true,
+		"example.com":              false,
+		"docs.example.com":         false,
+		"other.example.net":        false,
+	} {
+		if got := set.ListsHostname(hostname); got != want {
+			t.Errorf("ListsHostname(%q) = %v, want %v", hostname, got, want)
+		}
+	}
+
+	var missing *Ruleset
+	if missing.ListsHostname("checkout.example.net") {
+		t.Error("a site with no ruleset listed a hostname")
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 )
@@ -130,7 +131,7 @@ func (h *Handler) allowHostname(w http.ResponseWriter, r *http.Request, domain s
 		return
 	}
 
-	err := h.Store.AllowHostname(r.Context(), domain, body.Hostname)
+	err := h.Store.AllowHostname(r.Context(), domain, body.Hostname, i18n.Negotiate(r))
 	if errors.Is(err, ErrUnknownSite) {
 		h.fail(w, http.StatusNotFound, "no site is registered for "+domain)
 

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/health"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/reports"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
@@ -537,14 +538,13 @@ func (h *TeamHandler) healthRoute(w http.ResponseWriter, r *http.Request, identi
 	case "allow":
 		hostname := strings.TrimSpace(r.PostFormValue("hostname"))
 
-		if err := h.Health.AllowHostname(ctx, site.Domain, hostname); err != nil {
+		if err := h.Health.AllowHostname(ctx, site.Domain, hostname, i18n.Negotiate(r)); err != nil {
 			h.redirect(w, r, base, "", err.Error())
 
 			return
 		}
 
-		h.redirect(w, r, base,
-			hostname+" is now allowed, and so is "+site.Domain+". Events from any other hostname will be dropped.", "")
+		h.redirect(w, r, base, tr(r, "settings.health.flash_allowed", "hostname", hostname), "")
 
 		return
 

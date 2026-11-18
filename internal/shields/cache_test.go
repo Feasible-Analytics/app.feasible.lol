@@ -209,6 +209,37 @@ func TestIPShieldIsAnsweredFromTheSnapshot(t *testing.T) {
 	}
 }
 
+// TestTheCachePublishesTheAddedHostnames covers the two reads the rest of the
+// system makes of a site's hostname rules: the list an app shard publishes to
+// ingesters, and the membership check the health recorder asks.
+func TestTheCachePublishesTheAddedHostnames(t *testing.T) {
+	ctx := context.Background()
+	manager := accounts.NewManager(t.TempDir())
+	t.Cleanup(func() { _ = manager.CloseAll() })
+
+	cache := New(newRouting(t), manager)
+	if err := cache.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	cache.Set(1, []Rule{
+		{SiteID: 1, Kind: KindHostname, Value: "checkout.example.net"},
+		{SiteID: 1, Kind: KindCountry, Value: "US"},
+	})
+
+	if got := cache.AllowedHostnames(1); len(got) != 1 || got[0] != "checkout.example.net" {
+		t.Fatalf("published hostnames = %v, want only the hostname rule", got)
+	}
+
+	if !cache.ListsHostname(1, "checkout.example.net") || cache.ListsHostname(1, "example.com") {
+		t.Fatal("ListsHostname does not answer from the site's hostname rules alone")
+	}
+
+	if got := cache.AllowedHostnames(99); got != nil || cache.ListsHostname(99, "checkout.example.net") {
+		t.Fatalf("a site with no rules published %v", got)
+	}
+}
+
 // shieldEvent builds an event on the shielded site.
 func shieldEvent(path string, now time.Time) ingest.Event {
 	return ingest.Event{

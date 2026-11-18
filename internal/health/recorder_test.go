@@ -23,16 +23,18 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/logger"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/shields"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
-// fixture is a system database, an account manager and the two stores, with a
-// clock the test drives.
+// fixture is a system database, an account manager, the shield snapshot and the
+// two stores, with a clock the test drives.
 type fixture struct {
 	control  *sql.DB
 	accounts *accounts.Manager
 	sites    *sites.Cache
+	rules    *shields.Cache
 	recorder *Recorder
 	store    *Store
 	now      time.Time
@@ -91,10 +93,16 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatalf("refresh sites: %v", err)
 	}
 
+	f.rules = shields.New(f.sites, f.accounts)
+	if err := f.rules.Refresh(context.Background()); err != nil {
+		t.Fatalf("refresh shields: %v", err)
+	}
+
 	f.recorder = NewRecorder(f.accounts, f.sites, nil)
 	f.recorder.Now = func() time.Time { return f.now }
+	f.recorder.Hostnames = f.rules
 
-	f.store = NewStore(f.accounts, f.sites, control)
+	f.store = NewStore(f.accounts, f.sites, f.rules)
 	f.store.Now = func() time.Time { return f.now }
 
 	return f
@@ -545,20 +553,20 @@ func TestASiteWithNoSignalsReportsAnEmptyListNotNull(t *testing.T) {
 	}
 }
 
-// TestAnAllowListChangesWhatCountsAsUnexpected checks the other branch: once a
-// customer sets an explicit list, "unexpected" means "not on it".
-func TestAnAllowListChangesWhatCountsAsUnexpected(t *testing.T) {
+// TestAnAllowedHostnameIsNotUnexpected checks the recorder agrees with the
+// writer. The site's own domain, its subdomains and a hostname somebody allowed
+// all count, so none of them may raise a warning; anything else still does.
+func TestAnAllowedHostnameIsNotUnexpected(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	if err := f.store.AllowHostname(ctx, f.domain, "staging.other.example"); err != nil {
+	if err := f.store.AllowHostname(ctx, f.domain, "staging.other.example", "en"); err != nil {
 		t.Fatalf("allow: %v", err)
 	}
 
-	// The site's own domain is on the list now, so it is expected. A subdomain
-	// that was expected before no longer is.
-	f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{Hostname: "acme.example"}})
-	f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{Hostname: "blog.acme.example"}})
+	for _, hostname := range []string{"acme.example", "blog.acme.example", "staging.other.example", "somewhere.else.example"} {
+		f.observe(ingest.Observation{Accepted: true, Debug: ingest.Debug{Hostname: hostname}})
+	}
 
 	if _, err := f.recorder.Flush(ctx); err != nil {
 		t.Fatalf("flush: %v", err)
@@ -569,7 +577,7 @@ func TestAnAllowListChangesWhatCountsAsUnexpected(t *testing.T) {
 		t.Fatalf("panel: %v", err)
 	}
 
-	if len(panel.UnknownHostnames) != 1 || panel.UnknownHostnames[0].Value != "blog.acme.example" {
+	if len(panel.UnknownHostnames) != 1 || panel.UnknownHostnames[0].Value != "somewhere.else.example" {
 		t.Fatalf("the unexpected hostnames are %+v", panel.UnknownHostnames)
 	}
 }

@@ -20,7 +20,10 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/config"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/shields"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
@@ -120,12 +123,112 @@ func runDBMigrate(e *env, args []string) int {
 		}
 	}
 
+	// Every schema is current here, so shield_rules and the rule markers exist.
+	if err := carryAllowedHostnames(ctx, e, e.cfg.App.DataDir); err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return ExitError
+	}
+
 	e.log.Info("migrations complete",
 		"data_dir", e.cfg.App.DataDir,
 		"databases", len(targets),
 	)
 
 	return ExitOK
+}
+
+// carryAllowedHostnames moves every hostname in the retired system-database
+// allow-list onto a hostname shield rule in the site's account database, where
+// the writer decides hostnames. Each account is carried, stamped so a running
+// process re-reads its rules within one refresh, and only then forgotten from
+// system.db, so an interrupted run carries the rest on the next one. An account
+// whose database is missing keeps its rows and is named in the log.
+func carryAllowedHostnames(ctx context.Context, e *env, dataDir string) (err error) {
+	path := filepath.Join(dataDir, config.SystemDatabaseName)
+
+	system, err := store.OpenDatabase(path)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := system.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("%s: close database: %w", path, closeErr))
+		}
+	}()
+
+	rows, err := shields.ReadLegacyHostnames(ctx, system.Reader())
+	if err != nil || len(rows) == 0 {
+		return err
+	}
+
+	byAccount := map[int64][]shields.LegacyHostname{}
+	for _, row := range rows {
+		byAccount[row.AccountID] = append(byAccount[row.AccountID], row)
+	}
+
+	ids := make([]int64, 0, len(byAccount))
+	for id := range byAccount {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	note := i18n.T(i18n.DefaultLocale, "settings.health.allowed_note")
+	markers := sites.New(system.Writer())
+
+	for _, id := range ids {
+		added, err := carryAccountHostnames(ctx, dataDir, id, byAccount[id], note)
+		if errors.Is(err, os.ErrNotExist) {
+			e.log.Warn("allowed hostnames left in system.db: the account database is missing",
+				"account", id, "rows", len(byAccount[id]))
+
+			continue
+		}
+		if err != nil {
+			return err
+		}
+
+		if err := markers.StampRules(ctx, id, time.Now()); err != nil {
+			return err
+		}
+
+		if err := shields.ForgetLegacyHostnames(ctx, system.Writer(), byAccount[id]); err != nil {
+			return err
+		}
+
+		e.log.Info("allowed hostnames carried to shield rules",
+			"account", id, "rows", len(byAccount[id]), "rules_added", added)
+	}
+
+	return nil
+}
+
+// carryAccountHostnames opens one account database and stores its rows as
+// hostname rules. It never creates the database: a missing one is reported as
+// os.ErrNotExist, since inventing an empty account would hide the problem.
+func carryAccountHostnames(ctx context.Context, dataDir string, accountID int64,
+	rows []shields.LegacyHostname, note string) (added int, err error) {
+	path := accounts.Path(dataDir, accountID)
+
+	if _, err := os.Stat(path); err != nil {
+		return 0, fmt.Errorf("%s: %w", path, err)
+	}
+
+	db, err := store.OpenDatabase(path)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("%s: close database: %w", path, closeErr))
+		}
+	}()
+
+	added, err = shields.CarryLegacyHostnames(ctx, db.Writer(), rows, note)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", path, err)
+	}
+
+	return added, nil
 }
 
 // renameLegacySystemDatabase performs the one-time filename upgrade before

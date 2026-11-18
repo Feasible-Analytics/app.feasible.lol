@@ -41,6 +41,7 @@ type RemoteRouter struct {
 	lastSuccess map[int]time.Time
 	account     map[int64]int
 	blocked     map[int64][]netip.Prefix
+	allowed     map[int64]map[string]bool
 }
 
 // NewRemoteRouter loads the last disk-cached map before any network poll. A
@@ -51,6 +52,7 @@ func NewRemoteRouter(ctx context.Context, db *sql.DB, shards []string, signer *I
 		Shards: shards, Cache: sites.NewEmpty(), DB: db, Signer: signer,
 		byShard: map[int]map[string]RoutedSite{}, etags: map[int]string{},
 		lastSuccess: map[int]time.Time{}, account: map[int64]int{}, blocked: map[int64][]netip.Prefix{},
+		allowed: map[int64]map[string]bool{},
 	}
 	if err := router.createSchema(ctx); err != nil {
 		return nil, err
@@ -124,25 +126,17 @@ func (r *RemoteRouter) Blocked(siteID int64, addr netip.Addr) bool {
 	return false
 }
 
-// AllowsHostname reports only additive hostname entries; the pipeline performs
-// the registered-domain and subdomain rule before consulting this method.
+// AllowsHostname reports only the extra hostnames a site allowed; the pipeline
+// performs the registered-domain and subdomain rule before consulting this
+// method.
 func (r *RemoteRouter) AllowsHostname(siteID int64, hostname string) bool {
 	if siteID == 0 {
 		return false
 	}
-	for _, site := range r.Cache.All() {
-		if site.ID != siteID {
-			continue
-		}
-		hostname = sites.Normalise(hostname)
-		for _, allowed := range site.AllowedHostnames {
-			if sites.Normalise(allowed) == hostname {
-				return true
-			}
-		}
-	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
-	return false
+	return r.allowed[siteID][sites.Normalise(hostname)]
 }
 
 // ResolveEvent updates an unrouted or stale event from the latest merged map.
@@ -341,11 +335,12 @@ func (r *RemoteRouter) persistShard(ctx context.Context, shard int, etag string,
 	return nil
 }
 
-// rebuildLocked publishes the merged site cache and the two hot lookup maps.
+// rebuildLocked publishes the merged site cache and the three hot lookup maps.
 func (r *RemoteRouter) rebuildLocked() {
 	all := make([]sites.Site, 0)
 	r.account = map[int64]int{}
 	r.blocked = map[int64][]netip.Prefix{}
+	r.allowed = map[int64]map[string]bool{}
 	shards := make([]int, 0, len(r.byShard))
 	for shard := range r.byShard {
 		shards = append(shards, shard)
@@ -364,6 +359,12 @@ func (r *RemoteRouter) rebuildLocked() {
 				if prefix, err := netip.ParsePrefix(value); err == nil {
 					r.blocked[routed.Site.ID] = append(r.blocked[routed.Site.ID], prefix.Masked())
 				}
+			}
+			for _, hostname := range routed.AllowedHostnames {
+				if r.allowed[routed.Site.ID] == nil {
+					r.allowed[routed.Site.ID] = map[string]bool{}
+				}
+				r.allowed[routed.Site.ID][sites.Normalise(hostname)] = true
 			}
 		}
 	}

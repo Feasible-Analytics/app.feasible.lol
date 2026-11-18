@@ -214,8 +214,8 @@ func TestTheAllowEndpointReturnsTheUpdatedPanel(t *testing.T) {
 		}
 	}
 
-	if len(panel.AllowedHostnames) != 2 {
-		t.Fatalf("the allow-list is %v, want the hostname and the site's own domain", panel.AllowedHostnames)
+	if len(panel.AllowedHostnames) != 1 || panel.AllowedHostnames[0] != "staging.other.example" {
+		t.Fatalf("the allowed hostnames are %v, want only the one allowed", panel.AllowedHostnames)
 	}
 }
 
