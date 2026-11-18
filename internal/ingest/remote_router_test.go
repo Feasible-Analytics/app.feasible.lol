@@ -26,9 +26,10 @@ import (
 // routingServer publishes one mutable shard contribution and can be made
 // unavailable without discarding the previous contribution in the ingester.
 type routingServer struct {
-	failed atomic.Bool
-	shard  int
-	site   sites.Site
+	failed  atomic.Bool
+	shard   int
+	site    sites.Site
+	allowed []string
 }
 
 // ServeHTTP returns a signed-request-aware routing snapshot for one shard.
@@ -43,7 +44,7 @@ func (s *routingServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("ETag", `"route"`)
-	_ = json.NewEncoder(w).Encode(DomainsResponse{Shard: s.shard, Sites: []RoutedSite{{Site: s.site}}})
+	_ = json.NewEncoder(w).Encode(DomainsResponse{Shard: s.shard, Sites: []RoutedSite{{Site: s.site, AllowedHostnames: s.allowed}}})
 }
 
 // openRoutingDB opens a temporary SQLite handle for routing tests.
@@ -151,5 +152,52 @@ func TestRemoteRouterRejectsMisorderedShardIdentity(t *testing.T) {
 	}
 	if router.DestinationReady(0) {
 		t.Fatal("misordered destination was enabled for delivery")
+	}
+}
+
+// TestRemoteRouterAllowsTheHostnamesTheShardPublished checks an ingester's
+// early hostname check reads the site's hostname rules from the routing
+// snapshot, and keeps them across a restart from the disk cache, so its debug
+// answer agrees with the writer.
+func TestRemoteRouterAllowsTheHostnamesTheShardPublished(t *testing.T) {
+	server := &routingServer{
+		shard:   1,
+		site:    sites.Site{ID: 4, AccountID: 10, Domain: "known.example"},
+		allowed: []string{"checkout.partner.example"},
+	}
+	httpServer := httptest.NewServer(server)
+	defer httpServer.Close()
+	db := openRoutingDB(t)
+	signer := &InternalSigner{Key: "secret"}
+	router, err := NewRemoteRouter(context.Background(), db, []string{httpServer.URL}, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if router.AllowsHostname(4, "checkout.partner.example") {
+		t.Fatal("a hostname was allowed before any shard published it")
+	}
+	if err := router.RefreshAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	for hostname, want := range map[string]bool{
+		"checkout.partner.example":     true,
+		"www.Checkout.Partner.example": true,
+		"other.partner.example":        false,
+	} {
+		if got := router.AllowsHostname(4, hostname); got != want {
+			t.Errorf("AllowsHostname(%q) = %v, want %v", hostname, got, want)
+		}
+	}
+	if router.AllowsHostname(5, "checkout.partner.example") {
+		t.Fatal("one site's allowed hostname was applied to another site")
+	}
+
+	restarted, err := NewRemoteRouter(context.Background(), db, []string{httpServer.URL}, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restarted.AllowsHostname(4, "checkout.partner.example") {
+		t.Fatal("the allowed hostname was lost across a restart from the disk cache")
 	}
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/migrate"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/reports"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/shields"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/teams"
@@ -126,7 +127,7 @@ func newFixture(t *testing.T) *fixture {
 		Teams:   teams.NewStore(control),
 		Sharing: sharing.NewStore(control),
 		Reports: reports.NewStore(control),
-		Health:  health.NewStore(manager, cache, control),
+		Health:  health.NewStore(manager, cache, shields.New(cache, manager)),
 		Sites:   cache,
 		Mail:    f.mail,
 		BaseURL: "http://localhost:19300",

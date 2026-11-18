@@ -22,6 +22,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/i18n"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/shields"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 )
 
@@ -173,21 +174,21 @@ type Store struct {
 	Accounts *accounts.Manager
 	Sites    *sites.Cache
 
-	// System is the installation-wide database where the hostname allow-list
-	// originates. The app publishes that list to ingesters through its signed
-	// private endpoint; an ingester never opens this database itself.
-	System *sql.DB
+	// Rules is the running shield snapshot. The writer decides every event's
+	// hostname against it, so an allowed hostname is a hostname shield rule
+	// and the Allow button updates this snapshot as well as storage.
+	Rules *shields.Cache
 
 	// Now bounds the window, injectable for tests.
 	Now func() time.Time
 }
 
 // NewStore builds a panel reader.
-func NewStore(manager *accounts.Manager, cache *sites.Cache, control *sql.DB) *Store {
+func NewStore(manager *accounts.Manager, cache *sites.Cache, rules *shields.Cache) *Store {
 	return &Store{
 		Accounts: manager,
 		Sites:    cache,
-		System:   control,
+		Rules:    rules,
 		Now:      func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -236,7 +237,11 @@ func (s *Store) Panel(ctx context.Context, domain string) (Panel, error) {
 		IPSources:         []Seen{},
 		UnknownHostnames:  []Seen{},
 		AutomationSignals: []Seen{},
-		AllowedHostnames:  site.AllowedHostnames,
+		AllowedHostnames:  []string{},
+	}
+
+	if err := s.readAllowedHostnames(ctx, account.Reader(), &panel); err != nil {
+		return Panel{}, err
 	}
 
 	if err := s.readCounts(ctx, account.Reader(), &panel, from, panel.To); err != nil {
@@ -399,47 +404,41 @@ func (s *Store) readLastRequest(ctx context.Context, db *sql.DB, panel *Panel, f
 	return nil
 }
 
-// AllowHostname adds a hostname to a site's allow-list. It is the one-click
-// remedy behind the "events arriving from a hostname not on your allow-list"
-// warning, and it also clears the observation so the warning goes away rather
-// than staying on the screen looking unfixed.
-func (s *Store) AllowHostname(ctx context.Context, domain, hostname string) error {
+// readAllowedHostnames lists the hostnames the site accepts beyond its own
+// domain and subdomains. They are the site's hostname shield rules, the same
+// list the Shields page edits and the writer enforces.
+func (s *Store) readAllowedHostnames(ctx context.Context, db *sql.DB, panel *Panel) error {
+	rules, err := shields.List(ctx, db, panel.SiteID)
+	if err != nil {
+		return fmt.Errorf("health: read allowed hostnames: %w", err)
+	}
+
+	for _, rule := range rules {
+		if rule.Kind == shields.KindHostname {
+			panel.AllowedHostnames = append(panel.AllowedHostnames, rule.Value)
+		}
+	}
+
+	return nil
+}
+
+// AllowHostname lets a hostname's events count for a site. It is the one-click
+// remedy behind the "events arriving from" warning: it stores a hostname
+// shield rule, applies it to the running snapshot so the next event is
+// accepted, and clears the observation so the warning goes away rather than
+// staying on the screen looking unfixed. The note is written in the locale of
+// whoever pressed the button, because the Shields page shows it beside the rule.
+func (s *Store) AllowHostname(ctx context.Context, domain, hostname, locale string) error {
 	site, ok := s.Sites.Lookup(domain)
 	if !ok {
 		return ErrUnknownSite
 	}
 
-	hostname = sites.Normalise(hostname)
-	if hostname == "" {
-		return fmt.Errorf("health: a hostname is required")
-	}
-
-	// The site's own domain has to go on the list at the same time. An
-	// allow-list is all-or-nothing: adding one hostname to an empty list would
-	// otherwise start dropping the site's own traffic, which is the worst
-	// possible outcome of clicking a button labelled Allow.
-	registered := sites.Normalise(site.Domain)
-
-	tx, err := s.System.BeginTx(ctx, nil)
+	// Both validation failures below are sentences for the person who pressed
+	// the button, so they go back without a prefix.
+	value, err := shields.Normalise(shields.KindHostname, hostname)
 	if err != nil {
-		return fmt.Errorf("health: allow hostname: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck // a rollback after commit is a no-op
-
-	now := s.now().Unix()
-
-	for _, allow := range []string{registered, hostname} {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO site_allowed_hostnames (site_id, hostname, created_at)
-			VALUES (?, ?, ?)
-			ON CONFLICT (site_id, hostname) DO NOTHING
-		`, site.ID, allow, now); err != nil {
-			return fmt.Errorf("health: allow hostname: %w", err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("health: allow hostname: %w", err)
+		return err
 	}
 
 	lease, err := s.Accounts.Acquire(ctx, site.AccountID)
@@ -447,24 +446,38 @@ func (s *Store) AllowHostname(ctx context.Context, domain, hostname string) erro
 		return fmt.Errorf("health: open account %d: %w", site.AccountID, err)
 	}
 
-	// Held until the last read: the handle behind it can be closed by the
+	// Held until the last write: the handle behind it can be closed by the
 	// cache the moment nothing is using it.
 	defer lease.Release() //nolint:errcheck // the result is more useful than an unlock error
 
 	account := lease.Account
 
+	_, err = shields.Add(ctx, account.Writer(), site.ID, shields.KindHostname, value,
+		i18n.T(locale, "settings.health.allowed_note"), s.now())
+	if err != nil && !errors.Is(err, shields.ErrExists) {
+		return err
+	}
+
 	if _, err := account.Writer().ExecContext(ctx, `
 		DELETE FROM ingest_observations WHERE site_id = ? AND kind = ? AND value = ?
-	`, site.ID, KindUnknownHostname, hostname); err != nil {
+	`, site.ID, KindUnknownHostname, value); err != nil {
 		return fmt.Errorf("health: clear hostname observation: %w", err)
 	}
 
-	// The routing snapshot is what the ingest path reads, so refreshing it here
-	// makes the button take effect now rather than at the next fifteen-second
-	// tick. A button whose result is visible on the *next* page load is a
-	// button people press twice.
-	if err := s.Sites.Refresh(ctx); err != nil {
-		return fmt.Errorf("health: refresh sites: %w", err)
+	rules, err := shields.List(ctx, account.Reader(), site.ID)
+	if err != nil {
+		return fmt.Errorf("health: allow hostname: %w", err)
+	}
+
+	// This process applies the rule now. The stamp tells every other process
+	// sharing this data directory to re-read the account on its next pass,
+	// rather than at the hourly full refresh.
+	if s.Rules != nil {
+		s.Rules.Set(site.ID, rules)
+	}
+
+	if err := s.Sites.StampRules(ctx, site.AccountID, s.now()); err != nil {
+		return fmt.Errorf("health: allow hostname: %w", err)
 	}
 
 	return nil
@@ -497,9 +510,10 @@ func buildWarnings(panel Panel) []Warning {
 			Code:  WarnUnknownHostname,
 			Title: "Events are arriving from " + hostname.Value,
 			Detail: fmt.Sprintf(
-				"%d events came from a hostname that is not this site's domain and is not on its allow-list. "+
-					"That is usually a staging copy or somebody else's page running your snippet. Allow it if it "+
-					"is yours, and its traffic will be counted; leave it and add the hostnames you do want.",
+				"%d events came from a hostname that is not this site's domain, one of its subdomains, or a "+
+					"hostname you allowed, so they were left out of your numbers. That is usually a staging copy "+
+					"or somebody else's page running your snippet. If it is yours, allow it and its events count "+
+					"from then on. If it is not, leave it.",
 				hostname.Count),
 			Count:    hostname.Count,
 			Hostname: hostname.Value,
@@ -514,10 +528,10 @@ func buildWarnings(panel Panel) []Warning {
 
 		warnings = append(warnings, Warning{
 			Code:  WarnHostnameBlocked,
-			Title: "Events are being dropped by your hostname allow-list",
+			Title: "Events are being dropped because of their hostname",
 			Detail: fmt.Sprintf(
-				"%d events were refused because their hostname is not on this site's allow-list. If that is not "+
-					"what you meant, add the hostname or clear the list entirely to accept every hostname.",
+				"%d events were refused because their hostname is not this site's domain, one of its "+
+					"subdomains, or a hostname you allowed. If one of them is yours, allow it below.",
 				drop.Count),
 			Count: drop.Count,
 		})

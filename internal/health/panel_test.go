@@ -15,8 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/ingest"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/shields"
 )
 
 // warningsByCode indexes a panel's warnings for assertions.
@@ -165,13 +168,11 @@ func TestTheUnknownHostnameWarningNamesTheHostnameAndOffersAllow(t *testing.T) {
 	}
 }
 
-// TestAllowingAHostnameAlsoAllowsTheSitesOwnDomain is the trap inside the
-// one-click remedy.
-//
-// An allow-list is all-or-nothing: adding one hostname to an empty list would
-// start dropping the site's own traffic, which is the worst possible outcome of
-// pressing a button labelled Allow.
-func TestAllowingAHostnameAlsoAllowsTheSitesOwnDomain(t *testing.T) {
+// TestAllowingAHostnameTakesEffectAtOnce checks the button against the
+// snapshot the writer is reading right now, without waiting for a refresh. A
+// button whose result shows up fifteen seconds later is a button people
+// press twice.
+func TestAllowingAHostnameTakesEffectAtOnce(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
@@ -183,8 +184,19 @@ func TestAllowingAHostnameAlsoAllowsTheSitesOwnDomain(t *testing.T) {
 		t.Fatalf("flush: %v", err)
 	}
 
-	if err := f.store.AllowHostname(ctx, f.domain, "staging.other.example"); err != nil {
+	if err := f.store.AllowHostname(ctx, f.domain, "staging.other.example", "en"); err != nil {
 		t.Fatalf("allow: %v", err)
+	}
+
+	for hostname, want := range map[string]bool{
+		"staging.other.example":  true,
+		"acme.example":           true,
+		"blog.acme.example":      true,
+		"somewhere.else.example": false,
+	} {
+		if got, _ := f.rules.Allowed(f.siteID, hostname, "/", ""); got != want {
+			t.Errorf("the running snapshot answers %v for %s, want %v", got, hostname, want)
+		}
 	}
 
 	panel, err := f.store.Panel(ctx, f.domain)
@@ -192,32 +204,10 @@ func TestAllowingAHostnameAlsoAllowsTheSitesOwnDomain(t *testing.T) {
 		t.Fatalf("panel: %v", err)
 	}
 
-	allowed := map[string]bool{}
-	for _, hostname := range panel.AllowedHostnames {
-		allowed[hostname] = true
-	}
-
-	if !allowed["acme.example"] {
-		t.Fatal("allowing a hostname did not also allow the site's own domain — its traffic would now be dropped")
-	}
-
-	if !allowed["staging.other.example"] {
-		t.Fatal("the requested hostname was not allowed")
-	}
-
-	// And the routing snapshot the ingest path reads has to agree immediately,
-	// not at the next fifteen-second refresh.
-	site, ok := f.sites.Lookup(f.domain)
-	if !ok {
-		t.Fatal("the site vanished from the routing map")
-	}
-
-	if !site.HostnameAllowed("staging.other.example") || !site.HostnameAllowed("acme.example") {
-		t.Fatalf("the routing snapshot has allow-list %v", site.AllowedHostnames)
-	}
-
-	if site.HostnameAllowed("somewhere.else.example") {
-		t.Fatal("the allow-list is not actually restricting anything")
+	// The site's own domain is always accepted, so the list holds only what
+	// somebody added.
+	if len(panel.AllowedHostnames) != 1 || panel.AllowedHostnames[0] != "staging.other.example" {
+		t.Fatalf("the panel lists %v, want only the allowed hostname", panel.AllowedHostnames)
 	}
 
 	// The warning goes away in the same round trip, rather than staying on the
@@ -225,6 +215,98 @@ func TestAllowingAHostnameAlsoAllowsTheSitesOwnDomain(t *testing.T) {
 	if _, found := warningsByCode(panel)[WarnUnknownHostname]; found {
 		t.Fatal("the warning survived the Allow button")
 	}
+
+	// Other processes find out through the account's rule marker.
+	versions, err := f.sites.RuleVersions(ctx)
+	if err != nil {
+		t.Fatalf("rule versions: %v", err)
+	}
+
+	if versions[f.teamID] == 0 {
+		t.Fatal("the account's rule marker was not stamped, so other processes wait an hour to see the hostname")
+	}
+}
+
+// TestTheAllowedHostnameIsTheShieldsPageRule checks there is one list. What the
+// health panel allows is the hostname rule the Shields page shows and removes,
+// with a note saying where it came from.
+func TestTheAllowedHostnameIsTheShieldsPageRule(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	if err := f.store.AllowHostname(ctx, f.domain, "https://www.Staging.Other.example/", "en"); err != nil {
+		t.Fatalf("allow: %v", err)
+	}
+
+	rules := f.listRules(t)
+
+	if len(rules) != 1 || rules[0].Kind != shields.KindHostname || rules[0].Value != "staging.other.example" {
+		t.Fatalf("the stored rules are %+v, want one hostname rule for staging.other.example", rules)
+	}
+
+	if rules[0].Note == "" || strings.HasPrefix(rules[0].Note, "settings.") {
+		t.Errorf("the rule's note is %q, want the translated sentence", rules[0].Note)
+	}
+}
+
+// TestAllowingAnAlreadyAllowedHostnameSucceeds covers the second click, and a
+// hostname somebody already added on the Shields page. The hostname is
+// allowed, which is what the button promised.
+func TestAllowingAnAlreadyAllowedHostnameSucceeds(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	if err := f.store.AllowHostname(ctx, f.domain, "staging.other.example", "en"); err != nil {
+		t.Fatalf("first allow: %v", err)
+	}
+
+	if err := f.store.AllowHostname(ctx, f.domain, "staging.other.example", "en"); err != nil {
+		t.Fatalf("second allow answered an error: %v", err)
+	}
+
+	if rules := f.listRules(t); len(rules) != 1 {
+		t.Fatalf("two clicks stored %d rules, want 1", len(rules))
+	}
+}
+
+// TestAllowingSomethingThatIsNotAHostnameSaysWhy checks the free-text box. The
+// message goes straight onto the page, so it is the shields sentence with
+// nothing in front of it.
+func TestAllowingSomethingThatIsNotAHostnameSaysWhy(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	err := f.store.AllowHostname(ctx, f.domain, "two words", "en")
+	if err == nil {
+		t.Fatal("a value with a space in it was allowed")
+	}
+
+	if !strings.Contains(err.Error(), "is not a hostname") || strings.HasPrefix(err.Error(), "health:") {
+		t.Errorf("the error reads %q", err.Error())
+	}
+
+	if rules := f.listRules(t); len(rules) != 0 {
+		t.Fatalf("a rejected value stored %d rules", len(rules))
+	}
+}
+
+// listRules reads the fixture site's stored shield rules.
+func (f *fixture) listRules(t *testing.T) []shields.Rule {
+	t.Helper()
+
+	lease, err := f.accounts.Acquire(context.Background(), f.teamID)
+	if err != nil {
+		t.Fatalf("open account: %v", err)
+	}
+
+	defer lease.Release() //nolint:errcheck // a test read
+
+	rules, err := shields.List(context.Background(), lease.Account.Reader(), f.siteID)
+	if err != nil {
+		t.Fatalf("list rules: %v", err)
+	}
+
+	return rules
 }
 
 // TestTheTruncationWarningNamesTheNumber is the third named warning.
@@ -530,5 +612,72 @@ func TestPanelUsesAnExactOpenClosedDayWindow(t *testing.T) {
 	}
 	if panel.LastRequest != nil {
 		t.Fatalf("future last request leaked into panel: %+v", panel.LastRequest)
+	}
+}
+
+// TestAllowingAHostnameLetsItsEventsThroughTheWriter is the button's real job.
+// The writer decides an event's hostname against the shield snapshot, so a
+// hostname the panel allowed has to pass that snapshot in every process,
+// including one that picks the change up only from storage on its next
+// fifteen-second pass.
+func TestAllowingAHostnameLetsItsEventsThroughTheWriter(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	// A second process, which learns about rules only by reading storage.
+	other := shields.New(f.sites, f.accounts)
+	if err := other.Refresh(ctx); err != nil {
+		t.Fatalf("refresh shields: %v", err)
+	}
+
+	if allowed, _ := other.Allowed(f.siteID, "staging.other.example", "/", ""); allowed {
+		t.Fatal("a hostname outside the site's domain was accepted before anybody allowed it")
+	}
+
+	if err := f.store.AllowHostname(ctx, f.domain, "staging.other.example", "en"); err != nil {
+		t.Fatalf("allow: %v", err)
+	}
+
+	if err := other.RefreshChanged(ctx); err != nil {
+		t.Fatalf("refresh shields: %v", err)
+	}
+
+	if allowed, reason := other.Allowed(f.siteID, "staging.other.example", "/", ""); !allowed {
+		t.Fatalf("the writer still refuses the hostname the panel allowed: %s", reason)
+	}
+
+	// And through the real writer, to disk.
+	writer := ingest.NewWriter(f.accounts)
+	writer.Now = func() time.Time { return f.now }
+	writer.Shield = other
+
+	if _, err := writer.Write(ctx, []ingest.Event{{
+		UUID:      uuid.New(),
+		AccountID: f.teamID,
+		SiteID:    f.siteID,
+		Timestamp: f.now.Unix(),
+		DerivedAt: f.now.UnixNano(),
+		Name:      ingest.EventPageview,
+		UserID:    4242,
+		Hostname:  "staging.other.example",
+		Pathname:  "/",
+		Country:   "US",
+	}}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	lease, err := f.accounts.Acquire(ctx, f.teamID)
+	if err != nil {
+		t.Fatalf("open account: %v", err)
+	}
+	defer lease.Release() //nolint:errcheck // a test read
+
+	var stored int
+	if err := lease.Account.Reader().QueryRowContext(ctx, "SELECT COUNT(*) FROM events").Scan(&stored); err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+
+	if stored != 1 {
+		t.Fatalf("the writer stored %d events from the allowed hostname, want 1", stored)
 	}
 }

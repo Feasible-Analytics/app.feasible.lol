@@ -26,6 +26,7 @@ package shields
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/netip"
 	"sort"
@@ -141,6 +142,28 @@ func Normalise(kind, value string) (string, error) {
 	}
 }
 
+// ErrExists matches the error Add returns when the site already holds the same
+// rule. The health panel's Allow button treats it as success, since the
+// hostname it was asked to allow is allowed.
+var ErrExists = errors.New("shields: the rule already exists")
+
+// existsError is the duplicate-rule error. Its message is the sentence the
+// Shields page shows, and errors.Is matches it against ErrExists.
+type existsError struct {
+	value string
+	kind  string
+}
+
+// Error returns the sentence the customer reads.
+func (e *existsError) Error() string {
+	return fmt.Sprintf("%s is already on the %s list", e.value, e.kind)
+}
+
+// Is reports whether target is ErrExists.
+func (e *existsError) Is(target error) bool {
+	return target == ErrExists
+}
+
 // List reads one site's rules, ordered so the settings page renders them the
 // same way twice.
 func List(ctx context.Context, db *sql.DB, siteID int64) ([]Rule, error) {
@@ -196,7 +219,7 @@ func Add(ctx context.Context, db *sql.DB, siteID int64, kind, value, note string
 		// The unique index is the only constraint that can fire here, and the
 		// customer's version of it is not a database error.
 		if strings.Contains(err.Error(), "UNIQUE") {
-			return Rule{}, fmt.Errorf("%s is already on the %s list", normalised, kind)
+			return Rule{}, &existsError{value: normalised, kind: kind}
 		}
 
 		return Rule{}, fmt.Errorf("shields: add rule: %w", err)
@@ -305,6 +328,17 @@ func (r *Ruleset) AllowedHostnames() []string {
 	sort.Strings(hostnames)
 
 	return hostnames
+}
+
+// ListsHostname reports whether the hostname is one of the explicit additive
+// hostname rules. Unlike HostnameAllowed it says nothing about the registered
+// domain, and a missing ruleset lists nothing.
+func (r *Ruleset) ListsHostname(hostname string) bool {
+	if r == nil {
+		return false
+	}
+
+	return r.hostnames[normaliseHostname(hostname)]
 }
 
 // BlockedIPPrefixes lists the canonical address ranges that must be evaluated

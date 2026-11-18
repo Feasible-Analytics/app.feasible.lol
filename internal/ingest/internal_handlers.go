@@ -31,12 +31,14 @@ const (
 	InternalIngestPath = "/internal/ingest"
 )
 
-// RoutedSite is one domain record returned to ingesters. Blocked IP rules are
-// the sole account-specific policy copied forward because they must run before
-// the raw address is discarded.
+// RoutedSite is one domain record returned to ingesters. It carries the two
+// rules an ingester applies before an event leaves it: blocked IPs, because
+// the raw address is discarded there, and the extra hostnames the site
+// allowed, so the ingester's early hostname check matches the writer's.
 type RoutedSite struct {
-	Site       sites.Site `json:"site"`
-	BlockedIPs []string   `json:"blocked_ips,omitempty"`
+	Site             sites.Site `json:"site"`
+	BlockedIPs       []string   `json:"blocked_ips,omitempty"`
+	AllowedHostnames []string   `json:"allowed_hostnames,omitempty"`
 }
 
 // DomainsResponse is one versioned routing snapshot from an app shard.
@@ -110,10 +112,11 @@ func (s *InternalShard) observe(events []Event, committed []uuid.UUID) {
 	}
 }
 
-// RoutingShields exposes only the IP rules that must cross into the ingest
-// tier, avoiding any dependency on account-side policy implementation.
+// RoutingShields exposes the rules that cross into the ingest tier, without a
+// dependency on how the account side stores them.
 type RoutingShields interface {
 	BlockedIPPrefixes(siteID int64) []string
+	AllowedHostnames(siteID int64) []string
 }
 
 // BatchWriter is the app shard's durable account writer. Keeping the protocol
@@ -157,6 +160,7 @@ func (s *InternalShard) handleDomains(w http.ResponseWriter, r *http.Request) {
 		routed := RoutedSite{Site: site}
 		if s.Shields != nil {
 			routed.BlockedIPs = s.Shields.BlockedIPPrefixes(site.ID)
+			routed.AllowedHostnames = s.Shields.AllowedHostnames(site.ID)
 		}
 		response.Sites = append(response.Sites, routed)
 	}

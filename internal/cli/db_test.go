@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/accounts"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/shields"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 )
 
@@ -143,6 +144,120 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	}
 	if strings.Count(stdout, "database already current") != 2 {
 		t.Fatalf("the second run was not clear about doing nothing: %q", stdout)
+	}
+}
+
+// seedAllowedHostnames migrates the data directory, then gives account 1 a site
+// whose hostnames were allowed into the retired system-database list, the way
+// the health panel stored them: the site's own domain beside each hostname.
+func seedAllowedHostnames(t *testing.T, dir string) {
+	t.Helper()
+
+	if code, _, stderr := run(t, "db", "migrate"); code != ExitOK {
+		t.Fatalf("first migrate: exit code %d, stderr: %s", code, stderr)
+	}
+
+	control, err := store.Open(filepath.Join(dir, "system.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+
+	for _, statement := range []string{
+		"INSERT INTO teams (id, name, created_at, updated_at) VALUES (1, 'Acme', 0, 0)",
+		"INSERT INTO sites (id, account_id, domain, created_at, updated_at) VALUES (5, 1, 'acme.example', 0, 0)",
+		"INSERT INTO site_allowed_hostnames (site_id, hostname, created_at) VALUES (5, 'acme.example', 1790000000)",
+		"INSERT INTO site_allowed_hostnames (site_id, hostname, created_at) VALUES (5, 'staging.other.example', 1790000000)",
+	} {
+		if _, err := control.ExecContext(context.Background(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestMigrateCarriesAllowedHostnamesOntoShieldRules checks nobody who allowed
+// a hostname loses it. The writer decides hostnames by shield rules, so each
+// allowed hostname has to become one, the account has to be stamped so a
+// running process applies it within one refresh, and the old row has to go.
+func TestMigrateCarriesAllowedHostnamesOntoShieldRules(t *testing.T) {
+	dir := seedDataDir(t)
+	t.Setenv("FEASIBLE_APP_DATA_DIR", dir)
+	seedAllowedHostnames(t, dir)
+
+	code, stdout, stderr := run(t, "db", "migrate")
+	if code != ExitOK {
+		t.Fatalf("exit code %d, stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "allowed hostnames carried to shield rules") {
+		t.Fatalf("the carry was not logged: %q", stdout)
+	}
+
+	account, err := store.Open(accounts.Path(dir, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer account.Close()
+
+	rules, err := shields.List(context.Background(), account, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].Kind != shields.KindHostname || rules[0].Value != "staging.other.example" {
+		t.Fatalf("the account holds rules %+v, want one hostname rule for staging.other.example", rules)
+	}
+
+	control, err := store.Open(filepath.Join(dir, "system.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+
+	var left, stamped int
+	if err := control.QueryRow("SELECT COUNT(*) FROM site_allowed_hostnames").Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.QueryRow("SELECT COUNT(*) FROM account_rule_versions WHERE account_id = 1").Scan(&stamped); err != nil {
+		t.Fatal(err)
+	}
+	if left != 0 || stamped != 1 {
+		t.Fatalf("after the carry %d rows are left and the account is stamped %d times, want 0 and 1", left, stamped)
+	}
+}
+
+// TestMigrateLeavesHostnamesWhoseAccountIsMissing checks a row that cannot be
+// carried stays put and is named, rather than vanishing with nobody told.
+func TestMigrateLeavesHostnamesWhoseAccountIsMissing(t *testing.T) {
+	dir := seedDataDir(t)
+	t.Setenv("FEASIBLE_APP_DATA_DIR", dir)
+	seedAllowedHostnames(t, dir)
+
+	if err := os.RemoveAll(filepath.Dir(accounts.Path(dir, 1))); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := run(t, "db", "migrate")
+	if code != ExitOK {
+		t.Fatalf("exit code %d, stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "the account database is missing") {
+		t.Fatalf("the missing account was not named: %q", stdout)
+	}
+	if _, err := os.Stat(accounts.Path(dir, 1)); !os.IsNotExist(err) {
+		t.Fatalf("the carry created an account database: %v", err)
+	}
+
+	control, err := store.Open(filepath.Join(dir, "system.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+
+	var left int
+	if err := control.QueryRow("SELECT COUNT(*) FROM site_allowed_hostnames").Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left != 2 {
+		t.Fatalf("%d rows are left, want both kept for the next run", left)
 	}
 }
 

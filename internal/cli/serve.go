@@ -221,7 +221,7 @@ func runServe(e *env, args []string) int {
 	// panel. They are assembled in one place so that the shared-link handler and
 	// the authenticated dashboard render the same shell rather than two copies
 	// of it that drift.
-	extra := buildServices(e, control, manager, service, mailer)
+	extra := buildServices(e, control, manager, service, site.shields, mailer)
 	extra.Notifier.Unsubscribe = unsubscribe
 
 	checks := &health.Set{}

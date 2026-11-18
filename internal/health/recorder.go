@@ -86,6 +86,11 @@ type Recorder struct {
 	Sites    *sites.Cache
 	Log      *logger.Logger
 
+	// Hostnames answers whether a site allowed a hostname outside its own
+	// domain. It is the writer's shield snapshot, so a hostname is unexpected
+	// here exactly when the writer refuses it. Nil means no site allowed any.
+	Hostnames HostnameRules
+
 	// Now is the clock buckets are stamped with, injectable so a test can drive
 	// two hours of traffic through in a millisecond.
 	Now func() time.Time
@@ -145,6 +150,12 @@ type lastRequest struct {
 // grouping keeps at one per account.
 type opener interface {
 	Acquire(ctx context.Context, id int64) (*accounts.Lease, error)
+}
+
+// HostnameRules is the part of the shield snapshot the recorder reads: the
+// hostnames a site added beyond its own domain and subdomains.
+type HostnameRules interface {
+	ListsHostname(siteID int64, hostname string) bool
 }
 
 // NewRecorder builds a recorder over the account manager and the routing map.
@@ -315,14 +326,11 @@ func (r *Recorder) makeFairObservationRoom(accountID, siteID int64, incoming int
 }
 
 // unexpectedHostname reports whether an event's hostname is one this site did
-// not ask for.
-//
-// With an explicit allow-list the answer is simply "not on it". Without one —
-// which is almost every site — the useful question is whether the hostname is
-// the site's own domain or a subdomain of it. A snippet copied onto a staging
-// domain, a scraper mirror or somebody else's site is exactly what this catches,
-// and it is one of the few analytics problems that is completely invisible from
-// the numbers alone.
+// not ask for: not the site's own domain, not a subdomain of it, and not a
+// hostname the site allowed. A snippet copied onto a staging domain, a scraper
+// mirror or somebody else's site is exactly what this catches, and it is one
+// of the few analytics problems that is completely invisible from the numbers
+// alone.
 func (r *Recorder) unexpectedHostname(domain, hostname string) bool {
 	if r.Sites == nil {
 		return false
@@ -333,14 +341,14 @@ func (r *Recorder) unexpectedHostname(domain, hostname string) bool {
 		return false
 	}
 
-	if len(site.AllowedHostnames) > 0 {
-		return !site.HostnameAllowed(hostname)
-	}
-
 	registered := sites.Normalise(site.Domain)
 	seen := sites.Normalise(hostname)
 
-	return seen != registered && !strings.HasSuffix(seen, "."+registered)
+	if seen == registered || strings.HasSuffix(seen, "."+registered) {
+		return false
+	}
+
+	return r.Hostnames == nil || !r.Hostnames.ListsHostname(site.ID, seen)
 }
 
 // truncationCount is one truncation reason and how many of it an event carried.
