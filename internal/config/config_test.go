@@ -287,10 +287,45 @@ func TestTraceIdentityDefaultsOff(t *testing.T) {
 	}
 }
 
+// TestSourceIconsDefaultOnAndTurnOff covers the switch on the one outbound call
+// a self-hosted install makes without being configured to. It stays on unless
+// somebody says otherwise, in hosted and self-hosted mode alike, and false
+// turns it off.
+func TestSourceIconsDefaultOnAndTurnOff(t *testing.T) {
+	loader, err := NewLoader("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, hosted := range []string{"true", "false"} {
+		t.Setenv("FEASIBLE_APP_HOSTED", hosted)
+
+		cfg, err := LoadFrom(loader)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if !cfg.App.SourceIcons {
+			t.Fatalf("source icons default off with FEASIBLE_APP_HOSTED=%s", hosted)
+		}
+	}
+
+	t.Setenv("FEASIBLE_APP_SOURCE_ICONS", "false")
+
+	cfg, err := LoadFrom(loader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.App.SourceIcons {
+		t.Fatal("FEASIBLE_APP_SOURCE_ICONS=false left source icons on")
+	}
+}
+
 // TestLoadFromRejectsMalformedBooleans covers every boolean whose fallback can
-// alter telemetry, legal mode, or SMTP transport security.
+// alter telemetry, legal mode, SMTP transport security, or an outbound call.
 func TestLoadFromRejectsMalformedBooleans(t *testing.T) {
-	for _, name := range []string{"FEASIBLE_TRACE_EVENTS", "FEASIBLE_TRACE_IDENTITY", "FEASIBLE_APP_HOSTED", "FEASIBLE_SMTP_STARTTLS"} {
+	for _, name := range []string{"FEASIBLE_TRACE_EVENTS", "FEASIBLE_TRACE_IDENTITY", "FEASIBLE_APP_HOSTED", "FEASIBLE_SMTP_STARTTLS", "FEASIBLE_APP_SOURCE_ICONS"} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(name, "truthy")
 			loader, err := NewLoader("", "")

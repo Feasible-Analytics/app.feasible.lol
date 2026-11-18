@@ -834,6 +834,7 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 	// telling every site that ever linked to yours that somebody is looking at
 	// their referral traffic.
 	favicons := newFavicons(filepath.Join(dataDir, "favicons"), e.log)
+	favicons.Disabled = !e.cfg.App.SourceIcons
 	favicons.Scope = func(r *http.Request) (string, bool) {
 		return stats.Scope(faviconAccess(r), r.URL.Query().Get("site"))
 	}

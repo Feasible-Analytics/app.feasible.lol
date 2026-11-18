@@ -126,6 +126,11 @@ type Favicons struct {
 	// allows every one.
 	Limit func(*http.Request) bool
 
+	// Disabled answers every name with its letter tile. Nothing is fetched,
+	// nothing already cached is served, and no shown names are recorded, so
+	// the icon service is never contacted by this process.
+	Disabled bool
+
 	// MaxDiskBytes and MaxMemoryBytes cap the two halves of the cache. Zero
 	// takes the defaults.
 	MaxDiskBytes   int64
@@ -169,7 +174,7 @@ func NewFavicons(dir string, log *logger.Logger) *Favicons {
 // what entitles a request from that view to an icon for one of them. The stats
 // endpoint calls it with every source report it answers.
 func (f *Favicons) Allow(key string, names []string) {
-	if key == "" || len(names) == 0 {
+	if f.Disabled || key == "" || len(names) == 0 {
 		return
 	}
 
@@ -270,10 +275,10 @@ const tileType = "image/svg+xml; charset=utf-8"
 // entitled to.
 func (f *Favicons) icon(r *http.Request, name string) (body []byte, contentType, cacheControl string) {
 	host := hostFor(name)
-	if host == "" {
-		// A channel, a campaign tag or direct traffic. There is no site to
-		// fetch an icon from, and pretending otherwise would spend a request to
-		// arrive at the same tile.
+	if f.Disabled || host == "" {
+		// The operator turned icons off, or the name is a channel, a campaign
+		// tag or direct traffic with no site to fetch an icon from. Either way
+		// the tile is the whole answer.
 		return tile(name), tileType, browserCacheControl
 	}
 

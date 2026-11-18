@@ -1,6 +1,6 @@
 #
 # release.yml
-# Manually tag main, build cross-platform binaries and publish a GitHub Release.
+# Manually tag main, build cross-platform binaries and a container image, and publish a GitHub Release.
 #
 # Created: 2026-09-01
 # Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -16,9 +16,11 @@ on:
         required: false
         type: string
 
-# The release command creates both a tag and a GitHub Release.
+# The release command creates both a tag and a GitHub Release, and pushes the
+# container image to GitHub's registry.
 permissions:
   contents: write
+  packages: write
 
 # Automatic patch selection must be serialized so two manual runs cannot choose
 # the same next version while neither tag exists yet.
@@ -151,6 +153,71 @@ jobs:
           tar -C "$staging" -xzf "dist/feasible_${RELEASE_VERSION}_linux_amd64.tar.gz"
           "$staging/feasible" --version | grep -F "feasible v${RELEASE_VERSION}"
           rm -rf "$staging"
+
+      # The image carries the Linux binaries from the archives above rather than
+      # compiling its own, so a container runs the same bytes people download.
+      # They replace the Dockerfile's source-build stage through a build context
+      # of the same name. The final stage only copies files, so no emulation is
+      # needed for arm64.
+      - name: Stage image binaries
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for goarch in amd64 arm64; do
+            mkdir -p "image-binaries/linux/${goarch}"
+            tar -C "image-binaries/linux/${goarch}" \
+              -xzf "dist/feasible_${RELEASE_VERSION}_linux_${goarch}.tar.gz" feasible
+          done
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # One platform is loaded into the runner and started before anything is
+      # pushed, so an image that cannot run never reaches the registry.
+      - name: Build image for the smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          build-contexts: binaries=image-binaries
+          platforms: linux/amd64
+          load: true
+          tags: feasible:smoke
+
+      - name: Verify image
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker run --rm feasible:smoke --version | grep -F "feasible v${RELEASE_VERSION}"
+
+      # Pushed before the tag exists, so a failed push leaves no release behind
+      # and the next run picks the same version again. Provenance attestations
+      # are off because the registry lists each one as an extra unknown/unknown
+      # platform beside the two real ones.
+      - name: Publish image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          build-contexts: binaries=image-binaries
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/feasible-analytics/feasible:${{ steps.release.outputs.version }}
+            ghcr.io/feasible-analytics/feasible:latest
+          labels: |
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.release.outputs.sha }}
 
       # Push the tag before creating the release. This preserves the exact
       # checked-out commit that produced the binaries and follows the release

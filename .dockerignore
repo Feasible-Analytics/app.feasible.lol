@@ -1,0 +1,24 @@
+#
+# .dockerignore
+# Keeps the build context to the source the binary is compiled from.
+#
+# Created: 2026-11-18
+# Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+#
+
+.git
+.github
+.claude
+.env
+.env.local
+**/node_modules
+**/.DS_Store
+data
+tmp
+dist
+bin
+feasible
+ecosystem
+tracker/test-results
+tracker/playwright-report
+web/.test-build
