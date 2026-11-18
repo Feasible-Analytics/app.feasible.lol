@@ -254,6 +254,12 @@ type App struct {
 	// self-hoster gets it off by default and hosted gets it on.
 	Gravatar bool
 
+	// SourceIcons decides whether the dashboard's source rows get real icons,
+	// fetched by this server from a public icon service. Off, every source is a
+	// letter tile and the process never contacts that service. It defaults to
+	// on, hosted and self-hosted alike.
+	SourceIcons bool
+
 	SMTP   SMTP
 	AWS    AWS
 	Google GoogleOAuth
@@ -683,6 +689,10 @@ func LoadFrom(l *Loader) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	sourceIcons, err := l.Bool("FEASIBLE_APP_SOURCE_ICONS", true)
+	if err != nil {
+		return nil, err
+	}
 	trustSender, err := l.Bool("FEASIBLE_INGEST_TRUST_SENDER_ADDRESS", false)
 	if err != nil {
 		return nil, err
@@ -772,6 +782,7 @@ func LoadFrom(l *Loader) (*Config, error) {
 			SecretKey:         strings.TrimSpace(l.String("FEASIBLE_APP_SECRET_KEY", "")),
 			Worker:            worker,
 			Gravatar:          gravatar,
+			SourceIcons:       sourceIcons,
 			SMTP: SMTP{
 				Host:     strings.TrimSpace(l.String("FEASIBLE_SMTP_HOST", "")),
 				Port:     smtpPort,

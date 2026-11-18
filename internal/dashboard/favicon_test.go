@@ -264,6 +264,46 @@ func TestChannelNamesNeverGoUpstream(t *testing.T) {
 	}
 }
 
+// TestDisabledServesOnlyTiles covers the operator's off switch. Every name gets
+// its tile, a built-in source and an icon already on disk included, and the
+// upstream is never asked, because the point of the switch is that this
+// process makes no call to the icon service at all.
+func TestDisabledServesOnlyTiles(t *testing.T) {
+	dir := t.TempDir()
+
+	first := &stub{status: http.StatusOK, contentType: "image/x-icon", body: []byte("icon-bytes")}
+	warm := NewFavicons(dir, nil)
+	warm.Client = &http.Client{Transport: first}
+
+	if body := fetch(t, warm, "Hacker News").Body.String(); body != "icon-bytes" {
+		t.Fatalf("the warm-up answered %q, want the upstream bytes", body)
+	}
+
+	upstream := &stub{status: http.StatusOK, contentType: "image/x-icon", body: []byte("icon-bytes")}
+	off := NewFavicons(dir, nil)
+	off.Client = &http.Client{Transport: upstream}
+	off.Scope = func(*http.Request) (string, bool) { return view, true }
+	off.Disabled = true
+
+	shown(off, "blog.partner.org")
+
+	for _, name := range []string{"Hacker News", "DuckDuckGo", "blog.partner.org", "Direct"} {
+		w := fetch(t, off, name)
+
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<svg") {
+			t.Errorf("%q answered %d %q, want the tile", name, w.Code, w.Body.String())
+		}
+	}
+
+	if len(upstream.calls) != 0 {
+		t.Fatalf("upstream was asked %v with icons turned off", upstream.calls)
+	}
+
+	if len(off.scopes) != 0 {
+		t.Fatalf("%d view(s) were recorded with icons turned off", len(off.scopes))
+	}
+}
+
 // TestTileIsStableAndEscaped covers the fallback image itself. The colour has to
 // be a function of the name so the same source looks the same on every
 // dashboard, and the initial has to be safe: the name comes from a referrer

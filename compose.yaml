@@ -1,0 +1,28 @@
+#
+# compose.yaml
+# One container, one volume, one settings file. There is no database or queue service to add.
+#
+# Created: 2026-11-18
+# Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
+#
+# Write feasible.env next to this file (the README shows what goes in it), then:
+#
+#   docker compose run --rm feasible db migrate
+#   docker compose run --rm feasible account create --email you@example.com --name "Your Name"
+#   docker compose up -d
+#
+# The port is published on 127.0.0.1 only, for a TLS proxy on the same machine.
+# Swap latest for a release number, without the v, to upgrade when you choose.
+
+services:
+  feasible:
+    image: ghcr.io/feasible-analytics/feasible:latest
+    restart: unless-stopped
+    env_file: feasible.env
+    ports:
+      - "127.0.0.1:19301:19301"
+    volumes:
+      - feasible-data:/data
+
+volumes:
+  feasible-data:

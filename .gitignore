@@ -1,6 +1,7 @@
 # Environment
 .env
 .env.local
+feasible.env
 
 # Local data — SQLite databases, ingest buffers, GeoIP
 data/

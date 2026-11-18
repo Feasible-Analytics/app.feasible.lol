@@ -125,9 +125,63 @@ A few things worth knowing:
   features hide themselves.
 - **Backups.** `./feasible db backup` writes a consistent snapshot of every database. Don't `cp`
   files a running process is writing.
+- **Source icons.** The rows on the Sources card show icons your server fetches from DuckDuckGo's
+  icon service and serves from your own address. The request carries the source's hostname and
+  nothing else. Set `FEASIBLE_APP_SOURCE_ICONS=false` and every source gets a letter tile instead,
+  with no request at all.
 
 Every variable is documented in [`.env.sample`](.env.sample). The full guide is at
 [feasible.lol/docs/self-hosting](https://feasible.lol/docs/self-hosting/).
+
+### Docker
+
+You don't need it, but if you run everything in containers there's an image of the same binary for
+linux/amd64 and linux/arm64. There's no database or queue container to go with it, because there
+isn't one.
+
+```bash
+docker pull ghcr.io/feasible-analytics/feasible:latest
+```
+
+Put [`compose.yaml`](compose.yaml) in a folder with a `feasible.env` next to it. It's the file above
+without the listen address and data directory, which the image sets to `:19301` and `/data`. The
+image also sets `FEASIBLE_ENV=production` and `FEASIBLE_APP_HOSTED=false`.
+
+```bash
+cat > feasible.env <<EOF
+FEASIBLE_APP_BASE_URL=https://stats.example.com
+FEASIBLE_INGEST_SALT=$(openssl rand -hex 32)
+FEASIBLE_INGEST_TRUSTED_PROXIES=172.16.0.0/12
+FEASIBLE_OPERATOR_EMAIL=you@example.com
+EOF
+
+docker compose run --rm feasible db migrate
+docker compose run --rm feasible account create --email you@example.com --name "Your Name"
+docker compose up -d
+```
+
+The compose file publishes port 19301 on `127.0.0.1` only, for a TLS proxy on the same machine, so
+the Caddy config above works unchanged. Inside the container, your proxy's connections arrive from
+Docker's network gateway, an address in `172.16.0.0/12`, which is why that range is the trusted
+proxy. If your Docker hands out other ranges, `docker network inspect` shows the gateway to use.
+
+All the data is in the `feasible-data` volume, at `/data`. The container runs as uid 65532, so if
+you bind-mount a folder instead, `chown 65532:65532` it first. Every other command runs the same
+way, such as `docker compose run --rm feasible db backup`.
+
+To upgrade, back up with the old image, then migrate with the new one:
+
+```bash
+docker compose stop
+docker compose run --rm feasible db backup
+docker compose pull
+docker compose run --rm feasible db migrate
+docker compose up -d
+```
+
+To choose when you upgrade, swap `latest` in `compose.yaml` for a release number. The image tags
+match the [releases](https://github.com/Feasible-Analytics/app.feasible.lol/releases), without the
+`v`.
 
 ## What's in it
 
@@ -247,7 +301,8 @@ make check-env         # every environment variable is documented in .env.sample
 Releases are a deliberate choice, never automatic. When `main` is stable, run the **Release**
 workflow from the Actions tab. Leave the version blank to bump the patch number, or give one like
 `1.2.3`. It tags `main`, creates the GitHub Release and attaches Linux, Windows and macOS builds for
-amd64 and arm64 with a SHA-256 checksum file.
+amd64 and arm64 with a SHA-256 checksum file. It also pushes `ghcr.io/feasible-analytics/feasible`,
+tagged with the version and `latest`, built from the same two Linux binaries.
 
 ## License
 

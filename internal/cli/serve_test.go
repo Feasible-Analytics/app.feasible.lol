@@ -716,11 +716,11 @@ func (u *iconUpstream) RoundTrip(r *http.Request) (*http.Response, error) {
 	}, nil
 }
 
-// TestSourceIconsAreOnlyFetchedForNamesAReportShowedTheViewer drives the icon
-// proxy through the assembled routes on a public dashboard. A name nobody was
-// shown costs no fetch and no file; the same name, once the public sources
-// report has listed it, gets its icon; and that entitles no other view to it.
-func TestSourceIconsAreOnlyFetchedForNamesAReportShowedTheViewer(t *testing.T) {
+// stubIconUpstream makes every icon proxy serve builds answer from memory
+// instead of the network, and returns the counter of fetches it was asked for.
+func stubIconUpstream(t *testing.T) *iconUpstream {
+	t.Helper()
+
 	upstream := &iconUpstream{}
 	original := newFavicons
 	newFavicons = func(dir string, log *logger.Logger) *dashboard.Favicons {
@@ -731,8 +731,13 @@ func TestSourceIconsAreOnlyFetchedForNamesAReportShowedTheViewer(t *testing.T) {
 	}
 	t.Cleanup(func() { newFavicons = original })
 
-	s := newStack(t)
-	s.pay(t)
+	return upstream
+}
+
+// seedSourceVisit writes one pageview from the named source into the test
+// account, an hour ago, so a sources report has a row to list.
+func seedSourceVisit(t *testing.T, s *stack, name string) {
+	t.Helper()
 
 	ctx := context.Background()
 
@@ -746,7 +751,7 @@ func TestSourceIconsAreOnlyFetchedForNamesAReportShowedTheViewer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	source, err := account.Intern.ID(ctx, intern.Source, "blog.partner.org")
+	source, err := account.Intern.ID(ctx, intern.Source, name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -764,6 +769,18 @@ func TestSourceIconsAreOnlyFetchedForNamesAReportShowedTheViewer(t *testing.T) {
 		VALUES (1, ?, ?, 500, 1, ?)`, at, pageview, source); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestSourceIconsAreOnlyFetchedForNamesAReportShowedTheViewer drives the icon
+// proxy through the assembled routes on a public dashboard. A name nobody was
+// shown costs no fetch and no file; the same name, once the public sources
+// report has listed it, gets its icon; and that entitles no other view to it.
+func TestSourceIconsAreOnlyFetchedForNamesAReportShowedTheViewer(t *testing.T) {
+	upstream := stubIconUpstream(t)
+
+	s := newStack(t)
+	s.pay(t)
+	seedSourceVisit(t, s, "blog.partner.org")
 
 	icons := filepath.Join(s.dataDir, "favicons")
 	public := "/favicon/sources/blog.partner.org?site=example.com&public=public"
@@ -819,6 +836,45 @@ func TestSourceIconsAreOnlyFetchedForNamesAReportShowedTheViewer(t *testing.T) {
 
 	if entries, _ := os.ReadDir(icons); len(entries) != 1 {
 		t.Errorf("the cache holds %d file(s), want one", len(entries))
+	}
+}
+
+// TestSourceIconsOffNeverFetches drives the same public dashboard with
+// FEASIBLE_APP_SOURCE_ICONS=false. The report lists the source, which would
+// normally entitle the view to its icon, and the answer is still the tile, with
+// no fetch and nothing cached.
+func TestSourceIconsOffNeverFetches(t *testing.T) {
+	t.Setenv("FEASIBLE_APP_SOURCE_ICONS", "false")
+
+	upstream := stubIconUpstream(t)
+
+	s := newStack(t)
+	s.pay(t)
+	seedSourceVisit(t, s, "blog.partner.org")
+
+	report := s.send(t, http.MethodPost, "/api/stats/example.com/query",
+		`{"metrics":["visitors"],"date_range":"7d","dimensions":["visit:source"]}`,
+		map[string]string{"Content-Type": "application/json", sharing.HeaderPublic: "public"})
+	if report.Code != http.StatusOK || !strings.Contains(report.Body.String(), "blog.partner.org") {
+		t.Fatalf("the public sources report answered %d: %s", report.Code, report.Body.String())
+	}
+
+	for _, path := range []string{
+		"/favicon/sources/blog.partner.org?site=example.com&public=public",
+		"/favicon/sources/Hacker%20News?site=example.com&public=public",
+	} {
+		response := s.send(t, http.MethodGet, path, "", nil)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "<svg") {
+			t.Errorf("%s answered %d %q, want the tile", path, response.Code, response.Body.String())
+		}
+	}
+
+	if upstream.calls != 0 {
+		t.Fatalf("upstream was asked %d time(s) with source icons off", upstream.calls)
+	}
+
+	if entries, _ := os.ReadDir(filepath.Join(s.dataDir, "favicons")); len(entries) != 0 {
+		t.Fatalf("the cache holds %d file(s) with source icons off", len(entries))
 	}
 }
 
