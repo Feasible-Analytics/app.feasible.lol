@@ -352,7 +352,7 @@ func TestGA4WorkerCompletesAndRecordsFailures(t *testing.T) {
 			ctx := context.Background()
 			now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
 			workers, account := newWorkers(t, &searchStub{}, now)
-			ga4TestServer(t, bad)
+			ga4TestServer(t, bad, nil)
 			if err := SaveConnection(ctx, account.Writer(), Connection{SiteID: 1, AccountID: 1, Provider: ProviderGA4, Property: "123", AccessToken: "valid", ExpiresAt: now.Add(time.Hour).Unix()}, now); err != nil {
 				t.Fatal(err)
 			}

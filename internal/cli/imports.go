@@ -1,6 +1,6 @@
 //
 // imports.go
-// The `imports summarise` subcommand.
+// The `imports summarise` and `imports rename` subcommands.
 //
 // Created: 2026-09-06
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -21,6 +21,7 @@ const importsHelp = `feasible imports — the history a customer brought with th
 
 Commands:
   summarise  Build the week and month summaries an import needs to read quickly.
+  rename     Rewrite imported values into the names live collection stores.
 `
 
 const importsSummariseHelp = `feasible imports summarise — build the week and month summaries.
@@ -45,6 +46,8 @@ func runImports(e *env, args []string) int {
 	switch args[0] {
 	case "summarise", "summarize":
 		return runImportsSummarise(e, args[1:])
+	case "rename":
+		return runImportsRename(e, args[1:])
 	default:
 		fmt.Fprintf(e.stderr, "unknown imports command %q\n\n", args[0])
 		fmt.Fprint(e.stderr, importsHelp)
@@ -112,4 +115,116 @@ func runImportsSummarise(e *env, args []string) int {
 	fmt.Fprintf(e.stdout, "summarised %d import(s)\n", summarised)
 
 	return ExitOK
+}
+
+const importsRenameHelp = `feasible imports rename — rewrite imported values into live names.
+
+Rewrites the browser, system, device, source, referrer, campaign, country and
+page values of every completed import into the spelling live collection stores
+for the same thing, then rebuilds the week and month summaries of each import
+it changed.
+
+Only imported rows are written. Collected events and sessions are not touched.
+Running it twice costs nothing: the second run finds nothing to rename.
+
+Take a backup first with feasible db backup.
+
+Flags:
+`
+
+// runImportsRename rewrites every completed import's values into the names
+// live collection stores and prints what changed, import by import.
+func runImportsRename(e *env, args []string) int {
+	fs := newFlagSet("imports rename", e, importsRenameHelp)
+	dataDir := fs.String("data-dir", e.cfg.App.DataDir, "directory holding system.db and the account databases")
+	dryRun := fs.Bool("dry-run", false, "print what would be renamed and write nothing")
+
+	if code, ok := parseFlags(fs, args); !ok {
+		return code
+	}
+
+	ctx := context.Background()
+
+	control, err := openSystem(ctx, *dataDir)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return ExitError
+	}
+	defer control.Close()
+
+	manager := accounts.NewManager(*dataDir)
+	manager.MaxOpen = e.cfg.App.MaxOpenAccounts
+
+	defer func() { _ = manager.CloseAll() }()
+
+	sites, err := rollup.SystemLister(control)(ctx)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return ExitError
+	}
+
+	verb := "renamed"
+	if *dryRun {
+		verb = "would rename"
+	}
+
+	imports, changedImports, changedRows := 0, 0, int64(0)
+
+	for _, ref := range sites {
+		// A walk over every account, so the handles it opens must not evict the
+		// ones taking traffic.
+		lease, err := manager.AcquireForScan(ctx, ref.AccountID)
+		if err != nil {
+			fmt.Fprintf(e.stderr, "%v\n", err)
+			return ExitError
+		}
+
+		results, err := dataio.RenameImports(ctx, lease.Account.Writer(), lease.Account.Intern,
+			ref.Site.ID, ref.Site.Location(), !*dryRun)
+		_ = lease.Release()
+
+		for _, result := range results {
+			imports++
+
+			if result.Rows == 0 {
+				continue
+			}
+
+			changedImports++
+			changedRows += result.Rows
+
+			fmt.Fprintf(e.stdout, "site %d %s, import %d (%s): %s %d row(s)\n",
+				ref.Site.ID, ref.Site.Domain, result.ImportID, result.Source, verb, result.Rows)
+
+			for _, renamed := range result.Renamed {
+				fmt.Fprintf(e.stdout, "  %-22s %s -> %s  (%d row(s))\n",
+					renamed.Dimension, quoteValue(renamed.From), quoteValue(renamed.To), renamed.Rows)
+			}
+		}
+
+		if err != nil {
+			fmt.Fprintf(e.stderr, "site %d: %v\n", ref.Site.ID, err)
+			return ExitError
+		}
+	}
+
+	if *dryRun {
+		fmt.Fprintf(e.stdout, "dry run: %d of %d completed import(s) would change, %d row(s); nothing was written\n",
+			changedImports, imports, changedRows)
+		return ExitOK
+	}
+
+	fmt.Fprintf(e.stdout, "%d of %d completed import(s) renamed, %d row(s)\n", changedImports, imports, changedRows)
+
+	return ExitOK
+}
+
+// quoteValue renders a dimension value for the report, with the empty value
+// spelled out so a rename to nothing is visible.
+func quoteValue(value string) string {
+	if value == "" {
+		return "(empty)"
+	}
+
+	return fmt.Sprintf("%q", value)
 }

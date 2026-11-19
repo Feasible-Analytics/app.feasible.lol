@@ -153,7 +153,7 @@ func importOneFile(ctx context.Context, db *sql.DB, cache *intern.Cache, record 
 		return nil, 0, 0, 0, err
 	}
 
-	writer, err := NewWriter(db, cache, record.ID, record.SiteID, layout.dimensions)
+	writer, err := NewWriter(db, cache, record, layout.dimensions)
 	if err != nil {
 		return nil, 0, 0, 0, fmt.Errorf("%s: %w", source.Name, err)
 	}

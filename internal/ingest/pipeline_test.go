@@ -469,6 +469,36 @@ func TestSiteDomainCasingDoesNotSplitTheVisitor(t *testing.T) {
 	}
 }
 
+// TestStoredHostnameAndPath checks the hostname and path an event stores for a
+// page URL, which imported history is rewritten to match.
+func TestStoredHostnameAndPath(t *testing.T) {
+	cases := []struct {
+		raw      string
+		hostname string
+		path     string
+	}{
+		{"https://www.Example.com/About/?ref=x", "example.com", "/About/"},
+		{"https://shop.example.com:8443", "shop.example.com", "/"},
+		{"https://example.com/caf%C3%A9", "example.com", "/caf%C3%A9"},
+		{"https://example.com/#/pricing", "example.com", "/#/pricing"},
+		{"/no-host", NoneHostname, "/no-host"},
+	}
+
+	for _, tc := range cases {
+		parsed, err := url.Parse(tc.raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if got := StoredHostname(parsed); got != tc.hostname {
+			t.Errorf("StoredHostname(%q) = %q, want %q", tc.raw, got, tc.hostname)
+		}
+		if got := StoredPath(parsed); got != tc.path {
+			t.Errorf("StoredPath(%q) = %q, want %q", tc.raw, got, tc.path)
+		}
+	}
+}
+
 // TestOverlongPathIsNotCutMidEscape checks the truncation lands on a boundary.
 // Cutting "%C3%BC" in half leaves a path ending in "%C" that nothing can decode
 // and that groups as a page of its own on every report.

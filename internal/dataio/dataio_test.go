@@ -16,6 +16,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -75,7 +76,7 @@ var fixtureVisits = []visit{
 	{id: 2, user: 102, startedAt: at(28, 11), duration: 0, bounce: 1,
 		pages: []string{"/pricing"}, source: "Google", country: "GB", browser: "Firefox", device: "Mobile"},
 	{id: 3, user: 101, startedAt: at(29, 9), duration: 60, bounce: 0,
-		pages: []string{"/home", "/about"}, source: "Twitter", country: "US", browser: "Chrome", device: "Desktop"},
+		pages: []string{"/home", "/about"}, source: "X", country: "US", browser: "Chrome", device: "Desktop"},
 	{id: 4, user: 103, startedAt: at(29, 10), duration: 0, bounce: 1,
 		pages: []string{"/home"}, source: "", country: "CA", browser: "Safari", device: "Mobile"},
 	{id: 5, user: 104, startedAt: at(29, 14), duration: 300, bounce: 0,
@@ -372,7 +373,7 @@ func TestFailedImportRemovesPartialRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writer, err := NewWriter(account.Writer(), account.Intern, record.ID, 1, nil)
+	writer, err := NewWriter(account.Writer(), account.Intern, record, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1469,4 +1470,169 @@ func countRows(t *testing.T, db *sql.DB, statement string) int64 {
 	}
 
 	return count
+}
+
+// TestZIPExportNamesMatchLiveCollection runs one row per mapping through the
+// ZIP importer and checks each lands on the name live collection stores for
+// the same thing, so a report over imported and collected days has one row
+// per browser, system and source.
+func TestZIPExportNamesMatchLiveCollection(t *testing.T) {
+	cases := []struct {
+		sheet string
+		row   map[string]string
+		want  map[string]string
+	}{
+		{"imported_sources", map[string]string{"source": "X (Twitter)", "referrer": "t.co"}, map[string]string{"visit:source": "X", "visit:channel": "Organic Social"}},
+		{"imported_sources", map[string]string{"source": "Google Gemini"}, map[string]string{"visit:source": "Gemini", "visit:channel": "AI Assistants"}},
+		{"imported_sources", map[string]string{"source": "Brave"}, map[string]string{"visit:source": "Brave Search", "visit:channel": "Organic Search"}},
+		{"imported_sources", map[string]string{"source": "Vkontakte"}, map[string]string{"visit:source": "VK"}},
+		{"imported_sources", map[string]string{"source": "Sina Weibo"}, map[string]string{"visit:source": "Weibo"}},
+		{"imported_sources", map[string]string{"source": "Outlook.com"}, map[string]string{"visit:source": "Outlook"}},
+		{"imported_sources", map[string]string{"source": "ProtonMail"}, map[string]string{"visit:source": "Proton Mail"}},
+		{"imported_sources", map[string]string{"source": "Wikipedia"}, map[string]string{"visit:source": "wikipedia.org"}},
+		{"imported_sources", map[string]string{"source": "Grok"}, map[string]string{"visit:source": "grok.com"}},
+		{"imported_sources", map[string]string{"source": "DeepSeek"}, map[string]string{"visit:source": "deepseek.com"}},
+		{"imported_sources", map[string]string{"source": "Phind"}, map[string]string{"visit:source": "phind.com"}},
+		{"imported_sources", map[string]string{"source": "Youtube"}, map[string]string{"visit:source": "YouTube"}},
+		{"imported_sources", map[string]string{"source": "Github"}, map[string]string{"visit:source": "GitHub"}},
+		{"imported_sources", map[string]string{"source": "blog.example.com"}, map[string]string{"visit:source": "example.com"}},
+		{"imported_sources", map[string]string{"source": "Direct"}, map[string]string{"visit:source": "", "visit:channel": "Direct"}},
+		{"imported_sources", map[string]string{"source": "Direct / None"}, map[string]string{"visit:source": ""}},
+		{"imported_sources", map[string]string{"source": "Hacker News", "referrer": "www.News.ycombinator.com/item/"},
+			map[string]string{"visit:source": "Hacker News", "visit:referrer": "news.ycombinator.com/item"}},
+		{"imported_sources", map[string]string{"source": "Google", "utm_medium": "(gclid)", "utm_campaign": "(not set)"},
+			map[string]string{"visit:utm_medium": "", "visit:utm_campaign": ""}},
+		{"imported_sources", map[string]string{"source": "Google", "utm_medium": "organic"}, map[string]string{"visit:utm_medium": "organic"}},
+		{"imported_devices", map[string]string{"device": "Laptop"}, map[string]string{"visit:device": "Desktop"}},
+		{"imported_devices", map[string]string{"device": "(not set)"}, map[string]string{"visit:device": ""}},
+		{"imported_browsers", map[string]string{"browser": "Samsung Browser"}, map[string]string{"visit:browser": "Samsung Internet"}},
+		{"imported_browsers", map[string]string{"browser": "DuckDuckGo Privacy Browser"}, map[string]string{"visit:browser": "DuckDuckGo"}},
+		{"imported_browsers", map[string]string{"browser": "Opera GX"}, map[string]string{"visit:browser": "Opera"}},
+		{"imported_browsers", map[string]string{"browser": "Chrome", "browser_version": "140.0"}, map[string]string{"visit:browser": "Chrome", "visit:browser_version": "140"}},
+		{"imported_operating_systems", map[string]string{"operating_system": "Mac", "operating_system_version": "10.15"},
+			map[string]string{"visit:os": "macOS", "visit:os_version": "10.15"}},
+		{"imported_operating_systems", map[string]string{"operating_system": "Android", "operating_system_version": "14.0"},
+			map[string]string{"visit:os": "Android", "visit:os_version": "14"}},
+		{"imported_operating_systems", map[string]string{"operating_system": "Windows", "operating_system_version": "10.0"},
+			map[string]string{"visit:os": "Windows", "visit:os_version": "10"}},
+		{"imported_operating_systems", map[string]string{"operating_system": "iOS", "operating_system_version": "17.4.1"},
+			map[string]string{"visit:os": "iOS", "visit:os_version": "17.4"}},
+		{"imported_locations", map[string]string{"country": "us", "region": "(not set)"}, map[string]string{"visit:country": "US", "visit:region": ""}},
+		{"imported_pages", map[string]string{"hostname": "www.Example.com", "page": "/café?ref=x"},
+			map[string]string{"event:hostname": "example.com", "event:page": "/caf%C3%A9"}},
+		{"imported_entry_pages", map[string]string{"entry_page": "/über/"}, map[string]string{"visit:entry_page": "/%C3%BCber/"}},
+		{"imported_exit_pages", map[string]string{"exit_page": "/a b"}, map[string]string{"visit:exit_page": "/a%20b"}},
+	}
+
+	first := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+
+	// One file per sheet, one dated line per case, so each case's rows are the
+	// only ones on its day.
+	columns := map[string]map[string]bool{}
+	for _, tc := range cases {
+		if columns[tc.sheet] == nil {
+			columns[tc.sheet] = map[string]bool{}
+		}
+		for column := range tc.row {
+			columns[tc.sheet][column] = true
+		}
+	}
+
+	files := map[string]string{
+		"imported_visitors_20260701_20261231.csv": "date,visitors\n2026-07-01,1\n",
+	}
+	bodies := map[string]*strings.Builder{}
+
+	for i, tc := range cases {
+		header := make([]string, 0, len(columns[tc.sheet]))
+		for column := range columns[tc.sheet] {
+			header = append(header, column)
+		}
+		sort.Strings(header)
+
+		body, ok := bodies[tc.sheet]
+		if !ok {
+			body = &strings.Builder{}
+			bodies[tc.sheet] = body
+			writer := csv.NewWriter(body)
+			_ = writer.Write(append(append([]string{"date"}, header...), "visitors"))
+			writer.Flush()
+		}
+
+		line := []string{first.AddDate(0, 0, i).Format("2006-01-02")}
+		for _, column := range header {
+			line = append(line, tc.row[column])
+		}
+
+		writer := csv.NewWriter(body)
+		_ = writer.Write(append(line, "1"))
+		writer.Flush()
+	}
+
+	for sheet, body := range bodies {
+		files[sheet+"_20260701_20261231.csv"] = body.String()
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "export.zip")
+	writeArchive(t, archivePath, files)
+
+	record, account := importPlausibleArchive(t, archivePath)
+
+	for i, tc := range cases {
+		day := first.AddDate(0, 0, i).Unix()
+
+		for dimension, want := range tc.want {
+			if got := storedValue(t, account.Reader(), record.ID, day, dimension); got != want {
+				t.Errorf("%s %v: %s = %q, want %q", tc.sheet, tc.row, dimension, got, want)
+			}
+		}
+	}
+}
+
+// storedValue reads the value one dimension holds on an import's rows for one
+// day, from the rows that carry that dimension. It fails the test unless every
+// such row holds the same value.
+func storedValue(t *testing.T, db *sql.DB, importID, day int64, dimension string) string {
+	t.Helper()
+
+	column, ok := query.ImportedColumn(dimension)
+	if !ok {
+		t.Fatalf("%s is not an imported dimension", dimension)
+	}
+
+	table, ok := query.ImportedInterned(dimension)
+	if !ok {
+		t.Fatalf("%s has no dimension table", dimension)
+	}
+
+	bit, err := query.ImportedCoverage([]string{dimension})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := db.Query("SELECT DISTINCT COALESCE(d.value, '') FROM imported_rollups r "+
+		"LEFT JOIN "+table.Table()+" d ON d.id = r."+column+" "+
+		"WHERE r.import_id = ? AND r.timestamp = ? AND (r.covered & ?) != 0", importID, day, int64(bit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var values []string
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			t.Fatal(err)
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(values) != 1 {
+		t.Fatalf("%s on day %d holds %q, want exactly one value", dimension, day, values)
+	}
+
+	return values[0]
 }
