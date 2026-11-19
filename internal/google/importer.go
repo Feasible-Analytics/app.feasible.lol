@@ -125,7 +125,7 @@ func (a *App) GA4Import(ctx context.Context, db *sql.DB, cache *intern.Cache, re
 func (a *App) importShape(ctx context.Context, db *sql.DB, cache *intern.Cache, record *dataio.Import,
 	connection *Connection, shape reportShape, month monthRange, location *time.Location, now func() time.Time) (int64, error) {
 
-	writer, err := dataio.NewWriter(db, cache, record.ID, record.SiteID, shape.Ours)
+	writer, err := dataio.NewWriter(db, cache, record, shape.Ours)
 	if err != nil {
 		return 0, err
 	}

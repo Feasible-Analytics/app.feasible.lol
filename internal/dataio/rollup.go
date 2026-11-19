@@ -98,6 +98,10 @@ type Writer struct {
 	importID int64
 	siteID   int64
 
+	// origin is the import's source, which decides how its values are
+	// normalised into the names live collection stores.
+	origin string
+
 	// covered is the bitmask every row this writer produces carries: the
 	// dimensions the source genuinely reported. It is fixed per file, because a
 	// file's columns are fixed, and it is the thing that lets a filtered query
@@ -112,10 +116,10 @@ type Writer struct {
 	written int64
 }
 
-// NewWriter builds a writer for one file's worth of rows. The dimension list is
-// validated up front so an unrecognised column fails before anything is
-// written, rather than half way through a year of history.
-func NewWriter(db *sql.DB, cache *intern.Cache, importID, siteID int64, dimensions []string) (*Writer, error) {
+// NewWriter builds a writer for one file's worth of an import's rows. The
+// dimension list is validated up front so an unrecognised column fails before
+// anything is written, rather than half way through a year of history.
+func NewWriter(db *sql.DB, cache *intern.Cache, record *Import, dimensions []string) (*Writer, error) {
 	ordered := append([]string(nil), dimensions...)
 	sort.Strings(ordered)
 
@@ -126,7 +130,7 @@ func NewWriter(db *sql.DB, cache *intern.Cache, importID, siteID int64, dimensio
 
 	return &Writer{
 		db: db, cache: cache,
-		importID: importID, siteID: siteID,
+		importID: record.ID, siteID: record.SiteID, origin: record.Source,
 		covered: covered, dimensions: ordered,
 	}, nil
 }
@@ -141,14 +145,15 @@ func (w *Writer) Written() int64 {
 	return w.written
 }
 
-// Add queues one parsed row. Interning happens here rather than at flush time
-// because it can write, and a write issued while the flush transaction holds
-// the single connection would wait for a connection only that transaction can
-// release.
+// Add queues one parsed row, with its dimension values normalised into the
+// names live collection stores. Interning happens here rather than at flush
+// time because it can write, and a write issued while the flush transaction
+// holds the single connection would wait for a connection only that
+// transaction can release.
 func (w *Writer) Add(ctx context.Context, row Row) error {
 	ids := map[string]int64{}
 
-	for name, value := range row.Dimensions {
+	for name, value := range Normalise(w.origin, row.Dimensions) {
 		column, ok := query.ImportedColumn(name)
 		if !ok {
 			return fmt.Errorf("%q is not a dimension imported data can carry — known ones are %s",

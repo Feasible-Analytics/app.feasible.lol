@@ -10,6 +10,7 @@ package google
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -23,7 +24,8 @@ import (
 
 // ga4TestServer returns two short pages per shape, forcing the importer to use
 // Google's rowCount rather than assuming a page shorter than its limit is final.
-func ga4TestServer(t *testing.T, badMetric bool) *httptest.Server {
+// Overrides replace the value the server answers for a report dimension.
+func ga4TestServer(t *testing.T, badMetric bool, overrides map[string]string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer valid" {
@@ -56,6 +58,9 @@ func ga4TestServer(t *testing.T, badMetric bool) *httptest.Server {
 			date = strings.ReplaceAll(request.Ranges[0].End, "-", "")
 		}
 		values := map[string]string{"date": date, "hostName": "example.com", "pagePath": "/guide", "sessionSource": "Google", "sessionMedium": "organic", "sessionCampaignName": "spring", "sessionDefaultChannelGroup": "Organic Search", "countryId": "US", "region": "Oregon", "city": "Portland", "deviceCategory": "desktop", "browser": "Chrome", "operatingSystem": "Macintosh", "landingPage": "/guide"}
+		for name, value := range overrides {
+			values[name] = value
+		}
 		dims := []map[string]string{}
 		for _, dimension := range request.Dimensions {
 			dims = append(dims, map[string]string{"value": values[dimension.Name]})
@@ -81,7 +86,7 @@ func TestGA4ReplayAndDashboardTotals(t *testing.T) {
 	ctx := context.Background()
 	account := newAccount(t)
 	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
-	ga4TestServer(t, false)
+	ga4TestServer(t, false, nil)
 	app, _ := NewApp("id", "secret", "https://example.com")
 	connection := &Connection{SiteID: 1, Provider: ProviderGA4, Property: "123", AccessToken: "valid", ExpiresAt: now.Add(time.Hour).Unix()}
 	record, err := dataio.CreateImport(ctx, account.Writer(), 1, dataio.SourceGA4, "123", now)
@@ -127,7 +132,7 @@ func TestGA4ReplayAndDashboardTotals(t *testing.T) {
 func TestGA4RejectsInvalidMetrics(t *testing.T) {
 	ctx := context.Background()
 	account := newAccount(t)
-	ga4TestServer(t, true)
+	ga4TestServer(t, true, nil)
 	now := time.Now()
 	record, err := dataio.CreateImport(ctx, account.Writer(), 1, dataio.SourceGA4, "123", now)
 	if err != nil {
@@ -138,4 +143,127 @@ func TestGA4RejectsInvalidMetrics(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "invalid totalUsers") {
 		t.Fatalf("error = %v", err)
 	}
+}
+
+// TestAPIImportNamesMatchLiveCollection runs the API import once per mapping
+// and checks each value lands on the name live collection stores for the same
+// thing, so a report over imported and collected days has one row per browser,
+// system and source.
+func TestAPIImportNamesMatchLiveCollection(t *testing.T) {
+	cases := []struct {
+		dimension string
+		value     string
+		stored    string
+		want      string
+	}{
+		{"sessionSource", "(direct)", "visit:source", ""},
+		{"sessionSource", "google", "visit:source", "Google"},
+		{"sessionSource", "m.facebook.com", "visit:source", "Facebook"},
+		{"sessionSource", "en.wikipedia.org", "visit:source", "wikipedia.org"},
+		{"sessionSource", "newsletter", "visit:source", "Newsletter"},
+		{"sessionSource", "producthunt", "visit:source", "producthunt"},
+		{"sessionMedium", "(none)", "visit:utm_medium", ""},
+		{"sessionMedium", "organic", "visit:utm_medium", ""},
+		{"sessionMedium", "referral", "visit:utm_medium", ""},
+		{"sessionMedium", "cpc", "visit:utm_medium", "cpc"},
+		{"sessionCampaignName", "(organic)", "visit:utm_campaign", ""},
+		{"sessionCampaignName", "(referral)", "visit:utm_campaign", ""},
+		{"sessionCampaignName", "(direct)", "visit:utm_campaign", ""},
+		{"sessionCampaignName", "(not set)", "visit:utm_campaign", ""},
+		{"sessionCampaignName", "(cross-network)", "visit:utm_campaign", ""},
+		{"sessionDefaultChannelGroup", "organic search", "visit:channel", "Organic Search"},
+		{"countryId", "us", "visit:country", "US"},
+		{"countryId", "(not set)", "visit:country", ""},
+		{"region", "(not set)", "visit:region", ""},
+		{"city", "(not set)", "visit:city", ""},
+		{"deviceCategory", "desktop", "visit:device", "Desktop"},
+		{"deviceCategory", "mobile", "visit:device", "Mobile"},
+		{"deviceCategory", "tablet", "visit:device", "Tablet"},
+		{"deviceCategory", "smart tv", "visit:device", "TV"},
+		{"browser", "Edge", "visit:browser", "Microsoft Edge"},
+		{"browser", "Android Webview", "visit:browser", "Mobile App"},
+		{"browser", "Safari (in-app)", "visit:browser", "Mobile App"},
+		{"browser", "YaBrowser", "visit:browser", "Yandex Browser"},
+		{"browser", "Opera Mini", "visit:browser", "Opera"},
+		{"browser", "(not set)", "visit:browser", ""},
+		{"operatingSystem", "Macintosh", "visit:os", "macOS"},
+		{"operatingSystem", "Linux", "visit:os", "GNU/Linux"},
+		{"operatingSystem", "(not set)", "visit:os", ""},
+		{"hostName", "www.example.com", "event:hostname", "example.com"},
+		{"hostName", "(not set)", "event:hostname", "(none)"},
+		{"pagePath", "/café", "event:page", "/caf%C3%A9"},
+		{"pagePath", "(not set)", "event:page", ""},
+		{"landingPage", "/über", "visit:entry_page", "/%C3%BCber"},
+		{"landingPage", "(not set)", "visit:entry_page", ""},
+	}
+
+	ctx := context.Background()
+	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	from := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC)
+
+	for _, tc := range cases {
+		account := newAccount(t)
+		ga4TestServer(t, false, map[string]string{tc.dimension: tc.value})
+
+		app, _ := NewApp("id", "secret", "https://example.com")
+		connection := &Connection{SiteID: 1, Provider: ProviderGA4, Property: "123", AccessToken: "valid", ExpiresAt: now.Add(time.Hour).Unix()}
+
+		record, err := dataio.CreateImport(ctx, account.Writer(), 1, dataio.SourceGA4, "123", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := app.GA4Import(ctx, account.Writer(), account.Intern, record, connection, from, to, time.UTC, func() time.Time { return now }); err != nil {
+			t.Fatal(err)
+		}
+
+		got := storedValues(t, account.Reader(), record.ID, tc.stored)
+		if len(got) != 1 || got[0] != tc.want {
+			t.Errorf("%s %q stored as %s %q, want %q", tc.dimension, tc.value, tc.stored, got, tc.want)
+		}
+	}
+}
+
+// storedValues lists the distinct values one dimension holds across the rows
+// of an import that carry it.
+func storedValues(t *testing.T, db *sql.DB, importID int64, dimension string) []string {
+	t.Helper()
+
+	column, ok := query.ImportedColumn(dimension)
+	if !ok {
+		t.Fatalf("%s is not an imported dimension", dimension)
+	}
+
+	table, ok := query.ImportedInterned(dimension)
+	if !ok {
+		t.Fatalf("%s has no dimension table", dimension)
+	}
+
+	bit, err := query.ImportedCoverage([]string{dimension})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := db.Query("SELECT DISTINCT COALESCE(d.value, '') FROM imported_rollups r "+
+		"LEFT JOIN "+table.Table()+" d ON d.id = r."+column+" "+
+		"WHERE r.import_id = ? AND (r.covered & ?) != 0 ORDER BY 1", importID, int64(bit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var values []string
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			t.Fatal(err)
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	return values
 }

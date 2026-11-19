@@ -734,21 +734,8 @@ func parseEventURL(raw string) (parsed *url.URL, hostname, pathname string, para
 		return nil, NoneHostname, "/", url.Values{}, false
 	}
 
-	hostname = strings.ToLower(parsed.Hostname())
-	if hostname == "" {
-		// A URL with no host still has to hash and group consistently, and an
-		// empty string there would collide with a genuinely missing hostname.
-		hostname = NoneHostname
-	}
-	hostname = strings.TrimPrefix(hostname, "www.")
-
-	pathname = parsed.EscapedPath()
-	if pathname == "" {
-		pathname = "/"
-	}
-	if parsed.Fragment != "" {
-		pathname += "#" + parsed.EscapedFragment()
-	}
+	hostname = StoredHostname(parsed)
+	pathname = StoredPath(parsed)
 
 	// The trailing slash is kept. `/about/` and `/about` are different URLs to
 	// a server, and one of them is usually the canonical one — so rewriting it
@@ -768,6 +755,35 @@ func parseEventURL(raw string) (parsed *url.URL, hostname, pathname string, para
 	params = retainAcquisitionParams(parsed.Query())
 
 	return parsed, hostname, pathname, params, truncated
+}
+
+// StoredHostname returns the hostname an event stores for a parsed page URL:
+// lower case, without a port or a leading "www.", and NoneHostname when the URL
+// has no host.
+func StoredHostname(parsed *url.URL) string {
+	hostname := strings.ToLower(parsed.Hostname())
+	if hostname == "" {
+		// A URL with no host still has to hash and group consistently, and an
+		// empty string there would collide with a genuinely missing hostname.
+		hostname = NoneHostname
+	}
+
+	return strings.TrimPrefix(hostname, "www.")
+}
+
+// StoredPath returns the path an event stores for a parsed page URL: the
+// escaped path, "/" when it is empty, and the escaped fragment after a "#" when
+// there is one. The query string is never part of it.
+func StoredPath(parsed *url.URL) string {
+	pathname := parsed.EscapedPath()
+	if pathname == "" {
+		pathname = "/"
+	}
+	if parsed.Fragment != "" {
+		pathname += "#" + parsed.EscapedFragment()
+	}
+
+	return pathname
 }
 
 // validEventURL reports whether the actual page URL is absolute HTTP(S) and
