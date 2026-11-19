@@ -221,3 +221,51 @@ func TestNormaliseHelpers(t *testing.T) {
 		}
 	}
 }
+
+// TestNormaliseIsIdempotent checks normalising a value twice gives what
+// normalising it once did. The rename command matches rows by their old values
+// and relies on this, so a renamed row is never caught by a second rename.
+func TestNormaliseIsIdempotent(t *testing.T) {
+	raw := map[string][]string{
+		"visit:source": {"(direct)", "Direct", "X (Twitter)", "Google Gemini", "Brave", "Vkontakte", "Sina Weibo",
+			"Outlook.com", "ProtonMail", "Wikipedia", "Grok", "Youtube", "google", "m.facebook.com",
+			"en.wikipedia.org", "blog.example.com", "android-app://com.google.android.gm", "producthunt", "(not set)"},
+		"visit:referrer":        {"www.News.ycombinator.com/item/", "https://Example.com/a/?q=1", "(not set)"},
+		"visit:channel":         {"organic search", "Unassigned"},
+		"visit:utm_medium":      {"organic", "referral", "(none)", "(gclid)", "cpc"},
+		"visit:utm_campaign":    {"(organic)", "(cross-network)", "Spring"},
+		"visit:browser":         {"Edge", "Samsung Browser", "Android Webview", "Safari (in-app)", "YaBrowser", "Opera GX", "chrome"},
+		"visit:browser_version": {"140.0", "17.4.1", "beta"},
+		"visit:device":          {"desktop", "smart tv", "Laptop"},
+		"visit:screen":          {"laptop", "MOBILE"},
+		"visit:country":         {"us", "(not set)"},
+		"event:hostname":        {"www.Example.com", "(not set)", "https://www.example.com/"},
+		"event:page":            {"/café?x=1", "/a b", "/#/about", "(not set)"},
+		"visit:entry_page":      {"/über/"},
+	}
+
+	systems := []struct{ os, version string }{
+		{"Macintosh", "10.15.7"}, {"Mac", "14.0"}, {"Windows", "6.1"}, {"Windows", "10.0"},
+		{"Linux", ""}, {"iOS", "17.4.1"}, {"Android", "14.0"},
+	}
+
+	for _, origin := range []string{SourceCSV, SourcePlausible, SourceGA4} {
+		for dimension, values := range raw {
+			for _, value := range values {
+				once := Normalise(origin, map[string]string{dimension: value})
+				twice := Normalise(origin, once)
+				if !reflect.DeepEqual(once, twice) {
+					t.Errorf("%s %s %q: once %q, twice %q", origin, dimension, value, once[dimension], twice[dimension])
+				}
+			}
+		}
+
+		for _, system := range systems {
+			once := Normalise(origin, map[string]string{"visit:os": system.os, "visit:os_version": system.version})
+			twice := Normalise(origin, once)
+			if !reflect.DeepEqual(once, twice) {
+				t.Errorf("%s %v: once %v, twice %v", origin, system, once, twice)
+			}
+		}
+	}
+}

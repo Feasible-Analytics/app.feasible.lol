@@ -13,7 +13,6 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -133,61 +132,62 @@ func completedImports(ctx context.Context, db *sql.DB, siteID int64) ([]Import, 
 	return imports, nil
 }
 
-// storedRow is one roll-up row's id and its dimension ids, in renameColumns
-// order.
-type storedRow struct {
-	id  int64
-	ids []int64
+// storedCombination is one distinct combination of dimension ids an import's
+// rows hold, in renameColumns order, and how many rows hold it.
+type storedCombination struct {
+	ids  []int64
+	rows int64
 }
 
-// renameImport rewrites one import. Every read finishes before any write
-// starts, because interning a new value and the update transaction both need
-// the account's single writer connection.
+// renamedCombination is a stored combination whose values Normalise changes,
+// with every value after the change in renameColumns order.
+type renamedCombination struct {
+	ids    []int64
+	values []string
+}
+
+// renameCombinationsPerTransaction bounds how many combinations one write
+// transaction rewrites, which bounds how long the account's writer is held.
+const renameCombinationsPerTransaction = 50
+
+// renameImport rewrites one import. It works on distinct combinations of
+// values rather than on rows, which keeps memory bounded by the variety of an
+// import rather than its size. Every read finishes before any write starts,
+// because interning a new value and the update transaction both need the
+// account's single writer connection.
 func renameImport(ctx context.Context, db *sql.DB, cache *intern.Cache, record Import, location *time.Location, apply bool) (RenameResult, error) {
 	result := RenameResult{ImportID: record.ID, Source: record.Source}
 
-	rows, err := readStoredRows(ctx, db, record.ID)
+	combinations, err := readStoredCombinations(ctx, db, record.ID)
 	if err != nil {
 		return result, err
 	}
 
-	values, err := readStoredValues(ctx, db, rows)
+	values, err := readStoredValues(ctx, db, combinations)
 	if err != nil {
 		return result, err
 	}
 
-	// Rows sharing a combination of ids normalise the same way, so each
-	// combination is worked out once.
-	outcomes := map[string]renamedRow{}
 	counts := map[[3]string]int64{}
-	changed := make([]storedRow, 0)
-	newValues := make([][]string, 0)
+	var renamed []renamedCombination
 
-	for _, row := range rows {
-		key := idsKey(row.ids)
-
-		found, seen := outcomes[key]
-		if !seen {
-			found = normaliseStored(record.Source, row.ids, values)
-			outcomes[key] = found
-		}
-
-		if !found.changed {
+	for _, combination := range combinations {
+		changed, after := normaliseStored(record.Source, combination.ids, values)
+		if !changed {
 			continue
 		}
 
-		changed = append(changed, row)
-		newValues = append(newValues, found.values)
+		renamed = append(renamed, renamedCombination{ids: combination.ids, values: after})
+		result.Rows += combination.rows
 
 		for i, column := range renameColumns {
-			from := values[i][row.ids[i]]
-			if found.values[i] != from {
-				counts[[3]string{column.dimension, from, found.values[i]}]++
+			from := values[i][combination.ids[i]]
+			if after[i] != from {
+				counts[[3]string{column.dimension, from, after[i]}] += combination.rows
 			}
 		}
 	}
 
-	result.Rows = int64(len(changed))
 	for key, count := range counts {
 		result.Renamed = append(result.Renamed, Renamed{Dimension: key[0], From: key[1], To: key[2], Rows: count})
 	}
@@ -203,27 +203,49 @@ func renameImport(ctx context.Context, db *sql.DB, cache *intern.Cache, record I
 		return a.To < b.To
 	})
 
-	if !apply || len(changed) == 0 {
+	if !apply || len(renamed) == 0 {
 		return result, nil
 	}
 
-	updates := make([][]int64, len(changed))
-	for i, row := range changed {
-		ids := make([]int64, len(renameColumns))
+	// Rows are matched by their old values, so a combination renamed into
+	// another one's old values would be rewritten twice. Normalise is
+	// idempotent, which rules that out; this refuses to write if it ever is not.
+	old := make(map[string]bool, len(renamed))
+	for _, combination := range renamed {
+		old[fmt.Sprint(combination.ids)] = true
+	}
+
+	// Each update is the new ids, then the import id, then the old ids, in the
+	// order the statement binds them.
+	updates := make([][]any, 0, len(renamed))
+	for _, combination := range renamed {
+		args := make([]any, 0, 2*len(renameColumns)+1)
+		ids := make([]int64, 0, len(renameColumns))
 
 		for c, column := range renameColumns {
-			id, err := cache.ID(ctx, column.table, newValues[i][c])
+			id, err := cache.ID(ctx, column.table, combination.values[c])
 			if err != nil {
 				return result, fmt.Errorf("dataio: rename import %d: %w", record.ID, err)
 			}
 
-			ids[c] = id
+			args = append(args, id)
+			ids = append(ids, id)
 		}
 
-		updates[i] = append(ids, row.id)
+		if old[fmt.Sprint(ids)] {
+			return result, fmt.Errorf("dataio: rename import %d: %v renames into values another combination is renamed from; nothing was written",
+				record.ID, combination.values)
+		}
+
+		args = append(args, record.ID)
+		for _, id := range combination.ids {
+			args = append(args, id)
+		}
+
+		updates = append(updates, args)
 	}
 
-	if err := writeRenamedRows(ctx, db, record.ID, updates); err != nil {
+	if err := writeRenamedCombinations(ctx, db, record.ID, updates); err != nil {
 		return result, err
 	}
 
@@ -234,15 +256,10 @@ func renameImport(ctx context.Context, db *sql.DB, cache *intern.Cache, record I
 	return result, nil
 }
 
-// renamedRow is one combination of stored ids after Normalise: whether any
-// value changed, and every value in renameColumns order.
-type renamedRow struct {
-	changed bool
-	values  []string
-}
-
-// normaliseStored runs one combination of stored ids through Normalise.
-func normaliseStored(origin string, ids []int64, values []map[int64]string) (out renamedRow) {
+// normaliseStored runs one combination of stored ids through Normalise and
+// reports whether any value changed, with every value after it in
+// renameColumns order.
+func normaliseStored(origin string, ids []int64, values []map[int64]string) (bool, []string) {
 	dimensions := make(map[string]string, len(renameColumns))
 	for i, column := range renameColumns {
 		if ids[i] != intern.EmptyID {
@@ -252,77 +269,77 @@ func normaliseStored(origin string, ids []int64, values []map[int64]string) (out
 
 	normalised := Normalise(origin, dimensions)
 
-	out.values = make([]string, len(renameColumns))
+	changed := false
+	after := make([]string, len(renameColumns))
+
 	for i, column := range renameColumns {
-		out.values[i] = normalised[column.dimension]
-		if out.values[i] != values[i][ids[i]] {
-			out.changed = true
+		after[i] = normalised[column.dimension]
+		if after[i] != values[i][ids[i]] {
+			changed = true
 		}
 	}
 
-	return out
+	return changed, after
 }
 
-// idsKey renders a combination of ids as a map key.
-func idsKey(ids []int64) string {
-	var b strings.Builder
-	for _, id := range ids {
-		b.WriteString(strconv.FormatInt(id, 10))
-		b.WriteByte(',')
-	}
-
-	return b.String()
-}
-
-// readStoredRows reads every roll-up row of one import.
-func readStoredRows(ctx context.Context, db *sql.DB, importID int64) ([]storedRow, error) {
+// renameColumnNames lists the dimension columns in renameColumns order.
+func renameColumnNames() []string {
 	names := make([]string, 0, len(renameColumns))
 	for _, column := range renameColumns {
 		names = append(names, column.column)
 	}
 
+	return names
+}
+
+// readStoredCombinations reads every distinct combination of dimension ids one
+// import's rows hold, with the number of rows holding each.
+func readStoredCombinations(ctx context.Context, db *sql.DB, importID int64) ([]storedCombination, error) {
+	columns := strings.Join(renameColumnNames(), ", ")
+
 	rows, err := db.QueryContext(ctx,
-		"SELECT id, "+strings.Join(names, ", ")+" FROM "+query.ImportedTable+" WHERE import_id = ? ORDER BY id", importID)
+		"SELECT "+columns+", COUNT(*) FROM "+query.ImportedTable+" WHERE import_id = ? GROUP BY "+columns, importID)
 	if err != nil {
-		return nil, fmt.Errorf("dataio: read import %d rows: %w", importID, err)
+		return nil, fmt.Errorf("dataio: read import %d values: %w", importID, err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var stored []storedRow
+	var combinations []storedCombination
 
 	for rows.Next() {
-		row := storedRow{ids: make([]int64, len(renameColumns))}
+		combination := storedCombination{ids: make([]int64, len(renameColumns))}
 
-		targets := make([]any, 0, 1+len(renameColumns))
-		targets = append(targets, &row.id)
-		for i := range row.ids {
-			targets = append(targets, &row.ids[i])
+		targets := make([]any, 0, len(renameColumns)+1)
+		for i := range combination.ids {
+			targets = append(targets, &combination.ids[i])
 		}
+		targets = append(targets, &combination.rows)
 
 		if err := rows.Scan(targets...); err != nil {
-			return nil, fmt.Errorf("dataio: read import %d rows: %w", importID, err)
+			return nil, fmt.Errorf("dataio: read import %d values: %w", importID, err)
 		}
 
-		stored = append(stored, row)
+		combinations = append(combinations, combination)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("dataio: read import %d rows: %w", importID, err)
+		return nil, fmt.Errorf("dataio: read import %d values: %w", importID, err)
 	}
 
-	return stored, nil
+	return combinations, nil
 }
 
-// readStoredValues looks up the value behind every id the rows use, one map
-// per column in renameColumns order. Id 0 is the empty value in every table.
-func readStoredValues(ctx context.Context, db *sql.DB, rows []storedRow) ([]map[int64]string, error) {
+// readStoredValues looks up the value behind every id the combinations use,
+// one map per column in renameColumns order. Id 0 is the empty value in every
+// table.
+func readStoredValues(ctx context.Context, db *sql.DB, combinations []storedCombination) ([]map[int64]string, error) {
 	values := make([]map[int64]string, len(renameColumns))
 
 	for i, column := range renameColumns {
 		values[i] = map[int64]string{intern.EmptyID: ""}
 
-		for _, row := range rows {
-			id := row.ids[i]
+		for _, combination := range combinations {
+			id := combination.ids[i]
 			if _, ok := values[i][id]; ok {
 				continue
 			}
@@ -340,19 +357,23 @@ func readStoredValues(ctx context.Context, db *sql.DB, rows []storedRow) ([]map[
 	return values, nil
 }
 
-// writeRenamedRows applies the new ids in batches, one transaction each. Each
-// update is the row's new ids in renameColumns order followed by its row id.
-func writeRenamedRows(ctx context.Context, db *sql.DB, importID int64, updates [][]int64) error {
-	assignments := make([]string, 0, len(renameColumns))
-	for _, column := range renameColumns {
-		assignments = append(assignments, column.column+" = ?")
+// writeRenamedCombinations rewrites every row holding each renamed combination
+// of one import, a bounded number of combinations per transaction.
+func writeRenamedCombinations(ctx context.Context, db *sql.DB, importID int64, updates [][]any) error {
+	names := renameColumnNames()
+
+	assignments := make([]string, 0, len(names))
+	matches := make([]string, 0, len(names))
+	for _, name := range names {
+		assignments = append(assignments, name+" = ?")
+		matches = append(matches, name+" = ?")
 	}
 
 	statement := "UPDATE " + query.ImportedTable + " SET " + strings.Join(assignments, ", ") +
-		" WHERE id = ? AND import_id = ?"
+		" WHERE import_id = ? AND " + strings.Join(matches, " AND ")
 
-	for start := 0; start < len(updates); start += batchRows {
-		end := min(start+batchRows, len(updates))
+	for start := 0; start < len(updates); start += renameCombinationsPerTransaction {
+		end := min(start+renameCombinationsPerTransaction, len(updates))
 
 		if err := writeRenamedBatch(ctx, db, importID, statement, updates[start:end]); err != nil {
 			return err
@@ -363,7 +384,7 @@ func writeRenamedRows(ctx context.Context, db *sql.DB, importID int64, updates [
 }
 
 // writeRenamedBatch applies one batch of updates in one transaction.
-func writeRenamedBatch(ctx context.Context, db *sql.DB, importID int64, statement string, updates [][]int64) (err error) {
+func writeRenamedBatch(ctx context.Context, db *sql.DB, importID int64, statement string, updates [][]any) (err error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("dataio: rename import %d: %w", importID, err)
@@ -376,13 +397,7 @@ func writeRenamedBatch(ctx context.Context, db *sql.DB, importID int64, statemen
 	}
 	defer closeResource(prepared, &err, "rename statement")
 
-	for _, update := range updates {
-		args := make([]any, 0, len(update)+1)
-		for _, value := range update {
-			args = append(args, value)
-		}
-		args = append(args, importID)
-
+	for _, args := range updates {
 		if _, err := prepared.ExecContext(ctx, args...); err != nil {
 			return fmt.Errorf("dataio: rename import %d: %w", importID, err)
 		}
