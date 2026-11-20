@@ -66,6 +66,17 @@ func DatacenterSources() []Source {
 		{Name: "Vultr", URL: "https://geofeed.constant.com/", Parse: parseGeofeed},
 	}
 
+	// Google's crawlers and fetchers run from address space outside Google
+	// Cloud, which Google publishes separately. These files share cloud.json's
+	// format.
+	for _, file := range googleCrawlerFiles {
+		sources = append(sources, Source{
+			Name:  "Google " + file.name,
+			URL:   googleCrawlerBase + file.path,
+			Parse: parseGoogleCloud,
+		})
+	}
+
 	// Azure's file name carries the date it was published, so its URL has to be
 	// discovered rather than written down. It is added by the caller.
 
@@ -80,6 +91,23 @@ func DatacenterSources() []Source {
 	}
 
 	return sources
+}
+
+// googleCrawlerBase is the directory Google publishes its crawler ranges in.
+const googleCrawlerBase = "https://developers.google.com/static/crawling/ipranges/"
+
+// googleCrawlerFiles are Google's crawler and fetcher range files: Googlebot
+// and the other common crawlers, among them the URL Inspection tool; the
+// special-case crawlers such as AdsBot; and the fetchers a person or a Google
+// product sets off.
+var googleCrawlerFiles = []struct {
+	name string
+	path string
+}{
+	{"crawlers", "common-crawlers.json"},
+	{"special crawlers", "special-crawlers.json"},
+	{"user fetchers", "user-triggered-fetchers.json"},
+	{"product fetchers", "user-triggered-fetchers-google.json"},
 }
 
 // hostingASN is one provider that has to be looked up by the networks it

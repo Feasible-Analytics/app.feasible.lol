@@ -43,6 +43,13 @@ func TestParsersReadTheirOwnShape(t *testing.T) {
 			want:  []string{"34.64.32.0/19", "2600:1900::/28"},
 		},
 		{
+			name:  "google crawlers",
+			parse: parseGoogleCloud,
+			body: `{"creationTime":"2026-11-19T15:46:05.000000","prefixes":[
+			        {"ipv6Prefix":"2001:4860:4801:10::/64"},{"ipv4Prefix":"66.249.64.0/27"}]}`,
+			want: []string{"2001:4860:4801:10::/64", "66.249.64.0/27"},
+		},
+		{
 			name:  "oracle",
 			parse: parseOracle,
 			body:  `{"regions":[{"cidrs":[{"cidr":"129.213.16.0/20"},{"cidr":"140.91.0.0/17"}]}]}`,
@@ -158,6 +165,29 @@ func TestMergeIsIdempotent(t *testing.T) {
 
 	if !slices.Equal(once, twice) {
 		t.Errorf("merging twice gave %d ranges, merging once gave %d", len(twice), len(once))
+	}
+}
+
+// TestGoogleCrawlerRangesAreSources checks the list is built from all four of
+// Google's crawler and fetcher range files. Their addresses sit outside Google
+// Cloud, so cloud.json alone leaves Google's own renderers counted as visitors.
+func TestGoogleCrawlerRangesAreSources(t *testing.T) {
+	want := []string{
+		"https://developers.google.com/static/crawling/ipranges/common-crawlers.json",
+		"https://developers.google.com/static/crawling/ipranges/special-crawlers.json",
+		"https://developers.google.com/static/crawling/ipranges/user-triggered-fetchers.json",
+		"https://developers.google.com/static/crawling/ipranges/user-triggered-fetchers-google.json",
+	}
+
+	urls := map[string]bool{}
+	for _, source := range DatacenterSources() {
+		urls[source.URL] = true
+	}
+
+	for _, url := range want {
+		if !urls[url] {
+			t.Errorf("%s is not a source", url)
+		}
 	}
 }
 
