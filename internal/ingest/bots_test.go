@@ -52,6 +52,50 @@ func TestBotUserAgents(t *testing.T) {
 	}
 }
 
+// TestGoogleCrawlersWithoutBotInTheName checks the Google crawlers and fetchers
+// whose user agents carry no generic bot word, and that the browsers and apps
+// Google makes for people are still counted.
+func TestGoogleCrawlersWithoutBotInTheName(t *testing.T) {
+	filter := NewBotFilter()
+
+	crawlers := []string{
+		"Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Mobile Safari/537.36 (compatible; Google-InspectionTool/1.0)",
+		"Mozilla/5.0 (compatible; Google-InspectionTool/1.0)",
+		"Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Mobile Safari/537.36 (compatible; GoogleOther)",
+		"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GoogleOther) Chrome/157.0.0.0 Safari/537.36",
+		"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 (compatible; Google-Read-Aloud; +https://support.google.com/webmasters/answer/1061943)",
+		"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko; compatible; Google-Agent; +https://developers.google.com/crawling/docs/crawlers-fetchers/google-agent) Chrome/157.0.0.0 Safari/537.36",
+		"Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36 (compatible; Google-GeminiNotebook; +https://developers.google.com/crawling/docs/crawlers-fetchers/google-gemininotebook)",
+		"Mozilla/5.0 (Linux; Android 11; Pixel 2; DuplexWeb-Google/1.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.193 Mobile Safari/537.36",
+		"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/49.0.2623.75 Safari/537.36 Google Favicon",
+		"Mediapartners-Google",
+		"APIs-Google (+https://developers.google.com/webmasters/APIs-Google.html)",
+		"Mozilla/5.0 (compatible; Google-Site-Verification/1.0)",
+		"Mozilla/5.0 (compatible; Google-CWS)",
+		"GoogleProducer; (+https://developers.google.com/search/docs/crawling-indexing/google-producer)",
+	}
+
+	for _, ua := range crawlers {
+		if !filter.IsBotUserAgent(ua) {
+			t.Errorf("missed a Google crawler: %q", ua)
+		}
+	}
+
+	people := []string{
+		"Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Mobile Safari/537.36",
+		"Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/AP1A.240305.019; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/157.0.0.0 Mobile Safari/537.36 GSA/15.10.38.29.arm64",
+		"Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) GSA/390.0.811 Mobile/15E148 Safari/604.1",
+		"Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/157.0.0.0 Mobile/15E148 Safari/604.1",
+		"Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
+	}
+
+	for _, ua := range people {
+		if filter.IsBotUserAgent(ua) {
+			t.Errorf("a person on a Google browser or app was classified as a bot: %q", ua)
+		}
+	}
+}
+
 // TestDatacenterRanges checks the merged range set answers correctly at both
 // edges of every block, in both address families.
 func TestDatacenterRanges(t *testing.T) {

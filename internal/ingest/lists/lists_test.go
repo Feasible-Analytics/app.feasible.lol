@@ -101,6 +101,9 @@ func TestKnownProvidersAreListed(t *testing.T) {
 	for _, addr := range []string{
 		"52.94.76.1",   // AWS us-east-1
 		"34.64.32.1",   // Google Cloud
+		"66.249.66.1",  // Googlebot and the URL Inspection tool
+		"108.177.2.1",  // a Google special-case crawler
+		"142.250.32.1", // a fetcher a Google product sets off
 		"129.213.16.1", // Oracle Cloud
 		"157.245.0.1",  // DigitalOcean
 		"139.162.1.1",  // Linode

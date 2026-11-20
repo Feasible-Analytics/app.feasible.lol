@@ -91,6 +91,13 @@ var baselineBotTokens = []string{
 	"gptbot", "ccbot", "claudebot", "perplexitybot", "google-extended",
 	"chatgpt-user", "oai-searchbot", "anthropic-ai", "amazonbot", "meta-externalagent",
 	"scrapy", "zgrab", "masscan", "nmap", "nuclei", "sqlmap",
+
+	// Google's crawlers and fetchers whose names carry none of the words above.
+	// They render the page in a real Chrome, so the tracker fires for them.
+	"google-inspectiontool", "googleother", "mediapartners-google", "apis-google",
+	"duplexweb-google", "google favicon", "google-read-aloud", "google-site-verification",
+	"google-cws", "google-agent", "google-gemininotebook", "google-notebooklm",
+	"google-pinpoint", "google-speakr", "google-safety", "googleproducer",
 }
 
 // baselineSpamDomains are referrers that exist only to appear in somebody's
