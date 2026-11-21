@@ -10,8 +10,8 @@
 /**
  * Plugin Name:       Feasible Analytics
  * Plugin URI:        https://feasible.lol/integrations/wordpress/
- * Description:       Privacy-first analytics for WordPress. Serves the tracking script and the event endpoint from your own domain on randomised paths, tracks site searches and 404s, and puts your dashboard inside wp-admin.
- * Version:           1.0.0
+ * Description:       Cookieless analytics for WordPress. Serves the bundled tracking script and the event endpoint from your own domain, counts site searches and 404s, and puts your dashboard inside wp-admin.
+ * Version:           1.0.1
  * Requires at least: 5.9
  * Requires PHP:      7.4
  * Author:            Cloudmanic Labs, LLC
@@ -29,7 +29,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 // The version is read by the settings screen and the site health panel. It is a
 // constant rather than a call to get_plugin_data() because that function is not
 // loaded on the front end, and the proxy runs on every event request.
-define( 'FEASIBLE_VERSION', '1.0.0' );
+define( 'FEASIBLE_VERSION', '1.0.1' );
 
 // The absolute path and URL of this plugin folder, both with a trailing slash.
 define( 'FEASIBLE_PLUGIN_FILE', __FILE__ );
@@ -40,6 +40,7 @@ require_once FEASIBLE_PLUGIN_DIR . 'includes/class-feasible-settings.php';
 require_once FEASIBLE_PLUGIN_DIR . 'includes/class-feasible-paths.php';
 require_once FEASIBLE_PLUGIN_DIR . 'includes/class-feasible-client-ip.php';
 require_once FEASIBLE_PLUGIN_DIR . 'includes/class-feasible-events.php';
+require_once FEASIBLE_PLUGIN_DIR . 'includes/class-feasible-payload.php';
 require_once FEASIBLE_PLUGIN_DIR . 'includes/class-feasible-measurements.php';
 require_once FEASIBLE_PLUGIN_DIR . 'includes/class-feasible-proxy.php';
 require_once FEASIBLE_PLUGIN_DIR . 'includes/class-feasible-snippet.php';

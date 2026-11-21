@@ -1,7 +1,7 @@
 <?php
 //
 // class-feasible-proxy.php
-// Serving the tracker script and the event endpoint from the site's own domain.
+// Serving the bundled tracker script and the event endpoint from the site's own domain.
 //
 // Created: 2026-08-30
 // Copyright (c) 2026 Cloudmanic Labs, LLC. All rights reserved.
@@ -25,6 +25,9 @@ if ( ! defined( 'ABSPATH' ) ) {
  * toggling the setting never needs a rewrite flush and a site that turns the
  * proxy off still gets a readable answer on the old routes instead of a 404
  * that looks like the plugin is broken.
+ *
+ * The script route serves the tracker file shipped inside this plugin. Nothing
+ * here downloads code from anywhere else.
  */
 class Feasible_Proxy {
 
@@ -33,15 +36,8 @@ class Feasible_Proxy {
 	// use the site as a relay, and both deserve the same refusal.
 	const MAX_BODY_BYTES = 65536;
 
-	// How long a fetched copy of the bundle is served without asking upstream
-	// again. Ten minutes keeps a tracker fix moving quickly without turning
-	// every pageview on a busy site into an outbound request.
-	const SCRIPT_TTL = 600;
-
-	// How long the last known good copy is kept as a fallback. Serving a
-	// slightly old script through an upstream outage is strictly better than
-	// serving nothing, and the response says which one it was.
-	const SCRIPT_FALLBACK_TTL = 86400;
+	// The tracker script, relative to the plugin folder.
+	const SCRIPT_FILE = 'assets/js/feasible.js';
 
 	// How long the browser may keep the script before revalidating. The ETag
 	// makes that revalidation a 304, so the cost of an hour is one conditional
@@ -135,7 +131,7 @@ class Feasible_Proxy {
 	}
 
 	/**
-	 * serve_script answers the script route and exits.
+	 * serve_script answers the script route with the bundled tracker and exits.
 	 *
 	 * @return void
 	 */
@@ -143,41 +139,39 @@ class Feasible_Proxy {
 		header( 'Content-Type: application/javascript; charset=utf-8' );
 		header( 'X-Content-Type-Options: nosniff' );
 
+		if ( ! Feasible_Settings::tracking_enabled() ) {
+			self::refuse(
+				503,
+				'tracking-off',
+				'/* Feasible Analytics: tracking is switched off in WordPress, so this path serves nothing. */',
+				''
+			);
+		}
+
 		if ( ! Feasible_Settings::proxy_enabled() ) {
 			self::refuse(
 				503,
 				'proxy-disabled',
-				'/* feasible.lol: the proxy is switched off in WordPress, so this path serves nothing. */',
+				'/* Feasible Analytics: the proxy is switched off in WordPress, so this path serves nothing. */',
 				__( 'The proxy is switched off, so the script and event routes on this domain answer nothing.', 'feasible-analytics' )
 			);
 		}
 
-		$url    = Feasible_Settings::upstream_script_url();
-		$bundle = self::fetch_script( $url );
+		$script = self::bundled_script();
 
-		if ( false === $bundle ) {
+		if ( '' === $script ) {
 			self::refuse(
-				502,
-				'script-fetch-failed',
-				'/* feasible.lol: the tracking script could not be fetched from ' . str_replace( '*/', '', $url ) . ' */',
-				sprintf(
-					/* translators: %s: the upstream script URL. */
-					__( 'The tracking script could not be fetched from %s, so no page on this site is being measured.', 'feasible-analytics' ),
-					$url
-				)
+				500,
+				'script-missing',
+				'/* Feasible Analytics: the tracking script is missing from the plugin folder. */',
+				__( 'The tracking script is missing from the plugin folder, so no page on this site is being measured. Reinstall the plugin.', 'feasible-analytics' )
 			);
 		}
 
-		$etag = '"' . md5( $bundle['body'] ) . '"';
+		$etag = '"' . md5( $script ) . '"';
 
 		header( 'Cache-Control: public, max-age=' . self::BROWSER_CACHE_SECONDS );
 		header( 'ETag: ' . $etag );
-
-		if ( $bundle['stale'] ) {
-			// A stale copy is still a working tracker, but the customer is
-			// entitled to know that the upstream fetch is failing.
-			self::send_header( self::ERROR_HEADER, 'serving-stale-script' );
-		}
 
 		if ( self::etag_matches( $etag ) ) {
 			status_header( 304 );
@@ -186,10 +180,28 @@ class Feasible_Proxy {
 
 		status_header( 200 );
 
-		// The body is JavaScript fetched from our own service, and it is
-		// written out byte for byte: escaping it would corrupt the bundle.
-		echo $bundle['body']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+		// The body is the JavaScript file shipped in this plugin's assets
+		// folder, written out byte for byte: escaping it would corrupt it.
+		echo $script; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 		exit;
+	}
+
+	/**
+	 * bundled_script reads the tracker file shipped with the plugin.
+	 *
+	 * @return string The script, or an empty string when the file is missing.
+	 */
+	public static function bundled_script() {
+		$path = dirname( __DIR__ ) . '/' . self::SCRIPT_FILE;
+
+		if ( ! is_readable( $path ) ) {
+			return '';
+		}
+
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- a local file in this plugin's folder.
+		$script = file_get_contents( $path );
+
+		return is_string( $script ) ? $script : '';
 	}
 
 	/**
@@ -210,86 +222,6 @@ class Feasible_Proxy {
 		$header = trim( sanitize_text_field( wp_unslash( $_SERVER['HTTP_IF_NONE_MATCH'] ) ) );
 
 		return '' !== $header && false !== strpos( $header, $etag );
-	}
-
-	/**
-	 * fetch_script returns the bundle, from cache when it can.
-	 *
-	 * Two caches are kept: a short one that decides how often upstream is
-	 * asked, and a long one that exists purely so an upstream outage degrades
-	 * to an old script rather than to no analytics at all.
-	 *
-	 * @param string $url Upstream script URL.
-	 * @return array|false array( 'body' => string, 'stale' => bool ), or false.
-	 */
-	private static function fetch_script( $url ) {
-		$key      = 'feasible_js_' . md5( $url );
-		$fallback = 'feasible_js_last_' . md5( $url );
-
-		$cached = get_transient( $key );
-
-		if ( is_array( $cached ) && ! empty( $cached['body'] ) ) {
-			return array(
-				'body'  => $cached['body'],
-				'stale' => false,
-			);
-		}
-
-		$response = wp_remote_get(
-			$url,
-			array(
-				'timeout'     => 10,
-				'redirection' => 2,
-				'user-agent'  => 'feasible-analytics-wordpress/' . FEASIBLE_VERSION,
-			)
-		);
-
-		$problem = '';
-
-		if ( is_wp_error( $response ) ) {
-			$problem = $response->get_error_message();
-		} else {
-			$code = (int) wp_remote_retrieve_response_code( $response );
-			$body = wp_remote_retrieve_body( $response );
-
-			if ( 200 !== $code ) {
-				/* translators: %d: an HTTP status code. */
-				$problem = sprintf( __( 'the server answered %d', 'feasible-analytics' ), $code );
-			} elseif ( '' === trim( $body ) ) {
-				$problem = __( 'the server answered with an empty body', 'feasible-analytics' );
-			} else {
-				set_transient( $key, array( 'body' => $body ), self::SCRIPT_TTL );
-				set_transient( $fallback, array( 'body' => $body ), self::SCRIPT_FALLBACK_TTL );
-				Feasible_Settings::clear_error();
-
-				return array(
-					'body'  => $body,
-					'stale' => false,
-				);
-			}
-		}
-
-		Feasible_Settings::record_error(
-			'script',
-			'script-fetch-failed',
-			sprintf(
-				/* translators: 1: the upstream script URL, 2: the reason the fetch failed. */
-				__( 'Fetching %1$s failed: %2$s', 'feasible-analytics' ),
-				$url,
-				$problem
-			)
-		);
-
-		$stale = get_transient( $fallback );
-
-		if ( is_array( $stale ) && ! empty( $stale['body'] ) ) {
-			return array(
-				'body'  => $stale['body'],
-				'stale' => true,
-			);
-		}
-
-		return false;
 	}
 
 	/**
@@ -315,6 +247,15 @@ class Feasible_Proxy {
 		}
 
 		$settings = Feasible_Settings::all();
+
+		if ( ! Feasible_Settings::tracking_enabled() ) {
+			self::refuse(
+				503,
+				'tracking-off',
+				__( 'Tracking is switched off in WordPress, so this endpoint forwards nothing.', 'feasible-analytics' ),
+				__( 'An event reached the proxy while tracking is switched off. Turn tracking on in the settings, or remove the snippet you added by hand.', 'feasible-analytics' )
+			);
+		}
 
 		if ( empty( $settings['proxy_enabled'] ) ) {
 			self::refuse(
@@ -353,9 +294,13 @@ class Feasible_Proxy {
 			self::refuse( 400, 'empty-body', __( 'There was no event in the request body.', 'feasible-analytics' ), '' );
 		}
 
-		$name = Feasible_Events::name_from_body( $body );
+		$event = Feasible_Payload::clean( $body, $settings['domain'] );
 
-		if ( Feasible_Events::is_suppressed( $name, $settings ) ) {
+		if ( null === $event ) {
+			self::refuse( 400, 'invalid-event', __( 'The request body is not a JSON event with a name.', 'feasible-analytics' ), '' );
+		}
+
+		if ( Feasible_Events::is_suppressed( $event['n'], $settings ) ) {
 			// The status stays 202 because the browser script treats anything
 			// else as a failure worth reporting, and this is not a failure —
 			// it is this site's own choice, said out loud in the header.
@@ -364,7 +309,7 @@ class Feasible_Proxy {
 			exit;
 		}
 
-		self::forward( $body );
+		self::forward( Feasible_Payload::encode( $event ) );
 	}
 
 	/**
@@ -372,12 +317,13 @@ class Feasible_Proxy {
 	 *
 	 * One byte more than the cap is read so that an oversized body is refused
 	 * outright rather than truncated into a payload the server would reject as
-	 * malformed for reasons nobody could work out.
+	 * malformed for reasons nobody could work out. The body is never forwarded
+	 * as read: Feasible_Payload rebuilds it first.
 	 *
 	 * @return string|null
 	 */
 	private static function read_body() {
-		if ( isset( $_SERVER['CONTENT_LENGTH'] ) && (int) $_SERVER['CONTENT_LENGTH'] > self::MAX_BODY_BYTES ) {
+		if ( isset( $_SERVER['CONTENT_LENGTH'] ) && absint( wp_unslash( $_SERVER['CONTENT_LENGTH'] ) ) > self::MAX_BODY_BYTES ) {
 			return null;
 		}
 
@@ -404,11 +350,11 @@ class Feasible_Proxy {
 	 * failure that produces no error anywhere and is usually noticed weeks
 	 * later, if at all.
 	 *
-	 * @param string $body Raw event body.
+	 * @param string $body The clean event, encoded as JSON.
 	 * @return void
 	 */
 	private static function forward( $body ) {
-		$server = isset( $_SERVER ) && is_array( $_SERVER ) ? $_SERVER : array();
+		$server = self::request_headers();
 		$ip     = Feasible_Client_IP::resolve( $server );
 		$agent  = Feasible_Client_IP::user_agent( $server );
 
@@ -422,7 +368,7 @@ class Feasible_Proxy {
 			'User-Agent'      => $agent,
 		);
 
-		if ( isset( $server['HTTP_X_DEBUG_REQUEST'] ) && 'true' === strtolower( trim( (string) $server['HTTP_X_DEBUG_REQUEST'] ) ) ) {
+		if ( isset( $server['HTTP_X_DEBUG_REQUEST'] ) && 'true' === strtolower( $server['HTTP_X_DEBUG_REQUEST'] ) ) {
 			// Passing the debug flag through is what lets the person who owns
 			// this site answer "why was that event not counted" with one curl,
 			// instead of asking us to read logs they cannot see.
@@ -502,6 +448,27 @@ class Feasible_Proxy {
 		}
 
 		exit;
+	}
+
+	/**
+	 * request_headers reads the request headers the forward needs, each one
+	 * unslashed and sanitised as plain text.
+	 *
+	 * Only these five are read. The addresses are validated again as IP
+	 * addresses by Feasible_Client_IP before any of them is forwarded.
+	 *
+	 * @return array A $_SERVER-shaped array holding only these keys.
+	 */
+	private static function request_headers() {
+		$headers = array();
+
+		foreach ( array( 'HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'REMOTE_ADDR', 'HTTP_USER_AGENT', 'HTTP_X_DEBUG_REQUEST' ) as $key ) {
+			if ( isset( $_SERVER[ $key ] ) && is_string( $_SERVER[ $key ] ) ) {
+				$headers[ $key ] = sanitize_text_field( wp_unslash( $_SERVER[ $key ] ) );
+			}
+		}
+
+		return $headers;
 	}
 
 	/**

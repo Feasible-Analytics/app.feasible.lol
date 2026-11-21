@@ -15,16 +15,9 @@ if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 /**
  * feasible_uninstall_site removes the plugin's rows from the current site.
  *
- * The cached script bodies are deleted with a query rather than by name
- * because their transient keys contain a hash of the upstream URL, so a site
- * that changed hosts has more than one and none of them is predictable from
- * here.
- *
  * @return void
  */
 function feasible_uninstall_site() {
-	global $wpdb;
-
 	delete_option( 'feasible_settings' );
 	delete_option( 'feasible_paths' );
 	delete_option( 'feasible_last_error' );
@@ -33,15 +26,6 @@ function feasible_uninstall_site() {
 	// The rewrite rules hold the two routes this plugin registered, and they
 	// are rebuilt without them on the next request.
 	delete_option( 'rewrite_rules' );
-
-	// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-	$wpdb->query(
-		$wpdb->prepare(
-			"DELETE FROM {$wpdb->options} WHERE option_name LIKE %s OR option_name LIKE %s",
-			$wpdb->esc_like( '_transient_feasible_js_' ) . '%',
-			$wpdb->esc_like( '_transient_timeout_feasible_js_' ) . '%'
-		)
-	);
 }
 
 if ( is_multisite() ) {

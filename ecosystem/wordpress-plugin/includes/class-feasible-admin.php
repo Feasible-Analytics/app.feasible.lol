@@ -41,7 +41,44 @@ class Feasible_Admin {
 		add_action( 'admin_menu', array( __CLASS__, 'add_menu' ) );
 		add_action( 'admin_init', array( __CLASS__, 'register_settings' ) );
 		add_action( 'admin_post_' . self::ROTATE_ACTION, array( __CLASS__, 'handle_rotate' ) );
+		add_action( 'admin_notices', array( __CLASS__, 'tracking_off_notice' ) );
 		add_filter( 'plugin_action_links_' . plugin_basename( FEASIBLE_PLUGIN_FILE ), array( __CLASS__, 'action_links' ) );
+	}
+
+	/**
+	 * tracking_off_notice tells an administrator that tracking is off and where
+	 * to turn it on.
+	 *
+	 * It shows only on the Plugins screen and on this plugin's own screens,
+	 * only to someone who can change the settings, and it goes away by itself
+	 * once tracking is on.
+	 *
+	 * @return void
+	 */
+	public static function tracking_off_notice() {
+		if ( Feasible_Settings::tracking_enabled() || ! current_user_can( 'manage_options' ) || ! function_exists( 'get_current_screen' ) ) {
+			return;
+		}
+
+		$screen = get_current_screen();
+
+		if ( ! $screen || ! in_array( $screen->id, array( 'plugins', 'toplevel_page_' . self::PAGE ), true ) ) {
+			return;
+		}
+
+		echo '<div class="notice notice-info"><p>';
+
+		if ( 'plugins' === $screen->id ) {
+			printf(
+				/* translators: %s: link to the plugin's settings screen. */
+				esc_html__( 'Feasible Analytics is installed but not measuring anything yet. Confirm your site domain and turn tracking on in %s.', 'feasible-analytics' ),
+				'<a href="' . esc_url( admin_url( 'admin.php?page=' . self::PAGE ) ) . '">' . esc_html__( 'Feasible settings', 'feasible-analytics' ) . '</a>'
+			);
+		} else {
+			echo esc_html__( 'Tracking is off. Nothing is added to your pages and nothing is sent to Feasible until you confirm the site domain below, tick "Turn on tracking" and save.', 'feasible-analytics' );
+		}
+
+		echo '</p></div>';
 	}
 
 	/**
@@ -121,6 +158,7 @@ class Feasible_Admin {
 		);
 
 		self::add_field( 'domain', __( 'Site domain', 'feasible-analytics' ), 'feasible_connection', 'render_domain' );
+		self::add_field( 'tracking_enabled', __( 'Tracking', 'feasible-analytics' ), 'feasible_connection', 'render_tracking_enabled' );
 		self::add_field( 'host', __( 'feasible.lol host', 'feasible-analytics' ), 'feasible_connection', 'render_host' );
 		self::add_field( 'script_token', __( 'Per-site script token', 'feasible-analytics' ), 'feasible_connection', 'render_token' );
 
@@ -197,7 +235,7 @@ class Feasible_Admin {
 	 * @return void
 	 */
 	public static function section_connection() {
-		echo '<p>' . esc_html__( 'The domain has to match the site exactly as you registered it in feasible.lol. Everything else on this screen depends on it.', 'feasible-analytics' ) . '</p>';
+		echo '<p>' . esc_html__( 'The domain has to match the site exactly as you registered it in feasible.lol. Everything else on this screen depends on it. Nothing is measured until you turn tracking on.', 'feasible-analytics' ) . '</p>';
 	}
 
 	/**
@@ -206,7 +244,7 @@ class Feasible_Admin {
 	 * @return void
 	 */
 	public static function section_proxy() {
-		echo '<p>' . esc_html__( 'With the proxy on, the tracking script and the event endpoint are served from paths on this site rather than from feasible.lol, and the visitor\'s real address is forwarded upstream so the numbers stay correct.', 'feasible-analytics' ) . '</p>';
+		echo '<p>' . esc_html__( 'With the proxy on, the tracking script bundled with this plugin and the event endpoint are served from paths on this site rather than from feasible.lol. Each event is checked and rebuilt here before it is forwarded, with the visitor\'s real address so the numbers stay correct.', 'feasible-analytics' ) . '</p>';
 		echo '<p>' . esc_html__( 'The paths are random and specific to this site. That means a filter list naming one path costs one site rather than every site using this plugin. It raises the cost of being blocked; it does not end it.', 'feasible-analytics' ) . '</p>';
 	}
 
@@ -247,14 +285,30 @@ class Feasible_Admin {
 		$value = (string) Feasible_Settings::get( 'domain' );
 		$guess = Feasible_Settings::sanitise_domain( home_url() );
 
+		// The field is filled with the site's own domain as a suggestion. It
+		// is stored only when the administrator saves this form.
+		if ( '' === $value ) {
+			$value = $guess;
+		}
+
 		echo '<input type="text" class="regular-text" name="' . esc_attr( self::name( 'domain' ) ) . '" value="' . esc_attr( $value ) . '" placeholder="' . esc_attr( $guess ) . '" />';
 		echo '<p class="description">';
 		printf(
 			/* translators: %s: the domain of this WordPress site. */
-			esc_html__( 'This site looks like %s.', 'feasible-analytics' ),
+			esc_html__( 'This site looks like %s. Check it matches the site in your Feasible account.', 'feasible-analytics' ),
 			'<code>' . esc_html( $guess ) . '</code>'
 		);
 		echo '</p>';
+	}
+
+	/**
+	 * render_tracking_enabled draws the switch that turns tracking on.
+	 *
+	 * @return void
+	 */
+	public static function render_tracking_enabled() {
+		self::checkbox( 'tracking_enabled', __( 'Turn on tracking', 'feasible-analytics' ) );
+		echo '<p class="description">' . esc_html__( 'Off until you tick this. While it is off the plugin adds nothing to your pages and sends nothing to Feasible.', 'feasible-analytics' ) . '</p>';
 	}
 
 	/**
@@ -276,7 +330,7 @@ class Feasible_Admin {
 		$value = (string) Feasible_Settings::get( 'script_token' );
 
 		echo '<input type="text" class="regular-text code" name="' . esc_attr( self::name( 'script_token' ) ) . '" value="' . esc_attr( $value ) . '" placeholder="' . esc_attr__( 'optional', 'feasible-analytics' ) . '" />';
-		echo '<p class="description">' . esc_html__( 'Optional. If your site settings in feasible.lol show a script path like /js/fs-abcdefghijklmnop.js, paste it here and the proxy will fetch that one instead of the shared script.', 'feasible-analytics' ) . '</p>';
+		echo '<p class="description">' . esc_html__( 'Optional, and used only while the proxy is off. If your site settings in feasible.lol show a script path like /js/fs-abcdefghijklmnop.js, paste it here and the snippet will load that one instead of the shared script.', 'feasible-analytics' ) . '</p>';
 	}
 
 	/**
@@ -286,7 +340,7 @@ class Feasible_Admin {
 	 */
 	public static function render_proxy_enabled() {
 		self::checkbox( 'proxy_enabled', __( 'Serve the script and the event endpoint from this domain', 'feasible-analytics' ) );
-		echo '<p class="description">' . esc_html__( 'With this off, the snippet loads the script from feasible.lol directly. That works; it is simply easier to block.', 'feasible-analytics' ) . '</p>';
+		echo '<p class="description">' . esc_html__( 'With this off, the snippet loads the script from your feasible.lol host directly and the browser sends events there. That works; it is simply easier to block.', 'feasible-analytics' ) . '</p>';
 	}
 
 	/**
@@ -502,8 +556,12 @@ class Feasible_Admin {
 	 * @return void
 	 */
 	private static function rotation_notice() {
+		// A display flag set by handle_rotate's redirect, which checked the
+		// nonce before rotating; nothing here acts on it.
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		if ( empty( $_GET['feasible_rotated'] ) ) {
+		$rotated = isset( $_GET['feasible_rotated'] ) ? sanitize_key( wp_unslash( $_GET['feasible_rotated'] ) ) : '';
+
+		if ( '1' !== $rotated ) {
 			return;
 		}
 
@@ -564,7 +622,9 @@ class Feasible_Admin {
 		echo '<h2>' . esc_html__( 'The snippet on your pages', 'feasible-analytics' ) . '</h2>';
 		echo '<textarea class="large-text code" rows="3" readonly>' . esc_textarea( $tag ) . '</textarea>';
 
-		if ( ! Feasible_Settings::get( 'inject_enabled' ) ) {
+		if ( ! Feasible_Settings::tracking_enabled() ) {
+			echo '<p class="description">' . esc_html__( 'Tracking is off, so this tag is not on your pages yet.', 'feasible-analytics' ) . '</p>';
+		} elseif ( ! Feasible_Settings::get( 'inject_enabled' ) ) {
 			echo '<p class="description">' . esc_html__( 'Injection is switched off, so this is the tag to paste into your theme yourself.', 'feasible-analytics' ) . '</p>';
 		}
 	}

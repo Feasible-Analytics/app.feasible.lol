@@ -52,39 +52,13 @@ class Feasible_Events {
 	}
 
 	/**
-	 * name_from_body reads the event name out of a raw request body.
-	 *
-	 * A body that will not decode returns an empty name, which suppresses
-	 * nothing: forwarding it and letting the server answer 400 is far better
-	 * than the proxy inventing its own opinion about a malformed payload.
-	 *
-	 * @param string $body Raw JSON body.
-	 * @return string
-	 */
-	public static function name_from_body( $body ) {
-		$body = trim( (string) $body );
-
-		if ( '' === $body ) {
-			return '';
-		}
-
-		$decoded = json_decode( $body, true );
-
-		if ( ! is_array( $decoded ) || ! isset( $decoded['n'] ) || ! is_string( $decoded['n'] ) ) {
-			return '';
-		}
-
-		return trim( $decoded['n'] );
-	}
-
-	/**
 	 * is_suppressed reports whether this site has switched an event off.
 	 *
 	 * Only the three names above are suppressible. A custom event, a pageview
 	 * or an unknown name is always forwarded — dropping something the customer
 	 * sent deliberately would be the worst kind of silent data loss.
 	 *
-	 * @param string $name     Event name from the body.
+	 * @param string $name     Event name from the sanitised body.
 	 * @param array  $settings The plugin settings.
 	 * @return bool
 	 */

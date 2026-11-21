@@ -133,6 +133,19 @@ func TestGeneratedArtifactsMatchEmbedded(t *testing.T) {
 	}
 }
 
+// TestWordPressPluginCopyMatchesEmbedded keeps the script the WordPress plugin
+// serves from its own folder identical to the one this binary serves, so a
+// tracker change cannot ship to one and not the other.
+func TestWordPressPluginCopyMatchesEmbedded(t *testing.T) {
+	copied, err := os.ReadFile(filepath.Join("..", "..", "ecosystem", "wordpress-plugin", "assets", "js", "feasible.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(copied, Script) {
+		t.Fatal("ecosystem/wordpress-plugin/assets/js/feasible.js differs from the embedded production asset; run `make tracker`")
+	}
+}
+
 // TestLegacyScriptIsServedUnconfigured is the drop-in contract: the legacy path
 // carries no baked configuration at all, because the whole point of it is that
 // an existing snippet's own data-domain keeps working.
