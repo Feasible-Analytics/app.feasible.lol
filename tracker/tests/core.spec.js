@@ -395,6 +395,69 @@ test("a failed event is kept and retried on the next pageview", async ({ page })
 	expect(attempts[0].k).toBe(attempts[1].k);
 });
 
+// errorsOn records every uncaught error the page throws, including a rejection
+// from inside the tracker's own fetch handler.
+function errorsOn(page) {
+	const errors = [];
+	page.on("pageerror", (error) => errors.push(error.message));
+	return errors;
+}
+
+// settle gives a late uncaught error time to reach the test before it asserts
+// that there was none.
+async function settle(page) {
+	await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 500)));
+}
+
+// A replay has no callback to answer, and a successful one must not throw onto
+// the host page, where it lands in the console and in the site's error tracker.
+test("a successful replay throws nothing onto the page", async ({ page }) => {
+	const errors = errorsOn(page);
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+
+	await page.evaluate(() => {
+		const body = JSON.stringify({ n: "pageview", u: "https://example.test/replayed", d: "example.test", k: "aaaaaaaa-0000-4000-8000-000000000004", v: 2 });
+		localStorage.setItem("feasible_outbox", JSON.stringify([{ b: body, t: Date.now() }]));
+	});
+
+	await page.goto("/spa.html");
+
+	await waitFor(state, (events) => events.some((e) => e.u && e.u.includes("/replayed")), "the stashed event was replayed");
+	await expect.poll(() => page.evaluate(() => localStorage.getItem("feasible_outbox"))).toBe("[]");
+	await settle(page);
+
+	expect(errors).toEqual([]);
+});
+
+// A site can hand `callback` anything. A value that is not a function is not
+// called, and a falsy one is not mistaken for a replay and left out of the
+// outbox.
+test("a callback that is not a function is neither called nor mistaken for a replay", async ({ page }) => {
+	const errors = errorsOn(page);
+	const state = await collect(page);
+
+	await page.goto("/basic.html");
+	await settledCount(state, "pageview", 1);
+
+	state.fail = 1;
+	await page.evaluate(() => window.feasible("Signup", { callback: false }));
+	await expect.poll(() => page.evaluate(() => localStorage.getItem("feasible_outbox"))).toContain("Signup");
+
+	await page.evaluate(() => window.feasible("Upgrade", { callback: "not a function" }));
+	await settledCount(state, "Upgrade", 1);
+
+	await page.goto("/spa.html");
+
+	await settledCount(state, "Signup", 2);
+	await expect.poll(() => page.evaluate(() => localStorage.getItem("feasible_outbox"))).toBe("[]");
+	await settle(page);
+
+	expect(errors).toEqual([]);
+});
+
 // The hardest retry boundary is a request the server durably accepted whose
 // 202 never reached the browser. Both attempts must carry one client identity.
 test("a lost 202 retries with the same client idempotency key", async ({ page }) => {

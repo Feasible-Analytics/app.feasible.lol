@@ -7,7 +7,7 @@
 //
 
 import { doc, loc, page, stamp } from "./state.js";
-import { send, drain, refusal } from "./send.js";
+import { send, drain, refusal, answer } from "./send.js";
 import { warn } from "./exclude.js";
 import * as engagement from "./engagement.js";
 
@@ -93,7 +93,7 @@ export function pageview(opts) {
 	const reason = refusal({ u: target });
 	if (reason) {
 		warn("not tracking — " + reason);
-		options.callback?.({ status: null });
+		answer(options.callback, { status: null });
 		page.k = cfg.h ? target : target.split("#")[0];
 		page.u = "";
 		engagement.suspend();
