@@ -134,6 +134,14 @@ function writeOutbox(items) {
 	}
 }
 
+// answer calls a callback with a result, and does nothing when it is not a
+// function. Replays pass none, and a site can pass anything as `callback`;
+// `callback?.()` only skips null and undefined, so it would throw onto the
+// host page from inside our promise handler.
+export function answer(callback, result) {
+	if (typeof callback == "function") callback(result);
+}
+
 // drain replays whatever failed last time. It runs on a pageview rather than on
 // a timer because a pageview is the one moment we know the network is being
 // used anyway and the visitor is present.
@@ -148,7 +156,7 @@ export function drain() {
 		items.filter((item) => {
 			try {
 				if (!refusal(JSON.parse(item.b))) {
-					post(item.b, 0);
+					post(item.b, 0, 1);
 					return true;
 				}
 			} catch {}
@@ -175,10 +183,13 @@ export function drain() {
 //     network failure or an excluded page means it is never called, so any
 //     caller that gates a form submission on it must race it against its own
 //     timeout.
-export function post(body, callback) {
+//
+// `replayed` marks a body drain took from the outbox, which is already durable
+// and must not be stashed a second time.
+export function post(body, callback, replayed) {
 	// Persistence happens before fetch so cancellation cannot destroy the only
-	// copy. A zero callback marks a replay that is already in the durable queue.
-	if (callback != 0) writeOutbox(readOutbox().concat({ b: body, t: Date.now() }));
+	// copy.
+	if (!replayed) writeOutbox(readOutbox().concat({ b: body, t: Date.now() }));
 
 	try {
 		fetch(endpoint, {
@@ -193,7 +204,7 @@ export function post(body, callback) {
 			(res) => {
 				if (res.ok) {
 					writeOutbox(readOutbox().filter((item) => item.b != body));
-					callback?.({
+					answer(callback, {
 						status: res.status,
 						dropped: res.headers.get("x-feasible-dropped"),
 					});
@@ -210,7 +221,7 @@ export function post(body, callback) {
 // which keeps a pageview under two hundred bytes.
 export function send(event, callback) {
 	if (refusal(event)) {
-		callback?.({ status: null });
+		answer(callback, { status: null });
 		return;
 	}
 	// Creating the key before post means a lost 202, cancellation and later

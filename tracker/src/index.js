@@ -8,7 +8,7 @@
 
 import { win, globals } from "./state.js";
 import { resolve } from "./config.js";
-import { configure } from "./send.js";
+import { configure, answer } from "./send.js";
 import { ignoreReason, warn } from "./exclude.js";
 import * as pageview from "./pageview.js";
 import * as engagement from "./engagement.js";
@@ -22,7 +22,7 @@ const cfg = resolve();
 // thing to get wrong.
 function api(name, options) {
 	if (reason) {
-		options?.callback?.({ status: null });
+		answer(options?.callback, { status: null });
 		return;
 	}
 
