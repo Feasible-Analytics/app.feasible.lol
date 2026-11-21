@@ -45,14 +45,13 @@ class Feasible_Snippet {
 
 		$in_footer = ( 'footer' === Feasible_Settings::get( 'inject_location' ) );
 
-		// A null version keeps WordPress from appending ?ver= to the source.
-		// The proxy path is already unique to this site and the ETag decides
-		// freshness, so a version string would only fragment the browser cache
-		// on every WordPress upgrade.
-		// The script is served with its own ETag and changes upstream, not with
-		// this plugin, so a plugin version in the URL would say nothing true.
-		// phpcs:ignore WordPress.WP.EnqueuedResourceParameters.MissingVersion
-		wp_enqueue_script( self::HANDLE, self::script_src(), array(), null, $in_footer );
+		// Through the proxy the script is the copy bundled with this plugin, so
+		// the plugin version is its version. Loaded from the Feasible host it
+		// changes with that host, and a null version keeps WordPress from
+		// appending a ?ver= that would say nothing true about it.
+		$version = Feasible_Settings::proxy_enabled() ? FEASIBLE_VERSION : null;
+
+		wp_enqueue_script( self::HANDLE, self::script_src(), array(), $version, $in_footer );
 
 		// The queue stub has to exist before anything calls feasible(). The
 		// bundle is deferred, so a call made by the page — or by the inline
@@ -69,9 +68,10 @@ class Feasible_Snippet {
 	/**
 	 * script_src is the address the tag loads from.
 	 *
-	 * With the proxy on this is a path on the customer's own domain; with it
-	 * off it is the service directly, which is a working installation and is
-	 * said plainly on the settings screen rather than treated as a fault.
+	 * With the proxy on this is a path on the customer's own domain, which
+	 * serves the script bundled with this plugin. With it off it is the
+	 * Feasible host directly, which is a working installation and is said
+	 * plainly on the settings screen rather than treated as a fault.
 	 *
 	 * @return string
 	 */
@@ -80,7 +80,7 @@ class Feasible_Snippet {
 			return Feasible_Paths::script_url();
 		}
 
-		return Feasible_Settings::upstream_script_url();
+		return Feasible_Settings::direct_script_url();
 	}
 
 	/**
@@ -123,7 +123,11 @@ class Feasible_Snippet {
 	 * that they land on the tag on every WordPress version this plugin
 	 * supports, including the ones before loading strategies existed.
 	 *
-	 * @param string $tag    The full script tag.
+	 * The markup WordPress passes in also holds the inline scripts attached to
+	 * the handle, so only the tag that loads the file, the one with a src, is
+	 * changed.
+	 *
+	 * @param string $tag    The script markup for the handle.
 	 * @param string $handle The handle being printed.
 	 * @return string
 	 */
@@ -138,7 +142,29 @@ class Feasible_Snippet {
 			$extra .= esc_attr( $name ) . '="' . esc_attr( $value ) . '" ';
 		}
 
-		return str_replace( '<script ', '<script ' . $extra, $tag );
+		return self::add_to_loading_tag( $tag, $extra );
+	}
+
+	/**
+	 * add_to_loading_tag inserts attributes into the first script tag that has
+	 * a src, and leaves any inline script around it alone.
+	 *
+	 * WordPress puts src first on older versions and after id on newer ones,
+	 * so the match does not depend on the order.
+	 *
+	 * @param string $tag   The script markup for the handle.
+	 * @param string $extra Attributes to insert, each followed by a space.
+	 * @return string
+	 */
+	public static function add_to_loading_tag( $tag, $extra ) {
+		return (string) preg_replace_callback(
+			'/<script(?=\s(?:[^>]*\s)?src=)\s/i',
+			function () use ( $extra ) {
+				return '<script ' . $extra;
+			},
+			(string) $tag,
+			1
+		);
 	}
 
 	/**
@@ -154,7 +180,13 @@ class Feasible_Snippet {
 		$settings = Feasible_Settings::all();
 		$track    = true;
 
-		if ( empty( $settings['inject_enabled'] ) || '' === trim( (string) $settings['domain'] ) ) {
+		if ( ! Feasible_Settings::tracking_enabled() ) {
+			// Nothing reaches a page until an administrator has turned
+			// tracking on, and no filter below can change that.
+			return false;
+		}
+
+		if ( empty( $settings['inject_enabled'] ) ) {
 			$track = false;
 		} elseif ( is_preview() || is_customize_preview() ) {
 			// A preview is the author looking at their own unpublished draft,

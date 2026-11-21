@@ -4,7 +4,7 @@ Tags: analytics, privacy, statistics, cookieless, site search
 Requires at least: 5.9
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.0.0
+Stable tag: 1.0.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -16,10 +16,12 @@ Feasible is web analytics with no cookies. This plugin connects a WordPress site
 
 You need a Feasible account, or your own self-hosted copy of Feasible. The plugin stores no statistics in your WordPress database.
 
+Nothing happens when you activate the plugin. It adds nothing to your pages and sends nothing anywhere until you confirm your site domain and turn tracking on in **Feasible → Settings**.
+
 = What it does =
 
-* Adds the tracking script to every page, in the head or the footer.
-* Serves the script and the event endpoint from your own domain, on paths generated when you activate the plugin.
+* Adds the tracking script to every page, in the head or the footer, once you turn tracking on.
+* Serves the tracking script, which ships inside the plugin, and the event endpoint from your own domain, on random paths generated for your site.
 * Counts site searches: the term, how many results came back, and whether it found anything.
 * Counts 404 errors: the path that was asked for and where the visitor came from.
 * Lets you switch off outbound link clicks, file downloads and form submissions, one by one.
@@ -37,28 +39,34 @@ No cookies. No cross-site tracking. The visitor's IP address is used to work out
 
 = The proxy =
 
-With the proxy on, two routes are served from your domain on random path segments:
+The proxy is on by default. With it on, two routes are served from your domain on random path segments:
 
-* The tracker script. It is fetched from your Feasible host, cached for ten minutes and served with an ETag. The last good copy is kept for a day, so an outage upstream costs you a slightly old script and not a missing one.
-* The event endpoint. It forwards each event to your Feasible host with the visitor's IP address and User-Agent.
+* The tracker script. It is the file in the plugin's `assets/js` folder, served with an ETag. The plugin never downloads code from anywhere.
+* The event endpoint. It checks each event, keeps only the fields Feasible accepts, cleans and size-limits each one, and forwards the rebuilt event to your Feasible host with the visitor's IP address and User-Agent.
 
 The event route needs those two headers. Without them the analytics server sees your web host, and every visitor is counted as one person in a datacenter.
 
 With pretty permalinks the routes are real paths. With plain permalinks they fall back to a query-string route, because a bare path never reaches WordPress without a rewrite rule in front of it. The settings screen tells you which mode you are in.
 
-You can turn the proxy off. The script then loads from your Feasible host directly.
+You can turn the proxy off. The snippet then loads the script from your Feasible host directly, and visitors' browsers send events there.
+
+= Source code =
+
+The tracking script in `assets/js/feasible.js` is minified. Its source, and the build that produces it, are in the `tracker` folder of the Feasible repository: https://github.com/Feasible-Analytics/app.feasible.lol/tree/main/tracker. The script is licensed AGPL-3.0-or-later. The plugin's own source is in the same repository under `ecosystem/wordpress-plugin`.
 
 == External services ==
 
 This plugin connects your site to Feasible, a web analytics service. It does nothing useful without it. The service is the hosted one at https://app.feasible.lol unless you change the host setting to your own self-hosted copy.
 
-What is sent, and when:
+Nothing is sent until you turn tracking on. Activating the plugin contacts no server. Until you enter your site domain and tick "Turn on tracking" in the settings, the plugin adds no script to your pages and forwards nothing.
+
+What is sent once tracking is on, and when:
 
 * **On each page a visitor loads,** the visitor's browser runs the Feasible script. It sends the page URL, the referrer, the page title, the browser window width and the site domain you entered. Later it sends how long the visitor stayed and how far they scrolled.
 * **When a visitor clicks an outbound link, downloads a file or submits a form,** the script sends an event with the link or file URL. The form event carries no field values. You can switch each of these off.
 * **When a visitor searches your site or lands on a 404,** the plugin sends the search term and result count, or the missing path.
-* **With the proxy on,** those requests go to your own site first. Your server then forwards each event to the Feasible host, with the visitor's IP address and User-Agent, and fetches the tracker script from that host at most once every ten minutes.
-* **With the proxy off,** the visitor's browser talks to the Feasible host directly, which sees the visitor's IP address and User-Agent as any web server does.
+* **With the proxy on** (the default), the script comes from the plugin itself and those requests go to your own site first. Your server then forwards each event to the Feasible host, with the visitor's IP address and User-Agent. It never downloads code from the host.
+* **With the proxy off,** the visitor's browser loads the script from the Feasible host and sends events to it directly. The host sees the visitor's IP address and User-Agent as any web server does.
 
 Feasible uses the IP address and User-Agent to count a visitor and to work out a country, region and city. The IP address is then discarded and never stored. No cookies are set.
 
@@ -70,10 +78,11 @@ The hosted service is run by Cloudmanic Labs, LLC. [Terms of service](https://fe
 
 1. Install the plugin from the plugin directory, or upload the folder to `/wp-content/plugins/`.
 2. Activate it on the **Plugins** screen.
-3. Open **Feasible → Settings** and enter your site domain exactly as it is registered in Feasible.
-4. Leave the proxy switched on. The screen shows the two URLs it now serves.
-5. Choose the optional measurements you want.
-6. Optional: paste a shared dashboard link to read your dashboard inside wp-admin.
+3. Open **Feasible → Settings**. Check the site domain matches the site in your Feasible account.
+4. Tick **Turn on tracking** and save. Until you do, the plugin adds nothing to your pages.
+5. Leave the proxy switched on. The screen shows the two URLs it now serves.
+6. Choose the optional measurements you want.
+7. Optional: paste a shared dashboard link to read your dashboard inside wp-admin.
 
 == Frequently Asked Questions ==
 
@@ -84,6 +93,10 @@ Yes. The plugin sends events to Feasible, either the hosted service or your own 
 = Does it set cookies? =
 
 No.
+
+= Does activating the plugin start tracking? =
+
+No. Tracking stays off until you confirm your site domain and tick "Turn on tracking" in the settings.
 
 = Why serve the script from my own domain? =
 
@@ -113,10 +126,19 @@ Yes. Each site has its own settings and its own paths.
 
 == Changelog ==
 
+= 1.0.1 =
+* Activation no longer turns tracking on or fills in the site domain. Confirm the domain and turn tracking on in the settings.
+* The tracking script now ships inside the plugin. The proxy serves that file and no longer fetches or caches the script from the Feasible host.
+* The proxy checks every event, keeps only the fields Feasible accepts, sanitizes and size-limits each one, and forwards the rebuilt event.
+* Request headers the proxy reads are sanitized.
+
 = 1.0.0 =
 * First release.
 
 == Upgrade Notice ==
+
+= 1.0.1 =
+Tracking is now off until you turn it on in Feasible → Settings. If you used 1.0.0, open the settings, check the domain and tick "Turn on tracking".
 
 = 1.0.0 =
 First release.

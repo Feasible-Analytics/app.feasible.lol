@@ -7,298 +7,354 @@
 # Created: 2026-08-30
 msgid ""
 msgstr ""
-"Project-Id-Version: Feasible Analytics 1.0.0\n"
+"Project-Id-Version: Feasible Analytics 1.0.1\n"
 "Report-Msgid-Bugs-To: https://feasible.lol/support\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"POT-Creation-Date: 2026-08-30T00:00:00+00:00\n"
+"POT-Creation-Date: 2026-11-21T12:27:29+00:00\n"
 "PO-Revision-Date: \n"
-"X-Generator: hand-written from the plugin source\n"
+"X-Generator: WP-CLI 2.7.1\n"
 "X-Domain: feasible-analytics\n"
 
-#: includes/class-feasible-admin.php:58 includes/class-feasible-admin.php:481 includes/class-feasible-site-health.php:125
+#. Plugin Name of the plugin
+#: includes/class-feasible-admin.php:95
+#: includes/class-feasible-admin.php:535
+#: includes/class-feasible-site-health.php:136
 msgid "Feasible Analytics"
 msgstr ""
 
-#: includes/class-feasible-admin.php:59
+#. Plugin URI of the plugin
+msgid "https://feasible.lol/integrations/wordpress/"
+msgstr ""
+
+#. Description of the plugin
+msgid "Cookieless analytics for WordPress. Serves the bundled tracking script and the event endpoint from your own domain, counts site searches and 404s, and puts your dashboard inside wp-admin."
+msgstr ""
+
+#. Author of the plugin
+msgid "Cloudmanic Labs, LLC"
+msgstr ""
+
+#. Author URI of the plugin
+msgid "https://cloudmanic.com"
+msgstr ""
+
+#. translators: %s: link to the plugin's settings screen.
+#: includes/class-feasible-admin.php:74
+msgid "Feasible Analytics is installed but not measuring anything yet. Confirm your site domain and turn tracking on in %s."
+msgstr ""
+
+#: includes/class-feasible-admin.php:75
+msgid "Feasible settings"
+msgstr ""
+
+#: includes/class-feasible-admin.php:78
+msgid "Tracking is off. Nothing is added to your pages and nothing is sent to Feasible until you confirm the site domain below, tick \"Turn on tracking\" and save."
+msgstr ""
+
+#: includes/class-feasible-admin.php:96
 msgid "Feasible"
 msgstr ""
 
-#: includes/class-feasible-admin.php:69
+#: includes/class-feasible-admin.php:106
 msgid "Feasible Settings"
 msgstr ""
 
-#: includes/class-feasible-admin.php:70 includes/class-feasible-admin.php:93
+#: includes/class-feasible-admin.php:107
+#: includes/class-feasible-admin.php:130
 msgid "Settings"
 msgstr ""
 
-#: includes/class-feasible-admin.php:78 includes/class-feasible-dashboard.php:93
+#: includes/class-feasible-admin.php:115
+#: includes/class-feasible-dashboard.php:93
 msgid "Feasible Dashboard"
 msgstr ""
 
-#: includes/class-feasible-admin.php:79 includes/class-feasible-admin.php:163
+#: includes/class-feasible-admin.php:116
+#: includes/class-feasible-admin.php:201
 msgid "Dashboard"
 msgstr ""
 
-#: includes/class-feasible-admin.php:118
+#: includes/class-feasible-admin.php:155
 msgid "Connection"
 msgstr ""
 
-#: includes/class-feasible-admin.php:123 includes/class-feasible-site-health.php:132
+#: includes/class-feasible-admin.php:160
+#: includes/class-feasible-site-health.php:147
 msgid "Site domain"
 msgstr ""
 
-#: includes/class-feasible-admin.php:124
+#: includes/class-feasible-admin.php:161
+#: includes/class-feasible-site-health.php:143
+msgid "Tracking"
+msgstr ""
+
+#: includes/class-feasible-admin.php:162
 msgid "feasible.lol host"
 msgstr ""
 
-#: includes/class-feasible-admin.php:125
+#: includes/class-feasible-admin.php:163
 msgid "Per-site script token"
 msgstr ""
 
-#: includes/class-feasible-admin.php:129 includes/class-feasible-site-health.php:140
+#: includes/class-feasible-admin.php:167
+#: includes/class-feasible-site-health.php:155
 msgid "Proxy"
 msgstr ""
 
-#: includes/class-feasible-admin.php:134
+#: includes/class-feasible-admin.php:172
 msgid "Serve from this domain"
 msgstr ""
 
-#: includes/class-feasible-admin.php:135
+#: includes/class-feasible-admin.php:173
 msgid "Live routes"
 msgstr ""
 
-#: includes/class-feasible-admin.php:139
+#: includes/class-feasible-admin.php:177
 msgid "Snippet"
 msgstr ""
 
-#: includes/class-feasible-admin.php:144
+#: includes/class-feasible-admin.php:182
 msgid "Add the snippet"
 msgstr ""
 
-#: includes/class-feasible-admin.php:145
+#: includes/class-feasible-admin.php:183
 msgid "Where"
 msgstr ""
 
-#: includes/class-feasible-admin.php:146
+#: includes/class-feasible-admin.php:184
 msgid "Logged-in users"
 msgstr ""
 
-#: includes/class-feasible-admin.php:147
+#: includes/class-feasible-admin.php:185
 msgid "Excluded roles"
 msgstr ""
 
-#: includes/class-feasible-admin.php:148
+#: includes/class-feasible-admin.php:186
 msgid "Download file types"
 msgstr ""
 
-#: includes/class-feasible-admin.php:152
+#: includes/class-feasible-admin.php:190
 msgid "Measurements"
 msgstr ""
 
-#: includes/class-feasible-admin.php:157
+#: includes/class-feasible-admin.php:195
 msgid "Site search"
 msgstr ""
 
-#: includes/class-feasible-admin.php:158
+#: includes/class-feasible-admin.php:196
 msgid "404 errors"
 msgstr ""
 
-#: includes/class-feasible-admin.php:159
+#: includes/class-feasible-admin.php:197
 msgid "Measured by the script"
 msgstr ""
 
-#: includes/class-feasible-admin.php:168
+#: includes/class-feasible-admin.php:206
 msgid "Shared dashboard link"
 msgstr ""
 
-#: includes/class-feasible-admin.php:200
-msgid "The domain has to match the site exactly as you registered it in feasible.lol. Everything else on this screen depends on it."
+#: includes/class-feasible-admin.php:238
+msgid "The domain has to match the site exactly as you registered it in feasible.lol. Everything else on this screen depends on it. Nothing is measured until you turn tracking on."
 msgstr ""
 
-#: includes/class-feasible-admin.php:209
-msgid "With the proxy on, the tracking script and the event endpoint are served from paths on this site rather than from feasible.lol, and the visitor's real address is forwarded upstream so the numbers stay correct."
+#: includes/class-feasible-admin.php:247
+msgid "With the proxy on, the tracking script bundled with this plugin and the event endpoint are served from paths on this site rather than from feasible.lol. Each event is checked and rebuilt here before it is forwarded, with the visitor's real address so the numbers stay correct."
 msgstr ""
 
-#: includes/class-feasible-admin.php:210
+#: includes/class-feasible-admin.php:248
 msgid "The paths are random and specific to this site. That means a filter list naming one path costs one site rather than every site using this plugin. It raises the cost of being blocked; it does not end it."
 msgstr ""
 
-#: includes/class-feasible-admin.php:219
+#: includes/class-feasible-admin.php:257
 msgid "The snippet is added to the front end of the site. Turn it off if you paste the script into your theme yourself."
 msgstr ""
 
-#: includes/class-feasible-admin.php:229
+#: includes/class-feasible-admin.php:267
 msgid "Site searches and 404s are measured by this plugin, because only WordPress knows a page was a 404 and how many results a search returned."
 msgstr ""
 
-#: includes/class-feasible-admin.php:238
+#: includes/class-feasible-admin.php:276
 msgid "Create a shared link for this site in feasible.lol and paste it here to see the dashboard without leaving WordPress."
 msgstr ""
 
 #. translators: %s: the domain of this WordPress site.
-#: includes/class-feasible-admin.php:254
-msgid "This site looks like %s."
-msgstr ""
-
-#: includes/class-feasible-admin.php:267
-msgid "Leave this alone unless you run feasible.lol yourself."
-msgstr ""
-
-#: includes/class-feasible-admin.php:278
-msgid "optional"
-msgstr ""
-
-#: includes/class-feasible-admin.php:279
-msgid "Optional. If your site settings in feasible.lol show a script path like /js/fs-abcdefghijklmnop.js, paste it here and the proxy will fetch that one instead of the shared script."
-msgstr ""
-
-#: includes/class-feasible-admin.php:288
-msgid "Serve the script and the event endpoint from this domain"
-msgstr ""
-
-#: includes/class-feasible-admin.php:289
-msgid "With this off, the snippet loads the script from feasible.lol directly. That works; it is simply easier to block."
-msgstr ""
-
-#: includes/class-feasible-admin.php:304
-msgid "Script"
-msgstr ""
-
-#: includes/class-feasible-admin.php:305
-msgid "Events"
-msgstr ""
-
-#: includes/class-feasible-admin.php:307 includes/class-feasible-site-health.php:144
-msgid "Routing mode"
+#: includes/class-feasible-admin.php:298
+msgid "This site looks like %s. Check it matches the site in your Feasible account."
 msgstr ""
 
 #: includes/class-feasible-admin.php:310
-msgid "real paths, using WordPress rewrite rules."
+msgid "Turn on tracking"
 msgstr ""
 
-#: includes/class-feasible-admin.php:312
-msgid "query string on the site index."
+#: includes/class-feasible-admin.php:311
+msgid "Off until you tick this. While it is off the plugin adds nothing to your pages and sends nothing to Feasible."
 msgstr ""
 
-#: includes/class-feasible-admin.php:314
-msgid "This site uses plain permalinks, so nothing rewrites a bare path to WordPress and a path route would be a 404 before any PHP runs. Switch to any other permalink setting and these become real paths, which look less like tracking."
+#: includes/class-feasible-admin.php:321
+msgid "Leave this alone unless you run feasible.lol yourself."
 msgstr ""
 
-#: includes/class-feasible-admin.php:319
-msgid "Rotate paths"
+#: includes/class-feasible-admin.php:332
+msgid "optional"
 msgstr ""
 
-#: includes/class-feasible-admin.php:320
-msgid "Rotating generates new random paths and rewrites the rules behind them. It is the remedy when a path ends up on a filter list. Anything caching the old script URL will fetch the new one on its next page load."
-msgstr ""
-
-#: includes/class-feasible-admin.php:329
-msgid "Add the tracking snippet to the front end"
-msgstr ""
-
-#: includes/class-feasible-admin.php:341
-msgid "In the head (recommended)"
+#: includes/class-feasible-admin.php:333
+msgid "Optional, and used only while the proxy is off. If your site settings in feasible.lol show a script path like /js/fs-abcdefghijklmnop.js, paste it here and the snippet will load that one instead of the shared script."
 msgstr ""
 
 #: includes/class-feasible-admin.php:342
+msgid "Serve the script and the event endpoint from this domain"
+msgstr ""
+
+#: includes/class-feasible-admin.php:343
+msgid "With this off, the snippet loads the script from your feasible.lol host directly and the browser sends events there. That works; it is simply easier to block."
+msgstr ""
+
+#: includes/class-feasible-admin.php:358
+msgid "Script"
+msgstr ""
+
+#: includes/class-feasible-admin.php:359
+msgid "Events"
+msgstr ""
+
+#: includes/class-feasible-admin.php:361
+#: includes/class-feasible-site-health.php:159
+msgid "Routing mode"
+msgstr ""
+
+#: includes/class-feasible-admin.php:364
+msgid "real paths, using WordPress rewrite rules."
+msgstr ""
+
+#: includes/class-feasible-admin.php:366
+msgid "query string on the site index."
+msgstr ""
+
+#: includes/class-feasible-admin.php:368
+msgid "This site uses plain permalinks, so nothing rewrites a bare path to WordPress and a path route would be a 404 before any PHP runs. Switch to any other permalink setting and these become real paths, which look less like tracking."
+msgstr ""
+
+#: includes/class-feasible-admin.php:373
+msgid "Rotate paths"
+msgstr ""
+
+#: includes/class-feasible-admin.php:374
+msgid "Rotating generates new random paths and rewrites the rules behind them. It is the remedy when a path ends up on a filter list. Anything caching the old script URL will fetch the new one on its next page load."
+msgstr ""
+
+#: includes/class-feasible-admin.php:383
+msgid "Add the tracking snippet to the front end"
+msgstr ""
+
+#: includes/class-feasible-admin.php:395
+msgid "In the head (recommended)"
+msgstr ""
+
+#: includes/class-feasible-admin.php:396
 msgid "In the footer"
 msgstr ""
 
-#: includes/class-feasible-admin.php:347
+#: includes/class-feasible-admin.php:401
 msgid "The script is deferred either way, so the head costs nothing and catches visitors who leave before the footer renders."
 msgstr ""
 
-#: includes/class-feasible-admin.php:356
+#: includes/class-feasible-admin.php:410
 msgid "Do not measure anyone who is signed in to WordPress"
 msgstr ""
 
-#: includes/class-feasible-admin.php:369
+#: includes/class-feasible-admin.php:423
 msgid "No roles were found on this site."
 msgstr ""
 
-#: includes/class-feasible-admin.php:378
+#: includes/class-feasible-admin.php:432
 msgid "Useful when the whole editorial team should be invisible but subscribers should still count."
 msgstr ""
 
-#: includes/class-feasible-admin.php:390
+#: includes/class-feasible-admin.php:444
 msgid "Extensions, separated by commas. Leave it empty to use the script's own list. Setting this replaces that list rather than adding to it."
 msgstr ""
 
-#: includes/class-feasible-admin.php:399
+#: includes/class-feasible-admin.php:453
 msgid "Record what people search for on this site"
 msgstr ""
 
-#: includes/class-feasible-admin.php:400
+#: includes/class-feasible-admin.php:454
 msgid "Sends a Search event with the search term, the number of results, and whether anything was found at all. Terms are lowercased and their spacing collapsed so the same question asked three ways is one row rather than three."
 msgstr ""
 
-#: includes/class-feasible-admin.php:409
+#: includes/class-feasible-admin.php:463
 msgid "Record pages that were not found"
 msgstr ""
 
-#: includes/class-feasible-admin.php:410
+#: includes/class-feasible-admin.php:464
 msgid "Sends a 404 event with the path and the referrer, which is what turns a broken link into something you can find and fix."
 msgstr ""
 
-#: includes/class-feasible-admin.php:423
+#: includes/class-feasible-admin.php:477
 msgid "Outbound link clicks"
 msgstr ""
 
-#: includes/class-feasible-admin.php:424
+#: includes/class-feasible-admin.php:478
 msgid "File downloads"
 msgstr ""
 
-#: includes/class-feasible-admin.php:425
+#: includes/class-feasible-admin.php:479
 msgid "Form submissions"
 msgstr ""
 
-#: includes/class-feasible-admin.php:430
+#: includes/class-feasible-admin.php:484
 msgid "These three are measured by the browser script itself and cannot be switched off inside it. Turning one off here makes the proxy recognise the event and answer the browser without forwarding it, so nothing is recorded."
 msgstr ""
 
-#: includes/class-feasible-admin.php:432
+#: includes/class-feasible-admin.php:486
 msgid "These three switches do nothing while the proxy is off."
 msgstr ""
 
-#: includes/class-feasible-admin.php:433
+#: includes/class-feasible-admin.php:487
 msgid "The browser script measures them regardless, and with no proxy in the way the events go straight to feasible.lol. Turn the proxy on if you need to stop one."
 msgstr ""
 
 #. translators: %s: the configured feasible.lol host.
-#: includes/class-feasible-admin.php:451
+#: includes/class-feasible-admin.php:505
 msgid "Only a /share/ link on %s is accepted, because anything else would be framed next to your admin session."
 msgstr ""
 
-#: includes/class-feasible-admin.php:477 includes/class-feasible-dashboard.php:85
+#: includes/class-feasible-admin.php:531
+#: includes/class-feasible-dashboard.php:85
 msgid "You do not have permission to view this page."
 msgstr ""
 
-#: includes/class-feasible-admin.php:510
+#: includes/class-feasible-admin.php:568
 msgid "New paths generated and the rewrite rules rebuilt."
 msgstr ""
 
-#: includes/class-feasible-admin.php:530
+#: includes/class-feasible-admin.php:588
 msgid "The last request through the proxy failed."
 msgstr ""
 
 #. translators: %s: a human-readable interval, for example "5 minutes".
-#: includes/class-feasible-admin.php:537
+#: includes/class-feasible-admin.php:595
 msgid "%s ago."
 msgstr ""
 
-#: includes/class-feasible-admin.php:564
+#: includes/class-feasible-admin.php:622
 msgid "The snippet on your pages"
 msgstr ""
 
-#: includes/class-feasible-admin.php:568
+#: includes/class-feasible-admin.php:626
+msgid "Tracking is off, so this tag is not on your pages yet."
+msgstr ""
+
+#: includes/class-feasible-admin.php:628
 msgid "Injection is switched off, so this is the tag to paste into your theme yourself."
 msgstr ""
 
-#: includes/class-feasible-admin.php:579
+#: includes/class-feasible-admin.php:639
 msgid "You do not have permission to rotate the paths."
 msgstr ""
 
@@ -323,76 +379,73 @@ msgstr ""
 msgid "feasible.lol dashboard"
 msgstr ""
 
-#: includes/class-feasible-proxy.php:151
+#: includes/class-feasible-proxy.php:156
 msgid "The proxy is switched off, so the script and event routes on this domain answer nothing."
 msgstr ""
 
-#. translators: %s: the upstream script URL.
-#: includes/class-feasible-proxy.php:165
-msgid "The tracking script could not be fetched from %s, so no page on this site is being measured."
+#: includes/class-feasible-proxy.php:167
+msgid "The tracking script is missing from the plugin folder, so no page on this site is being measured. Reinstall the plugin."
 msgstr ""
 
-#. translators: %d: an HTTP status code.
-#: includes/class-feasible-proxy.php:257
-msgid "the server answered %d"
-msgstr ""
-
-#: includes/class-feasible-proxy.php:259
-msgid "the server answered with an empty body"
-msgstr ""
-
-#. translators: 1: the upstream script URL, 2: the reason the fetch failed.
-#: includes/class-feasible-proxy.php:277
-msgid "Fetching %1$s failed: %2$s"
-msgstr ""
-
-#: includes/class-feasible-proxy.php:314
+#: includes/class-feasible-proxy.php:246
 msgid "POST an event to this endpoint."
 msgstr ""
 
-#: includes/class-feasible-proxy.php:323
+#: includes/class-feasible-proxy.php:255
+msgid "Tracking is switched off in WordPress, so this endpoint forwards nothing."
+msgstr ""
+
+#: includes/class-feasible-proxy.php:256
+msgid "An event reached the proxy while tracking is switched off. Turn tracking on in the settings, or remove the snippet you added by hand."
+msgstr ""
+
+#: includes/class-feasible-proxy.php:264
 msgid "The proxy is switched off in WordPress, so this endpoint forwards nothing."
 msgstr ""
 
-#: includes/class-feasible-proxy.php:324
+#: includes/class-feasible-proxy.php:265
 msgid "An event reached the proxy endpoint while the proxy was switched off. Either turn the proxy back on or remove the old snippet."
 msgstr ""
 
-#: includes/class-feasible-proxy.php:332
+#: includes/class-feasible-proxy.php:273
 msgid "No site domain is configured in WordPress, so events cannot be attributed to a site."
 msgstr ""
 
-#: includes/class-feasible-proxy.php:333
+#: includes/class-feasible-proxy.php:274
 msgid "Events are arriving but no site domain is set, so none of them can be attributed. Set the site domain on the settings screen."
 msgstr ""
 
 #. translators: %d: the maximum body size in bytes.
-#: includes/class-feasible-proxy.php:345
+#: includes/class-feasible-proxy.php:286
 msgid "An event body may not be larger than %d bytes."
 msgstr ""
 
-#: includes/class-feasible-proxy.php:353
+#: includes/class-feasible-proxy.php:294
 msgid "There was no event in the request body."
 msgstr ""
 
+#: includes/class-feasible-proxy.php:300
+msgid "The request body is not a JSON event with a name."
+msgstr ""
+
 #. translators: %s: the reason the request failed.
-#: includes/class-feasible-proxy.php:458
+#: includes/class-feasible-proxy.php:404
 msgid "Events could not be forwarded to feasible.lol: %s"
 msgstr ""
 
-#: includes/class-feasible-settings.php:196
-msgid "No site domain is set, so nothing will be measured. Enter the domain exactly as you registered it in feasible.lol."
+#: includes/class-feasible-settings.php:229
+msgid "Tracking is still off because no site domain is set. Enter the domain exactly as you registered it in Feasible, then turn tracking on."
 msgstr ""
 
-#: includes/class-feasible-settings.php:265
+#: includes/class-feasible-settings.php:298
 msgid "The feasible.lol host must be a full http:// or https:// address. The previous value has been kept."
 msgstr ""
 
-#: includes/class-feasible-settings.php:305
+#: includes/class-feasible-settings.php:338
 msgid "The script token was not recognised. Copy it from the snippet on your feasible.lol site settings, or leave the field empty to use the shared script path."
 msgstr ""
 
-#: includes/class-feasible-settings.php:420
+#: includes/class-feasible-settings.php:453
 msgid "The shared dashboard link has to be a /share/ link on the feasible.lol host configured above, so it has been discarded."
 msgstr ""
 
@@ -412,46 +465,53 @@ msgstr ""
 msgid "The tracking snippet is being added to the front end and the proxy has not reported a failure."
 msgstr ""
 
-#: includes/class-feasible-site-health.php:76
-msgid "No site domain is set, so no event can be attributed to a site."
+#: includes/class-feasible-site-health.php:79
+msgid "Feasible Analytics is not measuring this site yet"
 msgstr ""
 
 #: includes/class-feasible-site-health.php:80
-msgid "The snippet is not being added to the front end. If you paste it into your theme yourself this is fine; otherwise nothing is being measured."
+msgid "Tracking is off, so nothing is added to your pages and nothing is sent to Feasible. Confirm the site domain and turn tracking on in the settings when you are ready."
 msgstr ""
 
-#: includes/class-feasible-site-health.php:94
-msgid "feasible.lol is not measuring this site correctly"
-msgstr ""
-
-#: includes/class-feasible-site-health.php:106
+#: includes/class-feasible-site-health.php:84
+#: includes/class-feasible-site-health.php:117
 msgid "Open the feasible.lol settings"
 msgstr ""
 
-#: includes/class-feasible-site-health.php:128
+#: includes/class-feasible-site-health.php:91
+msgid "The snippet is not being added to the front end. If you paste it into your theme yourself this is fine; otherwise nothing is being measured."
+msgstr ""
+
+#: includes/class-feasible-site-health.php:105
+msgid "feasible.lol is not measuring this site correctly"
+msgstr ""
+
+#: includes/class-feasible-site-health.php:139
 msgid "Plugin version"
 msgstr ""
 
-#: includes/class-feasible-site-health.php:133
-msgid "not set"
-msgstr ""
-
-#: includes/class-feasible-site-health.php:136
-msgid "Host"
-msgstr ""
-
-#: includes/class-feasible-site-health.php:141
+#: includes/class-feasible-site-health.php:144
+#: includes/class-feasible-site-health.php:156
 msgid "on"
 msgstr ""
 
-#: includes/class-feasible-site-health.php:141
+#: includes/class-feasible-site-health.php:144
+#: includes/class-feasible-site-health.php:156
 msgid "off"
 msgstr ""
 
 #: includes/class-feasible-site-health.php:148
+msgid "not set"
+msgstr ""
+
+#: includes/class-feasible-site-health.php:151
+msgid "Host"
+msgstr ""
+
+#: includes/class-feasible-site-health.php:163
 msgid "Script route"
 msgstr ""
 
-#: includes/class-feasible-site-health.php:152
+#: includes/class-feasible-site-health.php:167
 msgid "Event route"
 msgstr ""

@@ -25,14 +25,19 @@ const here = dirname(fileURLToPath(import.meta.url));
 // The second copy is inside the Go package that serves it. `go:embed`
 // cannot reach outside its own directory, and the alternative — a Makefile step
 // that copies the file — is a step that gets skipped, leaving the binary serving
-// a bundle nobody can find the source of. Writing both here means the copies can
-// never disagree.
+// a bundle nobody can find the source of. Writing every copy here means the
+// copies can never disagree.
+//
+// The base bundle has a third copy inside the WordPress plugin, which serves
+// the script from its own folder: the plugin directory does not allow a plugin
+// to fetch code from elsewhere and run it on a site.
 const BUNDLES = [
 	{
 		name: "tracker base",
 		entry: join(here, "src", "index.js"),
 		out: join(here, "dist", "feasible.js"),
 		embedded: join(here, "..", "internal", "tracker", "assets", "feasible.js"),
+		copies: [join(here, "..", "ecosystem", "wordpress-plugin", "assets", "js", "feasible.js")],
 		// 3.75 KiB. The ceiling moves only when something is bought with it, and
 		// it is written as a multiple of 256 so raising it is always a visible
 		// decision rather than a number nudged to fit. It buys the viewport
@@ -60,7 +65,7 @@ const BUNDLES = [
 // where nothing else identifies it.
 const BANNER = "/*! feasible.lol tracker | AGPL-3.0-or-later */";
 
-// compile produces one independently budgeted bundle and its embedded copy.
+// compile produces one independently budgeted bundle and every copy of it.
 //
 // Esbuild owns module resolution and syntax lowering. Terser then spends a few
 // extra compression passes on the already bundled program; that deterministic
@@ -94,8 +99,10 @@ async function compile(bundle) {
 	if (!minified.code) throw new Error(`${bundle.name} minification produced no code`);
 	writeFileSync(bundle.out, `${minified.code}\n`);
 
-	mkdirSync(dirname(bundle.embedded), { recursive: true });
-	writeFileSync(bundle.embedded, readFileSync(bundle.out));
+	for (const copy of [bundle.embedded, ...(bundle.copies || [])]) {
+		mkdirSync(dirname(copy), { recursive: true });
+		writeFileSync(copy, readFileSync(bundle.out));
+	}
 }
 
 // report prints one bundle's size and returns whether it is within budget.

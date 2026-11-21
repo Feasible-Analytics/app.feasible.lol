@@ -14,7 +14,14 @@ GPL-2.0-or-later. Requires WordPress 5.9 and PHP 7.4.
 
 ## What it does
 
-- **Serves the tracking script and the event endpoint from your domain**, on paths generated when
+Nothing, until an administrator confirms the site domain and ticks **Turn on tracking** on the
+settings screen. Activation stores the random path segments and nothing else: no domain, no
+tracking, no request to any server. Until tracking is on, no script reaches a page and both proxy
+routes answer `503` with `x-feasible-error: tracking-off`.
+
+Once it is on, it:
+
+- **Serves the bundled tracking script and the event endpoint from your domain**, on paths generated when
   the plugin is activated. This is the single most effective thing a self-hosted analytics tool can
   do about ad blockers, and it is the reason this plugin exists.
 - **Injects the snippet** into `wp_head` or `wp_footer`, with no theme editing.
@@ -38,12 +45,18 @@ https://your-site.example/<namespace>/<script>.js     the tracker bundle
 https://your-site.example/<namespace>/<event>         the event endpoint
 ```
 
-**The script route** fetches the bundle from your analytics host, caches it for ten minutes, and
-serves it with an `ETag` so the browser's hourly revalidation is a `304` rather than a download. A
-last known good copy is kept for a day, so an upstream outage costs you a slightly old script rather
-than no script.
+**The script route** serves `assets/js/feasible.js`, the tracker bundled inside the plugin, with an
+`ETag` so the browser's hourly revalidation is a `304` rather than a download. The plugin never
+fetches code from anywhere: the plugin directory does not allow it, and a bundled file cannot fail
+upstream. The file is a build output of `tracker/` (see Development), byte for byte the same script
+the analytics host serves, and a Go test fails if the two copies differ.
 
-**The event route** forwards the body upstream with the visitor's real
+**The event route** never forwards the body it received. `Feasible_Payload` decodes the JSON, keeps
+only the keys the event endpoint reads, sanitises and size-limits each one for its type, sets the
+domain to the one configured here, and encodes the result again. A body that is not a JSON object
+with an event name is answered `400` with `x-feasible-error: invalid-event`. Each cap sits above the
+endpoint's own limit, so anything the endpoint would cut still reaches it and is counted on the
+health panel. The rebuilt event goes upstream with the visitor's real
 `X-Forwarded-For` and the visitor's real `User-Agent`. Without those two the analytics server sees
 your web host, and every visitor to your site becomes one person sitting in a datacentre — a failure
 that produces no error anywhere and is usually noticed weeks later, if at all. The address is
@@ -72,6 +85,11 @@ With **plain permalinks**, a bare path never reaches WordPress at all — there 
 front of it, so the web server answers the 404 itself and PHP never runs. In that case the plugin
 falls back to a query-string route on the site index. It works, it is still unpredictable, and it is
 slightly less tidy. The settings screen says which mode you are in rather than leaving you to guess.
+
+### With the proxy off
+
+The snippet loads the script from the analytics host directly (the per-site token path when one is
+set) and the browser sends events there. The two routes on this site answer `503`.
 
 ### Rotating the paths
 
@@ -108,15 +126,19 @@ something a plugin should offer.
 
 ## Installation
 
-1. Copy this folder into `wp-content/plugins/feasible-analytics` and activate it.
-2. Go to **Feasible → Settings**, enter your site domain exactly as it is registered, and save.
+1. Install the zip `bin/package.sh` builds (see below), or copy this folder into
+   `wp-content/plugins/feasible-analytics`, and activate it.
+2. Go to **Feasible → Settings**. Check the site domain matches the site as it is registered, tick
+   **Turn on tracking**, and save.
 3. Leave the proxy on. The screen shows the two URLs it is serving.
 4. Turn on the measurements you want.
 5. Optional: paste a shared dashboard link to get the dashboard inside wp-admin.
 
 ## Development
 
-There is no build step and no dependency to install.
+The PHP needs no build step and no dependency. The one build output is `assets/js/feasible.js`,
+which `tracker/build.js` writes alongside the copy the Go binary embeds. It is committed, so a
+checkout of this folder runs as it is.
 
 ```bash
 # Syntax-check every file. A parse error in a file the tests never load is a
@@ -128,8 +150,25 @@ find . -name '*.php' -print0 | xargs -0 -n1 php -l
 php tests/run.php
 ```
 
-The tests cover the parts worth testing without a WordPress runtime: the search-term normaliser, the
-visitor-IP precedence, the event-suppression list, and the shape of the generated paths.
+The tests cover the parts worth testing without a WordPress runtime: the event-body sanitiser, the
+search-term normaliser, the visitor-IP precedence, the event-suppression list, and the shape of the
+generated paths.
+
+### Packaging for the plugin directory
+
+```bash
+bin/package.sh
+# -> build/feasible-analytics-<version>.zip
+```
+
+It rebuilds the tracker from `../../tracker` (running `npm ci` there first if needed), checks that
+the version in the plugin header, the `FEASIBLE_VERSION` constant and the readme's stable tag agree,
+runs the syntax check and the tests, and zips only what a site needs: the main file,
+`uninstall.php`, `readme.txt`, `LICENSE`, `includes/`, `assets/` and `languages/`. The tests, `bin/`
+and this README stay out.
+
+Before uploading, run Plugin Check and activate the zip on a clean WordPress with `WP_DEBUG` and
+`WP_DEBUG_LOG` on, on the oldest PHP the readme claims and on a current one.
 
 ## Translations
 

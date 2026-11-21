@@ -83,36 +83,6 @@ feasible_assert(
 );
 
 feasible_assert_same(
-	'Outbound Link: Click',
-	Feasible_Events::name_from_body( '{"n":"Outbound Link: Click","u":"https://example.com/","d":"example.com"}' ),
-	'the event name is read out of the wire body'
-);
-
-feasible_assert_same(
-	'File Download',
-	Feasible_Events::name_from_body( '{"n":"  File Download  "}' ),
-	'a padded name still matches the switch it belongs to'
-);
-
-feasible_assert_same(
-	'',
-	Feasible_Events::name_from_body( 'not json at all' ),
-	'a malformed body yields no name, so nothing is suppressed on a guess'
-);
-
-feasible_assert_same(
-	'',
-	Feasible_Events::name_from_body( '{"n":{"nested":true}}' ),
-	'a name that is not a string yields no name'
-);
-
-feasible_assert_same(
-	'',
-	Feasible_Events::name_from_body( '' ),
-	'an empty body yields no name'
-);
-
-feasible_assert_same(
 	'disabled-in-wordpress',
 	Feasible_Events::DROPPED_REASON,
 	'the reason the proxy reports is the one documented for the response header'

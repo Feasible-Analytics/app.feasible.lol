@@ -50,14 +50,19 @@ class Feasible_Settings {
 	/**
 	 * defaults returns the configuration a fresh install starts with.
 	 *
+	 * Tracking starts off and the domain starts empty. Nothing is measured and
+	 * nothing is sent anywhere until an administrator enters the domain and
+	 * turns tracking on in the settings screen.
+	 *
 	 * The three native measurements default to on because the browser script
-	 * measures them whether or not this plugin exists; presenting them as off
-	 * by default would describe a site that is not the one being served.
+	 * measures them once tracking is on; presenting them as off by default
+	 * would describe a site that is not the one being served.
 	 *
 	 * @return array
 	 */
 	public static function defaults() {
 		return array(
+			'tracking_enabled'     => false,
 			'domain'               => '',
 			'host'                 => self::DEFAULT_HOST,
 			'script_token'         => '',
@@ -127,15 +132,16 @@ class Feasible_Settings {
 	}
 
 	/**
-	 * upstream_script_url is the URL the proxy fetches the browser bundle from.
+	 * direct_script_url is the address the snippet loads the script from when
+	 * the proxy is off: the Feasible host itself.
 	 *
-	 * A configured token selects the per-site path, whose configuration is
-	 * baked in by the server. Without one the shared path is used and the
-	 * snippet's data attributes carry the configuration instead.
+	 * A configured token selects the per-site path, whose domain is baked in
+	 * by the server. Without one the shared path is used and the snippet's
+	 * data attributes carry the configuration instead.
 	 *
 	 * @return string
 	 */
-	public static function upstream_script_url() {
+	public static function direct_script_url() {
 		$token = (string) self::get( 'script_token' );
 
 		if ( '' !== $token ) {
@@ -152,6 +158,20 @@ class Feasible_Settings {
 	 */
 	public static function upstream_event_url() {
 		return self::host() . '/api/event';
+	}
+
+	/**
+	 * tracking_enabled reports whether an administrator has turned tracking on.
+	 *
+	 * A domain is required as well, so a hand-edited option row can never
+	 * switch tracking on for a site with nothing to attribute events to.
+	 *
+	 * @return bool
+	 */
+	public static function tracking_enabled() {
+		$settings = self::all();
+
+		return ! empty( $settings['tracking_enabled'] ) && '' !== trim( (string) $settings['domain'] );
 	}
 
 	/**
@@ -187,11 +207,12 @@ class Feasible_Settings {
 		$clean['script_token'] = self::sanitise_token( isset( $input['script_token'] ) ? $input['script_token'] : '' );
 		$clean['file_types']   = self::sanitise_file_types( isset( $input['file_types'] ) ? $input['file_types'] : '' );
 
-		foreach ( array( 'proxy_enabled', 'inject_enabled', 'exclude_logged_in', 'track_404', 'track_search', 'track_outbound', 'track_downloads', 'track_forms' ) as $flag ) {
+		foreach ( array( 'tracking_enabled', 'proxy_enabled', 'inject_enabled', 'exclude_logged_in', 'track_404', 'track_search', 'track_outbound', 'track_downloads', 'track_forms' ) as $flag ) {
 			$clean[ $flag ] = ! empty( $input[ $flag ] );
 		}
 
-		$clean['inject_location'] = ( isset( $input['inject_location'] ) && 'footer' === $input['inject_location'] ) ? 'footer' : 'head';
+		$location                 = isset( $input['inject_location'] ) ? sanitize_key( (string) $input['inject_location'] ) : '';
+		$clean['inject_location'] = ( 'footer' === $location ) ? 'footer' : 'head';
 		$clean['excluded_roles']  = self::sanitise_roles( isset( $input['excluded_roles'] ) ? $input['excluded_roles'] : array() );
 
 		$clean['shared_dashboard_url'] = self::sanitise_share_url(
@@ -199,11 +220,13 @@ class Feasible_Settings {
 			$clean['host']
 		);
 
-		if ( '' === $clean['domain'] ) {
+		if ( '' === $clean['domain'] && $clean['tracking_enabled'] ) {
+			$clean['tracking_enabled'] = false;
+
 			add_settings_error(
 				self::OPTION,
 				'feasible_domain_missing',
-				esc_html__( 'No site domain is set, so nothing will be measured. Enter the domain exactly as you registered it in feasible.lol.', 'feasible-analytics' ),
+				esc_html__( 'Tracking is still off because no site domain is set. Enter the domain exactly as you registered it in Feasible, then turn tracking on.', 'feasible-analytics' ),
 				'error'
 			);
 		}
@@ -222,7 +245,7 @@ class Feasible_Settings {
 	 * @return string
 	 */
 	public static function sanitise_domain( $value ) {
-		$value = strtolower( trim( (string) $value ) );
+		$value = strtolower( trim( sanitize_text_field( (string) $value ) ) );
 
 		if ( '' === $value ) {
 			return '';
@@ -254,7 +277,7 @@ class Feasible_Settings {
 	 * @return string
 	 */
 	public static function sanitise_host( $value ) {
-		$value = trim( (string) $value );
+		$value = trim( sanitize_text_field( (string) $value ) );
 
 		if ( '' === $value ) {
 			return self::DEFAULT_HOST;
@@ -295,7 +318,7 @@ class Feasible_Settings {
 	 * @return string
 	 */
 	public static function sanitise_token( $value ) {
-		$value = strtolower( trim( (string) $value ) );
+		$value = strtolower( trim( sanitize_text_field( (string) $value ) ) );
 
 		if ( '' === $value ) {
 			return '';
@@ -330,7 +353,7 @@ class Feasible_Settings {
 	 * @return string
 	 */
 	public static function sanitise_file_types( $value ) {
-		$value = strtolower( (string) $value );
+		$value = strtolower( sanitize_text_field( (string) $value ) );
 		$parts = preg_split( '/[\s,]+/', $value );
 		$clean = array();
 

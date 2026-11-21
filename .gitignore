@@ -30,6 +30,9 @@ ecosystem/**/*.egg-info/
 ecosystem/**/.pytest_cache/
 ecosystem/**/*.gem
 
+# The WordPress plugin's zip, made by ecosystem/wordpress-plugin/bin/package.sh.
+ecosystem/wordpress-plugin/build/
+
 # Browser automation scratch (see global CLAUDE.md)
 .playwright/
 .playwright-cli/

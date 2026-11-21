@@ -43,7 +43,12 @@ class Feasible_Plugin {
 	}
 
 	/**
-	 * activate prepares a fresh installation.
+	 * activate prepares a fresh installation without turning anything on.
+	 *
+	 * Activation stores no domain, enables no tracking and makes no request to
+	 * any server. It only generates the random path segments and registers
+	 * their rewrite rules, both local to this site. Tracking starts when an
+	 * administrator enters the site domain and switches it on in the settings.
 	 *
 	 * The rules are added by hand before the flush because init has already
 	 * fired by the time an activation hook runs, so the rules this plugin adds
@@ -52,16 +57,6 @@ class Feasible_Plugin {
 	 * @return void
 	 */
 	public static function activate() {
-		$settings = Feasible_Settings::all();
-
-		if ( '' === trim( (string) $settings['domain'] ) ) {
-			// Guessing the domain from the site URL is right almost every time
-			// and costs nothing when it is wrong, since the field is on the
-			// first screen the customer sees.
-			$settings['domain'] = Feasible_Settings::sanitise_domain( home_url() );
-			update_option( Feasible_Settings::OPTION, $settings );
-		}
-
 		Feasible_Paths::all();
 		Feasible_Proxy::add_rewrite_rules();
 		flush_rewrite_rules( false );

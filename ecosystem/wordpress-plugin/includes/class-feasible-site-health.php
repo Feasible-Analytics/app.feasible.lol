@@ -72,8 +72,19 @@ class Feasible_Site_Health {
 		$settings = Feasible_Settings::all();
 		$problems = array();
 
-		if ( '' === trim( (string) $settings['domain'] ) ) {
-			$problems[] = __( 'No site domain is set, so no event can be attributed to a site.', 'feasible-analytics' );
+		if ( ! Feasible_Settings::tracking_enabled() ) {
+			// Off is the state a fresh install is in, and an administrator's
+			// own choice after that, so it is a suggestion rather than a fault.
+			$result['status']      = 'recommended';
+			$result['label']       = __( 'Feasible Analytics is not measuring this site yet', 'feasible-analytics' );
+			$result['description'] = '<p>' . esc_html__( 'Tracking is off, so nothing is added to your pages and nothing is sent to Feasible. Confirm the site domain and turn tracking on in the settings when you are ready.', 'feasible-analytics' ) . '</p>';
+			$result['actions']     = sprintf(
+				'<p><a href="%s">%s</a></p>',
+				esc_url( admin_url( 'admin.php?page=' . Feasible_Admin::PAGE ) ),
+				esc_html__( 'Open the feasible.lol settings', 'feasible-analytics' )
+			);
+
+			return $result;
 		}
 
 		if ( empty( $settings['inject_enabled'] ) ) {
@@ -127,6 +138,10 @@ class Feasible_Site_Health {
 				'version'      => array(
 					'label' => __( 'Plugin version', 'feasible-analytics' ),
 					'value' => FEASIBLE_VERSION,
+				),
+				'tracking'     => array(
+					'label' => __( 'Tracking', 'feasible-analytics' ),
+					'value' => Feasible_Settings::tracking_enabled() ? __( 'on', 'feasible-analytics' ) : __( 'off', 'feasible-analytics' ),
 				),
 				'domain'       => array(
 					'label' => __( 'Site domain', 'feasible-analytics' ),

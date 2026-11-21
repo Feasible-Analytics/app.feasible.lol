@@ -53,12 +53,96 @@ if ( ! function_exists( 'wp_json_encode' ) ) {
 	}
 }
 
+if ( ! function_exists( 'sanitize_text_field' ) ) {
+	/**
+	 * sanitize_text_field follows the core function's steps that matter for an
+	 * event body: tags stripped, whitespace collapsed, percent octets removed,
+	 * ends trimmed. The real function runs in the WordPress checks.
+	 *
+	 * @param mixed $str Value to sanitise.
+	 * @return string
+	 */
+	function sanitize_text_field( $str ) {
+		$filtered = strip_tags( (string) $str ); // phpcs:ignore WordPress.WP.AlternativeFunctions.strip_tags_strip_tags
+		$filtered = preg_replace( '/[\r\n\t ]+/', ' ', $filtered );
+
+		while ( preg_match( '/%[a-f0-9]{2}/i', $filtered, $match ) ) {
+			$filtered = str_replace( $match[0], '', $filtered );
+		}
+
+		return trim( $filtered );
+	}
+}
+
+if ( ! function_exists( 'wp_strip_all_tags' ) ) {
+	/**
+	 * wp_strip_all_tags is the core function, which is short enough to copy.
+	 *
+	 * @param string $text          Text to strip.
+	 * @param bool   $remove_breaks Whether to collapse line breaks too.
+	 * @return string
+	 */
+	function wp_strip_all_tags( $text, $remove_breaks = false ) {
+		$text = preg_replace( '@<(script|style)[^>]*?>.*?</\\1>@si', '', (string) $text );
+		$text = strip_tags( $text ); // phpcs:ignore WordPress.WP.AlternativeFunctions.strip_tags_strip_tags
+
+		if ( $remove_breaks ) {
+			$text = preg_replace( '/[\r\n\t ]+/', ' ', $text );
+		}
+
+		return trim( $text );
+	}
+}
+
+if ( ! function_exists( 'esc_url_raw' ) ) {
+	/**
+	 * esc_url_raw keeps the core function's protocol check and its allowed
+	 * character set, which is what the payload tests depend on.
+	 *
+	 * @param string $url       URL to sanitise.
+	 * @param array  $protocols Allowed schemes.
+	 * @return string
+	 */
+	function esc_url_raw( $url, $protocols = null ) {
+		$url = str_replace( ' ', '%20', ltrim( (string) $url ) );
+		$url = preg_replace( '|[^a-z0-9-~+_.?#=!&;,/:%@$\|*\'()\[\]\\x80-\\xff]|i', '', $url );
+
+		if ( '' === $url ) {
+			return '';
+		}
+
+		$colon = strpos( $url, ':' );
+
+		if ( false === $colon ) {
+			return '';
+		}
+
+		$scheme = strtolower( substr( $url, 0, $colon ) );
+
+		return in_array( $scheme, (array) $protocols, true ) ? $url : '';
+	}
+}
+
+if ( ! function_exists( 'wp_is_uuid' ) ) {
+	/**
+	 * wp_is_uuid is the core function's pattern for any UUID version.
+	 *
+	 * @param mixed $uuid Value to check.
+	 * @return bool
+	 */
+	function wp_is_uuid( $uuid ) {
+		return is_string( $uuid ) && 1 === preg_match( '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/', $uuid );
+	}
+}
+
 require_once dirname( __DIR__ ) . '/includes/class-feasible-client-ip.php';
 require_once dirname( __DIR__ ) . '/includes/class-feasible-events.php';
+require_once dirname( __DIR__ ) . '/includes/class-feasible-payload.php';
 require_once dirname( __DIR__ ) . '/includes/class-feasible-measurements.php';
 require_once dirname( __DIR__ ) . '/includes/class-feasible-paths.php';
 require_once dirname( __DIR__ ) . '/includes/class-feasible-proxy.php';
 require_once dirname( __DIR__ ) . '/includes/class-feasible-settings.php';
+require_once dirname( __DIR__ ) . '/includes/class-feasible-snippet.php';
 
 $GLOBALS['feasible_test_passed']   = 0;
 $GLOBALS['feasible_test_failures'] = array();
