@@ -93,6 +93,11 @@ type Meta struct {
 	// MetricWarnings is keyed by metric name.
 	MetricWarnings map[string]Warning `json:"metric_warnings,omitempty"`
 
+	// MetricUnits names the unit of every money metric in the answer, keyed by
+	// metric name. Amounts are whole hundredths of the reporting currency, and
+	// a reader who is not told so takes 845000 for 845,000 rather than 8,450.00.
+	MetricUnits map[string]string `json:"metric_units,omitempty"`
+
 	// TotalRows is how many groups exist before pagination, when it was asked
 	// for.
 	TotalRows *int `json:"total_rows,omitempty"`

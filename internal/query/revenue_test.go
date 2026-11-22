@@ -176,6 +176,35 @@ func TestAComparisonIsTotalledInTheCurrentPeriodsCurrency(t *testing.T) {
 	}
 }
 
+// TestMoneyMetricsNameTheirUnit checks that an answer with money in it says
+// the amounts are hundredths of the reporting currency, and that one without
+// money carries no units at all.
+func TestMoneyMetricsNameTheirUnit(t *testing.T) {
+	engine, account := newEngineWithAccount(t)
+
+	writePurchases(t, account)
+
+	q := baseQuery("visitors", "total_revenue", "average_revenue")
+	q.Filters = []Filter{purchaseFilter}
+	q.Currency = "EUR"
+
+	units := run(t, engine, q).Meta.MetricUnits
+
+	for _, name := range []string{"total_revenue", "average_revenue"} {
+		if !strings.Contains(units[name], "hundredths of EUR") {
+			t.Errorf("%s unit = %q, want hundredths of EUR", name, units[name])
+		}
+	}
+
+	if _, ok := units["visitors"]; ok {
+		t.Errorf("visitors is a count and must carry no unit, got %q", units["visitors"])
+	}
+
+	if plain := run(t, engine, baseQuery("visitors")).Meta.MetricUnits; plain != nil {
+		t.Errorf("an answer with no money in it carries units %v", plain)
+	}
+}
+
 // TestACurrencyThatIsNotACodeIsRefused checks the validation. A typo would
 // match no stored rate and report every revenue figure as zero.
 func TestACurrencyThatIsNotACodeIsRefused(t *testing.T) {

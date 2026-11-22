@@ -159,6 +159,30 @@ func (x *executor) revenueRates(ctx context.Context, r Resolved) (map[string]flo
 	return rates, nil
 }
 
+// moneyUnits names the unit of each money metric the query asked for, or
+// returns nil when it asked for none. The currency is empty when the range held
+// no revenue to resolve one from, and the unit then says so in general terms.
+func moneyUnits(metrics []string, currency string) map[string]string {
+	unit := "hundredths of the reporting currency (divide by 100)"
+	if currency != "" {
+		unit = "hundredths of " + currency + " (divide by 100: 845000 is 8,450.00 " + currency + ")"
+	}
+
+	var units map[string]string
+
+	for _, name := range metrics {
+		switch name {
+		case "total_revenue", "average_revenue", "revenue_per_visitor":
+			if units == nil {
+				units = map[string]string{}
+			}
+			units[name] = unit
+		}
+	}
+
+	return units
+}
+
 // currenciesInRange lists the currencies revenue actually arrived in. It is one
 // small query and it only runs when the caller did not name a currency, which
 // is the case where guessing wrong is expensive.
