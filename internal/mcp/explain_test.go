@@ -204,6 +204,32 @@ func TestExplainFindsTheSourceThatStopped(t *testing.T) {
 	}
 }
 
+// TestExplainIsUnaffectedByMixedCurrencies checks that a site taking money in
+// three currencies can still ask why its traffic moved. The tool explains
+// visitors, visits, pageviews or events, none of which is money, so it must
+// never run into the refusal that asks for a reporting currency.
+func TestExplainIsUnaffectedByMixedCurrencies(t *testing.T) {
+	f := newFixture(t)
+	seedMixedCurrencyPurchases(t, f)
+
+	for _, metric := range []string{"visitors", "events"} {
+		answer := f.tool(t, "explain_traffic_change",
+			`{"site_id":"example.com","date_range":"7d","metric":"`+metric+`"}`)
+		if answer.IsError {
+			t.Fatalf("explaining %s failed over mixed currencies: %s", metric, answer.Content[0].Text)
+		}
+
+		var explained explanation
+		structured(t, answer, &explained)
+
+		for _, driver := range explained.Drivers {
+			if strings.Contains(driver.Note, "currency") {
+				t.Errorf("explaining %s: %s %s", metric, driver.Dimension, driver.Note)
+			}
+		}
+	}
+}
+
 // TestExplainStaysExactUnderTheSamplingThreshold checks the composed MCP shape
 // that has no query meta to carry a sampling disclosure. Every internal query
 // must be exact so its headline and ranked drivers cannot silently mix scaled

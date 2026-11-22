@@ -131,8 +131,12 @@ func (x *executor) revenueRates(ctx context.Context, r Resolved) (map[string]flo
 		case 1:
 			currency = found[0]
 		default:
-			return nil, invalid("this range holds revenue in %s — set currency to the one you want the "+
-				"report totalled in", strings.Join(found, ", "))
+			// The field is quoted as JSON because the Stats API body and the
+			// MCP tool arguments both spell it that way, so one sentence tells
+			// either caller exactly what to send next.
+			return nil, invalid("this range holds revenue in %s, so name the one to total it in: add "+
+				"\"currency\": %q, or another of those codes, to the request",
+				strings.Join(found, ", "), found[0])
 		}
 	}
 
