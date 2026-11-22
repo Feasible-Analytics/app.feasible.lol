@@ -285,7 +285,7 @@ func renderTable(metrics, dimensions []string, result *query.Result) string {
 	// already carrying a re-scoping caveat would otherwise repeat an estimate
 	// with nothing marking it as one, and a model has no way to tell.
 	out.WriteString(samplingNote(result.Meta.Sampling))
-	out.WriteString(moneyNote(metrics, result.Query.Currency))
+	out.WriteString(moneyNote(result.Meta.MetricUnits))
 
 	// Warnings are printed rather than left in the structured payload, because
 	// a re-scoped or partially-covered metric that announces itself is the
@@ -524,44 +524,23 @@ func renderComparison(metrics, dimensions []string, result *query.Result) string
 	}
 
 	out.WriteString(samplingNote(result.Meta.Sampling))
-	out.WriteString(moneyNote(metrics, result.Query.Currency))
+	out.WriteString(moneyNote(result.Meta.MetricUnits))
 
 	return out.String()
 }
 
-// moneyMetrics are the metrics whose values are amounts of money.
-var moneyMetrics = map[string]bool{"total_revenue": true, "average_revenue": true, "revenue_per_visitor": true}
+// moneyNote prints the unit of every money metric in the answer, from the
+// engine's meta.metric_units. Clients that read only this text would otherwise
+// see 845000 with nothing to say it means 8,450.00, and the structured copy
+// carries the same units for clients that read only that.
+func moneyNote(units map[string]string) string {
+	var out strings.Builder
 
-// moneyNote states the unit of every money metric in the answer.
-//
-// Amounts are held in hundredths of a currency unit, and nothing else in the
-// answer says so. A model reading 845000 with no unit reports $845,000 for a
-// week that made $8,450, so the unit and the currency are printed beside the
-// table rather than left for the reader to guess.
-func moneyNote(metrics []string, currency string) string {
-	named := make([]string, 0, len(moneyMetrics))
-	for _, name := range metrics {
-		if moneyMetrics[name] {
-			named = append(named, name)
-		}
+	for _, name := range sortedKeys(units) {
+		out.WriteString("note: " + name + " is in " + units[name] + ".\n")
 	}
 
-	if len(named) == 0 {
-		return ""
-	}
-
-	verb := "are"
-	if len(named) == 1 {
-		verb = "is"
-	}
-
-	unit, example := "hundredths of the currency unit", "8,450.00"
-	if currency != "" {
-		unit, example = "hundredths of "+currency, example+" "+currency
-	}
-
-	return fmt.Sprintf("note: %s %s in %s, so divide by 100: 845000 is %s.\n",
-		strings.Join(named, ", "), verb, unit, example)
+	return out.String()
 }
 
 // createSiteArgs is the create_site tool's arguments.

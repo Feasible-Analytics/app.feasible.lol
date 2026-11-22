@@ -632,6 +632,12 @@ func TestQueryStatsTotalsMixedCurrenciesOnceOneIsNamed(t *testing.T) {
 	if !strings.Contains(answer.Content[0].Text, "hundredths of USD") {
 		t.Errorf("the readable answer does not give the money's unit: %q", answer.Content[0].Text)
 	}
+
+	// Some clients hand the model only the structured payload, so the unit has
+	// to be there as well as in the text.
+	if !strings.Contains(result.Meta.MetricUnits["total_revenue"], "hundredths of USD") {
+		t.Errorf("the structured answer does not give the money's unit: %v", result.Meta.MetricUnits)
+	}
 }
 
 // TestQueryStatsSaysWhatANamedCurrencyLeftOut covers a currency with no stored

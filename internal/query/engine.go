@@ -262,6 +262,8 @@ func (e *Engine) run(ctx context.Context, q Query) (*Result, error) {
 		result.Query.Currency = primary.currency
 	}
 
+	result.Meta.MetricUnits = moneyUnits(q.Metrics, primary.currency)
+
 	if hasTimeDimension(&q) || q.Include.TimeLabels {
 		result.Meta.TimeLabels = resolved.Labels()
 	}
