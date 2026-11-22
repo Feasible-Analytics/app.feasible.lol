@@ -133,6 +133,17 @@ func orderByArg() map[string]any {
 	}
 }
 
+// currencyArg describes the reporting currency for the money metrics. It is one
+// sentence shared by every tool that can return revenue, so the condition under
+// which a model needs it reads the same wherever it appears.
+func currencyArg() map[string]any {
+	return str("Three-letter ISO 4217 code to report total_revenue, average_revenue and " +
+		"revenue_per_visitor in, such as USD. Only needed when the range holds revenue in more than " +
+		"one currency: leave it out otherwise and the money comes back in the one currency it was " +
+		"taken in. Revenue in another currency is converted at a stored exchange rate where one " +
+		"exists; anything that cannot be converted is left out and the answer says how much.")
+}
+
 // compareArg describes the comparison mode.
 func compareArg() map[string]any {
 	return enum(

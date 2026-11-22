@@ -262,6 +262,12 @@ func TestToolsListIsCompleteAndDescribed(t *testing.T) {
 		if _, ok := properties["exact"]; !ok {
 			t.Errorf("%s does not publish its exact argument", name)
 		}
+
+		// The same goes for the refusal over a range with revenue in several
+		// currencies: it names currency, so the schema has to offer it.
+		if _, ok := properties["currency"]; !ok {
+			t.Errorf("%s does not publish its currency argument", name)
+		}
 	}
 
 	createSchema := byName["create_goal"]["inputSchema"].(map[string]any)
@@ -575,6 +581,114 @@ func TestComparePeriodsCarriesBothNumbers(t *testing.T) {
 
 	if len(result.Meta.ComparisonDateRange) != 2 {
 		t.Error("the comparison window must be echoed back")
+	}
+}
+
+// TestQueryStatsTotalsMixedCurrenciesOnceOneIsNamed is the revenue-by-source
+// question over a week that took dollars, euros and pounds. Without a currency
+// the engine refuses, and the refusal has to name the argument a model then
+// sets; with one, the money comes back by source with its unit stated.
+func TestQueryStatsTotalsMixedCurrenciesOnceOneIsNamed(t *testing.T) {
+	f := newFixture(t)
+	seedMixedCurrencyPurchases(t, f)
+
+	question := `"site_id":"example.com","metrics":["total_revenue"],"dimensions":["visit:source"],"date_range":"7d"`
+
+	refused := f.tool(t, "query_stats", `{`+question+`}`)
+	if !refused.IsError {
+		t.Fatalf("revenue in three currencies with none named must be refused, got %+v", refused.StructuredContent)
+	}
+
+	reason := refused.Content[0].Text
+	for _, want := range []string{"EUR", "GBP", "USD", `"currency"`} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("the refusal does not mention %s: %q", want, reason)
+		}
+	}
+
+	answer := f.tool(t, "query_stats", `{`+question+`,"currency":"usd"}`)
+	if answer.IsError {
+		t.Fatalf("naming a currency must answer: %s", answer.Content[0].Text)
+	}
+
+	var result query.Result
+	structured(t, answer, &result)
+
+	bySource := map[string]float64{}
+	for _, row := range result.Results {
+		bySource[row.Dimensions[0]] = row.Metrics[0]
+	}
+
+	// Google took 50.00 USD and 10.00 GBP at 1.25, Twitter 20.00 EUR at 1.10,
+	// all in hundredths.
+	if bySource["Google"] != 6250 || bySource["Twitter"] != 2200 {
+		t.Errorf("revenue by source = %v, want Google 6250 and Twitter 2200", bySource)
+	}
+
+	if result.Query.Currency != "USD" {
+		t.Errorf("the answer is totalled in %q, want USD echoed back", result.Query.Currency)
+	}
+
+	if !strings.Contains(answer.Content[0].Text, "hundredths of USD") {
+		t.Errorf("the readable answer does not give the money's unit: %q", answer.Content[0].Text)
+	}
+}
+
+// TestQueryStatsSaysWhatANamedCurrencyLeftOut covers a currency with no stored
+// rates into it. The money taken in that currency is the answer, and the rest
+// is listed as left out rather than silently dropped.
+func TestQueryStatsSaysWhatANamedCurrencyLeftOut(t *testing.T) {
+	f := newFixture(t)
+	seedMixedCurrencyPurchases(t, f)
+
+	answer := f.tool(t, "query_stats",
+		`{"site_id":"example.com","metrics":["total_revenue"],"date_range":"7d","currency":"EUR"}`)
+	if answer.IsError {
+		t.Fatalf("naming a currency must answer: %s", answer.Content[0].Text)
+	}
+
+	var result query.Result
+	structured(t, answer, &result)
+
+	if got := result.Results[0].Metrics[0]; got != 2000 {
+		t.Errorf("total_revenue in EUR = %v, want 2000", got)
+	}
+
+	text := answer.Content[0].Text
+	if !strings.Contains(text, "GBP") || !strings.Contains(text, "USD") {
+		t.Errorf("the answer must say which currencies it could not convert: %q", text)
+	}
+}
+
+// TestComparePeriodsTotalsMixedCurrenciesOnceOneIsNamed checks the comparison
+// tool takes the same argument. Its earlier week holds no revenue, so the
+// money now is set against zero.
+func TestComparePeriodsTotalsMixedCurrenciesOnceOneIsNamed(t *testing.T) {
+	f := newFixture(t)
+	seedMixedCurrencyPurchases(t, f)
+
+	question := `"site_id":"example.com","metrics":["total_revenue"],"date_range":"7d"`
+
+	refused := f.tool(t, "compare_periods", `{`+question+`}`)
+	if !refused.IsError || !strings.Contains(refused.Content[0].Text, `"currency"`) {
+		t.Fatalf("a comparison over three currencies must be refused with the argument named, got %+v", refused.Content)
+	}
+
+	answer := f.tool(t, "compare_periods", `{`+question+`,"currency":"USD"}`)
+	if answer.IsError {
+		t.Fatalf("naming a currency must answer: %s", answer.Content[0].Text)
+	}
+
+	var result query.Result
+	structured(t, answer, &result)
+
+	row := result.Results[0]
+	if row.Metrics[0] != 8450 || row.Comparison == nil || row.Comparison.Metrics[0] != 0 {
+		t.Errorf("total_revenue now %v against %+v, want 8450 against 0", row.Metrics[0], row.Comparison)
+	}
+
+	if !strings.Contains(answer.Content[0].Text, "hundredths of USD") {
+		t.Errorf("the readable comparison does not give the money's unit: %q", answer.Content[0].Text)
 	}
 }
 
@@ -1112,6 +1226,80 @@ func seedRealtimeVisitor(t *testing.T, f *fixture) {
 		INSERT INTO events (site_id, timestamp, name_id, user_id, session_id, pathname_id, source_id, scroll_depth)
 		VALUES (?, ?, ?, ?, ?, ?, ?, 255)`, siteID, at, pageview, userID, sessionID, page, source); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// seedMixedCurrencyPurchases adds three purchases to visits in the current
+// week: 50.00 USD and 10.00 GBP from Google, 20.00 EUR from Twitter. Rates are
+// stored into USD only, so a USD report converts everything and a EUR report
+// has to say what it left out.
+func seedMixedCurrencyPurchases(t *testing.T, f *fixture) {
+	t.Helper()
+
+	ctx := context.Background()
+
+	account, err := f.API.Accounts.Open(ctx, teamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	name, err := account.Intern.ID(ctx, intern.EventName, "Purchase")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	purchases := []struct {
+		visit    int
+		amount   int64
+		currency string
+	}{
+		{visit: 0, amount: 5000, currency: "USD"},
+		{visit: 1, amount: 1000, currency: "GBP"},
+		{visit: 3, amount: 2000, currency: "EUR"},
+	}
+
+	for _, purchase := range purchases {
+		entry := traffic[purchase.visit]
+		at := testNow.AddDate(0, 0, -entry.day).Truncate(time.Hour).Unix() + 30
+
+		page, err := account.Intern.ID(ctx, intern.Pathname, entry.page)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		source, err := account.Intern.ID(ctx, intern.Source, entry.source)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// The source is copied onto the event the way ingest writes it, which
+		// is what attributes the money to the visit's source.
+		inserted, err := account.Writer().ExecContext(ctx, `
+			INSERT INTO events (site_id, timestamp, name_id, user_id, session_id, pathname_id, source_id, scroll_depth, has_details)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 255, 1)`,
+			siteID, at, name, int64(1000+purchase.visit), int64(purchase.visit+1), page, source)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		id, err := inserted.LastInsertId()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := account.Writer().ExecContext(ctx,
+			"INSERT INTO event_details (event_id, revenue_amount, revenue_currency) VALUES (?, ?, ?)",
+			id, purchase.amount, purchase.currency); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for base, rate := range map[string]float64{"EUR": 1.10, "GBP": 1.25} {
+		if _, err := account.Writer().ExecContext(ctx,
+			"INSERT INTO currency_rates (base, quote, rate, fetched_at) VALUES (?, 'USD', ?, 0)",
+			base, rate); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

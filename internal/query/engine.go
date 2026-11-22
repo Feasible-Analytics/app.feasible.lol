@@ -255,6 +255,13 @@ func (e *Engine) run(ctx context.Context, q Query) (*Result, error) {
 		},
 	}
 
+	// The echo names the currency the money was totalled in even when the
+	// caller left it to the data, because an amount without its currency is a
+	// number nobody can read correctly.
+	if primary.currency != "" {
+		result.Query.Currency = primary.currency
+	}
+
 	if hasTimeDimension(&q) || q.Include.TimeLabels {
 		result.Meta.TimeLabels = resolved.Labels()
 	}
@@ -286,6 +293,13 @@ func (e *Engine) run(ctx context.Context, q Query) (*Result, error) {
 	}
 
 	if comparison != nil {
+		// The earlier period is totalled in the currency the current one was.
+		// Left to resolve its own, a period of dollars against a period of
+		// euros would report the difference as a change in revenue.
+		if q.Currency == "" {
+			q.Currency = primary.currency
+		}
+
 		if err := e.attachComparison(ctx, &q, blueprint, resolved, *comparison, compile, primary.keyRestriction(groups), warnings, result); err != nil {
 			return nil, err
 		}

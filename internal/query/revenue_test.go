@@ -136,6 +136,44 @@ func TestMixedCurrenciesWithoutAChoiceAreRefused(t *testing.T) {
 	if !strings.Contains(err.Error(), "EUR") || !strings.Contains(err.Error(), "USD") {
 		t.Errorf("the refusal must name the currencies it found, got %q", err)
 	}
+
+	// The Stats API and the MCP tools both take the field as "currency", and a
+	// caller can only follow the advice if the refusal spells out what to send.
+	if !strings.Contains(err.Error(), `"currency": "EUR"`) {
+		t.Errorf("the refusal must show the field to set and a code that would work, got %q", err)
+	}
+}
+
+// TestAComparisonIsTotalledInTheCurrentPeriodsCurrency covers two weeks that
+// each took one currency, but not the same one. Each week alone needs no
+// choice, and left to resolve separately they would set fifty dollars against
+// twenty euros and report the difference as a change in revenue.
+func TestAComparisonIsTotalledInTheCurrentPeriodsCurrency(t *testing.T) {
+	engine, account := newEngineWithAccount(t)
+
+	writePurchase(t, account, 20, 3, visitorA, at(30, 9, 3), 5000, "USD")
+	writePurchase(t, account, 30, 9, visitorA, at(20, 9, 0), 2000, "EUR")
+	writeRate(t, account, "EUR", "USD", 1.10)
+
+	q := baseQuery("total_revenue")
+	q.Filters = []Filter{purchaseFilter}
+	q.Include.Comparisons = &Comparison{Mode: ComparePreviousPeriod}
+
+	result := run(t, engine, q)
+	row := result.Results[0]
+
+	closeTo(t, "total_revenue now", row.Metrics[0], 5000)
+
+	if row.Comparison == nil {
+		t.Fatal("no comparison came back")
+	}
+
+	// Twenty euros at 1.10, in the dollars the current week was totalled in.
+	closeTo(t, "total_revenue before", row.Comparison.Metrics[0], 2200)
+
+	if result.Query.Currency != "USD" {
+		t.Errorf("the answer is totalled in %q, want USD echoed back", result.Query.Currency)
+	}
 }
 
 // TestACurrencyThatIsNotACodeIsRefused checks the validation. A typo would

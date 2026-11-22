@@ -109,6 +109,11 @@ type statsArgs struct {
 	// reader to ask again exactly — so the argument has to exist here, or that
 	// note is advice a model cannot act on.
 	Exact bool `json:"exact"`
+
+	// Currency is the ISO 4217 code the money metrics are totalled in. The
+	// engine refuses a range holding revenue in several currencies until one is
+	// named, and that refusal tells the caller to set this argument.
+	Currency string `json:"currency"`
 }
 
 // queryStatsTool is the whole read surface.
@@ -119,7 +124,7 @@ func (s *Server) queryStatsTool() *Tool {
 		Title: "Query stats",
 		Description: "Run any analytics query: pick metrics, group by dimensions, filter, sort and " +
 			"paginate. This is the same engine the dashboard runs on, so a number here is the number " +
-			"the customer sees.",
+			"the customer sees. Set currency only when the range holds revenue in more than one currency.",
 		ReadOnly: true,
 		InputSchema: object(map[string]any{
 			"site_id":            siteArg(),
@@ -138,6 +143,7 @@ func (s *Server) queryStatsTool() *Tool {
 			"exact": flag("Refuse sampling and wait for the exact answer. A very wide range is otherwise " +
 				"answered from deterministic event or session row buckets. Additive totals are expanded while rates " +
 				"and distribution statistics are calculated within the sample; every metric is labelled as estimated."),
+			"currency": currencyArg(),
 		}, "site_id", "metrics"),
 		Handler: s.runStats,
 	}
@@ -174,6 +180,7 @@ func (s *Server) runStats(ctx context.Context, key *apikeys.Key, raw json.RawMes
 		OrderBy:    args.OrderBy,
 		Pagination: query.Pagination{Limit: args.Limit, Offset: args.Offset},
 		Exact:      args.Exact,
+		Currency:   args.Currency,
 		Include: query.Include{
 			Bots:           args.IncludeBots,
 			ExcludeImports: !args.IncludeImports,
@@ -278,6 +285,7 @@ func renderTable(metrics, dimensions []string, result *query.Result) string {
 	// already carrying a re-scoping caveat would otherwise repeat an estimate
 	// with nothing marking it as one, and a model has no way to tell.
 	out.WriteString(samplingNote(result.Meta.Sampling))
+	out.WriteString(moneyNote(metrics, result.Query.Currency))
 
 	// Warnings are printed rather than left in the structured payload, because
 	// a re-scoped or partially-covered metric that announces itself is the
@@ -390,6 +398,10 @@ type compareArgs struct {
 	// be precise rather than quick. The readable answer points directly to it
 	// whenever the engine chose a sample.
 	Exact bool `json:"exact"`
+
+	// Currency is the ISO 4217 code the money metrics are totalled in, for a
+	// comparison over a range that holds revenue in several currencies.
+	Currency string `json:"currency"`
 }
 
 // comparePeriodsTool puts two periods side by side.
@@ -405,7 +417,8 @@ func (s *Server) comparePeriodsTool() *Tool {
 		Title: "Compare periods",
 		Description: "Run a query over one period and the period before it, and report both numbers and " +
 			"the percentage change. Both windows are resolved against the same clock and the same " +
-			"timezone, so a comparison taken near midnight still lines up.",
+			"timezone, so a comparison taken near midnight still lines up. Set currency only when the " +
+			"range holds revenue in more than one currency.",
 		ReadOnly: true,
 		InputSchema: object(map[string]any{
 			"site_id":    siteArg(),
@@ -418,6 +431,7 @@ func (s *Server) comparePeriodsTool() *Tool {
 			"exact": flag("Refuse sampling and wait for the exact answer. A very wide range is otherwise " +
 				"answered from deterministic event or session row buckets. Additive totals are expanded while rates " +
 				"and distribution statistics are calculated within the sample; every metric is labelled as estimated."),
+			"currency": currencyArg(),
 		}, "site_id", "metrics"),
 		Handler: func(ctx context.Context, key *apikeys.Key, raw json.RawMessage) (*toolResult, error) {
 			args := &compareArgs{}
@@ -453,6 +467,7 @@ func (s *Server) comparePeriodsTool() *Tool {
 				Timezone:   site.Timezone,
 				Pagination: query.Pagination{Limit: args.Limit},
 				Exact:      args.Exact,
+				Currency:   args.Currency,
 				Include:    query.Include{Comparisons: comparison},
 			})
 			if err != nil {
@@ -509,8 +524,44 @@ func renderComparison(metrics, dimensions []string, result *query.Result) string
 	}
 
 	out.WriteString(samplingNote(result.Meta.Sampling))
+	out.WriteString(moneyNote(metrics, result.Query.Currency))
 
 	return out.String()
+}
+
+// moneyMetrics are the metrics whose values are amounts of money.
+var moneyMetrics = map[string]bool{"total_revenue": true, "average_revenue": true, "revenue_per_visitor": true}
+
+// moneyNote states the unit of every money metric in the answer.
+//
+// Amounts are held in hundredths of a currency unit, and nothing else in the
+// answer says so. A model reading 845000 with no unit reports $845,000 for a
+// week that made $8,450, so the unit and the currency are printed beside the
+// table rather than left for the reader to guess.
+func moneyNote(metrics []string, currency string) string {
+	named := make([]string, 0, len(moneyMetrics))
+	for _, name := range metrics {
+		if moneyMetrics[name] {
+			named = append(named, name)
+		}
+	}
+
+	if len(named) == 0 {
+		return ""
+	}
+
+	verb := "are"
+	if len(named) == 1 {
+		verb = "is"
+	}
+
+	unit, example := "hundredths of the currency unit", "8,450.00"
+	if currency != "" {
+		unit, example = "hundredths of "+currency, example+" "+currency
+	}
+
+	return fmt.Sprintf("note: %s %s in %s, so divide by 100: 845000 is %s.\n",
+		strings.Join(named, ", "), verb, unit, example)
 }
 
 // createSiteArgs is the create_site tool's arguments.
