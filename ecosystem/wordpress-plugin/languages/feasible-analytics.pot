@@ -7,7 +7,7 @@
 # Created: 2026-08-30
 msgid ""
 msgstr ""
-"Project-Id-Version: Feasible Analytics 1.0.1\n"
+"Project-Id-Version: Feasible Analytics 1.0.2\n"
 "Report-Msgid-Bugs-To: https://feasible.lol/support\n"
 "Last-Translator: \n"
 "Language-Team: \n"

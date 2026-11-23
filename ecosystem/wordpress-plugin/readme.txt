@@ -4,7 +4,7 @@ Tags: analytics, privacy, statistics, cookieless, site search
 Requires at least: 5.9
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.0.1
+Stable tag: 1.0.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -124,7 +124,20 @@ Yes. Switch on "exclude logged-in users", or exclude specific roles.
 
 Yes. Each site has its own settings and its own paths.
 
+== Screenshots ==
+
+1. The settings screen. Confirm the site domain and turn tracking on. The script and the event endpoint are served from random paths on your own domain.
+2. Site searches and 404s are counted by the plugin. Outbound links, downloads and form submissions can each be switched off.
+3. Your Feasible dashboard inside wp-admin, from a shared link. Shown here with the demo site's generated data.
+4. A Site Health check says whether Feasible is measuring the site.
+5. A Feasible report for our test WordPress site: the two site searches made on it, by search term.
+
 == Changelog ==
+
+= 1.0.2 =
+* Fixed a script error in the tracking script. When an event that failed to send was sent again on a later page and went through, the script threw "e is not a function" on the visitor's page. No data was lost.
+* An event sent with a callback of `false` or an empty string is now saved and sent again if it fails, like any other event.
+* Fixed the Dashboard page in wp-admin showing an empty frame. A shared link pasted as copied from Feasible now loads there.
 
 = 1.0.1 =
 * Activation no longer turns tracking on or fills in the site domain. Confirm the domain and turn tracking on in the settings.
@@ -136,6 +149,9 @@ Yes. Each site has its own settings and its own paths.
 * First release.
 
 == Upgrade Notice ==
+
+= 1.0.2 =
+Fixes a script error after a failed event was sent again, and the empty frame on the Dashboard page.
 
 = 1.0.1 =
 Tracking is now off until you turn it on in Feasible → Settings. If you used 1.0.0, open the settings, check the domain and tick "Turn on tracking".

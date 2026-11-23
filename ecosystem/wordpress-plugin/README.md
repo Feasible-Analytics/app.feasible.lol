@@ -122,7 +122,8 @@ are three rows for one question, and the most common search on the site hides in
 Paste a shared-link URL from your analytics account into the settings screen, and the plugin adds a
 **Dashboard** page that frames it. The URL is checked to be a `/share/` path on your configured host
 before anything is framed — framing an arbitrary URL inside an authenticated admin session is not
-something a plugin should offer.
+something a plugin should offer. The frame loads the link with `embed=true` added, because the
+service refuses to be framed without it.
 
 ## Installation
 
@@ -151,8 +152,8 @@ php tests/run.php
 ```
 
 The tests cover the parts worth testing without a WordPress runtime: the event-body sanitiser, the
-search-term normaliser, the visitor-IP precedence, the event-suppression list, and the shape of the
-generated paths.
+search-term normaliser, the visitor-IP precedence, the event-suppression list, the shape of the
+generated paths, and which share links the dashboard page frames.
 
 ### Packaging for the plugin directory
 
