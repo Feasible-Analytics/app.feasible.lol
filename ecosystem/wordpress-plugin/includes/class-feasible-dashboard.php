@@ -76,6 +76,21 @@ class Feasible_Dashboard {
 	}
 
 	/**
+	 * frame_url is the address the iframe loads for a validated share link.
+	 *
+	 * The service lets a shared dashboard be framed only when the request asks
+	 * for it with embed=true. A link as copied from the dashboard has no such
+	 * parameter, so framing it unchanged gets a refusal and an empty frame.
+	 * Any existing embed value is replaced, and every other parameter is kept.
+	 *
+	 * @param string $url A share link that passed is_valid_share_url().
+	 * @return string
+	 */
+	public static function frame_url( $url ) {
+		return add_query_arg( 'embed', 'true', trim( (string) $url ) );
+	}
+
+	/**
 	 * render draws the dashboard page.
 	 *
 	 * @return void
@@ -115,7 +130,7 @@ class Feasible_Dashboard {
 
 		echo '<p><a href="' . esc_url( $url ) . '" target="_blank" rel="noopener noreferrer">' . esc_html__( 'Open the dashboard in a new tab', 'feasible-analytics' ) . '</a></p>';
 		echo '<iframe title="' . esc_attr__( 'feasible.lol dashboard', 'feasible-analytics' ) . '"';
-		echo ' src="' . esc_url( $url ) . '"';
+		echo ' src="' . esc_url( self::frame_url( $url ) ) . '"';
 		echo ' referrerpolicy="no-referrer"';
 		echo ' loading="lazy"';
 		echo ' style="width:100%;min-height:80vh;border:1px solid #c3c4c7;background:#fff;"></iframe>';

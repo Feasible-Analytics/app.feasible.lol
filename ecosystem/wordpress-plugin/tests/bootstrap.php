@@ -135,7 +135,54 @@ if ( ! function_exists( 'wp_is_uuid' ) ) {
 	}
 }
 
+if ( ! function_exists( 'wp_parse_url' ) ) {
+	/**
+	 * wp_parse_url is the core wrapper around parse_url, which on the PHP
+	 * versions the plugin supports behaves the same for absolute URLs.
+	 *
+	 * @param string $url       URL to parse.
+	 * @param int    $component One PHP_URL_* component, or -1 for all of them.
+	 * @return mixed
+	 */
+	function wp_parse_url( $url, $component = -1 ) {
+		return parse_url( $url, $component ); // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url
+	}
+}
+
+if ( ! function_exists( 'add_query_arg' ) ) {
+	/**
+	 * add_query_arg sets one query parameter the way the core function does for
+	 * the three-argument form: an existing value is replaced, the other
+	 * parameters and any fragment are kept.
+	 *
+	 * @param string $key   Parameter name.
+	 * @param string $value Parameter value.
+	 * @param string $url   URL to change.
+	 * @return string
+	 */
+	function add_query_arg( $key, $value, $url ) {
+		$fragment = '';
+
+		if ( false !== strpos( $url, '#' ) ) {
+			list( $url, $fragment ) = explode( '#', $url, 2 );
+			$fragment               = '#' . $fragment;
+		}
+
+		$query = array();
+
+		if ( false !== strpos( $url, '?' ) ) {
+			list( $url, $existing ) = explode( '?', $url, 2 );
+			parse_str( $existing, $query );
+		}
+
+		$query[ $key ] = $value;
+
+		return $url . '?' . http_build_query( $query ) . $fragment;
+	}
+}
+
 require_once dirname( __DIR__ ) . '/includes/class-feasible-client-ip.php';
+require_once dirname( __DIR__ ) . '/includes/class-feasible-dashboard.php';
 require_once dirname( __DIR__ ) . '/includes/class-feasible-events.php';
 require_once dirname( __DIR__ ) . '/includes/class-feasible-payload.php';
 require_once dirname( __DIR__ ) . '/includes/class-feasible-measurements.php';
