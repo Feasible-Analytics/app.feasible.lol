@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { useDismiss } from "../lib/dom";
-import { rangeLabel } from "../lib/format";
+import { daysLabel, rangeLabel } from "../lib/format";
 import { t } from "../lib/i18n";
 import type { Period } from "../lib/period";
 import { PERIODS, addDays, canStep, step, today, yesterday } from "../lib/period";
@@ -168,7 +168,7 @@ function StepButton({
 			aria-label={t(direction === -1 ? "dashboard.topbar.previous_period" : "dashboard.topbar.next_period")}
 			// Hovering answers "earlier than what?" with the window itself
 			// rather than with a direction the reader has to work out.
-			title={next ? rangeLabel([next.from, next.to]) : undefined}
+			title={next ? daysLabel(next.from, next.to) : undefined}
 			className="flex w-7 items-center justify-center text-sm text-muted transition-colors duration-150 ease-[var(--ease-ui)] hover:bg-hover hover:text-body disabled:text-faint"
 		>
 			<span aria-hidden="true" className="rtl:-scale-x-100">{direction === -1 ? "‹" : "›"}</span>
