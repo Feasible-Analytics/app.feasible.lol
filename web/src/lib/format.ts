@@ -8,7 +8,7 @@
 
 import type { Interval, Metric } from "../api/types";
 import { formatterLocale, hourCycle, n, t } from "./i18n";
-import { pad } from "./period";
+import { addDays, pad } from "./period";
 
 /** The month names, built once per locale. They come from Intl rather than from
  *  a table of English abbreviations, because the axis of a translated dashboard
@@ -286,20 +286,41 @@ export function bucketLong(label: string, interval: Interval): string {
 	}
 }
 
-/** rangeLabel renders the resolved window the server actually used, which is
- *  what the top bar shows under a preset name. Date maths is the biggest single
- *  source of "your numbers are wrong", and showing the window removes the
- *  question. */
+/** rangeLabel names the days a server-resolved window covers, for the top bar
+ *  and the graph's comparison. The bounds are half-open, so a whole-day window
+ *  ends at the midnight after its last day. */
 export function rangeLabel(bounds: string[] | undefined): string {
 	if (!bounds || bounds.length !== 2) return "";
 
-	const start = bounds[0]?.slice(0, 10) ?? "";
-	const end = bounds[1]?.slice(0, 10) ?? "";
+	const start = bounds[0] ?? "";
+	const end = bounds[1] ?? "";
 
 	if (!start || !end) return "";
-	if (start === end) return calendarDate(start);
 
-	return t("dashboard.format.range", { from: calendarDate(start), to: calendarDate(end) });
+	return daysLabel(start.slice(0, 10), lastDay(end));
+}
+
+/** daysLabel names a span of calendar days from its first and last day, both
+ *  inclusive YYYY-MM-DD. A single day prints as one date. */
+export function daysLabel(first: string, last: string): string {
+	if (!first || !last) return "";
+
+	// A last day before the first comes from a window with no length.
+	if (last <= first) return calendarDate(first);
+
+	return t("dashboard.format.range", { from: calendarDate(first), to: calendarDate(last) });
+}
+
+/** lastDay is the site-timezone day holding the last instant before an
+ *  exclusive end bound. An end at midnight belongs to the day before; an end
+ *  later in the day, like a comparison cut to the time elapsed so far, covers
+ *  part of its own day. It reads the bound's wall-clock text so the day cannot
+ *  slide in the reader's timezone. */
+function lastDay(end: string): string {
+	const day = end.slice(0, 10);
+	const clock = end.slice(10);
+
+	return clock === "" || /^T00:00(:00(\.0+)?)?(Z|[+-]\d\d:?\d\d)?$/.test(clock) ? addDays(day, -1) : day;
 }
 
 /** calendarDate renders an ISO calendar value without interpreting it as an
