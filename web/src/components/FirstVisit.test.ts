@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { FIRST_VISIT_REQUEST, FirstVisit } from "./FirstVisit";
+import { FIRST_VISIT_REQUEST, FirstVisit, firstVisitStatusURL } from "./FirstVisit";
 
 // The bootstrap is read once per bundle, and the catalogue travels in it.
 globalThis.document = {
@@ -62,6 +62,11 @@ test("a reader who cannot install the site gets the message and nothing to paste
 	assert.match(markup, /This page checks every few seconds\./);
 });
 
-test("the first-visit check asks about every visit the site has ever had", () => {
+test("a reader who can install the site is told by the install screen's uncached endpoint", () => {
+	assert.equal(firstVisitStatusURL({ domain: "example.com", install_url: "/onboarding/7", snippet: SNIPPET }), "/onboarding/7/status");
+});
+
+test("a reader who cannot install the site falls back to every visit the site has ever had", () => {
+	assert.equal(firstVisitStatusURL({ domain: "example.com" }), "");
 	assert.deepEqual(FIRST_VISIT_REQUEST, { metrics: ["visitors"], date_range: "all" });
 });
