@@ -59,6 +59,19 @@
   }
 }
 
+/* iOS Safari zooms the page in on any text field under 16px the moment it is
+   focused, and leaves it zoomed, so the form's own button ends up off screen.
+   The templates set their fields at 14px, which suits a desktop. Below `sm`
+   every typed field is 16px instead. It sits outside the layers so that it wins
+   over the `text-sm` utility on each field. */
+@media (max-width: 39.99rem) {
+  input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="hidden"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
 /* x-cloak hides an element until Alpine has initialised it. Without it every
    x-show="false" branch is visible for the moment between the HTML parsing and
    the script running, which reads as a page that flashes its own internals. */
