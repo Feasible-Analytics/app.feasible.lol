@@ -1192,3 +1192,30 @@ func TestTheUnsubscribePageAnswersBothKindsOfLink(t *testing.T) {
 		t.Fatalf("an unreadable token failed the page: %v", err)
 	}
 }
+
+// TestTheSupportLinkReachesWhoeverAnswers checks the account menu's Contact
+// support address for each kind of install. A hosted customer asking for help
+// writes to help@, where support works; a self-hosted one writes to their own
+// operator, and only falls back to sales when no operator address is set.
+func TestTheSupportLinkReachesWhoeverAnswers(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		hosted   bool
+		operator string
+		want     string
+	}{
+		{"hosted", true, "", "help@feasible.lol"},
+		{"hosted ignores an operator address", true, "ops@example.com", "help@feasible.lol"},
+		{"self-hosted with an operator", false, "ops@example.com", "ops@example.com"},
+		{"self-hosted without one", false, "", "sales@feasible.lol"},
+	} {
+		e := &env{cfg: &config.Config{}}
+		e.cfg.App.Hosted = tc.hosted
+		e.cfg.App.OperatorEmail = tc.operator
+		e.cfg.App.SalesEmail = "sales@feasible.lol"
+
+		if got := supportAddress(e); got != tc.want {
+			t.Errorf("%s: support address = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

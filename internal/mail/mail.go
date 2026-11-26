@@ -86,6 +86,10 @@ const (
 	// FounderAddress is where a reply to an onboarding email goes. Those
 	// emails are signed by a person and sent only by the hosted service.
 	FounderAddress = "Spicer Matthews <spicer@feasible.lol>"
+
+	// HelpAddress is where a hosted customer asks for help. It is the address
+	// support answers from, so a question and its reply share one thread.
+	HelpAddress = "help@feasible.lol"
 )
 
 // dialTimeout caps how long a send waits on an unreachable SMTP host. Without
