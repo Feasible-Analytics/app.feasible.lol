@@ -1329,6 +1329,39 @@ func TestRegisteringATakenAddressOffersSignInAndReset(t *testing.T) {
 	}
 }
 
+// TestTheVerifyLinkOnAnotherDeviceOpensTheFirstSiteForm covers the owner who
+// signs up on a laptop and taps the email's link on their phone. That browser
+// has no session until the link starts one, and it should land on the same
+// add-a-site form the typed code leads to, not on an empty sites list.
+func TestTheVerifyLinkOnAnotherDeviceOpensTheFirstSiteForm(t *testing.T) {
+	app := newTestApp(t)
+	registering := newClient(t, app)
+
+	registered := registering.post("/register", url.Values{
+		"email":    {"phone@example.com"},
+		"password": {"a long enough password"},
+	})
+	closeResponseBody(t, registered)
+
+	link, err := url.Parse(extractVerificationLink(t, app.sent.last(t).Text))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	phone := newClient(t, app)
+	verified := phone.get(link.RequestURI())
+	closeResponseBody(t, verified)
+
+	location := verified.Header.Get("Location")
+	if !strings.HasPrefix(location, "/sites/new?team_id=") || !strings.Contains(location, "welcome=1") {
+		t.Fatalf("the link in a fresh browser redirected to %q, want the first-site form", location)
+	}
+
+	if body := phone.body(location); !strings.Contains(body, "Add a site") {
+		t.Fatal("the fresh browser was not signed in to the first-site form")
+	}
+}
+
 // TestAllSitesAnalyticsFiltersByFolder drives the second sites screen through
 // the route table.
 //
