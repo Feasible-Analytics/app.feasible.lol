@@ -235,6 +235,12 @@ type Bootstrap struct {
 	// for minutes to hours, and it costs no polling.
 	Rebuild *Rebuild `json:"rebuild,omitempty"`
 
+	// Waiting is present when the site being looked at has never recorded a
+	// visit and holds no imported history. The front end then shows how to
+	// install the snippet instead of a page of zeros, and switches to the
+	// reports on its own when the first visit lands.
+	Waiting *Waiting `json:"waiting,omitempty"`
+
 	// Version is the build stamped into the running binary, shown verbatim in
 	// the dashboard footer: a release tag such as v0.0.59, a `git describe`
 	// string on a local build, or "dev" on an unstamped one.
@@ -246,6 +252,14 @@ type Bootstrap struct {
 // summary catches up.
 type Rebuild struct {
 	Percent int `json:"percent"`
+}
+
+// Waiting is a site that has not recorded its first visit yet. The install
+// screen and the snippet are filled in only for a reader who may install it.
+type Waiting struct {
+	Domain     string `json:"domain"`
+	InstallURL string `json:"install_url,omitempty"`
+	Snippet    string `json:"snippet,omitempty"`
 }
 
 // Navigation is the authenticated product map rendered in the dashboard menu.

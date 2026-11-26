@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { annotations as fetchAnnotations, bootstrap, shared } from "../api/client";
-import type { Annotation, Bootstrap, Metric, StatsRequest } from "../api/types";
+import type { Annotation, Bootstrap, Metric, StatsRequest, Waiting } from "../api/types";
 import type { FilterLabels, FilterState } from "../lib/filters";
 import { toApi, toggle } from "../lib/filters";
 import { t } from "../lib/i18n";
@@ -25,6 +25,7 @@ import { dateRange, useUrlState } from "../lib/url";
 import { useStats } from "../lib/useStats";
 import { Drawer } from "./Drawer";
 import { FilterBar } from "./FilterBar";
+import { FirstVisit } from "./FirstVisit";
 import { WithFooter } from "./Footer";
 import { GoalsCard } from "./GoalsCard";
 import type { ChartType } from "./MainGraph";
@@ -54,6 +55,12 @@ export function App() {
 	const boot = bootstrap();
 	const sites = boot.sites.slice().sort();
 
+	// Set when a site that was waiting records its first visit. The dashboard
+	// is remounted under a new key, so every report asks again instead of
+	// keeping the zeros it loaded while the site was still waiting.
+	const [arrived, setArrived] = useState(false);
+	const onArrived = useCallback(() => setArrived(true), []);
+
 	return (
 		<WithFooter boot={boot}>
 			{sites.length === 0 ? (
@@ -61,7 +68,11 @@ export function App() {
 			) : boot.lock && boot.navigation ? (
 				<LockedDashboard boot={boot} />
 			) : (
-				<AnalyticsDashboard />
+				<AnalyticsDashboard
+					key={arrived ? "arrived" : "waiting"}
+					waiting={arrived ? undefined : boot.waiting}
+					onArrived={onArrived}
+				/>
 			)}
 		</WithFooter>
 	);
@@ -98,8 +109,13 @@ function RebuildNotice() {
 }
 
 /** AnalyticsDashboard owns every report hook. Keeping it below the lock branch
- * guarantees a locked account mounts no data-fetching component at all. */
-function AnalyticsDashboard() {
+ * guarantees a locked account mounts no data-fetching component at all.
+ *
+ * waiting names a site that has never recorded a visit. While that site is the
+ * one on screen, the first-visit screen stands in for the reports; the site
+ * picker can move to another site without a reload, so it is matched by
+ * domain rather than assumed. */
+function AnalyticsDashboard({ waiting, onArrived }: { waiting?: Waiting; onArrived: () => void }) {
 	const [state, navigate] = useUrlState();
 	const [theme, setTheme] = useTheme();
 	const [sites] = useState(() => bootstrap().sites.slice().sort());
@@ -478,55 +494,61 @@ function AnalyticsDashboard() {
 				    gets quoted as the whole picture. */}
 				{embedded && <div className="mb-3">{filterBar}</div>}
 
-				{live ? (
-					<Realtime domain={state.domain} filters={filters} />
+				{waiting?.domain === state.domain ? (
+					<FirstVisit waiting={waiting} onArrived={onArrived} />
 				) : (
-					<section className="overflow-hidden border-2 border-line bg-card">
-						{/* Above the tiles rather than beside one of them:
-						    sampling applies to every figure in the section, and
-						    a caveat attached to a single number reads as being
-						    about that number alone. */}
-						<SampledBadge
-							sampling={totals.data?.meta.sampling}
-							exact={sectionExact}
-							exactFallback={totals.exactFallback || graph.exactFallback}
-							onExact={setExact}
-						/>
+					<>
+					{live ? (
+						<Realtime domain={state.domain} filters={filters} />
+					) : (
+						<section className="overflow-hidden border-2 border-line bg-card">
+							{/* Above the tiles rather than beside one of them:
+							    sampling applies to every figure in the section, and
+							    a caveat attached to a single number reads as being
+							    about that number alone. */}
+							<SampledBadge
+								sampling={totals.data?.meta.sampling}
+								exact={sectionExact}
+								exactFallback={totals.exactFallback || graph.exactFallback}
+								onExact={setExact}
+							/>
 
-						<TopStats stats={totals} selected={metric} onSelect={setMetric} comparing={comparing} />
-						<div className="p-4 sm:p-5">
-							<MainGraph stats={graph} metric={metric} comparing={comparing} annotations={notes} chart={chart} />
-						</div>
-					</section>
-				)}
+							<TopStats stats={totals} selected={metric} onSelect={setMetric} comparing={comparing} />
+							<div className="p-4 sm:p-5">
+								<MainGraph stats={graph} metric={metric} comparing={comparing} annotations={notes} chart={chart} />
+							</div>
+						</section>
+					)}
 
-				<div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2">
-					{CARDS.map((card) => (
-						<ReportCard
-							key={card.id}
+					<div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2">
+						{CARDS.map((card) => (
+							<ReportCard
+								key={card.id}
+								domain={state.domain}
+								card={card}
+								range={range}
+								total={uniqueVisitors}
+								onOpenDetails={openDetails}
+								drawerTab={drawerCard?.id === card.id ? drawerTab?.id : undefined}
+								filters={filters}
+								onFilter={applyFilter}
+								selected={selected}
+								exact={exact}
+							/>
+						))}
+						<GoalsCard
 							domain={state.domain}
-							card={card}
 							range={range}
-							total={uniqueVisitors}
-							onOpenDetails={openDetails}
-							drawerTab={drawerCard?.id === card.id ? drawerTab?.id : undefined}
 							filters={filters}
-							onFilter={applyFilter}
-							selected={selected}
 							exact={exact}
+							onFilter={applyFilter}
+							behavior={state.behavior}
+							onBehaviorChange={(behavior) => navigate({ ...state, behavior, drawer: null })}
 						/>
-					))}
-					<GoalsCard
-						domain={state.domain}
-						range={range}
-						filters={filters}
-						exact={exact}
-						onFilter={applyFilter}
-						behavior={state.behavior}
-						onBehaviorChange={(behavior) => navigate({ ...state, behavior, drawer: null })}
-					/>
-					<SearchConsoleCard domain={state.domain} range={range} />
-				</div>
+						<SearchConsoleCard domain={state.domain} range={range} />
+					</div>
+					</>
+				)}
 			</main>
 
 			{drawerCard && state.drawer && drawerTab && (

@@ -403,5 +403,12 @@
   "dashboard.value.direct": "Direct / None",
   "dashboard.value.none": "(none)",
   "dashboard.value.not_set": "(not set)",
-  "dashboard.value.unknown": "Unknown"
+  "dashboard.value.unknown": "Unknown",
+  "dashboard.waiting.body": "{site} hasn't recorded a visit yet. Paste this snippet into the <head> of every page, then open the site in another tab.",
+  "dashboard.waiting.body_viewer": "{site} hasn't recorded a visit yet. Its reports show here once the tracking snippet is installed and the first visit arrives.",
+  "dashboard.waiting.copied": "Copied",
+  "dashboard.waiting.copy": "Copy snippet",
+  "dashboard.waiting.install": "More ways to install",
+  "dashboard.waiting.live": "This page checks every few seconds and shows your reports as soon as the first visit arrives.",
+  "dashboard.waiting.title": "No visits yet"
 }

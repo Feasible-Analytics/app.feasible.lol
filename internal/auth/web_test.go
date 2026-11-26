@@ -2785,3 +2785,45 @@ func mustParseURL(t *testing.T, raw string) *url.URL {
 
 	return parsed
 }
+
+// TestDashboardInstallIsOnlyForThoseWhoCanInstall checks that the dashboard's
+// "no visits yet" state links the install screen and carries the snippet for
+// a reader who manages the site, and for nobody else.
+func TestDashboardInstallIsOnlyForThoseWhoCanInstall(t *testing.T) {
+	app := newTestApp(t)
+	registerAndVerify(t, app)
+
+	user, err := app.store.UserByEmail(context.Background(), "person@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	team, err := app.store.TeamForUser(context.Background(), user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err := app.store.CreateSite(context.Background(), team.ID, "waiting.example", "", "UTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.SiteCache.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	request := func(reader *User) *http.Request {
+		req := httptest.NewRequest(http.MethodGet, "/dashboard/"+site.Domain, nil)
+		return req.WithContext(context.WithValue(req.Context(), contextUser, reader))
+	}
+
+	installURL, snippet := app.DashboardInstall(request(user), site.Domain)
+	if installURL != "/onboarding/"+strconv.FormatInt(site.ID, 10) {
+		t.Fatalf("owner install URL = %q", installURL)
+	}
+	if !strings.Contains(snippet, "<script defer") {
+		t.Fatalf("owner snippet = %q", snippet)
+	}
+
+	stranger := &User{ID: user.ID + 1000, Email: "stranger@example.com"}
+	if installURL, snippet := app.DashboardInstall(request(stranger), site.Domain); installURL != "" || snippet != "" {
+		t.Fatalf("a reader with no role on the site got install=%q snippet=%q", installURL, snippet)
+	}
+}

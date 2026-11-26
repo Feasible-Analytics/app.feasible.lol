@@ -636,6 +636,43 @@ func rebuildNotice(ctx context.Context, domain string, cache *sites.Cache, manag
 	return &dashboard.Rebuild{Percent: progress.Percent}
 }
 
+// waitingNotice reports a site that has never recorded a visit and holds no
+// imported history, which is every site in the minutes after it is added. A
+// dashboard of zeros that says "try a wider date range" reads as broken to
+// somebody who has not installed the snippet yet, so the shell shows them how
+// to install it instead. A site with any session or any import, even one that
+// failed, keeps the ordinary dashboard. A read that fails also keeps it: a
+// wrong "no visits yet" over real data is worse than a page of zeros.
+func waitingNotice(ctx context.Context, domain string, cache *sites.Cache, manager *accounts.Manager) *dashboard.Waiting {
+	domain, _, _ = strings.Cut(domain, "/")
+	if domain == "" || cache == nil || manager == nil {
+		return nil
+	}
+
+	site, ok := cache.Lookup(domain)
+	if !ok {
+		return nil
+	}
+
+	// The account, not the acting team: a transferred site's history stays in
+	// the database it was written to.
+	lease, err := manager.Acquire(ctx, site.AccountID)
+	if err != nil {
+		return nil
+	}
+	defer lease.Release() //nolint:errcheck // the page is more useful than an unlock error
+
+	var seen bool
+	err = lease.Account.Reader().QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM sessions WHERE site_id = ?)
+		    OR EXISTS (SELECT 1 FROM imports WHERE site_id = ?)`, site.ID, site.ID).Scan(&seen)
+	if err != nil || seen {
+		return nil
+	}
+
+	return &dashboard.Waiting{Domain: site.Domain}
+}
+
 // serveRoutes is the app process's public surface: the tracker script, the
 // stats API the dashboard runs on, the server-rendered application, the pages
 // that sell it, the settings screens, and — with the direct transport — the
@@ -804,6 +841,10 @@ func serveRoutes(e *env, service *ingest.Service, manager *accounts.Manager, sec
 		}
 
 		boot.Rebuild = rebuildNotice(r.Context(), looking, service.Sites, manager)
+		boot.Waiting = waitingNotice(r.Context(), looking, service.Sites, manager)
+		if boot.Waiting != nil {
+			boot.Waiting.InstallURL, boot.Waiting.Snippet = app.DashboardInstall(r, boot.Waiting.Domain)
+		}
 
 		return boot
 	}
