@@ -9,6 +9,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -519,10 +520,15 @@ func (h *Handler) doVerifyLink(w http.ResponseWriter, r *http.Request) {
 	// mailbox, which is the same proof the password reset flow accepts, and
 	// making somebody sign in again on the phone they just tapped it on is
 	// friction with nothing behind it.
+	//
+	// The redirect is then worked out as that user, so a new owner lands on
+	// the add-a-site form in this browser exactly as in the one they signed up
+	// in, rather than on an empty sites list one tap further away.
 	if userFrom(r) == nil {
 		user, err := h.Store.UserByID(r.Context(), userID)
 		if err == nil {
 			h.startSession(w, r, user)
+			r = r.WithContext(context.WithValue(r.Context(), contextUser, user))
 		}
 	}
 
