@@ -679,9 +679,11 @@ type acquisition struct {
 }
 
 // resolveAcquisition combines the query parameters, the server-side overrides
-// and the referrer into a source and a channel. A UTM source wins over the
-// referrer because somebody typed it on purpose, and a campaign that says it is
-// Facebook is Facebook even when the click came through a link shortener.
+// and the referrer into a source and a channel. A UTM source names the source
+// because somebody typed it on purpose. A tag we recognise also decides the
+// kind of site, so a campaign that says it is Facebook is Facebook even when
+// the click came through a link shortener. A tag we do not recognise says
+// nothing about the kind of site, so a referrer we recognise still decides it.
 func resolveAcquisition(params url.Values, payload *Payload, source referrer.Result) acquisition {
 	out := acquisition{
 		source:      source.Source,
@@ -704,7 +706,10 @@ func resolveAcquisition(params url.Values, payload *Payload, source referrer.Res
 	if out.utmSource != "" {
 		if resolved, ok := referrer.SourceFromUTM(out.utmSource); ok {
 			out.source = resolved.Name
-			category = resolved.Category
+
+			if resolved.Category != referrer.CategoryUnknown {
+				category = resolved.Category
+			}
 		}
 	}
 

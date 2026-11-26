@@ -149,6 +149,44 @@ func TestRefAndSourceAliases(t *testing.T) {
 	}
 }
 
+// TestAKnownReferrerDecidesTheChannelOfAnUnknownTag checks that a tag we do
+// not recognise names the source without throwing away what the referrer says
+// about the kind of site the visit came from, while a tag we do recognise
+// still decides the channel over the referrer.
+func TestAKnownReferrerDecidesTheChannelOfAnUnknownTag(t *testing.T) {
+	h := newHandlerHarness(t)
+
+	cases := []struct {
+		name     string
+		query    string
+		referrer string
+		source   string
+		channel  string
+	}{
+		{"x with a made-up tag", "utm_source=twitter-outreach", "https://t.co/abc123", "twitter-outreach", "Organic Social"},
+		{"gmail app with a drip tag", "utm_source=newsletter-drip-1", "android-app://com.google.android.gm", "newsletter-drip-1", "Email"},
+		{"an assistant with a made-up tag", "utm_source=answer-link", "https://gemini.google.com/", "answer-link", "AI Assistants"},
+		{"a paid medium keeps the referrer's kind", "utm_source=spring&utm_medium=cpc", "https://t.co/abc123", "spring", "Paid Social"},
+		{"a recognised tag still wins", "utm_source=newsletter", "https://t.co/abc123", "Newsletter", "Email"},
+		{"a recognised assistant tag still wins", "utm_source=chatgpt", "https://t.co/abc123", "ChatGPT", "AI Assistants"},
+		{"an unknown tag from an unknown site", "utm_source=partner", "https://blog.somebody.example/post", "partner", "Referral"},
+		{"an unknown tag with no referrer", "utm_source=partner", "", "partner", "Referral"},
+		{"the gemini tag with no referrer", "utm_source=gemini", "", "Gemini", "AI Assistants"},
+	}
+
+	for _, tc := range cases {
+		body := `{"n":"pageview","u":"https://example.com/?` + tc.query + `","d":"example.com","r":"` + tc.referrer + `"}`
+		debug := derive(t, h, body, nil)
+
+		if debug.Source != tc.source {
+			t.Errorf("%s: source = %q, want %q", tc.name, debug.Source, tc.source)
+		}
+		if debug.Channel != tc.channel {
+			t.Errorf("%s: channel = %q, want %q", tc.name, debug.Channel, tc.channel)
+		}
+	}
+}
+
 // TestClickIDKeepsOnlyTheParameterName is the GDPR line. A click id is a unique
 // per-click identifier and is not ours to keep without consent, but knowing one
 // was there is what separates a paid click from an organic one.

@@ -110,9 +110,10 @@ func Parse(rawReferrer, siteHost string) Result {
 }
 
 // SourceFromUTM resolves an explicit utm_source tag to a canonical name. UTM
-// tags win over the referrer because somebody set them on purpose, and a
-// campaign that says it is Facebook is Facebook even when the click arrived
-// through a link shortener.
+// tags name the source over the referrer because somebody set them on purpose,
+// and a campaign that says it is Facebook is Facebook even when the click
+// arrived through a link shortener. An unrecognised tag comes back with
+// CategoryUnknown, which tells the caller to keep the referrer's category.
 func SourceFromUTM(utmSource string) (Source, bool) {
 	key := strings.ToLower(strings.TrimSpace(utmSource))
 	if key == "" {

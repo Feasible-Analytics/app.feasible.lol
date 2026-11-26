@@ -37,8 +37,8 @@ func TestCanonicalSource(t *testing.T) {
 		{"Outlook.com", "Outlook"},
 		{"ProtonMail", "Proton Mail"},
 		{"Wikipedia", "wikipedia.org"},
-		{"Grok", "grok.com"},
-		{"DeepSeek", "deepseek.com"},
+		{"Grok", "Grok"},
+		{"DeepSeek", "DeepSeek"},
 		{"Phind", "phind.com"},
 
 		// Our own names, in any case.
@@ -89,7 +89,8 @@ func TestCanonicalSource(t *testing.T) {
 func TestCanonicalSourceAgreesWithParse(t *testing.T) {
 	for _, host := range []string{
 		"google.com", "l.facebook.com", "old.reddit.com", "lnkd.in", "gemini.google.com",
-		"copilot.microsoft.com", "en.wikipedia.org", "docs.example.org",
+		"copilot.microsoft.com", "duck.ai", "l.meta.ai", "grok.com", "chat.deepseek.com",
+		"en.wikipedia.org", "docs.example.org",
 	} {
 		want := Parse("https://"+host+"/", "").Source
 		if got := CanonicalSource(host); got != want {
