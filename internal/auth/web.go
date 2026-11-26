@@ -867,6 +867,32 @@ func (h *Handler) NavigationForDashboard(w http.ResponseWriter, r *http.Request)
 	return navigation
 }
 
+// DashboardInstall returns the install screen and the tracking snippet for a
+// site the signed-in reader may install, or two empty strings when they may
+// not. It is asked only for a site that has never recorded a visit, so the
+// role lookup it repeats never runs for a site with data.
+func (h *Handler) DashboardInstall(r *http.Request, domain string) (installURL, snippet string) {
+	user := userFrom(r)
+	if user == nil {
+		return "", ""
+	}
+
+	site, ok := h.SiteCache.Lookup(domain)
+	if !ok {
+		return "", ""
+	}
+
+	role, err := h.Teams.SiteRole(r.Context(), site.ID, user.ID)
+	if err != nil || !teams.Can(role, teams.PermManageSiteSettings) {
+		return "", ""
+	}
+
+	installURL = "/onboarding/" + strconv.FormatInt(site.ID, 10)
+	snippet = Snippet(h.BaseURL, h.ScriptBaseURL, h.Keyer, &Site{Domain: site.Domain})
+
+	return installURL, snippet
+}
+
 // RoleForSite returns the current authenticated role for a separately rendered
 // site screen. The surrounding guard remains the authorization boundary; this
 // value only decides which already-authorized navigation links to draw.

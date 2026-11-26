@@ -35,6 +35,7 @@ import (
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/onboarding"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/reports"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/sharing"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/store"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/tracker"
 )
@@ -1217,5 +1218,45 @@ func TestTheSupportLinkReachesWhoeverAnswers(t *testing.T) {
 		if got := supportAddress(e); got != tc.want {
 			t.Errorf("%s: support address = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestASiteWithNoVisitsYetIsMarkedWaiting covers the dashboard's first-run
+// state. A site that has never recorded a visit is marked so the dashboard can
+// show how to install the snippet, and one visit, or one import of history, is
+// enough to give it the ordinary dashboard back.
+func TestASiteWithNoVisitsYetIsMarkedWaiting(t *testing.T) {
+	s := newStack(t)
+	ctx := context.Background()
+
+	cache := sites.NewEmpty()
+	cache.Set(sites.Site{ID: 1, AccountID: lockedTeam, Domain: "example.com"})
+	cache.Set(sites.Site{ID: 2, AccountID: lockedTeam, Domain: "imported.example"})
+
+	waiting := waitingNotice(ctx, "example.com", cache, s.manager)
+	if waiting == nil || waiting.Domain != "example.com" {
+		t.Fatalf("a site with no visits was not marked waiting: %+v", waiting)
+	}
+	if got := waitingNotice(ctx, "nobody.example", cache, s.manager); got != nil {
+		t.Fatalf("a domain the reader has no site for was marked waiting: %+v", got)
+	}
+
+	// An imported history is data too, even before a live visit arrives.
+	account, err := s.manager.Open(ctx, lockedTeam)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := account.Writer().ExecContext(ctx,
+		`INSERT INTO imports (site_id, source, status, created_at) VALUES (2, 'csv', 'completed', ?)`,
+		time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitingNotice(ctx, "imported.example", cache, s.manager); got != nil {
+		t.Fatalf("a site with imported history was marked waiting: %+v", got)
+	}
+
+	seedSourceVisit(t, s, "Google")
+	if got := waitingNotice(ctx, "example.com/sources", cache, s.manager); got != nil {
+		t.Fatalf("a site with a visit was marked waiting: %+v", got)
 	}
 }

@@ -371,10 +371,22 @@ export interface Bootstrap {
 	 *  is honest for something that runs for minutes to hours and costs no
 	 *  polling. */
 	rebuild?: RollupRebuild;
+	/** Present when the site the page was served for has never recorded a
+	 *  visit and holds no imported history. The dashboard shows how to install
+	 *  the snippet instead of a page of zeros. */
+	waiting?: Waiting;
 	/** The build stamped into the running binary, shown verbatim in the footer:
 	 *  a release tag such as v0.0.59, a `git describe` string on a local build,
 	 *  or "dev". Empty only when the page was served without a bootstrap. */
 	version: string;
+}
+
+/** A site waiting for its first visit. The install screen and the snippet are
+ *  present only for a reader who may install the site. */
+export interface Waiting {
+	domain: string;
+	install_url?: string;
+	snippet?: string;
 }
 
 /** How far a site's summary has got. Every number on the dashboard is correct
