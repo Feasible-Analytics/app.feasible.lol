@@ -10,6 +10,13 @@
   <h1 class="text-xl font-semibold text-heading">{{ t $.Lang "auth.register.title" }}</h1>
   <p class="mt-1 text-sm text-muted">{{ t $.Lang "auth.register.subtitle" }}</p>
 
+  {{ if .Data.EmailTaken }}
+    <div class="mt-6 flex flex-wrap gap-3">
+      <a href="/login?next={{ .Data.Next }}" class="btn btn-primary">{{ t $.Lang "auth.register.taken_sign_in" }}</a>
+      <a href="{{ url $.Lang "/forgot-password" }}" class="btn btn-secondary">{{ t $.Lang "auth.register.taken_reset" }}</a>
+    </div>
+  {{ end }}
+
   {{ if .GoogleEnabled }}
     <a href="/auth/google?next={{ .Data.Next }}{{ .Data.Referral.LinkSuffix }}"
        class="mt-6 flex w-full items-center justify-center gap-2 border-2 border-field bg-card px-4 py-2.5 text-sm font-medium text-body hover:bg-hover">
