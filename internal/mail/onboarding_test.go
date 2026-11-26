@@ -159,6 +159,66 @@ func TestAnAccountWithNoSiteIsNotToldAboutOne(t *testing.T) {
 	}
 }
 
+// TestAWelcomeToAnAccountAlreadyCountingSaysTheInstallIsDone covers the owner
+// who pasted the snippet before the welcome went out: it must not tell them
+// the snippet is still the one thing to do, and it sends them to the dashboard
+// rather than back to the install screen.
+func TestAWelcomeToAnAccountAlreadyCountingSaysTheInstallIsDone(t *testing.T) {
+	notice := onboardingNotice(onboarding.TemplateWelcome)
+	notice.Collecting = true
+	notice.DashboardURL = "https://app.example/dashboard/harbor.my"
+
+	content, err := OnboardingContent(notice)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	message, err := content.Message("sam@example.com", onboarding.TemplateWelcome)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	install, err := OnboardingContent(onboardingNotice(onboarding.TemplateWelcome))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content.Subject == install.Subject {
+		t.Fatalf("both welcomes have the subject %q", content.Subject)
+	}
+
+	text := content.Subject + "\n" + content.Preheader + "\n" + message.Text
+	for _, want := range []string{
+		"Hi Sam,", "~Spicer", "harbor.my has already arrived", "install is done",
+		"Open your dashboard: https://app.example/dashboard/harbor.my",
+		"https://feasible.lol/docs/goals-funnels/", "https://feasible.lol/docs/mcp/",
+		"eply to this email", "Stop these setup emails", "https://app.example/unsubscribe/token",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the counting welcome is missing %q", want)
+		}
+	}
+
+	for _, unwanted := range []string{"Nothing shows up", "Paste the two-line snippet", "/onboarding/", "—", "–", "!"} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("the counting welcome contains %q", unwanted)
+		}
+	}
+
+	// An account with no site cannot be counting, so the flag alone does not
+	// change the words.
+	notice.SiteDomain = ""
+	notice.InstallURL = ""
+	notice.DashboardURL = ""
+
+	noSite, err := OnboardingContent(notice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if noSite.Subject != install.Subject {
+		t.Fatalf("a siteless account was sent %q", noSite.Subject)
+	}
+}
+
 // TestTheOnboardingMailerSendsUnderTheOutboxKey checks the message handed to
 // the transport, and that a declined send is an error.
 func TestTheOnboardingMailerSendsUnderTheOutboxKey(t *testing.T) {

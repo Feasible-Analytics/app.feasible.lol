@@ -269,6 +269,39 @@ func TestAnAccountWithDataFromTheStartGetsOnlyTheWelcome(t *testing.T) {
 	}
 
 	h.expect(TemplateWelcome)
+
+	if welcome := h.sent[0]; !welcome.Collecting || welcome.DashboardURL != "https://app.example/dashboard/example.com" {
+		t.Fatalf("welcome to a counting account = %+v", welcome)
+	}
+}
+
+// TestTheWelcomeKnowsWhetherTheAccountIsCounting checks the flag the welcome's
+// wording hangs on: off while nothing has arrived, and a failed read sends the
+// install wording rather than holding the welcome back.
+func TestTheWelcomeKnowsWhetherTheAccountIsCounting(t *testing.T) {
+	h := newSweeper(t)
+
+	signedUp := start.Add(time.Hour)
+	addTeam(t, h.db, 1, signedUp)
+	h.addSite(1, "example.com")
+
+	h.at(signedUp)
+	h.sweep()
+	h.expect(TemplateWelcome)
+
+	if h.sent[0].Collecting {
+		t.Fatal("a welcome to an account with no data said it was counting")
+	}
+
+	h.traffic.failed = errors.New("account database unreadable")
+	addTeam(t, h.db, 3, signedUp)
+	h.addSite(3, "example.net")
+	h.sweep()
+
+	h.expect(TemplateWelcome, TemplateWelcome)
+	if welcome := h.sent[1]; welcome.Collecting || welcome.SiteDomain != "example.net" {
+		t.Fatalf("a welcome sent on a failed read = %+v", welcome)
+	}
 }
 
 // TestAnAccountWithNoSiteIsStillHelped proves an account that never added a

@@ -42,10 +42,17 @@ type Notice struct {
 	// MessageKey is stable across retries of the same outbox row.
 	MessageKey string
 
-	// SiteDomain is the account's first site, and InstallURL is that site's
-	// install screen. Both are empty when no site has been added yet.
-	SiteDomain string
-	InstallURL string
+	// SiteDomain is the account's first site, InstallURL is that site's
+	// install screen and DashboardURL is its dashboard. All three are empty
+	// when no site has been added yet.
+	SiteDomain   string
+	InstallURL   string
+	DashboardURL string
+
+	// Collecting is set on a welcome that goes out after the account has
+	// already counted an event, which happens to anybody who installs within
+	// a sweep of verifying. Their install is done, so the welcome says so.
+	Collecting bool
 
 	// AddSiteURL is where a site is added.
 	AddSiteURL string
@@ -195,6 +202,11 @@ func (s *Service) advance(ctx context.Context, team Team, now time.Time) (bool, 
 		}
 	}
 
+	welcomeCollecting := false
+	if template == TemplateWelcome && hasSite {
+		welcomeCollecting = s.collectingAtWelcome(ctx, team.ID)
+	}
+
 	if strings.TrimSpace(team.OwnerEmail) == "" {
 		return false, fmt.Errorf("onboarding: account %d has no owner address and is due %s", team.ID, template)
 	}
@@ -229,6 +241,8 @@ func (s *Service) advance(ctx context.Context, team Team, now time.Time) (bool, 
 	if hasSite {
 		notice.SiteDomain = site.Domain
 		notice.InstallURL = s.BaseURL + "/onboarding/" + strconv.FormatInt(site.ID, 10)
+		notice.DashboardURL = s.BaseURL + "/dashboard/" + site.Domain
+		notice.Collecting = welcomeCollecting
 	}
 
 	outcome, err := s.Notify.Notify(ctx, notice)
@@ -246,6 +260,24 @@ func (s *Service) advance(ctx context.Context, team Team, now time.Time) (bool, 
 	}
 
 	return true, nil
+}
+
+// collectingAtWelcome reports whether an account has counted an event by the
+// time its welcome goes out. A failed read answers no and is logged: the
+// welcome still goes, in its install wording, rather than waiting on a database
+// that may stay unreadable.
+func (s *Service) collectingAtWelcome(ctx context.Context, teamID int64) bool {
+	collecting, err := s.Traffic.HasEvents(ctx, teamID)
+	if err != nil {
+		if s.Log != nil {
+			s.Log.Warn("could not tell whether a new account is collecting; sending the install welcome",
+				"team", teamID, "error", err)
+		}
+
+		return false
+	}
+
+	return collecting
 }
 
 // settleRemaining marks every install-help email not yet sent as skipped, once
