@@ -22,6 +22,7 @@ import (
 
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/clientip"
 	"github.com/Feasible-Analytics/app.feasible.lol/internal/referrer"
+	"github.com/Feasible-Analytics/app.feasible.lol/internal/sites"
 )
 
 // derive runs the pipeline over one payload and returns the debug view, which
@@ -710,4 +711,66 @@ func TestTheReportedSignalsAreKeptWhateverTheVerdict(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAMissAsksTheResolverToLookAgain checks that a domain the snapshot does
+// not hold yet is confirmed before it is dropped. A standalone ingester learns
+// a new site on its next poll, and the owner's first visit arrives before it.
+func TestAMissAsksTheResolverToLookAgain(t *testing.T) {
+	h := newHandlerHarness(t)
+
+	site, ok := h.service.Sites.Lookup("example.com")
+	if !ok {
+		t.Fatal("the fixture site is missing")
+	}
+	late := &lateResolver{site: site}
+	h.service.Pipeline.Sites = late
+
+	recorder := post(t, h, "text/plain", validBody, nil)
+
+	if got := recorder.Header().Get(HeaderDropped); got != "" {
+		t.Fatalf("a site the resolver confirmed was dropped as %q", got)
+	}
+	if late.asked != 1 {
+		t.Fatalf("the resolver was asked to confirm %d times, want 1", late.asked)
+	}
+}
+
+// TestAConfirmedAbsenceIsStillUnknown checks that a second look which does not
+// find the domain drops the event with the same reason as before.
+func TestAConfirmedAbsenceIsStillUnknown(t *testing.T) {
+	h := newHandlerHarness(t)
+
+	late := &lateResolver{}
+	h.service.Pipeline.Sites = late
+
+	recorder := post(t, h, "text/plain", validBody, nil)
+
+	if got := recorder.Header().Get(HeaderDropped); got != ReasonUnknownSite {
+		t.Fatalf("dropped header = %q, want %q", got, ReasonUnknownSite)
+	}
+	if late.asked != 1 {
+		t.Fatalf("the resolver was asked to confirm %d times, want 1", late.asked)
+	}
+}
+
+// lateResolver holds no sites in its snapshot and finds its one site only when
+// asked to look again, the way an ingester does in the seconds after a site
+// is created. A zero site means the second look finds nothing either.
+type lateResolver struct {
+	site  sites.Site
+	asked int
+}
+
+// Lookup misses every domain.
+func (l *lateResolver) Lookup(string) (sites.Site, bool) { return sites.Site{}, false }
+
+// Refresh does nothing; the snapshot never changes.
+func (l *lateResolver) Refresh(context.Context) error { return nil }
+
+// Confirm counts the second look and returns the one site, if there is one.
+func (l *lateResolver) Confirm(context.Context, string) (sites.Site, bool) {
+	l.asked++
+
+	return l.site, l.site.ID != 0
 }

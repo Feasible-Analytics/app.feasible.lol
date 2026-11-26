@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -199,5 +200,139 @@ func TestRemoteRouterAllowsTheHostnamesTheShardPublished(t *testing.T) {
 	}
 	if !restarted.AllowsHostname(4, "checkout.partner.example") {
 		t.Fatal("the allowed hostname was lost across a restart from the disk cache")
+	}
+}
+
+// growingServer publishes a shard's site list that can gain a site between
+// polls, and counts the polls, so a test can see how many a miss caused.
+type growingServer struct {
+	mu    sync.Mutex
+	list  []sites.Site
+	polls atomic.Int64
+}
+
+// add publishes one more site from the next poll on.
+func (s *growingServer) add(site sites.Site) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.list = append(s.list, site)
+}
+
+// ServeHTTP returns the current list as shard one's routing snapshot.
+func (s *growingServer) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+	s.polls.Add(1)
+	s.mu.Lock()
+	response := DomainsResponse{Shard: 1}
+	for _, site := range s.list {
+		response.Sites = append(response.Sites, RoutedSite{Site: site})
+	}
+	s.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+// newGrowingRouter starts a growing shard with one site and a router that has
+// already polled it once, so its map is complete.
+func newGrowingRouter(t *testing.T) (*growingServer, *RemoteRouter) {
+	t.Helper()
+	server := &growingServer{list: []sites.Site{{ID: 1, AccountID: 10, Domain: "first.example"}}}
+	httpServer := httptest.NewServer(server)
+	t.Cleanup(httpServer.Close)
+	router, err := NewRemoteRouter(context.Background(), openRoutingDB(t), []string{httpServer.URL}, &InternalSigner{Key: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := router.RefreshAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !router.Complete() {
+		t.Fatal("routing map is incomplete after its only shard succeeded")
+	}
+
+	return server, router
+}
+
+// TestRemoteRouterConfirmFindsASiteAddedAfterThePoll is the first visit to a
+// new site: the app shard knows the site, this ingester's last poll did not,
+// and the event must be counted rather than dropped as unknown.
+func TestRemoteRouterConfirmFindsASiteAddedAfterThePoll(t *testing.T) {
+	server, router := newGrowingRouter(t)
+	server.add(sites.Site{ID: 2, AccountID: 10, Domain: "new.example"})
+
+	if _, ok := router.Lookup("new.example"); ok {
+		t.Fatal("the new site was known before any poll published it")
+	}
+	site, ok := router.Confirm(context.Background(), "WWW.New.example")
+	if !ok || site.ID != 2 {
+		t.Fatalf("Confirm = %+v, %v; want the new site", site, ok)
+	}
+	if _, ok := router.Lookup("new.example"); !ok {
+		t.Fatal("the poll a miss started did not publish the new site")
+	}
+}
+
+// TestRemoteRouterConfirmCoolsDownADomainNobodyOwns checks that a junk domain
+// costs one poll per cooldown, not one per event.
+func TestRemoteRouterConfirmCoolsDownADomainNobodyOwns(t *testing.T) {
+	server, router := newGrowingRouter(t)
+	now := time.Now().UTC()
+	router.Now = func() time.Time { return now }
+
+	before := server.polls.Load()
+	if _, ok := router.Confirm(context.Background(), "junk.example"); ok {
+		t.Fatal("a domain no shard owns was confirmed")
+	}
+	if got := server.polls.Load() - before; got != 1 {
+		t.Fatalf("the first miss caused %d polls, want 1", got)
+	}
+
+	for range 5 {
+		if _, ok := router.Confirm(context.Background(), "junk.example"); ok {
+			t.Fatal("a domain no shard owns was confirmed")
+		}
+	}
+	if got := server.polls.Load() - before; got != 1 {
+		t.Fatalf("repeat misses inside the cooldown caused %d polls, want 1", got)
+	}
+
+	// Once the cooldown passes, the domain is due another look. A site added
+	// in the meantime is found by it.
+	server.add(sites.Site{ID: 3, AccountID: 10, Domain: "junk.example"})
+	now = now.Add(missCooldown)
+	if _, ok := router.Confirm(context.Background(), "junk.example"); !ok {
+		t.Fatal("a domain added after its cooldown was not found")
+	}
+}
+
+// TestRemoteRouterConfirmSharesOnePoll checks that a burst of misses, such as
+// a page's first pageview and its engagement event arriving together, waits
+// on one poll instead of starting one each.
+func TestRemoteRouterConfirmSharesOnePoll(t *testing.T) {
+	server, router := newGrowingRouter(t)
+	server.add(sites.Site{ID: 2, AccountID: 10, Domain: "new.example"})
+
+	// The gap since the setup poll is waited out first, so every caller below
+	// arrives while the one poll they share is due or running.
+	time.Sleep(missRefreshGap)
+	before := server.polls.Load()
+
+	var group sync.WaitGroup
+	var found atomic.Int64
+	for range 20 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			if _, ok := router.Confirm(context.Background(), "new.example"); ok {
+				found.Add(1)
+			}
+		}()
+	}
+	group.Wait()
+
+	if found.Load() != 20 {
+		t.Fatalf("%d of 20 concurrent misses found the new site", found.Load())
+	}
+	if got := server.polls.Load() - before; got != 1 {
+		t.Fatalf("20 concurrent misses caused %d polls, want 1", got)
 	}
 }

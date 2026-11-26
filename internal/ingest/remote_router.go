@@ -25,6 +25,29 @@ import (
 
 const routingFreshness = 60 * time.Second
 
+const (
+	// missCooldown is how long a domain that a fresh poll still did not know
+	// waits before it can ask for another one. A stale snippet or a junk
+	// domain with steady traffic therefore costs one poll per cooldown, not
+	// one per event.
+	missCooldown = 5 * time.Second
+
+	// missRefreshGap is the least time between two polls started by misses,
+	// across every domain, so a flood of made-up domains cannot turn into a
+	// flood of requests to the app shards.
+	missRefreshGap = time.Second
+
+	// missWaitLimit bounds how long one event waits for that poll before it
+	// is dropped as unknown, the same answer it would have had without one.
+	missWaitLimit = 3 * time.Second
+
+	// missMemory caps how many confirmed-absent domains are remembered. Past
+	// it, a domain that is not in the map is dropped without a second look
+	// until old entries expire, which is what happened to every unknown
+	// domain before second looks existed.
+	missMemory = 10000
+)
+
 // RemoteRouter merges the domain lists independently published by every
 // configured app shard. Failed polls retain the last successful contribution.
 type RemoteRouter struct {
@@ -34,6 +57,18 @@ type RemoteRouter struct {
 	Client *http.Client
 	Signer *InternalSigner
 	Now    func() time.Time
+
+	// refreshMu serialises polls. A miss can start one while the background
+	// loop runs its own, and the older of two snapshots must never be the one
+	// published last.
+	refreshMu sync.Mutex
+
+	// missMu guards the second-look state below.
+	missMu      sync.Mutex
+	missRunning chan struct{}
+	missLast    time.Time
+	missDone    time.Time
+	missUntil   map[string]time.Time
 
 	mu          sync.RWMutex
 	byShard     map[int]map[string]RoutedSite
@@ -52,7 +87,7 @@ func NewRemoteRouter(ctx context.Context, db *sql.DB, shards []string, signer *I
 		Shards: shards, Cache: sites.NewEmpty(), DB: db, Signer: signer,
 		byShard: map[int]map[string]RoutedSite{}, etags: map[int]string{},
 		lastSuccess: map[int]time.Time{}, account: map[int64]int{}, blocked: map[int64][]netip.Prefix{},
-		allowed: map[int64]map[string]bool{},
+		allowed: map[int64]map[string]bool{}, missUntil: map[string]time.Time{},
 	}
 	if err := router.createSchema(ctx); err != nil {
 		return nil, err
@@ -75,6 +110,143 @@ func (r *RemoteRouter) Lookup(domain string) (sites.Site, bool) {
 	}
 
 	return sites.Site{}, false
+}
+
+// Confirm takes a second look at a domain the merged map does not hold before
+// the event is dropped as unknown. A site is in its app shard's list the moment
+// it is created, but this ingester only learns of it on its next poll, and the
+// first visit usually arrives in that gap: the owner pastes the snippet and
+// loads their page straight away. One fresh poll closes the gap.
+//
+// The poll is shared and rate-limited. Concurrent misses wait on one poll,
+// polls started by misses are at least missRefreshGap apart, and a domain a
+// fresh poll still did not know is not looked at again for missCooldown.
+func (r *RemoteRouter) Confirm(ctx context.Context, domain string) (sites.Site, bool) {
+	asked := time.Now()
+	if site, ok := r.Lookup(domain); ok {
+		return site, true
+	}
+
+	key := sites.Normalise(domain)
+	if key == "" || !r.mayConfirm(key) {
+		return sites.Site{}, false
+	}
+
+	r.refreshForMiss(ctx, asked)
+
+	site, ok := r.Lookup(domain)
+	if !ok {
+		r.rememberMiss(key)
+	}
+
+	return site, ok
+}
+
+// mayConfirm reports whether a domain is due a second look. It also sweeps
+// expired entries once the memory is full, and refuses when it is still full
+// after that, so a stream of made-up domains cannot grow it without limit.
+func (r *RemoteRouter) mayConfirm(key string) bool {
+	r.missMu.Lock()
+	defer r.missMu.Unlock()
+
+	now := r.clock()
+	if until, seen := r.missUntil[key]; seen {
+		if now.Before(until) {
+			return false
+		}
+		delete(r.missUntil, key)
+	}
+
+	if len(r.missUntil) >= missMemory {
+		for domain, until := range r.missUntil {
+			if !now.Before(until) {
+				delete(r.missUntil, domain)
+			}
+		}
+		if len(r.missUntil) >= missMemory {
+			return false
+		}
+	}
+
+	return true
+}
+
+// rememberMiss starts a domain's cooldown after a fresh poll did not know it.
+func (r *RemoteRouter) rememberMiss(key string) {
+	r.missMu.Lock()
+	defer r.missMu.Unlock()
+
+	if len(r.missUntil) < missMemory {
+		r.missUntil[key] = r.clock().Add(missCooldown)
+	}
+}
+
+// refreshForMiss joins the poll a miss already started, or starts one once
+// missRefreshGap has passed since the last, and waits at most missWaitLimit for
+// it. A miss poll that finished after asked has already answered the caller,
+// so none is started for it.
+//
+// The poll runs in its own goroutine on its own context, so one visitor
+// closing the tab cannot cancel it for everyone else waiting, and a background
+// poll holding the lock cannot keep an event waiting past the limit. The gap
+// is measured on the wall clock rather than the injectable one: it is a real
+// wait, and a frozen test clock would turn it into an endless one.
+func (r *RemoteRouter) refreshForMiss(ctx context.Context, asked time.Time) {
+	ctx, cancel := context.WithTimeout(ctx, missWaitLimit)
+	defer cancel()
+
+	for {
+		r.missMu.Lock()
+		if r.missDone.After(asked) {
+			r.missMu.Unlock()
+			return
+		}
+		running := r.missRunning
+		if running == nil {
+			wait := missRefreshGap - time.Since(r.missLast)
+			if wait > 0 {
+				r.missMu.Unlock()
+
+				timer := time.NewTimer(wait)
+				select {
+				case <-timer.C:
+					continue
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				}
+			}
+
+			running = make(chan struct{})
+			r.missRunning = running
+			r.missLast = time.Now()
+			go r.pollForMiss(running)
+		}
+		r.missMu.Unlock()
+
+		select {
+		case <-running:
+		case <-ctx.Done():
+		}
+
+		return
+	}
+}
+
+// pollForMiss runs one poll for the misses waiting on it, then releases them.
+// A failed poll is not reported here: the background loop reports the same
+// shard on its own schedule, and the events behind it are counted as unknown.
+func (r *RemoteRouter) pollForMiss(running chan struct{}) {
+	ctx, cancel := context.WithTimeout(context.Background(), missWaitLimit)
+	defer cancel()
+
+	_ = r.RefreshAll(ctx)
+
+	r.missMu.Lock()
+	r.missRunning = nil
+	r.missDone = time.Now()
+	r.missMu.Unlock()
+	close(running)
 }
 
 // Shard resolves an account to its current owner. Account zero is the
@@ -160,6 +332,9 @@ func (r *RemoteRouter) ResolveEvent(event *Event) (resolved bool, absent bool) {
 // RefreshAll polls every shard independently. One failure is returned for
 // visibility without discarding any previously successful shard contribution.
 func (r *RemoteRouter) RefreshAll(ctx context.Context) error {
+	r.refreshMu.Lock()
+	defer r.refreshMu.Unlock()
+
 	var first error
 	for shard := range r.Shards {
 		if err := r.refreshShard(ctx, shard); err != nil && first == nil {
