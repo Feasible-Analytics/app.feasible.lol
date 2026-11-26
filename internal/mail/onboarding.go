@@ -22,6 +22,8 @@ const (
 	docsInstallation  = "https://feasible.lol/docs/installation/"
 	docsProxying      = "https://feasible.lol/docs/proxying/"
 	docsAssistant     = "https://feasible.lol/docs/mcp/"
+	docsGoals         = "https://feasible.lol/docs/goals-funnels/"
+	helpInvite        = "https://feasible.lol/help/how-do-i-invite-someone-to-my-team/"
 )
 
 // OnboardingMailer turns an onboarding notice into a sent message.
@@ -63,7 +65,8 @@ func (m *OnboardingMailer) Notify(ctx context.Context, notice onboarding.Notice)
 // OnboardingContent is the copy table for the four onboarding emails. Each one
 // reads differently for an account that has added a site and one that has not,
 // because "we have not seen example.com" means nothing to somebody who never
-// added it.
+// added it. The welcome has a third version for an account that was already
+// counting when it went out.
 func OnboardingContent(notice onboarding.Notice) (Content, error) {
 	hasSite := notice.SiteDomain != ""
 
@@ -86,6 +89,11 @@ func OnboardingContent(notice onboarding.Notice) (Content, error) {
 
 	switch notice.Template {
 	case onboarding.TemplateWelcome:
+		if hasSite && notice.Collecting {
+			welcomeCollecting(&content, notice, greeting)
+			break
+		}
+
 		content.Subject = "Three steps to your first pageview"
 		content.Heading = "Welcome to Feasible"
 		content.Preheader = "Add your site, paste the snippet, and press Check my installation."
@@ -185,4 +193,29 @@ func OnboardingContent(notice onboarding.Notice) (Content, error) {
 	}
 
 	return content, nil
+}
+
+// welcomeCollecting writes the welcome for an owner whose site was counting
+// before the welcome went out. Telling them the snippet is the one thing to do
+// today would describe a job they have already finished, so this version says
+// it is done and points at what is worth doing next.
+func welcomeCollecting(content *Content, notice onboarding.Notice, greeting string) {
+	content.Subject = "Your first pageview is in"
+	content.Heading = "Welcome to Feasible"
+	content.Preheader = "The install is done. Three things worth five minutes this week."
+	content.Primary = Button{Label: "Open your dashboard", URL: notice.DashboardURL}
+	content.Closing = "Questions? Reply to this email and we'll help."
+	content.Body = []string{
+		greeting,
+		"I'm Spicer. I built Feasible. Your first pageview from " + notice.SiteDomain + " has already arrived, so the install is done.",
+		"Three things worth five minutes this week:",
+		"1. Add a goal for the one action that matters most, like a sign-up or a purchase. Downloads, outbound links, forms and missing pages are counted already.",
+		"2. Invite a teammate or a client. There's no charge per person.",
+		"3. Connect Claude, ChatGPT, Cursor or VS Code by pasting one URL, then ask about your traffic in plain words.",
+	}
+	content.Links = []Button{
+		{Label: "Goals and funnels", URL: docsGoals},
+		{Label: "Inviting your team", URL: helpInvite},
+		{Label: "Connecting an assistant", URL: docsAssistant},
+	}
 }
