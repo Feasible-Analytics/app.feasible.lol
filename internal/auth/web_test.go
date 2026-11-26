@@ -1272,11 +1272,10 @@ func TestRegisterVerifyAndCreateASite(t *testing.T) {
 	}
 
 	// The onboarding screen has to carry the snippet, the waiting state and the
-	// skip option. A visit in the first seconds after the site is created is
-	// not counted, so the waiting state also says to load the site again.
+	// skip option.
 	onboarding := c.body(resp.Header.Get("Location"))
 
-	for _, fragment := range []string{"Waiting for your first pageview", "Copy snippet", "Skip for now", "WordPress", "load your site once more"} {
+	for _, fragment := range []string{"Waiting for your first pageview", "Copy snippet", "Skip for now", "WordPress", "updates on its own"} {
 		if !strings.Contains(onboarding, fragment) {
 			t.Errorf("the onboarding screen is missing %q", fragment)
 		}

@@ -37,11 +37,6 @@ const verifyMaxBytes = 1 << 20
 // that a tab left open overnight is not a load problem.
 const FirstEventPollInterval = 3 * time.Second
 
-// RoutingDelay is the worst case between creating a site and every serving
-// process learning about it from the app shard system database. This number is
-// what the waiting screen tells the user while remote snapshots refresh.
-const RoutingDelay = 15 * time.Second
-
 // Snippet renders the script tag for one site.
 //
 // The per-site path is used rather than the shared one. Filter lists name files

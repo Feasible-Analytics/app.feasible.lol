@@ -69,6 +69,15 @@ type SiteResolver interface {
 	Refresh(context.Context) error
 }
 
+// SiteConfirmer is a resolver whose snapshot can trail the app that owns the
+// sites. Before an event is dropped as unknown, the pipeline asks it to look
+// once more, so the first visit to a site created a moment ago is counted
+// rather than lost. A local snapshot has nothing to trail and does not
+// implement it.
+type SiteConfirmer interface {
+	Confirm(ctx context.Context, domain string) (sites.Site, bool)
+}
+
 // SaltSource supplies the current and previous UTC-day fingerprint salts.
 type SaltSource interface {
 	Pair(context.Context) (salts.Pair, error)
@@ -310,6 +319,11 @@ func (p *Pipeline) Derive(ctx context.Context, r *http.Request, payload *Payload
 
 	// Step 4.
 	site, known := p.Sites.Lookup(payload.Domain)
+	if !known {
+		if confirmer, ok := p.Sites.(SiteConfirmer); ok {
+			site, known = confirmer.Confirm(ctx, payload.Domain)
+		}
+	}
 	if !known && stop(ReasonUnknownSite) {
 		return result, nil
 	}

@@ -37,7 +37,6 @@ func (h *Handler) showOnboarding(w http.ResponseWriter, r *http.Request) {
 	p.Data["SnippetLegacy"] = SnippetLegacy(h.BaseURL, h.ScriptBaseURL, site)
 	p.Data["Platforms"] = InstallPlatforms()
 	p.Data["PollMillis"] = int(FirstEventPollInterval.Milliseconds())
-	p.Data["RoutingDelay"] = int(RoutingDelay.Seconds())
 
 	h.render(w, r, "onboarding", p, http.StatusOK)
 }
@@ -122,7 +121,6 @@ func (h *Handler) doVerifyInstall(w http.ResponseWriter, r *http.Request) {
 		p.Data["SnippetLegacy"] = SnippetLegacy(h.BaseURL, h.ScriptBaseURL, site)
 		p.Data["Platforms"] = InstallPlatforms()
 		p.Data["PollMillis"] = int(FirstEventPollInterval.Milliseconds())
-		p.Data["RoutingDelay"] = int(RoutingDelay.Seconds())
 		p.Error = i18n.T(p.Lang, "auth.error.too_many_attempts")
 
 		h.render(w, r, "onboarding", p, http.StatusTooManyRequests)
@@ -158,7 +156,6 @@ func (h *Handler) doVerifyInstall(w http.ResponseWriter, r *http.Request) {
 	p.Data["SnippetLegacy"] = SnippetLegacy(h.BaseURL, h.ScriptBaseURL, site)
 	p.Data["Platforms"] = InstallPlatforms()
 	p.Data["PollMillis"] = int(FirstEventPollInterval.Milliseconds())
-	p.Data["RoutingDelay"] = int(RoutingDelay.Seconds())
 	p.Data["Verify"] = result
 
 	if result.OK() {

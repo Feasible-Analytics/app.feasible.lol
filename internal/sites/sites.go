@@ -27,9 +27,10 @@ import (
 	"time"
 )
 
-// RefreshInterval is how often the snapshot is rebuilt. Fifteen seconds is the
-// gap between adding a site in the dashboard and its first event being
-// accepted, and it is short enough that nobody files a bug about it.
+// RefreshInterval is how often the snapshot is rebuilt. A site created in this
+// process is set into the snapshot straight away, and a standalone ingester
+// takes a second look before it drops an unknown domain, so the interval only
+// bounds how long a change made somewhere else takes to be seen.
 const RefreshInterval = 15 * time.Second
 
 // Site is everything the ingest path needs to know about one site. It carries
