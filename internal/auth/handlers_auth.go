@@ -155,6 +155,9 @@ func (h *Handler) doRegister(w http.ResponseWriter, r *http.Request) {
 
 	user, team, err := h.Store.CreateUser(r.Context(), email, name, hash, "")
 	if errors.Is(err, ErrEmailTaken) {
+		// The message says to sign in or reset the password, so the form
+		// offers both as buttons rather than leaving the person to find them.
+		p.Data["EmailTaken"] = true
 		fail(i18n.T(p.Lang, "auth.error.email_taken"))
 		return
 	}

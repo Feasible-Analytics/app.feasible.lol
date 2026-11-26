@@ -1289,6 +1289,46 @@ func TestRegisterVerifyAndCreateASite(t *testing.T) {
 	}
 }
 
+// TestRegisteringATakenAddressOffersSignInAndReset covers somebody signing up
+// again with an address that already has an account. The message tells them
+// to sign in or reset their password, so both have to be there to press.
+func TestRegisteringATakenAddressOffersSignInAndReset(t *testing.T) {
+	app := newTestApp(t)
+	registerAndVerify(t, app)
+
+	c := newClient(t, app)
+	resp := c.post("/register", url.Values{
+		"email":    {"person@example.com"},
+		"password": {"another long password"},
+	})
+	defer closeResponseBody(t, resp)
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+
+	for _, fragment := range []string{
+		"An account already uses that email address",
+		`href="/login?next=`, ">Sign in</a>",
+		`href="/forgot-password"`, ">Reset your password</a>",
+	} {
+		if !strings.Contains(body, fragment) {
+			t.Errorf("the taken-address form is missing %q", fragment)
+		}
+	}
+
+	// A first visit to the form has no reason to offer a password reset.
+	if fresh := newClient(t, app).body("/register"); strings.Contains(fresh, "Reset your password") {
+		t.Error("the empty sign-up form offers a password reset")
+	}
+}
+
 // TestAllSitesAnalyticsFiltersByFolder drives the second sites screen through
 // the route table.
 //
