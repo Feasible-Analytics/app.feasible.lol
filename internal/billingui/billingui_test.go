@@ -519,6 +519,44 @@ func TestBillingBannerNamesTheDates(t *testing.T) {
 	}
 }
 
+// TestBillingNamesTheFreeTrialInThePlanBox covers an owner on day one of the
+// trial. The banner says the trial is running, so the plan box beside it must
+// not say "No plan" and "none"; once the trial has run out it goes back to
+// saying what the payment provider says.
+func TestBillingNamesTheFreeTrialInThePlanBox(t *testing.T) {
+	handler, control := newHandler(t)
+
+	state := lifecycle.State{Trigger: lifecycle.TriggerTrial, StartedAt: pagesNow.Add(-lifecycle.Day)}
+	if err := lifecycle.NewStore(control).Save(context.Background(), 1, state); err != nil {
+		t.Fatal(err)
+	}
+
+	body := render(t, handler, "/billing?team=1").Body.String()
+
+	ends := "Ends on " + state.Boundary(lifecycle.PhaseLocked).Format("2 January 2006") + "."
+	for _, want := range []string{"Free trial", ends, `action="/billing/checkout"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the trial's billing page is missing %q", want)
+		}
+	}
+
+	for _, unwanted := range []string{">No plan<", ">none<"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("the trial's billing page still says %q", unwanted)
+		}
+	}
+
+	// Past the trial the account is locked, and the box says so plainly.
+	state.StartedAt = pagesNow.Add(-40 * lifecycle.Day)
+	if err := lifecycle.NewStore(control).Save(context.Background(), 1, state); err != nil {
+		t.Fatal(err)
+	}
+
+	if body := render(t, handler, "/billing?team=1").Body.String(); strings.Contains(body, "Free trial") {
+		t.Error("a trial that has run out is still called a free trial")
+	}
+}
+
 // TestBillingAlwaysOffersTheExport is the portability guarantee on the screen: it
 // has to be reachable in every phase, including from a locked account.
 func TestBillingAlwaysOffersTheExport(t *testing.T) {

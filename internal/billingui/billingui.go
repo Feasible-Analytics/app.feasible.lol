@@ -442,6 +442,10 @@ func (h *Handler) billing(w http.ResponseWriter, r *http.Request) {
 		} else {
 			data.Status = bannerFor(lang, state, now)
 			data.Timeline = timelineFor(lang, state, now)
+
+			if trial, ok := trialPlan(lang, state, now, data.Plan); ok {
+				data.Plan = trial
+			}
 		}
 	}
 
@@ -474,6 +478,28 @@ func meterFor(counts usage.Counts, now time.Time) usageMeter {
 	}
 
 	return meter
+}
+
+// trialPlan describes the plan box for an account inside its free trial that
+// has not subscribed. Without it the box reads "No plan" and "none" next to a
+// banner saying the trial is running, which looks like the trial never
+// started. Once a subscription exists, or the trial has run out, the box shows
+// what the payment provider says, as it always has.
+func trialPlan(lang string, state lifecycle.State, now time.Time, current planPanel) (planPanel, bool) {
+	if current.Subscribed || current.HasCustomer || current.PaymentState != "" {
+		return planPanel{}, false
+	}
+
+	if !state.Running() || state.Trigger != lifecycle.TriggerTrial || state.At(now) != lifecycle.PhaseGrace {
+		return planPanel{}, false
+	}
+
+	return planPanel{
+		Label:             i18n.T(lang, "pages.billing.plan.trial"),
+		Status:            i18n.T(lang, "pages.billing.plan.status_active"),
+		RenewsOn:          state.Boundary(lifecycle.PhaseLocked).Format("2 January 2006"),
+		CancelAtPeriodEnd: true,
+	}, true
 }
 
 // bannerFor turns the lifecycle state into the one message at the top of the

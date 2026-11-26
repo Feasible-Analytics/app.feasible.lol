@@ -37,6 +37,7 @@
   "pages.billing.plan.status": "Status",
   "pages.billing.plan.status_active": "active",
   "pages.billing.plan.status_none": "none",
+  "pages.billing.plan.trial": "Free trial",
   "pages.billing.subtitle": "{account} — what you are using, what you are paying, and what happens next.",
   "pages.billing.upgrade.features": "Every feature, no add-ons",
   "pages.billing.upgrade.label": "Upgrade",
