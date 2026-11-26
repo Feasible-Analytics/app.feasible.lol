@@ -50,7 +50,9 @@ type statusResponse struct {
 
 // onboardingStatus answers "has anything arrived yet".
 //
-// This endpoint is the whole reason the waiting screen works. Another serving
+// This endpoint is the whole reason the waiting screen works, and the
+// dashboard's "no visits yet" screen polls it too, because the stats endpoint
+// holds a live answer for thirty seconds. Another serving
 // process can take a control-cache refresh cycle to learn a new domain, so the
 // screen turns that bounded propagation gap into a normal-feeling wait.
 func (h *Handler) onboardingStatus(w http.ResponseWriter, r *http.Request) {

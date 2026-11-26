@@ -10,17 +10,33 @@ import { useEffect, useState } from "react";
 
 import type { StatsRequest, Waiting } from "../api/types";
 import { t } from "../lib/i18n";
-import { useInterval, useStats } from "../lib/useStats";
+import { useInterval, useRemote, useStats } from "../lib/useStats";
 
-/** How often the page asks whether the first visit has arrived. Somebody who
- *  has just pasted the snippet is watching this page, so it has to feel live;
- *  it only runs for a site with no visits, so the cost is a handful of small
- *  queries while they set up. */
-export const FIRST_VISIT_POLL_MS = 5_000;
+/** How often the page asks whether the first visit has arrived, the same as
+ *  the install screen. Somebody who has just pasted the snippet is watching
+ *  this page, so it has to feel live; it only runs for a site with no visits,
+ *  so the cost is a handful of small reads while they set up. */
+export const FIRST_VISIT_POLL_MS = 3_000;
 
-/** Every visit the site has ever had. It is a cheap question for a site that
- *  has none, which is the only site it is ever asked about. */
+/** Every visit the site has ever had, for a reader who cannot open the install
+ *  screen. The stats endpoint holds a live answer for thirty seconds, so this
+ *  is the slower of the two ways to notice the first visit. */
 export const FIRST_VISIT_REQUEST: StatsRequest = { metrics: ["visitors"], date_range: "all" };
+
+/** The install screen's own "has anything arrived" endpoint. It is read
+ *  uncached, so a reader who may install the site sees the first visit within
+ *  one poll. Empty when the reader cannot open the install screen. */
+export function firstVisitStatusURL(waiting: Waiting): string {
+	return waiting.install_url ? `${waiting.install_url}/status` : "";
+}
+
+/** readStatus asks the install screen's endpoint whether a visit has arrived. */
+async function readStatus(url: string, signal: AbortSignal): Promise<{ received: boolean }> {
+	const response = await fetch(url, { signal, credentials: "same-origin", headers: { Accept: "application/json" } });
+	if (!response.ok) throw new Error(`first-visit status ${response.status}`);
+
+	return (await response.json()) as { received: boolean };
+}
 
 /**
  * FirstVisit takes the place of the reports for a site that has never recorded
@@ -34,17 +50,21 @@ export const FIRST_VISIT_REQUEST: StatsRequest = { metrics: ["visitors"], date_r
  * onArrived when it has, so the reports appear without a reload.
  */
 export function FirstVisit({ waiting, onArrived }: { waiting: Waiting; onArrived: () => void }) {
-	// Quiet: this asks on a timer rather than because anybody did anything, so
-	// it must never move the page-level loading bar.
-	const stats = useStats(waiting.domain, FIRST_VISIT_REQUEST, true, { quiet: true });
+	// Quiet: both ask on a timer rather than because anybody did anything, so
+	// neither may move the page-level loading bar. Only one of them runs.
+	const statusURL = firstVisitStatusURL(waiting);
+	const status = useRemote(`first-visit|${statusURL}`, statusURL !== "", (signal) => readStatus(statusURL, signal), {
+		quiet: true,
+	});
+	const stats = useStats(waiting.domain, FIRST_VISIT_REQUEST, statusURL === "", { quiet: true });
 
-	useInterval(stats.reload, FIRST_VISIT_POLL_MS);
+	useInterval(statusURL ? status.reload : stats.reload, FIRST_VISIT_POLL_MS);
 
-	const visitors = stats.data?.results[0]?.metrics[0] ?? 0;
+	const arrived = statusURL ? status.data?.received === true : (stats.data?.results[0]?.metrics[0] ?? 0) > 0;
 
 	useEffect(() => {
-		if (visitors > 0) onArrived();
-	}, [visitors, onArrived]);
+		if (arrived) onArrived();
+	}, [arrived, onArrived]);
 
 	const canInstall = Boolean(waiting.snippet);
 
