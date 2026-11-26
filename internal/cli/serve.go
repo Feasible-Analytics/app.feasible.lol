@@ -460,12 +460,17 @@ func buildApp(e *env, control *sql.DB, manager *accounts.Manager, service *inges
 
 // supportAddress is who a customer writes to.
 //
+// Hosted customers write to the help address, which is where support works.
 // A self-hosted deployment answers its own operator, because pointing that
 // customer at us is pointing them at somebody who can see neither their data
-// nor their machine. Hosted falls back to the sales address, which has a
-// default, so the link is never empty.
+// nor their machine. A self-hosted install with no operator address falls back
+// to the sales address, which has a default, so the link is never empty.
 func supportAddress(e *env) string {
-	if !e.cfg.App.Hosted && e.cfg.App.OperatorEmail != "" {
+	if e.cfg.App.Hosted {
+		return mail.HelpAddress
+	}
+
+	if e.cfg.App.OperatorEmail != "" {
 		return e.cfg.App.OperatorEmail
 	}
 
