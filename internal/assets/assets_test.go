@@ -305,3 +305,20 @@ func TestEveryAssetALayoutAsksForExists(t *testing.T) {
 
 // assetCall matches the template helper's argument.
 var assetCall = regexp.MustCompile(`asset\s+"([^"]+)"`)
+
+// TestPhoneFieldsAreLargeEnoughNotToZoom checks the built stylesheet keeps the
+// 16px rule for typed fields on a phone. Under 16px iOS Safari zooms the page
+// in on every field a person taps, and the sign-up form's button leaves the
+// screen. The rule lives in tailwind.css, so this also catches a template
+// change that was never followed by `make ui-css`.
+func TestPhoneFieldsAreLargeEnoughNotToZoom(t *testing.T) {
+	css := string(UI["app.css"].Body)
+	if css == "" {
+		t.Fatal("the embedded stylesheet is empty")
+	}
+
+	rule := regexp.MustCompile(`@media \(max-width:\s?39\.99rem\)\s?\{input:not\([^)]*\),select,textarea\{font-size:16px\}`)
+	if !rule.MatchString(css) {
+		t.Fatal("app.css has no 16px rule for typed fields below sm, so iPhones will zoom into every form")
+	}
+}
