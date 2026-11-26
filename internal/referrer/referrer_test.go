@@ -31,6 +31,11 @@ func TestParseKnownSources(t *testing.T) {
 		{"https://mail.google.com/mail/u/0", "Gmail", CategoryEmail},
 		{"https://chatgpt.com/", "ChatGPT", CategoryAI},
 		{"https://duckduckgo.com/", "DuckDuckGo", CategorySearch},
+		{"https://duck.ai/", "Duck.ai", CategoryAI},
+		{"https://l.meta.ai/", "Meta AI", CategoryAI},
+		{"https://www.meta.ai/", "Meta AI", CategoryAI},
+		{"https://grok.com/", "Grok", CategoryAI},
+		{"https://chat.deepseek.com/a/chat/s/x", "DeepSeek", CategoryAI},
 	}
 
 	for _, tc := range cases {
@@ -172,5 +177,25 @@ func TestSourceFromUTM(t *testing.T) {
 
 	if _, ok := SourceFromUTM("   "); ok {
 		t.Fatal("a blank tag resolved to a source")
+	}
+}
+
+// TestAIAssistantTags checks every assistant people tag links with resolves to
+// the AI category, so a tagged link from a chat lands in AI Assistants rather
+// than Referral.
+func TestAIAssistantTags(t *testing.T) {
+	cases := map[string]string{
+		"chatgpt":    "ChatGPT",
+		"claude":     "Claude",
+		"perplexity": "Perplexity",
+		"gemini":     "Gemini",
+		"Gemini":     "Gemini",
+	}
+
+	for tag, want := range cases {
+		got, ok := SourceFromUTM(tag)
+		if !ok || got.Name != want || got.Category != CategoryAI {
+			t.Errorf("%q: source = %q, category = %d, want %q in the AI category", tag, got.Name, got.Category, want)
+		}
 	}
 }

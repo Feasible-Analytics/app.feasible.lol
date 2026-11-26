@@ -35,8 +35,6 @@ var importedSourceNames = map[string]string{
 	"outlook.com":   "Outlook",
 	"protonmail":    "Proton Mail",
 	"wikipedia":     "wikipedia.org",
-	"grok":          "grok.com",
-	"deepseek":      "deepseek.com",
 	"phind":         "phind.com",
 }
 

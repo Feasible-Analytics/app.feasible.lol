@@ -145,6 +145,10 @@ var hosts = map[string]Source{
 	"copilot.com":           {"Microsoft Copilot", CategoryAI},
 	"you.com":               {"You.com", CategoryAI},
 	"poe.com":               {"Poe", CategoryAI},
+	"duck.ai":               {"Duck.ai", CategoryAI},
+	"meta.ai":               {"Meta AI", CategoryAI},
+	"grok.com":              {"Grok", CategoryAI},
+	"chat.deepseek.com":     {"DeepSeek", CategoryAI},
 
 	// Audio.
 	"open.spotify.com":   {"Spotify", CategoryAudio},
@@ -236,6 +240,7 @@ var utmSourceAliases = map[string]Source{
 	"openai":       {"ChatGPT", CategoryAI},
 	"claude":       {"Claude", CategoryAI},
 	"perplexity":   {"Perplexity", CategoryAI},
+	"gemini":       {"Gemini", CategoryAI},
 	"amazon":       {"Amazon", CategoryShopping},
 	"spotify":      {"Spotify", CategoryAudio},
 }
